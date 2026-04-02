@@ -91,6 +91,7 @@ export const actionTypes = {
   "protect": "Defend others, shield from harm, sacrifice",
   "create": "Build something new, artistic expression, innovate",
   "heal": "Repair damage, restore health/trust",
+  "custom": "Custom prompt from reader",
   "other": "Catch-all for uncategorized actions"
 };
 
@@ -194,6 +195,7 @@ export const actionHintTypes = [
   "truth_revelation",
   "survival",
   "psychological",
+  "custom",
   "none",
 ] as const;
 

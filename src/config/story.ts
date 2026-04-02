@@ -2,7 +2,7 @@ export const MAX_WORDS_PER_PAGE = 60;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 export const DEFAULT_BOOK_MAX_PAGES = 150;
 
-export const MAX_RELEVANT_CHARACTERS = 10;
+export const MAX_RELEVANT_CHARACTERS = 5;
 
 /**
  * Maximum number of pages back to consider character interactions "recent"

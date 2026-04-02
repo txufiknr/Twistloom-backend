@@ -6,7 +6,7 @@
  * @summary Validates and parses a date string with comprehensive error handling
  * @description Safely parses date strings with validation and detailed error reporting
  * @param dateString - Date string to parse
- * @param context - Context for error logging (e.g., feed ID, item title)
+ * @param context - Context for error logging (e.g., item title)
  * @returns Object with parsed date and validation status
  */
 export function validateAndParseDate(

@@ -1,0 +1,68 @@
+name: Daily Cleanup
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # Daily at 4:00 UTC (after data modification jobs complete)
+  workflow_dispatch:      # Allow manual triggering
+
+jobs:
+  cleanup:
+    name: Cleanup Old Data
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup package manager
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+          
+      # Setup Node.js runtime with caching
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          
+      # Get pnpm cache directory for optimization
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: |
+          echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      # Cache pnpm packages to speed up future runs
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+            
+      # Install project dependencies
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        
+      # Build TypeScript to JavaScript
+      - name: Build project
+        run: pnpm build
+        
+      # Ensure compiled file exists before running
+      - name: Verify build
+        run: test -f dist/cron/cleanup.js
+        
+      # Execute cleanup cron job
+      - name: Run cleanup job
+        run: node dist/cron/cleanup.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
+          IMAGEKIT_API_KEY_PRIVATE: ${{ secrets.IMAGEKIT_API_KEY_PRIVATE }}
+          NODE_ENV: production
+        timeout-minutes: 20  # Conservative timeout for cleanup operation

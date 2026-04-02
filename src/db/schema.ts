@@ -276,6 +276,8 @@ export const users = pgTable(
     userId: userId().primaryKey(),
     name: text("name"),
     gender,
+    image: text("image"), // Profile image ImageKit URL
+    imageId: text("image_id"), // ImageKit file ID for deletion
     lastActive,
     createdAt,
     updatedAt,
@@ -318,6 +320,8 @@ export const books = pgTable(
     displayTitle: text("display_title").notNull(),
     hook: text("hook"),
     summary: text("summary"),
+    image: text("image"), // Cover image ImageKit URL
+    imageId: text("image_id"), // ImageKit file ID for deletion
     trendingScore: real("trending_score").default(0),
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['cardiff mosque', 'peel street mosque', 'world war ii', 'muslim community']
     status: text("status").$type<BookStatus | null>().default('active'),
@@ -329,8 +333,8 @@ export const books = pgTable(
     index("books_trending_idx").on(t.trendingScore),
     // Optimize time-window queries
     index("books_recent_idx").on(t.updatedAt),
-    // Optimize trending feed queries with compound ordering
-    index("books_trending_feed_idx").on(
+    // Optimize trending queries with compound ordering
+    index("books_trending_idx").on(
       t.status.desc(),
       t.trendingScore.desc(),
       t.updatedAt.desc()
@@ -339,17 +343,17 @@ export const books = pgTable(
     index("books_user_idx").on(t.userId),
     // Index for status filtering
     index("books_status_idx").on(t.status),
-    // Optimize cursor-based pagination (with status filter)
-    index("books_feed_cursor_idx").on(
-      t.updatedAt.desc(),
-      t.id.desc()
-    ),
-    // Optimize cursor-based pagination with status
-    index("books_feed_cursor_status_idx").on(
-      t.status,
-      t.updatedAt.desc(),
-      t.id.desc()
-    ),
+    // // Optimize cursor-based pagination (with status filter)
+    // index("books_cursor_idx").on(
+    //   t.updatedAt.desc(),
+    //   t.id.desc()
+    // ),
+    // // Optimize cursor-based pagination with status
+    // index("books_cursor_status_idx").on(
+    //   t.status,
+    //   t.updatedAt.desc(),
+    //   t.id.desc()
+    // ),
   ]
 );
 
@@ -549,5 +553,57 @@ export const userSessions = pgTable(
     index("user_sessions_status_idx").on(t.status),
     // Index for user's active sessions
     index("user_sessions_user_active_idx").on(t.userId).where(sql`status = 'active'`),
+  ]
+);
+
+/**
+ * Server-side user cache (cheap & powerful)
+ * @summary Cache user data for faster retrieval
+ * 
+ * Cached users (key):
+ * - user:{userId} - User data
+ * - user:{userId}:favorites - User favorites
+ * - user:{userId}:sessions - User sessions
+ */
+export const userCache = pgTable(
+  "user_cache",
+  {
+    key: text("key").primaryKey(),
+    payload: jsonb("payload").notNull(),
+    updatedAt,
+  },
+  (t) => [
+    // Index for JSONB queries (future-proof)
+    index("user_cache_payload_gin").using("gin", t.payload),
+
+    // Index for TTL cleanup & freshness checks
+    index("user_cache_updated_at_idx").on(t.updatedAt),
+  ]
+);
+
+/**
+ * Create deleted images table
+ * @summary Queue ImageKit file IDs for deletion when clusters are deleted
+ * 
+ * This table acts as a reliable queue system:
+ * 1. Database trigger inserts heroImageId when cluster is deleted
+ * 2. Daily cleanup job processes queued deletions
+ * 3. Rows are immediately deleted after successful ImageKit deletion
+ * 
+ * @example
+ * {
+ *   "file_id": "abc123_imagekit_file_id",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const deletedImages = pgTable(
+  "deleted_images",
+  {
+    fileId: text("file_id").notNull().primaryKey(), // ImageKit file ID to be deleted
+    createdAt, // When this deletion was queued
+  },
+  (t) => [
+    // Index for efficient cleanup queries (oldest first)
+    index("deleted_images_created_idx").on(t.createdAt),
   ]
 );

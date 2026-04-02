@@ -15,23 +15,27 @@
  * - POST /api/books - Create new psychological thriller books
  * - GET /api/books - Retrieve user's book library
  * - GET /api/books/explore - Explore published books with search and pagination
+ * - PUT /api/books/:id - Update book information and cover image
  * - POST /api/books/:id/pages - Generate new story pages
  * - GET /api/books/:id/pages/:pageId - Retrieve specific pages
  * - POST /api/books/:id/sessions - Manage reading sessions
+ * - DELETE /api/books/:id - Delete a book and queue image for deletion
  */
 
 import type { Request, Response } from "express";
 import { Router } from "express";
-import { dbRead } from "../db/client.js";
+import { dbRead, dbWrite } from "../db/client.js";
 import { optionalClientId, requireClientId } from "../middleware/auth.js";
-import { books, pages, userSessions } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and, isNull } from "drizzle-orm";
 import { initializeBook, chooseAction } from "../utils/prompt.js";
 import { getActiveSession, setActiveSession } from "../services/book.js";
 import { getStoryState } from "../services/story.js";
+import { imageUpload, uploadBookCover } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
+import { ImageUploadSource } from "../types/image.js";
 
 const router = Router();
 
@@ -103,6 +107,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
         displayTitle: books.displayTitle,
         hook: books.hook,
         summary: books.summary,
+        image: books.image,
         status: books.status,
         createdAt: books.createdAt,
         updatedAt: books.updatedAt,
@@ -150,6 +155,132 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
     res.json(createPaginatedResponse(userBooks, pagination));
   } catch (error) {
     handleApiError(res, "Failed to retrieve books", error);
+  }
+});
+
+/**
+ * PUT /api/books/:id
+ * 
+ * Updates book information including title, hook, summary, keywords, and cover image.
+ * Supports partial updates - only provided fields will be modified.
+ * Handles multiple image upload sources: URL, base64, or multipart file.
+ * 
+ * @param id - Book ID to update
+ * @param displayTitle - Updated book title (optional)
+ * @param hook - Updated book hook/description (optional)
+ * @param summary - Updated book summary (optional)
+ * @param keywords - Updated book keywords array (optional)
+ * @param imageUrl - New cover image URL to upload (optional)
+ * @param imageFile - New cover image file from multipart upload (optional)
+ * @returns Updated book information
+ */
+router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+    const { 
+      displayTitle, 
+      hook, 
+      summary, 
+      keywords, 
+      imageUrl 
+    } = req.body;
+
+    // Verify book ownership
+    const existingBook = await dbRead
+      .select({ 
+        id: books.id,
+        userId: books.userId,
+        displayTitle: books.displayTitle,
+        imageId: books.imageId
+      })
+      .from(books)
+      .where(and(
+        eq(books.id, id as string),
+        eq(books.userId, userId)
+      ))
+      .limit(1);
+
+    if (!existingBook.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    const book = existingBook[0];
+    let newImageUrl: string | undefined;
+    let newImageId: string | undefined;
+    let oldImageIdQueued = false;
+
+    // Handle image upload from different sources
+    let imageSource: ImageUploadSource | undefined;
+
+    if (req.file) {
+      // Multipart file upload
+      imageSource = req.file;
+    } else if (imageUrl) {
+      // URL or base64 string upload
+      imageSource = imageUrl;
+    }
+
+    // Process image upload if source is provided
+    if (imageSource) {
+      const uploadResult = await uploadBookCover(
+        imageSource,
+        book.id,
+        displayTitle || book.displayTitle,
+        keywords || []
+      );
+
+      if (uploadResult) {
+        newImageUrl = uploadResult.url;
+        newImageId = uploadResult.fileId;
+
+        // Queue old image for deletion if it exists
+        if (book.imageId) {
+          await dbWrite
+            .insert(deletedImages)
+            .values({
+              fileId: book.imageId,
+              createdAt: new Date(),
+            });
+          oldImageIdQueued = true;
+        }
+      } else {
+        return res.status(400).json({
+          error: "Failed to upload cover image"
+        });
+      }
+    }
+
+    // Prepare update data (only include provided fields)
+    const updateData: any = {
+      updatedAt: new Date(),
+    };
+
+    if (displayTitle !== undefined) updateData.displayTitle = displayTitle;
+    if (hook !== undefined) updateData.hook = hook;
+    if (summary !== undefined) updateData.summary = summary;
+    if (keywords !== undefined) updateData.keywords = keywords;
+    if (newImageUrl) updateData.image = newImageUrl;
+    if (newImageId) updateData.imageId = newImageId;
+
+    // Update the book
+    const updatedBook = await dbWrite
+      .update(books)
+      .set(updateData)
+      .where(and(
+        eq(books.id, id as string),
+        eq(books.userId, userId)
+      ))
+      .returning();
+
+    res.json({
+      book: updatedBook[0],
+      imageUploaded: !!newImageUrl,
+      oldImageQueuedForDeletion: oldImageIdQueued,
+      uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to update book", error);
   }
 });
 
@@ -316,6 +447,7 @@ router.post("/:id/sessions", requireClientId, async (req: Request, res: Response
       book: {
         id: book[0].id,
         displayTitle: book[0].displayTitle,
+        image: book[0].image,
         currentPage: session.pageId
       }
     });
@@ -349,6 +481,7 @@ router.get("/explore", optionalClientId, async (req: Request, res: Response) => 
         displayTitle: books.displayTitle,
         hook: books.hook,
         summary: books.summary,
+        image: books.image,
         keywords: books.keywords,
         status: books.status,
         trendingScore: books.trendingScore,
@@ -389,6 +522,68 @@ router.get("/explore", optionalClientId, async (req: Request, res: Response) => 
     res.json(createPaginatedResponse(booksResult, pagination));
   } catch (error) {
     handleApiError(res, "Failed to explore books", error);
+  }
+});
+
+/**
+ * DELETE /api/books/:id
+ * 
+ * Deletes a book and all its associated data.
+ * If the book has an imageId, queues it for deletion in the deletedImages table.
+ * 
+ * @param id - Book ID to delete
+ * @returns Success message with deletion details
+ */
+router.delete("/:id", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+
+    // Get book information including imageId before deletion
+    const book = await dbRead
+      .select({ 
+        id: books.id,
+        imageId: books.imageId,
+        userId: books.userId
+      })
+      .from(books)
+      .where(and(
+        eq(books.id, id as string),
+        eq(books.userId, userId)
+      ))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    const bookToDelete = book[0];
+
+    // Queue image for deletion if imageId exists
+    if (bookToDelete.imageId) {
+      await dbWrite
+        .insert(deletedImages)
+        .values({
+          fileId: bookToDelete.imageId,
+          createdAt: new Date(),
+        });
+    }
+
+    // Delete the book (cascade will handle related records)
+    await dbWrite
+      .delete(books)
+      .where(and(
+        eq(books.id, id as string),
+        eq(books.userId, userId)
+      ));
+
+    res.json({
+      message: "Book deleted successfully",
+      bookId: id,
+      imageQueuedForDeletion: !!bookToDelete.imageId
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to delete book", error);
   }
 });
 

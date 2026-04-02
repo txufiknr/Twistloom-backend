@@ -16,8 +16,7 @@
  * - GET /user - Get user profile
  * - POST /user - Create or fully replace user profile
  * - PUT /user - Partially update user profile
- * - DELETE /user - Delete user profile
- * - POST /user/reset - Reset all user data
+ * - DELETE /user - Delete user profile and all associated data
  * - POST /user/likes - Like a target item
  * - DELETE /user/likes - Unlike a target item
  * - GET /user/likes - Get user likes
@@ -34,13 +33,15 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireClientId } from "../middleware/auth.js";
-import { users, userDevices, userSessions, userLikes, userFavorites, userComments } from "../db/schema.js";
+import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
 import type { NewUser, NewUserLike, NewUserFavorite, NewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, sql, and, desc } from "drizzle-orm";
-// import { invalidateCacheKey, invalidateCachePattern } from "../utils/cache.js";
+import { updateUserLastActivity } from "../services/user.js";
+import { invalidateCacheKey, invalidateCachePattern } from "../utils/cache.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
+import { imageUpload, uploadUserProfile } from "../services/image.js";
 
 const router = Router();
 
@@ -48,7 +49,7 @@ const router = Router();
  * GET /user
  * 
  * Retrieves the authenticated user's profile information.
- * Returns the complete user profile with liked and saved feed counts, or null if no user exists.
+ * Returns the complete user profile with liked and saved book counts, or null if no user exists.
  * 
  * @route GET /user
  * @description Get user profile with engagement counts
@@ -61,9 +62,16 @@ const router = Router();
  * @returns {Object} User profile response
  * @returns {boolean} success - Operation status
  * @returns {Object|null} data - User profile object or null
+ * @returns {string} data.userId - User's unique identifier
+ * @returns {string|null} data.name - User's display name
+ * @returns {string|null} data.gender - User's gender
+ * @returns {string|null} data.image - User's profile image URL
  * @returns {number} data.totalLiked - Number of liked articles
  * @returns {number} data.totalSaved - Number of saved articles
  * @returns {number} data.totalReads - Number of read articles
+ * @returns {string} data.lastActive - Last activity timestamp
+ * @returns {string} data.createdAt - Account creation timestamp
+ * @returns {string} data.updatedAt - Last update timestamp
  * 
  * @example
  * // Request
@@ -77,6 +85,7 @@ const router = Router();
  *     "userId": "user123",
  *     "name": "John Doe",
  *     "gender": "male",
+ *     "image": "https://ik.imagekit.io/abc123/profile.jpg",
  *     "totalLiked": 15,
  *     "totalSaved": 8,
  *     "totalReads": 100,
@@ -96,6 +105,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
         userId: users.userId,
         name: users.name,
         gender: users.gender,
+        image: users.image,
         lastActive: users.lastActive,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
@@ -129,6 +139,9 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
       success: true,
       data: userData,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve user profile", error);
   }
@@ -151,6 +164,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  * @body {Object} User profile data
  * @body {string} [name] - User's display name
  * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
+ * @body {string} [image] - User's profile image URL
  * 
  * @returns {Object} Creation/replacement response
  * @returns {boolean} success - Operation status
@@ -163,6 +177,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  * Body: {
  *   "name": "John Doe",
  *   "gender": "male",
+ *   "image": "https://ik.imagekit.io/abc123/profile.jpg"
  * }
  * 
  * // Response
@@ -172,6 +187,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  *     "userId": "user123",
  *     "name": "John Doe",
  *     "gender": "male",
+ *     "image": "https://ik.imagekit.io/abc123/profile.jpg",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
  *     "updatedAt": "2023-01-01T00:00:00.000Z"
  *   }
@@ -180,13 +196,14 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
 router.post("/", requireClientId, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, gender } = req.body;
+    const { name, gender, image } = req.body;
 
     // Prepare user data for upsert (exclude timestamp fields from frontend)
     const userData: NewUser = {
       userId,
       name: name?.trim() || null,
       gender: normalizeGender(gender),
+      image: image?.trim() || null,
     };
 
     // Perform upsert operation (create or replace)
@@ -198,6 +215,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
         set: {
           name: userData.name,
           gender: userData.gender,
+          image: userData.image,
           lastActive: new Date(),
           updatedAt: new Date(),
         },
@@ -209,6 +227,9 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       message: "User created successfully",
       data: row,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to create/update user profile", error);
   }
@@ -219,6 +240,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
  * 
  * Partially updates the authenticated user's profile.
  * Only provided fields are updated, existing fields remain unchanged.
+ * Supports multiple image upload methods: URL, base64, or multipart file.
  * 
  * @route PUT /user
  * @description Partially update user profile
@@ -227,21 +249,33 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
  * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
+ * @header Content-Type - multipart/form-data for file uploads or application/json
  * 
- * @body {Object} Partial user profile data
+ * @body {Object} Partial user profile data (for JSON requests)
  * @body {string} [name] - User's display name (optional)
  * @body {string} [gender] - User's gender (optional)
+ * @body {string} [imageUrl] - User's profile image URL to upload (optional)
+ * @body {File} [imageFile] - User's profile image file (multipart) (optional)
  * 
  * @returns {Object} Update response
  * @returns {boolean} success - Operation status
  * @returns {Object} data - Updated user profile
+ * @returns {string} uploadSource - Image upload method used
+ * @returns {boolean} imageUploaded - Whether image was uploaded
+ * @returns {boolean} oldImageQueuedForDeletion - Whether old image was queued for deletion
  * 
  * @example
- * // Request
+ * // Request with file upload
+ * PUT /user
+ * Headers: X-Client-Id: user123, Content-Type: multipart/form-data
+ * Body: imageFile=<file>, name=John Doe
+ * 
+ * // Request with base64
  * PUT /user
  * Headers: X-Client-Id: user123
  * Body: {
- *   "name": "Jane Doe"
+ *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
+ *   "name": "John Doe"
  * }
  * 
  * // Response
@@ -249,21 +283,33 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
  *   "success": true,
  *   "data": {
  *     "userId": "user123",
- *     "name": "Jane Doe",
+ *     "name": "John Doe",
  *     "gender": "male",
+ *     "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
  *     "updatedAt": "2023-01-01T12:00:00.000Z"
- *   }
+ *   },
+ *   "imageUploaded": true,
+ *   "uploadSource": "file",
+ *   "oldImageQueuedForDeletion": false
  * }
  */
-router.put("/", requireClientId, async (req: Request, res: Response) => {
+router.put("/", requireClientId, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, gender } = req.body;
+    const { name, gender, imageUrl } = req.body;
 
     // Check if user exists
     const existingUser = await dbRead
-      .select()
+      .select({ 
+        userId: users.userId,
+        name: users.name,
+        gender: users.gender,
+        image: users.image,
+        imageId: users.imageId,
+        createdAt: users.createdAt,
+        updatedAt: users.updatedAt
+      })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
@@ -272,17 +318,68 @@ router.put("/", requireClientId, async (req: Request, res: Response) => {
       return handleNotFoundError(res, "User profile not found");
     }
 
+    const user = existingUser[0];
+    let newImageUrl: string | undefined;
+    let newImageId: string | undefined;
+    let oldImageIdQueued = false;
+
+    // Handle image upload from different sources
+    let imageSource: string | Buffer | { buffer: ArrayBuffer; originalname: string; mimetype: string } | undefined;
+
+    if (req.file) {
+      // Multipart file upload
+      imageSource = {
+        buffer: req.file.buffer as unknown as ArrayBuffer,
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype
+      };
+    } else if (imageUrl) {
+      // URL or base64 string upload
+      imageSource = imageUrl;
+    }
+
+    // Process image upload if source is provided
+    if (imageSource) {
+      const uploadResult = await uploadUserProfile(imageSource, userId);
+
+      if (uploadResult) {
+        newImageUrl = uploadResult.url;
+        newImageId = uploadResult.fileId;
+
+        // Queue old image for deletion if it exists
+        if (user.imageId) {
+          await dbWrite
+            .insert(deletedImages)
+            .values({
+              fileId: user.imageId,
+              createdAt: new Date(),
+            });
+          oldImageIdQueued = true;
+        }
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: "Failed to upload profile image"
+        });
+      }
+    }
+
     // Only include non-null and non-empty values for update
     const updateData = filterObjectEntries({
       name: name?.trim() || null,
       gender: normalizeGender(gender),
+      image: newImageUrl || null,
+      imageId: newImageId || null,
     });
 
     // Only proceed if there are actual updates
     if (Object.keys(updateData).length === 0) {
       return res.json({
         success: true,
-        data: existingUser[0],
+        data: user,
+        imageUploaded: !!newImageUrl,
+        uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+        oldImageQueuedForDeletion: oldImageIdQueued,
       });
     }
 
@@ -299,6 +396,9 @@ router.put("/", requireClientId, async (req: Request, res: Response) => {
     res.json({
       success: true,
       data: result[0],
+      imageUploaded: !!newImageUrl,
+      uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+      oldImageQueuedForDeletion: oldImageIdQueued,
     });
   } catch (error) {
     handleApiError(res, "Failed to update user profile", error);
@@ -308,11 +408,16 @@ router.put("/", requireClientId, async (req: Request, res: Response) => {
 /**
  * DELETE /user
  * 
- * Deletes the authenticated user's profile from the system.
- * This operation is irreversible and will remove all user data.
+ * Deletes the authenticated user's profile and all associated data from the system.
+ * This operation is irreversible and will remove all user data including:
+ * - Profile information and image
+ * - User preferences and settings
+ * - Favorites, likes, and comments
+ * - Reading sessions and history
+ * - Device registrations
  * 
  * @route DELETE /user
- * @description Delete user profile
+ * @description Delete user profile and all associated data
  * @access Private (requires X-Client-Id header)
  * 
  * @header X-Client-Id - User identification header (required)
@@ -322,6 +427,7 @@ router.put("/", requireClientId, async (req: Request, res: Response) => {
  * @returns {Object} Deletion response
  * @returns {boolean} success - Operation status
  * @returns {string} message - Confirmation message
+ * @returns {Object} data - Summary of deleted records
  * 
  * @example
  * // Request
@@ -331,16 +437,30 @@ router.put("/", requireClientId, async (req: Request, res: Response) => {
  * // Response
  * {
  *   "success": true,
- *   "message": "User profile deleted successfully"
+ *   "message": "User account deleted successfully",
+ *   "data": {
+ *     "deletedRecords": {
+ *       "userProfile": 1,
+ *       "userFavorites": 8,
+ *       "userLikes": 15,
+ *       "userSessions": 42,
+ *       "userDevices": 2,
+ *       "userComments": 5
+ *     },
+ *     "imageQueuedForDeletion": true
+ *   }
  * }
  */
 router.delete("/", requireClientId, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
 
-    // Check if user exists before deletion
+    // Get user information including imageId before deletion
     const existingUser = await dbRead
-      .select()
+      .select({ 
+        userId: users.userId,
+        imageId: users.imageId
+      })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
@@ -349,127 +469,58 @@ router.delete("/", requireClientId, async (req: Request, res: Response) => {
       return handleNotFoundError(res, "User profile not found");
     }
 
-    // Delete user profile
-    await dbWrite.delete(users).where(eq(users.userId, userId));
+    const userToDelete = existingUser[0];
 
-    res.json({
-      success: true,
-      message: "User profile deleted successfully",
-    });
-  } catch (error) {
-    handleApiError(res, "Failed to delete user profile", error);
-  }
-});
-
-/**
- * POST /user/reset
- * 
- * Resets all user data by clearing all user-related tables for the authenticated user.
- * This operation is irreversible and will remove all user preferences, favorites, likes,
- * history, settings, devices, and streaks data.
- * 
- * @route POST /user/reset
- * @description Reset all user data
- * @access Private (requires X-Client-Id header)
- * 
- * @header X-Client-Id - User identification header (required)
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @returns {Object} Reset response
- * @returns {boolean} success - Operation status
- * @returns {string} message - Confirmation message
- * @returns {Object} data - Summary of cleared data
- * 
- * @example
- * // Request
- * POST /user/reset
- * Headers: X-Client-Id: user123
- * 
- * // Response
- * {
- *   "success": true,
- *   "message": "User data reset successfully",
- *   "data": {
- *     "deletedRecords": {
- *       "userPreferences": 1,
- *       "userFavorites": 8,
- *       "userLikes": 15,
- *       "userHistory": 42,
- *       "userSettings": 1,
- *       "userDevices": 2,
- *       "userStreaks": 1
- *     }
- *   }
- * }
- */
-router.post("/reset", requireClientId, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-
-    // Check if user exists before reset
-    const existingUser = await dbRead
-      .select()
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-
-    if (existingUser.length === 0) {
-      return handleNotFoundError(res, "User profile not found");
+    // Queue image for deletion if imageId exists
+    if (userToDelete.imageId) {
+      await dbWrite
+        .insert(deletedImages)
+        .values({
+          fileId: userToDelete.imageId,
+          createdAt: new Date(),
+        });
     }
 
-    // TODO: Execute all delete operations in parallel for efficiency
-    // const [
-    //   deletedPreferences,
-    //   deletedFavorites,
-    //   deletedLikes,
-    //   deletedHistory,
-    //   deletedSettings,
-    //   deletedDevices,
-    //   deletedStreaks
-    // ] = await Promise.all([
-    //   dbWrite.delete(userPreferences).where(eq(userPreferences.userId, userId)).returning(),
-    //   dbWrite.delete(userFavorites).where(eq(userFavorites.userId, userId)).returning(),
-    //   dbWrite.delete(userLikes).where(eq(userLikes.userId, userId)).returning(),
-    //   dbWrite.delete(userHistory).where(eq(userHistory.userId, userId)).returning(),
-    //   dbWrite.delete(userSettings).where(eq(userSettings.userId, userId)).returning(),
-    //   dbWrite.delete(userDevices).where(eq(userDevices.userId, userId)).returning(),
-    //   dbWrite.delete(userStreaks).where(eq(userStreaks.userId, userId)).returning(),
-    // ]);
+    // Execute all delete operations in parallel for efficiency
+    const [
+      deletedProfile,
+      deletedFavorites,
+      deletedLikes,
+      deletedSessions,
+      deletedDevices,
+      deletedComments
+    ] = await Promise.all([
+      dbWrite.delete(users).where(eq(users.userId, userId)).returning(),
+      dbWrite.delete(userFavorites).where(eq(userFavorites.userId, userId)).returning(),
+      dbWrite.delete(userLikes).where(eq(userLikes.userId, userId)).returning(),
+      dbWrite.delete(userSessions).where(eq(userSessions.userId, userId)).returning(),
+      dbWrite.delete(userDevices).where(eq(userDevices.userId, userId)).returning(),
+      dbWrite.delete(userComments).where(eq(userComments.userId, userId)).returning(),
+    ]);
 
-    // TODO: Invalidate all relevant cache entries
-    // await Promise.all([
-    //   // User-specific feed caches
-    //   invalidateCacheKey(`feed:personalized:${userId}`),
-    //   invalidateCacheKey(`feed:liked:${userId}`),
-    //   invalidateCacheKey(`feed:saved:${userId}`),
-    //   invalidateCacheKey(`feed:history:${userId}`),
-
-    //   // Invalidate all collection caches
-    //   invalidateCachePattern(`feed:saved:${userId}:collection:%`),
-      
-    //   // User-specific latest feed caches (all topics and general)
-    //   invalidateCachePattern(`feed:latest:%:${userId}`),
-    // ]);
+    // Invalidate all relevant user cache entries
+    await Promise.all([
+      invalidateCachePattern(`user:${userId}%`),
+    ]);
 
     res.json({
       success: true,
-      message: "User data reset successfully",
+      message: "User account deleted successfully",
       data: {
         deletedRecords: {
-          // TODO: Uncomment when delete operations are implemented
-          // userPreferences: deletedPreferences.length,
-          // userFavorites: deletedFavorites.length,
-          // userLikes: deletedLikes.length,
-          // userHistory: deletedHistory.length,
-          // userSettings: deletedSettings.length,
-          // userDevices: deletedDevices.length,
-          // userStreaks: deletedStreaks.length,
+          userProfile: deletedProfile.length,
+          userFavorites: deletedFavorites.length,
+          userLikes: deletedLikes.length,
+          userSessions: deletedSessions.length,
+          userDevices: deletedDevices.length,
+          userComments: deletedComments.length,
         },
+        imageQueuedForDeletion: !!userToDelete.imageId,
       },
     });
+
   } catch (error) {
-    handleApiError(res, "Failed to reset user data", error);
+    handleApiError(res, "Failed to delete user account", error);
   }
 });
 
@@ -567,6 +618,9 @@ router.post("/likes", requireClientId, async (req: Request, res: Response) => {
       message: "Like created successfully",
       data: result[0] || null,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to create like", error);
   }
@@ -641,6 +695,9 @@ router.delete("/likes", requireClientId, async (req: Request, res: Response) => 
       success: true,
       message: "Like removed successfully",
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to remove like", error);
   }
@@ -710,6 +767,9 @@ router.get("/likes", requireClientId, async (req: Request, res: Response) => {
       success: true,
       data: likes,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve likes", error);
   }
@@ -796,6 +856,9 @@ router.post("/favorites", requireClientId, async (req: Request, res: Response) =
       message: "Book added to favorites successfully",
       data: result[0],
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to add book to favorites", error);
   }
@@ -860,6 +923,9 @@ router.delete("/favorites", requireClientId, async (req: Request, res: Response)
       success: true,
       message: "Book removed from favorites successfully",
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to remove book from favorites", error);
   }
@@ -919,6 +985,9 @@ router.get("/favorites", requireClientId, async (req: Request, res: Response) =>
       success: true,
       data: favorites,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve favorites", error);
   }
@@ -1009,6 +1078,9 @@ router.post("/comments", requireClientId, async (req: Request, res: Response) =>
       message: "Comment created successfully",
       data: row,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to create comment", error);
   }
@@ -1176,6 +1248,9 @@ router.delete("/comments/:commentId", requireClientId, async (req: Request, res:
       success: true,
       message: "Comment deleted successfully",
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to delete comment", error);
   }
@@ -1248,6 +1323,9 @@ router.get("/comments", requireClientId, async (req: Request, res: Response) => 
       success: true,
       data: comments,
     });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve comments", error);
   }

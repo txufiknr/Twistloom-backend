@@ -366,7 +366,9 @@ pnpm lock:check    # Check lock status
 
 ## 🧪 Testing Guidelines
 
-### Running Tests
+### Test File Format
+Use Node.js testing approach with TypeScript and ES modules.
+
 **Only create and run tests when explicitly requested** by the user (on-demand testing).
 
 ### Test Execution Format

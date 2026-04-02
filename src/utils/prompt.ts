@@ -2,9 +2,9 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMM
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AIChatConfig } from "../types/ai-chat.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity, ActionedStoryPage } from "../types/story.js";
+import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity, ActionedStoryPage, ActionHintType } from "../types/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
-import { getStoryPageById, getStoryProgress, insertStoryState, setActiveSession, updateActiveSession } from "../services/book.js";
+import { getStoryPageById, getStoryProgress, insertStoryState, setActiveSession } from "../services/book.js";
 import { aiPrompt } from "./ai-chat.js";
 import { getCurrentEndingArchetype, updateState } from "./story.js";
 import { formatPlacesForPrompt } from "./places.js";
@@ -570,8 +570,8 @@ function getMainCharacterInfo(mc: StoryMC): string {
  * @param hint - Raw hint text from action
  * @returns Processed hint with narrative guidance and constraints
  */
-function getHintGuidanceForAI(hint: ActionHint): string {
-  switch (hint.type) {
+function getHintGuidanceForAI(hintType: ActionHintType): string {
+  switch (hintType) {
     case "dark_discovery": return "Focus on atmosphere and emotional impact. Avoid revealing discovery immediately. Build tension through sensory details and MC's internal reaction rather than external events.";
     case "relationship_revelation": return "Reveal through dialogue and character interactions. Show relationship dynamics through subtext and emotional responses rather than direct exposition.";
     case "betrayal": return "Create suspicion and unease. Use unreliable narration, subtle inconsistencies, and character behavior changes rather than stating betrayal directly.";
@@ -579,6 +579,7 @@ function getHintGuidanceForAI(hint: ActionHint): string {
     case "truth_revelation": return "Reveal through fragmented memories and environmental storytelling. Use symbolism, metaphor, and gradual realization rather than direct exposition.";
     case "survival": return "Focus on immediate consequences and resource limitations. Use time pressure, environmental hazards, and MC's physical/mental state rather than planning solutions.";
     case "psychological": return "Explore internal conflict and perception issues. Use unreliable narration, memory inconsistencies, and blurred reality rather than psychological analysis.";
+    case "custom": return "Reader provided unique direction. Honor their creative intent while maintaining narrative consistency. Weave their suggestion naturally into the story's existing themes and character development, avoiding abrupt tonal shifts or plot contradictions.";
     default: return "Develop naturally with appropriate tone for the action type and context.";
   }
 }
@@ -592,11 +593,11 @@ function getHintGuidanceForAI(hint: ActionHint): string {
 function formatSelectedAction(selectedAction?: Action): string {
   if (!selectedAction) return 'No action chosen. Continue the story naturally.';
 
-  return `${selectedAction.text} (type: ${selectedAction.type})
+  const isCustomAction = selectedAction.type == 'custom';
 
-About selected action:
-• Hint: ${selectedAction.hint.text}
-• Guidance: ${getHintGuidanceForAI(selectedAction.hint)}`;
+  return `• [${selectedAction.type}] ${selectedAction.text}\n\nAbout selected action:
+• Hint: ${isCustomAction ? "This is custom prompt from reader. Develop naturally, don't fullfil their expectation." : selectedAction.hint.text}
+• Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}`;
 }
 
 /**
@@ -605,7 +606,7 @@ About selected action:
  * @returns Formatted string with action choices
  */
 function formatActionChoices(actions: Action[]): string {
-  return actions.map(action => `• ${action.text} (type: ${action.type})`).join('\n');
+  return actions.map(action => `• [${action.type}] ${action.text}`).join('\n');
 }
 
 /**
@@ -1147,7 +1148,7 @@ export async function initializeBook(
  * @param mc - Main character profile containing name, gender, and psychological data
  * @param state - Current story state with progression, flags, and hidden values
  * @param actionedPage - Previous page with selected action for context
- * @param shouldGenerateCandidates - Whether to pre-generate candidates for next page (default: false)
+ * @param isUserAction - Whether to pre-generate candidates for next page (default: true)
  * @returns Promise resolving to persisted story page with database ID and metadata
  * 
  * @example
@@ -1166,7 +1167,7 @@ export async function buildNextPage(
   mc: StoryMC,
   state: StoryState, // Current story state with incremented page number
   actionedPage: ActionedStoryPage, // Previous page with selected action
-  shouldGenerateCandidates: boolean = true, // Should pre-generate page candidates for each action
+  isUserAction: boolean = true, // User selected action, or just candidate pre-generation
 ): Promise<PersistedStoryPage> {
   // 1. Create personalized prompt with character, story context, and previous action
   const prompt = buildCompletePrompt(mc, state, actionedPage);
@@ -1178,7 +1179,7 @@ export async function buildNextPage(
   const response = await aiPrompt<StoryPage>(prompt, {
     config,
     modelSelection: AI_CHAT_MODELS_WRITING,
-    context: shouldGenerateCandidates ? 'story-page-candidate' : 'story-page',
+    context: isUserAction ? 'story-page' : 'story-page-candidate',
     outputAsJson: true
   });
   
@@ -1189,22 +1190,9 @@ export async function buildNextPage(
 
   const generatedPage = response.result; // Generated content without database ID yet
 
-  // 5. Pre-generate candidate pages for each action (main story only)
-  // This creates branching options for the next user choice
-  if (!shouldGenerateCandidates) {
-    // For each action without a pre-generated page, create a candidate
-    for (const action of generatedPage.actions) {
-      // Skip if action already has a pageId (pre-generated candidate)
-      if (action.pageId) continue;
-      
-      // Generate candidate page for this action (recursion prevented by isChosenFromCandidate=true)
-      const candidatePage = await chooseAction(userId, action, true);
-      
-      // Update action with destination pageId for branching navigation
-      generatedPage.actions = generatedPage.actions.map(act => {
-        return { ...act, pageId: candidatePage.id } satisfies Action
-      });
-    }
+  // 5. Pre-generate candidate pages for each action
+  if (isUserAction) {
+    await ensureCandidatesForPage(userId, generatedPage);
   }
   
   // 6. Persist generated page to database with parent-child relationship
@@ -1238,7 +1226,7 @@ export async function buildNextPage(
  * 
  * @param userId - The user's unique identifier
  * @param action - The action chosen by the user from current page options
- * @param isChosenFromCandidate - Whether this action is chosen from a pre-generated candidate (default: false)
+ * @param isUserAction - Whether this action is chosen by user or from a pre-generated candidate (default: true)
  * @returns Promise resolving to the generated story page with database ID and metadata
  * 
  * @example
@@ -1252,7 +1240,7 @@ export async function buildNextPage(
  * console.log(`Candidate page: ${candidatePage.text}`);
  * ```
  */
-export async function chooseAction(userId: string, action: Action, isChosenFromCandidate: boolean = false): Promise<PersistedStoryPage> {
+export async function chooseAction(userId: string, action: Action, isUserAction: boolean = true): Promise<PersistedStoryPage> {
   // 1. Get current story progress (session, page, state, character) in parallel
   const { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
   
@@ -1270,7 +1258,12 @@ export async function chooseAction(userId: string, action: Action, isChosenFromC
   }
 
   // 4. If no pre-generated page exists, generate new page with state progression
-  if (!persistedPage) {
+  if (persistedPage) {
+    // User action: ensure candidates for next page | Candidate: wait until user visit the page and ensure next candidates
+    if (isUserAction) {
+      await ensureCandidatesForPage(userId, persistedPage);
+    }
+  } else {
     // 4a. Create actioned page with selected action for state processing
     const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
     
@@ -1278,16 +1271,72 @@ export async function chooseAction(userId: string, action: Action, isChosenFromC
     const updatedState = await updateState(currentState, actionedPage);
     
     // 4c. Generate next page using AI with dynamic configuration
-    // Main story: generates candidates for next page | Candidate: no new candidates
-    const shouldGenerateCandidates = !isChosenFromCandidate;
-    persistedPage = await buildNextPage(userId, currentMc, updatedState, actionedPage, shouldGenerateCandidates);
+    persistedPage = await buildNextPage(userId, currentMc, updatedState, actionedPage, isUserAction);
   }
 
   // 5. Update user session to point to the new page
-  await updateActiveSession(userId, activeSession.bookId, persistedPage.id);
+  await setActiveSession(userId, activeSession.bookId, persistedPage.id);
   
   // 6. Return the generated page with all database metadata
   return persistedPage;
+}
+
+/**
+ * Pre-generates candidate pages for all actions on a story page
+ * 
+ * This function implements the branching narrative system by creating destination pages
+ * for each action choice that doesn't already have a pre-generated candidate. It ensures
+ * that when users select actions, the corresponding destination pages are immediately
+ * available without waiting for AI generation.
+ * 
+ * The function operates by:
+ * 1. Iterating through each action on the provided page
+ * 2. Skipping actions that already have a pageId (pre-generated candidates)
+ * 3. For each remaining action, calling chooseAction with isUserAction=false to generate
+ *    a candidate page without triggering additional candidate generation
+ * 4. Updating the action with its unique destination pageId for navigation
+ * 
+ * This creates a tree-like structure where each main story page branches into multiple
+ * candidate pages, one for each possible action choice. The candidate pages themselves
+ * don't generate further candidates to prevent infinite recursion.
+ * 
+ * @param userId - The user's unique identifier for database operations
+ * @param page - The story page whose actions need candidate generation (null-safe)
+ * 
+ * @example
+ * ```typescript
+ * // Pre-generate candidates for a newly created story page
+ * const newPage = await buildNextPage(userId, character, state, previousPage, true);
+ * await ensureCandidatesForPage(userId, newPage);
+ * // Result: Each action on newPage now has a unique pageId pointing to a pre-generated candidate
+ * 
+ * // Handle null case safely
+ * await ensureCandidatesForPage(userId, null); // No operation performed
+ * ```
+ * 
+ * @note This function modifies the page.actions array in-place but does not persist
+ *       the changes to the database. The calling function should handle persistence
+ *       if the updated actions need to be stored.
+ * 
+ * @see chooseAction - Used to generate individual candidate pages
+ * @see buildNextPage - Calls this function for main story pages when isUserAction=true
+ */
+export async function ensureCandidatesForPage(userId: string, page: StoryPage | null) {
+  if (!page) return;
+  
+  // For each action without a pre-generated page, create a candidate
+  for (let i = 0; i < page.actions.length; i++) {
+    const action = page.actions[i];
+    
+    // Skip if action already has a pageId (pre-generated candidate)
+    if (action.pageId) continue;
+    
+    // Generate candidate page for this action
+    const candidatePage = await chooseAction(userId, action, false);
+    
+    // Update only this action with its destination pageId for branching navigation
+    page.actions[i] = { ...action, pageId: candidatePage.id };
+  }
 }
 
 /**

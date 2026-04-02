@@ -11,7 +11,8 @@
  * - Type-safe database operations
  */
 
-import { db } from "../db/client.js";
+import { dbRead, dbWrite } from "../db/client.js";
+import { updateUserLastActivity } from "./user.js";
 import { userSessions, books, pages, storyStates } from "../db/schema.js";
 import { eq, and, asc } from "drizzle-orm";
 import { PersistedStoryPage, StoryPage, StoryProgress, StoryState } from "../types/story.js";
@@ -42,7 +43,7 @@ import { NewStoryState, NewUserSession, Page, UserSession } from "../types/schem
  */
 export async function getActiveSession(userId: string): Promise<{ bookId: string; pageId: string | null } | null> {
   try {
-    const result = await db
+    const result = await dbRead
       .select({ bookId: userSessions.bookId, pageId: userSessions.pageId })
       .from(userSessions)
       .where(
@@ -82,7 +83,7 @@ export async function getActiveSession(userId: string): Promise<{ bookId: string
  */
 export async function getPageById(pageId: string) {
   try {
-    const result = await db
+    const result = await dbRead
       .select()
       .from(pages)
       .where(eq(pages.id, pageId))
@@ -127,7 +128,7 @@ export async function getStoryPageById(bookId: string, pageId?: string | null): 
     }
     
     // Fallback: get the first page of the book
-    const firstPage = await db
+    const firstPage = await dbRead
       .select()
       .from(pages)
       .where(eq(pages.bookId, bookId))
@@ -231,44 +232,55 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
 }
 
 /**
- * Updates the active session for a user with new page information
+ * Creates or updates the active session for a user with new page information
  * 
  * @param userId - The user's unique identifier
  * @param bookId - The book's unique identifier
  * @param pageId - The new page identifier to set as current
- * @returns Promise that resolves when session is updated
+ * @returns Promise that resolves to the created/updated session object
  * 
  * Behavior:
- * - Updates user_sessions table with new pageId
+ * - Uses upsert operation (create or update) for user_sessions table
  * - Maintains active status and book association
  * - Handles session creation if none exists
  * - Ensures user always has a valid active session
+ * - Updates user's last activity timestamp for tracking
+ * - Returns the complete session object for further processing
  * 
  * Example:
  * ```typescript
- * await updateActiveSession("user123", "book456", "page789");
- * // User's active session now points to the new page
+ * const session = await setActiveSession("user123", "book456", "page789");
+ * console.log(`Session ${session.id} activated for user ${session.userId}`);
+ * // User's active session now points to the new page and activity is tracked
  * ```
  */
-export async function updateActiveSession(userId: string, bookId: string, pageId: string): Promise<void> {
+export async function setActiveSession(userId: string, bookId: string, pageId: string): Promise<UserSession> {
   try {
-    await db
+    const result = await dbWrite
       .insert(userSessions)
       .values({
         userId,
         bookId,
         pageId,
+        status: 'active',
       })
       .onConflictDoUpdate({
         target: [userSessions.userId, userSessions.bookId],
         set: {
           pageId,
+          status: 'active',
           updatedAt: new Date(),
         }
-      });
+      }).returning();
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+    
+    console.log(`Session activated for user ${userId}, book ${bookId}`);
+    return result[0];
   } catch (error) {
-    console.error(`Failed to update active session for user ${userId}, book ${bookId}:`, error);
-    throw new Error(`Unable to update active session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to set active session for user ${userId}, book ${bookId}:`, error);
+    throw new Error(`Unable to set active session: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -293,7 +305,7 @@ export async function updateActiveSession(userId: string, bookId: string, pageId
  */
 export async function insertStoryState(userId: string, pageId: string, state: StoryState): Promise<void> {
   try {
-    await db
+    await dbWrite
       .insert(storyStates)
       .values({
         userId,
@@ -362,7 +374,7 @@ export async function insertStoryState(userId: string, pageId: string, state: St
  */
 export async function getStoryState(userId: string, pageId: string): Promise<StoryState | null> {
   try {
-    const result = await db
+    const result = await dbRead
       .select()
       .from(storyStates)
       .where(
@@ -409,7 +421,7 @@ export async function getStoryState(userId: string, pageId: string): Promise<Sto
  */
 export async function getBookInfo(bookId: string) {
   try {
-    const result = await db
+    const result = await dbRead
       .select()
       .from(books)
       .where(eq(books.id, bookId))
@@ -422,52 +434,6 @@ export async function getBookInfo(bookId: string) {
   }
 }
 
-/**
- * Creates or updates a user session for a specific book
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @param pageId - Optional page ID to set as current position
- * @returns Promise that resolves when session is created/updated
- * 
- * Behavior:
- * - Uses upsert operation (create or update)
- * - Automatically handles session exclusivity via database trigger
- * - Sets status to 'active' by default
- * - Updates timestamp for session tracking
- * 
- * Example:
- * ```typescript
- * await setActiveSession("user123", "book456", "page789");
- * // This will automatically deactivate other sessions for this user
- * ```
- */
-export async function setActiveSession(userId: string, bookId: string, pageId: string): Promise<UserSession> {
-  try {
-    const result = await db
-      .insert(userSessions)
-      .values({
-        userId,
-        bookId,
-        pageId,
-        status: 'active',
-      })
-      .onConflictDoUpdate({
-        target: [userSessions.userId, userSessions.bookId],
-        set: {
-          status: 'active',
-          pageId,
-          updatedAt: new Date(),
-        }
-      }).returning();
-    
-    console.log(`Session activated for user ${userId}, book ${bookId}`);
-    return result[0];
-  } catch (error) {
-    console.error(`Failed to set active session for user ${userId}, book ${bookId}:`, error);
-    throw new Error(`Unable to set active session: ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-}
 
 /**
  * Deactivates a user's session for a specific book
@@ -489,7 +455,7 @@ export async function setActiveSession(userId: string, bookId: string, pageId: s
  */
 export async function deactivateSession(userId: string, bookId: string) {
   try {
-    const result = await db
+    const result = await dbWrite
       .update(userSessions)
       .set({ 
         status: 'past',

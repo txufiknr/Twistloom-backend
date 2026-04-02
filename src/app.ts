@@ -41,10 +41,8 @@ app.get("/", (_, res) => {
 });
 
 // Backward-compatible redirects
-app.get("/feed", (_, res) => res.redirect("/api/feed"));
-app.get("/preferences", (_, res) => res.redirect("/api/preferences"));
-app.get("/favorites", (_, res) => res.redirect("/api/favorites"));
-app.get("/history", (_, res) => res.redirect("/api/history"));
+app.get("/user", (_, res) => res.redirect("/api/user"));
+app.get("/books", (_, res) => res.redirect("/api/books"));
 
 // Health check endpoint
 app.get("/health", (_, res) => {
