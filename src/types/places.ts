@@ -1,0 +1,153 @@
+/**
+ * Available place types for categorizing locations
+ * 
+ * These types help the AI understand the nature and function
+ * of each place within the narrative world.
+ */
+export const placeTypes = [
+  "house",        // Residential buildings, homes
+  "school",       // Educational institutions
+  "forest",       // Natural wooded areas
+  "river",        // Water bodies, streams
+  "road",         // Transportation routes
+  "building",     // General structures
+  "room",         // Indoor spaces
+  "outdoor",      // Open areas
+  "unknown",      // Mysterious/unidentified places
+  "other"         // Catch-all for unique locations
+] as const;
+
+/**
+ * Union type of all possible place type values
+ */
+export type PlaceType = typeof placeTypes[number];
+
+/**
+ * Available emotional atmospheres for places
+ * 
+ * These moods track how places feel to the MC and can
+ * influence narrative tone and psychological effects.
+ */
+export const placeMoods = [
+  "safe",         // Feels secure, protected
+  "threatening",  // Dangerous, hostile
+  "eerie",        // Unsettling, strange
+  "familiar",     // Known, comfortable
+  "unfamiliar",   // New, unknown
+  "distorted",    // Wrong, altered
+  "sacred",       // Special, meaningful
+  "contaminated", // Corrupted, tainted
+  "neutral"       // No strong atmosphere
+] as const;
+
+/**
+ * Union type of all possible place mood values
+ */
+export type PlaceMood = typeof placeMoods[number];
+
+/**
+ * Sensory details for immersive place descriptions
+ * 
+ * These optional details help the AI create consistent
+ * atmospheric descriptions across multiple visits.
+ */
+export type SensoryDetails = {
+  /** Smell characteristics of the place */
+  smell?: string;
+  /** Sound environment of the place */
+  sound?: string;
+  /** Visual appearance and lighting */
+  visual?: string;
+  /** Physical sensations (temperature, texture) */
+  feeling?: string;
+};
+
+// /**
+//  * Character-place relationship tracking
+//  * 
+//  * This structure connects characters to specific places,
+//  * enabling narrative logic about where characters tend to appear.
+//  */
+// export type CharacterPlaceRelation = {
+//   // /** Character name this relation belongs to */
+//   // characterName: string;
+//   // /** Place identifier (matches Place.id) */
+//   // placeId: string;
+//   /** How often MC meets this character here */
+//   frequency: number;
+//   /** Last page where character was seen at this place */
+//   lastSeenAtPage: number;
+//   /** Optional context about their presence here */
+//   context?: string;
+// };
+
+/**
+ * Complete place memory structure for narrative consistency
+ * 
+ * This type defines the full place schema including visit history,
+ * emotional associations, and narrative connections.
+ */
+export type PlaceMemory = {
+  // /** Unique identifier for the place */
+  // placeId: string;
+  /** Place name as it appears in the narrative */
+  name: string;
+  /** Type of place for categorization and behavior patterns */
+  type: PlaceType;
+  /** Short human-readable description for immediate recall */
+  context: string;
+  /** Optional spatial relationship to other places */
+  locationHint?: string;
+  
+  /** Visit tracking metrics */
+  visitCount: number;
+  lastVisitedAtPage: number;
+  familiarity: number; // 0-1, important for reuse priority
+  
+  /** Emotional and narrative associations */
+  moodHistory: PlaceMood[];
+  eventTags: string[]; // ["betrayal", "discovery", "first_meeting"]
+  knownCharacters: string[]; // Character names encountered here
+  
+  /** Optional sensory details for consistent atmosphere */
+  sensoryDetails?: SensoryDetails;
+  
+  /** Current emotional atmosphere of the place */
+  currentMood: PlaceMood;
+};
+
+/**
+ * Place update structure for AI output
+ * 
+ * When AI modifies existing places, it provides updates in this format
+ * to maintain place development and narrative consistency.
+ */
+export type PlaceUpdate = Omit<PlaceMemory, 'type' | 'locationHint'>;
+
+/**
+ * Place creation structure for AI output
+ * 
+ * When AI introduces new places, it provides them in this format
+ * for consistent integration into the place memory system.
+ */
+export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'familiarity' | 'moodHistory'> & {
+  /** Initial visit count (always 1 for new places) */
+  visitCount?: number;
+  /** Initial mood history (starts with current mood) */
+  moodHistory?: PlaceMood[];
+};
+
+/**
+ * Complete place updates structure for AI JSON output
+ * 
+ * This structure allows the AI to create new places and update
+ * existing ones in a single response, maintaining narrative flow.
+ */
+export type PlaceUpdates = {
+  /** New places introduced in this page */
+  newPlaces: NewPlace[];
+  /** Updates to existing places */
+  updatedPlaces: PlaceUpdate[];
+  // /** Character-place relationships */
+  // characterPlaceRelation: CharacterPlaceRelation[];
+};

@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    // ====================
+    // 🧩 TARGET & MODULE SYSTEM
+    // ====================
+    // Modern JavaScript target for optimal Vercel/Neon performance
+    "target": "es2022",
+    // ESNext modules for tree-shaking and modern bundling
+    "module": "esnext",
+    // Bundler resolution for Vercel's build system
+    "moduleResolution": "bundler",
+    
+    // ====================
+    // 🤝 INTEROPERABILITY & COMPATIBILITY
+    // ====================
+    // Enable seamless ESM/CommonJS imports for Vercel environment
+    "allowSyntheticDefaultImports": true,
+    // Ensure compatibility between module systems
+    "esModuleInterop": true,
+    // Prevent case-sensitive import issues across platforms
+    "forceConsistentCasingInFileNames": true,
+    // Enable strict type checking for better code quality
+    "strict": true,
+    // Vercel handles compilation - no output needed during development
+    "noEmit": true,
+    
+    // ====================
+    // 📊 TYPE CHECKING OPTIMIZATIONS
+    // ====================
+    // Skip type checking of node_modules for faster builds
+    "skipLibCheck": true,
+    // Allow importing JSON files (config, environment variables)
+    "resolveJsonModule": true
+  },
+  // ====================
+  // ✅ FILE INCLUSION/EXCLUSION
+  // ====================
+  // Include all TypeScript source files
+  "include": ["src/**/*.ts"],
+  // Exclude build artifacts and dependencies
+  "exclude": [
+    "node_modules",
+    "dist",
+    "drizzle" // Database migrations handled separately
+  ]
+}

@@ -1,0 +1,1 @@
+export type BookStatus = 'active' | 'archived' | 'draft';

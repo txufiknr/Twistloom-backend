@@ -1,0 +1,63 @@
+{
+  "name": "twistloom-backend",
+  "version": "1.0.0",
+  "description": "Backend for Twistloom application",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env.local src/server.ts",
+    "dev:api": "tsx --env-file=.env.local src/server.ts",
+    "start": "node dist/server.js",
+    "start:api": "node dist/server.js",
+    "build": "node ./scripts/build.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:fast": "eslint . --rule '@typescript-eslint/no-floating-promises: off'",
+    "lint:imports": "node ./scripts/check-import-extensions.js",
+    "check": "pnpm lint && pnpm lint:imports && pnpm typecheck",
+    "db:generate": "tsx node_modules/drizzle-kit/bin.cjs generate",
+    "db:migrate": "tsx node_modules/drizzle-kit/bin.cjs migrate",
+    "db:migrate:prod": "tsx --env-file=.env.production node_modules/drizzle-kit/bin.cjs migrate",
+    "db:studio": "tsx node_modules/drizzle-kit/bin.cjs studio",
+    "db:test": "tsx --env-file=.env.local src/db/test-connection.ts",
+    "db:triggers": "tsx --env-file=.env.local src/db/triggers.ts",
+    "db:clear": "tsx --env-file=.env.local src/db/reset.ts",
+    "db:reset": "pnpm db:clear && pnpm db:migrate && pnpm db:triggers"
+  },
+  "author": {
+    "name": "Taufik Nur Rahmanda",
+    "email": "flias.test@gmail.com",
+    "url": "https://txufiknr.pages.dev"
+  },
+  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319",
+  "dependencies": {
+    "@cerebras/cerebras_cloud_sdk": "^1.64.1",
+    "@google/genai": "^1.40.0",
+    "@mistralai/mistralai": "^2.1.2",
+    "@neondatabase/serverless": "^1.0.2",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.36.1",
+    "cohere-ai": "^7.20.0",
+    "cors": "^2.8.6",
+    "drizzle-orm": "0.45.1",
+    "express": "^5.2.1",
+    "groq-sdk": "^0.37.0",
+    "lru-cache": "^11.2.2",
+    "openai": "^6.33.0",
+    "p-retry": "^7.1.1",
+    "undici": "^7.19.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.37.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.8.1",
+    "drizzle-kit": "^0.31.8",
+    "eslint": "^9.37.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.1"
+  }
+}

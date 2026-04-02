@@ -1,0 +1,33 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // ====================
+    // 📦 BUILD OUTPUT CONFIGURATION
+    // ====================
+    // Override noEmit to generate compiled JavaScript for Vercel deployment
+    "noEmit": false,
+    // Output directory for compiled files (Vercel standard)
+    "outDir": "dist",
+    // Source root directory for TypeScript files
+    "rootDir": "src",
+
+    // ====================
+    // 📄 TYPE DECLARATION GENERATION
+    // ====================
+    // Generate .d.ts files for type definitions (useful for library consumers)
+    "declaration": true,
+    // Generate source maps for declaration files
+    "declarationMap": true,
+
+    // ====================
+    // 🐞 DEBUGGING & SOURCE MAPS
+    // ====================
+    // Generate source maps for better debugging in Vercel environment
+    "sourceMap": true
+  },
+  // ====================
+  // ✅ BUILD SCOPE
+  // ====================
+  // Only include source files in the build process
+  "include": ["src/**/*.ts"]
+}
