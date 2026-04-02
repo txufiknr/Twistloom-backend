@@ -516,23 +516,8 @@ export type StoryPage = {
   selectedAction?: Action;
 };
 
-// export type PersistedStoryPage = Omit<StoryPage, 'id'> & { id: string, bookId: string };
 export type PersistedStoryPage = StoryPage & { id: string, bookId: string };
-
-// /**
-//  * User action structure for story progression
-//  * 
-//  * Represents a single user choice and its classification,
-//  * used to update the story state and guide narrative development.
-//  * 
-//  * @interface StoryAction
-//  */
-// export type StoryAction = {
-//   /** Page which was actioned */
-//   page: StoryPage;
-//   /** Action chosen by user */
-//   selectedAction: Action;
-// };
+export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
 
 export type Action = {
   /** Action text */

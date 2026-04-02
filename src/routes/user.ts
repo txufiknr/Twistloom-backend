@@ -1,8 +1,8 @@
 /**
  * @overview User Routes Module
  * 
- * Provides endpoints for managing user profile information and basic user data.
- * Implements CRUD operations for user profile storage and retrieval.
+ * Provides endpoints for managing user profile information, likes, favorites, and comments.
+ * Implements CRUD operations for user profile storage and retrieval, plus social features.
  * 
  * Architecture Features:
  * - User profile management
@@ -10,6 +10,7 @@
  * - Conflict resolution with upsert patterns
  * - Consistent error handling and validation
  * - Analytics-friendly user tracking
+ * - Social interactions (likes, favorites, comments)
  * 
  * Endpoints:
  * - GET /user - Get user profile
@@ -17,16 +18,27 @@
  * - PUT /user - Partially update user profile
  * - DELETE /user - Delete user profile
  * - POST /user/reset - Reset all user data
+ * - POST /user/likes - Like a target item
+ * - DELETE /user/likes - Unlike a target item
+ * - GET /user/likes - Get user likes
+ * - POST /user/favorites - Add book to favorites
+ * - DELETE /user/favorites - Remove book from favorites
+ * - GET /user/favorites - Get user favorites
+ * - POST /user/comments - Create comment
+ * - PUT /user/comments/:commentId - Update comment
+ * - DELETE /user/comments/:commentId - Delete comment
+ * - GET /user/comments - Get user comments
  */
 
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireClientId } from "../middleware/auth.js";
-import { users, userDevices } from "../db/schema.js";
-import type { NewUser } from "../types/schema.js";
+import { users, userDevices, userSessions, userLikes, userFavorites, userComments } from "../db/schema.js";
+import type { NewUser, NewUserLike, NewUserFavorite, NewUserComment } from "../types/schema.js";
+import type { LikeTargetType } from "../types/user.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and, desc } from "drizzle-orm";
 // import { invalidateCacheKey, invalidateCachePattern } from "../utils/cache.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 
@@ -52,7 +64,6 @@ const router = Router();
  * @returns {number} data.totalLiked - Number of liked articles
  * @returns {number} data.totalSaved - Number of saved articles
  * @returns {number} data.totalReads - Number of read articles
- * @returns {number} data.totalNotInterested - Number of articles marked as not interested
  * 
  * @example
  * // Request
@@ -69,7 +80,6 @@ const router = Router();
  *     "totalLiked": 15,
  *     "totalSaved": 8,
  *     "totalReads": 100,
- *     "totalNotInterested": 5,
  *     "lastActive": "2023-01-15T10:30:00.000Z",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
  *     "updatedAt": "2023-01-01T00:00:00.000Z"
@@ -78,7 +88,7 @@ const router = Router();
  */
 router.get("/", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { userId } = req;
+    const userId = req.userId!;
 
     // Single query with subqueries for counts
     const userWithCounts = await dbRead
@@ -101,14 +111,9 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
         )`.as('totalSaved'),
         totalReads: sql<number>`(
           SELECT COUNT(*)::int
-          FROM ${userHistory}
-          WHERE ${userHistory.userId} = ${userId}
+          FROM ${userSessions}
+          WHERE ${userSessions.userId} = ${userId}
         )`.as('totalReads'),
-        totalNotInterested: sql<number>`(
-          SELECT COUNT(*)::int
-          FROM ${userNotInterested}
-          WHERE ${userNotInterested.userId} = ${userId}
-        )`.as('totalNotInterested'),
       })
       .from(users)
       .where(eq(users.userId, userId))
@@ -174,7 +179,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  */
 router.post("/", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { userId } = req;
+    const userId = req.userId!;
     const { name, gender } = req.body;
 
     // Prepare user data for upsert (exclude timestamp fields from frontend)
@@ -253,7 +258,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
  */
 router.put("/", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { userId } = req;
+    const userId = req.userId!;
     const { name, gender } = req.body;
 
     // Check if user exists
@@ -331,7 +336,7 @@ router.put("/", requireClientId, async (req: Request, res: Response) => {
  */
 router.delete("/", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { userId } = req;
+    const userId = req.userId!;
 
     // Check if user exists before deletion
     const existingUser = await dbRead
@@ -400,7 +405,7 @@ router.delete("/", requireClientId, async (req: Request, res: Response) => {
  */
 router.post("/reset", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { userId } = req;
+    const userId = req.userId!;
 
     // Check if user exists before reset
     const existingUser = await dbRead
@@ -413,57 +418,838 @@ router.post("/reset", requireClientId, async (req: Request, res: Response) => {
       return handleNotFoundError(res, "User profile not found");
     }
 
-    // Execute all delete operations in parallel for efficiency
-    const [
-      deletedPreferences,
-      deletedFavorites,
-      deletedLikes,
-      deletedHistory,
-      deletedSettings,
-      deletedDevices,
-      deletedStreaks
-    ] = await Promise.all([
-      dbWrite.delete(userPreferences).where(eq(userPreferences.userId, userId)).returning(),
-      dbWrite.delete(userFavorites).where(eq(userFavorites.userId, userId)).returning(),
-      dbWrite.delete(userLikes).where(eq(userLikes.userId, userId)).returning(),
-      dbWrite.delete(userHistory).where(eq(userHistory.userId, userId)).returning(),
-      dbWrite.delete(userSettings).where(eq(userSettings.userId, userId)).returning(),
-      dbWrite.delete(userDevices).where(eq(userDevices.userId, userId)).returning(),
-      dbWrite.delete(userStreaks).where(eq(userStreaks.userId, userId)).returning(),
-    ]);
+    // TODO: Execute all delete operations in parallel for efficiency
+    // const [
+    //   deletedPreferences,
+    //   deletedFavorites,
+    //   deletedLikes,
+    //   deletedHistory,
+    //   deletedSettings,
+    //   deletedDevices,
+    //   deletedStreaks
+    // ] = await Promise.all([
+    //   dbWrite.delete(userPreferences).where(eq(userPreferences.userId, userId)).returning(),
+    //   dbWrite.delete(userFavorites).where(eq(userFavorites.userId, userId)).returning(),
+    //   dbWrite.delete(userLikes).where(eq(userLikes.userId, userId)).returning(),
+    //   dbWrite.delete(userHistory).where(eq(userHistory.userId, userId)).returning(),
+    //   dbWrite.delete(userSettings).where(eq(userSettings.userId, userId)).returning(),
+    //   dbWrite.delete(userDevices).where(eq(userDevices.userId, userId)).returning(),
+    //   dbWrite.delete(userStreaks).where(eq(userStreaks.userId, userId)).returning(),
+    // ]);
 
-    // Invalidate all relevant cache entries
-    await Promise.all([
-      // User-specific feed caches
-      invalidateCacheKey(`feed:personalized:${userId}`),
-      invalidateCacheKey(`feed:liked:${userId}`),
-      invalidateCacheKey(`feed:saved:${userId}`),
-      invalidateCacheKey(`feed:history:${userId}`),
+    // TODO: Invalidate all relevant cache entries
+    // await Promise.all([
+    //   // User-specific feed caches
+    //   invalidateCacheKey(`feed:personalized:${userId}`),
+    //   invalidateCacheKey(`feed:liked:${userId}`),
+    //   invalidateCacheKey(`feed:saved:${userId}`),
+    //   invalidateCacheKey(`feed:history:${userId}`),
 
-      // Invalidate all collection caches
-      invalidateCachePattern(`feed:saved:${userId}:collection:%`),
+    //   // Invalidate all collection caches
+    //   invalidateCachePattern(`feed:saved:${userId}:collection:%`),
       
-      // User-specific latest feed caches (all topics and general)
-      invalidateCachePattern(`feed:latest:%:${userId}`),
-    ]);
+    //   // User-specific latest feed caches (all topics and general)
+    //   invalidateCachePattern(`feed:latest:%:${userId}`),
+    // ]);
 
     res.json({
       success: true,
       message: "User data reset successfully",
       data: {
         deletedRecords: {
-          userPreferences: deletedPreferences.length,
-          userFavorites: deletedFavorites.length,
-          userLikes: deletedLikes.length,
-          userHistory: deletedHistory.length,
-          userSettings: deletedSettings.length,
-          userDevices: deletedDevices.length,
-          userStreaks: deletedStreaks.length,
+          // TODO: Uncomment when delete operations are implemented
+          // userPreferences: deletedPreferences.length,
+          // userFavorites: deletedFavorites.length,
+          // userLikes: deletedLikes.length,
+          // userHistory: deletedHistory.length,
+          // userSettings: deletedSettings.length,
+          // userDevices: deletedDevices.length,
+          // userStreaks: deletedStreaks.length,
         },
       },
     });
   } catch (error) {
     handleApiError(res, "Failed to reset user data", error);
+  }
+});
+
+// ===== USER LIKES ROUTES =====
+
+/**
+ * POST /user/likes
+ * 
+ * Like a book, comment, or another user.
+ * Uses upsert operation to handle both creation and idempotent likes.
+ * 
+ * @route POST /user/likes
+ * @description Like a target item
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @body {Object} Like data
+ * @body {string} targetType - Type of target ("book" | "comment" | "user")
+ * @body {string} targetId - ID of the target to like
+ * 
+ * @returns {Object} Like creation response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} data - Created like record
+ * 
+ * @example
+ * // Request
+ * POST /user/likes
+ * Headers: X-Client-Id: user123
+ * Body: {
+ *   "targetType": "book",
+ *   "targetId": "book456"
+ * }
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "userId": "user123",
+ *     "targetType": "book",
+ *     "targetId": "book456",
+ *     "createdAt": "2023-01-01T00:00:00.000Z"
+ *   }
+ * }
+ */
+router.post("/likes", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { targetType, targetId } = req.body;
+
+    // Validate target type
+    if (!["book", "comment", "user"].includes(targetType)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid target type. Must be 'book', 'comment', or 'user'",
+      });
+    }
+
+    if (!targetId) {
+      return res.status(400).json({
+        success: false,
+        error: "Target ID is required",
+      });
+    }
+
+    // Prepare like data for upsert
+    const likeData: NewUserLike = {
+      userId,
+      targetType,
+      targetId,
+    };
+
+    // Perform upsert operation (create or return existing)
+    const [row] = await dbWrite
+      .insert(userLikes)
+      .values(likeData)
+      .onConflictDoNothing()
+      .returning();
+
+    // If row is null, like already existed - fetch it
+    const result = row ? [row] : await dbRead
+      .select()
+      .from(userLikes)
+      .where(and(
+        eq(userLikes.userId, userId),
+        eq(userLikes.targetType, targetType),
+        eq(userLikes.targetId, targetId)
+      ))
+      .limit(1);
+
+    res.status(201).json({
+      success: true,
+      message: "Like created successfully",
+      data: result[0] || null,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to create like", error);
+  }
+});
+
+/**
+ * DELETE /user/likes
+ * 
+ * Unlike a book, comment, or another user.
+ * 
+ * @route DELETE /user/likes
+ * @description Unlike a target item
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {string} targetType - Type of target ("book" | "comment" | "user")
+ * @query {string} targetId - ID of the target to unlike
+ * 
+ * @returns {Object} Unlike response
+ * @returns {boolean} success - Operation status
+ * @returns {string} message - Confirmation message
+ * 
+ * @example
+ * // Request
+ * DELETE /user/likes?targetType=book&targetId=book456
+ * Headers: X-Client-Id: user123
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "Like removed successfully"
+ * }
+ */
+router.delete("/likes", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { targetType, targetId } = req.query;
+
+    // Validate target type
+    if (!targetType || !["book", "comment", "user"].includes(targetType as string)) {
+      return res.status(400).json({
+        success: false,
+        error: "Valid target type is required. Must be 'book', 'comment', or 'user'",
+      });
+    }
+
+    if (!targetId) {
+      return res.status(400).json({
+        success: false,
+        error: "Target ID is required",
+      });
+    }
+
+    // Delete the like
+    const result = await dbWrite
+      .delete(userLikes)
+      .where(and(
+        eq(userLikes.userId, userId),
+        eq(userLikes.targetType, targetType as LikeTargetType),
+        eq(userLikes.targetId, targetId as string)
+      ))
+      .returning();
+
+    if (result.length === 0) {
+      return handleNotFoundError(res, "Like not found");
+    }
+
+    res.json({
+      success: true,
+      message: "Like removed successfully",
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to remove like", error);
+  }
+});
+
+/**
+ * GET /user/likes
+ * 
+ * Get all likes for the authenticated user, optionally filtered by target type.
+ * 
+ * @route GET /user/likes
+ * @description Get user likes
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {string} [targetType] - Filter by target type ("book" | "comment" | "user")
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Likes response
+ * @returns {boolean} success - Operation status
+ * @returns {Array} data - Array of like records
+ * 
+ * @example
+ * // Request
+ * GET /user/likes?targetType=book&limit=10
+ * Headers: X-Client-Id: user123
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": [
+ *     {
+ *       "userId": "user123",
+ *       "targetType": "book",
+ *       "targetId": "book456",
+ *       "createdAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get("/likes", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { targetType, limit = "50", offset = "0" } = req.query;
+
+    // Build base query conditions
+    const baseConditions = [eq(userLikes.userId, userId)];
+    
+    // Add target type filter if provided
+    if (targetType && ["book", "comment", "user"].includes(targetType as string)) {
+      baseConditions.push(eq(userLikes.targetType, targetType as LikeTargetType));
+    }
+
+    const likes = await dbRead
+      .select()
+      .from(userLikes)
+      .where(and(...baseConditions))
+      .orderBy(desc(userLikes.createdAt))
+      .limit(parseInt(limit as string))
+      .offset(parseInt(offset as string));
+
+    res.json({
+      success: true,
+      data: likes,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve likes", error);
+  }
+});
+
+// ===== USER FAVORITES ROUTES =====
+
+/**
+ * POST /user/favorites
+ * 
+ * Add a book to user favorites (to read later).
+ * Uses upsert operation to handle both creation and idempotent favorites.
+ * 
+ * @route POST /user/favorites
+ * @description Add book to favorites
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @body {Object} Favorite data
+ * @body {string} bookId - ID of the book to favorite
+ * 
+ * @returns {Object} Favorite creation response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} data - Created favorite record
+ * 
+ * @example
+ * // Request
+ * POST /user/favorites
+ * Headers: X-Client-Id: user123
+ * Body: {
+ *   "bookId": "book456"
+ * }
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "userId": "user123",
+ *     "bookId": "book456",
+ *     "createdAt": "2023-01-01T00:00:00.000Z"
+ *   }
+ * }
+ */
+router.post("/favorites", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { bookId } = req.body;
+
+    if (!bookId) {
+      return res.status(400).json({
+        success: false,
+        error: "Book ID is required",
+      });
+    }
+
+    // Prepare favorite data for upsert
+    const favoriteData: NewUserFavorite = {
+      userId,
+      bookId,
+    };
+
+    // Perform upsert operation (create or return existing)
+    const [row] = await dbWrite
+      .insert(userFavorites)
+      .values(favoriteData)
+      .onConflictDoNothing()
+      .returning();
+
+    // If row is null, the favorite already existed - fetch it
+    const result = row ? [row] : await dbRead
+      .select()
+      .from(userFavorites)
+      .where(and(
+        eq(userFavorites.userId, userId),
+        eq(userFavorites.bookId, bookId)
+      ))
+      .limit(1);
+
+    res.status(201).json({
+      success: true,
+      message: "Book added to favorites successfully",
+      data: result[0],
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to add book to favorites", error);
+  }
+});
+
+/**
+ * DELETE /user/favorites
+ * 
+ * Remove a book from user favorites.
+ * 
+ * @route DELETE /user/favorites
+ * @description Remove book from favorites
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {string} bookId - ID of the book to remove from favorites
+ * 
+ * @returns {Object} Remove favorite response
+ * @returns {boolean} success - Operation status
+ * @returns {string} message - Confirmation message
+ * 
+ * @example
+ * // Request
+ * DELETE /user/favorites?bookId=book456
+ * Headers: X-Client-Id: user123
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "Book removed from favorites successfully"
+ * }
+ */
+router.delete("/favorites", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { bookId } = req.query;
+
+    if (!bookId) {
+      return res.status(400).json({
+        success: false,
+        error: "Book ID is required",
+      });
+    }
+
+    // Delete the favorite
+    const result = await dbWrite
+      .delete(userFavorites)
+      .where(and(
+        eq(userFavorites.userId, userId),
+        eq(userFavorites.bookId, bookId as string)
+      ))
+      .returning();
+
+    if (result.length === 0) {
+      return handleNotFoundError(res, "Favorite not found");
+    }
+
+    res.json({
+      success: true,
+      message: "Book removed from favorites successfully",
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to remove book from favorites", error);
+  }
+});
+
+/**
+ * GET /user/favorites
+ * 
+ * Get all favorite books for the authenticated user.
+ * 
+ * @route GET /user/favorites
+ * @description Get user favorites
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Favorites response
+ * @returns {boolean} success - Operation status
+ * @returns {Array} data - Array of favorite records
+ * 
+ * @example
+ * // Request
+ * GET /user/favorites?limit=10
+ * Headers: X-Client-Id: user123
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": [
+ *     {
+ *       "userId": "user123",
+ *       "bookId": "book456",
+ *       "createdAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get("/favorites", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { limit = "50", offset = "0" } = req.query;
+
+    const favorites = await dbRead
+      .select()
+      .from(userFavorites)
+      .where(eq(userFavorites.userId, userId))
+      .orderBy(desc(userFavorites.createdAt))
+      .limit(parseInt(limit as string))
+      .offset(parseInt(offset as string));
+
+    res.json({
+      success: true,
+      data: favorites,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve favorites", error);
+  }
+});
+
+// ===== USER COMMENTS ROUTES =====
+
+/**
+ * POST /user/comments
+ * 
+ * Create a comment on a book or reply to another comment.
+ * 
+ * @route POST /user/comments
+ * @description Create comment
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @body {Object} Comment data
+ * @body {string} bookId - ID of the book to comment on
+ * @body {string} [parentCommentId] - ID of parent comment (for replies)
+ * @body {string} content - Comment content
+ * 
+ * @returns {Object} Comment creation response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} data - Created comment record
+ * 
+ * @example
+ * // Request
+ * POST /user/comments
+ * Headers: X-Client-Id: user123
+ * Body: {
+ *   "bookId": "book456",
+ *   "content": "This story is amazing!"
+ * }
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "id": "comment123",
+ *     "userId": "user123",
+ *     "bookId": "book456",
+ *     "parentCommentId": null,
+ *     "content": "This story is amazing!",
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-01T00:00:00.000Z"
+ *   }
+ * }
+ */
+router.post("/comments", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { bookId, parentCommentId, content } = req.body;
+
+    if (!bookId) {
+      return res.status(400).json({
+        success: false,
+        error: "Book ID is required",
+      });
+    }
+
+    if (!content || content.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Comment content is required",
+      });
+    }
+
+    // Prepare comment data
+    const commentData: NewUserComment = {
+      userId,
+      bookId,
+      parentCommentId: parentCommentId || null,
+      content: content.trim(),
+    };
+
+    // Create the comment
+    const [row] = await dbWrite
+      .insert(userComments)
+      .values(commentData)
+      .returning();
+
+    res.status(201).json({
+      success: true,
+      message: "Comment created successfully",
+      data: row,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to create comment", error);
+  }
+});
+
+/**
+ * PUT /user/comments/:commentId
+ * 
+ * Update an existing comment (only by the original author).
+ * 
+ * @route PUT /user/comments/:commentId
+ * @description Update comment
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @param {string} commentId - ID of the comment to update
+ * 
+ * @body {Object} Comment update data
+ * @body {string} content - Updated comment content
+ * 
+ * @returns {Object} Comment update response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} data - Updated comment record
+ * 
+ * @example
+ * // Request
+ * PUT /user/comments/comment123
+ * Headers: X-Client-Id: user123
+ * Body: {
+ *   "content": "Updated comment content"
+ * }
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "id": "comment123",
+ *     "userId": "user123",
+ *     "bookId": "book456",
+ *     "parentCommentId": null,
+ *     "content": "Updated comment content",
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-01T12:00:00.000Z"
+ *   }
+ * }
+ */
+router.put("/comments/:commentId", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { commentId } = req.params;
+    const { content } = req.body;
+
+    if (!content || content.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Comment content is required",
+      });
+    }
+
+    // Check if comment exists and belongs to user
+    const existingComment = await dbRead
+      .select()
+      .from(userComments)
+      .where(eq(userComments.id, commentId as string))
+      .limit(1);
+
+    if (existingComment.length === 0) {
+      return handleNotFoundError(res, "Comment not found");
+    }
+
+    if (existingComment[0].userId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: "You can only edit your own comments",
+      });
+    }
+
+    // Update comment
+    const result = await dbWrite
+      .update(userComments)
+      .set({
+        content: content.trim(),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(userComments.id, commentId as string),
+        eq(userComments.userId, userId)
+      ))
+      .returning();
+
+    res.json({
+      success: true,
+      data: result[0],
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to update comment", error);
+  }
+});
+
+/**
+ * DELETE /user/comments/:commentId
+ * 
+ * Delete a comment (only by the original author).
+ * 
+ * @route DELETE /user/comments/:commentId
+ * @description Delete comment
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @param {string} commentId - ID of the comment to delete
+ * 
+ * @returns {Object} Comment deletion response
+ * @returns {boolean} success - Operation status
+ * @returns {string} message - Confirmation message
+ * 
+ * @example
+ * // Request
+ * DELETE /user/comments/comment123
+ * Headers: X-Client-Id: user123
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "Comment deleted successfully"
+ * }
+ */
+router.delete("/comments/:commentId", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { commentId } = req.params;
+
+    // Check if comment exists and belongs to user
+    const existingComment = await dbRead
+      .select()
+      .from(userComments)
+      .where(eq(userComments.id, commentId as string))
+      .limit(1);
+
+    if (existingComment.length === 0) {
+      return handleNotFoundError(res, "Comment not found");
+    }
+
+    if (existingComment[0].userId !== userId) {
+      return res.status(403).json({
+        success: false,
+        error: "You can only delete your own comments",
+      });
+    }
+
+    // Delete comment
+    await dbWrite
+      .delete(userComments)
+      .where(and(
+        eq(userComments.id, commentId as string),
+        eq(userComments.userId, userId)
+      ));
+
+    res.json({
+      success: true,
+      message: "Comment deleted successfully",
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to delete comment", error);
+  }
+});
+
+/**
+ * GET /user/comments
+ * 
+ * Get all comments by the authenticated user, optionally filtered by book.
+ * 
+ * @route GET /user/comments
+ * @description Get user comments
+ * @access Private (requires X-Client-Id header)
+ * 
+ * @header X-Client-Id - User identification header (required)
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {string} [bookId] - Filter by book ID
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Comments response
+ * @returns {boolean} success - Operation status
+ * @returns {Array} data - Array of comment records
+ * 
+ * @example
+ * // Request
+ * GET /user/comments?bookId=book456&limit=10
+ * Headers: X-Client-Id: user123
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": [
+ *     {
+ *       "id": "comment123",
+ *       "userId": "user123",
+ *       "bookId": "book456",
+ *       "parentCommentId": null,
+ *       "content": "This story is amazing!",
+ *       "createdAt": "2023-01-01T00:00:00.000Z",
+ *       "updatedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get("/comments", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { bookId, limit = "50", offset = "0" } = req.query;
+
+    // Build base query conditions
+    const baseConditions = [eq(userComments.userId, userId)];
+    
+    // Add book filter if provided
+    if (bookId) {
+      baseConditions.push(eq(userComments.bookId, bookId as string));
+    }
+
+    const comments = await dbRead
+      .select()
+      .from(userComments)
+      .where(and(...baseConditions))
+      .orderBy(desc(userComments.createdAt))
+      .limit(parseInt(limit as string))
+      .offset(parseInt(offset as string));
+
+    res.json({
+      success: true,
+      data: comments,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve comments", error);
   }
 });
 

@@ -2,7 +2,7 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMM
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AIChatConfig } from "../types/ai-chat.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity } from "../types/story.js";
+import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity, ActionedStoryPage } from "../types/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { getStoryPageById, getStoryProgress, insertStoryState, setActiveSession, updateActiveSession } from "../services/book.js";
 import { aiPrompt } from "./ai-chat.js";
@@ -627,7 +627,7 @@ function formatActionChoices(actions: Action[]): string {
  * // Returns: "Continue this branching psychological thriller..." with all placeholders filled
  * ```
  */
-export function buildCompletePrompt(mc: StoryMC, state: StoryState, actionedPage: StoryPage): string {
+export function buildCompletePrompt(mc: StoryMC, state: StoryState, actionedPage: ActionedStoryPage): string {
   const isNearEnding = state.page >= state.maxPage - 10;
   const endingRules = isNearEnding ? `---
 ENDING EXECUTION TEMPLATE (LAST 10 PAGES):
@@ -1165,7 +1165,7 @@ export async function buildNextPage(
   userId: string,
   mc: StoryMC,
   state: StoryState, // Current story state with incremented page number
-  actionedPage: PersistedStoryPage, // Previous page with selected action
+  actionedPage: ActionedStoryPage, // Previous page with selected action
   shouldGenerateCandidates: boolean = true, // Should pre-generate page candidates for each action
 ): Promise<PersistedStoryPage> {
   // 1. Create personalized prompt with character, story context, and previous action
@@ -1272,7 +1272,7 @@ export async function chooseAction(userId: string, action: Action, isChosenFromC
   // 4. If no pre-generated page exists, generate new page with state progression
   if (!persistedPage) {
     // 4a. Create actioned page with selected action for state processing
-    const actionedPage: PersistedStoryPage = { ...currentPage, selectedAction: action };
+    const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
     
     // 4b. Update story state based on chosen action (increments page, generates context summary)
     const updatedState = await updateState(currentState, actionedPage);

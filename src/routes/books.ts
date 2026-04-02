@@ -22,30 +22,15 @@
 
 import type { Request, Response } from "express";
 import { Router } from "express";
-import { dbRead, dbWrite } from "../db/client.js";
+import { dbRead } from "../db/client.js";
 import { optionalClientId, requireClientId } from "../middleware/auth.js";
-import { 
-  books, 
-  pages, 
-  userSessions,
-  characters,
-  places,
-  storyStates 
-} from "../db/schema.js";
-import type { NewBook, NewPage, NewUserSession } from "../types/schema.js";
+import { books, pages, userSessions } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, desc, and, isNull } from "drizzle-orm";
-import { initializeBook, buildNextPage, chooseAction } from "../utils/prompt.js";
+import { eq, and, isNull } from "drizzle-orm";
+import { initializeBook, chooseAction } from "../utils/prompt.js";
 import { getActiveSession, setActiveSession } from "../services/book.js";
-import { insertStoryPage } from "../services/story.js";
 import { getStoryState } from "../services/story.js";
-import { 
-  extractPaginationParams, 
-  createPaginatedResponse, 
-  createSearchFilter, 
-  applySorting, 
-  calculatePaginationMeta 
-} from "../utils/pagination.js";
+import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 
 const router = Router();

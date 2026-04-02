@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, boolean, UpdateDeleteAction } from "drizzle-orm/pg-core";
 import type { Gender, KnownGender } from "../types/user.js";
+import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC } from "../types/character.js";
 import type { BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
@@ -406,6 +407,115 @@ export const userDevices = pgTable(
     
     // Index for first-seen date queries
     index("user_devices_first_seen_idx").on(t.firstSeenAt),
+  ]
+);
+
+/**
+ * Create user likes table
+ * @summary Store user likes for books, comments, and other users
+ * @example
+ * {
+ *   "user_id": "user123",
+ *   "target_type": "book",
+ *   "target_id": "book456",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userLikes = pgTable(
+  "user_likes",
+  {
+    userId: userId(),
+    targetType: text("target_type").$type<LikeTargetType>().notNull(), // "book" | "comment" | "user"
+    targetId: uuid("target_id").notNull(), // ID of the liked item
+    createdAt,
+  },
+  (t) => [
+    // Composite primary key: one like per user+target combination
+    primaryKey({ columns: [t.userId, t.targetType, t.targetId] }),
+    
+    // Index for user's likes
+    index("user_likes_user_idx").on(t.userId),
+    
+    // Index for target popularity
+    index("user_likes_target_idx").on(t.targetType, t.targetId),
+    
+    // Index for recent likes
+    index("user_likes_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Create user favorites table
+ * @summary Store user favorites for books to read later
+ * @example
+ * {
+ *   "user_id": "user123",
+ *   "book_id": "book456",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userFavorites = pgTable(
+  "user_favorites",
+  {
+    userId: userId(),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    createdAt,
+  },
+  (t) => [
+    // Composite primary key: one favorite per user+book combination
+    primaryKey({ columns: [t.userId, t.bookId] }),
+    
+    // Index for user's favorites
+    index("user_favorites_user_idx").on(t.userId),
+    
+    // Index for book popularity
+    index("user_favorites_book_idx").on(t.bookId),
+    
+    // Index for recent favorites
+    index("user_favorites_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Create user comments table
+ * @summary Store user comments on books and comment replies
+ * @example
+ * {
+ *   "id": "comment123",
+ *   "user_id": "user123",
+ *   "book_id": "book456",
+ *   "parent_comment_id": "comment789",
+ *   "content": "This story is amazing!",
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userComments = pgTable(
+  "user_comments",
+  {
+    id: id(),
+    userId: userId(),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    parentCommentId: uuid("parent_comment_id"), // For threaded comments
+    content: text("content").notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for user's comments
+    index("user_comments_user_idx").on(t.userId),
+    
+    // Index for book comments
+    index("user_comments_book_idx").on(t.bookId),
+    
+    // Index for comment threading
+    index("user_comments_parent_idx").on(t.parentCommentId),
+    
+    // Index for recent comments
+    index("user_comments_created_idx").on(t.createdAt.desc()),
+    
+    // Index for book comment ordering
+    index("user_comments_book_order_idx").on(t.bookId, t.createdAt.desc()),
   ]
 );
 
