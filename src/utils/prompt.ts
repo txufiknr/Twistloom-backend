@@ -1,8 +1,9 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { AIChatConfig } from "../types/ai-chat.js";
+import { AIChatConfig, AIChatConfigCaps } from "../types/ai-chat.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity, ActionedStoryPage, ActionHintType } from "../types/story.js";
+import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity, ActionedStoryPage, ActionHintType, ActionType, AIActionConfig } from "../types/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { getStoryPageById, getStoryProgress, insertStoryState, setActiveSession } from "../services/book.js";
 import { aiPrompt } from "./ai-chat.js";
@@ -755,6 +756,110 @@ export function formatHiddenState(hiddenState: HiddenState): string {
 }
 
 /**
+ * Validates AI configuration parameters against acceptable bounds
+ * 
+ * @param config - AI configuration to validate
+ * @returns Validated and corrected AI configuration
+ */
+function validateAIConfig(config: AIChatConfig): AIChatConfig {
+  // Temperature bounds
+  if (config.temperature < MIN_TEMPERATURE) {
+    console.warn('[validateAIConfig] ⚠️ Temperature too low, clamping to', MIN_TEMPERATURE);
+    config.temperature = MIN_TEMPERATURE;
+  } else if (config.temperature > MAX_TEMPERATURE) {
+    console.warn('[validateAIConfig] ⚠️ Temperature too high, clamping to', MAX_TEMPERATURE);
+    config.temperature = MAX_TEMPERATURE;
+  }
+
+  // topP bounds
+  if (config.topP < MIN_TOP_P) {
+    console.warn('[validateAIConfig] ⚠️ topP too low, clamping to', MIN_TOP_P);
+    config.topP = MIN_TOP_P;
+  } else if (config.topP > MAX_TOP_P) {
+    console.warn('[validateAIConfig] ⚠️ topP too high, clamping to', MAX_TOP_P);
+    config.topP = MAX_TOP_P;
+  }
+
+  // topK bounds
+  if (config.topK < MIN_TOP_K) {
+    console.warn('[validateAIConfig] ⚠️ topK too low, clamping to', MIN_TOP_K);
+    config.topK = MIN_TOP_K;
+  } else if (config.topK > MAX_TOP_K) {
+    console.warn('[validateAIConfig] ⚠️ topK too high, clamping to', MAX_TOP_K);
+    config.topK = MAX_TOP_K;
+  }
+
+  // maxOutputToken bounds
+  if (config.maxOutputToken < MIN_OUTPUT_TOKENS) {
+    console.warn('[validateAIConfig] ⚠️ maxOutputToken too low, clamping to', MIN_OUTPUT_TOKENS);
+    config.maxOutputToken = MIN_OUTPUT_TOKENS;
+  } else if (config.maxOutputToken > MAX_OUTPUT_TOKENS) {
+    console.warn('[validateAIConfig] ⚠️ maxOutputToken too high, clamping to', MAX_OUTPUT_TOKENS);
+    config.maxOutputToken = MAX_OUTPUT_TOKENS;
+  }
+
+  return config;
+}
+
+/**
+ * Applies action-specific AI configuration to base config
+ * 
+ * This function adjusts AI parameters based on the selected action type,
+ * applying configured adjustments while respecting defined bounds.
+ * 
+ * @param config - Base AI configuration to modify
+ * @param actionConfig - Action-specific configuration with adjustments and bounds
+ * @returns Modified AI configuration with applied adjustments
+ */
+function applyActionConfig(config: AIChatConfig, actionConfig: AIActionConfig): AIChatConfig {
+  // Apply temperature adjustment with bounds
+  config.temperature = Math.max(
+    actionConfig.temperature.min,
+    Math.min(actionConfig.temperature.max, config.temperature + actionConfig.temperature.adjustment)
+  );
+  
+  // Apply topP adjustment with bounds
+  config.topP = Math.max(
+    actionConfig.topP.min,
+    Math.min(actionConfig.topP.max, config.topP + actionConfig.topP.adjustment)
+  );
+  
+  // Apply topK adjustment with bounds
+  config.topK = Math.max(
+    actionConfig.topK.min,
+    Math.min(actionConfig.topK.max, config.topK + actionConfig.topK.adjustment)
+  );
+  
+  return config;
+}
+
+/**
+ * Applies capping limits to AI configuration
+ * 
+ * This function caps AI parameters at specified maximum values,
+ * used for JSON reliability and other constraint scenarios.
+ * 
+ * @param config - Base AI configuration to modify
+ * @param capConfig - Configuration with maximum limits for parameters
+ * @returns Modified AI configuration with applied caps
+ */
+function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIChatConfig {
+  if (capConfig.maxTemperature !== undefined) {
+    config.temperature = Math.min(config.temperature, capConfig.maxTemperature);
+  }
+  
+  if (capConfig.maxTopP !== undefined) {
+    config.topP = Math.min(config.topP, capConfig.maxTopP);
+  }
+  
+  if (capConfig.maxTopK !== undefined) {
+    config.topK = Math.min(config.topK, capConfig.maxTopK);
+  }
+  
+  return config;
+}
+
+/**
  * Determines dynamic AI configuration based on story progress and psychological state
  * 
  * This function implements a sophisticated multi-layer configuration system that balances
@@ -766,23 +871,6 @@ export function formatHiddenState(hiddenState: HiddenState): string {
  * - Phase-based progression: Different creativity levels for story arcs
  * - JSON reliability: Ensures structured output integrity
  * 
- * ## Specific Action Adjustments:
- * 
- * | Action Type | Temp Change | topP Change | topK Change | Purpose |
- * |-------------|-------------|-------------|-------------|---------|
- * | `attack` | -0.05 | - | - | Controlled violence |
- * | `escape` | -0.03 | -0.02 | - | Panic responses |
- * | `risk` | -0.02 | - | -3 | Bold moves |
- * | `social` | +0.02 | +0.01 | - | Dialogue creativity |
- * | `deceive` | -0.02 | - | -3 | Psychological manipulation |
- * | `create` | +0.03 | +0.02 | - | Creative expression |
- * | `heal` | -0.04 | -0.02 | - | Recovery scenes |
- * | `ignore` | -0.03 | - | -5 | Avoidance |
- * | `explore` | +0.02 | +0.01 | - | Discovery |
- * | `protect` | -0.02 | - | -3 | Defense |
- * 
- * All adjustments are conservative (±0.05 max temp, ±0.02 max topP, ±5 max topK) to maintain
- * narrative consistency and prevent sudden style changes between actions.
  * 
  * @param state - Current story state containing progress, psychological profile, and hidden values
  * @param action - Optional action taken by user for context-specific adjustments
@@ -790,13 +878,19 @@ export function formatHiddenState(hiddenState: HiddenState): string {
  * 
  * @example
  * ```typescript
- * // Early game exploration
- * const earlyConfig = determineAIConfig(storyState, { type: 'explore' });
- * // Returns: { temperature: 0.75, topP: 0.92, topK: 50 }
+ * // Early story with stable psychological state
+ * const earlyConfig = determineAIConfig(
+ *   { page: 5, psychologicalProfile: { stability: 'stable' } },
+ *   { type: 'explore' }
+ * );
+ * // Returns: { temperature: 0.75, topP: 0.92, topK: 50, ... }
  * 
- * // Late game with psychological distress
- * const lateConfig = determineAIConfig(storyState, { type: 'escape' });
- * // Returns: { temperature: 0.8, topP: 0.95, topK: 60 }
+ * // Late story with unstable psychological state
+ * const lateConfig = determineAIConfig(
+ *   { page: 85, psychologicalProfile: { stability: 'unstable' } },
+ *   { type: 'attack' }
+ * );
+ * // Returns: { temperature: 0.65, topP: 0.88, topK: 45, ... }
  * ```
  */
 export function determineAIConfig(state: StoryState, selectedAction?: Action): AIChatConfig {
@@ -810,6 +904,7 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
   const isNearEnding = state.page >= state.maxPage - 5;
   const hasProfileShift = state.hiddenState.profileShift?.detected;
   const isPsychologicallyDistressed = stability === 'unstable' || stability === 'fractured';
+  const hasValidActionType = !!selectedAction?.type && selectedAction.type in actionTypes;
   
   // BASE CONFIG: Controlled chaos with consistency
   let config: AIChatConfig = { ...AI_CHAT_CONFIG_DEFAULT };
@@ -835,93 +930,40 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
   
   // Psychological Manipulation Mode: When sanity is low or memory corruption
   if (isPsychologicallyDistressed) {
-    config.temperature = Math.max(config.temperature, 0.8);
-    config.topP = Math.max(config.topP, 0.95);
-    config.topK = Math.max(config.topK, 60);
+    config = applyActionConfig(config, PSYCHOLOGICAL_DISTRESS_CONFIG);
   }
   
   // 3. SPECIAL MOMENTS ADJUSTMENTS
   
   // Twist Injection Mode: Major reveals and betrayals
   if (hasProfileShift || isNearEnding) {
-    config.temperature = Math.min(config.temperature + 0.1, 0.8);
-    config.topP = Math.min(config.topP + 0.05, 0.95);
-    config.topK = Math.min(config.topK + 10, 60);
+    config = applyActionConfig(config, TWIST_INJECTION_CONFIG);
   }
   
-  // 4. JSON RELIABILITY LAYER
+  // 4. ACTION-SPECIFIC ADJUSTMENTS
   
-  // Ensure structured output doesn't break
-  if (config.temperature > 0.8) {
-    // Slightly reduce topK for better sentence structure
-    config.topK = Math.min(config.topK, 50);
+  // Apply subtle adjustments based on action type using configuration
+  // This comes after psychological and special moments to preserve their impact
+  if (hasValidActionType) {
+    const actionConfig = ACTION_AI_CONFIG[selectedAction.type satisfies ActionType];
+    if (actionConfig) {
+      config = applyActionConfig(config, actionConfig);
+    } else {
+      console.warn(`[determineAIConfig] ⚠️ No configuration found for action type: ${selectedAction.type}`);
+    }
   }
   
-  // 5. ACTION-SPECIFIC ADJUSTMENTS
+  // 5. JSON RELIABILITY LAYER (Final safety check)
   
-  // Apply subtle adjustments based on action type
-  // All adjustments are conservative to maintain narrative consistency
-  
-  switch (selectedAction?.type) {
-    case "attack":
-      // Aggressive actions: Slightly reduce creativity for controlled violence
-      config.temperature = Math.max(0.6, config.temperature - 0.05);
-      break;
-      
-    case "escape":
-      // Escape actions: Slightly reduce creativity for panic responses
-      config.temperature = Math.max(0.65, config.temperature - 0.03);
-      config.topP = Math.max(0.88, config.topP - 0.02);
-      break;
-      
-    case "risk":
-      // Risk actions: Minor adjustment for bold moves
-      config.temperature = Math.max(0.65, config.temperature - 0.02);
-      config.topK = Math.max(40, config.topK - 3);
-      break;
-      
-    case "social":
-      // Social actions: Slightly increase creativity for dialogue
-      config.temperature = Math.min(config.temperature + 0.02, 0.8);
-      config.topP = Math.min(config.topP + 0.01, 0.95);
-      break;
-      
-    case "deceive":
-      // Deceptive actions: Minor control for psychological manipulation
-      config.temperature = Math.max(0.7, config.temperature - 0.02);
-      config.topK = Math.max(45, config.topK - 3);
-      break;
-      
-    case "create":
-      // Creative actions: Slightly increase creativity
-      config.temperature = Math.min(config.temperature + 0.03, 0.8);
-      config.topP = Math.min(config.topP + 0.02, 0.95);
-      break;
-      
-    case "heal":
-      // Heal actions: Slightly reduce creativity for recovery scenes
-      config.temperature = Math.max(0.6, config.temperature - 0.04);
-      config.topP = Math.max(0.85, config.topP - 0.02);
-      break;
-      
-    case "ignore":
-      // Ignore actions: Minor reduction for avoidance
-      config.temperature = Math.max(0.65, config.temperature - 0.03);
-      config.topK = Math.max(40, config.topK - 5);
-      break;
-      
-    case "explore":
-      // Explore actions: Slightly increase creativity for discovery
-      config.temperature = Math.min(config.temperature + 0.02, 0.75);
-      config.topP = Math.min(config.topP + 0.01, 0.9);
-      break;
-      
-    case "protect":
-      // Protect actions: Minor adjustment for defense
-      config.temperature = Math.max(0.65, config.temperature - 0.02);
-      config.topK = Math.max(40, config.topK - 3);
-      break;
+  // Ensure structured output doesn't break - this is applied last to cap any excessive values
+  if (config.temperature > JSON_RELIABILITY_TEMPERATURE_THRESHOLD) {
+    config = applyConfigCaps(config, JSON_RELIABILITY_CAPS);
   }
+  
+  // 6. FINAL VALIDATION
+  
+  // Ensure all parameters are within acceptable bounds
+  config = validateAIConfig(config);
   
   return config;
 }

@@ -65,6 +65,12 @@ export type AIChatConfig = {
   stopSequences?: string[];
 };
 
+export type AIChatConfigCaps = {
+  maxTemperature?: number;
+  maxTopP?: number;
+  maxTopK?: number;
+}
+
 /**
  * Document structure for document-based AI processing
  * 

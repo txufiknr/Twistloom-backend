@@ -1,4 +1,4 @@
-import ImageKit from "@imagekit/nodejs";
+import ImageKit, { toFile } from "@imagekit/nodejs";
 import { getTodayDate } from "../utils/time.js";
 import { dbWrite } from "../db/client.js";
 import { eq, inArray } from "drizzle-orm";
@@ -144,6 +144,34 @@ function handleUrlUpload(imageUrl: string, prefix: string, entityId: string): {
 }
 
 /**
+ * Validate and extract file extension from MIME type
+ * @param mimeType - MIME type string to validate
+ * @returns Valid file extension or default 'jpg'
+ */
+function validateMimeType(mimeType: string): string {
+  if (!mimeType || typeof mimeType !== 'string') {
+    console.warn('[validateMimeType] ⚠️ Invalid MIME type provided, using default');
+    return 'jpg';
+  }
+
+  const parts = mimeType.split('/');
+  if (parts.length !== 2 || !parts[0].startsWith('image/')) {
+    console.warn('[validateMimeType] ⚠️ Not an image MIME type:', mimeType);
+    return 'jpg';
+  }
+
+  const extension = parts[1];
+  const validExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'bmp', 'svg', 'heic', 'tiff'];
+  
+  if (!validExtensions.includes(extension.toLowerCase())) {
+    console.warn('[validateMimeType] ⚠️ Unsupported image extension:', extension);
+    return 'jpg';
+  }
+
+  return extension.toLowerCase();
+}
+
+/**
  * Handle base64 data URL uploads
  * @param base64Url - Base64 data URL
  * @param prefix - Filename prefix
@@ -164,7 +192,7 @@ function handleBase64Upload(base64Url: string, prefix: string, entityId: string)
   const mimeType = matches[1];
   const base64Data = matches[2];
   const fileContent = Buffer.from(base64Data, 'base64');
-  const extension = mimeType.split('/')[1] || 'jpg';
+  const extension = validateMimeType(mimeType);
   const fileName = generateImageFilename(entityId, prefix, extension);
 
   return {
@@ -273,40 +301,78 @@ export async function uploadImageKit(
   const imagekit = getImageKitClient();
   if (!imagekit) return null;
 
+  // Track created File objects for cleanup
+  const createdFiles: File[] = [];
+
   try {
-    let fileContent: string | Buffer;
+    let fileData: File | string;
     let fileName: string;
 
     // Handle different input types using helper functions
     if (typeof imageSource === 'string') {
       if (imageSource.startsWith('data:')) {
-        // Base64 data URL
+        // Base64 data URL - convert to File using toFile
         const base64Result = handleBase64Upload(imageSource, options.filenamePrefix || 'image', entityId);
         if (!base64Result) return null;
         
-        fileContent = base64Result.fileContent;
-        fileName = generateImageFilename(entityId, options.filenamePrefix || 'image', base64Result.mimeType.split('/')[1] || 'jpg');
+        try {
+          const file = await toFile(
+            base64Result.fileContent,
+            generateImageFilename(entityId, options.filenamePrefix || 'image', validateMimeType(base64Result.mimeType)),
+            { type: base64Result.mimeType }
+          );
+          createdFiles.push(file);
+          fileData = file;
+          fileName = file.name;
+        } catch (fileError) {
+          console.error('[uploadImageKit] ❌ Failed to convert base64 to File:', fileError);
+          return null;
+        }
       } else {
-        // Regular URL
+        // Regular URL - pass string directly
         const urlResult = handleUrlUpload(imageSource, options.filenamePrefix || 'image', entityId);
-        fileContent = urlResult.fileContent;
+        fileData = urlResult.fileContent; // This is the URL string
         fileName = generateImageFilename(entityId, options.filenamePrefix || 'image');
       }
     } else if (imageSource && typeof imageSource === 'object' && 'buffer' in imageSource) {
-      // File object from multipart upload
+      // File object from multipart upload - convert Buffer to File
       const uploadObj = imageSource as ImageUploadObject;
       const fileResult = handleFileUpload(uploadObj, options.filenamePrefix || 'image', entityId);
-      fileContent = fileResult.fileContent;
-      fileName = generateImageFilename(entityId, options.filenamePrefix || 'image', uploadObj.originalname?.split('.').pop() || 'jpg');
+      
+      try {
+        const file = await toFile(
+          fileResult.fileContent,
+          generateImageFilename(entityId, options.filenamePrefix || 'image', uploadObj.originalname?.split('.').pop() || 'jpg'),
+          { type: uploadObj.mimetype }
+        );
+        createdFiles.push(file);
+        fileData = file;
+        fileName = file.name;
+      } catch (fileError) {
+        console.error('[uploadImageKit] ❌ Failed to convert multipart file to File:', fileError);
+        return null;
+      }
     } else if (Buffer.isBuffer(imageSource)) {
-      // Direct Buffer input
+      // Direct Buffer input - convert to File
       const bufferResult = handleFileUpload(
         { buffer: imageSource, originalname: 'buffer.jpg', mimetype: undefined },
         options.filenamePrefix || 'image',
         entityId
       );
-      fileContent = bufferResult.fileContent;
-      fileName = generateImageFilename(entityId, options.filenamePrefix || 'image');
+      
+      try {
+        const file = await toFile(
+          bufferResult.fileContent,
+          generateImageFilename(entityId, options.filenamePrefix || 'image', 'jpg'),
+          { type: 'image/jpeg' }
+        );
+        createdFiles.push(file);
+        fileData = file;
+        fileName = file.name;
+      } catch (fileError) {
+        console.error('[uploadImageKit] ❌ Failed to convert buffer to File:', fileError);
+        return null;
+      }
     } else {
       console.error('[uploadImageKit] ❌ Invalid image source type');
       return null;
@@ -314,7 +380,7 @@ export async function uploadImageKit(
 
     // Prepare upload parameters
     const uploadParams: ImageKit.Files.FileUploadParams = {
-      file: fileContent as unknown as ImageKit.Files.FileUploadParams['file'],
+      file: fileData,
       fileName,
       useUniqueFileName: options.useUniqueFileName ?? false,
       folder: `/${APP_NAME_SLUG}/${options.folder}/${getTodayDate().replace(/-/g, '/')}`,
@@ -334,6 +400,10 @@ export async function uploadImageKit(
   } catch (error) {
     console.error(`[uploadImageKit] ❌ Image upload failed for entity ${entityId}:`, error);
     return null;
+  } finally {
+    // Cleanup File objects to prevent memory leaks
+    // Note: In serverless environments, this helps with garbage collection
+    createdFiles.length = 0; // Clear array for GC
   }
 }
 
@@ -476,7 +546,7 @@ export async function deleteFilesFromImageKit(fileIds: string[]) {
     const response = await imagekit.files.bulk.delete({ fileIds });
     console.log("[imagekit] 🗑️ Images bulk delete result:", response.successfullyDeletedFileIds);
   } catch (error) {
-    console.error("[imagekit] ❌ Failed to bulk delete images:", getErrorMessage(error));
+    console.error(`[imagekit] ❌ Failed to bulk delete images:`, getErrorMessage(error));
   }
 }
 
@@ -488,7 +558,7 @@ export async function deleteFolderFromImageKit(folderPath: string) {
     await imagekit.folders.delete({ folderPath });
     console.log(`[imagekit] 🗑️ Folder "${folderPath}" and all its contents deleted.`);
   } catch (error) {
-    console.error(`[imagekit] ❌ Failed to delete folder "${folderPath}":`, error);
+    console.error(`[imagekit] ❌ Failed to delete folder "${folderPath}"`, getErrorMessage(error));
   }
 }
 
@@ -550,23 +620,39 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
     }
 
     stats.processed = pendingDeletions.length;
-    const fileIdsToDelete: string[] = [];
+    const fileIdsToDelete = pendingDeletions.map(deletion => deletion.fileId);
 
-    // Process each deletion individually to handle errors gracefully
-    for (const deletion of pendingDeletions) {
-      try {
-        await imagekit.files.delete(deletion.fileId);
-        stats.successful++;
-        console.log(`[imagekit] 🗑️ File ${deletion.fileId} deleted successfully`);
-      } catch (error) {
-        stats.failed++;
-        const errorMsg = `Failed to delete file ${deletion.fileId}: ${error instanceof Error ? error.message : String(error)}`;
-        stats.errors.push(errorMsg);
-        console.error(`[imagekit] ❌ ${errorMsg}`);
-      }
+    // Use bulk deletion for optimal performance
+    try {
+      const response = await imagekit.files.bulk.delete({ fileIds: fileIdsToDelete });
+      stats.successful = response.successfullyDeletedFileIds?.length || 0;
+      stats.failed = fileIdsToDelete.length - stats.successful;
       
-      // Add to list for queue cleanup (regardless of success/failure)
-      fileIdsToDelete.push(deletion.fileId);
+      console.log(`[imagekit] 🗑️ Bulk deletion completed: ${stats.successful}/${stats.processed} successful`);
+      
+      // Note: ImageKit bulk API doesn't provide detailed failure information
+      // We can only determine which files succeeded vs total count
+    } catch (bulkError) {
+      // Fallback to individual deletions if bulk fails
+      console.warn("[imagekit] ⚠️ Bulk deletion failed, falling back to individual deletions:", bulkError);
+      
+      // Reset counters for fallback processing
+      stats.successful = 0;
+      stats.failed = 0;
+      
+      // Process each deletion individually as fallback
+      for (const deletion of pendingDeletions) {
+        try {
+          await imagekit.files.delete(deletion.fileId);
+          stats.successful++;
+          console.log(`[imagekit] 🗑️ File ${deletion.fileId} deleted successfully (fallback)`);
+        } catch (error) {
+          stats.failed++;
+          const errorMsg = `Failed to delete file ${deletion.fileId}: ${error instanceof Error ? error.message : String(error)}`;
+          stats.errors.push(errorMsg);
+          console.error(`[imagekit] ❌ ${errorMsg}`);
+        }
+      }
     }
 
     // Remove processed items from queue (both successful and failed)

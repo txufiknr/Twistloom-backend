@@ -119,6 +119,9 @@ export type Ending = typeof endings[keyof typeof endings];
  */
 export type ActionType = typeof actionTypes[keyof typeof actionTypes];
 
+export type AIParameterValue = { adjustment: number, min: number, max: number };
+export type AIActionConfig = { temperature: AIParameterValue, topP: AIParameterValue, topK: AIParameterValue };
+
 /**
  * Core inputs for Narrative Style Engine
  * 
