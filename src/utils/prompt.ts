@@ -1,9 +1,9 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AIChatConfig, AIChatConfigCaps } from "../types/ai-chat.js";
-import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, ActionHint, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, MemoryIntegrity, ActionedStoryPage, ActionHintType, ActionType, AIActionConfig } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD } from "../config/story.js";
+import { CharacterMemory, characterStatuses, PotentialTwistType, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
+import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, ActionedStoryPage, ActionHintType, ActionType, AIActionConfig } from "../types/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { getStoryPageById, getStoryProgress, insertStoryState, setActiveSession } from "../services/book.js";
 import { aiPrompt } from "./ai-chat.js";
@@ -15,8 +15,8 @@ import { insertStoryPage, insertBook } from "../services/story.js";
 import { formatCharactersForPrompt } from "./characters.js";
 import { generateRandomCharacter } from "./characters.js";
 import { genders } from "../types/user.js";
-import { placeMoods } from "../types/places.js";
-import { Book } from "../types/schema.js";
+import { PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
+import { DBBook } from "../types/schema.js";
 import { createInitialHiddenState, createInitialPsychologicalProfile } from "./books.js";
 
 // ============================================================================
@@ -216,6 +216,17 @@ function getActionTypesText(): string {
   return Object.entries(actionTypes)
     .map(([key, value]) => `• ${key}: ${value}`)
     .join('\n');
+}
+
+function getActionRulesText(limit: number = MAX_ACTION_CHOICES): string {
+  return `Generate 1-${limit} next actions object(s):
+• Each: 2-5 words, immediate, meaningful, clearly different
+• At least has one that is risky, irrational, or dangerous
+• Occasionally include deceptive choice
+• Each action should have a hint that provides key continuity
+
+ACTION TYPES:
+${getActionTypesText()}`;
 }
 
 /**
@@ -444,14 +455,7 @@ PLACE UPDATE RULES:
 
 ---
 BRANCHING ACTIONS:
-Generate 1-3 next actions object(s):
-• Each: 2-5 words, immediate, meaningful, clearly different
-• At least has one that is risky, irrational, or dangerous
-• Occasionally include deceptive choice
-• Each action should have a hint that provides key continuity
-
-ACTION TYPES:
-${getActionTypesText()}
+${getActionRulesText()}
 
 ---
 EXAMPLE OUTPUT FORMAT (JSON):
@@ -546,8 +550,8 @@ function getPreviousPagesText(state: StoryState): string {
 
   return state.pageHistory
     .slice(-MAX_PAGE_HISTORY) // Last configurable pages for context
-    .map((page, index) => 
-      `• Page ${state.page - state.pageHistory.length + index + 1}: ${page.text.replace(/\n/g, ' ')} (place: ${page.place}, action: ${page.selectedAction?.text ?? 'Continue'})`
+    .map((page, index) =>
+      `• Page ${state.pageHistory[index].page}: ${page.text.replace(/\n/g, ' ¶ ')} (place: ${page.place}, action: ${page.selectedAction?.text ?? 'Continue'})`
     )
     .join('\n');
 }
@@ -998,24 +1002,42 @@ MAIN CHARACTER:
 - Age: ${mc.age ?? '-'}
 - Gender: ${mc.gender ?? '-'}
 
+REQUIREMENTS:
+- Establish psychological tension and mystery immediately
+- Create a sense of unease and impending dread
+- All content must be age-appropriate thriller horror
+- Main character should feel vulnerable and relatable
+- Include subtle hints of deeper psychological themes
+- Include 1-${MAX_ACTION_CHOICES_FIRST_PAGE} actionable choices for the reader
+
+WRITING STYLE DNA:
+- Use short, punchy sentences mixed with occasional longer ones
+- Occasionally start sentences with "And" or "But"
+- Use interruptions — (em dash) to create tension
+- Avoid full clarity; imply more than explain
+- Let the narrator misunderstand reality
+- Use sensory details (sound, silence, shadows, breathing)
+
+OPENING DISTURBANCE:
+The first page MUST introduce something that feels wrong, unnatural, or contradictory.
+Not scary yet—but deeply unsettling.
+
+BRANCHING ACTIONS:
+${getActionRulesText(MAX_ACTION_CHOICES_FIRST_PAGE)}
+
+---
 Generate the following complete book setup:
 
 1. BOOK TITLE: A catchy, mysterious title (1-4 words)
 2. HOOK: 1-2 sentences that immediately create intrigue and psychological tension
 3. SUMMARY: 50-100 words that sets up the psychological thriller premise
-4. KEYWORDS: 3-5 relevant tags for story categorization (e.g., "haunted mansion", "family secrets", "psychological horror")
-5. FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery, minimum 1 action to continue
+4. KEYWORDS: 3-5 relevant tags or genre (lowercase) for story categorization
+5. FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery
 6. INITIAL PSYCHOLOGICAL FLAGS: Set trust, fear, guilt, curiosity levels (low/medium/high)
 7. STORY DIFFICULTY: One of: "low", "medium", "high", "nightmare"
 8. ENDING ARCHETYPE: One of:\n${getEndingArchetypesText()}
-
-REQUIREMENTS:
-- First page must include 3-4 actionable choices for the reader
-- Establish psychological tension and mystery immediately
-- Create a sense of unease and impending dread
-- All content must be age-appropriate thriller horror
-- The main character should feel vulnerable and relatable
-- Include subtle hints of deeper psychological themes
+9. INITIAL PLACE: The main location where the story begins (name, mood, brief description)
+10. INITIAL CHARACTERS: Key characters introduced in the first page excluding MC (name, status, relationship to MC)
 
 RESPONSE FORMAT:
 Return a JSON object with the following structure:
@@ -1027,7 +1049,8 @@ Return a JSON object with the following structure:
   "firstPage": {
     "text": "Prologue text",
     "mood": "One of: ${moods.join('", "')}",
-    "place": "Location",
+    "place": "Location Name",
+    "characters": ["Character1", "Character2"],
     "actions": [
       {
         "text": "Action choice 1",
@@ -1046,10 +1069,29 @@ Return a JSON object with the following structure:
     "curiosity": "high"
   },
   "initialDifficulty": "medium",
-  "initialEndingArchetype": "fake_escape"
+  "initialEndingArchetype": "fake_escape",
+  "initialPlace": {
+    "name": "Location Name",
+    "type": "One of: ${placeTypes.join('", "')}",
+    "currentMood": "One of: ${placeMoods.join('", "')}",
+    "context": "Brief description of the place"
+  },
+  "initialCharacters": [
+    {
+      "name": "Character Name",
+      "gender": "One of: ${genders.join('", "')}",
+      "status": "One of: ${characterStatuses.join('", "')}",
+      "relationshipToMC": "friend",
+      "bio": "Brief character description"
+    }
+  ]
 }
 
-Make the story immediately engaging and psychologically unsettling while maintaining the R.L. Stine-inspired darker tone.`;
+---
+
+FINAL RULE:
+End the first page with tension, uncertainty, or a subtle cliffhanger—not resolution.
+Make the story immediately engaging and psychologically unsettling.`;
 }
 
 /**
@@ -1089,9 +1131,9 @@ Make the story immediately engaging and psychologically unsettling while maintai
 export async function initializeBook(
   userId: string,
   theme: string,
-  mcCandidate: StoryMCCandidate
+  mcCandidate?: StoryMCCandidate
 ): Promise<{
-  book: Book;
+  book: DBBook;
   firstPage: PersistedStoryPage;
   initialState: StoryState;
 }> {
@@ -1115,17 +1157,28 @@ export async function initializeBook(
       throw new Error('Failed to generate book creation: AI response result is undefined');
     }
 
-    const bookCreation = response.result;
+    const {
+      displayTitle,
+      hook,
+      summary,
+      keywords,
+      initialPsychologicalFlags,
+      initialDifficulty,
+      initialEndingArchetype,
+      firstPage: generatedFirstPage,
+      initialPlace,
+      initialCharacters
+    } = response.result;
 
     // 5. Persist book to database with character profile
     const book = await insertBook(
       userId,
-      bookCreation.displayTitle,
-      bookCreation.hook,
-      bookCreation.summary,
-      bookCreation.keywords,
+      displayTitle,
+      hook,
+      summary,
+      keywords,
       'active',
-      mcCandidate // Use original candidate for character generation
+      mc,
     );
 
     // 6. Create initial story state with generated psychological profile
@@ -1133,22 +1186,58 @@ export async function initializeBook(
       pageId: '', // Will be set after page creation
       page: 1,
       maxPage: DEFAULT_BOOK_MAX_PAGES,
-      flags: bookCreation.initialPsychologicalFlags,
+      flags: initialPsychologicalFlags,
       traumaTags: [],
       psychologicalProfile: createInitialPsychologicalProfile(),
       hiddenState: createInitialHiddenState(),
-      memoryIntegrity: 'stable' satisfies MemoryIntegrity,
-      difficulty: bookCreation.initialDifficulty,
-      cachedEndingArchetype: bookCreation.initialEndingArchetype,
-      characters: {},
-      places: {},
+      memoryIntegrity: 'stable',
+      difficulty: initialDifficulty,
+      cachedEndingArchetype: initialEndingArchetype,
+      characters: initialCharacters ? 
+        Object.fromEntries(
+          initialCharacters.map((char) => [
+            char.name,
+            {
+              name: char.name,
+              gender: char.gender,
+              role: char.relationshipToMC || 'character',
+              bio: char.bio || '',
+              status: char.status,
+              relationshipToMC: char.relationshipToMC || 'unknown',
+              relationships: [],
+              pastInteractions: [],
+              lastInteractionAtPage: 1,
+              narrativeFlags: {
+                isSuspicious: false,
+                isMissing: false,
+                isDead: false,
+                hasSecret: false,
+                potentialTwist: 'none' satisfies PotentialTwistType
+              }
+            } satisfies CharacterMemory
+          ])
+        ) : {},
+      places: initialPlace ? {
+        [initialPlace.name]: {
+          name: initialPlace.name,
+          type: initialPlace.type,
+          context: initialPlace.context || '',
+          visitCount: 1,
+          lastVisitedAtPage: 1,
+          familiarity: 0.1,
+          moodHistory: [initialPlace.currentMood],
+          eventTags: [],
+          knownCharacters: [],
+          currentMood: initialPlace.currentMood
+        } satisfies PlaceMemory
+      } : {},
       pageHistory: [],
       actionsHistory: [],
-      contextHistory: '',
+      contextHistory: ''
     };
 
     // 7. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, bookCreation.firstPage, book.id);
+    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, book.id);
 
     // 8. Update state with pageId and persist to database
     initialState.pageId = firstPage.id;
@@ -1285,18 +1374,25 @@ export async function buildNextPage(
 export async function chooseAction(userId: string, action: Action, isUserAction: boolean = true): Promise<PersistedStoryPage> {
   // 1. Get current story progress (session, page, state, character) in parallel
   const { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
-  
+
   // 2. Validate all required components exist for story progression
   if (!activeSession) throw new Error(`No active session found for user ${userId}`);
   if (!currentMc) throw new Error(`No active book found for user ${userId}`);
   if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
   if (!currentState) throw new Error(`No state found for user ${userId} (bookId: ${activeSession.bookId})`);
+
+  // Choice made, can't make another choice
+  if (currentPage.selectedAction && 
+      (currentPage.selectedAction.text !== action.text || 
+      currentPage.selectedAction.type !== action.type)) {
+    throw new Error(`Choice made, can't make another choice`);
+  }
   
   // 3. Check if next page is pre-generated (candidate) and reuse if available
   const nextPageId = action.pageId;
   let persistedPage: PersistedStoryPage | null = null;
   if (nextPageId) {
-    persistedPage = await getStoryPageById(nextPageId);
+    persistedPage = await getStoryPageById(activeSession.bookId, nextPageId);
   }
 
   // 4. If no pre-generated page exists, generate new page with state progression
@@ -1321,6 +1417,58 @@ export async function chooseAction(userId: string, action: Action, isUserAction:
   
   // 6. Return the generated page with all database metadata
   return persistedPage;
+}
+
+/**
+ * Goes back to the previous page in the story
+ * 
+ * This function allows users to navigate back to the previous page by updating
+ * the active session to point to the last page in the page history.
+ * 
+ * @param userId - User ID to get story progress for
+ * @returns Previous page data or null if no previous page exists
+ * 
+ * @example
+ * ```typescript
+ * // Go back to previous page
+ * const previousPage = await goToPreviousPage("user123");
+ * if (previousPage) {
+ *   console.log(`Returned to page: ${previousPage.text}`);
+ * } else {
+ *   console.log("No previous page available");
+ * }
+ * ```
+ */
+export async function goToPreviousPage(userId: string): Promise<PersistedStoryPage | null> {
+  // 1. Get current story progress (session, page, state, character) in parallel
+  const { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
+  
+  // 2. Validate all required components exist for navigation
+  if (!activeSession) throw new Error(`No active session found for user ${userId}`);
+  if (!currentMc) throw new Error(`No active book found for user ${userId}`);
+  if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
+  if (!currentState) throw new Error(`No state found for user ${userId} (bookId: ${activeSession.bookId})`);
+
+  // 3. Check if there's a previous page available
+  const previousPageId = currentPage.parentId;
+  if (!previousPageId) {
+    console.warn(`[goToPreviousPage] ⚠️ No previous page available (no parentId)`);
+    return null;
+  }
+  
+  // 4. Get the previous page directly by ID
+  const previousPage = await getStoryPageById(activeSession.bookId, previousPageId);
+  if (!previousPage) {
+    throw new Error('Previous page ${previousPageId} not found in database');
+  }
+  
+  // 6. Update user session to point to the previous page
+  await setActiveSession(userId, activeSession.bookId, previousPage.id);
+  
+  console.log(`[goToPreviousPage] ↩️ User ${userId} returned to page ${previousPage.id}`);
+  
+  // 7. Return the previous page with all database metadata
+  return previousPage;
 }
 
 /**

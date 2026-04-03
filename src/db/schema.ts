@@ -18,7 +18,8 @@ import type {
   HiddenState,
   MemoryIntegrity,
   Difficulty,
-  Action
+  Action,
+  ActionedStoryPage
 } from "../types/story.js";
 import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate } from "../types/character.js";
 import type { PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
@@ -242,7 +243,7 @@ export const storyStates = pgTable(
     cachedEndingArchetype: text("cached_ending_archetype").$type<Ending>(), // Ending enum, nullable until assigned
     characters: jsonb("characters").$type<Record<string, CharacterMemory>>().notNull().default(sql`'{}'::jsonb`), // Character records
     places: jsonb("places").$type<Record<string, PlaceMemory>>().notNull().default(sql`'{}'::jsonb`), // Place records
-    pageHistory: jsonb("page_history").$type<StoryPage[]>().notNull().default(sql`'[]'::jsonb`), // StoryPage[] sliding window
+    pageHistory: jsonb("page_history").$type<ActionedStoryPage[]>().notNull().default(sql`'[]'::jsonb`), // Page history with sliding window
     actionsHistory: jsonb("actions_history").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // History of user actions
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     createdAt,

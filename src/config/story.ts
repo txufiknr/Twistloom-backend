@@ -5,6 +5,8 @@ export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 export const DEFAULT_BOOK_MAX_PAGES = 150;
 
 export const MAX_RELEVANT_CHARACTERS = 5;
+export const MAX_ACTION_CHOICES = 3;
+export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
 /**
  * Maximum number of pages back to consider character interactions "recent"
@@ -92,7 +94,7 @@ export const MAX_CHARACTER_PLACES = 5;
  * This maintains a sliding window of recent pages to keep
  * context relevant without overwhelming memory.
  */
-export const MAX_PAGE_HISTORY = 10;
+export const MAX_PAGE_HISTORY = 5;
 
 // ============================================================================
 // PLACE MEMORY CONFIGURATION

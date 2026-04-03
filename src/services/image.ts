@@ -93,37 +93,6 @@ function getImageKitClient(): ImageKit | null {
   return imageKitClient;
 }
 
-// /**
-//  * Upload image to ImageKit.io
-//  * @param url - Image URL to be uploaded
-//  * @param keywords - Image tags and custom metadata
-//  * @param filename - Desired filename
-//  * @returns Promise resolving to ImageKit upload response
-//  */
-// export async function uploadToImageKit(url: string, keywords: string[], fileName: string): Promise<ImageKit.Files.FileUploadResponse | null> {
-//   const imagekit = getImageKitClient();
-//   if (!imagekit) return null;
-
-//   try {
-//     const result = await imagekit.files.upload({
-//       // Directly pass the public image URL as a string
-//       file: url,
-//       fileName: fileName,
-//       // Optional: specify a folder path within your ImageKit media library
-//       folder: `/${APP_NAME_SLUG}/${getTodayDate().replace(/-/g, '/')}`,
-//       // Optional: add tags and custom metadata
-//       tags: keywords,
-//     });
-
-//     console.log('[uploadToImageKit] 🌐 Media uploaded via ImageKit:', result.url);
-//     return result;
-//   } catch (error) {
-//     // Returns 400 if URL is unreachable or takes >8s to respond
-//     console.error('[uploadToImageKit] ❌ ImageKit upload failed:', error);
-//     return null;
-//   }
-// }
-
 /**
  * Handle URL-based image uploads
  * @param imageUrl - Image URL to upload

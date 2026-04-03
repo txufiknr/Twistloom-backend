@@ -113,8 +113,6 @@ export type CharacterMemory = {
   lastInteractionAtPage: number;
   /** Narrative control flags for plot development */
   narrativeFlags: NarrativeFlags;
-  // /** Places where this character tends to appear (max 5) */
-  // places: CharacterPlaceRelation[];
 };
 
 /**

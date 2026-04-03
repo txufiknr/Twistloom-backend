@@ -17,7 +17,8 @@ import { userSessions, books, pages, storyStates } from "../db/schema.js";
 import { eq, and, asc } from "drizzle-orm";
 import { PersistedStoryPage, StoryPage, StoryProgress, StoryState } from "../types/story.js";
 import { StoryMC } from "../types/character.js";
-import { NewStoryState, NewUserSession, Page, UserSession } from "../types/schema.js";
+import { DBNewStoryState, DBNewUserSession, DBPage, DBUserSession } from "../types/schema.js";
+import { getStoryState } from "./story.js";
 
 /**
  * Retrieves the active session for a user including both bookId and current pageId
@@ -41,7 +42,7 @@ import { NewStoryState, NewUserSession, Page, UserSession } from "../types/schem
  * }
  * ```
  */
-export async function getActiveSession(userId: string): Promise<{ bookId: string; pageId: string | null } | null> {
+export async function getActiveSession(userId: string): Promise<{ bookId: string; pageId: string } | null> {
   try {
     const result = await dbRead
       .select({ bookId: userSessions.bookId, pageId: userSessions.pageId })
@@ -110,7 +111,7 @@ export async function getPageById(pageId: string) {
  * 
  * Example:
  * ```typescript
- * const storyPage = await getStoryPageById("page789");
+ * const storyPage = await getStoryPageById("book456", "page789");
  * if (storyPage) {
  *   console.log(`Page ${storyPage.text.substring(0, 50)}...`);
  *   console.log(`Actions: ${storyPage.actions.map(a => a.text).join(', ')}`);
@@ -123,7 +124,7 @@ export async function getStoryPageById(bookId: string, pageId?: string | null): 
     if (pageId) {
       const dbPage = await getPageById(pageId);
       if (dbPage) {
-        return mapToStoryPage<PersistedStoryPage>(dbPage);
+        return mapToPersistedStoryPage(dbPage);
       }
     }
     
@@ -135,7 +136,7 @@ export async function getStoryPageById(bookId: string, pageId?: string | null): 
       .orderBy(asc(pages.page))
       .limit(1);
     
-    return firstPage[0] ? mapToStoryPage<PersistedStoryPage>(firstPage[0]) : null;
+    return firstPage[0] ? mapToPersistedStoryPage(firstPage[0]) : null;
   } catch (error) {
     console.error(`Failed to get story page for book ${bookId}, page ${pageId}:`, error);
     throw new Error(`Unable to retrieve story page: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -143,10 +144,10 @@ export async function getStoryPageById(bookId: string, pageId?: string | null): 
 }
 
 /**
- * Maps database Page type to domain StoryPage type
+ * Maps database Page type to domain PersistedStoryPage type
  * 
  * @param dbPage - Page data from database
- * @returns StoryPage domain object with proper type mapping
+ * @returns PersistedStoryPage domain object with proper type mapping
  * 
  * Behavior:
  * - Maps all fields from database to domain types
@@ -155,14 +156,16 @@ export async function getStoryPageById(bookId: string, pageId?: string | null): 
  * 
  * Example:
  * ```typescript
- * const storyPage = mapToStoryPage(dbPage);
+ * const storyPage = mapToPersistedStoryPage(dbPage);
  * console.log(`Page ${storyPage.page}: ${storyPage.text.substring(0, 50)}...`);
  * ```
  */
-export function mapToStoryPage<T extends StoryPage | PersistedStoryPage>(dbPage: Page): T {
+export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
   return {
     id: dbPage.id,
     bookId: dbPage.bookId,
+    parentId: dbPage.parentId,
+    page: dbPage.page,
     text: dbPage.text,
     mood: dbPage.mood,
     place: dbPage.place,
@@ -173,7 +176,40 @@ export function mapToStoryPage<T extends StoryPage | PersistedStoryPage>(dbPage:
     addTraumaTag: dbPage.addTraumaTag || undefined,
     characterUpdates: dbPage.characterUpdates || undefined,
     placeUpdates: dbPage.placeUpdates || undefined,
-  } as T;
+  };
+}
+
+/**
+ * Maps database Page type to domain StoryPage type (without database fields)
+ * 
+ * @param dbPage - Page data from database
+ * @returns StoryPage domain object with proper type mapping
+ * 
+ * Behavior:
+ * - Maps only story content fields from database to domain types
+ * - Excludes database-specific fields like id, bookId, parentId
+ * - Handles optional fields correctly
+ * - Preserves data integrity during transformation
+ * 
+ * Example:
+ * ```typescript
+ * const storyPage = mapToStoryPage(dbPage);
+ * console.log(`Page ${storyPage.page}: ${storyPage.text.substring(0, 50)}...`);
+ * ```
+ */
+export function mapToStoryPage(dbPage: DBPage): StoryPage {
+  return {
+    text: dbPage.text,
+    mood: dbPage.mood,
+    place: dbPage.place,
+    characters: dbPage.characters || [],
+    keyEvents: dbPage.keyEvents || [],
+    importantObjects: dbPage.importantObjects || [],
+    actions: dbPage.actions || [],
+    addTraumaTag: dbPage.addTraumaTag || undefined,
+    characterUpdates: dbPage.characterUpdates || undefined,
+    placeUpdates: dbPage.placeUpdates || undefined,
+  };
 }
 
 /**
@@ -214,7 +250,7 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
     // Step 2: Get current page, story state, and book info in parallel
     const [currentPage, currentState, bookInfo] = await Promise.all([
       getStoryPageById(bookId, pageId),
-      getStoryState(userId, bookId),
+      getStoryState(userId, pageId),
       getBookInfo(bookId),
     ]);
 
@@ -224,7 +260,7 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
       state: currentState,
       session: activeSession,
       mc: bookInfo.mc,
-    };
+    } satisfies StoryProgress;
   } catch (error) {
     console.error(`Failed to get story progress for user ${userId}:`, error);
     throw new Error(`Unable to retrieve story progress: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -254,7 +290,7 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
  * // User's active session now points to the new page and activity is tracked
  * ```
  */
-export async function setActiveSession(userId: string, bookId: string, pageId: string): Promise<UserSession> {
+export async function setActiveSession(userId: string, bookId: string, pageId: string): Promise<DBUserSession> {
   try {
     const result = await dbWrite
       .insert(userSessions)
@@ -348,54 +384,6 @@ export async function insertStoryState(userId: string, pageId: string, state: St
   } catch (error) {
     console.error(`Failed to update story state for user ${userId}, page ${pageId}:`, error);
     throw new Error(`Unable to update story state: ${error instanceof Error ? error.message : 'Unknown error'}`);
-  }
-}
-
-/**
- * Retrieves story state for a user and book
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @returns Promise that resolves to story state or null if not found
- * 
- * Behavior:
- * - Queries story_states table by composite key (userId, bookId)
- * - Returns complete story state with all psychological and narrative data
- * - Handles cases where story state doesn't exist
- * - Includes page history, trauma tags, and psychological profiles
- * 
- * Example:
- * ```typescript
- * const storyState = await getStoryState("user123", "book456");
- * if (storyState) {
- *   console.log(`Current page: ${storyState.page}, Difficulty: ${storyState.difficulty}`);
- * }
- * ```
- */
-export async function getStoryState(userId: string, pageId: string): Promise<StoryState | null> {
-  try {
-    const result = await dbRead
-      .select()
-      .from(storyStates)
-      .where(
-        and(
-          eq(storyStates.userId, userId),
-          eq(storyStates.pageId, pageId),
-        )
-      )
-      .limit(1);
-    
-    const dbState = result[0];
-    if (!dbState) return null;
-    
-    // Convert null to undefined for cachedEndingArchetype to match StoryState type
-    return {
-      ...dbState,
-      cachedEndingArchetype: dbState.cachedEndingArchetype || undefined,
-    };
-  } catch (error) {
-    console.error(`Failed to get story state for user ${userId}, page ${pageId}:`, error);
-    throw new Error(`Unable to retrieve story state: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 

@@ -1,6 +1,6 @@
 import { MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_PAST_INTERACTIONS, MAX_TRAUMA_TAGS } from "../config/story.js";
 import type { CharacterMemory, CharacterStatus, CharacterUpdate, RelationshipUpdate } from "../types/character.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Ending, StoryPage, Action } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Ending, StoryPage, Action, ActionedStoryPage } from "../types/story.js";
 import { Gender } from "../types/user.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
@@ -26,10 +26,10 @@ import { summarizeStoryContext } from "./prompt.js";
  * });
  * ```
  */
-export async function updateState(state: StoryState, actionedPage: StoryPage): Promise<StoryState> {
+export async function updateState(state: StoryState, actionedPage: ActionedStoryPage): Promise<StoryState> {
   const updatedState = {
     ...state,
-    // Add current page to history, maintain sliding window (last 10 pages)
+    // Add current page to history, maintain sliding window (last 5 pages)
     pageHistory: [...state.pageHistory, actionedPage].slice(-MAX_PAGE_HISTORY),
     // Increment page number
     page: state.page + 1

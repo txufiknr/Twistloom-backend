@@ -1,5 +1,7 @@
-import type { CharacterMemory, CharacterUpdates, StoryMC } from "./character.js";
-import type { PlaceMemory, PlaceUpdates } from "./places.js";
+import type { CharacterMemory, CharacterStatus, CharacterUpdates, StoryMC } from "./character.js";
+import type { PlaceMemory, PlaceMood, PlaceType, PlaceUpdates } from "./places.js";
+import type { DBPage } from "./schema.js";
+import type { Gender } from "./user.js";
 
 /**
  * AI response structure for book creation
@@ -24,6 +26,21 @@ export type BookCreationResponse = {
   initialDifficulty: Difficulty;
   /** Ending archetype for the story */
   initialEndingArchetype: Ending;
+  /** Initial place memory setup */
+  initialPlace?: {
+    name: string;
+    type: PlaceType;
+    currentMood: PlaceMood;
+    context?: string;
+  };
+  /** Initial character memories setup */
+  initialCharacters?: Array<{
+    name: string;
+    gender: Gender,
+    status: CharacterStatus;
+    relationshipToMC?: string;
+    bio?: string;
+  }>;
 };
 
 /**
@@ -521,7 +538,8 @@ export type StoryPage = {
   selectedAction?: Action;
 };
 
-export type PersistedStoryPage = StoryPage & { id: string, bookId: string };
+// export type PersistedStoryPage = StoryPage & { id: string, bookId: string, parentId?: string | null };
+export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'parentId' | 'page'>;
 export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
 
 export type Action = {
@@ -617,6 +635,8 @@ export type StoryState = {
    * Stores all characters encountered in the story with their
    * relationships, interactions, and narrative flags. This enables
    * consistent character behavior and plot twist setup.
+   * 
+   * Key: character name
    */
   characters: Record<string, CharacterMemory>;
 
@@ -626,6 +646,8 @@ export type StoryState = {
    * Stores all places encountered in the story with their
    * visit history, emotional associations, and narrative connections.
    * This enables consistent world-building and psychological anchoring.
+   * 
+   * Key: place name
    */
   places: Record<string, PlaceMemory>;
 
@@ -635,7 +657,7 @@ export type StoryState = {
    * Maintains a sliding window of recent pages for context
    * and narrative continuity in AI prompts.
    */
-  pageHistory: StoryPage[];
+  pageHistory: ActionedStoryPage[];
 
   /** History of all user actions made throughout the story */
   actionsHistory: Action[];

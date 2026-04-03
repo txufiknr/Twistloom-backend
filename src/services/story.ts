@@ -1,12 +1,12 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { pages, books, storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
-import type { StoryPage, StoryState as DomainStoryState, PersistedStoryPage } from "../types/story.js";
-import { Book, NewBook, NewPage, Page, StoryState } from "../types/schema.js";
+import type { StoryPage, StoryState, PersistedStoryPage } from "../types/story.js";
+import { DBBook, DBNewBook, DBNewPage, DBPage, DBStoryState } from "../types/schema.js";
 import type { BookStatus } from "../types/book.js";
-import { StoryMCCandidate } from "../types/character.js";
-import { generateRandomCharacter } from "../utils/characters.js";
+import { StoryMC } from "../types/character.js";
 import { getErrorMessage } from "../utils/error.js";
+import { mapToPersistedStoryPage } from "./book.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -60,10 +60,10 @@ export async function insertStoryPage(
         placeUpdates: page.placeUpdates || null,
         createdAt: new Date(),
         updatedAt: new Date()
-      } satisfies NewPage)
+      } satisfies DBNewPage)
       .returning();
 
-    return { ...page, id: result[0].id, bookId: result[0].bookId }
+    return mapToPersistedStoryPage(result[0]);
   } catch (error) {
     console.error(`Failed to insert story page for page ${pageNumber}:`, error);
     throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`);
@@ -79,8 +79,8 @@ export async function insertStoryPage(
  */
 export async function updateStoryPage(
   pageId: string,
-  updates: Partial<Omit<NewPage, 'id' | 'bookId' | 'pageNumber' | 'createdAt'>>
-): Promise<Page> {
+  updates: Partial<Omit<DBNewPage, 'id' | 'bookId' | 'pageNumber' | 'createdAt'>>
+): Promise<DBPage> {
   const result = await dbWrite
     .update(pages)
     .set({ ...updates, updatedAt: new Date() })
@@ -96,7 +96,7 @@ export async function updateStoryPage(
  * @param bookId - Book identifier to retrieve pages for
  * @returns Promise resolving to array of page records ordered by page number
  */
-export async function getBookPages(bookId: string): Promise<Page[]> {
+export async function getBookPages(bookId: string): Promise<DBPage[]> {
   const result = await dbRead
     .select()
     .from(pages)
@@ -124,8 +124,8 @@ export async function insertBook(
   summary: string,
   keywords: string[],
   status: BookStatus = 'active',
-  mcCandidate?: StoryMCCandidate,
-): Promise<Book> {
+  mc: StoryMC,
+): Promise<DBBook> {
   const result = await dbWrite.insert(books).values({
     userId,
     displayTitle,
@@ -134,7 +134,7 @@ export async function insertBook(
     keywords,
     status,
     trendingScore: 0,
-    mc: generateRandomCharacter(mcCandidate),
+    mc,
     createdAt: new Date(),
     updatedAt: new Date()
   }).returning();
@@ -148,7 +148,7 @@ export async function insertBook(
  * @param bookId - Book identifier to retrieve
  * @returns Promise resolving to the book record or null if not found
  */
-export async function getBook(bookId: string): Promise<Book | null> {
+export async function getBook(bookId: string): Promise<DBBook | null> {
   const result = await dbRead
     .select()
     .from(books)
@@ -167,8 +167,8 @@ export async function getBook(bookId: string): Promise<Book | null> {
  */
 export async function updateBook(
   bookId: string,
-  updates: Partial<Omit<NewBook, 'id' | 'userId' | 'createdAt'>>
-): Promise<Book> {
+  updates: Partial<Omit<DBNewBook, 'id' | 'userId' | 'createdAt'>>
+): Promise<DBBook> {
   const result = await dbWrite
     .update(books)
     .set({ ...updates, updatedAt: new Date() })
@@ -188,7 +188,7 @@ export async function updateBook(
 export async function getUserBooks(
   userId: string,
   status?: BookStatus
-): Promise<Book[]> {
+): Promise<DBBook[]> {
   if (status) {
     return await dbRead
       .select()
@@ -211,18 +211,46 @@ export async function getUserBooks(
  * @param bookId - Book identifier for the story state
  * @returns Promise resolving to the story state record or null if not found
  */
-export async function getStoryState(
+export async function getStoryStateFromDB(
   userId: string,
   pageId: string
-): Promise<StoryState | null> {
+): Promise<DBStoryState | null> {
   const result = await dbRead
     .select()
     .from(storyStates)
-    // .where(and(eq(storyStates.userId, userId), eq(storyStates.bookId, bookId)))
     .where(and(eq(storyStates.userId, userId), eq(storyStates.pageId, pageId)))
     .limit(1);
 
   return result[0] || null;
+}
+
+/**
+ * Retrieves story state by user ID and book ID
+ * 
+ * @param userId - User identifier for the story state
+ * @param pageId - Page identifier for the story state
+ * @returns Promise resolving to the story state record or null if not found
+ * 
+ * Behavior:
+ * - Queries story_states table by composite key (userId, pageId)
+ * - Returns complete story state with all psychological and narrative data
+ * - Handles cases where story state doesn't exist
+ * - Includes page history, trauma tags, and psychological profiles
+ * 
+ * Example:
+ * ```typescript
+ * const storyState = await getStoryState("user123", "page456");
+ * if (storyState) {
+ *   console.log(`Current page: ${storyState.page}, Difficulty: ${storyState.difficulty}`);
+ * }
+ * ```
+ */
+export async function getStoryState(
+  userId: string,
+  pageId: string
+): Promise<StoryState | null> {
+  const result = await getStoryStateFromDB(userId, pageId);
+  return result ? mapStoryStateFromDb(result) : null;
 }
 
 /**
@@ -233,7 +261,7 @@ export async function getStoryState(
  * @param dbStoryState - StoryState record from database
  * @returns Mapped domain StoryState object
  */
-export function mapStoryStateFromDb(dbStoryState: StoryState): DomainStoryState {
+export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
   return {
     pageId: dbStoryState.pageId,
     page: dbStoryState.page,

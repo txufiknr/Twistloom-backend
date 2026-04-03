@@ -10,11 +10,11 @@ import { classifyGenAIError, getErrorMessage } from "./error.js";
 import { parseAISafely } from "./parser.js";
 
 import type Groq from 'groq-sdk';
-import type { ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
-import type { GenerateContentResponse } from "@google/genai";
-import type { V2ChatResponse } from "cohere-ai/api";
-import type { ChatCompletion } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
-import type { ChatCompletionResponse } from "@mistralai/mistralai/models/components";
+import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
+import type { GenerateContentParameters, GenerateContentResponse } from "@google/genai";
+import type { V2ChatRequest, V2ChatResponse } from "cohere-ai/api";
+import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
+import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -134,7 +134,7 @@ export async function githubPrompt(
         top_p: config.topP,
         stream: false,
         stop: config.stopSequences,
-      });
+      } satisfies ChatCompletionCreateParamsNonStreaming);
     },
     (response) => {
       const content = response.choices?.[0]?.message?.content;
@@ -190,7 +190,7 @@ export async function geminiPrompt(
           topK: config.topK,
           stopSequences: config.stopSequences,
         },
-      });
+      } satisfies GenerateContentParameters);
       
       // Prompt-level safety block
       if (response.promptFeedback?.blockReason) {
@@ -285,7 +285,7 @@ export async function groqPrompt(
         top_p: config.topP,
         stop: config.stopSequences,
         stream: false,
-      }).withResponse();
+      } satisfies ChatCompletionCreateParamsBase).withResponse();
 
       // Log rate limit information from response headers
       const remaining = response.headers.get('x-ratelimit-remaining-requests');
@@ -370,7 +370,7 @@ export async function coherePrompt(
         p: config.topP,
         k: config.topK,
         stopSequences: config.stopSequences,
-      });
+      } satisfies V2ChatRequest);
     },
     (response) => {
       const message = response.message;
@@ -441,7 +441,7 @@ export async function cerebrasPrompt(
         top_p: config.topP,
         stream: false,
         stop: config.stopSequences,
-      }) as ChatCompletion.ChatCompletionResponse;
+      } satisfies ChatCompletionCreateParamsBase) as ChatCompletion.ChatCompletionResponse;
     },
     (response) => {
       const content = response.choices?.[0]?.message?.content;
@@ -504,7 +504,7 @@ export async function mistralPrompt(
         topP: config.topP,
         stop: config.stopSequences,
         stream: false,
-      });
+      } satisfies ChatCompletionRequest);
     },
     (response) => {
       const content = response.choices?.[0]?.message?.content;

@@ -31,7 +31,7 @@ import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and, isNull } from "drizzle-orm";
 import { initializeBook, chooseAction } from "../utils/prompt.js";
 import { getActiveSession, setActiveSession } from "../services/book.js";
-import { getStoryState } from "../services/story.js";
+import { getStoryState, getStoryStateFromDB } from "../services/story.js";
 import { imageUpload, uploadBookCover } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -54,9 +54,9 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate } = req.body;
     
-    if (!theme || !mcCandidate) {
+    if (!theme) {
       return res.status(400).json({ 
-        error: "Missing required fields: theme and mcCandidate are required" 
+        error: "Missing required field: theme is required" 
       });
     }
 
@@ -381,7 +381,7 @@ router.get("/:id/pages/:pageId", requireClientId, async (req: Request, res: Resp
     }
 
     // Get current story state for this page
-    const storyState = await getStoryState(userId, pageId as string);
+    const storyState = await getStoryStateFromDB(userId, pageId as string);
 
     res.json({
       page: page[0],

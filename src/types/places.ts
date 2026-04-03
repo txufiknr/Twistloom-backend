@@ -62,25 +62,6 @@ export type SensoryDetails = {
   feeling?: string;
 };
 
-// /**
-//  * Character-place relationship tracking
-//  * 
-//  * This structure connects characters to specific places,
-//  * enabling narrative logic about where characters tend to appear.
-//  */
-// export type CharacterPlaceRelation = {
-//   // /** Character name this relation belongs to */
-//   // characterName: string;
-//   // /** Place identifier (matches Place.id) */
-//   // placeId: string;
-//   /** How often MC meets this character here */
-//   frequency: number;
-//   /** Last page where character was seen at this place */
-//   lastSeenAtPage: number;
-//   /** Optional context about their presence here */
-//   context?: string;
-// };
-
 /**
  * Complete place memory structure for narrative consistency
  * 
@@ -88,8 +69,6 @@ export type SensoryDetails = {
  * emotional associations, and narrative connections.
  */
 export type PlaceMemory = {
-  // /** Unique identifier for the place */
-  // placeId: string;
   /** Place name as it appears in the narrative */
   name: string;
   /** Type of place for categorization and behavior patterns */
