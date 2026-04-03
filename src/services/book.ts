@@ -340,6 +340,7 @@ export async function setActiveSession(userId: string, bookId: string, pageId: s
  * ```
  */
 export async function insertStoryState(userId: string, pageId: string, state: StoryState): Promise<void> {
+  // TODO: cleanup old states (last 10 pages sliding window, set config const)
   try {
     await dbWrite
       .insert(storyStates)

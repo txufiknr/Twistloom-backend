@@ -380,13 +380,8 @@ router.get("/:id/pages/:pageId", requireClientId, async (req: Request, res: Resp
       return handleNotFoundError(res, "Page not found");
     }
 
-    // Get current story state for this page
-    const storyState = await getStoryStateFromDB(userId, pageId as string);
-
     res.json({
       page: page[0],
-      storyState,
-      availableActions: page[0].actions || []
     });
   } catch (error) {
     handleApiError(res, "Failed to retrieve page", error);

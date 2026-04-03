@@ -1379,9 +1379,11 @@ export async function chooseAction(userId: string, action: Action, isUserAction:
   if (!activeSession) throw new Error(`No active session found for user ${userId}`);
   if (!currentMc) throw new Error(`No active book found for user ${userId}`);
   if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
+
+  // TODO: old states are purged, so this is not mandatory
   if (!currentState) throw new Error(`No state found for user ${userId} (bookId: ${activeSession.bookId})`);
 
-  // Choice made, can't make another choice
+  // If this is previous page and choice has been made, can't make another choice
   if (currentPage.selectedAction && 
       (currentPage.selectedAction.text !== action.text || 
       currentPage.selectedAction.type !== action.type)) {
@@ -1406,6 +1408,7 @@ export async function chooseAction(userId: string, action: Action, isUserAction:
     const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
     
     // 4b. Update story state based on chosen action (increments page, generates context summary)
+    // TODO: currentState reconstruction if null using `reconstructStoryState`
     const updatedState = await updateState(currentState, actionedPage);
     
     // 4c. Generate next page using AI with dynamic configuration
@@ -1441,13 +1444,11 @@ export async function chooseAction(userId: string, action: Action, isUserAction:
  */
 export async function goToPreviousPage(userId: string): Promise<PersistedStoryPage | null> {
   // 1. Get current story progress (session, page, state, character) in parallel
-  const { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
+  const { page: currentPage, session: activeSession } = await getStoryProgress(userId);
   
   // 2. Validate all required components exist for navigation
   if (!activeSession) throw new Error(`No active session found for user ${userId}`);
-  if (!currentMc) throw new Error(`No active book found for user ${userId}`);
   if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
-  if (!currentState) throw new Error(`No state found for user ${userId} (bookId: ${activeSession.bookId})`);
 
   // 3. Check if there's a previous page available
   const previousPageId = currentPage.parentId;
@@ -1459,7 +1460,7 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
   // 4. Get the previous page directly by ID
   const previousPage = await getStoryPageById(activeSession.bookId, previousPageId);
   if (!previousPage) {
-    throw new Error('Previous page ${previousPageId} not found in database');
+    throw new Error('Previous page not found in database');
   }
   
   // 6. Update user session to point to the previous page

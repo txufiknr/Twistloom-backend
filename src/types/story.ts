@@ -689,8 +689,220 @@ export type StoryProgress = {
   state: StoryState | null;
   
   /** Active user session linking user to current book and page */
-  session: { bookId: string; pageId: string | null } | null;
+  session: { bookId: string; pageId: string } | null;
   
   /** Main character profile with name, age, and gender */
   mc: StoryMC | null;
+};
+
+/**
+ * Enhanced story progress with branch traversal information
+ * 
+ * This type extends the standard story progress with branch-specific data
+ * including path information, statistics, and sibling pages for navigation.
+ * 
+ * @interface StoryProgressWithBranch
+ */
+export type StoryProgressWithBranch = StoryProgress & {
+  /** Branch path from root to current page */
+  branchPath: import("../utils/branch-traversal.js").BranchPath | null;
+  
+  /** Branch statistics including depth and branching factor */
+  branchStats: Awaited<ReturnType<typeof import("../utils/branch-traversal.js").getBranchStats>> | null;
+  
+  /** Sibling pages for navigation context */
+  siblings: PersistedStoryPage[];
+};
+
+/**
+ * Previous page navigation result with branch context
+ * 
+ * @interface PreviousPageResult
+ */
+export type PreviousPageResult = {
+  /** Previous page data */
+  previousPage: PersistedStoryPage | null;
+  
+  /** Branch path from root to previous page */
+  branchPath: import("../utils/branch-traversal.js").BranchPath | null;
+  
+  /** Whether user can navigate back further */
+  canGoBackFurther: boolean;
+};
+
+/**
+ * Branch integrity validation result
+ * 
+ * @interface BranchValidationResult
+ */
+export type BranchValidationResult = {
+  /** Whether branch is valid */
+  isValid: boolean;
+  
+  /** List of validation issues */
+  issues: string[];
+  
+  /** Branch path if validation succeeded */
+  path: import("../utils/branch-traversal.js").BranchPath | null;
+};
+
+/**
+ * Branch navigation options
+ * 
+ * @interface BranchNavigationOptions
+ */
+export type BranchNavigationOptions = {
+  /** Whether user can navigate back */
+  canGoBack: boolean;
+  
+  /** Whether user can navigate forward */
+  canGoForward: boolean;
+  
+  /** Available sibling pages */
+  siblingPages: PersistedStoryPage[];
+  
+  /** Current branch depth */
+  branchDepth: number;
+  
+  /** Total number of branches */
+  totalBranches: number;
+};
+
+/**
+ * Story state cleanup result
+ * 
+ * @interface StoryStateCleanupResult
+ */
+export type StoryStateCleanupResult = {
+  /** Number of deleted states */
+  deletedCount: number;
+  
+  /** Number of kept states */
+  keptCount: number;
+};
+
+// ============================================================================
+// STATE RECONSTRUCTION TYPES
+// ============================================================================
+
+/**
+ * State delta representing incremental changes between pages
+ * 
+ * This structure captures the differences between story states,
+ * enabling efficient reconstruction without storing full snapshots
+ * for every page.
+ * 
+ * @interface StateDelta
+ */
+export type StateDelta = {
+  /** Page ID where this delta was created */
+  pageId: string;
+  
+  /** Page number for ordering */
+  page: number;
+  
+  /** Characters added in this delta */
+  addedCharacters?: Record<string, CharacterMemory>;
+  
+  /** Characters updated in this delta */
+  updatedCharacters?: Record<string, Partial<CharacterMemory>>;
+  
+  /** Characters removed in this delta */
+  removedCharacters?: string[];
+  
+  /** Places added in this delta */
+  addedPlaces?: Record<string, PlaceMemory>;
+  
+  /** Places updated in this delta */
+  updatedPlaces?: Record<string, Partial<PlaceMemory>>;
+  
+  /** Places removed in this delta */
+  removedPlaces?: string[];
+  
+  /** Trauma tags added in this delta */
+  addedTraumaTags?: string[];
+  
+  /** Trauma tags removed in this delta */
+  removedTraumaTags?: string[];
+  
+  /** Psychological flags changes */
+  flagsDelta?: Partial<PsychologicalFlags>;
+  
+  /** Psychological profile changes */
+  profileDelta?: Partial<PsychologicalProfile>;
+  
+  /** Hidden state changes */
+  hiddenStateDelta?: Partial<HiddenState>;
+  
+  /** Memory integrity change */
+  memoryIntegrity?: MemoryIntegrity;
+  
+  /** Difficulty change */
+  difficulty?: Difficulty;
+  
+  /** Ending archetype change */
+  endingArchetype?: Ending;
+  
+  /** Context history addition */
+  contextHistoryAddition?: string;
+  
+  /** Actions added to history */
+  addedActions?: Action[];
+};
+
+/**
+ * State snapshot representing a complete story state at a point in time
+ * 
+ * Snapshots serve as checkpoints for efficient state reconstruction.
+ * They contain the complete state at a specific page, allowing
+ * deltas to be applied forward from that point.
+ * 
+ * @interface StateSnapshot
+ */
+export type StateSnapshot = {
+  /** Page ID where snapshot was taken */
+  pageId: string;
+  
+  /** Page number for ordering */
+  page: number;
+  
+  /** Complete story state at this point */
+  state: StoryState;
+  
+  /** Timestamp when snapshot was created */
+  createdAt: Date;
+  
+  /** Snapshot version for future-proofing */
+  version: number;
+  
+  /** Whether this is a major event checkpoint */
+  isMajorCheckpoint: boolean;
+  
+  /** Reason for snapshot creation */
+  reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request';
+};
+
+/**
+ * State reconstruction result with metadata
+ * 
+ * @interface StateReconstructionResult
+ */
+export type StateReconstructionResult = {
+  /** Reconstructed story state */
+  state: StoryState;
+  
+  /** Number of snapshots used */
+  snapshotsUsed: number;
+  
+  /** Number of deltas applied */
+  deltasApplied: number;
+  
+  /** Reconstruction method used */
+  method: 'direct' | 'snapshot_plus_deltas' | 'fallback';
+  
+  /** Performance metrics */
+  reconstructionTimeMs: number;
+  
+  /** Source page ID of base snapshot */
+  baseSnapshotPageId?: string;
 };
