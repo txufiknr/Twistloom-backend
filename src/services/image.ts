@@ -201,7 +201,7 @@ function handleFileUpload(uploadObj: ImageUploadObject, prefix: string, entityId
         const arrayBuffer = arrayBufferLike.slice(0);
         fileContent = Buffer.from(arrayBuffer);
       } catch (error) {
-        console.error('[handleFileUpload] ❌ Failed to convert ArrayBufferLike to Buffer:', error);
+        console.error('[handleFileUpload] ❌ Failed to convert ArrayBufferLike to Buffer:', getErrorMessage(error));
         throw new Error('Invalid ArrayBufferLike: cannot convert to Buffer');
       }
     } else {
@@ -367,7 +367,7 @@ export async function uploadImageKit(
     console.log(`[uploadImageKit] 📸 Image uploaded: ${result.url} (ID: ${result.fileId})`);
     return result;
   } catch (error) {
-    console.error(`[uploadImageKit] ❌ Image upload failed for entity ${entityId}:`, error);
+    console.error(`[uploadImageKit] ❌ Image upload failed for entity ${entityId}:`, getErrorMessage(error));
     return null;
   } finally {
     // Cleanup File objects to prevent memory leaks

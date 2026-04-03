@@ -1,12 +1,13 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { pages, books, storyStates } from "../db/schema.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import type { StoryPage, StoryState, PersistedStoryPage } from "../types/story.js";
 import { DBBook, DBNewBook, DBNewPage, DBPage, DBStoryState } from "../types/schema.js";
 import type { BookStatus } from "../types/book.js";
 import { StoryMC } from "../types/character.js";
-import { getErrorMessage } from "../utils/error.js";
+import { deletedStateCache } from "./story-state-cache.js";
 import { mapToPersistedStoryPage } from "./book.js";
+import { getErrorMessage } from "../utils/error.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -65,7 +66,7 @@ export async function insertStoryPage(
 
     return mapToPersistedStoryPage(result[0]);
   } catch (error) {
-    console.error(`Failed to insert story page for page ${pageNumber}:`, error);
+    console.error(`Failed to insert story page for page ${pageNumber}:`, getErrorMessage(error));
     throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`);
   }
 }
@@ -225,32 +226,35 @@ export async function getStoryStateFromDB(
 }
 
 /**
- * Retrieves story state by user ID and book ID
+ * Gets story state with fallback to deleted state cache
  * 
  * @param userId - User identifier for the story state
  * @param pageId - Page identifier for the story state
  * @returns Promise resolving to the story state record or null if not found
  * 
  * Behavior:
- * - Queries story_states table by composite key (userId, pageId)
- * - Returns complete story state with all psychological and narrative data
- * - Handles cases where story state doesn't exist
- * - Includes page history, trauma tags, and psychological profiles
- * 
- * Example:
- * ```typescript
- * const storyState = await getStoryState("user123", "page456");
- * if (storyState) {
- *   console.log(`Current page: ${storyState.page}, Difficulty: ${storyState.difficulty}`);
- * }
- * ```
+ * - First tries to get from database
+ * - Falls back to deleted state cache if not found
+ * - Returns null if state doesn't exist anywhere
  */
 export async function getStoryState(
   userId: string,
   pageId: string
 ): Promise<StoryState | null> {
-  const result = await getStoryStateFromDB(userId, pageId);
-  return result ? mapStoryStateFromDb(result) : null;
+  // Try database first
+  const dbResult = await getStoryStateFromDB(userId, pageId);
+  if (dbResult) {
+    return mapStoryStateFromDb(dbResult);
+  }
+  
+  // Fall back to deleted state cache
+  const cachedState = deletedStateCache.get(userId, pageId);
+  if (cachedState) {
+    console.log(`[getStoryState] Retrieved from deleted cache for user ${userId}, page ${pageId}`);
+    return cachedState;
+  }
+  
+  return null;
 }
 
 /**

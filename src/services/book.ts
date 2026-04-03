@@ -12,13 +12,17 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { updateUserLastActivity } from "./user.js";
-import { userSessions, books, pages, storyStates } from "../db/schema.js";
-import { eq, and, asc } from "drizzle-orm";
-import { PersistedStoryPage, StoryPage, StoryProgress, StoryState } from "../types/story.js";
+import { pages, books, storyStates, userPageProgress, userSessions } from "../db/schema.js";
+import { eq, and, desc, asc } from "drizzle-orm";
+import { getErrorMessage } from "../utils/error.js";
+import type { DBBook, DBNewBook, DBNewPage, DBPage, DBStoryState, DBUserSession } from "../types/schema.js";
+import type { BookStatus } from "../types/book.js";
 import { StoryMC } from "../types/character.js";
-import { DBNewStoryState, DBNewUserSession, DBPage, DBUserSession } from "../types/schema.js";
-import { getStoryState } from "./story.js";
+import type { StoryState, StoryProgress, StoryPage, PersistedStoryPage, UserStoryPage, Action } from "../types/story.js";
+import { mapStoryStateFromDb, getStoryState } from "./story.js";
+import { deletedStateCache } from "./story-state-cache.js";
+import { MAX_STORY_STATES_PER_PAGE } from "../config/story.js";
+import { updateUserLastActivity } from "./user.js";
 
 /**
  * Retrieves the active session for a user including both bookId and current pageId
@@ -57,8 +61,8 @@ export async function getActiveSession(userId: string): Promise<{ bookId: string
     
     return result[0] || null;
   } catch (error) {
-    console.error(`Failed to get active session for user ${userId}:`, error);
-    throw new Error(`Unable to retrieve active session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to get active session for user ${userId}:`, getErrorMessage(error));
+    throw new Error(`Unable to retrieve active session: ${getErrorMessage(error)}`);
   }
 }
 
@@ -76,13 +80,13 @@ export async function getActiveSession(userId: string): Promise<{ bookId: string
  * 
  * Example:
  * ```typescript
- * const page = await getPageById("page789");
+ * const page = await getPageFromDB("page789");
  * if (page) {
  *   console.log(`Page ${page.page}: ${page.text.substring(0, 50)}...`);
  * }
  * ```
  */
-export async function getPageById(pageId: string) {
+export async function getPageFromDB(pageId: string): Promise<DBPage | null> {
   try {
     const result = await dbRead
       .select()
@@ -92,14 +96,50 @@ export async function getPageById(pageId: string) {
     
     return result[0] || null;
   } catch (error) {
-    console.error(`Failed to get page ${pageId}:`, error);
-    throw new Error(`Unable to retrieve page: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to get page ${pageId}:`, getErrorMessage(error));
+    throw new Error(`Unable to retrieve page: ${getErrorMessage(error)}`);
   }
+}
+
+async function getUserPageProgressMap(userId: string, bookId: string): Promise<Map<string, Action>> {
+  const rows = await dbRead
+    .select()
+    .from(userPageProgress)
+    .where(and(
+      eq(userPageProgress.userId, userId),
+      eq(userPageProgress.bookId, bookId)
+    ));
+  
+  return new Map(rows.map(r => [r.pageId, r.action]));
+}
+
+/**
+ * Gets user's selected action for a specific page
+ * 
+ * @param userId - The user's unique identifier
+ * @param bookId - The book's unique identifier
+ * @param pageId - The page's unique identifier
+ * @returns Promise resolving to user's selected action or null if not found
+ */
+async function getPageProgressFromDB(userId: string, bookId: string, pageId: string): Promise<Action | null> {
+  const userProgress = await dbRead
+    .select()
+    .from(userPageProgress)
+    .where(and(
+      eq(userPageProgress.userId, userId),
+      eq(userPageProgress.bookId, bookId),
+      eq(userPageProgress.pageId, pageId)
+    ))
+    .limit(1);
+  
+  return userProgress[0]?.action || null;
 }
 
 /**
  * Retrieves a specific story page by its ID and maps to domain type
  * 
+ * @param userId - The user's unique identifier
+ * @param bookId - The book's unique identifier
  * @param pageId - The page's unique identifier
  * @returns Promise that resolves to StoryPage domain object or null if not found
  * 
@@ -111,20 +151,22 @@ export async function getPageById(pageId: string) {
  * 
  * Example:
  * ```typescript
- * const storyPage = await getStoryPageById("book456", "page789");
+ * const storyPage = await getStoryPageById("user123", "book456", "page789");
  * if (storyPage) {
  *   console.log(`Page ${storyPage.text.substring(0, 50)}...`);
  *   console.log(`Actions: ${storyPage.actions.map(a => a.text).join(', ')}`);
  * }
  * ```
  */
-export async function getStoryPageById(bookId: string, pageId?: string | null): Promise<PersistedStoryPage | null> {
+export async function getStoryPageById(userId: string, bookId: string, pageId: string): Promise<UserStoryPage | null> {
   try {
     // If pageId is provided, try to get that specific page
     if (pageId) {
-      const dbPage = await getPageById(pageId);
+      const dbPage = await getPageFromDB(pageId);
       if (dbPage) {
-        return mapToPersistedStoryPage(dbPage);
+        // Get user page progress to include selected action
+        const selectedAction = await getPageProgressFromDB(userId, bookId, pageId);
+        return mapToUserStoryPage(dbPage, selectedAction || undefined);
       }
     }
     
@@ -136,11 +178,59 @@ export async function getStoryPageById(bookId: string, pageId?: string | null): 
       .orderBy(asc(pages.page))
       .limit(1);
     
-    return firstPage[0] ? mapToPersistedStoryPage(firstPage[0]) : null;
+    if (firstPage[0]) {
+      // Get progress for first page
+      const selectedAction = await getPageProgressFromDB(userId, bookId, firstPage[0].id);
+      return mapToUserStoryPage(firstPage[0], selectedAction || undefined);
+    }
+    
+    return null;
   } catch (error) {
-    console.error(`Failed to get story page for book ${bookId}, page ${pageId}:`, error);
-    throw new Error(`Unable to retrieve story page: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to get story page for book ${bookId}, page ${pageId}:`, getErrorMessage(error));
+    throw new Error(`Unable to retrieve story page: ${getErrorMessage(error)}`);
   }
+}
+
+/**
+ * Maps database Page type to domain UserStoryPage type with optional selected action
+ * 
+ * @param dbPage - Page data from database
+ * @param selectedAction - User's selected action for this page (optional)
+ * @returns UserStoryPage domain object with optional selectedAction
+ * 
+ * Behavior:
+ * - Maps all fields from database to domain types
+ * - Includes user's selected action if available
+ * - Handles optional fields correctly
+ * - Preserves data integrity during transformation
+ * 
+ * Example:
+ * ```typescript
+ * const userPage = mapToUserStoryPage(dbPage, userAction);
+ * console.log(`Page ${userPage.page}: ${userPage.text.substring(0, 50)}...`);
+ * if (userPage.selectedAction) {
+ *   console.log(`User chose: ${userPage.selectedAction.text}`);
+ * }
+ * ```
+ */
+export function mapToUserStoryPage(dbPage: DBPage, selectedAction?: Action): UserStoryPage {
+  return {
+    id: dbPage.id,
+    bookId: dbPage.bookId,
+    parentId: dbPage.parentId,
+    page: dbPage.page,
+    text: dbPage.text,
+    mood: dbPage.mood,
+    place: dbPage.place,
+    characters: dbPage.characters || [],
+    keyEvents: dbPage.keyEvents || [],
+    importantObjects: dbPage.importantObjects || [],
+    actions: dbPage.actions || [],
+    addTraumaTag: dbPage.addTraumaTag || undefined,
+    characterUpdates: dbPage.characterUpdates || undefined,
+    placeUpdates: dbPage.placeUpdates || undefined,
+    selectedAction: selectedAction || undefined,
+  } satisfies UserStoryPage;
 }
 
 /**
@@ -176,7 +266,7 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     addTraumaTag: dbPage.addTraumaTag || undefined,
     characterUpdates: dbPage.characterUpdates || undefined,
     placeUpdates: dbPage.placeUpdates || undefined,
-  };
+  } satisfies PersistedStoryPage;
 }
 
 /**
@@ -209,7 +299,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     addTraumaTag: dbPage.addTraumaTag || undefined,
     characterUpdates: dbPage.characterUpdates || undefined,
     placeUpdates: dbPage.placeUpdates || undefined,
-  };
+  } satisfies StoryPage;
 }
 
 /**
@@ -237,19 +327,14 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
     // Step 1: Get active session
     const activeSession = await getActiveSession(userId);
     if (!activeSession) {
-      return {
-        page: null,
-        state: null,
-        session: null,
-        mc: null,
-      };
+      return { page: null, state: null, session: null, mc: null };
     }
 
     const { bookId, pageId } = activeSession;
 
     // Step 2: Get current page, story state, and book info in parallel
     const [currentPage, currentState, bookInfo] = await Promise.all([
-      getStoryPageById(bookId, pageId),
+      getStoryPageById(userId, bookId, pageId),
       getStoryState(userId, pageId),
       getBookInfo(bookId),
     ]);
@@ -262,8 +347,8 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
       mc: bookInfo.mc,
     } satisfies StoryProgress;
   } catch (error) {
-    console.error(`Failed to get story progress for user ${userId}:`, error);
-    throw new Error(`Unable to retrieve story progress: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to get story progress for user ${userId}:`, getErrorMessage(error));
+    throw new Error(`Unable to retrieve story progress: ${getErrorMessage(error)}`);
   }
 }
 
@@ -315,8 +400,8 @@ export async function setActiveSession(userId: string, bookId: string, pageId: s
     console.log(`Session activated for user ${userId}, book ${bookId}`);
     return result[0];
   } catch (error) {
-    console.error(`Failed to set active session for user ${userId}, book ${bookId}:`, error);
-    throw new Error(`Unable to set active session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to set active session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
+    throw new Error(`Unable to set active session: ${getErrorMessage(error)}`);
   }
 }
 
@@ -336,17 +421,17 @@ export async function setActiveSession(userId: string, bookId: string, pageId: s
  * 
  * Example:
  * ```typescript
- * await insertStoryState("user123", "page456", state);
+ * await insertStoryState("user123", "book456", "page789", state);
  * ```
  */
-export async function insertStoryState(userId: string, pageId: string, state: StoryState): Promise<void> {
-  // TODO: cleanup old states (last 10 pages sliding window, set config const)
+export async function insertStoryState(userId: string, bookId: string, pageId: string, state: StoryState): Promise<void> {
   try {
     await dbWrite
       .insert(storyStates)
       .values({
         userId,
         pageId,
+        bookId,
         page: state.page,
         maxPage: state.maxPage,
         flags: state.flags,
@@ -363,7 +448,7 @@ export async function insertStoryState(userId: string, pageId: string, state: St
         contextHistory: state.contextHistory,
       })
       .onConflictDoUpdate({
-        target: [storyStates.userId, storyStates.pageId],
+        target: [storyStates.userId, storyStates.bookId, storyStates.pageId],
         set: {
           page: state.page,
           maxPage: state.maxPage,
@@ -382,9 +467,68 @@ export async function insertStoryState(userId: string, pageId: string, state: St
           updatedAt: new Date(),
         }
       });
+
+    // Cleanup old story states - keep only the latest MAX_STORY_STATES_PER_PAGE per user/book
+    await cleanupOldStoryStates(userId, bookId);
   } catch (error) {
-    console.error(`Failed to update story state for user ${userId}, page ${pageId}:`, error);
-    throw new Error(`Unable to update story state: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to update story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));
+    throw new Error(`Unable to update story state: ${getErrorMessage(error)}`);
+  }
+}
+
+/**
+ * Cleans up old story states for a specific user/book combination
+ * 
+ * @param userId - The user's unique identifier
+ * @param bookId - The book's unique identifier
+ * @returns Promise that resolves when cleanup is complete
+ * 
+ * Behavior:
+ * - Keeps only the latest MAX_STORY_STATES_PER_PAGE states across all pages
+ * - Orders by updatedAt descending to identify newest states
+ * - Deletes older states beyond the limit
+ */
+async function cleanupOldStoryStates(userId: string, bookId: string): Promise<void> {
+  try {
+    // Get all story states for this user/book combination, ordered by newest first
+    const allStates = await dbRead
+      .select({ 
+        pageId: storyStates.pageId,
+        updatedAt: storyStates.updatedAt 
+      })
+      .from(storyStates)
+      .where(and(
+        eq(storyStates.userId, userId),
+        eq(storyStates.bookId, bookId)
+      ))
+      .orderBy(desc(storyStates.updatedAt));
+
+    // If we have more states than the limit, delete the oldest ones
+    if (allStates.length > MAX_STORY_STATES_PER_PAGE) {
+      const statesToDelete = allStates.slice(MAX_STORY_STATES_PER_PAGE); // Get the oldest states to delete
+      
+      for (const stateToDelete of statesToDelete) {
+        // Cache the state before deletion for safety net
+        const fullState = await getStoryState(userId, stateToDelete.pageId);
+        if (fullState) {
+          deletedStateCache.set(userId, stateToDelete.pageId, fullState);
+          console.log(`[cleanupOldStoryStates] 💾 Cached state before deletion for user ${userId}, page ${stateToDelete.pageId}`);
+        }
+        
+        await dbWrite
+          .delete(storyStates)
+          .where(and(
+            eq(storyStates.userId, userId),
+            eq(storyStates.bookId, bookId),
+            eq(storyStates.pageId, stateToDelete.pageId)
+          ));
+      }
+      
+      console.log(`[cleanupOldStoryStates] 🗑️ Cleaned up ${statesToDelete.length} old states for user ${userId}, book ${bookId}`);
+    }
+  } catch (error) {
+    console.error(`Failed to cleanup old story states for user ${userId}, book ${bookId}:`, getErrorMessage(error));
+    // Don't throw error here - cleanup failure shouldn't break the main operation
   }
 }
 
@@ -400,7 +544,7 @@ export async function insertStoryState(userId: string, pageId: string, state: St
  * - Handles cases where book doesn't exist
  * - Includes main character information
  * 
- * Example:
+ * @example
  * ```typescript
  * const bookInfo = await getBookInfo("book456");
  * if (bookInfo) {
@@ -418,8 +562,8 @@ export async function getBookInfo(bookId: string) {
     
     return result[0] || null;
   } catch (error) {
-    console.error(`Failed to get book info for ${bookId}:`, error);
-    throw new Error(`Unable to retrieve book information: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to get book info for ${bookId}:`, getErrorMessage(error));
+    throw new Error(`Unable to retrieve book information: ${getErrorMessage(error)}`);
   }
 }
 
@@ -463,7 +607,7 @@ export async function deactivateSession(userId: string, bookId: string) {
       console.log(`Session deactivated for user ${userId}, book ${bookId}`);
     }
   } catch (error) {
-    console.error(`Failed to deactivate session for user ${userId}, book ${bookId}:`, error);
-    throw new Error(`Unable to deactivate session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to deactivate session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
+    throw new Error(`Unable to deactivate session: ${getErrorMessage(error)}`);
   }
 }

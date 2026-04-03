@@ -68,7 +68,7 @@ function createRedisClient(): Redis | null {
       token,
     });
   } catch (error) {
-    console.error('[rate-limit] Failed to initialize Redis client:', error);
+    console.error('[rate-limit] Failed to initialize Redis client:', getErrorMessage(error));
     return null;
   }
 }
@@ -166,7 +166,7 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
     } catch (error) {
       // On error, allow request to proceed (fail open for availability)
       // Log error for monitoring but don't block legitimate users
-      console.error('[rate-limit] Error checking rate limit:', error);
+      console.error('[rate-limit] Error checking rate limit:', getErrorMessage(error));
       next();
     }
   };

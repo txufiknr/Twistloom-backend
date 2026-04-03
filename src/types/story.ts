@@ -534,13 +534,15 @@ export type StoryPage = {
   characterUpdates?: CharacterUpdates;
   /** Updates to places (new and existing) */
   placeUpdates?: PlaceUpdates;
-  /** Action chosen by user */
-  selectedAction?: Action;
+  // /** Action chosen by user */
+  // selectedAction?: Action;
 };
 
 // export type PersistedStoryPage = StoryPage & { id: string, bookId: string, parentId?: string | null };
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'parentId' | 'page'>;
-export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
+// export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
+export type UserStoryPage = PersistedStoryPage & { selectedAction?: Action };
+export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
 
 export type Action = {
   /** Action text */
@@ -672,6 +674,16 @@ export type StoryState = {
   contextHistory: string;
 };
 
+export type UserPageProgress = {
+  id: string;
+  userId: string;
+  bookId: string;
+  pageId: string;
+  actionId: string;
+  nextPageId?: string;
+  createdAt: number;
+}
+
 /**
  * Complete story progress information for a user
  * 
@@ -683,16 +695,16 @@ export type StoryState = {
  */
 export type StoryProgress = {
   /** Current story page with all content and actions */
-  page: PersistedStoryPage | null;
+  page?: UserStoryPage | null;
   
   /** Current story state with psychological profile and progression */
-  state: StoryState | null;
+  state?: StoryState | null;
   
   /** Active user session linking user to current book and page */
-  session: { bookId: string; pageId: string } | null;
+  session?: { bookId: string; pageId: string } | null;
   
   /** Main character profile with name, age, and gender */
-  mc: StoryMC | null;
+  mc?: StoryMC | null;
 };
 
 /**
@@ -705,10 +717,10 @@ export type StoryProgress = {
  */
 export type StoryProgressWithBranch = StoryProgress & {
   /** Branch path from root to current page */
-  branchPath: import("../utils/branch-traversal.js").BranchPath | null;
+  branchPath: BranchPath | null;
   
   /** Branch statistics including depth and branching factor */
-  branchStats: Awaited<ReturnType<typeof import("../utils/branch-traversal.js").getBranchStats>> | null;
+  branchStats: Awaited<BranchStats> | null;
   
   /** Sibling pages for navigation context */
   siblings: PersistedStoryPage[];
@@ -724,7 +736,7 @@ export type PreviousPageResult = {
   previousPage: PersistedStoryPage | null;
   
   /** Branch path from root to previous page */
-  branchPath: import("../utils/branch-traversal.js").BranchPath | null;
+  branchPath: BranchPath | null;
   
   /** Whether user can navigate back further */
   canGoBackFurther: boolean;
@@ -743,7 +755,7 @@ export type BranchValidationResult = {
   issues: string[];
   
   /** Branch path if validation succeeded */
-  path: import("../utils/branch-traversal.js").BranchPath | null;
+  path: BranchPath | null;
 };
 
 /**
@@ -846,8 +858,14 @@ export type StateDelta = {
   /** Context history addition */
   contextHistoryAddition?: string;
   
+  /** Full context history replacement (when context is completely different) */
+  fullContextHistory?: string;
+  
   /** Actions added to history */
   addedActions?: Action[];
+  
+  /** Full actions history replacement (when actions are completely different) */
+  fullActionsHistory?: Action[];
 };
 
 /**
@@ -890,19 +908,109 @@ export type StateSnapshot = {
 export type StateReconstructionResult = {
   /** Reconstructed story state */
   state: StoryState;
-  
+
   /** Number of snapshots used */
   snapshotsUsed: number;
-  
+
   /** Number of deltas applied */
   deltasApplied: number;
-  
+
   /** Reconstruction method used */
   method: 'direct' | 'snapshot_plus_deltas' | 'fallback';
-  
+
   /** Performance metrics */
   reconstructionTimeMs: number;
-  
+
   /** Source page ID of base snapshot */
   baseSnapshotPageId?: string;
 };
+
+// ============================================================================
+//  BRANCH TRAVERSAL TYPES
+// ============================================================================
+
+/**
+ * Branch path with full timeline information
+ */
+export type BranchPath = {
+  /** Ordered array of pages from root to current */
+  pages: PersistedStoryPage[];
+  /** Root page ID (first page in the branch) */
+  rootId: string;
+  /** Current page ID (last page in the branch) */
+  currentId: string;
+  /** Total depth/length of the branch */
+  depth: number;
+  /** Timestamp when path was cached */
+  cachedAt?: number;
+};
+
+/**
+ * Branch statistics for analytics and navigation
+ * 
+ * @interface BranchStats
+ */
+export type BranchStats = {
+  /** Depth of the branch from root to current page */
+  depth: number;
+  /** Total number of branches across all levels */
+  totalBranches: number;
+  /** Average branching factor (branches per level) */
+  avgBranchingFactor: number;
+};
+
+/**
+ * Cache entry for branch paths
+ */
+export type CacheEntry = {
+  path: BranchPath;
+  expiresAt: number;
+};
+
+/**
+ * Cache entry for reconstructed states
+ */
+export type StateCacheEntry = {
+  state: StoryState;
+  result: StateReconstructionResult;
+  expiresAt: number;
+};
+
+/**
+ * Traversal options for performance tuning
+ */
+export type TraversalOptions = {
+  /** Maximum depth to traverse (default: MAX_TRAVERSAL_DEPTH) */
+  maxDepth?: number;
+  /** Whether to use cache (default: true) */
+  useCache?: boolean;
+  /** Whether to validate path integrity (default: true) */
+  validatePath?: boolean;
+};
+
+/**
+ * State reconstruction dependencies
+ */
+export type StateReconstructionDeps = {
+  /** Get page by ID */
+  getPageById: (pageId: string) => Promise<DBPage | null>;
+  /** Get state snapshot by page ID */
+  getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
+  /** Get state delta by page ID */
+  getDelta: (pageId: string) => Promise<StateDelta | null>;
+  /** Get story state by page ID (fallback) */
+  getStoryState?: (pageId: string) => Promise<StoryState | null>;
+};
+
+/**
+ * Type definitions for snapshot and delta operations
+ * 
+ * Active types are defined above in the main type section.
+ * The older commented definitions have been removed to eliminate confusion.
+ */
+
+export interface SnapshotCreationDecision {
+  shouldCreate: boolean;
+  reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request';
+  priority: number;
+}

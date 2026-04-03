@@ -5,21 +5,18 @@
  * for improved navigation, state reconstruction, and performance.
  */
 
-import { dbRead, dbWrite } from "../db/client.js";
-import { pages, storyStates } from "../db/schema.js";
+import { dbWrite } from "../db/client.js";
+import { storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
-import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, StoryStateCleanupResult } from "../types/story.js";
-import { getStoryProgress } from "./book.js";
-import { 
-  getBranchPath, 
-  getSiblingPages, 
-  getBranchStats, 
-  reconstructStoryState,
-  preWarmBranchCache,
-  type BranchPath,
-  type TraversalOptions,
-  StateReconstructionDeps
-} from "../utils/branch-traversal.js";
+import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, StoryStateCleanupResult, TraversalOptions, StateReconstructionDeps, BranchPath } from "../types/story.js";
+import { getPageFromDB, getStoryProgress } from "./book.js";
+import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
+import { getActiveSession, setActiveSession, getStoryPageById } from "./book.js";
+import { getUserBooks, getBookPages, getStoryStateFromDB, mapStoryStateFromDb, getStoryState } from "./story.js";
+import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
+import { getStateSnapshot } from "./snapshots.js";
+import { getStateDelta } from "./deltas.js";
+import { getErrorMessage } from "../utils/error.js";
 
 // ============================================================================
 // ENHANCED STORY FUNCTIONS WITH BRANCH TRAVERSAL
@@ -55,24 +52,17 @@ export async function getStoryStateWithBranch(
     
     // Create dependencies for reconstruction
     const reconstructionDeps: StateReconstructionDeps = {
-      getPageById: async (id: string) => {
-        const dbPage = await dbRead
-          .select()
-          .from(pages)
-          .where(eq(pages.id, id))
-          .limit(1);
-        return dbPage[0] || null;
-      },
-      getSnapshot: async (id: string) => null, // TODO: Implement snapshot service
-      getDelta: async (id: string) => null, // TODO: Implement delta service
+      getPageById: async (id: string) => await getPageFromDB(id),
+      getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+      getDelta: async (id: string) => await getStateDelta(userId, id),
       getStoryState: async (id: string) => await getStoryState(userId, id)
     };
     
-    const reconstructionResult = await reconstructStoryState(pageId, reconstructionDeps, options);
+    const reconstructionResult = await reconstructStoryState(pageId, userId, reconstructionDeps, options);
     const reconstructedState = reconstructionResult.state;
     
     // Get branch path for page number
-    const branchPathData = await getBranchPath(pageId, options);
+    const branchPathData = await getBranchPath(pageId, userId, options);
     
     // Create minimal valid state
     const minimalState: StoryState = {
@@ -109,7 +99,7 @@ export async function getStoryStateWithBranch(
 
     return { ...minimalState, ...reconstructedState };
   } catch (error) {
-    console.error(`[getStoryStateWithBranch] ❌ Failed to get/reconstruct state for page ${pageId}:`, error);
+    console.error(`[getStoryStateWithBranch] ❌ Failed to get/reconstruct state for page ${pageId}:`, getErrorMessage(error));
     return null;
   }
 }
@@ -146,8 +136,8 @@ export async function getStoryProgressWithBranch(
 
     // Get branch information
     const [branchPath, branchStats, siblings] = await Promise.all([
-      getBranchPath(standardProgress.page.id, options),
-      getBranchStats(standardProgress.page.id).catch(() => null),
+      getBranchPath(standardProgress.page.id, userId, options),
+      getBranchStats(standardProgress.page.id, userId).catch(() => null),
       getSiblingPages(standardProgress.page.id)
     ]);
 
@@ -158,7 +148,7 @@ export async function getStoryProgressWithBranch(
       siblings
     };
   } catch (error) {
-    console.error(`[getStoryProgressWithBranch] ❌ Failed to get enhanced progress for user ${userId}:`, error);
+    console.error(`[getStoryProgressWithBranch] ❌ Failed to get enhanced progress for user ${userId}:`, getErrorMessage(error));
     throw error;
   }
 }
@@ -201,7 +191,7 @@ export async function goToPreviousPageWithBranch(
     }
 
     // Get previous page using branch traversal for validation
-    const previousPage = await getStoryPageById(progress.session.bookId, progress.page.parentId);
+    const previousPage = await getStoryPageById(userId, progress.session.bookId, progress.page.parentId);
     
     if (!previousPage) {
       console.error(`[goToPreviousPageWithBranch] ❌ Previous page ${progress.page.parentId} not found`);
@@ -216,7 +206,7 @@ export async function goToPreviousPageWithBranch(
     await setActiveSession(userId, progress.session.bookId, previousPage.id);
     
     // Get updated branch path from previous page
-    const updatedBranchPath = await getBranchPath(previousPage.id, options);
+    const updatedBranchPath = await getBranchPath(previousPage.id, userId, options);
 
     console.log(`[goToPreviousPageWithBranch] ↩️ User ${userId} navigated to page ${previousPage.id}`);
 
@@ -226,7 +216,7 @@ export async function goToPreviousPageWithBranch(
       canGoBackFurther: !!previousPage.parentId
     };
   } catch (error) {
-    console.error(`[goToPreviousPageWithBranch] ❌ Failed to navigate back for user ${userId}:`, error);
+    console.error(`[goToPreviousPageWithBranch] ❌ Failed to navigate back for user ${userId}:`, getErrorMessage(error));
     throw error;
   }
 }
@@ -237,12 +227,12 @@ export async function goToPreviousPageWithBranch(
  * @param pageId - Page ID to validate
  * @returns Promise resolving to validation result
  */
-export async function validateBranchIntegrity(pageId: string): Promise<BranchValidationResult> {
+export async function validateBranchIntegrity(pageId: string, userId: string): Promise<BranchValidationResult> {
   const issues: string[] = [];
   let path: BranchPath | null = null;
 
   try {
-    path = await getBranchPath(pageId, { validatePath: true });
+    path = await getBranchPath(pageId, userId, { validatePath: true });
     
     // Additional validation checks
     if (path.depth > 50) {
@@ -266,7 +256,7 @@ export async function validateBranchIntegrity(pageId: string): Promise<BranchVal
       path
     };
   } catch (error) {
-    issues.push(`Failed to traverse branch: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    issues.push(`Failed to traverse branch: ${getErrorMessage(error)}`);
     return {
       isValid: false,
       issues,
@@ -281,10 +271,10 @@ export async function validateBranchIntegrity(pageId: string): Promise<BranchVal
  * @param pageId - Current page ID
  * @returns Promise resolving to navigation options
  */
-export async function getBranchNavigationOptions(pageId: string): Promise<BranchNavigationOptions> {
+export async function getBranchNavigationOptions(pageId: string, userId: string): Promise<BranchNavigationOptions> {
   try {
     const [branchPath, siblings] = await Promise.all([
-      getBranchPath(pageId),
+      getBranchPath(pageId, userId),
       getSiblingPages(pageId)
     ]);
 
@@ -299,7 +289,7 @@ export async function getBranchNavigationOptions(pageId: string): Promise<Branch
       totalBranches: siblings.length
     };
   } catch (error) {
-    console.error(`[getBranchNavigationOptions] ❌ Failed to get navigation options for page ${pageId}:`, error);
+    console.error(`[getBranchNavigationOptions] ❌ Failed to get navigation options for page ${pageId}:`, getErrorMessage(error));
     return {
       canGoBack: false,
       canGoForward: false,
@@ -323,26 +313,23 @@ export async function getBranchNavigationOptions(pageId: string): Promise<Branch
 export async function preWarmBranchCacheForUsers(userIds: string[]): Promise<void> {
   console.log(`[preWarmBranchCacheForUsers] 🔥 Warming cache for ${userIds.length} users`);
   
-  const pageIds: string[] = [];
+  let warmedUsers = 0;
   
-  // Get current page for each user
+  // Pre-warm cache for each user individually
   for (const userId of userIds) {
     try {
       const session = await getActiveSession(userId);
       if (session?.pageId) {
-        pageIds.push(session.pageId);
+        // Pre-warm cache for this specific user
+        await preWarmBranchCache([session.pageId], userId);
+        warmedUsers++;
       }
     } catch (error) {
-      console.warn(`[preWarmBranchCacheForUsers] ⚠️ Failed to get session for user ${userId}:`, error);
+      console.warn(`[preWarmBranchCacheForUsers] ⚠️ Failed to pre-warm cache for user ${userId}:`, getErrorMessage(error));
     }
   }
-
-  // Pre-warm cache with all page IDs
-  if (pageIds.length > 0) {
-    await preWarmBranchCache(pageIds);
-  }
   
-  console.log(`[preWarmBranchCacheForUsers] ✅ Cache warmed for ${pageIds.length} pages`);
+  console.log(`[preWarmBranchCacheForUsers] ✅ Cache warmed for ${warmedUsers} users`);
 }
 
 /**
@@ -387,7 +374,7 @@ export async function cleanupOldStoryStates(
             ));
           deletedCount++;
         } catch (error) {
-          console.warn(`[cleanupOldStoryStates] ⚠️ Failed to delete state for page ${page.id}:`, error);
+          console.warn(`[cleanupOldStoryStates] ⚠️ Failed to delete state for page ${page.id}:`, getErrorMessage(error));
         }
       }
       
@@ -398,32 +385,7 @@ export async function cleanupOldStoryStates(
     
     return { deletedCount, keptCount };
   } catch (error) {
-    console.error(`[cleanupOldStoryStates] ❌ Failed to cleanup old states for user ${userId}:`, error);
+    console.error(`[cleanupOldStoryStates] ❌ Failed to cleanup old states for user ${userId}:`, getErrorMessage(error));
     return { deletedCount: 0, keptCount: 0 };
   }
 }
-
-// ============================================================================
-// UTILITY FUNCTIONS (re-exported for convenience)
-// ============================================================================
-
-// Re-export core branch traversal functions
-export { 
-  getBranchPath, 
-  getSiblingPages, 
-  getBranchStats, 
-  reconstructStoryState,
-  getBranchPathsBatch,
-  preWarmBranchCache,
-  clearBranchCache,
-  MAX_TRAVERSAL_DEPTH,
-  BRANCH_CACHE_TTL,
-  type BranchPath,
-  type TraversalOptions,
-  type StateReconstructionDeps
-} from "../utils/branch-traversal.js";
-
-// Import existing functions that we need
-import { getActiveSession, setActiveSession, getStoryPageById } from "./book.js";
-import { getUserBooks, getBookPages, getStoryStateFromDB, mapStoryStateFromDb, getStoryState } from "./story.js";import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
-

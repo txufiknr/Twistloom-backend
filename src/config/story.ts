@@ -96,6 +96,14 @@ export const MAX_CHARACTER_PLACES = 5;
  */
 export const MAX_PAGE_HISTORY = 5;
 
+/**
+ * Maximum number of story states to keep per user/book/page combination
+ * 
+ * This maintains a sliding window of story states to prevent
+ * database bloat while preserving recent narrative progression.
+ */
+export const MAX_STORY_STATES_PER_PAGE = 10;
+
 // ============================================================================
 // PLACE MEMORY CONFIGURATION
 // ============================================================================

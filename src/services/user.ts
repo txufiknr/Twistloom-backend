@@ -64,6 +64,6 @@ export async function updateUserLastActivity(userId: string): Promise<void> {
     }
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
-    console.error(`Failed to update last activity for user ${userId}:`, error);
+    console.error(`Failed to update last activity for user ${userId}:`, getErrorMessage(error));
   }
 }

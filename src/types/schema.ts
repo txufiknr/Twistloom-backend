@@ -1,4 +1,4 @@
-import type { users, pages, characters, places, storyStates, books, userSessions, userLikes, userFavorites, userComments } from "../db/schema.js";
+import type { users, pages, characters, places, storyStates, books, userSessions, userLikes, userFavorites, userComments, userPageProgress } from "../db/schema.js";
 
 /** Complete user data as stored in database */
 export type DBUser = typeof users.$inferSelect;
@@ -34,6 +34,10 @@ export type DBNewBook = typeof books.$inferInsert;
 /** Complete user session data as stored in database */
 export type DBUserSession = typeof userSessions.$inferSelect;
 export type DBNewUserSession = typeof userSessions.$inferInsert;
+
+/** Complete user page progress data as stored in database */
+export type DBUserPageProgress = typeof userPageProgress.$inferSelect;
+export type DBNewUserPageProgress = typeof userPageProgress.$inferInsert;
 
 /** Complete user like data as stored in database */
 export type DBUserLike = typeof userLikes.$inferSelect;

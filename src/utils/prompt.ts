@@ -2,10 +2,13 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMM
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { AIChatConfig, AIChatConfigCaps } from "../types/ai-chat.js";
 import { CharacterMemory, characterStatuses, PotentialTwistType, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, ActionedStoryPage, ActionHintType, ActionType, AIActionConfig } from "../types/story.js";
+import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, ActionHintType, ActionType, AIActionConfig, ActionedStoryPage } from "../types/story.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
-import { getStoryPageById, getStoryProgress, insertStoryState, setActiveSession } from "../services/book.js";
+import { getPageFromDB, getStoryPageById, getStoryProgress, insertStoryState, setActiveSession } from "../services/book.js";
+import { getStoryState } from "../services/story.js";
+import { dbWrite } from "../db/client.js";
+import { userPageProgress } from "../db/schema.js";
 import { aiPrompt } from "./ai-chat.js";
 import { getCurrentEndingArchetype, updateState } from "./story.js";
 import { formatPlacesForPrompt } from "./places.js";
@@ -18,6 +21,11 @@ import { genders } from "../types/user.js";
 import { PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
 import { DBBook } from "../types/schema.js";
 import { createInitialHiddenState, createInitialPsychologicalProfile } from "./books.js";
+import { reconstructStoryState } from "./branch-traversal.js";
+import type { StateReconstructionDeps } from "../types/story.js";
+import { getErrorMessage } from "./error.js";
+import { getStateSnapshot } from "../services/snapshots.js";
+import { getStateDelta } from "../services/deltas.js";
 
 // ============================================================================
 // SYSTEM PROMPTS
@@ -1241,7 +1249,7 @@ export async function initializeBook(
 
     // 8. Update state with pageId and persist to database
     initialState.pageId = firstPage.id;
-    await insertStoryState(userId, firstPage.id, initialState);
+    await insertStoryState(userId, book.id, firstPage.id, initialState);
 
     // 9. Set user's active session to the new book and page
     await setActiveSession(userId, book.id, firstPage.id);
@@ -1254,8 +1262,8 @@ export async function initializeBook(
     };
 
   } catch (error) {
-    console.error(`Failed to initialize book for user ${userId} with theme "${theme}":`, error);
-    throw new Error(`Book initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error(`Failed to initialize book for user ${userId} with theme "${theme}":`, getErrorMessage(error));
+    throw new Error(`Book initialization failed: ${getErrorMessage(error)}`);
   }
 }
 
@@ -1321,21 +1329,40 @@ export async function buildNextPage(
 
   const generatedPage = response.result; // Generated content without database ID yet
 
-  // 5. Pre-generate candidate pages for each action
+  // 5. Pre-generate candidate pages for each action in the new page
   if (isUserAction) {
     await ensureCandidatesForPage(userId, generatedPage);
   }
-  
+
   // 6. Persist generated page to database with parent-child relationship
   const persistedPage = await insertStoryPage(userId, state.page, generatedPage, actionedPage.bookId, actionedPage.id);
-  
-  // 7. Persist story state for the generated page (page-based state management)
-  await insertStoryState(userId, persistedPage.id, state);
 
-  // 8. Update user session to point to the new page
-  await setActiveSession(userId, persistedPage.bookId, persistedPage.id);
+  // 7. Insert user page progress tracking
+  await dbWrite
+    .insert(userPageProgress)
+    .values({
+      userId,
+      bookId: actionedPage.bookId,
+      pageId: actionedPage.id,
+      action: actionedPage.selectedAction,
+      nextPageId: persistedPage.id
+    })
+    .onConflictDoUpdate({
+      target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.pageId],
+      set: {
+        nextPageId: persistedPage.id
+      }
+    });
   
-  // 9. Return the persisted story page with all database metadata
+  // 8. Persist story state for the generated page (page-based state management)
+  const bookId = persistedPage.bookId;
+  const pageId = persistedPage.id;
+  await insertStoryState(userId, bookId, pageId, state);
+
+  // 9. Update user session to point to the new page
+  await setActiveSession(userId, bookId, pageId);
+  
+  // 10. Return the persisted story page with all database metadata
   return persistedPage;
 }
 
@@ -1358,7 +1385,7 @@ export async function buildNextPage(
  * @param userId - The user's unique identifier
  * @param action - The action chosen by the user from current page options
  * @param isUserAction - Whether this action is chosen by user or from a pre-generated candidate (default: true)
- * @returns Promise resolving to the generated story page with database ID and metadata
+ * @returns Promise resolving to the next generated story page with database ID and metadata
  * 
  * @example
  * ```typescript
@@ -1373,53 +1400,68 @@ export async function buildNextPage(
  */
 export async function chooseAction(userId: string, action: Action, isUserAction: boolean = true): Promise<PersistedStoryPage> {
   // 1. Get current story progress (session, page, state, character) in parallel
-  const { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
+  let { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
 
   // 2. Validate all required components exist for story progression
   if (!activeSession) throw new Error(`No active session found for user ${userId}`);
   if (!currentMc) throw new Error(`No active book found for user ${userId}`);
   if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
 
-  // TODO: old states are purged, so this is not mandatory
-  if (!currentState) throw new Error(`No state found for user ${userId} (bookId: ${activeSession.bookId})`);
+  // 3. Old story states are purged, so we should reconstruct
+  if (!currentState) {
+    console.log(`[chooseAction] 🔄 currentState is null, reconstructing from branch traversal for page ${currentPage.id}`);
+    
+    // Create dependencies for reconstruction
+    const reconstructionDeps: StateReconstructionDeps = {
+      getPageById: async (id: string) => await getPageFromDB(id),
+      getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+      getDelta: async (id: string) => await getStateDelta(userId, id),
+      getStoryState: async (id: string) => await getStoryState(userId, id),
+    };
+    
+    // Reconstruct state using branch traversal
+    const reconstructionResult = await reconstructStoryState(currentPage.id, userId, reconstructionDeps);
+    currentState = reconstructionResult.state;
+    
+    console.log(`[chooseAction] ✅ State reconstructed using ${reconstructionResult.method} (${reconstructionResult.reconstructionTimeMs}ms)`);
+  }
 
-  // If this is previous page and choice has been made, can't make another choice
+  // 4. If this is previous page and choice has been made, can't make another choice
   if (currentPage.selectedAction && 
       (currentPage.selectedAction.text !== action.text || 
       currentPage.selectedAction.type !== action.type)) {
     throw new Error(`Choice made, can't make another choice`);
   }
   
-  // 3. Check if next page is pre-generated (candidate) and reuse if available
+  // 5. Check if next page is pre-generated (candidate) and reuse if available
   const nextPageId = action.pageId;
-  let persistedPage: PersistedStoryPage | null = null;
+  let userPage: PersistedStoryPage | null = null;
   if (nextPageId) {
-    persistedPage = await getStoryPageById(activeSession.bookId, nextPageId);
+    userPage = await getStoryPageById(userId, activeSession.bookId, nextPageId);
   }
 
-  // 4. If no pre-generated page exists, generate new page with state progression
-  if (persistedPage) {
+  // 6. If no pre-generated page exists, generate new page with state progression
+  if (userPage) {
     // User action: ensure candidates for next page | Candidate: wait until user visit the page and ensure next candidates
     if (isUserAction) {
-      await ensureCandidatesForPage(userId, persistedPage);
+      await ensureCandidatesForPage(userId, userPage);
     }
   } else {
-    // 4a. Create actioned page with selected action for state processing
+    // 6a. Create actioned page with selected action for state processing
     const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
     
-    // 4b. Update story state based on chosen action (increments page, generates context summary)
-    // TODO: currentState reconstruction if null using `reconstructStoryState`
+    // 6b. Update story state based on chosen action (increments page, generates context summary)
     const updatedState = await updateState(currentState, actionedPage);
     
-    // 4c. Generate next page using AI with dynamic configuration
-    persistedPage = await buildNextPage(userId, currentMc, updatedState, actionedPage, isUserAction);
+    // 6c. Generate next page using AI with dynamic configuration
+    userPage = await buildNextPage(userId, currentMc, updatedState, actionedPage, isUserAction);
   }
 
-  // 5. Update user session to point to the new page
-  await setActiveSession(userId, activeSession.bookId, persistedPage.id);
+  // 7. Update user session to point to the new page
+  await setActiveSession(userId, activeSession.bookId, userPage.id);
   
-  // 6. Return the generated page with all database metadata
-  return persistedPage;
+  // 8. Return the generated page with all database metadata
+  return userPage;
 }
 
 /**
@@ -1458,7 +1500,7 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
   }
   
   // 4. Get the previous page directly by ID
-  const previousPage = await getStoryPageById(activeSession.bookId, previousPageId);
+  const previousPage = await getStoryPageById(userId, activeSession.bookId, previousPageId);
   if (!previousPage) {
     throw new Error('Previous page not found in database');
   }

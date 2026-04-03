@@ -16,10 +16,20 @@ import { dbRead } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import type { DBPage } from "../types/schema.js";
-import type { PersistedStoryPage, StoryState, StateDelta, StateSnapshot, StateReconstructionResult, PsychologicalFlags, PsychologicalProfile, HiddenState, MemoryIntegrity, Difficulty, Ending, Action } from "../types/story.js";
-import type { CharacterMemory } from "../types/character.js";
-import type { PlaceMemory } from "../types/places.js";
-import { LRUCache } from "lru-cache";
+import type { PersistedStoryPage, StoryState, StateSnapshot, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, CacheEntry, StateCacheEntry } from "../types/story.js";
+import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
+
+// Re-export centralized cache constants for backward compatibility
+export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
+
+// Re-export centralized functions for use within this module
+import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots.js';
+import { createStateDelta, applyStateDelta } from '../services/deltas.js';
+import { getErrorMessage } from "./error.js";
+import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
+
+// Re-export for backward compatibility
+export { shouldCreateSnapshot, createStateSnapshot, createStateDelta, applyStateDelta };
 
 // ============================================================================
 // CONFIGURATION
@@ -28,113 +38,20 @@ import { LRUCache } from "lru-cache";
 /** Maximum traversal depth to prevent infinite loops */
 export const MAX_TRAVERSAL_DEPTH = 100;
 
-/** Cache TTL for branch paths (5 minutes) */
-export const BRANCH_CACHE_TTL = 5 * 60 * 1000;
-
-/** Maximum number of paths to cache */
-export const MAX_CACHE_SIZE = 1000;
-
 /** Snapshot creation intervals */
 export const SNAPSHOT_INTERVAL_PAGES = 5; // Create snapshot every 5 pages
 export const MAJOR_EVENT_SNAPSHOT_INTERVAL = 10; // For major events
 
-/** Cache TTL for reconstructed states (2 minutes) */
-export const STATE_CACHE_TTL = 2 * 60 * 1000;
-
-/** Maximum number of reconstructed states to cache */
-export const MAX_STATE_CACHE_SIZE = 500;
-
-// ============================================================================
-// TYPES
-// ============================================================================
-
-/**
- * Branch path with full timeline information
- */
-export type BranchPath = {
-  /** Ordered array of pages from root to current */
-  pages: PersistedStoryPage[];
-  /** Root page ID (first page in the branch) */
-  rootId: string;
-  /** Current page ID (last page in the branch) */
-  currentId: string;
-  /** Total depth/length of the branch */
-  depth: number;
-  /** Timestamp when path was cached */
-  cachedAt?: number;
-};
-
-/**
- * Cache entry for branch paths
- */
-type CacheEntry = {
-  path: BranchPath;
-  expiresAt: number;
-};
-
-/**
- * Cache entry for reconstructed states
- */
-type StateCacheEntry = {
-  state: StoryState;
-  result: StateReconstructionResult;
-  expiresAt: number;
-};
-
-/**
- * Traversal options for performance tuning
- */
-export type TraversalOptions = {
-  /** Maximum depth to traverse (default: MAX_TRAVERSAL_DEPTH) */
-  maxDepth?: number;
-  /** Whether to use cache (default: true) */
-  useCache?: boolean;
-  /** Whether to validate path integrity (default: true) */
-  validatePath?: boolean;
-};
-
-/**
- * State reconstruction dependencies
- */
-export type StateReconstructionDeps = {
-  /** Get page by ID */
-  getPageById: (pageId: string) => Promise<DBPage | null>;
-  /** Get state snapshot by page ID */
-  getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
-  /** Get state delta by page ID */
-  getDelta: (pageId: string) => Promise<StateDelta | null>;
-  /** Get story state by page ID (fallback) */
-  getStoryState?: (pageId: string) => Promise<StoryState | null>;
-};
-
-// ============================================================================
-// LRU CACHE IMPLEMENTATION
-// ============================================================================
-
-/** LRU cache for branch paths with TTL support */
-const branchCache = new LRUCache<string, CacheEntry>({
-  max: MAX_CACHE_SIZE,
-  ttl: BRANCH_CACHE_TTL,
-  allowStale: false,
-  updateAgeOnGet: true
-});
-
-/** LRU cache for reconstructed states with TTL support */
-const stateCache = new LRUCache<string, StateCacheEntry>({
-  max: MAX_STATE_CACHE_SIZE,
-  ttl: STATE_CACHE_TTL,
-  allowStale: false,
-  updateAgeOnGet: true
-});
-
 /**
  * Gets cached branch path if valid
  * 
+ * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to check in cache
  * @returns Cached branch path or null if not found
  */
-function getCachedPath(pageId: string): BranchPath | null {
-  const entry = branchCache.get(pageId);
+function getCachedPath(userId: string, pageId: string): BranchPath | null {
+  const cacheKey = `${userId}:${pageId}`;
+  const entry = branchCache.get(cacheKey);
   if (!entry) return null;
   
   return entry.path;
@@ -143,11 +60,13 @@ function getCachedPath(pageId: string): BranchPath | null {
 /**
  * Sets branch path in cache with TTL
  * 
+ * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to cache
  * @param path - Branch path to cache
  */
-function setCachedPath(pageId: string, path: BranchPath): void {
-  branchCache.set(pageId, {
+function setCachedPath(userId: string, pageId: string, path: BranchPath): void {
+  const cacheKey = `${userId}:${pageId}`;
+  branchCache.set(cacheKey, {
     path,
     expiresAt: Date.now() + BRANCH_CACHE_TTL
   });
@@ -156,11 +75,13 @@ function setCachedPath(pageId: string, path: BranchPath): void {
 /**
  * Gets cached reconstructed state if valid
  * 
+ * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to check in cache
  * @returns Cached state entry or null if not found
  */
-function getCachedState(pageId: string): StateCacheEntry | null {
-  const entry = stateCache.get(pageId);
+function getCachedState(userId: string, pageId: string): StateCacheEntry | null {
+  const cacheKey = `${userId}:${pageId}`;
+  const entry = stateCache.get(cacheKey);
   if (!entry) return null;
   
   return entry;
@@ -169,12 +90,14 @@ function getCachedState(pageId: string): StateCacheEntry | null {
 /**
  * Sets reconstructed state in cache with TTL
  * 
+ * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to cache
  * @param state - Story state to cache
  * @param result - Reconstruction result metadata
  */
-function setCachedState(pageId: string, state: StoryState, result: StateReconstructionResult): void {
-  stateCache.set(pageId, {
+function setCachedState(userId: string, pageId: string, state: StoryState, result: StateReconstructionResult): void {
+  const cacheKey = `${userId}:${pageId}`;
+  stateCache.set(cacheKey, {
     state,
     result,
     expiresAt: Date.now() + STATE_CACHE_TTL
@@ -236,7 +159,7 @@ async function getPageById(pageId: string): Promise<DBPage | null> {
     
     return result[0] || null;
   } catch (error) {
-    console.error(`[getPageById] ❌ Failed to retrieve page ${pageId}:`, error);
+    console.error(`[getPageById] ❌ Failed to retrieve page ${pageId}:`, getErrorMessage(error));
     return null;
   }
 }
@@ -264,6 +187,7 @@ async function getPageById(pageId: string): Promise<DBPage | null> {
  */
 export async function getBranchPath(
   currentPageId: string,
+  userId: string,
   options: TraversalOptions = {}
 ): Promise<BranchPath> {
   const {
@@ -274,7 +198,7 @@ export async function getBranchPath(
 
   // Check cache first if enabled
   if (useCache) {
-    const cachedPath = getCachedPath(currentPageId);
+    const cachedPath = getCachedPath(userId, currentPageId);
     if (cachedPath) {
       console.log(`[getBranchPath] 🎯 Cache hit for page ${currentPageId}`);
       return cachedPath;
@@ -341,7 +265,7 @@ export async function getBranchPath(
 
   // Cache the result if enabled
   if (useCache) {
-    setCachedPath(currentPageId, branchPath);
+    setCachedPath(userId, currentPageId, branchPath);
   }
 
   console.log(`[getBranchPath] ✅ Traversed ${branchPath.depth} pages: ${branchPath.rootId} → ${branchPath.currentId}`);
@@ -426,7 +350,7 @@ export async function getSiblingPages(pageId: string): Promise<PersistedStoryPag
       placeUpdates: sibling.placeUpdates || undefined,
     }));
   } catch (error) {
-    console.error(`[getSiblingPages] ❌ Failed to get siblings for page ${pageId}:`, error);
+    console.error(`[getSiblingPages] ❌ Failed to get siblings for page ${pageId}:`, getErrorMessage(error));
     return [];
   }
 }
@@ -437,12 +361,8 @@ export async function getSiblingPages(pageId: string): Promise<PersistedStoryPag
  * @param pageId - Page ID to analyze
  * @returns Promise resolving to branch statistics
  */
-export async function getBranchStats(pageId: string): Promise<{
-  depth: number;
-  totalBranches: number;
-  avgBranchingFactor: number;
-}> {
-  const path = await getBranchPath(pageId);
+export async function getBranchStats(pageId: string, userId: string): Promise<BranchStats> {
+  const path = await getBranchPath(pageId, userId);
   
   // Count branches at each level
   const branchCounts: number[] = [];
@@ -494,6 +414,7 @@ export async function getBranchStats(pageId: string): Promise<{
  */
 export async function reconstructStoryState(
   currentPageId: string,
+  userId: string,
   deps: StateReconstructionDeps,
   options: TraversalOptions = {}
 ): Promise<StateReconstructionResult> {
@@ -502,7 +423,7 @@ export async function reconstructStoryState(
   try {
     // Check cache first
     if (options.useCache !== false) {
-      const cached = getCachedState(currentPageId);
+      const cached = getCachedState(userId, currentPageId);
       if (cached) {
         console.log(`[reconstructStoryState] 🎯 Cache hit for page ${currentPageId}`);
         return cached.result;
@@ -524,7 +445,7 @@ export async function reconstructStoryState(
         };
         
         if (options.useCache !== false) {
-          setCachedState(currentPageId, directState, result);
+          setCachedState(userId, currentPageId, directState, result);
         }
         
         console.log(`[reconstructStoryState] ✅ Direct state retrieval for ${currentPageId}`);
@@ -533,7 +454,7 @@ export async function reconstructStoryState(
     }
     
     // Strategy 2: Hybrid delta + checkpoint reconstruction
-    const branchPath = await getBranchPath(currentPageId, options);
+    const branchPath = await getBranchPath(currentPageId, userId, options);
     
     // Find nearest snapshot (from bottom/end of path)
     let snapshotIndex = -1;
@@ -588,7 +509,7 @@ export async function reconstructStoryState(
     
     // Cache the result
     if (options.useCache !== false) {
-      setCachedState(currentPageId, baseState, result);
+      setCachedState(userId, currentPageId, baseState, result);
     }
     
     console.log(`[reconstructStoryState] ✅ Reconstruction complete: ${result.method}, ${deltasApplied} deltas, ${result.reconstructionTimeMs}ms`);
@@ -596,7 +517,7 @@ export async function reconstructStoryState(
     return result;
     
   } catch (error) {
-    console.error(`[reconstructStoryState] ❌ Failed to reconstruct state for ${currentPageId}:`, error);
+    console.error(`[reconstructStoryState] ❌ Failed to reconstruct state for ${currentPageId}:`, getErrorMessage(error));
     
     // Ultimate fallback: minimal state
     const fallbackState = createEmptyStoryState(currentPageId, 1);
@@ -621,7 +542,7 @@ function createEmptyStoryState(pageId: string, pageNumber: number): StoryState {
   return {
     pageId,
     page: pageNumber,
-    maxPage: 150,
+    maxPage: DEFAULT_BOOK_MAX_PAGES,
     flags: {
       trust: 'medium',
       fear: 'low',
@@ -651,378 +572,10 @@ function createEmptyStoryState(pageId: string, pageNumber: number): StoryState {
   };
 }
 
-/**
- * Applies a state delta to a base story state
- * 
- * This function incrementally updates the story state by applying
- * all changes defined in the delta. It handles all state fields
- * including characters, places, trauma, psychological profile, etc.
- * 
- * @param state - Base story state to modify
- * @param delta - State delta to apply
- * 
- * @example
- * ```typescript
- * applyStateDelta(baseState, {
- *   pageId: 'page123',
- *   page: 5,
- *   addedTraumaTags: ['heard_voice', 'saw_shadow'],
- *   flagsDelta: { fear: 'high' }
- * });
- * ```
- */
-export function applyStateDelta(state: StoryState, delta: StateDelta): void {
-  // Characters management
-  if (delta.addedCharacters) {
-    state.characters = { ...state.characters, ...delta.addedCharacters };
-  }
-  
-  if (delta.updatedCharacters) {
-    for (const [charId, updates] of Object.entries(delta.updatedCharacters)) {
-      if (state.characters[charId]) {
-        state.characters[charId] = { ...state.characters[charId], ...updates };
-      }
-    }
-  }
-  
-  if (delta.removedCharacters) {
-    for (const charId of delta.removedCharacters) {
-      delete state.characters[charId];
-    }
-  }
-  
-  // Places management
-  if (delta.addedPlaces) {
-    state.places = { ...state.places, ...delta.addedPlaces };
-  }
-  
-  if (delta.updatedPlaces) {
-    for (const [placeId, updates] of Object.entries(delta.updatedPlaces)) {
-      if (state.places[placeId]) {
-        state.places[placeId] = { ...state.places[placeId], ...updates };
-      }
-    }
-  }
-  
-  if (delta.removedPlaces) {
-    for (const placeId of delta.removedPlaces) {
-      delete state.places[placeId];
-    }
-  }
-  
-  // Trauma tags management
-  if (delta.addedTraumaTags) {
-    state.traumaTags = [...state.traumaTags, ...delta.addedTraumaTags];
-  }
-  
-  if (delta.removedTraumaTags) {
-    state.traumaTags = state.traumaTags.filter(tag => !delta.removedTraumaTags!.includes(tag));
-  }
-  
-  // Psychological flags
-  if (delta.flagsDelta) {
-    state.flags = { ...state.flags, ...delta.flagsDelta };
-  }
-  
-  // Psychological profile
-  if (delta.profileDelta) {
-    state.psychologicalProfile = { ...state.psychologicalProfile, ...delta.profileDelta };
-  }
-  
-  // Hidden state
-  if (delta.hiddenStateDelta) {
-    state.hiddenState = { ...state.hiddenState, ...delta.hiddenStateDelta };
-  }
-  
-  // Memory integrity
-  if (delta.memoryIntegrity) {
-    state.memoryIntegrity = delta.memoryIntegrity;
-  }
-  
-  // Difficulty
-  if (delta.difficulty) {
-    state.difficulty = delta.difficulty;
-  }
-  
-  // Ending archetype
-  if (delta.endingArchetype) {
-    state.cachedEndingArchetype = delta.endingArchetype;
-  }
-  
-  // Context history
-  if (delta.contextHistoryAddition) {
-    state.contextHistory = state.contextHistory + '\n' + delta.contextHistoryAddition;
-  }
-  
-  // Actions history
-  if (delta.addedActions) {
-    state.actionsHistory = [...state.actionsHistory, ...delta.addedActions];
-  }
-  
-  // Update page information
-  state.pageId = delta.pageId;
-  state.page = delta.page;
-}
 
 // ============================================================================
 // SNAPSHOT CREATION STRATEGY
 // ============================================================================
-
-/**
- * Determines if a snapshot should be created for the current page
- * 
- * This function implements the snapshot creation strategy based on:
- * - Periodic intervals (every N pages)
- * - Major events (death, betrayal, reveals)
- * - Branch starts
- * - Performance considerations
- * 
- * @param currentPage - Current page data
- * @param previousPage - Previous page data (if available)
- * @param lastSnapshotPage - Page number of last snapshot
- * @param isMajorEvent - Whether this is a major story event
- * @returns Whether to create a snapshot and the reason
- */
-export function shouldCreateSnapshot(
-  currentPage: PersistedStoryPage,
-  previousPage: PersistedStoryPage | null,
-  lastSnapshotPage: number,
-  isMajorEvent: boolean = false
-): { shouldCreate: boolean; reason: 'periodic' | 'major_event' | 'branch_start' | 'none' } {
-  // Check for major event
-  if (isMajorEvent) {
-    return { shouldCreate: true, reason: 'major_event' };
-  }
-  
-  // Check for branch start (no parent page)
-  if (!currentPage.parentId) {
-    return { shouldCreate: true, reason: 'branch_start' };
-  }
-  
-  // Check periodic interval
-  const pagesSinceLastSnapshot = currentPage.page - lastSnapshotPage;
-  if (pagesSinceLastSnapshot >= SNAPSHOT_INTERVAL_PAGES) {
-    return { shouldCreate: true, reason: 'periodic' };
-  }
-  
-  return { shouldCreate: false, reason: 'none' };
-}
-
-/**
- * Creates a state snapshot at the specified page
- * 
- * @param pageId - Page ID to create snapshot for
- * @param state - Complete story state to snapshot
- * @param reason - Reason for snapshot creation
- * @returns Created state snapshot
- */
-export function createStateSnapshot(
-  pageId: string,
-  state: StoryState,
-  reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request'
-): StateSnapshot {
-  return {
-    pageId,
-    page: state.page,
-    state: structuredClone(state), // Deep clone to prevent mutations
-    createdAt: new Date(),
-    version: 1,
-    isMajorCheckpoint: reason === 'major_event' || reason === 'branch_start',
-    reason
-  };
-}
-
-/**
- * Creates a state delta representing changes between two states
- * 
- * This function analyzes two story states and creates a delta
- * containing only the differences, enabling efficient storage
- * and reconstruction.
- * 
- * @param fromState - Previous story state
- * @param toState - New story state
- * @param pageId - Page ID where delta was created
- * @returns State delta representing the changes
- */
-export function createStateDelta(
-  fromState: StoryState,
-  toState: StoryState,
-  pageId: string
-): StateDelta {
-  const delta: StateDelta = {
-    pageId,
-    page: toState.page
-  };
-  
-  // Compare characters
-  const fromCharIds = new Set(Object.keys(fromState.characters));
-  const toCharIds = new Set(Object.keys(toState.characters));
-  
-  // Added characters
-  const addedCharacters: Record<string, CharacterMemory> = {};
-  for (const charId of toCharIds) {
-    if (!fromCharIds.has(charId)) {
-      addedCharacters[charId] = toState.characters[charId];
-    }
-  }
-  if (Object.keys(addedCharacters).length > 0) {
-    delta.addedCharacters = addedCharacters;
-  }
-  
-  // Removed characters
-  const removedCharacters: string[] = [];
-  for (const charId of fromCharIds) {
-    if (!toCharIds.has(charId)) {
-      removedCharacters.push(charId);
-    }
-  }
-  if (removedCharacters.length > 0) {
-    delta.removedCharacters = removedCharacters;
-  }
-  
-  // Updated characters
-  const updatedCharacters: Record<string, Partial<CharacterMemory>> = {};
-  for (const charId of fromCharIds) {
-    if (toCharIds.has(charId)) {
-      const fromChar = fromState.characters[charId];
-      const toChar = toState.characters[charId];
-      
-      // Find differences
-      const updates: Partial<CharacterMemory> = {};
-      for (const key of Object.keys(toChar) as (keyof CharacterMemory)[]) {
-        if (fromChar[key] !== toChar[key]) {
-          (updates as any)[key] = toChar[key];
-        }
-      }
-      
-      if (Object.keys(updates).length > 0) {
-        updatedCharacters[charId] = updates;
-      }
-    }
-  }
-  if (Object.keys(updatedCharacters).length > 0) {
-    delta.updatedCharacters = updatedCharacters;
-  }
-  
-  // Compare places (similar logic to characters)
-  const fromPlaceIds = new Set(Object.keys(fromState.places));
-  const toPlaceIds = new Set(Object.keys(toState.places));
-  
-  const addedPlaces: Record<string, PlaceMemory> = {};
-  for (const placeId of toPlaceIds) {
-    if (!fromPlaceIds.has(placeId)) {
-      addedPlaces[placeId] = toState.places[placeId];
-    }
-  }
-  if (Object.keys(addedPlaces).length > 0) {
-    delta.addedPlaces = addedPlaces;
-  }
-  
-  const removedPlaces: string[] = [];
-  for (const placeId of fromPlaceIds) {
-    if (!toPlaceIds.has(placeId)) {
-      removedPlaces.push(placeId);
-    }
-  }
-  if (removedPlaces.length > 0) {
-    delta.removedPlaces = removedPlaces;
-  }
-  
-  const updatedPlaces: Record<string, Partial<PlaceMemory>> = {};
-  for (const placeId of fromPlaceIds) {
-    if (toPlaceIds.has(placeId)) {
-      const fromPlace = fromState.places[placeId];
-      const toPlace = toState.places[placeId];
-      
-      const updates: Partial<PlaceMemory> = {};
-      for (const key of Object.keys(toPlace) as (keyof PlaceMemory)[]) {
-        if (fromPlace[key] !== toPlace[key]) {
-          (updates as any)[key] = toPlace[key];
-        }
-      }
-      
-      if (Object.keys(updates).length > 0) {
-        updatedPlaces[placeId] = updates;
-      }
-    }
-  }
-  if (Object.keys(updatedPlaces).length > 0) {
-    delta.updatedPlaces = updatedPlaces;
-  }
-  
-  // Compare trauma tags
-  const addedTraumaTags = toState.traumaTags.filter(tag => !fromState.traumaTags.includes(tag));
-  if (addedTraumaTags.length > 0) {
-    delta.addedTraumaTags = addedTraumaTags;
-  }
-  
-  const removedTraumaTags = fromState.traumaTags.filter(tag => !toState.traumaTags.includes(tag));
-  if (removedTraumaTags.length > 0) {
-    delta.removedTraumaTags = removedTraumaTags;
-  }
-  
-  // Compare psychological flags
-  const flagsDelta: Partial<PsychologicalFlags> = {};
-  for (const key of Object.keys(toState.flags) as (keyof PsychologicalFlags)[]) {
-    if (fromState.flags[key] !== toState.flags[key]) {
-      (flagsDelta as any)[key] = toState.flags[key];
-    }
-  }
-  if (Object.keys(flagsDelta).length > 0) {
-    delta.flagsDelta = flagsDelta;
-  }
-  
-  // Compare psychological profile
-  const profileDelta: Partial<PsychologicalProfile> = {};
-  for (const key of Object.keys(toState.psychologicalProfile) as (keyof PsychologicalProfile)[]) {
-    if (fromState.psychologicalProfile[key] !== toState.psychologicalProfile[key]) {
-      (profileDelta as any)[key] = toState.psychologicalProfile[key];
-    }
-  }
-  if (Object.keys(profileDelta).length > 0) {
-    delta.profileDelta = profileDelta;
-  }
-  
-  // Compare hidden state
-  const hiddenStateDelta: Partial<HiddenState> = {};
-  for (const key of Object.keys(toState.hiddenState) as (keyof HiddenState)[]) {
-    if (fromState.hiddenState[key] !== toState.hiddenState[key]) {
-      (hiddenStateDelta as any)[key] = toState.hiddenState[key];
-    }
-  }
-  if (Object.keys(hiddenStateDelta).length > 0) {
-    delta.hiddenStateDelta = hiddenStateDelta;
-  }
-  
-  // Compare simple fields
-  if (fromState.memoryIntegrity !== toState.memoryIntegrity) {
-    delta.memoryIntegrity = toState.memoryIntegrity;
-  }
-  
-  if (fromState.difficulty !== toState.difficulty) {
-    delta.difficulty = toState.difficulty;
-  }
-  
-  if (fromState.cachedEndingArchetype !== toState.cachedEndingArchetype) {
-    delta.endingArchetype = toState.cachedEndingArchetype;
-  }
-  
-  // Compare context history (check for additions)
-  if (toState.contextHistory.length > fromState.contextHistory.length) {
-    const addition = toState.contextHistory.substring(fromState.contextHistory.length);
-    if (addition.trim()) {
-      delta.contextHistoryAddition = addition.trim();
-    }
-  }
-  
-  // Compare actions history
-  const addedActions = toState.actionsHistory.slice(fromState.actionsHistory.length);
-  if (addedActions.length > 0) {
-    delta.addedActions = addedActions;
-  }
-  
-  return delta;
-}
 
 /**
  * Optimizes snapshot storage by cleaning up old snapshots
@@ -1072,9 +625,10 @@ export function optimizeSnapshots(
  */
 export async function getBranchPathsBatch(
   pageIds: string[],
+  userId: string,
   options: TraversalOptions = {}
 ): Promise<BranchPath[]> {
-  console.log(`[getBranchPathsBatch] 📦 Processing ${pageIds.length} branch paths`);
+  console.log(`[getBranchPathsBatch] 📦 Processing ${pageIds.length} branch paths for user ${userId}`);
   
   // Process in parallel batches to avoid overwhelming the database
   const batchSize = 5;
@@ -1083,7 +637,7 @@ export async function getBranchPathsBatch(
   for (let i = 0; i < pageIds.length; i += batchSize) {
     const batch = pageIds.slice(i, i + batchSize);
     const batchResults = await Promise.all(
-      batch.map(pageId => getBranchPath(pageId, options))
+      batch.map(pageId => getBranchPath(pageId, userId, options))
     );
     results.push(...batchResults);
   }
@@ -1096,11 +650,12 @@ export async function getBranchPathsBatch(
  * Pre-warms cache with commonly accessed branch paths
  * 
  * @param pageIds - Array of page IDs to pre-cache
+ * @param userId - User ID for cache key isolation
  */
-export async function preWarmBranchCache(pageIds: string[]): Promise<void> {
-  console.log(`[preWarmBranchCache] 🔥 Pre-warming cache with ${pageIds.length} pages`);
+export async function preWarmBranchCache(pageIds: string[], userId: string): Promise<void> {
+  console.log(`[preWarmBranchCache] 🔥 Pre-warming cache with ${pageIds.length} pages for user ${userId}`);
   
-  await getBranchPathsBatch(pageIds, { useCache: true });
+  await getBranchPathsBatch(pageIds, userId, { useCache: true });
   
-  console.log(`[preWarmBranchCache] ✅ Cache pre-warmed`);
+  console.log(`[preWarmBranchCache] ✅ Cache pre-warmed for user ${userId}`);
 }

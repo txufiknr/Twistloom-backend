@@ -63,7 +63,7 @@ async function ensureUserSessionTrigger(): Promise<void> {
     
     console.log("✅ User session exclusivity trigger created successfully!");
   } catch (error) {
-    console.error("❌ Failed to create user session trigger:", error);
+    console.error("❌ Failed to create user session trigger:", getErrorMessage(error));
     throw error;
   }
 }
@@ -96,7 +96,7 @@ export async function ensureTriggers(): Promise<void> {
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);
   } catch (error) {
-    console.error("❌ Failed to create triggers:", error);
+    console.error("❌ Failed to create triggers:", getErrorMessage(error));
     throw error;
   }
 }

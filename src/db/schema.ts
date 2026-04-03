@@ -1,28 +1,25 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, boolean, UpdateDeleteAction } from "drizzle-orm/pg-core";
-import type { Gender, KnownGender } from "../types/user.js";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
+import type { Gender } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC } from "../types/character.js";
 import type { BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { 
-  StoryPage, 
-  StoryState, 
   PsychologicalProfile, 
-  Archetype, 
-  StabilityLevel, 
-  ManipulationAffinity, 
   Ending,
   PsychologicalFlags,
   HiddenState,
   MemoryIntegrity,
   Difficulty,
   Action,
-  ActionedStoryPage
+  ActionedStoryPage,
+  StateDelta,
+  StoryState,
 } from "../types/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate } from "../types/character.js";
-import type { PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
+import type { CharacterMemory, CharacterUpdates } from "../types/character.js";
+import type { PlaceMemory, PlaceUpdates } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
 
 /** Pre-defined columns */
@@ -229,9 +226,9 @@ export const places = pgTable(
 export const storyStates = pgTable(
   "story_states",
   {
-    id: id(),
     userId: userId(), // Initiator
     pageId: pageId("cascade"), // Delete if page is deleted
+    bookId: bookId("cascade"), // Delete if book is deleted
     page: integer("page").notNull(),
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
@@ -250,6 +247,8 @@ export const storyStates = pgTable(
     updatedAt,
   },
   (t) => [
+    // Composite primary key for unique user+book+page combinations
+    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
     // Index for current page
     index("story_states_page_idx").on(t.page),
     // Index for difficulty filtering
@@ -355,6 +354,154 @@ export const books = pgTable(
     //   t.updatedAt.desc(),
     //   t.id.desc()
     // ),
+  ]
+);
+
+/**
+ * Create user page progress tracking table
+ * @summary Track user's action choices per page for branch reconstruction
+ */
+export const userPageProgress = pgTable(
+  "user_page_progress",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "set null" }),
+    bookId: bookId("set null"),
+    pageId: uuid("page_id").notNull(),
+    action: jsonb("action").$type<Action>().notNull(),
+    nextPageId: uuid("next_page_id"), // For tracking pre-generated pages
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Composite primary key for unique user+book+page combinations
+    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Index for user's progress in a book
+    index("user_page_progress_user_book_idx").on(t.userId, t.bookId),
+    // Index for finding specific page progress
+    index("user_page_progress_page_idx").on(t.pageId),
+    // Index for action tracking
+    // index("user_page_progress_action_gin_idx").using("gin", t.action),
+  ]
+);
+
+/**
+ * Create story state snapshots table
+ * @summary Store complete story state checkpoints for efficient reconstruction
+ * @example
+ * {
+ *   "id": "snapshot123",
+ *   "user_id": "user456",
+ *   "book_id": "book789",
+ *   "page_id": "page123",
+ *   "state": {
+ *     "pageId": "page123",
+ *     "page": 15,
+ *     "maxPage": 150,
+ *     "flags": { "trust": "medium", "fear": "high" },
+ *     "traumaTags": ["betrayal", "loss"],
+ *     "psychologicalProfile": { "archetype": "survivor" },
+ *     "hiddenState": { "memoryIntegrity": "fragmented" },
+ *     "memoryIntegrity": "stable",
+ *     "difficulty": "medium",
+ *     "cachedEndingArchetype": "false_reality",
+ *     "characters": {},
+ *     "places": {},
+ *     "pageHistory": [],
+ *     "actionsHistory": [],
+ *     "contextHistory": "Story context summary..."
+ *   },
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "version": 1,
+ *   "is_major_checkpoint": true,
+ *   "reason": "major_event"
+ * }
+ */
+export const storyStateSnapshots = pgTable(
+  "story_state_snapshots",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "set null" }),
+    pageId: pageId("cascade"), // Delete if page is deleted
+    bookId: bookId("cascade"), // Delete if book is deleted
+    state: jsonb("state").$type<StoryState>().notNull(),
+    createdAt,
+    version: integer("version").default(1).notNull(),
+    isMajorCheckpoint: boolean("is_major_checkpoint").default(false).notNull(),
+    reason: text("reason").$type<'periodic' | 'major_event' | 'branch_start' | 'user_request'>().notNull(),
+    updatedAt,
+  },
+  (t) => [
+    // Composite primary key for unique user+book+page combinations
+    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Index for user's snapshots in a book
+    index("story_state_snapshots_user_book_idx").on(t.userId, t.bookId),
+    // Index for finding specific page snapshots
+    index("story_state_snapshots_page_idx").on(t.pageId),
+    // Index for recent snapshots (for cleanup)
+    index("story_state_snapshots_created_idx").on(t.createdAt.desc()),
+    // Index for major checkpoints prioritization
+    index("story_state_snapshots_major_idx").on(t.isMajorCheckpoint, t.createdAt.desc()),
+    // Index for snapshot reason filtering
+    index("story_state_snapshots_reason_idx").on(t.reason),
+    // Index for efficient page range queries using JSON path
+    index("story_state_snapshots_page_range_idx").on(t.bookId, sql`(state->>'page')::int`),
+  ]
+);
+
+/**
+ * Create story state deltas table
+ * @summary Store state changes between pages for efficient delta reconstruction
+ * @example
+ * {
+ *   "id": "delta123",
+ *   "user_id": "user456",
+ *   "book_id": "book789",
+ *   "page_id": "page456",
+ *   "delta": {
+ *     "pageId": "page456",
+ *     "fromPage": 14,
+ *     "toPage": 15,
+ *     "changes": {
+ *       "flags": {
+ *         "trust": { "from": "high", "to": "medium" },
+ *         "fear": { "from": "low", "to": "high" }
+ *       },
+ *       "traumaTags": {
+ *         "added": ["betrayal"],
+ *         "removed": []
+ *       },
+ *       "psychologicalProfile": {
+ *         "stabilityLevel": { "from": "stable", "to": "fragile" }
+ *       }
+ *     },
+ *     "timestamp": "2023-01-01T00:00:00.000Z"
+ *   },
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const storyStateDeltas = pgTable(
+  "story_state_deltas",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "set null" }),
+    pageId: pageId("cascade"), // Delete if page is deleted
+    bookId: bookId("cascade"), // Delete if book is deleted
+    delta: jsonb("delta").$type<StateDelta>().notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Composite primary key for unique user+book+page combinations
+    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Index for user's deltas in a book
+    index("story_state_deltas_user_book_idx").on(t.userId, t.bookId),
+    // Index for finding specific page deltas
+    index("story_state_deltas_page_idx").on(t.pageId),
+    // Index for recent deltas (for cleanup)
+    index("story_state_deltas_created_idx").on(t.createdAt.desc()),
+    // Index for efficient page range queries using JSON path
+    index("story_state_deltas_page_range_idx").on(t.bookId, sql`(delta->>'page')::int`),
   ]
 );
 

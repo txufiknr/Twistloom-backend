@@ -34,7 +34,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireClientId } from "../middleware/auth.js";
 import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
-import type { NewUser, NewUserLike, NewUserFavorite, NewUserComment } from "../types/schema.js";
+import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, sql, and, desc } from "drizzle-orm";
@@ -199,7 +199,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
     const { name, gender, image } = req.body;
 
     // Prepare user data for upsert (exclude timestamp fields from frontend)
-    const userData: NewUser = {
+    const userData: DBNewUser = {
       userId,
       name: name?.trim() || null,
       gender: normalizeGender(gender),
@@ -589,7 +589,7 @@ router.post("/likes", requireClientId, async (req: Request, res: Response) => {
     }
 
     // Prepare like data for upsert
-    const likeData: NewUserLike = {
+    const likeData: DBNewUserLike = {
       userId,
       targetType,
       targetId,
@@ -829,7 +829,7 @@ router.post("/favorites", requireClientId, async (req: Request, res: Response) =
     }
 
     // Prepare favorite data for upsert
-    const favoriteData: NewUserFavorite = {
+    const favoriteData: DBNewUserFavorite = {
       userId,
       bookId,
     };
@@ -1060,7 +1060,7 @@ router.post("/comments", requireClientId, async (req: Request, res: Response) =>
     }
 
     // Prepare comment data
-    const commentData: NewUserComment = {
+    const commentData: DBNewUserComment = {
       userId,
       bookId,
       parentCommentId: parentCommentId || null,

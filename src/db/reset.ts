@@ -62,7 +62,7 @@ export async function resetDatabase() {
     
     console.log("All tables dropped successfully! ✅");
   } catch (error) {
-    console.error("Failed to drop tables:", error);
+    console.error("Failed to drop tables:", getErrorMessage(error));
     throw error;
   }
 }

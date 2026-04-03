@@ -387,7 +387,7 @@ async function main() {
       process.exit(1);
     }
   } catch (error) {
-    console.error('\n💥 Test execution failed:', error);
+    console.error('\n💥 Test execution failed:', getErrorMessage(error));
     process.exit(1);
   }
 }

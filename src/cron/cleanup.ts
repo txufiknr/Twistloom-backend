@@ -37,7 +37,7 @@ export async function runDailyCleanup(): Promise<void> {
     const durationMs = Date.now() - startedAt;
     console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms - Total processed: ${totalDeleted} rows`);
   } catch (error) {
-    console.error("[cleanup] ❌ Daily cleanup failed:", error);
+    console.error("[cleanup] ❌ Daily cleanup failed:", getErrorMessage(error));
     throw error;
   }
 }
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
     console.log(`[cleanup] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error("[cleanup] ❌ Cleanup job failed:", error);
+    console.error("[cleanup] ❌ Cleanup job failed:", getErrorMessage(error));
     process.exit(1);
   }
 }
@@ -69,7 +69,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[cleanup] Uncaught exception", error);
+  console.error("[cleanup] Uncaught exception", getErrorMessage(error));
   process.exit(1);
 });
 

@@ -64,7 +64,7 @@ export async function cleanupUserCache(
   `).then((result) => {
     console.log('[cache] Cleaned up expired cache entries:', result.rowCount ?? 0);
   }).catch((error) => {
-    console.error('[cache] Error cleaning up expired cache entries:', error);
+    console.error('[cache] Error cleaning up expired cache entries:', getErrorMessage(error));
   });
 }
 
