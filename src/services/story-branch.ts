@@ -9,11 +9,10 @@ import { dbWrite } from "../db/client.js";
 import { storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, StoryStateCleanupResult, TraversalOptions, StateReconstructionDeps, BranchPath } from "../types/story.js";
-import { getPageFromDB, getStoryProgress } from "./book.js";
-import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
-import { getActiveSession, setActiveSession, getStoryPageById } from "./book.js";
-import { getUserBooks, getBookPages, getStoryStateFromDB, mapStoryStateFromDb, getStoryState } from "./story.js";
-import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
+import { getBookFromDB, getBookPages, getPageFromDB, getUserBooks } from "./book.js";
+import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache, createEmptyStoryState } from "../utils/branch-traversal.js";
+import { getStoryPageById } from "./book.js";
+import { getStoryStateFromDB, mapStoryStateFromDb, getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
 import { getStateSnapshot } from "./snapshots.js";
 import { getStateDelta } from "./deltas.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -50,9 +49,15 @@ export async function getStoryStateWithBranch(
     // Second attempt: Reconstruct from branch path using advanced reconstruction
     console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page ${pageId}`);
     
-    // Create dependencies for reconstruction
+    // Get the target page first to determine its branchId
+    const targetPage = await getPageFromDB(pageId);
+    const targetBranchId = targetPage?.branchId || undefined;
+    console.log(`[getStoryStateWithBranch] Target branchId for reconstruction: ${targetBranchId || 'main'}`);
+    
+    // Create dependencies for reconstruction with branch-aware page retrieval
     const reconstructionDeps: StateReconstructionDeps = {
-      getPageById: async (id: string) => await getPageFromDB(id),
+      getPageById: async (id: string) => await getPageFromDB(id, targetBranchId),
+      getBook: async (bookId: string) => await getBookFromDB(bookId),
       getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
       getDelta: async (id: string) => await getStateDelta(userId, id),
       getStoryState: async (id: string) => await getStoryState(userId, id)
@@ -65,37 +70,7 @@ export async function getStoryStateWithBranch(
     const branchPathData = await getBranchPath(pageId, userId, options);
     
     // Create minimal valid state
-    const minimalState: StoryState = {
-      pageId: pageId,
-      page: branchPathData.pages[branchPathData.pages.length - 1].page,
-      maxPage: DEFAULT_BOOK_MAX_PAGES, // Default max pages
-      flags: {
-        trust: 'medium',
-        fear: 'low',
-        guilt: 'low',
-        curiosity: 'medium'
-      },
-      traumaTags: [],
-      psychologicalProfile: {
-        archetype: 'survivor',
-        stability: 'stable',
-        dominantTraits: ['curious', 'cautious'],
-        manipulationAffinity: 'emotional'
-      },
-      hiddenState: {
-        truthLevel: 'ambiguous',
-        threatProximity: 'distant',
-        realityStability: 'stable'
-      },
-      memoryIntegrity: 'stable',
-      difficulty: 'medium',
-      cachedEndingArchetype: undefined,
-      characters: {},
-      places: {},
-      pageHistory: [],
-      actionsHistory: [],
-      contextHistory: ''
-    };
+    const minimalState: StoryState = createEmptyStoryState(pageId, branchPathData.pages[branchPathData.pages.length - 1].page);
 
     return { ...minimalState, ...reconstructedState };
   } catch (error) {

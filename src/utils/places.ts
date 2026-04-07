@@ -1,15 +1,9 @@
 import { 
-  MAX_MOOD_HISTORY, 
-  MAX_EVENT_TAGS, 
-  MAX_KNOWN_CHARACTERS, 
-  MAX_ACTIVE_PLACES, 
-  MAX_RELEVANT_PLACES, 
-  MAX_CHARACTER_PLACES,
+  MAX_PLACE_MOOD_HISTORY, 
+  MAX_PLACE_EVENT_TAGS, 
+  // MAX_KNOWN_CHARACTERS, 
+  // MAX_ACTIVE_PLACES, 
   INITIAL_PLACE_FAMILIARITY,
-  PLACE_RECENT_THRESHOLD,
-  PLACE_MIN_FAMILIARITY,
-  PLACE_RECENT_EVENTS,
-  PLACE_RECENT_CHARACTERS,
   PLACE_FAMILIARITY_WEIGHT,
   FAMILIARITY_RECENCY_DECAY,
   FAMILIARITY_RECENCY_WEIGHT,
@@ -31,7 +25,8 @@ import {
   MEDIUM_DIFFICULTY_WEIGHTS
 } from "../config/story.js";
 import type { PlaceMemory, PlaceUpdate, PlaceMood, PlaceUpdates } from "../types/places.js";
-import type { StoryState, StoryPage } from "../types/story.js";
+import type { StoryState } from "../types/story.js";
+import { filterTruthyAndDedupe } from "./parser.js";
 
 /**
  * Creates a new place with default values
@@ -104,40 +99,22 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMe
   
   // Merge mood history with sliding window
   if (update.moodHistory) {
-    updated.moodHistory = [
-      ...existing.moodHistory,
-      ...update.moodHistory
-    ].slice(-MAX_MOOD_HISTORY);
+    updated.moodHistory = [...existing.moodHistory, ...update.moodHistory].slice(-MAX_PLACE_MOOD_HISTORY);
   }
   
   // Merge event tags with sliding window
   if (update.eventTags) {
-    const mergedTags = [...existing.eventTags];
-    for (const tag of update.eventTags) {
-      if (!mergedTags.includes(tag)) {
-        mergedTags.push(tag);
-      }
-    }
-    updated.eventTags = mergedTags.slice(-MAX_EVENT_TAGS);
+    updated.eventTags = [...existing.eventTags, ...update.eventTags].slice(-MAX_PLACE_EVENT_TAGS);
   }
   
-  // Merge known characters with sliding window
+  // Merge known characters
   if (update.knownCharacters) {
-    const mergedCharacters = [...existing.knownCharacters];
-    for (const character of update.knownCharacters) {
-      if (!mergedCharacters.includes(character)) {
-        mergedCharacters.push(character);
-      }
-    }
-    updated.knownCharacters = mergedCharacters.slice(-MAX_KNOWN_CHARACTERS);
+    updated.knownCharacters = filterTruthyAndDedupe([...existing.knownCharacters, ...update.knownCharacters]);
   }
   
   // Update sensory details if provided
   if (update.sensoryDetails) {
-    updated.sensoryDetails = {
-      ...existing.sensoryDetails,
-      ...update.sensoryDetails
-    };
+    updated.sensoryDetails = {...existing.sensoryDetails, ...update.sensoryDetails};
   }
   
   return updated;
@@ -194,85 +171,37 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
     }
   }
   
-  // Maintain active place limit
-  maintainActivePlaceLimit(state);
+  // // Maintain active place limit
+  // maintainActivePlaceLimit(state);
 }
 
-/**
- * Maintains the active place limit by archiving old places
- * 
- * When the number of active places exceeds the limit, this function
- * archives the least recently used places to prevent memory bloat.
- * 
- * @param state - Current story state
- */
-function maintainActivePlaceLimit(state: StoryState): void {
-  const places = Object.values(state.places);
+// /**
+//  * Maintains the active place limit by archiving old places
+//  * 
+//  * When the number of active places exceeds the limit, this function
+//  * archives the least recently used places to prevent memory bloat.
+//  * 
+//  * @param state - Current story state
+//  */
+// function maintainActivePlaceLimit(state: StoryState): void {
+//   const places = Object.values(state.places);
   
-  if (places.length <= MAX_ACTIVE_PLACES) return;
+//   if (places.length <= MAX_ACTIVE_PLACES) return;
   
-  // Sort by last visit (least recent first) and familiarity
-  const sortedPlaces = places.sort((a, b) => {
-    const scoreA = a.lastVisitedAtPage + (a.familiarity * PLACE_FAMILIARITY_WEIGHT);
-    const scoreB = b.lastVisitedAtPage + (b.familiarity * PLACE_FAMILIARITY_WEIGHT);
-    return scoreA - scoreB;
-  });
+//   // Sort by last visit (least recent first) and familiarity
+//   const sortedPlaces = places.sort((a, b) => {
+//     const scoreA = a.lastVisitedAtPage + (a.familiarity * PLACE_FAMILIARITY_WEIGHT);
+//     const scoreB = b.lastVisitedAtPage + (b.familiarity * PLACE_FAMILIARITY_WEIGHT);
+//     return scoreA - scoreB;
+//   });
   
-  // Remove least relevant places
-  const placesToRemove = sortedPlaces.slice(0, places.length - MAX_ACTIVE_PLACES);
+//   // Remove least relevant places
+//   const placesToRemove = sortedPlaces.slice(0, places.length - MAX_ACTIVE_PLACES);
   
-  for (const place of placesToRemove) {
-    delete state.places[place.name];
-  }
-}
-
-/**
- * Gets relevant places for the current story context
- * 
- * Filters places based on recency, familiarity, and narrative importance
- * to provide focused context to the AI without overwhelming it.
- * 
- * @param state - Current story state
- * @returns Array of relevant places (max 8)
- * 
- * @example
- * ```typescript
- * const relevant = getRelevantPlaces(state);
- * // Returns places visited recently or with high familiarity
- * ```
- */
-export function getRelevantPlaces(state: StoryState): PlaceMemory[] {
-  const currentPage = state.page;
-  const recentThreshold = PLACE_RECENT_THRESHOLD; // Pages back to consider "recent"
-  
-  return Object.values(state.places)
-    .filter(place => 
-      // Place visited recently OR has high familiarity OR has important events
-      place.lastVisitedAtPage >= currentPage - recentThreshold ||
-      place.familiarity >= PLACE_MIN_FAMILIARITY ||
-      place.eventTags.some(tag => 
-        tag.includes("betrayal") || 
-        tag.includes("death") || 
-        tag.includes("discovery") ||
-        tag.includes("trauma")
-      )
-    )
-    .slice(0, MAX_RELEVANT_PLACES) // Limit to configured number of relevant places
-    .map(place => ({
-      // Trim place data for AI consumption
-      // placeId: place.placeId,
-      name: place.name,
-      type: place.type,
-      context: place.context,
-      visitCount: place.visitCount,
-      familiarity: place.familiarity,
-      currentMood: place.currentMood,
-      eventTags: place.eventTags.slice(-PLACE_RECENT_EVENTS), // Only recent events
-      knownCharacters: place.knownCharacters.slice(-PLACE_RECENT_CHARACTERS), // Only recent characters
-      lastVisitedAtPage: place.lastVisitedAtPage,
-      moodHistory: place.moodHistory
-    } satisfies PlaceMemory));
-}
+//   for (const place of placesToRemove) {
+//     delete state.places[place.name];
+//   }
+// }
 
 /**
  * Formats places for prompt injection
@@ -290,13 +219,13 @@ export function getRelevantPlaces(state: StoryState): PlaceMemory[] {
  * ```
  */
 export function formatPlacesForPrompt(state: StoryState): string {
-  const relevant = getRelevantPlaces(state);
+  const allPlaces = Object.values(state.places);
   
-  if (relevant.length === 0) {
+  if (allPlaces.length === 0) {
     return "No specific places established yet.";
   }
   
-  return relevant
+  return allPlaces
     .sort((a, b) => b.lastVisitedAtPage - a.lastVisitedAtPage) // Sort by most recent visit first
     .map(place => {
       const context = `  Context: ${place.context}`;

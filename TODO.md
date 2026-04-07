@@ -1,7 +1,7 @@
 [ ] similar books: jina embedding
 [ ] user preferences schema (interests)
 [ ] user settings schema (font size)
-[ ] summary & verdict at the end of story
+[ ] summary at the end of story (N readers ended up here)
 [ ] imagePrompt & imageImportance -> only provide "imagePrompt" when "imageImportance" >=2
 [ ] limit characters to 6 maximum
 [ ] complete character list in prompt
@@ -10,8 +10,8 @@
 [x] fix duplicate StateSnapshot and StateDelta type definitions
 [x] ensure state-reconstruction.ts error-free & properly typed
 [x] ensure deltas.ts error-free & properly typed
-[ ] dialogue action & verb action
-[ ] story meta (total pages, characters, place hints)
+[x] dialogue action & verb action
+[ ] story meta (characters, setting, place hints)
 [ ] story page (scene, image prompt, image importance)
 
 I'd like to see your designs proposal for:
@@ -28,22 +28,9 @@ paid:
 [ ] custom action prompt (max 50 chars)
 [ ] re-select other action in previous page
 [ ] generate cover image with AI
+[ ] see hint for an action
 
 getUserProgress(userId, bookId, branchId)
-
-db.userPageProgress.create({
-      data: {
-        userId,
-        bookId,
-        pageId, // location in story
-        actionId, // decision
-        nextPageId: nextPage.id // result
-branchId: string // default "main" // 👈 NEW: which reality you're in
-      }
-    }),
-
-so what are UserPageProgress composite PK after branchId addition?
-currently: t.userId, t.bookId, t.pageId
 
 function createBranch({
   userId,
@@ -72,9 +59,3 @@ function createBranch({
     branchId: newBranchId
   })
 }
-
-
-next:
-branch visualization system (timeline tree UI)
-“regret system” (player sees what could’ve happened 😈)
-branch merging system (very advanced, mind-blowing)

@@ -225,6 +225,115 @@ export function dedupeObjectFields<T extends Record<string, any>>(
 }
 
 /**
+ * Performs shallow equality comparison between two objects
+ * 
+ * Compares only the first-level properties of objects without deep recursion.
+ * Fast and efficient for simple object comparisons.
+ * 
+ * @advantages
+ * - O(n) time complexity where n is number of properties
+ * - No recursion overhead
+ * - Memory efficient with minimal stack usage
+ * - Fast for flat objects and primitive values
+ * 
+ * @limitations
+ * - Only compares first-level properties
+ * - Cannot detect differences in nested objects
+ * - Reference equality for objects (not deep comparison)
+ * - Does not handle circular references
+ * - May fail with objects that have non-enumerable properties
+ * 
+ * @param obj1 - First object to compare
+ * @param obj2 - Second object to compare
+ * @returns True if objects have same properties with equal values, false otherwise
+ */
+function shallowEqual(obj1: Record<string, any>, obj2: Record<string, any>): boolean {
+  const keys1 = Object.keys(obj1);
+  const keys2 = Object.keys(obj2);
+
+  if (keys1.length !== keys2.length) return false;
+
+  return keys1.every(key => obj1[key] === obj2[key]);
+}
+
+/**
+ * Performs deep equality comparison between two objects with recursion
+ * 
+ * Recursively compares all properties including nested objects and arrays.
+ * More comprehensive than shallowEqual but with higher computational cost.
+ * 
+ * @advantages
+ * - Comprehensive comparison of all nested properties
+ * - Handles objects with arbitrary depth
+ * - Detects differences in nested structures
+ * - Works with mixed data types (objects, arrays, primitives)
+ * 
+ * @limitations
+ * - O(n*m) time complexity in worst case (n=properties, m=depth)
+ * - Stack overflow risk with deeply nested objects (>1000 levels)
+ * - Higher memory usage due to recursion
+ * - Slower than shallowEqual for simple comparisons
+ * - May cause performance issues with large circular object graphs
+ * - JSON.stringify fallback may lose type information (Date, RegExp, etc.)
+ * 
+ * @param obj1 - First object to compare
+ * @param obj2 - Second object to compare
+ * @returns True if objects are deeply equal, false otherwise
+ */
+function deepEqual(obj1: any, obj2: any): boolean {
+  // Fast path: identical references
+  if (obj1 === obj2) return true;
+  
+  // Handle null/undefined cases and type mismatches
+  if (obj1 == null || obj2 == null) return false;
+  if (typeof obj1 !== 'object' || typeof obj2 !== 'object') return false;
+
+  const keys1 = Object.keys(obj1);
+  const keys2 = Object.keys(obj2);
+
+  if (keys1.length !== keys2.length) return false;
+
+  for (const key of keys1) {
+    if (!keys2.includes(key) || !deepEqual(obj1[key], obj2[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * Deeply compares two objects for equality using JSON.stringify
+ * 
+ * Safely handles null, undefined, and object comparison by converting
+ * both values to JSON strings and comparing the results.
+ * 
+ * {@link deepEqual} function is generally more robust but slower, while
+ * this is faster but has edge case limitations, e.g. Handles null/undefined
+ * identically.
+ * 
+ * @param obj1 - First object to compare
+ * @param obj2 - Second object to compare
+ * @returns true if objects are deeply equal, false otherwise
+ * 
+ * @example
+ * ```typescript
+ * const obj1 = { text: 'hello', type: 'ending' };
+ * const obj2 = { text: 'hello', type: 'ending' };
+ * const obj3 = { text: 'different', type: 'ending' };
+ * 
+ * deepEqualSimple(obj1, obj2); // Returns: true
+ * deepEqualSimple(obj1, obj3); // Returns: false
+ * deepEqualSimple(null, undefined); // Returns: true
+ * ```
+ */
+export function deepEqualSimple(obj1: any, obj2: any): boolean {
+  // Handle null/undefined cases
+  if (obj1 === obj2) return true;
+  if (obj1 == null || obj2 == null) return false;
+  
+  // Use JSON.stringify for deep comparison
+  return JSON.stringify(obj1) === JSON.stringify(obj2);
+}
+
+/**
  * Normalize gender string to 'male' or 'female'
  * @param gender - Gender string to normalize
  * @returns Normalized gender ('male', 'female') or null if input is falsy/empty

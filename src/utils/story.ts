@@ -1,7 +1,5 @@
-import { MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_PAST_INTERACTIONS, MAX_TRAUMA_TAGS } from "../config/story.js";
-import type { CharacterMemory, CharacterStatus, CharacterUpdate, RelationshipUpdate } from "../types/character.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Ending, StoryPage, Action, ActionedStoryPage } from "../types/story.js";
-import { Gender } from "../types/user.js";
+import { MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_TRAUMA_TAGS } from "../config/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { summarizeStoryContext } from "./prompt.js";
@@ -31,18 +29,20 @@ export async function updateState(state: StoryState, actionedPage: ActionedStory
     ...state,
     // Add current page to history, maintain sliding window (last 5 pages)
     pageHistory: [...state.pageHistory, actionedPage].slice(-MAX_PAGE_HISTORY),
+    // Add chosen action to history
+    actionsHistory: [...state.actionsHistory, actionedPage.selectedAction],
     // Increment page number
-    page: state.page + 1
+    page: state.page + 1,
+    // Update context history with AI summarization
+    contextHistory: await summarizeStoryContext(
+      state.contextHistory,
+      actionedPage.text,
+      state.page
+    ),
   };
-
-  // Add chosen action to history
-  addChosenAction(updatedState, actionedPage.selectedAction);
 
   // Update psychological flags based on action type
   updateFlags(updatedState, actionedPage.selectedAction);
-
-  // Process new trauma if provided
-  maybeAddTrauma(updatedState, actionedPage.addTraumaTag);
 
   // Escalate story tension and hidden state
   updateHiddenState(updatedState);
@@ -53,18 +53,14 @@ export async function updateState(state: StoryState, actionedPage: ActionedStory
   // Update advanced ending systems (profile shifts, fake endings)
   updateAdvancedEndingSystems(updatedState);
 
+  // Process new trauma if provided
+  maybeAddTrauma(updatedState, actionedPage.addTraumaTag);
+
   // Process character updates from AI output
   processCharacterUpdates(updatedState, actionedPage.characterUpdates);
 
   // Process place updates from AI output
   processPlaceUpdates(updatedState, actionedPage.placeUpdates);
-
-  // Update context history with AI summarization
-  updatedState.contextHistory = await summarizeStoryContext(
-    state.contextHistory,
-    actionedPage.text,
-    state.page
-  );
 
   return updatedState;
 }
@@ -134,22 +130,12 @@ function updateFlags(state: StoryState, action?: Action): void {
 }
 
 /**
- * Adds the chosen action to the history of actions taken in the story
- *
- * @param state - The current state of the story
- * @param action - The action chosen by the user. If not provided, the function does nothing.
- */
-function addChosenAction(state: StoryState, action?: Action): void {
-  if (action) state.actionsHistory.push(action);
-}
-
-/**
  * Adds new trauma tag if provided and manages trauma collection
  * 
  * @param state - Current story state
  * @param actionedPage - Page that may contain a new trauma tag
  */
-function maybeAddTrauma(state: StoryState, traumaTag?: string): void {
+export function maybeAddTrauma(state: StoryState, traumaTag?: string): void {
   if (traumaTag) pushTrauma(state, traumaTag);
 }
 
@@ -387,86 +373,56 @@ export function updatePsychologicalProfile(state: StoryState): PsychologicalProf
 }
 
 /**
- * Determines the optimal ending archetype based on psychological profile
+ * Determines optimal ending archetype based on current story state
  * 
- * This function analyzes the MC's psychological profile to select the most
- * appropriate ending archetype that will create the maximum narrative impact
- * based on their behavioral patterns and mental state. Uses flag-based
- * conditional logic for more nuanced ending selection.
+ * This function analyzes the complete story state including psychological profile,
+ * flags, hidden state, and profile shifts to recommend the most
+ * appropriate ending archetype for maximum narrative impact.
  * 
  * @param state - Current story state with psychological profile and flags
- * @returns The most suitable ending archetype for this profile
+ * @returns The most suitable ending archetype for this state
  * 
  * @example
  * ```typescript
- * const ending = determineEndingArchetype(state);
+ * const ending = determineOptimalEnding(state);
  * // Returns: "false_reality" for high-curiosity explorers
  * ```
  */
-export function determineEndingArchetype(state: StoryState): Ending {
+export function determineOptimalEnding(state: StoryState): EndingType {
   const { archetype, stability } = state.psychologicalProfile;
   const { flags } = state;
 
-  switch (archetype) {
-    case "the_explorer":
-      // High curiosity leads to discovering uncomfortable truths
-      return flags.curiosity === "high" ? "false_reality" : "fake_escape";
-
-    case "the_avoider":
-      // Avoidance leads to permanent consequences
-      return "irreversible_loss";
-
-    case "the_risk_taker":
-      // Low fear = bold risks that backfire, High fear = desperate losses
-      return flags.fear === "low" ? "fake_escape" : "irreversible_loss";
-
-    case "the_paranoid":
-      // Unstable paranoia creates loops, stable paranoia creates false realities
-      return stability === "unstable" ? "loop" : "false_reality";
-
-    case "the_guilty":
-      // Guilt always leads to irreversible loss
-      return "irreversible_loss";
-
-    case "the_denier":
-      // Deniers get identity twists as their reality unravels
-      return stability === "unstable" ? "mental_fabrication" : "identity_twist";
-
-    default:
-      return "ambiguity";
-  }
-}
-
-/**
- * Gets the current ending archetype for a story state
- * 
- * This function implements the timing logic for ending assignment.
- * Between 30-50% story progress, it caches the ending for consistency.
- * Before assignment, it returns dynamic calculation; after, it returns cached value.
- * 
- * @param state - Current story state
- * @returns The ending archetype (cached or dynamic)
- * 
- * @example
- * ```typescript
- * const ending = getCurrentEndingArchetype(state);
- * // Returns cached ending after 40% progress, dynamic before
- * ```
- */
-export function getCurrentEndingArchetype(state: StoryState): Ending {
-  const pageProgress = state.page / state.maxPage;
-  
-  // Assign ending at 30-50% progress for optimal foreshadowing
-  if (!state.cachedEndingArchetype && pageProgress >= 0.3 && pageProgress <= 0.5) {
-    // Ensure profile is up-to-date before assigning ending
-    if (!state.psychologicalProfile) {
-      updatePsychologicalProfile(state);
+  // Check for profile shift first (highest priority)
+  if (state.hiddenState.profileShift?.detected) {
+    const shiftedEnding = getShiftedEnding(state);
+    if (shiftedEnding) {
+      console.log(`[determineOptimalEnding] 🔄 Profile shift detected, using shifted ending: ${shiftedEnding}`);
+      return shiftedEnding;
     }
-    state.cachedEndingArchetype = determineEndingArchetype(state);
   }
   
-  // Return cached ending if available, otherwise calculate dynamically
-  return state.cachedEndingArchetype || determineEndingArchetype(state);
+  // Use original ending determination logic
+  switch (archetype) {
+    // High curiosity leads to discovering uncomfortable truths
+    case "the_explorer": return flags.curiosity === "high" ? "false_reality" : "fake_escape";
+
+    // Avoidance leads to permanent consequences
+    case "the_avoider": return "irreversible_loss";
+
+    // Low fear = bold risks that backfire, High fear = desperate losses
+    case "the_risk_taker": return flags.fear === "low" ? "fake_escape" : "irreversible_loss";
+
+    // Unstable paranoia creates loops, stable paranoia creates false realities
+    case "the_paranoid": return stability === "unstable" ? "loop" : "false_reality";
+
+    // Guilt always leads to irreversible loss
+    case "the_guilty": return "irreversible_loss";
+
+    // Deniers get identity twists as their reality unravels
+    case "the_denier": return stability === "unstable" ? "mental_fabrication" : "identity_twist";
+
+    default: return state.viableEnding?.type ?? "ambiguity";
+  }
 }
 
 /**
@@ -530,7 +486,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "curiosity_collapse",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -544,7 +500,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "fear_spike",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -558,7 +514,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "aggression_turn",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -572,7 +528,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "deception_onset",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -586,7 +542,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "social_withdrawal",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -600,7 +556,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "protective_to_aggressive",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -614,7 +570,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "creative_to_destructive",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -627,7 +583,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "archetype_collapse",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -643,7 +599,7 @@ export function detectProfileShift(state: StoryState): boolean {
         detected: true,
         shiftType: "reality_breakdown",
         detectedAt: state.page,
-        originalEnding: state.cachedEndingArchetype
+        originalEnding: state.viableEnding?.type
       };
       return true;
     }
@@ -660,7 +616,7 @@ export function detectProfileShift(state: StoryState): boolean {
       detected: true,
       shiftType: "manipulation_acceptance",
       detectedAt: state.page,
-      originalEnding: state.cachedEndingArchetype
+      originalEnding: state.viableEnding?.type
     };
     return true;
   }
@@ -677,7 +633,7 @@ export function detectProfileShift(state: StoryState): boolean {
         detected: true,
         shiftType: "trait_inversion",
         detectedAt: state.page,
-        originalEnding: state.cachedEndingArchetype
+        originalEnding: state.viableEnding?.type
       };
       return true;
     }
@@ -687,7 +643,7 @@ export function detectProfileShift(state: StoryState): boolean {
         detected: true,
         shiftType: "fear_to_aggression",
         detectedAt: state.page,
-        originalEnding: state.cachedEndingArchetype
+        originalEnding: state.viableEnding?.type
       };
       return true;
     }
@@ -711,9 +667,9 @@ export function detectProfileShift(state: StoryState): boolean {
  * // Returns "possession" for aggression turn
  * ```
  */
-export function getShiftedEnding(state: StoryState): Ending {
+export function getShiftedEnding(state: StoryState): EndingType | undefined {
   if (!state.hiddenState.profileShift?.detected) {
-    return getCurrentEndingArchetype(state);
+    return state.viableEnding?.type;
   }
   
   const { shiftType } = state.hiddenState.profileShift;
@@ -738,7 +694,7 @@ export function getShiftedEnding(state: StoryState): Ending {
     case "denial_break": return "false_reality";
     case "trust_betrayal": return "fake_escape";
       
-    default: return getCurrentEndingArchetype(state);
+    default: return state.viableEnding?.type;
   }
 }
 
@@ -762,7 +718,7 @@ export function updateAdvancedEndingSystems(state: StoryState): void {
   
   // Auto-arm fake-to-real endings for certain archetypes
   if (pageProgress >= 0.7 && !state.hiddenState.endingPlan?.armed) {
-    const ending = getCurrentEndingArchetype(state);
+    const ending = state.viableEnding?.type;
     const triggerPage = Math.max(state.page + 1, state.maxPage - 2);
     
     if (ending === "fake_escape" || ending === "loop" || ending === "identity_twist") {

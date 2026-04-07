@@ -4,17 +4,12 @@ export const MAX_WORDS_PER_PAGE = 60;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 export const DEFAULT_BOOK_MAX_PAGES = 150;
 
-export const MAX_RELEVANT_CHARACTERS = 5;
+export const MAX_CHARACTERS = 6;
+export const MAX_PLACES = 6;
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
-/**
- * Maximum number of pages back to consider character interactions "recent"
- * 
- * This determines the time window for considering character
- * interactions as recent for relevance calculations.
- */
-export const RECENT_INTERACTION_THRESHOLD = 30;
+export const NEAR_ENDING_PAGES = 10;
 
 /**
  * Maximum number of trauma tags to maintain in story state
@@ -46,7 +41,7 @@ export const MAX_PAST_INTERACTIONS = 5;
  * This maintains emotional atmosphere evolution while preventing
  * excessive memory usage for place mood tracking.
  */
-export const MAX_MOOD_HISTORY = 5;
+export const MAX_PLACE_MOOD_HISTORY = 5;
 
 /**
  * Maximum number of event tags to store per place
@@ -54,31 +49,31 @@ export const MAX_MOOD_HISTORY = 5;
  * This limits the number of significant events tracked per place
  * to maintain relevance and prevent memory bloat.
  */
-export const MAX_EVENT_TAGS = 8;
+export const MAX_PLACE_EVENT_TAGS = 8;
 
-/**
- * Maximum number of known characters to store per place
- * 
- * This maintains a manageable list of characters encountered
- * at each location for narrative consistency.
- */
-export const MAX_KNOWN_CHARACTERS = 5;
+// /**
+//  * Maximum number of known characters to store per place
+//  * 
+//  * This maintains a manageable list of characters encountered
+//  * at each location for narrative consistency.
+//  */
+// export const MAX_KNOWN_CHARACTERS = 5;
 
-/**
- * Maximum number of active places to maintain in memory
- * 
- * This prevents memory bloat by limiting the number of places
- * tracked simultaneously, archiving least relevant ones.
- */
-export const MAX_ACTIVE_PLACES = 10;
+// /**
+//  * Maximum number of active places to maintain in memory
+//  * 
+//  * This prevents memory bloat by limiting the number of places
+//  * tracked simultaneously, archiving least relevant ones.
+//  */
+// export const MAX_ACTIVE_PLACES = 10;
 
-/**
- * Maximum number of relevant places to show in AI context
- * 
- * This limits the number of places provided to the AI to prevent
- * overwhelming it with too much context while maintaining variety.
- */
-export const MAX_RELEVANT_PLACES = 8;
+// /**
+//  * Maximum number of relevant places to show in AI context
+//  * 
+//  * This limits the number of places provided to the AI to prevent
+//  * overwhelming it with too much context while maintaining variety.
+//  */
+// export const MAX_RELEVANT_PLACES = 8;
 
 /**
  * Maximum number of character-place relations per character
@@ -97,12 +92,13 @@ export const MAX_CHARACTER_PLACES = 5;
 export const MAX_PAGE_HISTORY = 5;
 
 /**
- * Maximum number of story states to keep per user/book/page combination
+ * Delta and snapshot cleanup configuration
  * 
- * This maintains a sliding window of story states to prevent
- * database bloat while preserving recent narrative progression.
+ * These constants control the strategic retention of story states
+ * for optimal performance and storage efficiency in the delta/snapshot system.
  */
-export const MAX_STORY_STATES_PER_PAGE = 10;
+export const SNAPSHOT_INTERVAL = 10; // Every 10 pages
+export const MIN_PAGES_FOR_MIDDLE = 20; // Only keep middle if book is substantial
 
 // ============================================================================
 // PLACE MEMORY CONFIGURATION

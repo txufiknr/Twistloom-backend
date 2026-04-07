@@ -14,10 +14,12 @@
 
 import { dbRead } from "../db/client.js";
 import { pages } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
+import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE } from "../config/story.js";
 import type { DBPage } from "../types/schema.js";
 import type { PersistedStoryPage, StoryState, StateSnapshot, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, CacheEntry, StateCacheEntry } from "../types/story.js";
 import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
+import { startPerformanceMeasurement } from "../services/performance-monitoring.js";
 
 // Re-export centralized cache constants for backward compatibility
 export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
@@ -144,17 +146,25 @@ export function getCacheStats(): {
 // ============================================================================
 
 /**
- * Retrieves page by ID with error handling
+ * Retrieves page by ID with error handling and branch validation
  * 
  * @param pageId - Page ID to retrieve
+ * @param targetBranchId - Target branch ID to ensure branch consistency (optional)
  * @returns Page data or null if not found
  */
-async function getPageById(pageId: string): Promise<DBPage | null> {
+async function getPageById(pageId: string, targetBranchId?: string): Promise<DBPage | null> {
   try {
+    const conditions = [eq(pages.id, pageId)];
+    
+    // If targetBranchId is provided, add branch condition
+    if (targetBranchId !== undefined) {
+      conditions.push(eq(pages.branchId, targetBranchId));
+    }
+    
     const result = await dbRead
       .select()
       .from(pages)
-      .where(eq(pages.id, pageId))
+      .where(and(...conditions))
       .limit(1);
     
     return result[0] || null;
@@ -209,6 +219,14 @@ export async function getBranchPath(
   
   const path: DBPage[] = [];
   let cursor: DBPage | null = await getPageById(currentPageId);
+  let targetBranchId: string | undefined;
+  
+  // Capture the branchId from the first page to ensure consistency
+  if (cursor) {
+    targetBranchId = cursor.branchId || undefined;
+    console.log(`[getBranchPath] 🌱 get branchId: ${targetBranchId || 'main'}`);
+  }
+  
   let depth = 0;
 
   // Walk backwards from current page to root
@@ -221,8 +239,8 @@ export async function getBranchPath(
       break;
     }
 
-    // Move to parent page
-    cursor = await getPageById(cursor.parentId);
+    // Move to parent page, ensuring we stay in the same branch
+    cursor = await getPageById(cursor.parentId, targetBranchId);
   }
 
   // Validate we found a complete path
@@ -238,18 +256,20 @@ export async function getBranchPath(
     id: page.id,
     bookId: page.bookId,
     parentId: page.parentId,
+    branchId: page.branchId,
     page: page.page,
     text: page.text,
-    mood: page.mood,
-    place: page.place,
-    characters: page.characters || [],
+    mood: page.mood || undefined,
+    place: page.place || undefined,
+    timeOfDay: page.timeOfDay || undefined,
+    charactersPresent: page.charactersPresent || [],
     keyEvents: page.keyEvents || [],
     importantObjects: page.importantObjects || [],
     actions: page.actions || [],
     addTraumaTag: page.addTraumaTag || undefined,
     characterUpdates: page.characterUpdates || undefined,
     placeUpdates: page.placeUpdates || undefined,
-  }));
+  } satisfies PersistedStoryPage));
 
   const branchPath: BranchPath = {
     pages: persistedPages,
@@ -331,24 +351,26 @@ export async function getSiblingPages(pageId: string): Promise<PersistedStoryPag
     const siblings = await dbRead
       .select()
       .from(pages)
-      .where(eq(pages.parentId, page.parentId));
+      .where(and(eq(pages.parentId, page.parentId), eq(pages.branchId, page.branchId || '')));
 
     return siblings.map(sibling => ({
       id: sibling.id,
       bookId: sibling.bookId,
       parentId: sibling.parentId,
+      branchId: sibling.branchId,
       page: sibling.page,
       text: sibling.text,
-      mood: sibling.mood,
-      place: sibling.place,
-      characters: sibling.characters || [],
+      mood: sibling.mood || undefined,
+      place: sibling.place || undefined,
+      timeOfDay: sibling.timeOfDay || undefined,
+      charactersPresent: sibling.charactersPresent || [],
       keyEvents: sibling.keyEvents || [],
       importantObjects: sibling.importantObjects || [],
       actions: sibling.actions || [],
       addTraumaTag: sibling.addTraumaTag || undefined,
       characterUpdates: sibling.characterUpdates || undefined,
       placeUpdates: sibling.placeUpdates || undefined,
-    }));
+    } satisfies PersistedStoryPage));
   } catch (error) {
     console.error(`[getSiblingPages] ❌ Failed to get siblings for page ${pageId}:`, getErrorMessage(error));
     return [];
@@ -383,6 +405,127 @@ export async function getBranchStats(pageId: string, userId: string): Promise<Br
 }
 
 /**
+ * Finds the optimal snapshot for state reconstruction using hybrid strategy
+ * 
+ * Strategy: Combine fixed checkpoints with interval snapshots for optimal performance:
+ * 1. Prefer interval snapshots (every 10 pages) - maximum 10 delta applications
+ * 2. Fall back to first/middle/last checkpoints if no interval snapshot available
+ * 3. Choose the snapshot that minimizes delta applications
+ * 
+ * @param branchPath - Complete branch path from root to current
+ * @param currentPageIndex - Index of the current page in the branch path
+ * @param deps - Reconstruction dependencies
+ * @param totalPages - Total pages from book schema (not calculated from states)
+ * @returns Promise resolving to optimal snapshot info
+ */
+async function findOptimalSnapshot(
+  branchPath: BranchPath,
+  currentPageIndex: number,
+  deps: StateReconstructionDeps,
+  totalPages: number
+): Promise<{
+  snapshotIndex: number;
+  baseState: StoryState;
+  snapshotPageId: string;
+  snapshotType: 'interval' | 'first' | 'middle' | 'last' | 'none';
+  deltasNeeded: number;
+}> {
+  // Collect all available snapshots with their metadata
+  const availableSnapshots: Array<{
+    index: number;
+    pageId: string;
+    page: number;
+    state: StoryState;
+    type: 'interval' | 'first' | 'middle' | 'last';
+    deltasNeeded: number;
+  }> = [];
+  
+  // Check each page for snapshots
+  for (let i = 0; i <= currentPageIndex; i++) {
+    const page = branchPath.pages[i];
+    const snapshot = await deps.getSnapshot(page.id);
+    
+    if (snapshot) {
+      const deltasNeeded = currentPageIndex - i;
+      let type: 'interval' | 'first' | 'middle' | 'last';
+      
+      // Determine snapshot type
+      if (i === 0) {
+        type = 'first';
+      } else if (i === currentPageIndex) {
+        type = 'last';
+      } else if (page.page % SNAPSHOT_INTERVAL === 0) {
+        type = 'interval';
+      } else {
+        // Check if this could be considered a middle snapshot using book's totalPages
+        if (totalPages >= MIN_PAGES_FOR_MIDDLE && Math.abs(page.page - totalPages / 2) <= SNAPSHOT_INTERVAL) {
+          type = 'middle';
+        } else {
+          type = 'interval'; // Treat as interval for selection purposes
+        }
+      }
+      
+      availableSnapshots.push({
+        index: i,
+        pageId: page.id,
+        page: page.page,
+        state: snapshot.state,
+        type,
+        deltasNeeded
+      });
+    }
+  }
+  
+  if (availableSnapshots.length === 0) {
+    // No snapshot found - return empty state
+    const emptyState = createEmptyStoryState(
+      branchPath.pages[currentPageIndex].id,
+      branchPath.pages[currentPageIndex].page
+    );
+    
+    return {
+      snapshotIndex: 0,
+      baseState: emptyState,
+      snapshotPageId: branchPath.pages[0].id,
+      snapshotType: 'none',
+      deltasNeeded: currentPageIndex
+    };
+  }
+  
+  // Prioritize snapshots by type and deltas needed
+  const prioritizedSnapshots = availableSnapshots.sort((a, b) => {
+    // First priority: Interval snapshots (optimal performance)
+    if (a.type === 'interval' && b.type !== 'interval') return -1;
+    if (b.type === 'interval' && a.type !== 'interval') return 1;
+    
+    // Second priority: Fewer deltas needed
+    if (a.deltasNeeded !== b.deltasNeeded) return a.deltasNeeded - b.deltasNeeded;
+    
+    // Third priority: Last snapshot (most recent)
+    if (a.type === 'last' && b.type !== 'last') return -1;
+    if (b.type === 'last' && a.type !== 'last') return 1;
+    
+    // Fourth priority: First snapshot (good baseline)
+    if (a.type === 'first' && b.type !== 'first') return -1;
+    if (b.type === 'first' && a.type !== 'first') return 1;
+    
+    return 0;
+  });
+  
+  const optimal = prioritizedSnapshots[0];
+  
+  console.log(`[findOptimalSnapshot] 🎯 Selected ${optimal.type} snapshot at page ${optimal.page} (index ${optimal.index}), needs ${optimal.deltasNeeded} deltas`);
+  
+  return {
+    snapshotIndex: optimal.index,
+    baseState: structuredClone(optimal.state),
+    snapshotPageId: optimal.pageId,
+    snapshotType: optimal.type,
+    deltasNeeded: optimal.deltasNeeded
+  };
+}
+
+/**
  * Reconstructs story state from branch path using hybrid delta + checkpoint system
  * 
  * This advanced reconstruction system uses a combination of snapshots (checkpoints)
@@ -390,7 +533,7 @@ export async function getBranchStats(pageId: string, userId: string): Promise<Br
  * 
  * Strategy:
  * 1. Try direct state retrieval (fastest)
- * 2. Find nearest snapshot backwards from current page
+ * 2. Find optimal snapshot using hybrid first/middle/last + interval strategy
  * 3. Apply deltas forward from snapshot to current page
  * 4. Fallback to basic reconstruction if no snapshot/deltas available
  * 
@@ -401,7 +544,7 @@ export async function getBranchStats(pageId: string, userId: string): Promise<Br
  * 
  * @example
  * ```typescript
- * const result = await reconstructStoryStateAdvanced('page123', {
+ * const result = await reconstructStoryState('page123', {
  *   getPageById: (id) => dbPageService.getPage(id),
  *   getSnapshot: (id) => snapshotService.getSnapshot(id),
  *   getDelta: (id) => deltaService.getDelta(id),
@@ -418,7 +561,11 @@ export async function reconstructStoryState(
   deps: StateReconstructionDeps,
   options: TraversalOptions = {}
 ): Promise<StateReconstructionResult> {
-  const startTime = Date.now();
+  const measurement = startPerformanceMeasurement('reconstruction', 'state_reconstruction', userId, {
+    currentPageId,
+    useCache: options.useCache,
+    validatePath: options.validatePath
+  });
   
   try {
     // Check cache first
@@ -426,7 +573,14 @@ export async function reconstructStoryState(
       const cached = getCachedState(userId, currentPageId);
       if (cached) {
         console.log(`[reconstructStoryState] 🎯 Cache hit for page ${currentPageId}`);
-        return cached.result;
+        const result = cached.result;
+        measurement.end({ 
+          method: result.method, 
+          cached: true,
+          snapshotsUsed: result.snapshotsUsed,
+          deltasApplied: result.deltasApplied
+        });
+        return result;
       }
     }
     
@@ -441,7 +595,7 @@ export async function reconstructStoryState(
           snapshotsUsed: 0,
           deltasApplied: 0,
           method: 'direct',
-          reconstructionTimeMs: Date.now() - startTime
+          reconstructionTimeMs: 0
         };
         
         if (options.useCache !== false) {
@@ -449,70 +603,96 @@ export async function reconstructStoryState(
         }
         
         console.log(`[reconstructStoryState] ✅ Direct state retrieval for ${currentPageId}`);
+        measurement.end({ 
+          method: 'direct', 
+          cached: false,
+          snapshotsUsed: 0,
+          deltasApplied: 0
+        });
         return result;
       }
     }
     
-    // Strategy 2: Hybrid delta + checkpoint reconstruction
+    // Strategy 2: Hybrid delta + checkpoint reconstruction with optimal snapshot selection
     const branchPath = await getBranchPath(currentPageId, userId, options);
+    const currentPageIndex = branchPath.pages.length - 1;
     
-    // Find nearest snapshot (from bottom/end of path)
-    let snapshotIndex = -1;
-    let baseState: StoryState | null = null;
-    let baseSnapshotPageId: string | undefined;
-    
-    for (let i = branchPath.pages.length - 1; i >= 0; i--) {
-      const page = branchPath.pages[i];
-      const snapshot = await deps.getSnapshot(page.id);
-      
-      if (snapshot) {
-        snapshotIndex = i;
-        baseState = structuredClone(snapshot.state);
-        baseSnapshotPageId = page.id;
-        console.log(`[reconstructStoryState] 📸 Found snapshot at page ${page.id} (index ${i})`);
-        break;
+    // Get book information to retrieve totalPages for optimal snapshot selection
+    let totalPages = DEFAULT_BOOK_MAX_PAGES; // Fallback to default
+    if (deps.getBook) {
+      try {
+        const currentPage = await deps.getPageById(currentPageId);
+        if (currentPage?.bookId) {
+          const book = await deps.getBook(currentPage.bookId);
+          if (book?.totalPages) {
+            totalPages = book.totalPages;
+            console.log(`[reconstructStoryState] 📚 Using totalPages from book schema: ${totalPages}`);
+          } else {
+            totalPages = Math.max(...branchPath.pages.map(p => p.page));
+            console.log(`[reconstructStoryState] ⚠️ Book not found, using branch path totalPages: ${totalPages}`);
+          }
+        } else {
+          totalPages = Math.max(...branchPath.pages.map(p => p.page));
+          console.log(`[reconstructStoryState] ⚠️ No bookId found, using branch path totalPages: ${totalPages}`);
+        }
+      } catch (error) {
+        totalPages = Math.max(...branchPath.pages.map(p => p.page));
+        console.log(`[reconstructStoryState] ⚠️ Could not get book info, using branch path totalPages: ${totalPages}`);
       }
+    } else {
+      totalPages = Math.max(...branchPath.pages.map(p => p.page));
+      console.log(`[reconstructStoryState] ⚠️ getBook not available, using branch path totalPages: ${totalPages}`);
     }
     
-    // Fallback: Create empty base state if no snapshot found
-    if (!baseState) {
-      baseState = createEmptyStoryState(currentPageId, branchPath.pages[branchPath.pages.length - 1].page);
-      snapshotIndex = 0;
-      console.log(`[reconstructStoryState] ⚠️ No snapshot found, using empty base state`);
-    }
+    // Find optimal snapshot using hybrid strategy
+    const snapshotInfo = await findOptimalSnapshot(branchPath, currentPageIndex, deps, totalPages);
     
     // Apply deltas forward from snapshot position
     let deltasApplied = 0;
-    for (let i = snapshotIndex + 1; i < branchPath.pages.length; i++) {
+    for (let i = snapshotInfo.snapshotIndex + 1; i <= currentPageIndex; i++) {
       const page = branchPath.pages[i];
       const delta = await deps.getDelta(page.id);
       
       if (delta) {
-        applyStateDelta(baseState, delta);
+        applyStateDelta(snapshotInfo.baseState, delta);
         deltasApplied++;
-        console.log(`[reconstructStoryState] 🔄 Applied delta for page ${page.id}`);
+        console.log(`[reconstructStoryState] 🔄 Applied delta for page ${page.id} (${i - snapshotInfo.snapshotIndex}/${snapshotInfo.deltasNeeded})`);
+      } else {
+        console.log(`[reconstructStoryState] ⚠️ No delta found for page ${page.id}, state may be incomplete`);
       }
     }
     
     // Ensure final state matches current page
-    baseState.pageId = currentPageId;
-    baseState.page = branchPath.pages[branchPath.pages.length - 1].page;
+    snapshotInfo.baseState.pageId = currentPageId;
+    snapshotInfo.baseState.page = branchPath.pages[currentPageIndex].page;
     
     const result: StateReconstructionResult = {
-      state: baseState,
-      snapshotsUsed: baseSnapshotPageId ? 1 : 0,
+      state: snapshotInfo.baseState,
+      snapshotsUsed: snapshotInfo.snapshotType === 'none' ? 0 : 1,
       deltasApplied,
-      method: baseSnapshotPageId ? 'snapshot_plus_deltas' : 'fallback',
-      reconstructionTimeMs: Date.now() - startTime,
-      baseSnapshotPageId
+      method: snapshotInfo.snapshotType === 'none' ? 'fallback' : 'snapshot_plus_deltas',
+      reconstructionTimeMs: 0, // Will be set by measurement.end()
+      baseSnapshotPageId: snapshotInfo.snapshotType === 'none' ? undefined : snapshotInfo.snapshotPageId
     };
     
     // Cache the result
     if (options.useCache !== false) {
-      setCachedState(userId, currentPageId, baseState, result);
+      setCachedState(userId, currentPageId, snapshotInfo.baseState, result);
     }
     
-    console.log(`[reconstructStoryState] ✅ Reconstruction complete: ${result.method}, ${deltasApplied} deltas, ${result.reconstructionTimeMs}ms`);
+    console.log(`[reconstructStoryState] ✅ Reconstruction complete: ${result.method}, ${deltasApplied} deltas, snapshot: ${snapshotInfo.snapshotType}`);
+    
+    const metric = measurement.end({ 
+      method: result.method, 
+      cached: false,
+      snapshotsUsed: result.snapshotsUsed,
+      deltasApplied: result.deltasApplied,
+      snapshotType: snapshotInfo.snapshotType,
+      branchDepth: branchPath.depth
+    });
+    
+    // Update reconstruction time from actual measurement
+    result.reconstructionTimeMs = metric.durationMs;
     
     return result;
     
@@ -521,13 +701,23 @@ export async function reconstructStoryState(
     
     // Ultimate fallback: minimal state
     const fallbackState = createEmptyStoryState(currentPageId, 1);
-    return {
+    const result: StateReconstructionResult = {
       state: fallbackState,
       snapshotsUsed: 0,
       deltasApplied: 0,
       method: 'fallback',
-      reconstructionTimeMs: Date.now() - startTime
+      reconstructionTimeMs: 0
     };
+    
+    measurement.end({ 
+      method: 'fallback', 
+      error: getErrorMessage(error),
+      cached: false,
+      snapshotsUsed: 0,
+      deltasApplied: 0
+    });
+    
+    return result;
   }
 }
 
@@ -538,7 +728,7 @@ export async function reconstructStoryState(
  * @param pageNumber - Page number
  * @returns Empty story state
  */
-function createEmptyStoryState(pageId: string, pageNumber: number): StoryState {
+export function createEmptyStoryState(pageId: string, pageNumber: number): StoryState {
   return {
     pageId,
     page: pageNumber,
@@ -563,7 +753,7 @@ function createEmptyStoryState(pageId: string, pageNumber: number): StoryState {
     },
     memoryIntegrity: 'stable',
     difficulty: 'medium',
-    cachedEndingArchetype: undefined,
+    viableEnding: undefined,
     characters: {},
     places: {},
     pageHistory: [],

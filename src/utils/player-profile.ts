@@ -7,6 +7,7 @@
  * This enables personalized storytelling based on individual player behavior patterns.
  */
 
+import { NEAR_ENDING_PAGES } from '../config/story.js';
 import type { 
   ActionType, 
   Action, 
@@ -125,17 +126,15 @@ export function calculatePlayerProfile(actionsHistory: Action[]): PsychologicalP
  * @returns Complete StyleInput for style calculation
  */
 export function createStyleInput(state: StoryState): StyleInput {
-  const profile = calculatePlayerProfile(state.actionsHistory);
-  
   return {
     sanity: state.memoryIntegrity === 'stable' ? 1.0 : 
-           state.memoryIntegrity === 'fragmented' ? 0.5 : 0.2,
+      state.memoryIntegrity === 'fragmented' ? 0.5 : 0.2,
     tension: state.flags.fear === 'high' ? 0.8 : 
-             state.flags.fear === 'medium' ? 0.5 : 0.3,
+      state.flags.fear === 'medium' ? 0.5 : 0.3,
     entropy: (state.page / state.maxPage) * 0.5, // Increases with story progress
     traumaTags: state.traumaTags,
     profile: calculatePlayerProfile(state.actionsHistory),
     page: state.page,
-    isEnding: state.page >= state.maxPage - 5
+    isEnding: state.page >= state.maxPage - NEAR_ENDING_PAGES
   };
 }

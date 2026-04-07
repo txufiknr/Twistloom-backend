@@ -1,4 +1,4 @@
-import { PsychologicalProfile, HiddenState, TruthLevel, ProfileShift, EndingPlan, ThreatProximity, RealityStability, Archetype, StabilityLevel, ManipulationAffinity, EndingPlanType, ProfileShiftType, Ending } from "../types/story.js";
+import { PsychologicalProfile, HiddenState, TruthLevel, ProfileShift, EndingPlan, ThreatProximity, RealityStability, Archetype, StabilityLevel, ManipulationAffinity, EndingPlanType, ProfileShiftType, Ending, EndingType } from "../types/story.js";
 
 /**
  * Creates initial psychological profile for new stories
@@ -34,7 +34,7 @@ export function createInitialHiddenState(): HiddenState {
       detected: false,
       shiftType: 'curiosity_collapse' satisfies ProfileShiftType,
       detectedAt: 0,
-      originalEnding: 'fake_escape' satisfies Ending
+      originalEnding: 'fake_escape' satisfies EndingType
     } satisfies ProfileShift
   } satisfies HiddenState;
 }

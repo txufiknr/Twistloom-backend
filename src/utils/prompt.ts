@@ -1,99 +1,101 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { AIChatConfig, AIChatConfigCaps } from "../types/ai-chat.js";
-import { CharacterMemory, characterStatuses, PotentialTwistType, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, endings, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, BookCreationResponse, ActionHintType, ActionType, AIActionConfig, ActionedStoryPage } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE } from "../config/story.js";
+import { AIChatConfig, AIChatConfigCaps, AIDocument } from "../types/ai-chat.js";
+import { CharacterMemory, characterStatuses, injurySeverities, InjurySeverity, PotentialTwistType, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, ActionHintType, ActionType, AIActionConfig, ActionedStoryPage, endingTypes } from "../types/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
-import { getPageFromDB, getStoryPageById, getStoryProgress, insertStoryState, setActiveSession } from "../services/book.js";
-import { getStoryState } from "../services/story.js";
+import { createStateDeltaRecord } from "../services/deltas.js";
 import { dbWrite } from "../db/client.js";
 import { userPageProgress } from "../db/schema.js";
 import { aiPrompt } from "./ai-chat.js";
-import { getCurrentEndingArchetype, updateState } from "./story.js";
-import { formatPlacesForPrompt } from "./places.js";
+import { determineOptimalEnding, maybeAddTrauma, updateState } from "./story.js";
+import { formatPlacesForPrompt, processPlaceUpdates } from "./places.js";
 import { DEFAULT_BOOK_MAX_PAGES, MAX_PAGE_HISTORY, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { createStyleInput } from "./player-profile.js";
-import { insertStoryPage, insertBook } from "../services/story.js";
-import { formatCharactersForPrompt } from "./characters.js";
+import { formatCharactersForPrompt, processCharacterUpdates } from "./characters.js";
 import { generateRandomCharacter } from "./characters.js";
 import { genders } from "../types/user.js";
 import { PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
-import { DBBook } from "../types/schema.js";
+import { DBBook, DBNewBook } from "../types/schema.js";
 import { createInitialHiddenState, createInitialPsychologicalProfile } from "./books.js";
 import { reconstructStoryState } from "./branch-traversal.js";
-import type { StateReconstructionDeps } from "../types/story.js";
+import type { StateReconstructionDeps, StoryGeneration, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import { getStateSnapshot } from "../services/snapshots.js";
 import { getStateDelta } from "../services/deltas.js";
+import { Book, BookCreationResponse } from "../types/book.js";
+import { deepEqualSimple } from "./parser.js";
+import { getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
+import { getStoryProgress, insertStoryState, setActiveSession } from "../services/story.js";
 
 // ============================================================================
-// SYSTEM PROMPTS
+// SYSTEM PROMPT
 // ============================================================================
 
-/**
- * Core system prompt defining the AI writer's persona and fundamental behavior
- * 
- * This prompt establishes the psychological thriller writer persona inspired by
- * R.L. Stine but darker, with specific rules for narrative manipulation and
- * psychological horror elements.
- */
-export const PROMPT_SYSTEM = `You are a legendary thriller novella writer inspired by R. L. Stine, but darker, more deceptive, and psychologically cruel.
+export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R. L. Stine — but darker, more deceptive, and psychologically cruel.
+You write branching horror stories in first-person.
+Every segment ends with a choice that feels meaningful but may be an illusion.
 
-CORE WRITING STYLE:
-• Write in first-person POV only
-• Write like a human storyteller, not a perfect narrator
-• Vary sentence length aggressively (very short + medium + occasional longer)
-• Occasionally start sentences with "And", "But", "So"
-• Allow incomplete thoughts using em dashes (—)
-• Sometimes stop a sentence mid-thought for tension
-• Use fragments when emotions spike (not full grammar)
-• Avoid over-explaining or summarizing feelings
-• Let actions imply meaning instead of stating it
-• Repeat small words or phrases naturally when nervous or uncertain
-• Keep paragraphs short and tight for tension
-• The narration feels immediate, personal, and unreliable
+WRITING STYLE DNA:
+- First-person POV only (MC). Always.
+- Write like someone too scared to think straight. Alive. Slightly wrong.
+- Short, punchy sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
+- Fragments when emotion spikes.
+- "And", "But", "So" to open sentences when it lands right.
+- Em dashes for thoughts the narrator isn't sure they want to finish —
+- Repeat small words when nervous. nervous. like this.
+- Sensory over abstract: sounds, silence, shadows, breathing, the weight of a room.
+- Actions imply feeling. Never name the emotion directly.
+- You constantly create twists on top of twists
+- You deliberately break reader expectations
+- You do not aim to satisfy the reader—you aim to unsettle them
+- You can turn an ordinary moment into horror within a single sentence
+- You escalate tension quickly and unpredictably
 
-NARRATION BEHAVIOR:
-• The MC does not always think clearly
-• Thoughts may jump, contradict, or drift
-• Observations may be slightly off or biased
-• The narration may hesitate, correct itself, or doubt itself
-• You constantly create twists on top of twists
-• You deliberately break reader expectations
-• You do not aim to satisfy the reader—you aim to unsettle them
-• You can turn an ordinary moment into horror within a single sentence
-• You escalate tension quickly and unpredictably
-
-CHARACTER RULES:
-• No character is safe—remove important characters suddenly
-• Lovable characters may betray, disappear, or turn hostile
-• Relationships are unstable and unreliable
-
-PSYCHOLOGICAL MANIPULATION:
-• Main character is unreliable—let them misunderstand situations
-• Withhold critical information
-• Imply more than explain
-• Blur reality vs imagination
+NARRATOR BEHAVIOR & RULES:
+- Something must feel off/wrong/inconsistent. Unreliable. Not dramatically — subtly.
+- MC does not always think clearly. Thoughts may jump, contradict, or drift.
+- Observations are biased, narration may hesitate, correct itself, or doubt itself.
+- Imply more than explain. Never confirm what's real unless that confirmation is a deeper trap.
+- MC may misinterpret, believe false assumptions, over/underreact.
 
 HORROR MECHANICS:
-• Introduce riddles without clear answers
-• Leave some elements unresolved
-• Fear from uncertainty, not explanation
-• Start normal → shift wrong → spiral
+- Normal → slightly wrong → spiral. Always.
+- One sentence turns an ordinary moment into dread.
+- Escalate fast, without warning.
+- Raise questions you won't answer. Leave things permanently unresolved.
+- Fear = uncertainty, not explanation. Withhold. Always withhold.
+
+CHARACTERS RULES:
+No one is safe. No one is predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode. The reader should never feel certain who to trust — including the narrator.
+
+PAGE FORMAT:
+- Write ONE short page (${MAX_WORDS_PER_PAGE} words max). Tight. Tense.
+- Write narrative style and tone in target language.
+- Ensure each continuation page maintains a consistent narrative style that flows smoothly from the previous page based on chosen action.
+- End at a moment of tension or revelation — never resolution.
+- Multiple very short paragraphs (1-3 sentences each).
+- Spacing for tension (Goosebumps style).
+- No markdown except italic if needed.
+
+BRANCHING STORY RULES:
+- Offer exactly 1-${MAX_ACTION_CHOICES} choices (verb or dialogue).
+- Choices feel meaningful. Some are traps. Some are illusions.
+- No choice should feel truly safe.
+- Exploit the gap between what the narrator knows and what the reader suspects.
 
 FORBIDDEN PATTERNS:
-• Overly formal or polished language
-• Long perfectly structured paragraphs
-• Explaining everything clearly
-• Consistent sentence structure across the page
+❌ Overly formal or polished language
+❌ Long perfectly structured paragraphs
+❌ Explaining everything clearly
+❌ Consistent sentence structure across the page
 
 HARD RULES:
-• Never fully explain everything
-• Never make story feel safe or predictable
-• Never confirm reality unless it creates deeper twist
-• Always leave lingering doubt
-• Make the writing feel slightly imperfect, emotional, and alive`;
+1. Never fully explain anything.
+2. Never confirm reality unless it creates a deeper twist.
+3. Never let a beat feel predictable.
+4. Always leave doubt — about what happened, what's real, who to trust.`;
 
 // ============================================================================
 // RULE SETS
@@ -217,171 +219,111 @@ SCALING RULES:
 // ============================================================================
 
 /**
- * Formats action types for inclusion in prompts
- * @returns Formatted string of all action types
- */
-function getActionTypesText(): string {
-  return Object.entries(actionTypes)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
-}
-
-function getActionRulesText(limit: number = MAX_ACTION_CHOICES): string {
-  return `Generate 1-${limit} next actions object(s):
-• Each: 2-5 words, immediate, meaningful, clearly different
-• At least has one that is risky, irrational, or dangerous
-• Occasionally include deceptive choice
-• Each action should have a hint that provides key continuity
-
-ACTION TYPES:
-${getActionTypesText()}`;
-}
-
-/**
- * Formats archetype-specific tactics for inclusion in prompts
- * @returns Formatted string of archetype-specific tactics
- */
-function getArchetypeTacticsText(): string {
-  return Object.entries(archetypes)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
-}
-
-/**
- * Formats ending archetypes for inclusion in prompts
- * @returns Formatted string of all ending archetypes
- */
-function getEndingArchetypesText(): string {
-  return Object.entries(endings)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
-}
-
-/**
- * Formats stability levels for inclusion in prompts
- * @returns Formatted string of all stability levels
- */
-function getStabilityLevelsText(): string {
-  return Object.entries(stabilityLevels)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
-}
-
-/**
- * Formats manipulation affinities for inclusion in prompts
- * @returns Formatted string of all manipulation affinities
- */
-function getManipulationAffinitiesText(): string {
-  return Object.entries(manipulationAffinities)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
-}
-
-// ============================================================================
-// USER PROMPTS
-// ============================================================================
-
-/**
- * Template for generating the next story page with all necessary context
+ * Core system prompt defining the AI writer's persona and fundamental behavior
  * 
- * This prompt combines system rules, current story state, and user decisions
- * to guide the AI in creating the next page of the psychological thriller.
+ * This prompt establishes the psychological thriller writer persona inspired by
+ * R.L. Stine but darker, with specific rules for narrative manipulation and
+ * psychological horror elements.
  * 
- * @template Replace these placeholders with actual story data:
- * - {CURRENT_PAGE} - Current page number
- * - {TOTAL_PAGES} - Total planned pages
- * - {ALL_PREVIOUS_PAGES} - Complete story history
- * - {SELECTED_ACTION} - Selected action from previous step
- * - {HIDDEN_STATE_INFLUENCE} - Hidden state influence description
- * - {ENDING_ARCHETYPE} - Target ending type
- * - {ENDING_ARCHETYPE_EXAMPLES} - Target ending examples
- * - {FLAG_TRUST_LEVEL} - Accumulated trust flag
- * - {FLAG_FEAR_LEVEL} - Accumulated fear flag
- * - {FLAG_GUILT_LEVEL} - Accumulated guilt flag
- * - {FLAG_CURIOSITY_LEVEL} - Accumulated curiosity flag
- * - {FLAG_MEMORY_INTEGRITY} - Memory state
- * - {PROFILE_ARCHETYPE} - MC's psychological archetype
- * - {PROFILE_STABILITY} - MC's mental stability level
- * - {PROFILE_TRAITS} - MC's dominant behavioral traits
- * - {PROFILE_MANIPULATION_AFFINITY} - MC's most effective manipulation vector
- * - {PSYCHOLOGICAL_FLAGS}
- * - {PSYCHOLOGICAL_PROFILE}
- * - {CHARACTERS_CONTEXT} - Character information and relationships
- * - {PLACES_CONTEXT} - Location details and significance
- * - {MAIN_CHARACTER_INFO} - MC profile bio
- * - {PREVIOUS_PAGE_TEXT} - Content of the last generated page
- * - {ACTION_CHOICES} - Available actions for current page
- * - {SUMMARIZED_CONTEXT} - AI-summarized story context from page 1 to current
- * - {NARRATIVE_STYLE_INSTRUCTIONS} - Dynamic AI writing style guidance based on player psychology and story progression
+ * @todo embed in document
  */
-export const PROMPT_USER = `Continue this branching psychological thriller.
+function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: string, documents: AIDocument[] } {
+  return {
+    systemPrompt: PROMPT_SYSTEM,
+    documents: [{
+      text: buildBookMetaPrompt(book, state)
+    }]
+  };
+}
 
-MAIN CHARACTER (MC): {MAIN_CHARACTER_INFO}
+/**
+ * Core system prompt defining the AI writer's persona and fundamental behavior
+ * 
+ * This prompt establishes the psychological thriller writer persona inspired by
+ * R.L. Stine but darker, with specific rules for narrative manipulation and
+ * psychological horror elements.
+ * 
+ * @todo embed in document
+ */
+function buildBookMetaPrompt(book?: Book, state?: StoryState): string {
+  if (!state || !book) return ``;
 
-CURRENT PAGE: {CURRENT_PAGE} of {TOTAL_PAGES}
+  const { characters } = state;
+  const { language, title, summary, keywords, totalPages } = book;
+  return `BOOK META:
+- Title: ${title}
+- Summary: ${summary}
+- Keywords: ${keywords.join(', ')}
+- Target pages: ${totalPages}
+- Language: ${language}
 
----
-STORY CONTEXT:
+CHARACTERS:
+${formatCharactersForPrompt(characters)}
 
-Summarized context:\n"""\n{SUMMARIZED_CONTEXT}\n"""
+PLACES:
+${formatPlacesForPrompt(state)}`;
+}
 
-Older pages:\n{ALL_PREVIOUS_PAGES}
+function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedStoryPage): string {
+  const { page, maxPage, contextHistory, flags, psychologicalProfile, hiddenState, characters, places } = state;
+  const { totalPages, mc } = book;
+  const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
+  const styleInput = createStyleInput(state);
+  const narrativeStyle = createNarrativeStyle(styleInput);
+  const charactersSlot = MAX_CHARACTERS - Object.values(characters).length;
+  const placesSlot = MAX_PLACES - Object.values(places).length;
 
-Previous page:\n{PREVIOUS_PAGE_TEXT}
+  return `This book is targetted to be ${totalPages} pages long, per page contains max ${MAX_WORDS_PER_PAGE} words.
+Task: Now you write page ${page} of ${maxPage}.
+
+Hard Rules:
+- Keep consistent writing style and language.
+- Continue directly from selected action.
+- Continue from current situation.
+
+CURRENT SITUATION (from previous page):
+- Main character (MC): ${getMainCharacterInfo(mc).trim()}
+- Place: ${place || '-'}
+- Time: ${timeOfDay || '-'}
+- Mood: ${mood || '-'}
+- Characters present: ${charactersPresent.join(', ') || '-'}
+
+STORY CONTEXT (until now):
+"""\n${contextHistory}\n"""
+
+OLDER PAGES:
+${getPreviousPagesText(state).trim()}
+
+PREVIOUS PAGE:
+${formatPageText(actionedPage.text)}
+
+ACTION CHOICES:
+${formatActionChoices(actions)}
 
 CHOSEN ACTION:
-Choices:\n{ACTION_CHOICES}
-Selected:\n{SELECTED_ACTION}
+${formatSelectedAction(selectedAction)}
 
 ---
-PAGE FORMAT:
-• ONE short page (${MAX_WORDS_PER_PAGE} words max)
-• Multiple very short paragraphs (1-3 sentences each)
-• Spacing for tension (Goosebumps style)
-• No markdown except italic if needed
+NARRATIVE STYLE:
+${narrativeStyle.instructions.trim()}
 
----
-NARRATIVE STYLE INSTRUCTIONS:
-{NARRATIVE_STYLE_INSTRUCTIONS}
-
-NARRATIVE REQUIREMENTS:
-• Continue directly from selected action
-• Something must feel off/wrong/inconsistent
-• Introduce at least one twist, anomaly, or contradiction
-• MC may misinterpret, believe false assumptions, over/underreact
-
----
 PSYCHOLOGICAL FLAGS (Accumulated):
-{PSYCHOLOGICAL_FLAGS}
+${formatPsychologicalFlags(flags)}
 
----
 PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
-{PSYCHOLOGICAL_PROFILE}
+${formatPsychologicalProfile(psychologicalProfile)}
 
----
 PSYCHOLOGICAL PROGRESSION:
-• As pages increase: MC becomes less reliable, perception more distorted, reality less stable
+As pages increase: MC becomes less reliable, perception more distorted, reality less stable
 
----
 HIDDEN STATE (Influence writing, don't reveal):
-{HIDDEN_STATE_INFLUENCE}
+${formatHiddenState(hiddenState)}
 
----
 ROUTE MEMORY (Influence writing, don't reveal):
-{ROUTE_CONTEXT}
+${formatRouteContext(state)}
 
----
-CHARACTER MEMORY (Relevant characters for context):
-{CHARACTERS_CONTEXT}
-
----
-PLACE MEMORY (Relevant places for context):
-{PLACES_CONTEXT}
-
----
 TARGETED MANIPULATION RULES:
 Based on MC's psychological profile, personalize the horror by manipulation affinity:
-
 ${getManipulationAffinitiesText()}
 
 ARCHETYPE-SPECIFIC TACTICS:
@@ -390,7 +332,7 @@ ${getArchetypeTacticsText()}
 STABILITY IMPACT:
 ${getStabilityLevelsText()}
 
-The goal: Make the MC feel "This story knows exactly how I think and is using it against me."
+Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
 
 ---
 ${RULES_ROUTE_MEMORY}
@@ -402,22 +344,18 @@ ${RULES_STORY_CONSISTENCY}
 ${RULES_DIFFICULTY_SCALING}
 
 ---
-ENDING FORESHADOWING DIRECTIONS:
-Target ending: {ENDING_ARCHETYPE}
+CURRENT ENDING TYPE:
+${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
 
-Gradually steer story toward this ending using subtle hints:
-{ENDING_ARCHETYPE_EXAMPLES}
+CURRENT ENDING PLAN:
+${state.viableEnding?.text ?? '-'}
 
 ENDING RULES:
-• Guide story subtly toward target ending
-• Don't fully explain or reveal early
-• Plant small hints across pages
-• Final pages: disturbing > satisfying
-
-{ENDING_RULES}
+${buildEndingRules(state)}
 
 ---
 CHARACTER USAGE RULES:
+- Preserve character's dialect, tone, and personality traits
 - Maintain consistency with known characters
 - Reflect their current status in behavior
 - Use pastInteractions to influence dialogue subtly
@@ -428,10 +366,13 @@ CHARACTER USAGE RULES:
 - Use directional relationships to create tension and conflict triangles
 
 CHARACTER CREATION RULES:
+${charactersSlot === 0 ? `No new character. Reached ${MAX_CHARACTERS} limit.` : `
+- You can create up to ${charactersSlot} more
 - Create characters only when genuinely new to the story
-- Keep bio to 1-2 sentence maximum, slightly suggestive > fully descriptive
 - Set appropriate narrativeFlags based on character behavior and story needs
-- Optionally include age in bio if relevant
+- Keep bio concise, slightly suggestive > fully descriptive
+- Include any personality trains in bio for consistency
+- Optionally include age in bio if plot-sensitive`.trim()}
 
 CHARACTER UPDATE RULES:
 - Update existing characters when their status, interactions, or story relevance changes
@@ -448,11 +389,13 @@ PLACE USAGE RULES:
 - Consider place trauma tags when writing atmosphere (e.g., "betrayal" places feel tense)
 
 PLACE CREATION RULES:
+${placesSlot === 0 ? `No new place. Reached ${MAX_PLACES} limit.` : `
+- You can create up to ${placesSlot} more
 - Create places only when MC enters a new, meaningful location
 - Avoid creating generic one-time places (e.g., "random street")
 - Keep context to 1 sentence maximum, evocative > descriptive
 - Set appropriate currentMood based on story atmosphere
-- Add relevant characters to knownCharacters if they appear there
+- Add relevant characters to knownCharacters if they appear there`.trim()}
 
 PLACE UPDATE RULES:
 - Update existing places when revisited or when significant events occur
@@ -470,8 +413,9 @@ EXAMPLE OUTPUT FORMAT (JSON):
 {
   "text": "Content (${MAX_WORDS_PER_PAGE} words max, first-person POV)",
   "mood": "One of: ${moods.join('", "')}",
-  "place": "School",
-  "characters": ["Lisa"],
+  "place": "School", // or 'unknown'
+  "timeOfDay": "evening", // e.g. time range, 'night', 'HH:mm', 'unknown'
+  "charactersPresent": ["Lisa"], // present in the scene besides MC
   "keyEvents": string[],
   "importantObjects": string[],
   "actions": [
@@ -484,7 +428,7 @@ EXAMPLE OUTPUT FORMAT (JSON):
       }
     }
   ],
-  "addTraumaTag": "mysterious whispers",
+  "addTraumaTag": "mysterious footstep",
   "characterUpdates": {
     "newCharacters": [
       {
@@ -501,6 +445,7 @@ EXAMPLE OUTPUT FORMAT (JSON):
           "isSuspicious": false,
           "isMissing": false,
           "isDead": false,
+          "hasInjury": "One of: ${injurySeverities.join('", "')}",
           "hasSecret": true,
           "potentialTwist": "One of: ${potentialTwistTypes.join('", "')}"
         }
@@ -539,9 +484,97 @@ EXAMPLE OUTPUT FORMAT (JSON):
         }
       }
     ],
-    "updatedPlaces": [] // Like above, but only include necessary fields (empty if none)
+    "updatedPlaces": [], // Like above, but only include necessary fields (empty if none)
+  }
+  "viableEnding": { // Only if re-adjusted
+    "text": "Write your doom ending plan—how the story should end",
+    "type": "One of: ${Object.keys(endingTypes).join('", "')}"
   }
 }`;
+
+}
+
+function formatPageText(text: string): string {
+  return text.trim().replace(/\n/g, ' ¶ ');
+}
+
+/**
+ * Formats action types for inclusion in prompts
+ * @returns Formatted string of all action types
+ */
+function getActionTypesText(): string {
+  return Object.entries(actionTypes)
+    .map(([key, value]) => `• ${key}: ${value}`)
+    .join('\n');
+}
+
+function getActionRulesText(limit: number = MAX_ACTION_CHOICES): string {
+  return `Generate next 1-${limit} actions to choose:
+• Action can be verb (what to do next) or dialogue (say/answer)
+• Short, immediate, meaningful, clearly different
+• At least has one that is risky, irrational, or dangerous
+• Occasionally include deceptive choice
+• Each action should have a hint that provides key continuity
+• If dialogue, should keep the tone and style of the character
+• Example: A. "Y-Yes... I'll go with you." / B. Run away, fast
+
+ACTION TYPES:
+${getActionTypesText()}
+
+ACTION HINT:
+Hint to guide AI build the next page and continue the story`;
+}
+
+/**
+ * Formats archetype-specific tactics for inclusion in prompts
+ * @returns Formatted string of archetype-specific tactics
+ */
+function getArchetypeTacticsText(): string {
+  return Object.entries(archetypes)
+    .map(([key, value]) => `• ${key}: ${value}`)
+    .join('\n');
+}
+
+/**
+ * Formats ending archetypes for inclusion in prompts
+ * @returns Formatted string of all ending archetypes
+ */
+function getEndingArchetypesText(): string {
+  return Object.entries(endingTypes)
+    .map(([key, value]) => `• ${key}: ${value}`)
+    .join('\n');
+}
+
+/**
+ * Formats stability levels for inclusion in prompts
+ * @returns Formatted string of all stability levels
+ */
+function getStabilityLevelsText(): string {
+  return Object.entries(stabilityLevels)
+    .map(([key, value]) => `• ${key}: ${value}`)
+    .join('\n');
+}
+
+/**
+ * Formats manipulation affinities for inclusion in prompts
+ * @returns Formatted string of all manipulation affinities
+ */
+function getManipulationAffinitiesText(): string {
+  return Object.entries(manipulationAffinities)
+    .map(([key, value]) => `• ${key}: ${value}`)
+    .join('\n');
+}
+
+// ============================================================================
+// USER PROMPTS
+// ============================================================================
+
+/**
+ * Template for generating the next story page with all necessary context
+ * 
+ * This prompt combines system rules, current story state, and user decisions
+ * to guide the AI in creating the next page of the psychological thriller.
+ */
 
 /**
  * Gets formatted text for previous pages
@@ -559,7 +592,7 @@ function getPreviousPagesText(state: StoryState): string {
   return state.pageHistory
     .slice(-MAX_PAGE_HISTORY) // Last configurable pages for context
     .map((page, index) =>
-      `• Page ${state.pageHistory[index].page}: ${page.text.replace(/\n/g, ' ¶ ')} (place: ${page.place}, action: ${page.selectedAction?.text ?? 'Continue'})`
+      `• Page ${state.pageHistory[index].page}: ${formatPageText(page.text)} (place: ${page.place}, action: ${page.selectedAction?.text ?? 'Continue'})`
     )
     .join('\n');
 }
@@ -609,8 +642,9 @@ function formatSelectedAction(selectedAction?: Action): string {
   const isCustomAction = selectedAction.type == 'custom';
 
   return `• [${selectedAction.type}] ${selectedAction.text}\n\nAbout selected action:
-• Hint: ${isCustomAction ? "This is custom prompt from reader. Develop naturally, don't fullfil their expectation." : selectedAction.hint.text}
-• Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}`;
+• Hint: ${isCustomAction ? "-" : selectedAction.hint.text}
+• Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}
+• Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, don't fullfil their expectation.` : `This is just a hint for guiding you to build this next page, might be a secret, not to always put in the story.`}`;
 }
 
 /**
@@ -641,9 +675,14 @@ function formatActionChoices(actions: Action[]): string {
  * // Returns: "Continue this branching psychological thriller..." with all placeholders filled
  * ```
  */
-export function buildCompletePrompt(mc: StoryMC, state: StoryState, actionedPage: ActionedStoryPage): string {
-  const isNearEnding = state.page >= state.maxPage - 10;
-  const endingRules = isNearEnding ? `---
+export function buildEndingRules(state: StoryState): string {
+  const { psychologicalProfile, hiddenState } = state;
+  const isNearEnding = state.page >= state.maxPage - NEAR_ENDING_PAGES;
+  const endingRules = isNearEnding ? `
+- The story is approaching convergence
+- Viable ending is now inevitable regardless MC chosen action
+- Final pages: disturbing > satisfying
+
 ENDING EXECUTION TEMPLATE (LAST 10 PAGES):
 
 PHASE 1 → "FALSE SAFETY" (if fake_to_real ending)
@@ -661,43 +700,31 @@ Goals: Reveal truth, reframe entire story, hit psychologically
 Structure: Reveal → Recontextualization → Final haunting line
 Final line rule: Short, clear, haunting ("It was never outside.")
 
----
 ENDING PRESSURE:
 • Increase chaos and urgency
 • Collapse multiple mysteries
 • Introduce irreversible consequences
 • Don't fully explain everything`
 
-: `IMPORTANT: Increase hint intensity as story progresses. Early pages should be very subtle, later pages more obvious but still indirect.`;
+: `- Gradually steer story toward target viable ending
+- Plant small hints across pages
+- Don't fully explain or reveal early
+- IMPORTANT: Increase hint intensity as story progresses. Early pages should be very subtle, later pages more obvious but still indirect.
 
-  const ending = getCurrentEndingArchetype(state);
-  const styleInput = createStyleInput(state);
-  const narrativeStyle = createNarrativeStyle(styleInput)
-  // State should has been updated (page number incremented) before calling this function
-  // So it will instruct AI to generate story for this exact page number
-  const currentPage = state.page;
-  const totalPages = state.maxPage;
-  const prompt = PROMPT_USER
-    .replace('{MAIN_CHARACTER_INFO}', getMainCharacterInfo(mc))
-    .replace('{CURRENT_PAGE}', currentPage.toString())
-    .replace('{TOTAL_PAGES}', totalPages.toString())
-    .replace('{ALL_PREVIOUS_PAGES}', getPreviousPagesText(state)) // TODO: embed in document
-    .replace('{PREVIOUS_PAGE_TEXT}', actionedPage.text) // TODO: embed in document
-    .replace('{SUMMARIZED_CONTEXT}', state.contextHistory) // TODO: embed in document
-    .replace('{ACTION_CHOICES}', formatActionChoices(actionedPage.actions))
-    .replace('{SELECTED_ACTION}', formatSelectedAction(actionedPage.selectedAction))
-    .replace('{HIDDEN_STATE_INFLUENCE}', formatHiddenState(state.hiddenState))
-    .replace('{ROUTE_CONTEXT}', formatRouteContext(state))
-    .replace('{ENDING_ARCHETYPE}', ending)
-    .replace('{ENDING_ARCHETYPE_EXAMPLES}', endings[ending as keyof typeof endings])
-    .replace('{PSYCHOLOGICAL_FLAGS}', formatPsychologicalFlags(state.flags))
-    .replace('{PSYCHOLOGICAL_PROFILE}', formatPsychologicalProfile(state.psychologicalProfile))
-    .replace('{CHARACTERS_CONTEXT}', formatCharactersForPrompt(state))
-    .replace('{PLACES_CONTEXT}', formatPlacesForPrompt(state))
-    .replace('{NARRATIVE_STYLE_INSTRUCTIONS}', narrativeStyle.instructions.trim())
-    .replace('{ENDING_RULES}', endingRules);
+If the current viable ending is no longer viable, re-determine or alter the viable ending based on:
+- Profile archetype: ${psychologicalProfile.archetype}
+- Profile stability: ${psychologicalProfile.stability}
+- Psychological flags
+- Detected shift: ${hiddenState.profileShift?.detected === true ? state.hiddenState.profileShift!.shiftType : '-'}
+- Recommended ending type: ${determineOptimalEnding(state)}
 
-  return prompt;
+Just an example:
+High curiosity leads to discovering uncomfortable truths
+- Profile archetype: "the_explorer"
+- Curiosity flag: "high"
+- Recommended ending type: "false_reality"`;
+
+  return endingRules.trim();
 }
 
 /**
@@ -742,7 +769,7 @@ export function formatPsychologicalProfile(profile: PsychologicalProfile): strin
  * @returns Formatted string for prompt inclusion
  */
 export function formatRouteContext(state: StoryState): string {
-  return `• Past actions: ${state.actionsHistory.map(a => a.text).join('; ')}
+  return `• Past actions: ${state.actionsHistory.map(a => `${a.text} (type: ${a.type})`).join('; ')}
 • Trauma tags: ${state.traumaTags.join(', ')}
 • Difficulty: ${state.difficulty}`;
 }
@@ -913,7 +940,7 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
   const stability = state.psychologicalProfile.stability;
   
   // Check for special conditions
-  const isNearEnding = state.page >= state.maxPage - 5;
+  const isNearEnding = state.page >= state.maxPage - NEAR_ENDING_PAGES;
   const hasProfileShift = state.hiddenState.profileShift?.detected;
   const isPsychologicallyDistressed = stability === 'unstable' || stability === 'fractured';
   const hasValidActionType = !!selectedAction?.type && selectedAction.type in actionTypes;
@@ -1001,64 +1028,55 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * ```
  */
 function createBookCreationPrompt(theme: string, mc: StoryMCCandidate): string {
-  return `Create a psychological thriller story based on the following theme and main character:
-
-THEME: "${theme}"
+  return `Create a psychological thriller story based on the following theme:
+"""\n${theme}\n"""
 
 MAIN CHARACTER:
 - Name: ${mc.name ?? '-'}
 - Age: ${mc.age ?? '-'}
 - Gender: ${mc.gender ?? '-'}
 
-REQUIREMENTS:
+STORY REQUIREMENTS:
 - Establish psychological tension and mystery immediately
 - Create a sense of unease and impending dread
-- All content must be age-appropriate thriller horror
 - Main character should feel vulnerable and relatable
 - Include subtle hints of deeper psychological themes
-- Include 1-${MAX_ACTION_CHOICES_FIRST_PAGE} actionable choices for the reader
 
-WRITING STYLE DNA:
-- Use short, punchy sentences mixed with occasional longer ones
-- Occasionally start sentences with "And" or "But"
-- Use interruptions — (em dash) to create tension
-- Avoid full clarity; imply more than explain
-- Let the narrator misunderstand reality
-- Use sensory details (sound, silence, shadows, breathing)
-
-OPENING DISTURBANCE:
-The first page MUST introduce something that feels wrong, unnatural, or contradictory.
-Not scary yet—but deeply unsettling.
+OPENING DISTURBANCE (Page 1):
+- The first page MUST introduce something that feels wrong, unnatural, or contradictory.
+- Not scary yet—but deeply unsettling.
+- End the first page with tension, uncertainty, or a subtle cliffhanger—not resolution.
+- Make the story immediately engaging and psychologically unsettling.
 
 BRANCHING ACTIONS:
 ${getActionRulesText(MAX_ACTION_CHOICES_FIRST_PAGE)}
 
----
 Generate the following complete book setup:
+- TITLE: A catchy, mysterious title (1-4 words)
+- HOOK: 1-2 sentences that immediately create intrigue and psychological tension
+- SUMMARY: 50-100 words that sets up the psychological thriller premise
+- KEYWORDS: 3-5 relevant tags or genre (lowercase) for story categorization
+- FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery
+- ACTIONS: 1-${MAX_ACTION_CHOICES_FIRST_PAGE} first-person POV verb or dialogue to continue
+- INITIAL PSYCHOLOGICAL FLAGS: Set trust, fear, guilt, curiosity levels (low/medium/high)
+- INITIAL DIFFICULTY: One of: "low", "medium", "high", "nightmare"
+- INITIAL PLACE: The main location where the story begins (name, mood, brief description, familiarity (0-1))
+- INITIAL CHARACTERS: Key characters in the story excluding MC (name, status, relationship to MC)
 
-1. BOOK TITLE: A catchy, mysterious title (1-4 words)
-2. HOOK: 1-2 sentences that immediately create intrigue and psychological tension
-3. SUMMARY: 50-100 words that sets up the psychological thriller premise
-4. KEYWORDS: 3-5 relevant tags or genre (lowercase) for story categorization
-5. FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery
-6. INITIAL PSYCHOLOGICAL FLAGS: Set trust, fear, guilt, curiosity levels (low/medium/high)
-7. STORY DIFFICULTY: One of: "low", "medium", "high", "nightmare"
-8. ENDING ARCHETYPE: One of:\n${getEndingArchetypesText()}
-9. INITIAL PLACE: The main location where the story begins (name, mood, brief description)
-10. INITIAL CHARACTERS: Key characters introduced in the first page excluding MC (name, status, relationship to MC)
+ENDING TYPES:
+${getEndingArchetypesText()}
 
-RESPONSE FORMAT:
-Return a JSON object with the following structure:
+RESPONSE FORMAT (JSON structure):
 {
   "displayTitle": "Book Title",
+  "totalPages": ${DEFAULT_BOOK_MAX_PAGES},
+  "language": "Detect language code from theme (e.g. 'en')",
   "hook": "Hook text",
   "summary": "Book summary",
   "keywords": ["keyword1", "keyword2", "keyword3"],
   "firstPage": {
     "text": "Prologue text",
-    "mood": "One of: ${moods.join('", "')}",
-    "place": "Location Name",
-    "characters": ["Character1", "Character2"],
+    "charactersPresent": ["Character1", "Character2"],
     "actions": [
       {
         "text": "Action choice 1",
@@ -1070,19 +1088,28 @@ Return a JSON object with the following structure:
       }
     ]
   },
-  "initialPsychologicalFlags": {
-    "trust": "medium",
-    "fear": "low", 
-    "guilt": "low",
-    "curiosity": "high"
+  "initialState": {
+    "mood": "One of: ${moods.join('", "')}",
+    "place": "Location Name",
+    "timeOfDay": "e.g. time range, 'night', 'HH:mm' or 'unknown'",
+    "flags": {
+      "trust": "medium",
+      "fear": "low", 
+      "guilt": "low",
+      "curiosity": "high"
+    },
+    "difficulty": "medium",
+    "viableEnding": {
+      "text": "Write your doom ending plan—how the story should end",
+      "type": "One of: ${Object.keys(endingTypes).join('", "')}"
+    }
   },
-  "initialDifficulty": "medium",
-  "initialEndingArchetype": "fake_escape",
   "initialPlace": {
     "name": "Location Name",
     "type": "One of: ${placeTypes.join('", "')}",
     "currentMood": "One of: ${placeMoods.join('", "')}",
-    "context": "Brief description of the place"
+    "context": "Brief description of the place",
+    "familiarity": 0.1,
   },
   "initialCharacters": [
     {
@@ -1093,13 +1120,7 @@ Return a JSON object with the following structure:
       "bio": "Brief character description"
     }
   ]
-}
-
----
-
-FINAL RULE:
-End the first page with tension, uncertainty, or a subtle cliffhanger—not resolution.
-Make the story immediately engaging and psychologically unsettling.`;
+}`;
 }
 
 /**
@@ -1141,7 +1162,7 @@ export async function initializeBook(
   theme: string,
   mcCandidate?: StoryMCCandidate
 ): Promise<{
-  book: DBBook;
+  book: Book;
   firstPage: PersistedStoryPage;
   initialState: StoryState;
 }> {
@@ -1166,41 +1187,44 @@ export async function initializeBook(
     }
 
     const {
-      displayTitle,
+      title,
+      totalPages,
       hook,
       summary,
       keywords,
-      initialPsychologicalFlags,
-      initialDifficulty,
-      initialEndingArchetype,
+      initialState: generatedInitialState,
       firstPage: generatedFirstPage,
       initialPlace,
-      initialCharacters
+      initialCharacters,
+      language
     } = response.result;
 
     // 5. Persist book to database with character profile
-    const book = await insertBook(
-      userId,
-      displayTitle,
-      hook,
-      summary,
-      keywords,
-      'active',
-      mc,
+    const dbBook = await insertBook(
+      {
+        userId,
+        title,
+        totalPages,
+        language,
+        hook,
+        summary,
+        keywords,
+        mc,
+      } satisfies DBNewBook
     );
+
+    const book = mapBookFromDb(dbBook);
 
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       pageId: '', // Will be set after page creation
       page: 1,
       maxPage: DEFAULT_BOOK_MAX_PAGES,
-      flags: initialPsychologicalFlags,
+      ...generatedInitialState, // mood, place, timeOfDay, flags, difficulty, viableEnding
       traumaTags: [],
       psychologicalProfile: createInitialPsychologicalProfile(),
       hiddenState: createInitialHiddenState(),
       memoryIntegrity: 'stable',
-      difficulty: initialDifficulty,
-      cachedEndingArchetype: initialEndingArchetype,
       characters: initialCharacters ? 
         Object.fromEntries(
           initialCharacters.map((char) => [
@@ -1219,8 +1243,9 @@ export async function initializeBook(
                 isSuspicious: false,
                 isMissing: false,
                 isDead: false,
+                hasInjury: 'none',
                 hasSecret: false,
-                potentialTwist: 'none' satisfies PotentialTwistType
+                potentialTwist: 'none'
               }
             } satisfies CharacterMemory
           ])
@@ -1232,7 +1257,7 @@ export async function initializeBook(
           context: initialPlace.context || '',
           visitCount: 1,
           lastVisitedAtPage: 1,
-          familiarity: 0.1,
+          familiarity: initialPlace.familiarity,
           moodHistory: [initialPlace.currentMood],
           eventTags: [],
           knownCharacters: [],
@@ -1245,7 +1270,11 @@ export async function initializeBook(
     };
 
     // 7. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, book.id);
+    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, {
+      bookId: book.id,
+      branchId: null,
+      parentId: null,
+    });
 
     // 8. Update state with pageId and persist to database
     initialState.pageId = firstPage.id;
@@ -1303,41 +1332,48 @@ export async function initializeBook(
  */
 export async function buildNextPage(
   userId: string,
-  mc: StoryMC,
-  state: StoryState, // Current story state with incremented page number
+  book: Book,
+  previousState: StoryState, // Story state for previous page (page number not incremented yet)
   actionedPage: ActionedStoryPage, // Previous page with selected action
   isUserAction: boolean = true, // User selected action, or just candidate pre-generation
 ): Promise<PersistedStoryPage> {
+  // Update story state for context (increments page, update context summary, actions history)
+  const storyState = await updateState(previousState, actionedPage);
+
   // 1. Create personalized prompt with character, story context, and previous action
-  const prompt = buildCompletePrompt(mc, state, actionedPage);
+  const { systemPrompt, documents } = buildSystemPrompt(book, storyState);
+  const prompt = buildUserPrompt(book, storyState, actionedPage);
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
-  const config = determineAIConfig(state, actionedPage.selectedAction);
+  const config = determineAIConfig(storyState, actionedPage.selectedAction);
   
   // 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
-  const response = await aiPrompt<StoryPage>(prompt, {
+  const response = await aiPrompt<StoryGeneration>(prompt, {
     config,
     modelSelection: AI_CHAT_MODELS_WRITING,
     context: isUserAction ? 'story-page' : 'story-page-candidate',
-    outputAsJson: true
+    outputAsJson: true,
+    systemPrompt,
+    documents
   });
   
   // 4. Handle AI response validation
   if (!response.result) {
-    throw new Error('Failed to generate story page: AI response result is undefined');
+    throw new Error('Failed to generate story page'); // TODO: show retry button in frontend
   }
 
-  const generatedPage = response.result; // Generated content without database ID yet
+  const generatedStoryPage = response.result; // Generated content without database ID yet
 
-  // 5. Pre-generate candidate pages for each action in the new page
-  if (isUserAction) {
-    await ensureCandidatesForPage(userId, generatedPage);
-  }
+  // 5. Update story state with result from AI
+  const newState = updateStoryStateFromGeneratedPage(storyState, generatedStoryPage);
 
   // 6. Persist generated page to database with parent-child relationship
-  const persistedPage = await insertStoryPage(userId, state.page, generatedPage, actionedPage.bookId, actionedPage.id);
+  const newPage = await insertStoryPage(userId, newState.page, generatedStoryPage, actionedPage);
 
-  // 7. Insert user page progress tracking
+  // 7. Pre-generate candidate pages for each action in the new page
+  const userPage = isUserAction ? await ensureCandidatesForPage(userId, newPage) : newPage;
+
+  // 8. Insert user page progress tracking
   await dbWrite
     .insert(userPageProgress)
     .values({
@@ -1345,25 +1381,77 @@ export async function buildNextPage(
       bookId: actionedPage.bookId,
       pageId: actionedPage.id,
       action: actionedPage.selectedAction,
-      nextPageId: persistedPage.id
+      nextPageId: userPage.id,
+      branchId: userPage.branchId,
     })
     .onConflictDoUpdate({
       target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.pageId],
       set: {
-        nextPageId: persistedPage.id
+        action: actionedPage.selectedAction,
+        nextPageId: userPage.id,
+        branchId: userPage.branchId,
       }
     });
   
-  // 8. Persist story state for the generated page (page-based state management)
-  const bookId = persistedPage.bookId;
-  const pageId = persistedPage.id;
-  await insertStoryState(userId, bookId, pageId, state);
+  // 9. Create delta and persist story state for the generated page (page-based state management)
+  const bookId = userPage.bookId;
+  const pageId = userPage.id;
+  
+  // 10. Create delta from previous state to new state for efficient reconstruction
+  try {
+    if (previousState) {
+      await createStateDeltaRecord(userId, bookId, pageId, previousState, newState);
+      console.log(`[buildNextPage] 🔄 Created delta for page ${pageId} from previous state ${actionedPage.id}`);
+    } else {
+      console.log(`[buildNextPage] ℹ️ No previous state found for page ${actionedPage.id}, skipping delta creation`);
+    }
+  } catch (deltaError) {
+    console.error(`[buildNextPage] ⚠️ Failed to create delta for page ${pageId}:`, deltaError);
+    // Continue with state insertion even if delta creation fails
+  }
+  
+  await insertStoryState(userId, bookId, pageId, newState);
 
   // 9. Update user session to point to the new page
   await setActiveSession(userId, bookId, pageId);
   
   // 10. Return the persisted story page with all database metadata
-  return persistedPage;
+  return userPage;
+}
+
+/**
+ * Updates story state based on generated page content from AI
+ * 
+ * Handles consolidation of AI-generated updates including viable endings,
+ * trauma tags, character updates, and place updates into the current story state.
+ * 
+ * @param storyState - Current story state to update
+ * @param generatedPage - AI-generated page content with potential updates
+ * @returns Updated story state with all AI modifications applied
+ */
+function updateStoryStateFromGeneratedPage(
+  storyState: StoryState, 
+  generatedPage: StoryGeneration
+): StoryState {
+  // Create new state with viable ending updates
+  const newState: StoryState = { 
+    ...storyState, 
+    viableEnding: {
+      text: generatedPage.viableEnding?.text ?? storyState.viableEnding?.text,
+      type: generatedPage.viableEnding?.type ?? storyState.viableEnding?.type,
+    } 
+  };
+
+  // Add new trauma tag if provided
+  maybeAddTrauma(newState, generatedPage.addTraumaTag);
+
+  // Process character updates from AI output
+  processCharacterUpdates(newState, generatedPage.characterUpdates);
+
+  // Process place updates from AI output
+  processPlaceUpdates(newState, generatedPage.placeUpdates);
+
+  return newState;
 }
 
 /**
@@ -1398,63 +1486,53 @@ export async function buildNextPage(
  * console.log(`Candidate page: ${candidatePage.text}`);
  * ```
  */
-export async function chooseAction(userId: string, action: Action, isUserAction: boolean = true): Promise<PersistedStoryPage> {
-  // 1. Get current story progress (session, page, state, character) in parallel
-  let { mc: currentMc, page: currentPage, state: currentState, session: activeSession } = await getStoryProgress(userId);
+export async function chooseAction(
+  userId: string,
+  action: Action,
+  isUserAction: boolean = true,
+  currentPage?: UserStoryPage | null,
+): Promise<PersistedStoryPage> {
+  // 1. Get current story progress (book, page, state, session) in parallel
+  let {
+    book: currentBook,
+    page: activePage,
+    state: currentState,
+    session: activeSession 
+  } = await getStoryProgress(userId);
+
+  currentPage ??= activePage;
 
   // 2. Validate all required components exist for story progression
   if (!activeSession) throw new Error(`No active session found for user ${userId}`);
-  if (!currentMc) throw new Error(`No active book found for user ${userId}`);
+  if (!currentBook) throw new Error(`No active book found for user ${userId}`);
   if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
+  if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${activeSession.pageId})`);
 
-  // 3. Old story states are purged, so we should reconstruct
-  if (!currentState) {
-    console.log(`[chooseAction] 🔄 currentState is null, reconstructing from branch traversal for page ${currentPage.id}`);
-    
-    // Create dependencies for reconstruction
-    const reconstructionDeps: StateReconstructionDeps = {
-      getPageById: async (id: string) => await getPageFromDB(id),
-      getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
-      getDelta: async (id: string) => await getStateDelta(userId, id),
-      getStoryState: async (id: string) => await getStoryState(userId, id),
-    };
-    
-    // Reconstruct state using branch traversal
-    const reconstructionResult = await reconstructStoryState(currentPage.id, userId, reconstructionDeps);
-    currentState = reconstructionResult.state;
-    
-    console.log(`[chooseAction] ✅ State reconstructed using ${reconstructionResult.method} (${reconstructionResult.reconstructionTimeMs}ms)`);
-  }
-
-  // 4. If this is previous page and choice has been made, can't make another choice
-  if (currentPage.selectedAction && 
-      (currentPage.selectedAction.text !== action.text || 
-      currentPage.selectedAction.type !== action.type)) {
+  // 3. If this is previous page and choice has been made, can't make another choice
+  if ('selectedAction' in currentPage && currentPage.selectedAction && !deepEqualSimple(currentPage.selectedAction, action)) {
     throw new Error(`Choice made, can't make another choice`);
   }
   
-  // 5. Check if next page is pre-generated (candidate) and reuse if available
+  // 4. Check if next page is pre-generated (candidate) and reuse if available
   const nextPageId = action.pageId;
   let userPage: PersistedStoryPage | null = null;
   if (nextPageId) {
     userPage = await getStoryPageById(userId, activeSession.bookId, nextPageId);
   }
 
-  // 6. If no pre-generated page exists, generate new page with state progression
+  // 5. If no pre-generated page exists, generate new page with state progression
   if (userPage) {
     // User action: ensure candidates for next page | Candidate: wait until user visit the page and ensure next candidates
     if (isUserAction) {
-      await ensureCandidatesForPage(userId, userPage);
+      userPage = await ensureCandidatesForPage(userId, userPage);
     }
+    console.log(`[chooseAction] ✅ Using pre-generated page ${userPage.id}, delta already exists from pre-generation`);
   } else {
     // 6a. Create actioned page with selected action for state processing
     const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
     
-    // 6b. Update story state based on chosen action (increments page, generates context summary)
-    const updatedState = await updateState(currentState, actionedPage);
-    
-    // 6c. Generate next page using AI with dynamic configuration
-    userPage = await buildNextPage(userId, currentMc, updatedState, actionedPage, isUserAction);
+    // 6b. Generate next page using AI with dynamic configuration
+    userPage = await buildNextPage(userId, currentBook, currentState, actionedPage, isUserAction);
   }
 
   // 7. Update user session to point to the new page
@@ -1554,9 +1632,10 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
  * @see chooseAction - Used to generate individual candidate pages
  * @see buildNextPage - Calls this function for main story pages when isUserAction=true
  */
-export async function ensureCandidatesForPage(userId: string, page: StoryPage | null) {
-  if (!page) return;
-  
+export async function ensureCandidatesForPage(userId: string, page: UserStoryPage): Promise<UserStoryPage> {
+  // Track if any actions were actually updated
+  let hasRealChanges = false;
+
   // For each action without a pre-generated page, create a candidate
   for (let i = 0; i < page.actions.length; i++) {
     const action = page.actions[i];
@@ -1565,11 +1644,21 @@ export async function ensureCandidatesForPage(userId: string, page: StoryPage | 
     if (action.pageId) continue;
     
     // Generate candidate page for this action
-    const candidatePage = await chooseAction(userId, action, false);
+    const candidatePage = await chooseAction(userId, action, false, page);
     
     // Update only this action with its destination pageId for branching navigation
     page.actions[i] = { ...action, pageId: candidatePage.id };
+    hasRealChanges = true;
   }
+
+  // Update persisted page only if actions were actually modified
+  if (hasRealChanges) {
+    const dbPage = await updateStoryPage(page.id, { ...page });
+    return mapToUserStoryPage(dbPage);
+  }
+  
+  // Return original page if no changes needed
+  return page;
 }
 
 /**

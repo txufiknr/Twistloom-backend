@@ -1,47 +1,8 @@
+import { Book } from "./book.js";
 import type { CharacterMemory, CharacterStatus, CharacterUpdates, StoryMC } from "./character.js";
 import type { PlaceMemory, PlaceMood, PlaceType, PlaceUpdates } from "./places.js";
 import type { DBPage } from "./schema.js";
 import type { Gender } from "./user.js";
-
-/**
- * AI response structure for book creation
- * 
- * This type defines the complete response structure from AI when creating
- * a new psychological thriller book, including all metadata and initial content.
- */
-export type BookCreationResponse = {
-  /** Book title (catchy, mysterious) */
-  displayTitle: string;
-  /** Hook text (1-2 sentences, intriguing) */
-  hook: string;
-  /** Summary (50-100 words, sets up psychological tension) */
-  summary: string;
-  /** Keywords (3-5 relevant tags) */
-  keywords: string[];
-  /** First story page content */
-  firstPage: StoryPage;
-  /** Initial psychological flags for the story */
-  initialPsychologicalFlags: PsychologicalFlags;
-  /** Story difficulty level */
-  initialDifficulty: Difficulty;
-  /** Ending archetype for the story */
-  initialEndingArchetype: Ending;
-  /** Initial place memory setup */
-  initialPlace?: {
-    name: string;
-    type: PlaceType;
-    currentMood: PlaceMood;
-    context?: string;
-  };
-  /** Initial character memories setup */
-  initialCharacters?: Array<{
-    name: string;
-    gender: Gender,
-    status: CharacterStatus;
-    relationshipToMC?: string;
-    bio?: string;
-  }>;
-};
 
 /**
  * Available moods for story pages
@@ -53,6 +14,9 @@ export type BookCreationResponse = {
  * background music or audio atmosphere for enhanced immersion.
  */
 export const moods = [
+  "calm",
+  "uneasy",
+  "fear",
   "eerie", // unsettling, strange atmosphere
   "tense", // high tension, anticipation of danger
   "dread", // deep feeling of impending doom
@@ -74,7 +38,7 @@ export const moods = [
  * These define the ultimate resolution pattern and twist type
  * that the story will build toward throughout its progression.
  */
-export const endings = {
+export const endingTypes = {
   /** MC thinks they escaped → final twist reveals they didn’t */
   "fake_escape": "MC thinks they escaped → final twist reveals they didn't; temporary escapes, recurring situations",
   /** Story ends where it began (or implied repetition) */
@@ -108,6 +72,7 @@ export const actionTypes = {
   "protect": "Defend others, shield from harm, sacrifice",
   "create": "Build something new, artistic expression, innovate",
   "heal": "Repair damage, restore health/trust",
+  "dialogue": "Interact with other characters",
   "custom": "Custom prompt from reader",
   "other": "Catch-all for uncategorized actions"
 };
@@ -126,7 +91,7 @@ export type Mood = typeof moods[number];
  * Generated from the endings object to ensure type safety
  * when specifying target story endings.
  */
-export type Ending = typeof endings[keyof typeof endings];
+export type EndingType = typeof endingTypes[keyof typeof endingTypes];
 
 /**
  * Union type of all possible action type values
@@ -243,6 +208,11 @@ export type PsychologicalFlags = {
   curiosity: "low" | "medium" | "high";
 };
 
+export type Ending = {
+  text?: string;
+  type?: EndingType;
+}
+
 /**
  * Available ending execution strategy types
  * 
@@ -302,7 +272,7 @@ export type ProfileShift = {
   /** When the shift was detected */
   detectedAt: number;
   /** Original ending type before shift */
-  originalEnding?: Ending;
+  originalEnding?: EndingType;
 };
 
 /**
@@ -516,12 +486,14 @@ export type PsychologicalProfileMetrics = {
 export type StoryPage = {
   /** Main story page content (60-120 words, first-person POV) */
   text: string;
-  /** Current emotional atmosphere of the page */
-  mood: Mood;
+  /** Current emotional atmosphere */
+  mood?: Mood;
   /** Current place where the story is taking place */
-  place: string;
+  place?: string;
+  /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
+  timeOfDay?: string;
   /** Characters present in the page */
-  characters?: string[];
+  charactersPresent?: string[];
   /** Key events that occurred in the page */
   keyEvents?: string[];
   /** Important objects mentioned in the page */
@@ -534,12 +506,14 @@ export type StoryPage = {
   characterUpdates?: CharacterUpdates;
   /** Updates to places (new and existing) */
   placeUpdates?: PlaceUpdates;
-  // /** Action chosen by user */
-  // selectedAction?: Action;
 };
 
+export type StoryGeneration = StoryPage & {
+  viableEnding?: Partial<Ending>
+}
+
 // export type PersistedStoryPage = StoryPage & { id: string, bookId: string, parentId?: string | null };
-export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'parentId' | 'page'>;
+export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'parentId' | 'branchId' | 'page'>;
 // export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
 export type UserStoryPage = PersistedStoryPage & { selectedAction?: Action };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
@@ -622,14 +596,15 @@ export type StoryState = {
    */
   difficulty: Difficulty;
 
-  /**
-   * Cached ending archetype assigned at story progression milestone
-   * 
-   * This is set dynamically between 30-50% story progress to allow
-   * proper foreshadowing while maintaining narrative consistency.
-   * undefined until the assignment timing is reached.
-   */
-  cachedEndingArchetype?: Ending;
+  // /**
+  //  * Cached ending archetype assigned at story progression milestone
+  //  * 
+  //  * This is set dynamically between 30-50% story progress to allow
+  //  * proper foreshadowing while maintaining narrative consistency.
+  //  * undefined until the assignment timing is reached.
+  //  */
+  // cachedEndingArchetype?: Ending;
+  viableEnding?: Ending;
 
   /**
    * Character memory system for narrative consistency
@@ -674,6 +649,8 @@ export type StoryState = {
   contextHistory: string;
 };
 
+export type StoryStateSnapshotReason = 'periodic' | 'major_event' | 'branch_start' | 'user_request';
+
 export type UserPageProgress = {
   id: string;
   userId: string;
@@ -681,6 +658,7 @@ export type UserPageProgress = {
   pageId: string;
   actionId: string;
   nextPageId?: string;
+  branchId?: string;
   createdAt: number;
 }
 
@@ -694,17 +672,14 @@ export type UserPageProgress = {
  * @interface StoryProgress
  */
 export type StoryProgress = {
+  /** Current book */
+  book?: Book | null;
   /** Current story page with all content and actions */
   page?: UserStoryPage | null;
-  
   /** Current story state with psychological profile and progression */
   state?: StoryState | null;
-  
   /** Active user session linking user to current book and page */
   session?: { bookId: string; pageId: string } | null;
-  
-  /** Main character profile with name, age, and gender */
-  mc?: StoryMC | null;
 };
 
 /**
@@ -852,8 +827,8 @@ export type StateDelta = {
   /** Difficulty change */
   difficulty?: Difficulty;
   
-  /** Ending archetype change */
-  endingArchetype?: Ending;
+  /** Viable ending change */
+  viableEnding?: Ending;
   
   /** Context history addition */
   contextHistoryAddition?: string;
@@ -994,6 +969,8 @@ export type TraversalOptions = {
 export type StateReconstructionDeps = {
   /** Get page by ID */
   getPageById: (pageId: string) => Promise<DBPage | null>;
+  /** Get book by ID to retrieve totalPages */
+  getBook: (bookId: string) => Promise<{ totalPages: number } | null>;
   /** Get state snapshot by page ID */
   getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
   /** Get state delta by page ID */

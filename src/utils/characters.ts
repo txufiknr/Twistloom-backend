@@ -1,5 +1,5 @@
-import { MAX_PAST_INTERACTIONS, MAX_RELEVANT_CHARACTERS, RECENT_INTERACTION_THRESHOLD } from "../config/story.js";
-import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate } from "../types/character.js";
+import { MAX_PAST_INTERACTIONS, MAX_CHARACTERS } from "../config/story.js";
+import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, NarrativeFlags, RelationshipUpdate, StoryMC, StoryMCCandidate } from "../types/character.js";
 import type { StoryState, StoryPage } from "../types/story.js";
 import { Gender, KnownGender } from "../types/user.js";
 
@@ -30,6 +30,7 @@ export function createCharacter(
   role: string,
   bio: string,
   status: CharacterStatus,
+  narrativeFlags: NarrativeFlags,
   relationshipToMC: string,
   currentPage: number
 ): CharacterMemory {
@@ -44,11 +45,12 @@ export function createCharacter(
     pastInteractions: [],
     lastInteractionAtPage: currentPage,
     narrativeFlags: {
-      isSuspicious: status === "suspicious",
-      isMissing: status === "missing",
-      isDead: status === "dead",
-      hasSecret: status === "suspicious" || status === "hostile",
-      potentialTwist: status === "suspicious" ? "betrayal" : "none"
+      ...narrativeFlags,
+      isSuspicious: narrativeFlags.isSuspicious || status === "suspicious",
+      isMissing: narrativeFlags.isMissing || status === "missing",
+      isDead: narrativeFlags.isDead || status === "dead",
+      hasSecret: narrativeFlags.hasSecret || status === "suspicious" || status === "hostile",
+      potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
     },
     // places: []
   };
@@ -199,34 +201,6 @@ export function processCharacterUpdates(
 }
 
 /**
- * Gets relevant characters for the current story context
- * 
- * Filters characters based on recency and importance to provide
- * focused context to the AI without overwhelming it.
- * 
- * @param state - Current story state
- * @returns Array of relevant characters (max 5)
- * 
- * @example
- * ```typescript
- * const relevant = getRelevantCharacters(state);
- * // Returns characters who appeared recently or have important statuses
- * ```
- */
-export function getRelevantCharacters(state: StoryState): CharacterMemory[] {
-  const currentPage = state.page;
-  const recentInteractionThreshold = RECENT_INTERACTION_THRESHOLD; // Pages back to consider "recent"
-  
-  return Object.values(state.characters)
-    .filter(character => 
-      // Character appeared recently OR has non-neutral status
-      character.lastInteractionAtPage >= currentPage - recentInteractionThreshold ||
-      character.status !== "neutral"
-    )
-    .slice(0, MAX_RELEVANT_CHARACTERS); // Limit to max relevant characters
-}
-
-/**
  * Formats characters for prompt injection
  * 
  * Creates a compact, readable string representation of relevant characters
@@ -241,14 +215,14 @@ export function getRelevantCharacters(state: StoryState): CharacterMemory[] {
  * // Returns: "Lina (best friend) - trusting - last seen: 3\n..."
  * ```
  */
-export function formatCharactersForPrompt(state: StoryState): string {
-  const relevant = getRelevantCharacters(state);
+export function formatCharactersForPrompt(characters: Record<string, CharacterMemory>): string {
+  const allCharacters = Object.values(characters);
   
-  if (relevant.length === 0) {
+  if (allCharacters.length === 0) {
     return "No characters encountered yet.";
   }
 
-  return relevant
+  return allCharacters
     .map(character => {
       const mainInfo = `• ${character.name} (${character.role}) - ${character.gender} - ${character.status} - last seen: page ${character.lastInteractionAtPage}`;
       const bio = `  Bio: ${character.bio}`;

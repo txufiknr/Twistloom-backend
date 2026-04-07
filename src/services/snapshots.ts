@@ -253,7 +253,8 @@ export function shouldCreateSnapshot(
       priority: 50
     };
   }
-  
+
+  // TODO: should it consider currentPage.branchId too?
   // Branch start (current page is a root page or different branch from previous)
   if (!currentPage.parentId) {
     // Current page is a root page (no parent) - always a branch start

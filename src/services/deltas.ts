@@ -26,6 +26,7 @@ import {
   createPlaceMemoryDelta
 } from "../utils/delta-helpers.js";
 import { getErrorMessage } from "../utils/error.js";
+import { deepEqualSimple } from "../utils/parser.js";
 
 // ============================================================================
 // DELTA CREATION UTILITIES
@@ -182,9 +183,9 @@ export function createStateDelta(
     delta.difficulty = toState.difficulty;
   }
   
-  // Track cached ending archetype changes
-  if (fromState.cachedEndingArchetype !== toState.cachedEndingArchetype) {
-    delta.endingArchetype = toState.cachedEndingArchetype;
+  // Track viable ending changes
+  if (!deepEqualSimple(fromState.viableEnding, toState.viableEnding)) {
+    delta.viableEnding = toState.viableEnding;
   }
   
   // Track character changes
@@ -371,8 +372,8 @@ export function applyStateDelta(baseState: StoryState, delta: StateDelta): Story
   }
   
   // Ending archetype
-  if (delta.endingArchetype) {
-    newState.cachedEndingArchetype = delta.endingArchetype;
+  if (delta.viableEnding) {
+    newState.viableEnding = delta.viableEnding;
   }
   
   // Context history

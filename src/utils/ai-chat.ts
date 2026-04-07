@@ -122,11 +122,12 @@ export async function githubPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const systemPromptWithDocuments = `${systemPrompt ?? PROMPT_SYSTEM}${documents ? documents!.map((doc) => `${doc.title}\n${doc.text}`.trim()).join('\n\n') : ''}`;
       return await getGitHubClient().chat.completions.create({
         model,
         messages: [
-          { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
+          { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
         max_tokens: config.maxOutputToken,
@@ -619,7 +620,14 @@ export async function aiPrompt<T = string>(
   prompt: string, 
   options: AIPromptOptions = {}
 ): Promise<AIResponse<T>> {
-  const { modelSelection = AI_CHAT_MODELS_WRITING, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson = false } = options;
+  const {
+    modelSelection = AI_CHAT_MODELS_WRITING,
+    context,
+    config = AI_CHAT_CONFIG_DEFAULT,
+    outputAsJson = false,
+    systemPrompt,
+    documents
+  } = options;
 
   // Define provider order from modelSelection or use empty array
   const providers = Object.keys(modelSelection) as AIChatProvider[];
@@ -637,29 +645,17 @@ export async function aiPrompt<T = string>(
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
+
+      const opts: Partial<PromptWithFallbackOptions> = { context, config, models, systemPrompt, documents };
       
       switch (provider) {
-        case 'github':
-          result = await githubPrompt(prompt, { context, config, models });
-          break;
-        case 'gemini':
-          result = await geminiPrompt(prompt, { context, config, models });
-          break;
-        case 'cohere':
-          result = await coherePrompt(prompt, { context, config, models });
-          break;
-        case 'mistral':
-          result = await mistralPrompt(prompt, { context, config, models });
-          break;
-        case 'groq':
-          result = await groqPrompt(prompt, { context, config, models });
-          break;
-        case 'cerebras':
-          result = await cerebrasPrompt(prompt, { context, config, models });
-          break;
-        case 'nvidia':
-          result = await nvidiaPrompt(prompt, { context, config, models });
-          break;
+        case 'github': result = await githubPrompt(prompt, opts); break;
+        case 'gemini': result = await geminiPrompt(prompt, opts); break;
+        case 'cohere': result = await coherePrompt(prompt, opts); break;
+        case 'mistral': result = await mistralPrompt(prompt, opts); break;
+        case 'groq': result = await groqPrompt(prompt, opts); break;
+        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break;
+        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, getErrorMessage(error));

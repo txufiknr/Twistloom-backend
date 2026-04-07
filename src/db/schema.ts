@@ -8,7 +8,6 @@ import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { 
   PsychologicalProfile, 
-  Ending,
   PsychologicalFlags,
   HiddenState,
   MemoryIntegrity,
@@ -17,10 +16,13 @@ import type {
   ActionedStoryPage,
   StateDelta,
   StoryState,
+  Ending,
+  StoryStateSnapshotReason,
 } from "../types/story.js";
 import type { CharacterMemory, CharacterUpdates } from "../types/character.js";
 import type { PlaceMemory, PlaceUpdates } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
+import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
 
 /** Pre-defined columns */
 const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -32,6 +34,7 @@ const date = text("date").notNull(); // YYYY-MM-DD format
 const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
 const lastActive = timestamp("last_active", { withTimezone: true }).defaultNow().notNull();
+const branchId = uuid("branch_id").notNull().default('main'); // Which reality you're in
 
 /**
  * Create story pages table
@@ -57,12 +60,14 @@ export const pages = pgTable(
     id: id(),
     userId: userId(), // Initiator
     parentId: uuid("parent_id"),
+    branchId, // Which reality you're in
     bookId: bookId("cascade"), // Delete if book is deleted
     page: integer("page").notNull(),
     text: text("text").notNull(), // 60 words max, first-person POV
-    mood: text("mood").notNull(), // Current emotional atmosphere
-    place: text("place").notNull(), // Current place where the story is taking place
-    characters: jsonb("characters").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Characters present in the page
+    mood: text("mood"), // Current emotional atmosphere
+    place: text("place"), // Current place where the story is taking place
+    timeOfDay: text("time_of_day"),
+    charactersPresent: jsonb("characters").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Characters present in the page
     keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
     importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
@@ -75,8 +80,6 @@ export const pages = pgTable(
   (t) => [
     // Index for book pagination
     index("pages_book_page_idx").on(t.bookId, t.page),
-    // Index for mood-based queries
-    index("pages_mood_idx").on(t.mood),
     // Index for book ordering
     index("pages_book_order_idx").on(t.bookId, t.page.desc()),
     // Index for creation time
@@ -237,7 +240,7 @@ export const storyStates = pgTable(
     hiddenState: jsonb("hidden_state").$type<HiddenState>().notNull(), // Hidden narrative state structure
     memoryIntegrity: text("memory_integrity").$type<MemoryIntegrity>().notNull().default("stable"), // "stable" | "fragmented" | "corrupted"
     difficulty: text("difficulty").$type<Difficulty>().notNull().default("low"), // "low" | "medium" | "high" | "nightmare"
-    cachedEndingArchetype: text("cached_ending_archetype").$type<Ending>(), // Ending enum, nullable until assigned
+    viableEnding: text("ending").$type<Ending>(),
     characters: jsonb("characters").$type<Record<string, CharacterMemory>>().notNull().default(sql`'{}'::jsonb`), // Character records
     places: jsonb("places").$type<Record<string, PlaceMemory>>().notNull().default(sql`'{}'::jsonb`), // Place records
     pageHistory: jsonb("page_history").$type<ActionedStoryPage[]>().notNull().default(sql`'[]'::jsonb`), // Page history with sliding window
@@ -317,7 +320,9 @@ export const books = pgTable(
   {
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
-    displayTitle: text("display_title").notNull(),
+    title: text("title").notNull(),
+    totalPages: integer("total_pages").notNull().default(DEFAULT_BOOK_MAX_PAGES),
+    language: text("language"),
     hook: text("hook"),
     summary: text("summary"),
     image: text("image"), // Cover image ImageKit URL
@@ -370,6 +375,7 @@ export const userPageProgress = pgTable(
     pageId: uuid("page_id").notNull(),
     action: jsonb("action").$type<Action>().notNull(),
     nextPageId: uuid("next_page_id"), // For tracking pre-generated pages
+    branchId, // Which reality you're in
     createdAt,
     updatedAt,
   },
@@ -404,7 +410,7 @@ export const userPageProgress = pgTable(
  *     "hiddenState": { "memoryIntegrity": "fragmented" },
  *     "memoryIntegrity": "stable",
  *     "difficulty": "medium",
- *     "cachedEndingArchetype": "false_reality",
+ *     "viableEnding": { "text": "...", "type": "false_reality" },
  *     "characters": {},
  *     "places": {},
  *     "pageHistory": [],
@@ -428,7 +434,7 @@ export const storyStateSnapshots = pgTable(
     createdAt,
     version: integer("version").default(1).notNull(),
     isMajorCheckpoint: boolean("is_major_checkpoint").default(false).notNull(),
-    reason: text("reason").$type<'periodic' | 'major_event' | 'branch_start' | 'user_request'>().notNull(),
+    reason: text("reason").$type<StoryStateSnapshotReason>().notNull(),
     updatedAt,
   },
   (t) => [

@@ -1,6 +1,16 @@
 // import type { CharacterPlaceRelation } from "./places.js";
 import { Gender, KnownGender } from "./user.js";
 
+export const injurySeverities = [
+  "mild",
+  "moderate", 
+  "severe",
+  "critical",
+  "none"
+] as const;
+
+export type InjurySeverity = typeof injurySeverities[number];
+
 /**
  * Main character profile for psychological thriller stories
  * 
@@ -38,6 +48,7 @@ export const characterStatuses = [
   "neutral",     // Indifferent, background character
   "missing",     // Disappeared, absent from story
   "hostile",     // Actively working against MC
+  "injured",
   "dead"         // Deceased, may appear in memories/ghosts
 ] as const;
 
@@ -72,13 +83,15 @@ export type PotentialTwistType = typeof potentialTwistTypes[number];
  * They serve as the control layer for character-driven plot developments.
  */
 export type NarrativeFlags = {
-  /** Character is hiding something important */
+  /** Whether character is hiding something important */
   isSuspicious: boolean;
-  /** Character has disappeared from the story */
+  /** Whether character has disappeared from the story */
   isMissing: boolean;
-  /** Character is deceased */
+  /** Whether character is deceased */
   isDead: boolean;
-  /** Character holds a secret that could be revealed */
+  /** Whether character has injury */
+  hasInjury: InjurySeverity;
+  /** Whether character holds a secret that could be revealed */
   hasSecret: boolean;
   /** Potential twist type for this character */
   potentialTwist: PotentialTwistType;

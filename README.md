@@ -301,7 +301,7 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 
 ### **Story Settings**
 - `MAX_WORDS_PER_PAGE`: 60 words per page limit
-- `MAX_RELEVANT_CHARACTERS`: 5 active characters limit
+- `MAX_CHARACTERS`: 5 active characters limit
 - `DEFAULT_BOOK_MAX_PAGES`: 150 pages per book
 - `MAX_WORDS_SUMMARIZED_CONTEXT`: 300 words context limit
 

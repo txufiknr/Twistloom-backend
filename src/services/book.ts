@@ -12,58 +12,225 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { pages, books, storyStates, userPageProgress, userSessions } from "../db/schema.js";
-import { eq, and, desc, asc } from "drizzle-orm";
+import { pages, books, userPageProgress } from "../db/schema.js";
+import { and, eq, asc } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
-import type { DBBook, DBNewBook, DBNewPage, DBPage, DBStoryState, DBUserSession } from "../types/schema.js";
-import type { BookStatus } from "../types/book.js";
-import { StoryMC } from "../types/character.js";
-import type { StoryState, StoryProgress, StoryPage, PersistedStoryPage, UserStoryPage, Action } from "../types/story.js";
-import { mapStoryStateFromDb, getStoryState } from "./story.js";
-import { deletedStateCache } from "./story-state-cache.js";
-import { MAX_STORY_STATES_PER_PAGE } from "../config/story.js";
-import { updateUserLastActivity } from "./user.js";
+import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
+import type { Book, BookStatus } from "../types/book.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action } from "../types/story.js";
 
 /**
- * Retrieves the active session for a user including both bookId and current pageId
+ * Inserts a story page into database (supports both root and child pages)
  * 
- * @param userId - The user's unique identifier
- * @returns Promise that resolves to active session or null if no active session
+ * @param userId - User identifier who owns the page
+ * @param pageNumber - The page number in the story sequence
+ * @param page - The story page content to insert
+ * @param bookId - The book's unique identifier
+ * @param parentPageId - Parent page identifier for branching (optional for root pages)
+ * @returns Promise that resolves when page is inserted
  * 
  * Behavior:
- * - Queries user_sessions table for active status
- * - Returns both bookId and pageId from active session
- * - Handles cases where user has no active sessions
- * - Uses composite primary key for efficient lookup
+ * - Stores AI-generated page in pages table
+ * - Associates with book and page number
+ * - Creates parent-child relationship for branching when parentPageId provided
+ * - Handles both root pages (no parent) and child pages (with parent)
  * 
- * Example:
+ * Examples:
  * ```typescript
- * const activeSession = await getActiveSession("user123");
- * if (activeSession) {
- *   console.log(`User is reading book ${activeSession.bookId} on page ${activeSession.pageId}`);
- * } else {
- *   console.log("User has no active reading session");
- * }
+ * // Root page
+ * const firstPage = await insertStoryPage("user123", 1, firstPageContent, "book456");
+ * 
+ * // Child page
+ * const childPage = await insertStoryPage("user123", 5, childPageContent, "book456", "parent123");
  * ```
  */
-export async function getActiveSession(userId: string): Promise<{ bookId: string; pageId: string } | null> {
+export async function insertStoryPage(
+  userId: string,
+  pageNumber: number,
+  page: StoryPage,
+  pageMeta: Pick<PersistedStoryPage, 'bookId' | 'branchId' | 'parentId'>,
+): Promise<PersistedStoryPage> {
+  const { bookId, branchId, parentId } = pageMeta;
   try {
-    const result = await dbRead
-      .select({ bookId: userSessions.bookId, pageId: userSessions.pageId })
-      .from(userSessions)
-      .where(
-        and(
-          eq(userSessions.userId, userId),
-          eq(userSessions.status, 'active')
-        )
-      )
-      .limit(1);
-    
-    return result[0] || null;
+    const result = await dbWrite
+      .insert(pages)
+      .values({
+        userId,
+        bookId,
+        branchId,
+        parentId,
+        page: pageNumber,
+        text: page.text,
+        mood: page.mood,
+        place: page.place || "Unknown", // Default place if not provided
+        timeOfDay: page.timeOfDay || "unknown",
+        charactersPresent: [], // Empty array for root page
+        keyEvents: [], // Empty array for root page
+        importantObjects: [], // Empty array for root page
+        actions: page.actions,
+        addTraumaTag: page.addTraumaTag || null,
+        characterUpdates: page.characterUpdates || null,
+        placeUpdates: page.placeUpdates || null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } satisfies DBNewPage)
+      .returning();
+
+    return mapToPersistedStoryPage(result[0]);
   } catch (error) {
-    console.error(`Failed to get active session for user ${userId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve active session: ${getErrorMessage(error)}`);
+    console.error(`Failed to insert story page for page ${pageNumber}:`, getErrorMessage(error));
+    throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`);
   }
+}
+
+/**
+ * Updates an existing story page in the database
+ * 
+ * @param pageId - Page identifier to update
+ * @param updates - Partial story page data to update
+ * @returns Promise resolving to the updated page record
+ */
+export async function updateStoryPage(
+  pageId: string,
+  updates: Partial<Omit<DBNewPage, 'id' | 'bookId' | 'pageNumber' | 'createdAt'>>
+): Promise<DBPage> {
+  const result = await dbWrite
+    .update(pages)
+    .set({ ...updates, updatedAt: new Date() })
+    .where(eq(pages.id, pageId))
+    .returning();
+
+  return result[0];
+}
+
+/**
+ * Retrieves all pages for a book in order
+ * 
+ * @param bookId - Book identifier to retrieve pages for
+ * @returns Promise resolving to array of page records ordered by page number
+ */
+export async function getBookPages(bookId: string, branchId?: string): Promise<DBPage[]> {
+  const conditions = [eq(pages.bookId, bookId)];
+  
+  // If branchId is provided, add branch condition
+  if (branchId !== undefined) {
+    conditions.push(eq(pages.branchId, branchId));
+  }
+  
+  const result = await dbRead
+    .select()
+    .from(pages)
+    .where(and(...conditions))
+    .orderBy(pages.page);
+
+  return result;
+}
+
+/**
+ * Inserts a new book into the database
+ * 
+ * @param userId - User identifier who owns the book
+ * @param displayTitle - Display title for the book
+ * @param totalPages - Total number of pages in the book
+ * @param hook - Hook text for the book
+ * @param summary - Summary text for the book
+ * @param keywords - Keywords array for the book
+ * @param status - Book status (active, archived, draft)
+ * @returns Promise resolving to the inserted book record
+ */
+export async function insertBook(book: DBNewBook): Promise<DBBook> {
+  const result = await dbWrite.insert(books).values({
+    ...book,
+    status: 'active',
+    createdAt: new Date(),
+    updatedAt: new Date()
+  }).returning();
+
+  return result[0];
+}
+
+/**
+ * Retrieves a book by ID
+ * 
+ * @param bookId - Book identifier to retrieve
+ * @returns Promise resolving to the book record or null if not found
+ */
+export async function getBookFromDB(bookId: string): Promise<DBBook | null> {
+  const result = await dbRead
+    .select()
+    .from(books)
+    .where(eq(books.id, bookId))
+    .limit(1);
+
+  return result[0] || null;
+}
+
+/**
+ * Gets story state with fallback to deleted state cache
+ * 
+ * @param userId - User identifier for the story state
+ * @param pageId - Page identifier for the story state
+ * @returns Promise resolving to the story state record or null if not found
+ * 
+ * Behavior:
+ * - First tries to get from database
+ * - Falls back to deleted state cache if not found
+ * - Returns null if state doesn't exist anywhere
+ */
+export async function getBook(bookId: string): Promise<Book | null> {
+  // Try database first
+  const dbResult = await getBookFromDB(bookId);
+  if (dbResult) {
+    return mapBookFromDb(dbResult);
+  }
+  
+  return null;
+}
+
+/**
+ * Updates an existing book in the database
+ * 
+ * @param bookId - Book identifier to update
+ * @param updates - Partial book data to update
+ * @returns Promise resolving to the updated book record
+ */
+export async function updateBook(
+  bookId: string,
+  updates: Partial<Omit<DBNewBook, 'id' | 'userId' | 'createdAt'>>
+): Promise<DBBook> {
+  const result = await dbWrite
+    .update(books)
+    .set({ ...updates, updatedAt: new Date() })
+    .where(eq(books.id, bookId))
+    .returning();
+
+  return result[0];
+}
+
+/**
+ * Retrieves all books for a user ordered by creation date
+ * 
+ * @param userId - User identifier to retrieve books for
+ * @param status - Optional status filter
+ * @returns Promise resolving to array of book records ordered by creation date
+ */
+export async function getUserBooks(
+  userId: string,
+  status?: BookStatus
+): Promise<DBBook[]> {
+  if (status) {
+    return await dbRead
+      .select()
+      .from(books)
+      .where(and(eq(books.userId, userId), eq(books.status, status)))
+      .orderBy(books.createdAt);
+  }
+  
+  return await dbRead
+    .select()
+    .from(books)
+    .where(eq(books.userId, userId))
+    .orderBy(books.createdAt);
 }
 
 /**
@@ -86,12 +253,19 @@ export async function getActiveSession(userId: string): Promise<{ bookId: string
  * }
  * ```
  */
-export async function getPageFromDB(pageId: string): Promise<DBPage | null> {
+export async function getPageFromDB(pageId: string, branchId?: string): Promise<DBPage | null> {
   try {
+    const conditions = [eq(pages.id, pageId)];
+    
+    // If branchId is provided, add branch condition
+    if (branchId !== undefined) {
+      conditions.push(eq(pages.branchId, branchId));
+    }
+    
     const result = await dbRead
       .select()
       .from(pages)
-      .where(eq(pages.id, pageId))
+      .where(and(...conditions))
       .limit(1);
     
     return result[0] || null;
@@ -218,11 +392,13 @@ export function mapToUserStoryPage(dbPage: DBPage, selectedAction?: Action): Use
     id: dbPage.id,
     bookId: dbPage.bookId,
     parentId: dbPage.parentId,
+    branchId: dbPage.branchId,
     page: dbPage.page,
     text: dbPage.text,
-    mood: dbPage.mood,
-    place: dbPage.place,
-    characters: dbPage.characters || [],
+    mood: dbPage.mood || undefined,
+    place: dbPage.place || undefined,
+    timeOfDay: dbPage.timeOfDay || undefined,
+    charactersPresent: dbPage.charactersPresent || [],
     keyEvents: dbPage.keyEvents || [],
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
@@ -255,11 +431,13 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     id: dbPage.id,
     bookId: dbPage.bookId,
     parentId: dbPage.parentId,
+    branchId: dbPage.branchId,
     page: dbPage.page,
     text: dbPage.text,
-    mood: dbPage.mood,
-    place: dbPage.place,
-    characters: dbPage.characters || [],
+    mood: dbPage.mood || undefined,
+    place: dbPage.place || undefined,
+    timeOfDay: dbPage.timeOfDay || undefined,
+    charactersPresent: dbPage.charactersPresent || [],
     keyEvents: dbPage.keyEvents || [],
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
@@ -277,7 +455,7 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
  * 
  * Behavior:
  * - Maps only story content fields from database to domain types
- * - Excludes database-specific fields like id, bookId, parentId
+ * - Excludes database-specific fields like id, bookId, parentId, branchId
  * - Handles optional fields correctly
  * - Preserves data integrity during transformation
  * 
@@ -290,9 +468,10 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
 export function mapToStoryPage(dbPage: DBPage): StoryPage {
   return {
     text: dbPage.text,
-    mood: dbPage.mood,
-    place: dbPage.place,
-    characters: dbPage.characters || [],
+    mood: dbPage.mood || undefined,
+    place: dbPage.place || undefined,
+    timeOfDay: dbPage.timeOfDay || undefined,
+    charactersPresent: dbPage.charactersPresent || [],
     keyEvents: dbPage.keyEvents || [],
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
@@ -303,311 +482,30 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
 }
 
 /**
- * Retrieves complete story progress for a user including session, page, and state
+ * Maps database book data to the Book type with proper type safety
  * 
- * @param userId - The user's unique identifier
- * @returns Promise that resolves to story progress object
+ * Converts nullable database fields to appropriate types and handles
+ * optional fields according to the Book interface specification.
  * 
- * Behavior:
- * - Gets active session (bookId, pageId) in parallel with story state
- * - Retrieves current page if pageId exists
- * - Returns all data needed for story progression
- * - Optimizes database queries with parallel execution
- * 
- * Example:
- * ```typescript
- * const { page: currentPage, state: currentState } = await getStoryProgress("user123");
- * if (currentPage && currentState) {
- *   console.log(`Reading page ${currentState.page} in book ${currentState.bookId}`);
- * }
- * ```
+ * @param dbBook - Raw book data from database
+ * @returns Properly typed Book object
  */
-export async function getStoryProgress(userId: string): Promise<StoryProgress> {
-  try {
-    // Step 1: Get active session
-    const activeSession = await getActiveSession(userId);
-    if (!activeSession) {
-      return { page: null, state: null, session: null, mc: null };
-    }
-
-    const { bookId, pageId } = activeSession;
-
-    // Step 2: Get current page, story state, and book info in parallel
-    const [currentPage, currentState, bookInfo] = await Promise.all([
-      getStoryPageById(userId, bookId, pageId),
-      getStoryState(userId, pageId),
-      getBookInfo(bookId),
-    ]);
-
-    // Step 3: Return
-    return {
-      page: currentPage,
-      state: currentState,
-      session: activeSession,
-      mc: bookInfo.mc,
-    } satisfies StoryProgress;
-  } catch (error) {
-    console.error(`Failed to get story progress for user ${userId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve story progress: ${getErrorMessage(error)}`);
-  }
-}
-
-/**
- * Creates or updates the active session for a user with new page information
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @param pageId - The new page identifier to set as current
- * @returns Promise that resolves to the created/updated session object
- * 
- * Behavior:
- * - Uses upsert operation (create or update) for user_sessions table
- * - Maintains active status and book association
- * - Handles session creation if none exists
- * - Ensures user always has a valid active session
- * - Updates user's last activity timestamp for tracking
- * - Returns the complete session object for further processing
- * 
- * Example:
- * ```typescript
- * const session = await setActiveSession("user123", "book456", "page789");
- * console.log(`Session ${session.id} activated for user ${session.userId}`);
- * // User's active session now points to the new page and activity is tracked
- * ```
- */
-export async function setActiveSession(userId: string, bookId: string, pageId: string): Promise<DBUserSession> {
-  try {
-    const result = await dbWrite
-      .insert(userSessions)
-      .values({
-        userId,
-        bookId,
-        pageId,
-        status: 'active',
-      })
-      .onConflictDoUpdate({
-        target: [userSessions.userId, userSessions.bookId],
-        set: {
-          pageId,
-          status: 'active',
-          updatedAt: new Date(),
-        }
-      }).returning();
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
-    
-    console.log(`Session activated for user ${userId}, book ${bookId}`);
-    return result[0];
-  } catch (error) {
-    console.error(`Failed to set active session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to set active session: ${getErrorMessage(error)}`);
-  }
-}
-
-/**
- * Updates the story state for a user and book
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @param state - The updated story state to persist
- * @returns Promise that resolves when state is updated
- * 
- * Behavior:
- * - Updates story_states table with new state data
- * - Maintains composite key relationship
- * - Handles all story state fields including psychological data
- * - Preserves candidate flag for branching narratives
- * 
- * Example:
- * ```typescript
- * await insertStoryState("user123", "book456", "page789", state);
- * ```
- */
-export async function insertStoryState(userId: string, bookId: string, pageId: string, state: StoryState): Promise<void> {
-  try {
-    await dbWrite
-      .insert(storyStates)
-      .values({
-        userId,
-        pageId,
-        bookId,
-        page: state.page,
-        maxPage: state.maxPage,
-        flags: state.flags,
-        traumaTags: state.traumaTags,
-        psychologicalProfile: state.psychologicalProfile,
-        hiddenState: state.hiddenState,
-        memoryIntegrity: state.memoryIntegrity,
-        difficulty: state.difficulty,
-        cachedEndingArchetype: state.cachedEndingArchetype || null,
-        characters: state.characters,
-        places: state.places,
-        pageHistory: state.pageHistory,
-        actionsHistory: state.actionsHistory,
-        contextHistory: state.contextHistory,
-      })
-      .onConflictDoUpdate({
-        target: [storyStates.userId, storyStates.bookId, storyStates.pageId],
-        set: {
-          page: state.page,
-          maxPage: state.maxPage,
-          flags: state.flags,
-          traumaTags: state.traumaTags,
-          psychologicalProfile: state.psychologicalProfile,
-          hiddenState: state.hiddenState,
-          memoryIntegrity: state.memoryIntegrity,
-          difficulty: state.difficulty,
-          cachedEndingArchetype: state.cachedEndingArchetype || null,
-          characters: state.characters,
-          places: state.places,
-          pageHistory: state.pageHistory,
-          actionsHistory: state.actionsHistory,
-          contextHistory: state.contextHistory,
-          updatedAt: new Date(),
-        }
-      });
-
-    // Cleanup old story states - keep only the latest MAX_STORY_STATES_PER_PAGE per user/book
-    await cleanupOldStoryStates(userId, bookId);
-  } catch (error) {
-    console.error(`Failed to update story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));
-    throw new Error(`Unable to update story state: ${getErrorMessage(error)}`);
-  }
-}
-
-/**
- * Cleans up old story states for a specific user/book combination
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @returns Promise that resolves when cleanup is complete
- * 
- * Behavior:
- * - Keeps only the latest MAX_STORY_STATES_PER_PAGE states across all pages
- * - Orders by updatedAt descending to identify newest states
- * - Deletes older states beyond the limit
- */
-async function cleanupOldStoryStates(userId: string, bookId: string): Promise<void> {
-  try {
-    // Get all story states for this user/book combination, ordered by newest first
-    const allStates = await dbRead
-      .select({ 
-        pageId: storyStates.pageId,
-        updatedAt: storyStates.updatedAt 
-      })
-      .from(storyStates)
-      .where(and(
-        eq(storyStates.userId, userId),
-        eq(storyStates.bookId, bookId)
-      ))
-      .orderBy(desc(storyStates.updatedAt));
-
-    // If we have more states than the limit, delete the oldest ones
-    if (allStates.length > MAX_STORY_STATES_PER_PAGE) {
-      const statesToDelete = allStates.slice(MAX_STORY_STATES_PER_PAGE); // Get the oldest states to delete
-      
-      for (const stateToDelete of statesToDelete) {
-        // Cache the state before deletion for safety net
-        const fullState = await getStoryState(userId, stateToDelete.pageId);
-        if (fullState) {
-          deletedStateCache.set(userId, stateToDelete.pageId, fullState);
-          console.log(`[cleanupOldStoryStates] 💾 Cached state before deletion for user ${userId}, page ${stateToDelete.pageId}`);
-        }
-        
-        await dbWrite
-          .delete(storyStates)
-          .where(and(
-            eq(storyStates.userId, userId),
-            eq(storyStates.bookId, bookId),
-            eq(storyStates.pageId, stateToDelete.pageId)
-          ));
-      }
-      
-      console.log(`[cleanupOldStoryStates] 🗑️ Cleaned up ${statesToDelete.length} old states for user ${userId}, book ${bookId}`);
-    }
-  } catch (error) {
-    console.error(`Failed to cleanup old story states for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    // Don't throw error here - cleanup failure shouldn't break the main operation
-  }
-}
-
-/**
- * Retrieves complete book information for a given book ID
- * 
- * @param bookId - The book's unique identifier
- * @returns Promise that resolves to book information or null if not found
- * 
- * Behavior:
- * - Queries books table by ID
- * - Returns all book fields including metadata
- * - Handles cases where book doesn't exist
- * - Includes main character information
- * 
- * @example
- * ```typescript
- * const bookInfo = await getBookInfo("book456");
- * if (bookInfo) {
- *   console.log(`Book: ${bookInfo.displayTitle} by MC: ${bookInfo.mcName}`);
- * }
- * ```
- */
-export async function getBookInfo(bookId: string) {
-  try {
-    const result = await dbRead
-      .select()
-      .from(books)
-      .where(eq(books.id, bookId))
-      .limit(1);
-    
-    return result[0] || null;
-  } catch (error) {
-    console.error(`Failed to get book info for ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve book information: ${getErrorMessage(error)}`);
-  }
-}
-
-
-/**
- * Deactivates a user's session for a specific book
- * 
- * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @returns Promise that resolves when session is deactivated
- * 
- * Behavior:
- * - Updates session status to 'past'
- * - Preserves session record for history
- * - Handles cases where session doesn't exist
- * 
- * Example:
- * ```typescript
- * await deactivateSession("user123", "book456");
- * console.log("Session deactivated");
- * ```
- */
-export async function deactivateSession(userId: string, bookId: string) {
-  try {
-    const result = await dbWrite
-      .update(userSessions)
-      .set({ 
-        status: 'past',
-        updatedAt: new Date()
-      })
-      .where(
-        and(
-          eq(userSessions.userId, userId),
-          eq(userSessions.bookId, bookId)
-        )
-      );
-    
-    if (result.rowCount === 0) {
-      console.warn(`No active session found for user ${userId}, book ${bookId}`);
-    } else {
-      console.log(`Session deactivated for user ${userId}, book ${bookId}`);
-    }
-  } catch (error) {
-    console.error(`Failed to deactivate session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to deactivate session: ${getErrorMessage(error)}`);
-  }
+export function mapBookFromDb(dbBook: DBBook): Book {
+  return {
+    id: dbBook.id,
+    userId: dbBook.userId,
+    title: dbBook.title,
+    totalPages: dbBook.totalPages,
+    language: dbBook.language || '',
+    hook: dbBook.hook || '',
+    summary: dbBook.summary || '',
+    image: dbBook.image || undefined,
+    imageId: dbBook.imageId || undefined,
+    trendingScore: dbBook.trendingScore || 0,
+    keywords: dbBook.keywords,
+    status: dbBook.status || 'active',
+    mc: dbBook.mc,
+    createdAt: dbBook.createdAt,
+    updatedAt: dbBook.updatedAt,
+  };
 }

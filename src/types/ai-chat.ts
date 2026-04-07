@@ -44,6 +44,10 @@ export interface AIPromptOptions {
   config?: AIChatConfig;
   /** Whether to parse the output as JSON */
   outputAsJson?: boolean;
+  /** Custom system prompt */
+  systemPrompt?: string;
+  /** Documents to attach */
+  documents?: AIDocument[];
 }
 
 /**
