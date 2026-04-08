@@ -1,7 +1,7 @@
-import { MAX_PAST_INTERACTIONS, MAX_CHARACTERS } from "../config/story.js";
+import { MAX_PAST_INTERACTIONS } from "../config/story.js";
 import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, NarrativeFlags, RelationshipUpdate, StoryMC, StoryMCCandidate } from "../types/character.js";
-import type { StoryState, StoryPage } from "../types/story.js";
-import { Gender, KnownGender } from "../types/user.js";
+import type { StoryState } from "../types/story.js";
+import type { Gender } from "../types/user.js";
 
 // ============================================================================
 // CHARACTER MEMORY MANAGEMENT SYSTEM

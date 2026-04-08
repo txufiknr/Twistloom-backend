@@ -3,14 +3,14 @@
  * Eliminates code duplication across Gemini, Groq, Cohere, and HuggingFace providers
  */
 
-import type { AIResponse } from "../types/content.js";
+import type { AIResponse } from "../types/ai-chat.js";
 
 /**
  * Logs successful AI provider response with standardized format
  * 
  * @param response - The AI provider response data
  */
-export function logAISuccess(response: AIResponse): void {
+export function logAISuccess(response: AIResponse<unknown>): void {
   const { provider, model, output, finishReason, usage } = response;
   
   // Log success with output

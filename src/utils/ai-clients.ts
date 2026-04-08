@@ -5,7 +5,7 @@ import Groq from 'groq-sdk';
 import OpenAI from "openai";
 import Cerebras from "@cerebras/cerebras_cloud_sdk";
 import { Mistral } from "@mistralai/mistralai";
-import { AIChatProvider } from "../types/ai-chat.js";
+import type { AIChatProvider } from "../types/ai-chat.js";
 
 /** AI client singleton instances to reuse connections across requests */
 let githubClient: OpenAI | null = null;

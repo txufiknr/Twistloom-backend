@@ -4,7 +4,7 @@ import { usage } from '../db/schema.js';
 import { getTodayDate } from './time.js';
 import { dbRead, dbWrite } from '../db/client.js';
 import { AI_RATE_LIMITS, RATE_LIMIT_SAFETY_BUFFER_PERCENT } from "../config/ai-clients.js";
-import { AIChatProvider } from "../types/ai-chat.js";
+import type { AIChatProvider } from "../types/ai-chat.js";
 import { delay } from "./time.js";
 
 /**

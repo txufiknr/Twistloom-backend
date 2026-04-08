@@ -247,7 +247,7 @@ export function dedupeObjectFields<T extends Record<string, any>>(
  * @param obj2 - Second object to compare
  * @returns True if objects have same properties with equal values, false otherwise
  */
-function shallowEqual(obj1: Record<string, any>, obj2: Record<string, any>): boolean {
+export function shallowEqual(obj1: Record<string, any>, obj2: Record<string, any>): boolean {
   const keys1 = Object.keys(obj1);
   const keys2 = Object.keys(obj2);
 
@@ -280,7 +280,7 @@ function shallowEqual(obj1: Record<string, any>, obj2: Record<string, any>): boo
  * @param obj2 - Second object to compare
  * @returns True if objects are deeply equal, false otherwise
  */
-function deepEqual(obj1: any, obj2: any): boolean {
+export function deepEqual(obj1: any, obj2: any): boolean {
   // Fast path: identical references
   if (obj1 === obj2) return true;
   

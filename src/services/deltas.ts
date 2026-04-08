@@ -27,6 +27,15 @@ import {
 } from "../utils/delta-helpers.js";
 import { getErrorMessage } from "../utils/error.js";
 import { deepEqualSimple } from "../utils/parser.js";
+import { 
+  GET_DELTA_CIRCUIT_THRESHOLD,
+  GET_DELTA_CIRCUIT_TIMEOUT,
+  CREATE_DELTA_CIRCUIT_THRESHOLD,
+  CREATE_DELTA_CIRCUIT_TIMEOUT,
+  GET_DELTA_KEY_PREFIX,
+  CREATE_DELTA_KEY_PREFIX
+} from "../config/branch-traversal.js";
+import { retryOperation, withCircuitBreaker, createReliabilityMeasurement, completeReliabilityMeasurement } from "../utils/reliability.js";
 
 // ============================================================================
 // DELTA CREATION UTILITIES
@@ -416,19 +425,46 @@ export async function getStateDelta(
   userId: string, 
   pageId: string
 ): Promise<StateDelta | null> {
+  const measurement = createReliabilityMeasurement('delta_retrieval', 'delta_service', userId, {
+    userId,
+    pageId,
+    operation: 'getStateDelta'
+  });
+
   try {
-    const delta = await dbRead
-      .select()
-      .from(storyStateDeltas)
-      .where(and(
-        eq(storyStateDeltas.userId, userId),
-        eq(storyStateDeltas.pageId, pageId)
-      ))
-      .limit(1);
-      
-    return delta[0]?.delta || null;
+    const delta = await withCircuitBreaker(
+      () => retryOperation(async () => {
+        const result = await dbRead
+          .select()
+          .from(storyStateDeltas)
+          .where(and(
+            eq(storyStateDeltas.userId, userId),
+            eq(storyStateDeltas.pageId, pageId)
+          ))
+          .limit(1);
+          
+        return result[0]?.delta || null;
+      }),
+      `${GET_DELTA_KEY_PREFIX}:${userId}`,
+      GET_DELTA_CIRCUIT_THRESHOLD,
+      GET_DELTA_CIRCUIT_TIMEOUT
+    );
+
+    completeReliabilityMeasurement(measurement, true, {
+      cached: false,
+      deltaFound: delta !== null
+    });
+
+    return delta;
   } catch (error) {
     console.error(`[getStateDelta] ❌ Failed to get delta for user ${userId}, page ${pageId}:`, getErrorMessage(error));
+    
+    completeReliabilityMeasurement(measurement, false, {
+      error: getErrorMessage(error),
+      cached: false,
+      deltaFound: false
+    });
+
     throw new Error(`Unable to retrieve state delta: ${getErrorMessage(error)}`);
   }
 }
@@ -522,33 +558,59 @@ export async function createStateDeltaRecord(
   fromState: StoryState, 
   toState: StoryState
 ): Promise<void> {
+  const measurement = createReliabilityMeasurement('delta_creation', 'delta_service', userId, {
+    userId,
+    bookId,
+    pageId,
+    operation: 'createStateDeltaRecord'
+  });
+
   try {
     console.log(`[createStateDeltaRecord] 🔄 Creating delta for user ${userId}, page ${pageId}`);
     
     const delta = createStateDelta(fromState, toState, pageId);
     
-    await dbWrite
-      .insert(storyStateDeltas)
-      .values({
-        userId,
-        bookId,
-        pageId,
-        delta,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [storyStateDeltas.userId, storyStateDeltas.bookId, storyStateDeltas.pageId],
-        set: {
-          delta,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }
-      });
+    await withCircuitBreaker(
+      () => retryOperation(async () => {
+        await dbWrite
+          .insert(storyStateDeltas)
+          .values({
+            userId,
+            bookId,
+            pageId,
+            delta,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [storyStateDeltas.userId, storyStateDeltas.bookId, storyStateDeltas.pageId],
+            set: {
+              delta,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            }
+          });
+      }),
+      `${CREATE_DELTA_KEY_PREFIX}:${userId}`,
+      CREATE_DELTA_CIRCUIT_THRESHOLD,
+      CREATE_DELTA_CIRCUIT_TIMEOUT
+    );
       
+    completeReliabilityMeasurement(measurement, true, {
+      cached: false,
+      deltaSize: JSON.stringify(delta).length
+    });
+    
     console.log(`[createStateDeltaRecord] ✅ Delta created for page ${pageId}`);
   } catch (error) {
     console.error(`[createStateDeltaRecord] ❌ Failed to create delta for user ${userId}, page ${pageId}:`, getErrorMessage(error));
+    
+    completeReliabilityMeasurement(measurement, false, {
+      error: getErrorMessage(error),
+      cached: false,
+      deltaSize: 0
+    });
+
     throw new Error(`Unable to create state delta: ${getErrorMessage(error)}`);
   }
 }

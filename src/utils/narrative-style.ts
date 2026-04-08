@@ -8,15 +8,7 @@
  * that creates authored, human-like storytelling rather than AI generation.
  */
 
-import type { 
-  StyleVector, 
-  NarrativeMode, 
-  NarrativeStyle,
-  StoryState,
-  PsychologicalProfile,
-  ActionType,
-  StyleInput
-} from '../types/story.js';
+import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput } from '../types/story.js';
 
 // /**
 //  * Core inputs for Narrative Style Engine

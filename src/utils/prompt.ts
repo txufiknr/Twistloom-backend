@@ -1,13 +1,11 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { AIChatConfig, AIChatConfigCaps, AIDocument } from "../types/ai-chat.js";
-import { CharacterMemory, characterStatuses, injurySeverities, InjurySeverity, PotentialTwistType, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, StoryState, StoryPage, Action, actionHintTypes, PsychologicalFlags, PsychologicalProfile, truthLevels, threatProximities, realityStabilities, HiddenState, PersistedStoryPage, ActionHintType, ActionType, AIActionConfig, ActionedStoryPage, endingTypes } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
+import type { AIChatConfig, AIChatConfigCaps, AIDocument } from "../types/ai-chat.js";
+import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMC, type StoryMCCandidate } from "../types/character.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes } from "../types/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
-import { dbWrite } from "../db/client.js";
-import { userPageProgress } from "../db/schema.js";
 import { aiPrompt } from "./ai-chat.js";
 import { determineOptimalEnding, maybeAddTrauma, updateState } from "./story.js";
 import { formatPlacesForPrompt, processPlaceUpdates } from "./places.js";
@@ -16,18 +14,18 @@ import { createStyleInput } from "./player-profile.js";
 import { formatCharactersForPrompt, processCharacterUpdates } from "./characters.js";
 import { generateRandomCharacter } from "./characters.js";
 import { genders } from "../types/user.js";
-import { PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
-import { DBBook, DBNewBook } from "../types/schema.js";
+import { type PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
+import type { DBNewBook } from "../types/schema.js";
 import { createInitialHiddenState, createInitialPsychologicalProfile } from "./books.js";
-import { reconstructStoryState } from "./branch-traversal.js";
-import type { StateReconstructionDeps, StoryGeneration, UserStoryPage } from "../types/story.js";
+import type { StoryGeneration, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import { getStateSnapshot } from "../services/snapshots.js";
-import { getStateDelta } from "../services/deltas.js";
-import { Book, BookCreationResponse } from "../types/book.js";
+import type { Book, BookCreationResponse } from "../types/book.js";
 import { deepEqualSimple } from "./parser.js";
 import { getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
-import { getStoryProgress, insertStoryState, setActiveSession } from "../services/story.js";
+import { getStoryProgress, insertStoryState, insertUserPageProgress, setActiveSession } from "../services/story.js";
+import type { BuildNextPageParams, ChooseActionParams } from "../types/prompt.js";
+import { generateBranchId } from "../services/story-branch.js";
+import { shouldCreateSnapshot, createStateSnapshot, getLastSnapshotPage } from "../services/snapshots.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -56,9 +54,9 @@ WRITING STYLE DNA:
 NARRATOR BEHAVIOR & RULES:
 - Something must feel off/wrong/inconsistent. Unreliable. Not dramatically — subtly.
 - MC does not always think clearly. Thoughts may jump, contradict, or drift.
+- MC may misinterpret, believe false assumptions, over/underreact.
 - Observations are biased, narration may hesitate, correct itself, or doubt itself.
 - Imply more than explain. Never confirm what's real unless that confirmation is a deeper trap.
-- MC may misinterpret, believe false assumptions, over/underreact.
 
 HORROR MECHANICS:
 - Normal → slightly wrong → spiral. Always.
@@ -107,67 +105,30 @@ HARD RULES:
  * These rules guide the AI in incorporating user choices and accumulated
  * psychological states into the ongoing story in subtle, meaningful ways.
  */
-export const RULES_ROUTE_MEMORY = `ROUTE MEMORY INFLUENCE:
+export const RULES_ROUTE_MEMORY = `ROUTE MEMORY RULES:
 
-PAST ACTIONS:
-• Subtly affect: MC thoughts, available actions, world reactions
-• Build psychological profile of player behavior patterns
+Past Actions — Subtly shape MC thoughts, available choices, and world reactions. Build a psychological profile from decision patterns over time.
 
-PLAYER PSYCHOLOGICAL PROFILING:
-Analyze the player's decision patterns to identify traits:
+Psychological Profiling — Read the player's patterns and weaponize them:
+- Risk: High-risk seeker → make safety illusory. Risk-averse → force no-win scenarios. Balanced → break patterns by alternating.
+- Trust: Trusting → betrayals hit harder, helpers turn. Distrustful → rare genuine help becomes a trap, paranoia gets justified. Inconsistent → reality itself fractures.
+- Curiosity: Curious → answers curse more than they reveal. Cautious → avoidance backfires, external forces push them in anyway. Mixed → knowledge becomes a weapon against them.
+- Emotion: Fear-driven → psychological threats over physical. Logic-driven → introduce impossible logic, break rational thinking. Emotional → manipulate through relationships and guilt.
 
-• Risk Tolerance:
-  - High risk seeker → Escalate dangers, make safety illusory
-  - Risk avoidant → Create no-win scenarios, force difficult choices
-  - Balanced → Alternate between safety and danger to break patterns
+Adaptive Manipulation — Mirror their patterns back in twisted form. Turn strengths into weaknesses. Create scenarios where their usual approach fails completely. Make them question their own judgment. Goal: learn how they think, then make their own mind work against them.
 
-• Trust Patterns:
-  - Trusting → Betrayals feel more devastating, characters appear helpful then turn
-  - Distrustful → Rare moments of genuine help become traps, paranoia justified
-  - Inconsistent → Reality itself becomes unreliable, memories contradict
+Flag Behaviors:
+- Trust: Low → betrayal/deception | High → apparent help (may deceive later)
+- Fear: High → panic, distorted perception | Low → curiosity, denial
+- Guilt: High → hallucinations, voices, trauma echoes
+- Curiosity: High → drawn to danger | Low → hesitation, avoidance
+- Memory Integrity: Stable → accurate recall | Fragmented → inconsistent details | Corrupted → false memories
 
-• Curiosity vs Caution:
-  - Curious → Dangerous knowledge becomes tempting curse, answers create more questions
-  - Cautious → Forced into situations through external pressures, avoidance backfires
-  - Mixed → Knowledge appears safe then becomes weapon against them
+Trauma Tags — Reappear in altered, disturbing forms. Echo through environment, dialogue, and perception. Never fully explained.
 
-• Emotional Response:
-  - Fear-driven → Threats become more psychological, less physical
-  - Logic-driven → Introduce impossible logic, break rational thinking
-  - Emotional → Manipulate through relationships, emotional blackmail
+Consequences — Delayed, subtle, escalating. Sometimes unfair or illogical. The story should feel like something remembers what they did.
 
-ADAPTIVE NARRATIVE MANIPULATION:
-Use the profile to personalize psychological horror:
-
-• Mirror their patterns back at them in twisted ways
-• Take their strengths and turn them into weaknesses
-• Exploit their decision-making patterns against them
-• Create scenarios where their usual approach fails completely
-• Make them question their own judgment and past decisions
-
-The goal: Learn how they think, then make their own mind work against them.
-
-FLAG BEHAVIORS:
-• Trust: Low→betrayal/deception | High→apparent help (may deceive later)
-• Fear: High→panic/distorted perception | Low→curiosity/denial
-• Guilt: High→hallucinations/voices/trauma echoes
-• Curiosity: High→drawn to danger | Low→hesitation/avoidance
-• Memory Integrity: Stable→accurate recall | Fragmented→inconsistent details | Corrupted→false memories
-
-TRAUMA TAGS:
-• Reappear in altered/disturbing forms
-• Echo in environment, dialogue, perception
-• Never fully explained
-
-CONSEQUENCES:
-• Delayed, subtle but escalating
-• Sometimes unfair or illogical
-• Story should feel: "Something remembers what I did"
-
-MEMORY CORRUPTION:
-• Never explicitly state memory is corrupted
-• Let contradictions emerge naturally
-• Make reader question previous pages occasionally`;
+Memory Corruption — Never state it directly. Let contradictions surface naturally. Make the reader quietly question previous pages.`;
 
 /**
  * Rules for maintaining narrative consistency despite psychological elements
@@ -177,23 +138,13 @@ MEMORY CORRUPTION:
  */
 export const RULES_STORY_CONSISTENCY = `STORY CONSISTENCY:
 
-INTERNAL LOGIC:
-• Maintain tone consistency even when events feel wrong
-• Preserve continuity of: Key objects, locations, emotional states, ongoing threats
-• Anchor contradictions to memory corruption or perception distortion
+Internal Logic — Maintain tone even when events feel wrong. Preserve continuity of key objects, locations, emotional states, and ongoing threats. Anchor contradictions to memory corruption or perception distortion — never random noise.
 
-NARRATIVE COHERENCE:
-• Avoid random events without emotional/narrative connection
-• No sudden tone-breaking elements
-• Every strange event must escalate tension or echo past trauma
+Coherence — No events without emotional or narrative connection. No tone-breaking elements. Every strange moment must escalate tension or echo past trauma.
 
-ELEMENT REUSE:
-• Objects reappear differently
-• Dialogue echoes
-• Locations feel altered, not replaced
+Element Reuse — Objects reappear changed, not replaced. Dialogue echoes. Locations feel altered. The world remembers.
 
-GUIDING PRINCIPLE:
-"Confusing, but not meaningless"`;
+Guiding principle: Confusing, but never meaningless.`;
 
 /**
  * Rules for story difficulty scaling and progression
@@ -203,16 +154,13 @@ GUIDING PRINCIPLE:
  */
 export const RULES_DIFFICULTY_SCALING = `DIFFICULTY SCALING:
 
-LEVELS:
-• Low: Stable narrative, occasional relief
-• Medium: Tension, misdirection, occasional betrayal  
-• High: Frequent twists, emotional damage, unreliable characters
-• Nightmare: Constant pressure, no safe choices, broken reality
+Levels:
+- Low: Stable narrative, occasional relief
+- Medium: Tension, misdirection, occasional betrayal
+- High: Frequent twists, emotional damage, unreliable characters
+- Nightmare: Constant pressure, no safe choices, broken reality
 
-SCALING RULES:
-• As page count increases, difficulty may escalate
-• Near ending → automatically behave like at least "high"
-• Higher difficulty = more unreliable narration, reality distortion`;
+Rules — Escalate naturally as page count increases. Near the ending, behave as at least High regardless of setting. Higher difficulty = more unreliable narration and reality distortion.`;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -354,55 +302,22 @@ ENDING RULES:
 ${buildEndingRules(state)}
 
 ---
-CHARACTER USAGE RULES:
-- Preserve character's dialect, tone, and personality traits
-- Maintain consistency with known characters
-- Reflect their current status in behavior
-- Use pastInteractions to influence dialogue subtly
-- Reintroduce characters naturally if absent for several pages
-- Characters may change behavior suddenly if narrativeFlags suggest it
-- Do NOT explain changes explicitly
-- Consider character relationships when writing interactions
-- Use directional relationships to create tension and conflict triangles
+CHARACTER RULES:
 
-CHARACTER CREATION RULES:
-${charactersSlot === 0 ? `No new character. Reached ${MAX_CHARACTERS} limit.` : `
-- You can create up to ${charactersSlot} more
-- Create characters only when genuinely new to the story
-- Set appropriate narrativeFlags based on character behavior and story needs
-- Keep bio concise, slightly suggestive > fully descriptive
-- Include any personality trains in bio for consistency
-- Optionally include age in bio if plot-sensitive`.trim()}
+Usage — Preserve dialect, tone, and personality consistently. Reflect current status in behavior. Use pastInteractions to subtly shape dialogue. Reintroduce naturally after absence. Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles.
 
-CHARACTER UPDATE RULES:
-- Update existing characters when their status, interactions, or story relevance changes
-- Merge new pastInteractions with existing, keeping only last 5 (sliding window)
-- Update lastInteractionAtPage to current page when character appears
-- Modify narrativeFlags to reflect plot developments and twist setup
+Creation — ${charactersSlot === 0 ? `No new characters. Limit of ${MAX_CHARACTERS} reached.` : `Up to ${charactersSlot} more allowed. Create only when genuinely new to the story. Bio: concise, suggestive over descriptive, include personality traits and age if plot-sensitive. Set narrativeFlags to match behavior and twist setup.`}
+
+Updates — When status, interactions, or relevance changes: merge pastInteractions (keep last 5), update lastInteractionAtPage, adjust narrativeFlags to reflect plot developments.
 
 ---
-PLACE USAGE RULES:
-- Maintain consistency with known places (use existing places when possible)
-- Reflect current mood and event history in place descriptions
-- Use familiar places for emotional impact and narrative continuity
-- Places with high familiarity should feel more detailed and real
-- Consider place trauma tags when writing atmosphere (e.g., "betrayal" places feel tense)
+PLACE RULES:
 
-PLACE CREATION RULES:
-${placesSlot === 0 ? `No new place. Reached ${MAX_PLACES} limit.` : `
-- You can create up to ${placesSlot} more
-- Create places only when MC enters a new, meaningful location
-- Avoid creating generic one-time places (e.g., "random street")
-- Keep context to 1 sentence maximum, evocative > descriptive
-- Set appropriate currentMood based on story atmosphere
-- Add relevant characters to knownCharacters if they appear there`.trim()}
+Usage — Use existing places whenever possible. Reflect current mood and event history in descriptions. Familiar places feel more textured and real. Apply trauma tags to atmosphere — a betrayal place stays tense.
 
-PLACE UPDATE RULES:
-- Update existing places when revisited or when significant events occur
-- Increment visitCount and update lastVisitedAtPage for revisited places
-- Add eventTags for significant events (betrayal, discovery, death, etc.)
-- Update familiarity based on visit patterns and story significance
-- Merge new arrays with existing, respecting sliding window limits
+Creation — ${placesSlot === 0 ? `No new places. Limit of ${MAX_PLACES} reached.` : `Up to ${placesSlot} more allowed. Create only when the MC enters a new, meaningful location — no generic one-offs. Context: 1 sentence max, evocative over descriptive. Set currentMood to match atmosphere. Add relevant characters to knownCharacters.`}
+
+Updates — On revisit or significant event: increment visitCount, update lastVisitedAtPage, add eventTags (betrayal, discovery, death, etc.), update familiarity accordingly.
 
 ---
 BRANCHING ACTIONS:
@@ -471,11 +386,11 @@ EXAMPLE OUTPUT FORMAT (JSON):
         "locationHint": "Behind school, flows toward town",
         "visitCount": 1,
         "lastVisitedAtPage": 5,
-        "familiarity": 0.1,
-        "moodHistory": ["..."],
+        "familiarity": 0.7,
         "eventTags": [],
         "knownCharacters": [],
         "currentMood": "One of: ${placeMoods.join('", "')}",
+        "moodHistory": [],
         "sensoryDetails": {
           "smell": "...",
           "sound": "...",
@@ -489,7 +404,8 @@ EXAMPLE OUTPUT FORMAT (JSON):
   "viableEnding": { // Only if re-adjusted
     "text": "Write your doom ending plan—how the story should end",
     "type": "One of: ${Object.keys(endingTypes).join('", "')}"
-  }
+  },
+  "isMajorEvent": true or false
 }`;
 
 }
@@ -1076,6 +992,9 @@ RESPONSE FORMAT (JSON structure):
   "keywords": ["keyword1", "keyword2", "keyword3"],
   "firstPage": {
     "text": "Prologue text",
+    "mood": "One of: ${moods.join('", "')}",
+    "place": "Location Name",
+    "timeOfDay": "e.g. time range, 'night', 'HH:mm' or 'unknown'",
     "charactersPresent": ["Character1", "Character2"],
     "actions": [
       {
@@ -1089,9 +1008,6 @@ RESPONSE FORMAT (JSON structure):
     ]
   },
   "initialState": {
-    "mood": "One of: ${moods.join('", "')}",
-    "place": "Location Name",
-    "timeOfDay": "e.g. time range, 'night', 'HH:mm' or 'unknown'",
     "flags": {
       "trust": "medium",
       "fear": "low", 
@@ -1214,6 +1130,7 @@ export async function initializeBook(
     );
 
     const book = mapBookFromDb(dbBook);
+    const bookId = book.id;
 
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
@@ -1270,18 +1187,14 @@ export async function initializeBook(
     };
 
     // 7. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, {
-      bookId: book.id,
-      branchId: null,
-      parentId: null,
-    });
+    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, { bookId });
 
     // 8. Update state with pageId and persist to database
     initialState.pageId = firstPage.id;
-    await insertStoryState(userId, book.id, firstPage.id, initialState);
+    await insertStoryState(userId, bookId, firstPage.id, initialState);
 
     // 9. Set user's active session to the new book and page
-    await setActiveSession(userId, book.id, firstPage.id);
+    await setActiveSession({userId, bookId, pageId: firstPage.id});
 
     // 10. Return complete book setup
     return {
@@ -1330,13 +1243,9 @@ export async function initializeBook(
  * // Returns: { id: "page457", bookId: "book789", text: "Reality began to distort...", actions: [...] }
  * ```
  */
-export async function buildNextPage(
-  userId: string,
-  book: Book,
-  previousState: StoryState, // Story state for previous page (page number not incremented yet)
-  actionedPage: ActionedStoryPage, // Previous page with selected action
-  isUserAction: boolean = true, // User selected action, or just candidate pre-generation
-): Promise<PersistedStoryPage> {
+export async function buildNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
+  const { userId, book, previousState, actionedPage, isUserAction } = params;
+  
   // Update story state for context (increments page, update context summary, actions history)
   const storyState = await updateState(previousState, actionedPage);
 
@@ -1362,42 +1271,30 @@ export async function buildNextPage(
     throw new Error('Failed to generate story page'); // TODO: show retry button in frontend
   }
 
-  const generatedStoryPage = response.result; // Generated content without database ID yet
+  // Generated content from AI response
+  const generatedStoryPage = response.result;
+
+  // Lazy branching: continue with the same branchId if none of the actions ever selected (no pageId)
+  // TODO: prevent race condition with concurrency lock and retry
+  const branchId = actionedPage.actions.some(a => !!a.pageId) ? generateBranchId() : actionedPage.branchId;
 
   // 5. Update story state with result from AI
   const newState = updateStoryStateFromGeneratedPage(storyState, generatedStoryPage);
 
   // 6. Persist generated page to database with parent-child relationship
-  const newPage = await insertStoryPage(userId, newState.page, generatedStoryPage, actionedPage);
+  const newPage = await insertStoryPage(userId, newState.page, generatedStoryPage, {
+    bookId: actionedPage.bookId,
+    parentId: actionedPage.id,
+    branchId,
+  });
 
   // 7. Pre-generate candidate pages for each action in the new page
   const userPage = isUserAction ? await ensureCandidatesForPage(userId, newPage) : newPage;
 
-  // 8. Insert user page progress tracking
-  await dbWrite
-    .insert(userPageProgress)
-    .values({
-      userId,
-      bookId: actionedPage.bookId,
-      pageId: actionedPage.id,
-      action: actionedPage.selectedAction,
-      nextPageId: userPage.id,
-      branchId: userPage.branchId,
-    })
-    .onConflictDoUpdate({
-      target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.pageId],
-      set: {
-        action: actionedPage.selectedAction,
-        nextPageId: userPage.id,
-        branchId: userPage.branchId,
-      }
-    });
+  // 8. Create delta and persist story state for the generated page (page-based state management)
+  const { bookId, id: pageId } = userPage;
   
-  // 9. Create delta and persist story state for the generated page (page-based state management)
-  const bookId = userPage.bookId;
-  const pageId = userPage.id;
-  
-  // 10. Create delta from previous state to new state for efficient reconstruction
+  // 9. Create delta from previous state to new state for efficient reconstruction
   try {
     if (previousState) {
       await createStateDeltaRecord(userId, bookId, pageId, previousState, newState);
@@ -1412,10 +1309,30 @@ export async function buildNextPage(
   
   await insertStoryState(userId, bookId, pageId, newState);
 
-  // 9. Update user session to point to the new page
-  await setActiveSession(userId, bookId, pageId);
-  
-  // 10. Return the persisted story page with all database metadata
+  // 10. Create snapshot if conditions are met
+  try {
+    // Get previous page for branch detection
+    const previousPage = await getStoryPageById(userId, bookId, actionedPage.id);
+    
+    // Get last snapshot page for this user/book
+    const lastSnapshotPage = await getLastSnapshotPage(userId, bookId);
+    
+    // Determine if this is a major event (based on AI analysis result)
+    const { isMajorEvent = false } = generatedStoryPage;
+    
+    // Check if snapshot should be created
+    const snapshotDecision = shouldCreateSnapshot(userPage, previousPage, lastSnapshotPage, isMajorEvent);
+    
+    if (snapshotDecision.shouldCreate) {
+      await createStateSnapshot(userId, bookId, pageId, newState, snapshotDecision.reason);
+      console.log(`[buildNextPage]  Created snapshot for page ${pageId}, reason: ${snapshotDecision.reason}`);
+    }
+  } catch (snapshotError) {
+    console.error(`[buildNextPage]  Failed to create snapshot for page ${pageId}:`, snapshotError);
+    // Continue even if snapshot creation fails
+  }
+
+  // 11. Return the persisted story page with all database metadata
   return userPage;
 }
 
@@ -1486,60 +1403,96 @@ function updateStoryStateFromGeneratedPage(
  * console.log(`Candidate page: ${candidatePage.text}`);
  * ```
  */
-export async function chooseAction(
-  userId: string,
-  action: Action,
-  isUserAction: boolean = true,
-  currentPage?: UserStoryPage | null,
-): Promise<PersistedStoryPage> {
-  // 1. Get current story progress (book, page, state, session) in parallel
-  let {
-    book: currentBook,
-    page: activePage,
-    state: currentState,
-    session: activeSession 
-  } = await getStoryProgress(userId);
+export async function chooseAction(params: ChooseActionParams): Promise<PersistedStoryPage | null> {
+  const { userId, action, isUserAction } = params;
+  let { currentPage } = params;
 
-  currentPage ??= activePage;
+  try {
+    // 1. Get current story progress (book, page, state, session) in parallel
+    const {
+      book: currentBook,
+      page: activePage,
+      state: currentState,
+      session: activeSession 
+    } = await getStoryProgress(userId);
 
-  // 2. Validate all required components exist for story progression
-  if (!activeSession) throw new Error(`No active session found for user ${userId}`);
-  if (!currentBook) throw new Error(`No active book found for user ${userId}`);
-  if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
-  if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${activeSession.pageId})`);
+    currentPage ??= activePage;
 
-  // 3. If this is previous page and choice has been made, can't make another choice
-  if ('selectedAction' in currentPage && currentPage.selectedAction && !deepEqualSimple(currentPage.selectedAction, action)) {
-    throw new Error(`Choice made, can't make another choice`);
-  }
-  
-  // 4. Check if next page is pre-generated (candidate) and reuse if available
-  const nextPageId = action.pageId;
-  let userPage: PersistedStoryPage | null = null;
-  if (nextPageId) {
-    userPage = await getStoryPageById(userId, activeSession.bookId, nextPageId);
-  }
+    // 2. Validate all required components exist for story progression
+    if (!activeSession) throw new Error(`No active session found for user ${userId}`);
+    if (!currentBook) throw new Error(`No active book found for user ${userId}`);
+    if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
+    if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${activeSession.pageId})`);
 
-  // 5. If no pre-generated page exists, generate new page with state progression
-  if (userPage) {
-    // User action: ensure candidates for next page | Candidate: wait until user visit the page and ensure next candidates
-    if (isUserAction) {
-      userPage = await ensureCandidatesForPage(userId, userPage);
+    const { bookId, pageId } = activeSession;
+    const { selectedAction } = currentPage;
+
+    // 3. Check if user already made a choice on this page (in this branch)
+    if (isUserAction && selectedAction) {
+      // If choice has been made, can't make another choice
+      if (!deepEqualSimple(selectedAction, action)) {
+        // TODO: except premium user
+        throw new Error(`Choice made, can't make another choice`);
+      }
     }
-    console.log(`[chooseAction] ✅ Using pre-generated page ${userPage.id}, delta already exists from pre-generation`);
-  } else {
-    // 6a. Create actioned page with selected action for state processing
-    const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
     
-    // 6b. Generate next page using AI with dynamic configuration
-    userPage = await buildNextPage(userId, currentBook, currentState, actionedPage, isUserAction);
-  }
+    // 4. Check if next page is pre-generated (candidate) and reuse if available
+    const nextPageId = action.pageId;
+    let userPage: PersistedStoryPage | null = null;
+    if (nextPageId) {
+      userPage = await getStoryPageById(userId, bookId, nextPageId);
+    }
 
-  // 7. Update user session to point to the new page
-  await setActiveSession(userId, activeSession.bookId, userPage.id);
-  
-  // 8. Return the generated page with all database metadata
-  return userPage;
+    // 5. If no pre-generated page exists, generate new page with state progression
+    if (userPage) {
+      // User action: ensure candidates for next page | Candidate: wait until user visit the page and ensure next candidates
+      if (isUserAction) {
+        userPage = await ensureCandidatesForPage(userId, userPage);
+      }
+      console.log(`[chooseAction] ✅ Using pre-generated page ${userPage.id}, delta already exists from pre-generation`);
+    } else {
+      // 6a. Create actioned page with selected action for state processing
+      const actionedPage: ActionedStoryPage = {
+        ...currentPage,
+        selectedAction: action 
+      };
+      
+      // 6b. Generate next page using AI with dynamic configuration
+      userPage = await buildNextPage({
+        userId,
+        book: currentBook,
+        previousState: currentState,
+        actionedPage,
+        isUserAction
+      });
+
+      console.log(`[chooseAction] 🌌 Generated new story page ${userPage.id}:`, { action, branchId: userPage.branchId, isUserAction });
+    }
+
+    // 7. Update user session and page progress tracking
+    if (isUserAction) {
+      await setActiveSession({userId, bookId, pageId: userPage.id, previousPageId: currentPage.id});
+      await insertUserPageProgress({
+        userId,
+        bookId,
+        pageId,
+        action,
+        nextPageId: userPage.id
+      });
+    }
+    
+    // 8. Return the generated page with all database metadata
+    return userPage;
+  } catch (error) {
+    console.error(`[chooseAction] ❌ Failed to generate next page:`, {
+      error: getErrorMessage(error),
+      userId,
+      pageId: currentPage?.id,
+      isUserAction,
+      action,
+    })
+    return null;
+  }
 }
 
 /**
@@ -1563,33 +1516,39 @@ export async function chooseAction(
  * ```
  */
 export async function goToPreviousPage(userId: string): Promise<PersistedStoryPage | null> {
-  // 1. Get current story progress (session, page, state, character) in parallel
-  const { page: currentPage, session: activeSession } = await getStoryProgress(userId);
+  try {
+    // 1. Get current story progress (session, page, state, character) in parallel
+    const { page: currentPage, session: activeSession } = await getStoryProgress(userId);
+    
+    // 2. Validate all required components exist for navigation
+    if (!activeSession) throw new Error(`No active session found for user ${userId}`);
+    if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
   
-  // 2. Validate all required components exist for navigation
-  if (!activeSession) throw new Error(`No active session found for user ${userId}`);
-  if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
-
-  // 3. Check if there's a previous page available
-  const previousPageId = currentPage.parentId;
-  if (!previousPageId) {
-    console.warn(`[goToPreviousPage] ⚠️ No previous page available (no parentId)`);
+    // 3. Check if there's a previous page available
+    const { bookId, previousPageId: activePreviousPageId } = activeSession;
+    const previousPageId = currentPage.parentId ?? activePreviousPageId;
+    if (!previousPageId) {
+      console.warn(`[goToPreviousPage] ⚠️ No previous page available (no parentId)`);
+      return null;
+    }
+    
+    // 4. Get the previous page directly by ID
+    const previousPage = await getStoryPageById(userId, bookId, previousPageId);
+    if (!previousPage) {
+      throw new Error('Previous page not found in database');
+    }
+    
+    // 6. Update user session to point to the previous page
+    await setActiveSession({userId, bookId, pageId: previousPage.id, previousPageId: currentPage.id});
+    
+    console.log(`[goToPreviousPage] ↩️ User ${userId} returned to page ${previousPage.id}`);
+    
+    // 7. Return the previous page with all database metadata
+    return previousPage;
+  } catch (error) {
+    console.error(`[goToPreviousPage] ❌ Cannot get previous page:`, getErrorMessage(error));
     return null;
   }
-  
-  // 4. Get the previous page directly by ID
-  const previousPage = await getStoryPageById(userId, activeSession.bookId, previousPageId);
-  if (!previousPage) {
-    throw new Error('Previous page not found in database');
-  }
-  
-  // 6. Update user session to point to the previous page
-  await setActiveSession(userId, activeSession.bookId, previousPage.id);
-  
-  console.log(`[goToPreviousPage] ↩️ User ${userId} returned to page ${previousPage.id}`);
-  
-  // 7. Return the previous page with all database metadata
-  return previousPage;
 }
 
 /**
@@ -1644,7 +1603,10 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     if (action.pageId) continue;
     
     // Generate candidate page for this action
-    const candidatePage = await chooseAction(userId, action, false, page);
+    const candidatePage = await chooseAction({userId, action, isUserAction: false, currentPage: page});
+
+    // Skip if candidate page not generated
+    if (!candidatePage) continue;
     
     // Update only this action with its destination pageId for branching navigation
     page.actions[i] = { ...action, pageId: candidatePage.id };

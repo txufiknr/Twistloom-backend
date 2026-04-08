@@ -26,7 +26,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
-import { handleTooManyRequestsError } from '../utils/error.js';
+import { getErrorMessage, handleTooManyRequestsError } from '../utils/error.js';
 
 /**
  * Rate limit configuration
@@ -166,7 +166,7 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
     } catch (error) {
       // On error, allow request to proceed (fail open for availability)
       // Log error for monitoring but don't block legitimate users
-      console.error('[rate-limit] Error checking rate limit:', getErrorMessage(error));
+      console.error('[rate-limit] ❌ Error checking rate limit:', getErrorMessage(error));
       next();
     }
   };

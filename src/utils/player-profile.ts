@@ -8,13 +8,7 @@
  */
 
 import { NEAR_ENDING_PAGES } from '../config/story.js';
-import type { 
-  ActionType, 
-  Action, 
-  StoryState, 
-  StyleInput,
-  PsychologicalProfileMetrics
-} from '../types/story.js';
+import type { Action, StoryState, StyleInput, PsychologicalProfileMetrics } from '../types/story.js';
 
 /**
  * Calculates player psychological profile from action history

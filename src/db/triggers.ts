@@ -13,6 +13,7 @@
 
 import { fileURLToPath } from "url";
 import { dbWrite } from "./client.js";
+import { getErrorMessage } from "../utils/error.js";
 const __filename = fileURLToPath(import.meta.url);
 
 /**
@@ -107,16 +108,11 @@ export async function ensureTriggers(): Promise<void> {
  */
 if (process.argv[1] === __filename) {
   (async () => {
-    try {
-      await ensureTriggers();
-      console.log("Database triggers initialization complete!");
-      process.exit(0);
-    } catch (err) {
-      console.error("Database triggers initialization failed:", err);
-      process.exit(1);
-    }
+    await ensureTriggers();
+    console.log("✅ Database triggers initialization complete!");
+    process.exit(0);
   })().catch((err) => {
-    console.error("Database triggers initialization failed:", err);
+    console.error("❌ Database triggers initialization failed:", getErrorMessage(err));
     process.exit(1);
   });
 }

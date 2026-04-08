@@ -48,7 +48,7 @@ export async function insertStoryPage(
   userId: string,
   pageNumber: number,
   page: StoryPage,
-  pageMeta: Pick<PersistedStoryPage, 'bookId' | 'branchId' | 'parentId'>,
+  pageMeta: Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'>,
 ): Promise<PersistedStoryPage> {
   const { bookId, branchId, parentId } = pageMeta;
   try {
@@ -109,18 +109,11 @@ export async function updateStoryPage(
  * @param bookId - Book identifier to retrieve pages for
  * @returns Promise resolving to array of page records ordered by page number
  */
-export async function getBookPages(bookId: string, branchId?: string): Promise<DBPage[]> {
-  const conditions = [eq(pages.bookId, bookId)];
-  
-  // If branchId is provided, add branch condition
-  if (branchId !== undefined) {
-    conditions.push(eq(pages.branchId, branchId));
-  }
-  
+export async function getBookPages(bookId: string): Promise<DBPage[]> {
   const result = await dbRead
     .select()
     .from(pages)
-    .where(and(...conditions))
+    .where(eq(pages.bookId, bookId))
     .orderBy(pages.page);
 
   return result;
@@ -253,19 +246,12 @@ export async function getUserBooks(
  * }
  * ```
  */
-export async function getPageFromDB(pageId: string, branchId?: string): Promise<DBPage | null> {
+export async function getPageFromDB(pageId: string): Promise<DBPage | null> {
   try {
-    const conditions = [eq(pages.id, pageId)];
-    
-    // If branchId is provided, add branch condition
-    if (branchId !== undefined) {
-      conditions.push(eq(pages.branchId, branchId));
-    }
-    
     const result = await dbRead
       .select()
       .from(pages)
-      .where(and(...conditions))
+      .where(eq(pages.id, pageId))
       .limit(1);
     
     return result[0] || null;
@@ -273,18 +259,6 @@ export async function getPageFromDB(pageId: string, branchId?: string): Promise<
     console.error(`Failed to get page ${pageId}:`, getErrorMessage(error));
     throw new Error(`Unable to retrieve page: ${getErrorMessage(error)}`);
   }
-}
-
-async function getUserPageProgressMap(userId: string, bookId: string): Promise<Map<string, Action>> {
-  const rows = await dbRead
-    .select()
-    .from(userPageProgress)
-    .where(and(
-      eq(userPageProgress.userId, userId),
-      eq(userPageProgress.bookId, bookId)
-    ));
-  
-  return new Map(rows.map(r => [r.pageId, r.action]));
 }
 
 /**
@@ -295,14 +269,14 @@ async function getUserPageProgressMap(userId: string, bookId: string): Promise<M
  * @param pageId - The page's unique identifier
  * @returns Promise resolving to user's selected action or null if not found
  */
-async function getPageProgressFromDB(userId: string, bookId: string, pageId: string): Promise<Action | null> {
+export async function getPageActionFromDB(userId: string, bookId: string, pageId: string): Promise<Action | null> {
   const userProgress = await dbRead
     .select()
     .from(userPageProgress)
     .where(and(
       eq(userPageProgress.userId, userId),
       eq(userPageProgress.bookId, bookId),
-      eq(userPageProgress.pageId, pageId)
+      eq(userPageProgress.pageId, pageId),
     ))
     .limit(1);
   
@@ -334,14 +308,11 @@ async function getPageProgressFromDB(userId: string, bookId: string, pageId: str
  */
 export async function getStoryPageById(userId: string, bookId: string, pageId: string): Promise<UserStoryPage | null> {
   try {
-    // If pageId is provided, try to get that specific page
-    if (pageId) {
-      const dbPage = await getPageFromDB(pageId);
-      if (dbPage) {
-        // Get user page progress to include selected action
-        const selectedAction = await getPageProgressFromDB(userId, bookId, pageId);
-        return mapToUserStoryPage(dbPage, selectedAction || undefined);
-      }
+    // Try to get the specific page by pageId
+    const dbPage = await getPageFromDB(pageId);
+    if (dbPage) {
+      // Get user page progress to include selected action
+      return completePageWithSelectedAction(dbPage, userId);
     }
     
     // Fallback: get the first page of the book
@@ -354,8 +325,7 @@ export async function getStoryPageById(userId: string, bookId: string, pageId: s
     
     if (firstPage[0]) {
       // Get progress for first page
-      const selectedAction = await getPageProgressFromDB(userId, bookId, firstPage[0].id);
-      return mapToUserStoryPage(firstPage[0], selectedAction || undefined);
+      return completePageWithSelectedAction(firstPage[0], userId);
     }
     
     return null;
@@ -363,6 +333,12 @@ export async function getStoryPageById(userId: string, bookId: string, pageId: s
     console.error(`Failed to get story page for book ${bookId}, page ${pageId}:`, getErrorMessage(error));
     throw new Error(`Unable to retrieve story page: ${getErrorMessage(error)}`);
   }
+}
+
+async function completePageWithSelectedAction(dbPage: DBPage, userId: string): Promise<UserStoryPage> {
+  // Get user page progress to include selected action
+  const selectedAction = await getPageActionFromDB(userId, dbPage.bookId, dbPage.id);
+  return mapToUserStoryPage(dbPage, selectedAction || undefined);
 }
 
 /**
@@ -455,7 +431,7 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
  * 
  * Behavior:
  * - Maps only story content fields from database to domain types
- * - Excludes database-specific fields like id, bookId, parentId, branchId
+ * - Excludes database-specific fields like id, bookId, parentId
  * - Handles optional fields correctly
  * - Preserves data integrity during transformation
  * 

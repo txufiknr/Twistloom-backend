@@ -1,4 +1,4 @@
-import { PsychologicalProfile, HiddenState, TruthLevel, ProfileShift, EndingPlan, ThreatProximity, RealityStability, Archetype, StabilityLevel, ManipulationAffinity, EndingPlanType, ProfileShiftType, Ending, EndingType } from "../types/story.js";
+import type { PsychologicalProfile, HiddenState, TruthLevel, ProfileShift, EndingPlan, ThreatProximity, RealityStability, Archetype, StabilityLevel, ManipulationAffinity, EndingPlanType, ProfileShiftType, EndingType } from "../types/story.js";
 
 /**
  * Creates initial psychological profile for new stories

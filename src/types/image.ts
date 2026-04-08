@@ -10,7 +10,7 @@ export interface ImageUploadOptions {
   /** Tags to apply to the uploaded image */
   tags: string[];
   /** Custom metadata for the upload */
-  customMetadata?: Record<string, any>;
+  customMetadata?: Record<string, unknown>;
   /** Filename prefix (e.g., 'book-cover', 'profile') */
   filenamePrefix?: string;
   /** Whether to use unique filename generation */

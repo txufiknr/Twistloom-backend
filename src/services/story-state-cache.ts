@@ -61,144 +61,109 @@ export const stateCache = new LRUCache<string, StateCacheEntry>({
 export interface DeletedStateCacheEntry {
   state: StoryState;
   deletedAt: number;
-  ttl: number; // Time to live in milliseconds
 }
+
+// Hit/miss tracking variables
+let cacheHits = 0;
+let cacheMisses = 0;
 
 /**
  * LRU cache for recently deleted story states
  * Provides safety net for states that might be needed shortly after cleanup
  */
-export class DeletedStateLRUCache {
-  private cache = new Map<string, DeletedStateCacheEntry>();
-  private readonly maxSize: number;
-  private readonly defaultTtl: number;
-  private hits = 0;
-  private misses = 0;
-
-  constructor(maxSize: number = 100, defaultTtl: number = 30 * 60 * 1000) { // 30 minutes default TTL
-    this.maxSize = maxSize;
-    this.defaultTtl = defaultTtl;
+export const deletedStateCache = new LRUCache<string, DeletedStateCacheEntry>({
+  max: DELETED_STATE_CACHE_SIZE,
+  ttl: DELETED_STATE_CACHE_TTL,
+  allowStale: false,
+  updateAgeOnGet: true,
+  // Custom dispose method for logging
+  dispose: (value: DeletedStateCacheEntry, key: string) => {
+    console.log(`[DeletedStateCache] 🗑️ Evicted expired entry: ${key} (age: ${Date.now() - value.deletedAt}ms)`);
   }
+});
 
-  /**
-   * Generates cache key for user+page combination
-   */
-  private getKey(userId: string, pageId: string): string {
-    return `${userId}:${pageId}`;
-  }
+/**
+ * Helper functions for deleted state cache operations
+ */
 
-  /**
-   * Gets a cached deleted state if valid
-   */
-  get(userId: string, pageId: string): StoryState | null {
-    const key = this.getKey(userId, pageId);
-    const entry = this.cache.get(key);
-    
-    if (!entry) {
-      this.misses++;
-      return null;
-    }
-    
-    // Check if entry has expired
-    if (Date.now() - entry.deletedAt > entry.ttl) {
-      this.cache.delete(key);
-      this.misses++;
-      console.log(`[DeletedStateLRUCache] 🕐 Cache expired for ${key}`);
-      return null;
-    }
-    
-    // Move to end (most recently used)
-    this.cache.delete(key);
-    this.cache.set(key, entry);
-    
-    this.hits++;
-    console.log(`[DeletedStateLRUCache] 🎯 Cache hit for ${key} (age: ${Date.now() - entry.deletedAt}ms)`);
-    return entry.state;
-  }
-
-  /**
-   * Caches a story state before deletion
-   */
-  set(userId: string, pageId: string, state: StoryState, ttl?: number): void {
-    const key = this.getKey(userId, pageId);
-    
-    // Remove oldest if at capacity
-    if (this.cache.size >= this.maxSize) {
-      const oldestKey = this.cache.keys().next().value;
-      if (oldestKey) {
-        this.cache.delete(oldestKey);
-        console.log(`[DeletedStateLRUCache] 🗑️ Evicted oldest entry: ${oldestKey}`);
-      }
-    }
-    
-    const entry: DeletedStateCacheEntry = {
-      state,
-      deletedAt: Date.now(),
-      ttl: ttl || this.defaultTtl
-    };
-    
-    this.cache.set(key, entry);
-    console.log(`[DeletedStateLRUCache] 💾 Cached deleted state for ${key} (TTL: ${entry.ttl}ms)`);
-  }
-
-  /**
-   * Clears expired entries
-   */
-  cleanup(): void {
-    const now = Date.now();
-    const keysToDelete: string[] = [];
-    
-    for (const [key, entry] of this.cache.entries()) {
-      if (now - entry.deletedAt > entry.ttl) {
-        keysToDelete.push(key);
-      }
-    }
-    
-    for (const key of keysToDelete) {
-      this.cache.delete(key);
-    }
-    
-    if (keysToDelete.length > 0) {
-      console.log(`[DeletedStateLRUCache] 🧹 Cleaned up ${keysToDelete.length} expired entries`);
-    }
-  }
-
-  /**
-   * Gets cache statistics
-   */
-  getStats(): { size: number; maxSize: number; hitRate: number; hits: number; misses: number; totalRequests: number } {
-    const totalRequests = this.hits + this.misses;
-    const hitRate = totalRequests > 0 ? (this.hits / totalRequests) * 100 : 0;
-    
-    return {
-      size: this.cache.size,
-      maxSize: this.maxSize,
-      hitRate: Math.round(hitRate * 100) / 100, // Round to 2 decimal places
-      hits: this.hits,
-      misses: this.misses,
-      totalRequests
-    };
-  }
-
-  /**
-   * Clears all entries
-   */
-  clear(): void {
-    this.cache.clear();
-    this.hits = 0;
-    this.misses = 0;
-    console.log(`[DeletedStateLRUCache] 🧹 Cache cleared (stats reset)`);
-  }
-
-  /**
-   * Resets hit/miss statistics without clearing cache
-   */
-  resetStats(): void {
-    this.hits = 0;
-    this.misses = 0;
-    console.log(`[DeletedStateLRUCache] 📊 Statistics reset`);
-  }
+/**
+ * Generates cache key for user+page combination
+ */
+export function getDeletedStateCacheKey(userId: string, pageId: string): string {
+  return `${userId}:${pageId}`;
 }
 
-// Global cache instance for deleted story states
-export const deletedStateCache = new DeletedStateLRUCache(DELETED_STATE_CACHE_SIZE, DELETED_STATE_DEFAULT_TTL);
+/**
+ * Gets a cached deleted state if valid
+ */
+export function getDeletedState(userId: string, pageId: string): StoryState | null {
+  const key = getDeletedStateCacheKey(userId, pageId);
+  const entry = deletedStateCache.get(key);
+  
+  if (!entry) {
+    cacheMisses++;
+    return null;
+  }
+  
+  cacheHits++;
+  console.log(`[DeletedStateCache] \ud83c\udfaf Cache hit for ${key} (age: ${Date.now() - entry.deletedAt}ms)`);
+  return entry.state;
+}
+
+/**
+ * Caches a story state before deletion
+ */
+export function setDeletedState(userId: string, pageId: string, state: StoryState): void {
+  const key = getDeletedStateCacheKey(userId, pageId);
+  
+  const entry: DeletedStateCacheEntry = {
+    state,
+    deletedAt: Date.now()
+  };
+  
+  deletedStateCache.set(key, entry);
+  console.log(`[DeletedStateCache] \ud83d\udcbe Cached deleted state for ${key} (TTL: ${DELETED_STATE_CACHE_TTL}ms)`);
+}
+
+/**
+ * Gets cache statistics for deleted states
+ */
+export function getDeletedStateCacheStats(): { 
+  size: number; 
+  maxSize: number; 
+  hitRate: number; 
+  hits: number; 
+  misses: number; 
+  totalRequests: number 
+} {
+  const size = deletedStateCache.size;
+  const maxSize = deletedStateCache.max;
+  const totalRequests = cacheHits + cacheMisses;
+  const hitRate = totalRequests > 0 ? (cacheHits / totalRequests) * 100 : 0;
+  
+  return {
+    size,
+    maxSize,
+    hitRate: Math.round(hitRate * 100) / 100, // Round to 2 decimal places
+    hits: cacheHits,
+    misses: cacheMisses,
+    totalRequests
+  };
+}
+
+/**
+ * Clears all deleted state cache entries
+ */
+export function clearDeletedStateCache(): void {
+  deletedStateCache.clear();
+  console.log(`[DeletedStateCache] \ud83e\uddf9 Cache cleared`);
+}
+
+/**
+ * Resets cache statistics without clearing cache data
+ */
+export function resetDeletedStateCacheStats(): void {
+  cacheHits = 0;
+  cacheMisses = 0;
+  console.log(`[DeletedStateCache] \ud83d\udcca Statistics reset`);
+}

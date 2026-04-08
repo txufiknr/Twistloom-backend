@@ -1,10 +1,11 @@
-import type { Request } from 'express';
+import type { _Request } from "express";
 
-declare global {
-  namespace Express {
-    interface Request {
-      userId?: string;
-      file?: Express.Multer.File;
-    }
+declare module "express" {
+  interface Request {
+    /** User identifier from authentication middleware */
+    userId?: string;
+    file?: Express.Multer.File;
   }
 }
+
+export {};

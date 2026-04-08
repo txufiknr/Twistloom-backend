@@ -39,7 +39,7 @@ import type { LikeTargetType } from "../types/user.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { updateUserLastActivity } from "../services/user.js";
-import { invalidateCacheKey, invalidateCachePattern } from "../utils/cache.js";
+import { invalidateCachePattern } from "../utils/cache.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 import { imageUpload, uploadUserProfile } from "../services/image.js";
 

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
 import type { Gender } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC } from "../types/character.js";
@@ -34,7 +34,7 @@ const date = text("date").notNull(); // YYYY-MM-DD format
 const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
 const lastActive = timestamp("last_active", { withTimezone: true }).defaultNow().notNull();
-const branchId = uuid("branch_id").notNull().default('main'); // Which reality you're in
+const branchId = uuid("branch_id").notNull().default("main"); // Which reality you're in
 
 /**
  * Create story pages table
@@ -375,13 +375,12 @@ export const userPageProgress = pgTable(
     pageId: uuid("page_id").notNull(),
     action: jsonb("action").$type<Action>().notNull(),
     nextPageId: uuid("next_page_id"), // For tracking pre-generated pages
-    branchId, // Which reality you're in
     createdAt,
     updatedAt,
   },
   (t) => [
-    // Composite primary key for unique user+book+page combinations
-    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Unique constraint on (userId, bookId, pageId) to ensure unique progress per branch
+    unique("user_page_progress_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
     // Index for user's progress in a book
     index("user_page_progress_user_book_idx").on(t.userId, t.bookId),
     // Index for finding specific page progress
@@ -693,16 +692,18 @@ export const userComments = pgTable(
 export const userSessions = pgTable(
   "user_sessions",
   {
+    id: id(),
     userId: userId(),
     bookId: bookId("cascade"), // Delete if book is deleted
     pageId: pageId("set null"),
+    previousPageId: uuid("previous_page_id"),
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,
     updatedAt,
   },
   (t) => [
-    // Composite primary key on userId and bookId
-    primaryKey({ columns: [t.userId, t.bookId] }),
+    // Unique constraint on (userId, bookId) to ensure one session per user+book
+    unique("user_sessions_user_book_unique").on(t.userId, t.bookId),
     // Index for status filtering
     index("user_sessions_status_idx").on(t.status),
     // Index for user's active sessions

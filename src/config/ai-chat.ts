@@ -1,4 +1,4 @@
-import { AIChatConfig } from "../types/ai-chat";
+import type { AIChatConfig } from "../types/ai-chat.js";
 
 export const DEFAULT_MAX_OUTPUT_TOKEN: number = 1500;
 

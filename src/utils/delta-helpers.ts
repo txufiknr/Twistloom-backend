@@ -5,13 +5,8 @@
  * to eliminate code duplication and ensure type safety.
  */
 
-import type { 
-  StateDelta, 
-  PsychologicalFlags, 
-  PsychologicalProfile, 
-  HiddenState
-} from "../types/story.js";
-import type { CharacterMemory, CharacterRelationship, NarrativeFlags } from "../types/character.js";
+import type { PsychologicalFlags, PsychologicalProfile, HiddenState } from "../types/story.js";
+import type { CharacterMemory } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 
 /**

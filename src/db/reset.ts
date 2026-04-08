@@ -21,6 +21,7 @@
 import { db } from "./client.js";
 import { sql } from "drizzle-orm";
 import { fileURLToPath } from "url";
+import { getErrorMessage } from "../utils/error.js";
 
 const __filename = fileURLToPath(import.meta.url);
 
@@ -60,9 +61,9 @@ export async function resetDatabase() {
       DROP TABLE IF EXISTS "drizzle"."__drizzle_migrations" CASCADE;
     `);
     
-    console.log("All tables dropped successfully! ✅");
+    console.log("✅ All tables dropped successfully!");
   } catch (error) {
-    console.error("Failed to drop tables:", getErrorMessage(error));
+    console.error("❌ Failed to drop tables:", getErrorMessage(error));
     throw error;
   }
 }

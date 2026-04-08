@@ -1,13 +1,15 @@
 import ImageKit, { toFile } from "@imagekit/nodejs";
 import { getTodayDate } from "../utils/time.js";
 import { dbWrite } from "../db/client.js";
-import { eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { APP_NAME_SLUG } from "../config/constants.js";
 import { deletedImages } from "../db/schema.js";
-import multer, { FileFilterCallback } from "multer";
+import multer, { type FileFilterCallback } from "multer";
 import { MAX_IMAGE_UPLOAD_SIZE } from "../config/image.js";
-import { ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
+import type { ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
+
+let imageKitClient: ImageKit | null = null;
 
 /**
  * @overview Default multer configuration for image uploads
@@ -28,12 +30,16 @@ export const imageUpload = multer({
   limits: {
     fileSize: MAX_IMAGE_UPLOAD_SIZE, // 2MB limit
   },
-  fileFilter: (req: any, file: any, cb: FileFilterCallback) => {
+  fileFilter: (
+    req: Express.Request,
+    file: Express.Multer.File,
+    callback: FileFilterCallback,
+  ) => {
     // Accept only image files
     if (file.mimetype?.startsWith('image/')) {
-      cb(null, true);
+      callback(null, true);
     } else {
-      cb(new Error('Only image files are allowed'));
+      callback(new Error('Only image files are allowed'));
     }
   },
 });
@@ -55,25 +61,6 @@ export function formatKeywordsForUrl(keywords: string[]): string {
     .map(keyword => keyword.replace(/\s+/g, '+')) // Replace spaces with '+'
     .join('|'); // Join with pipe delimiter
 }
-
-interface PixabayResponse {
-  hits: Array<{
-    largeImageURL: string;
-    webformatURL: string;
-    webformatWidth: number;
-    webformatHeight: number;
-  }>;
-}
-
-export interface GetImageResult {
-  url?: string;
-  originalUrl?: string;
-  width?: number;
-  height?: number;
-  id?: string;
-}
-
-let imageKitClient: ImageKit | null = null;
 
 function getImageKitClient(): ImageKit | null {
   if (imageKitClient) return imageKitClient;

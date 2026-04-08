@@ -22,6 +22,7 @@ import { and, eq, gt, like, or, sql } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
 import { userCache } from "../db/schema.js";
 import { CACHE_TTL_MINUTES } from "../config/cache.js";
+import { getErrorMessage } from "./error.js";
 
 /**
  * Removes expired user cache entries using database-enforced TTL.
@@ -62,9 +63,9 @@ export async function cleanupUserCache(
     DELETE FROM user_cache
     WHERE updated_at < now() - interval '${sql.raw(String(maxAgeMinutes))} minutes'
   `).then((result) => {
-    console.log('[cache] Cleaned up expired cache entries:', result.rowCount ?? 0);
+    console.log('[cache] ✨ Cleaned up expired cache entries:', result.rowCount ?? 0);
   }).catch((error) => {
-    console.error('[cache] Error cleaning up expired cache entries:', getErrorMessage(error));
+    console.error('[cache] ❌ Error cleaning up expired cache entries:', getErrorMessage(error));
   });
 }
 

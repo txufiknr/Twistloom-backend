@@ -227,40 +227,40 @@ export function debounce<T extends (...args: any[]) => any>(
   };
 }
 
-/**
- * Utility to clear all pending debounced calls for a specific key
- * 
- * @param debouncedFn - A debounced function created by debounceAsync or debounce
- * @param key - The key to clear timers for
- * 
- * @example
- * ```typescript
- * // Clear pending calls for a specific user
- * clearDebouncedCalls(debouncedUpdateActivity, 'user123');
- * ```
- */
-export function clearDebouncedCalls(debouncedFn: any, key: string): void {
-  // This is a simplified implementation
-  // In a real scenario, you'd need to expose the timers map
-  // For now, this serves as a placeholder API
-  console.warn(`clearDebouncedCalls not implemented for key: ${key}`);
-}
+// /**
+//  * Utility to clear all pending debounced calls for a specific key
+//  * 
+//  * @param debouncedFn - A debounced function created by debounceAsync or debounce
+//  * @param key - The key to clear timers for
+//  * 
+//  * @example
+//  * ```typescript
+//  * // Clear pending calls for a specific user
+//  * clearDebouncedCalls(debouncedUpdateActivity, 'user123');
+//  * ```
+//  */
+// export function clearDebouncedCalls(debouncedFn: any, key: string): void {
+//   // This is a simplified implementation
+//   // In a real scenario, you'd need to expose the timers map
+//   // For now, this serves as a placeholder API
+//   console.warn(`clearDebouncedCalls not implemented for key: ${key}`);
+// }
 
-/**
- * Utility to get the number of pending debounced calls
- * 
- * @param debouncedFn - A debounced function created by debounceAsync or debounce
- * @returns Number of pending calls across all keys
- * 
- * @example
- * ```typescript
- * const pendingCount = getPendingCallCount(debouncedUpdateActivity);
- * console.log(`Pending calls: ${pendingCount}`);
- * ```
- */
-export function getPendingCallCount(debouncedFn: any): number {
-  // This is a simplified implementation
-  // In a real scenario, you'd need to expose the timers map
-  console.warn('getPendingCallCount not implemented');
-  return 0;
-}
+// /**
+//  * Utility to get the number of pending debounced calls
+//  * 
+//  * @param debouncedFn - A debounced function created by debounceAsync or debounce
+//  * @returns Number of pending calls across all keys
+//  * 
+//  * @example
+//  * ```typescript
+//  * const pendingCount = getPendingCallCount(debouncedUpdateActivity);
+//  * console.log(`Pending calls: ${pendingCount}`);
+//  * ```
+//  */
+// export function getPendingCallCount(debouncedFn: any): number {
+//   // This is a simplified implementation
+//   // In a real scenario, you'd need to expose the timers map
+//   console.warn('getPendingCallCount not implemented');
+//   return 0;
+// }

@@ -471,11 +471,9 @@ export function setupFakeToRealEnding(state: StoryState, triggerPage: number, ex
 export function detectProfileShift(state: StoryState): boolean {
   if (state.actionsHistory.length < 6) return false; // Need enough data
   
+  const profile = state.psychologicalProfile;
   const recentActions = state.actionsHistory.slice(-3);
   const earlierActions = state.actionsHistory.slice(-6, -3);
-  
-  const { flags } = state;
-  const profile = state.psychologicalProfile;
   
   // Detect curiosity collapse (was exploring, now avoiding)
   const wasCurious = earlierActions.some(a => a.type === "explore");

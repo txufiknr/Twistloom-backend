@@ -118,32 +118,48 @@ pnpm db:migrate
 **In `src/utils/prompt.ts` - chooseAction function:**
 
 ```typescript
-// Replace the existing reconstructionDeps with:
+// Replace the existing reconstructionDeps with direct imports:
 
-import { createOptimalReconstructionDependencies } from "../services/state-reconstruction.js";
+import { reconstructStoryState } from "../utils/branch-traversal.js";
+import { getPageFromDB, getBookFromDB } from "../services/book.js";
+import { getStateSnapshot } from "../services/snapshots.js";
+import { getStateDelta } from "../services/deltas.js";
+import { getStoryState } from "../services/story.js";
 
-// Inside the chooseAction function, replace the reconstructionDeps object:
-const reconstructionDeps = createOptimalReconstructionDependencies(userId, {
-  enableCaching: true,
-  enableDetailedLogging: true,
-  enablePerformanceTracking: true,
-  maxCacheSize: 100
-});
+// Inside the function, create dependencies directly:
+const deps = {
+  getPageById: async (id: string) => await getPageFromDB(id),
+  getBook: async (bookId: string) => await getBookFromDB(bookId),
+  getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+  getDelta: async (id: string) => await getStateDelta(userId, id),
+  getStoryState: async (id: string) => await getStoryState(userId, id)
+};
+
+// Use directly in reconstruction
+const result = await reconstructStoryState(pageId, userId, deps, { useCache: true });
 ```
 
-**In `src/services/story-branch.ts` - getStoryStateWithBranch function:**
+**In `src/services/story.ts` - getStoryStateWithBranch function:**
 
 ```typescript
-// Replace the existing reconstructionDeps with:
+// Replace the existing reconstructionDeps with direct imports:
 
-import { createOptimalReconstructionDependencies } from "./state-reconstruction.js";
+import { reconstructStoryState } from "../utils/branch-traversal.js";
+import { getPageFromDB, getBookFromDB } from "./book.js";
+import { getStateSnapshot } from "./snapshots.js";
+import { getStateDelta } from "./deltas.js";
 
-// Inside the function, replace the reconstructionDeps object:
-const reconstructionDeps = createOptimalReconstructionDependencies(userId, {
-  enableCaching: true,
-  enableDetailedLogging: false,
-  enablePerformanceTracking: true
-});
+// Inside the function, create dependencies directly:
+const deps = {
+  getPageById: async (id: string) => await getPageFromDB(id),
+  getBook: async (bookId: string) => await getBookFromDB(bookId),
+  getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+  getDelta: async (id: string) => await getStateDelta(userId, id),
+  getStoryState: async (id: string) => await getStoryState(userId, id)
+};
+
+// Use directly in reconstruction
+const result = await reconstructStoryState(pageId, userId, deps, { useCache: true });
 ```
 
 ### 3. Integrate Snapshot & Delta Creation
@@ -355,20 +371,28 @@ await trackReconstructionMetrics({
 // tests/test-snapshot-delta-integration.js
 
 /**
- * Test complete integration
+ * Test complete integration using canonical branch-traversal.ts
  */
 async function testSnapshotDeltaIntegration() {
   const userId = 'test-user';
   const bookId = 'test-book';
   
-  // Test reconstruction with snapshots/deltas
-  const reconstructionDeps = createOptimalReconstructionDependencies(userId);
-  const result = await reconstructStoryState('test-page', reconstructionDeps);
+  // Create direct dependencies for reconstruction
+  const deps = {
+    getPageById: async (id: string) => await getPageFromDB(id),
+    getBook: async (bookId: string) => await getBookFromDB(bookId),
+    getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+    getDelta: async (id: string) => await getStateDelta(userId, id),
+    getStoryState: async (id: string) => await getStoryState(userId, id)
+  };
+  
+  // Test reconstruction with direct dependencies
+  const result = await reconstructStoryState('test-page', userId, deps, { useCache: true });
   
   assert(result.method !== 'direct', 'Should use hybrid reconstruction');
   assert(result.reconstructionTimeMs < 50, 'Should be fast');
   
-  console.log('✅ Integration test passed');
+  console.log('✅ Integration test passed - using canonical branch-traversal.ts');
 }
 ```
 
@@ -411,14 +435,26 @@ async function testStoryFlowWithSnapshots() {
 
 ### Debug Logging
 
-Enable detailed logging to troubleshoot issues:
+Enable detailed logging to troubleshoot issues using canonical branch-traversal.ts:
 
 ```typescript
-const reconstructionDeps = createOptimalReconstructionDependencies(userId, {
-  enableCaching: true,
-  enableDetailedLogging: true,
-  enablePerformanceTracking: true
+// Direct dependencies with built-in caching and performance monitoring
+const deps = {
+  getPageById: async (id: string) => await getPageFromDB(id),
+  getBook: async (bookId: string) => await getBookFromDB(bookId),
+  getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+  getDelta: async (id: string) => await getStateDelta(userId, id),
+  getStoryState: async (id: string) => await getStoryState(userId, id)
+};
+
+// Use branch-traversal.ts with built-in performance monitoring
+const result = await reconstructStoryState(pageId, userId, deps, { 
+  useCache: true,
+  validatePath: true 
 });
+
+console.log(`[reconstruction] 📊 Performance: ${result.reconstructionTimeMs}ms, method: ${result.method}`);
+console.log(`[reconstruction] 📈 Snapshots used: ${result.snapshotsUsed}, Deltas applied: ${result.deltasApplied}`);
 ```
 
 ## 📈 Success Metrics

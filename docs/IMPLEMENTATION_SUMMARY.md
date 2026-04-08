@@ -80,13 +80,13 @@ export async function createStateDeltaRecord(userId: string, bookId: string, pag
 export async function cleanupOldDeltas(userId: string, bookId: string, keepPages?: number): Promise<{ deleted: number; kept: number }>
 ```
 
-### 4. Reconstruction Service (`src/services/state-reconstruction.ts`)
+### 4. Reconstruction Service (`src/utils/branch-traversal.ts`)
 ```typescript
 // Key Functions
-export function createReconstructionDependencies(userId: string): StateReconstructionDeps
-export function createEnhancedReconstructionDependencies(userId: string, options?: ReconstructionOptions): StateReconstructionDeps
-export function createCachedReconstructionDependencies(userId: string, cacheOptions?: CacheOptions): StateReconstructionDeps
-export function createOptimalReconstructionDependencies(userId: string, options?: OptimalOptions): StateReconstructionDeps
+export async function reconstructStoryState(currentPageId: string, userId: string, deps: StateReconstructionDeps, options?: TraversalOptions): Promise<StateReconstructionResult>
+export async function getBranchPath(currentPageId: string, userId: string, options?: TraversalOptions): Promise<BranchPath>
+export function findOptimalSnapshot(branchPath: BranchPath, currentPageIndex: number, deps: StateReconstructionDeps, totalPages: number): Promise<SnapshotInfo>
+export function createEmptyStoryState(pageId: string, page: number): StoryState
 ```
 
 ### 5. Integration Guide (`docs/INTEGRATION_GUIDE.md`)
@@ -126,14 +126,20 @@ pnpm db:migrate
 
 ### Step 2: Update Reconstruction Dependencies
 ```typescript
-// In src/utils/prompt.ts and src/services/story-branch.ts
-import { createOptimalReconstructionDependencies } from "../services/state-reconstruction.js";
+// In src/utils/prompt.ts and other files that need reconstruction
+import { reconstructStoryState } from "../utils/branch-traversal.js";
 
-const reconstructionDeps = createOptimalReconstructionDependencies(userId, {
-  enableCaching: true,
-  enableDetailedLogging: true,
-  enablePerformanceTracking: true
-});
+// Use direct imports for dependencies
+const deps = {
+  getPageById: async (id: string) => await getPageFromDB(id),
+  getBook: async (bookId: string) => await getBookFromDB(bookId),
+  getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+  getDelta: async (id: string) => await getStateDelta(userId, id),
+  getStoryState: async (id: string) => await getStoryState(userId, id)
+};
+
+// Use directly in reconstruction
+const result = await reconstructStoryState(pageId, userId, deps, { useCache: true });
 ```
 
 ### Step 3: Integrate Snapshot/Delta Creation

@@ -1,5 +1,4 @@
-// import type { CharacterPlaceRelation } from "./places.js";
-import { Gender, KnownGender } from "./user.js";
+import type { Gender, KnownGender } from "./user.js";
 
 export const injurySeverities = [
   "mild",

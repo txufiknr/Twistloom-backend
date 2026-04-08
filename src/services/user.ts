@@ -11,10 +11,11 @@
  * - Type-safe operations
  */
 
-import { dbWrite } from "../db/client.js";
+import { dbRead, dbWrite } from "../db/client.js";
 import { users } from "../db/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, and, gt } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
+import { getErrorMessage } from "../utils/error.js";
 
 /**
  * Updates user's lastActive timestamp to current time
@@ -60,10 +61,42 @@ export async function updateUserLastActivity(userId: string): Promise<void> {
     
     // Log if call was debounced (useful for debugging)
     if (!result.executed) {
-      console.log(`[user] Activity update debounced for user: ${userId}`);
+      console.log(`[user] ⏳ Activity update debounced for user: ${userId}`);
     }
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
-    console.error(`Failed to update last activity for user ${userId}:`, getErrorMessage(error));
+    console.error(`[user] ❌ Failed to update last activity for user ${userId}:`, getErrorMessage(error));
+  }
+}
+
+/**
+ * Gets users with recent activity for cleanup operations
+ * 
+ * @param daysAgo - How many days back to consider activity (default: 30)
+ * @returns Promise resolving to array of user IDs with recent activity
+ * 
+ * @example
+ * ```typescript
+ * // Get users active in last 30 days
+ * const activeUsers = await getActiveUsers(30);
+ * console.log(`Found ${activeUsers.length} active users for cleanup`);
+ * ```
+ */
+export async function getActiveUsers(daysAgo: number = 30): Promise<string[]> {
+  try {
+    const cutoffDate = new Date(Date.now() - (daysAgo * 24 * 60 * 60 * 1000));
+    
+    const recentUsers = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(and(
+        gt(users.lastActive, cutoffDate)
+      ))
+      .limit(1000); // Reasonable limit for cleanup operations
+    
+    return recentUsers.map(user => user.userId);
+  } catch (error) {
+    console.error("[user] Failed to get active users:", getErrorMessage(error));
+    return [];
   }
 }

@@ -2,20 +2,106 @@
  * Performance Monitoring Service for Story State Delta & Snapshot System
  * 
  * Provides comprehensive metrics tracking, performance analysis, and
- * monitoring capabilities for the delta/snapshot reconstruction system.
+ * monitoring capabilities for delta/snapshot reconstruction system.
  */
 
 import { getErrorMessage } from "../utils/error.js";
+
+// ============================================================================
+// TYPES AND INTERFACES
+// ============================================================================
+
+/** Performance metric entry structure */
+export interface PerformanceMetric {
+  type: string;                    // 'reconstruction', 'delta_creation', 'cleanup', etc.
+  operation: string;                // 'snapshot_plus_deltas', 'direct', 'fallback', etc.
+  userId: string;
+  startTime: number;
+  endTime: number;
+  durationMs: number;
+  timestamp: Date;
+  metadata: Record<string, unknown>;     // Additional context like deltasApplied, snapshotsUsed, etc.
+}
+
+/** Performance statistics for a metric type */
+export interface PerformanceStats {
+  type: string;
+  timeRangeMs: number;
+  totalOperations: number;
+  averageDurationMs: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+  medianDurationMs: number;
+  p95DurationMs: number;
+  p99DurationMs: number;
+  operationsWithinTarget: number;
+  targetComplianceRate: number;
+}
+
+/** Comprehensive performance report */
+export interface PerformanceReport {
+  timeRangeMs: number;
+  generatedAt: Date;
+  metrics: Record<string, PerformanceStats>;
+  summary: {
+    totalOperations: number;
+    averageComplianceRate: number;
+    performanceGrade: string;
+    compliantTypes: number;
+  };
+}
+
+/** Health check result */
+export interface HealthCheckResult {
+  status: 'healthy' | 'degraded' | 'warning';
+  issues: string[];
+  recommendations: string[];
+  timestamp: Date;
+}
+
+/** Performance measurement context */
+export interface PerformanceMeasurement {
+  type: string;
+  operation: string;
+  userId: string;
+  startTime: number;
+  metadata: Record<string, unknown>;
+  end: (additionalMetadata?: Record<string, unknown>) => PerformanceMetric;
+}
+
+/** User performance metrics */
+export interface UserPerformanceMetrics {
+  [type: string]: {
+    totalOperations: number;
+    averageDurationMs: number;
+    minDurationMs: number;
+    maxDurationMs: number;
+    operations: PerformanceMetric[];
+  };
+}
+
+/** Metrics configuration */
+interface MetricsConfig {
+  RETENTION_PERIOD: number;
+  MAX_ENTRIES: number;
+  PERFORMANCE_TARGETS: {
+    RECONSTRUCTION_TIME_MS: number;
+    DELTA_APPLICATION_TIME_MS: number;
+    SNAPSHOT_SELECTION_TIME_MS: number;
+    CACHE_HIT_RATE_TARGET: number;
+    DATABASE_QUERY_TARGET: number;
+  };
+}
 
 // ============================================================================
 // PERFORMANCE METRICS STORAGE
 // ============================================================================
 
 /** In-memory metrics storage (in production, use Redis or similar) */
-const performanceMetrics = new Map();
+const performanceMetrics = new Map<string, PerformanceMetric[]>();
 
 /** Metrics configuration */
-const METRICS_CONFIG = {
+const METRICS_CONFIG: MetricsConfig = {
   // Retention period for metrics (in milliseconds)
   RETENTION_PERIOD: 24 * 60 * 60 * 1000, // 24 hours
   
@@ -32,20 +118,6 @@ const METRICS_CONFIG = {
   }
 };
 
-/** Performance metric entry structure */
-class PerformanceMetric {
-  constructor(type, operation, userId, startTime, endTime, metadata = {}) {
-    this.type = type;                    // 'reconstruction', 'delta_creation', 'cleanup', etc.
-    this.operation = operation;          // 'snapshot_plus_deltas', 'direct', 'fallback', etc.
-    this.userId = userId;
-    this.startTime = startTime;
-    this.endTime = endTime;
-    this.durationMs = endTime - startTime;
-    this.timestamp = new Date(startTime);
-    this.metadata = metadata;            // Additional context like deltasApplied, snapshotsUsed, etc.
-  }
-}
-
 // ============================================================================
 // METRICS COLLECTION
 // ============================================================================
@@ -55,11 +127,16 @@ class PerformanceMetric {
  * 
  * @param type - Type of operation being measured
  * @param operation - Specific operation name
- * @param userId - User ID for the operation
+ * @param userId - User ID for operation
  * @param metadata - Additional context
  * @returns Performance measurement context
  */
-export function startPerformanceMeasurement(type, operation, userId, metadata = {}) {
+export function startPerformanceMeasurement(
+  type: string,
+  operation: string,
+  userId: string,
+  metadata: Record<string, unknown> = {}
+): PerformanceMeasurement {
   const startTime = Date.now();
   
   return {
@@ -74,16 +151,18 @@ export function startPerformanceMeasurement(type, operation, userId, metadata = 
      * @param additionalMetadata - Additional metadata to add at completion
      * @returns PerformanceMetric object
      */
-    end: (additionalMetadata = {}) => {
+    end: (additionalMetadata: Record<string, unknown> = {}): PerformanceMetric => {
       const endTime = Date.now();
-      const metric = new PerformanceMetric(
+      const metric: PerformanceMetric = {
         type,
         operation,
         userId,
         startTime,
         endTime,
-        { ...metadata, ...additionalMetadata }
-      );
+        durationMs: endTime - startTime,
+        timestamp: new Date(startTime),
+        metadata: { ...metadata, ...additionalMetadata }
+      };
       
       recordMetric(metric);
       return metric;
@@ -96,20 +175,23 @@ export function startPerformanceMeasurement(type, operation, userId, metadata = 
  * 
  * @param metric - Performance metric to record
  */
-export function recordMetric(metric) {
+export function recordMetric(metric: PerformanceMetric): void {
   try {
     // Add to metrics storage
     if (!performanceMetrics.has(metric.type)) {
       performanceMetrics.set(metric.type, []);
     }
     
-    const typeMetrics = performanceMetrics.get(metric.type);
+    const typeMetrics = performanceMetrics.get(metric.type)!;
     typeMetrics.push(metric);
     
     // Cleanup old metrics if needed
     if (typeMetrics.length > METRICS_CONFIG.MAX_ENTRIES) {
       const cutoffTime = Date.now() - METRICS_CONFIG.RETENTION_PERIOD;
-      typeMetrics.splice(0, typeMetrics.findIndex(m => m.timestamp.getTime() > cutoffTime));
+      const firstValidIndex = typeMetrics.findIndex(m => m.timestamp.getTime() > cutoffTime);
+      if (firstValidIndex > 0) {
+        typeMetrics.splice(0, firstValidIndex);
+      }
     }
     
     // Log performance warnings if targets are not met
@@ -125,7 +207,7 @@ export function recordMetric(metric) {
  * 
  * @param metric - Performance metric to check
  */
-function checkPerformanceTargets(metric) {
+function checkPerformanceTargets(metric: PerformanceMetric): void {
   const targets = METRICS_CONFIG.PERFORMANCE_TARGETS;
   
   switch (metric.type) {
@@ -160,7 +242,7 @@ function checkPerformanceTargets(metric) {
  * @param timeRangeMs - Time range in milliseconds (default: 1 hour)
  * @returns Performance statistics object
  */
-export function getPerformanceStats(type, timeRangeMs = 60 * 60 * 1000) {
+export function getPerformanceStats(type: string, timeRangeMs: number = 60 * 60 * 1000): PerformanceStats | null {
   try {
     const metrics = performanceMetrics.get(type) || [];
     const cutoffTime = Date.now() - timeRangeMs;
@@ -183,9 +265,10 @@ export function getPerformanceStats(type, timeRangeMs = 60 * 60 * 1000) {
     }
     
     const durations = recentMetrics.map(m => m.durationMs).sort((a, b) => a - b);
-    const target = METRICS_CONFIG.PERFORMANCE_TARGETS[`${type.toUpperCase()}_TIME_MS`] || METRICS_CONFIG.PERFORMANCE_TARGETS.RECONSTRUCTION_TIME_MS;
+    const targetKey = `${type.toUpperCase()}_TIME_MS` as keyof typeof METRICS_CONFIG.PERFORMANCE_TARGETS;
+    const target = METRICS_CONFIG.PERFORMANCE_TARGETS[targetKey] || METRICS_CONFIG.PERFORMANCE_TARGETS.RECONSTRUCTION_TIME_MS;
     
-    const stats = {
+    const stats: PerformanceStats = {
       type,
       timeRangeMs,
       totalOperations: recentMetrics.length,
@@ -213,15 +296,16 @@ export function getPerformanceStats(type, timeRangeMs = 60 * 60 * 1000) {
  * @param timeRangeMs - Time range in milliseconds (default: 1 hour)
  * @returns Comprehensive performance report
  */
-export function getPerformanceReport(timeRangeMs = 60 * 60 * 1000) {
-  const report = {
+export function getPerformanceReport(timeRangeMs: number = 60 * 60 * 1000): PerformanceReport {
+  const report: PerformanceReport = {
     timeRangeMs,
     generatedAt: new Date(),
     metrics: {},
     summary: {
       totalOperations: 0,
       averageComplianceRate: 0,
-      performanceGrade: 'A'
+      performanceGrade: 'A',
+      compliantTypes: 0
     }
   };
   
@@ -242,6 +326,7 @@ export function getPerformanceReport(timeRangeMs = 60 * 60 * 1000) {
   
   report.summary.totalOperations = totalOperations;
   report.summary.averageComplianceRate = metricTypes.length > 0 ? totalCompliance / metricTypes.length : 0;
+  report.summary.compliantTypes = compliantTypes;
   
   // Calculate performance grade
   const complianceRate = report.summary.averageComplianceRate;
@@ -261,10 +346,13 @@ export function getPerformanceReport(timeRangeMs = 60 * 60 * 1000) {
  * @param timeRangeMs - Time range in milliseconds (default: 1 hour)
  * @returns User-specific performance metrics
  */
-export function getUserPerformanceMetrics(userId, timeRangeMs = 60 * 60 * 1000) {
+export function getUserPerformanceMetrics(
+  userId: string, 
+  timeRangeMs: number = 60 * 60 * 1000
+): UserPerformanceMetrics {
   try {
     const cutoffTime = Date.now() - timeRangeMs;
-    const userMetrics = {};
+    const userMetrics: UserPerformanceMetrics = {};
     
     for (const [type, metrics] of performanceMetrics.entries()) {
       const userSpecificMetrics = metrics.filter(m => 
@@ -292,34 +380,39 @@ export function getUserPerformanceMetrics(userId, timeRangeMs = 60 * 60 * 1000) 
 }
 
 // ============================================================================
-// PERFORMANCE MONITORING MIDDLEWARE
+// PERFORMANCE MONITORING DECORATORS
 // ============================================================================
 
 /**
- * Performance monitoring decorator for functions
+ * Performance monitoring decorator for methods
  * 
  * @param type - Metric type
  * @param operation - Operation name
- * @returns Decorated function with performance monitoring
+ * @returns Method decorator
  */
-export function withPerformanceMonitoring(type, operation) {
-  return function(target, propertyKey, descriptor) {
+export function withPerformanceMonitoring(type: string, operation: string) {
+  return function<T extends (...args: unknown[]) => Promise<unknown>>(
+    target: unknown,
+    propertyKey: string | symbol,
+    descriptor: TypedPropertyDescriptor<T>
+  ): TypedPropertyDescriptor<T> | void {
     const originalMethod = descriptor.value;
     
-    descriptor.value = async function(...args) {
-      const measurement = startPerformanceMeasurement(type, operation, args[0] || 'anonymous');
-      
-      try {
-        const result = await originalMethod.apply(this, args);
-        measurement.end({ success: true });
-        return result;
-      } catch (error) {
-        measurement.end({ success: false, error: getErrorMessage(error) });
-        throw error;
-      }
-    };
-    
-    return descriptor;
+    if (typeof originalMethod === 'function') {
+      descriptor.value = async function(this: unknown, ...args: unknown[]): Promise<unknown> {
+        const userId = (args[0] as string) || 'anonymous';
+        const measurement = startPerformanceMeasurement(type, operation, userId);
+        
+        try {
+          const result = await originalMethod.apply(this, args);
+          measurement.end({ success: true });
+          return result;
+        } catch (error) {
+          measurement.end({ success: false, error: getErrorMessage(error) });
+          throw error;
+        }
+      } as T;
+    }
   };
 }
 
@@ -332,8 +425,13 @@ export function withPerformanceMonitoring(type, operation) {
  * @param userId - User ID
  * @returns Monitored function
  */
-export function monitorAsyncFunction(fn, type, operation, userId) {
-  return async function(...args) {
+export function monitorAsyncFunction<T extends (...args: unknown[]) => Promise<unknown>>(
+  fn: T,
+  type: string,
+  operation: string,
+  userId: string
+): T {
+  return (async function(...args: unknown[]): Promise<unknown> {
     const measurement = startPerformanceMeasurement(type, operation, userId);
     
     try {
@@ -344,7 +442,7 @@ export function monitorAsyncFunction(fn, type, operation, userId) {
       measurement.end({ success: false, error: getErrorMessage(error) });
       throw error;
     }
-  };
+  }) as T;
 }
 
 // ============================================================================
@@ -356,9 +454,9 @@ export function monitorAsyncFunction(fn, type, operation, userId) {
  * 
  * @returns Health check results
  */
-export function performHealthCheck() {
+export function performHealthCheck(): HealthCheckResult {
   const report = getPerformanceReport(15 * 60 * 1000); // Last 15 minutes
-  const health = {
+  const health: HealthCheckResult = {
     status: 'healthy',
     issues: [],
     recommendations: [],
@@ -401,7 +499,7 @@ export function performHealthCheck() {
  * @param retentionMs - Retention period in milliseconds (default: 24 hours)
  * @returns Cleanup results
  */
-export function cleanupMetrics(retentionMs = METRICS_CONFIG.RETENTION_PERIOD) {
+export function cleanupMetrics(retentionMs: number = METRICS_CONFIG.RETENTION_PERIOD): { deleted: number; retentionMs: number } {
   try {
     const cutoffTime = Date.now() - retentionMs;
     let totalDeleted = 0;
@@ -427,9 +525,13 @@ export function cleanupMetrics(retentionMs = METRICS_CONFIG.RETENTION_PERIOD) {
  * 
  * @returns Memory usage statistics
  */
-export function getMetricsMemoryUsage() {
+export function getMetricsMemoryUsage(): {
+  totalEntries: number;
+  typeBreakdown: Record<string, number>;
+  estimatedMemoryMB: number;
+} {
   let totalEntries = 0;
-  const typeBreakdown = {};
+  const typeBreakdown: Record<string, number> = {};
   
   for (const [type, metrics] of performanceMetrics.entries()) {
     totalEntries += metrics.length;
@@ -452,7 +554,7 @@ export function getMetricsMemoryUsage() {
  * 
  * @param config - Configuration options
  */
-export function initializePerformanceMonitoring(config = {}) {
+export function initializePerformanceMonitoring(config: Partial<MetricsConfig> = {}): void {
   Object.assign(METRICS_CONFIG, config);
   
   // Set up periodic cleanup
@@ -465,9 +567,9 @@ export function initializePerformanceMonitoring(config = {}) {
 }
 
 // Auto-initialize if this module is imported
-if (typeof global !== 'undefined' && !global.performanceMonitoringInitialized) {
+if (typeof global !== 'undefined' && !(global as Record<string, unknown>).performanceMonitoringInitialized) {
   initializePerformanceMonitoring();
-  global.performanceMonitoringInitialized = true;
+  (global as Record<string, unknown>).performanceMonitoringInitialized = true;
 }
 
 console.log('[PerformanceMonitoring] 🚀 Performance monitoring service loaded');

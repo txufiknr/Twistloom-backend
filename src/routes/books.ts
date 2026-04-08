@@ -28,14 +28,14 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalClientId, requireClientId } from "../middleware/auth.js";
 import { books, pages, userSessions, deletedImages } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { initializeBook, chooseAction } from "../utils/prompt.js";
-import { getActiveSession, setActiveSession } from "../services/book.js";
-import { getStoryState, getStoryStateFromDB } from "../services/story.js";
 import { imageUpload, uploadBookCover } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { ImageUploadSource } from "../types/image.js";
+import type { ImageUploadSource } from "../types/image.js";
+import { setActiveSession } from "../services/story.js";
+import { getBook } from "../services/book.js";
 
 const router = Router();
 
@@ -68,7 +68,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
     );
 
     // Create reading session
-    const session = await setActiveSession(req.userId!, book.id, firstPage.id);
+    const session = await setActiveSession({userId: req.userId!, bookId: book.id, pageId: firstPage.id});
 
     res.status(201).json({
       book,
@@ -104,7 +104,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
     let query = dbRead
       .select({
         id: books.id,
-        displayTitle: books.displayTitle,
+        title: books.title,
         hook: books.hook,
         summary: books.summary,
         image: books.image,
@@ -120,14 +120,13 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
         and(
           eq(userSessions.bookId, books.id),
           eq(userSessions.userId, userId),
-          isNull(userSessions.updatedAt)
         )
       )
       .where(eq(books.userId, userId));
 
     // Apply search filter if provided
     if (search) {
-      query = createSearchFilter(search, ['displayTitle', 'hook', 'summary'])(query);
+      query = createSearchFilter(search, ['title', 'hook', 'summary'])(query);
     }
 
     // Apply sorting
@@ -140,7 +139,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
       .where(eq(books.userId, userId));
       
     if (search) {
-      countQuery = createSearchFilter(search, ['displayTitle', 'hook', 'summary'])(countQuery);
+      countQuery = createSearchFilter(search, ['title', 'hook', 'summary'])(countQuery);
     }
 
     const totalCountResult = await countQuery;
@@ -166,7 +165,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  * Handles multiple image upload sources: URL, base64, or multipart file.
  * 
  * @param id - Book ID to update
- * @param displayTitle - Updated book title (optional)
+ * @param title - Updated book title (optional)
  * @param hook - Updated book hook/description (optional)
  * @param summary - Updated book summary (optional)
  * @param keywords - Updated book keywords array (optional)
@@ -179,7 +178,7 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
     const { id } = req.params;
     const userId = req.userId!;
     const { 
-      displayTitle, 
+      title, 
       hook, 
       summary, 
       keywords, 
@@ -191,7 +190,7 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
       .select({ 
         id: books.id,
         userId: books.userId,
-        displayTitle: books.displayTitle,
+        title: books.title,
         imageId: books.imageId
       })
       .from(books)
@@ -226,7 +225,7 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
       const uploadResult = await uploadBookCover(
         imageSource,
         book.id,
-        displayTitle || book.displayTitle,
+        title || book.title,
         keywords || []
       );
 
@@ -256,7 +255,7 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
       updatedAt: new Date(),
     };
 
-    if (displayTitle !== undefined) updateData.displayTitle = displayTitle;
+    if (title !== undefined) updateData.title = title;
     if (hook !== undefined) updateData.hook = hook;
     if (summary !== undefined) updateData.summary = summary;
     if (keywords !== undefined) updateData.keywords = keywords;
@@ -322,7 +321,8 @@ router.post("/:id/pages", requireClientId, async (req: Request, res: Response) =
     }
 
     // Process user action choice using chooseAction function
-    const newPage = await chooseAction(userId, action, false);
+    const newPage = await chooseAction({userId, action, isUserAction: false});
+    if (!newPage) return handleApiError(res, "Failed to generate page");
 
     res.status(201).json({
       page: newPage,
@@ -358,7 +358,7 @@ router.get("/:id/pages/:pageId", requireClientId, async (req: Request, res: Resp
         pageNumber: pages.page,
         content: pages.text,
         actions: pages.actions,
-        characters: pages.characters,
+        charactersPresent: pages.charactersPresent,
         places: pages.place,
         keyEvents: pages.keyEvents,
         importantObjects: pages.importantObjects,
@@ -395,56 +395,33 @@ router.get("/:id/pages/:pageId", requireClientId, async (req: Request, res: Resp
  * Tracks reading progress and manages active sessions.
  * 
  * @param id - Book ID
- * @param currentPage - Current page number in reading session
+ * @param pageId - Current page ID in reading session
  * @returns Session information with progress
  */
 router.post("/:id/sessions", requireClientId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { currentPage } = req.body;
+    const { pageId } = req.body;
     const userId = req.userId!;
     const bookId = id as string;
 
-    if (!currentPage) {
+    if (!pageId) {
       return res.status(400).json({ 
-        error: "Missing required field: currentPage is required" 
+        error: "Missing required field: pageId is required" 
       });
     }
 
-    // Verify book ownership
-    const book = await dbRead
-      .select()
-      .from(books)
-      .where(and(
-        eq(books.id, bookId),
-        eq(books.userId, userId)
-      ))
-      .limit(1);
-
-    if (!book.length) {
+    const book = await getBook(bookId);
+    if (!book) {
       return handleNotFoundError(res, "Book not found");
     }
 
-    // Check for existing active session
-    const existingSession = await getActiveSession(userId);
- 
-    let session;
-    if (existingSession) {
-      // Update existing session
-      session = await setActiveSession(userId, bookId, currentPage);
-    } else {
-      // Create new session
-      session = await setActiveSession(userId, bookId, currentPage);
-    }
+    // Create or update existing session
+    const session = await setActiveSession({userId, bookId, pageId});
 
     res.status(201).json({
       session,
-      book: {
-        id: book[0].id,
-        displayTitle: book[0].displayTitle,
-        image: book[0].image,
-        currentPage: session.pageId
-      }
+      book
     });
   } catch (error) {
     handleApiError(res, "Failed to manage session", error);
@@ -473,7 +450,7 @@ router.get("/explore", optionalClientId, async (req: Request, res: Response) => 
     let query = dbRead
       .select({
         id: books.id,
-        displayTitle: books.displayTitle,
+        title: books.title,
         hook: books.hook,
         summary: books.summary,
         image: books.image,
@@ -489,7 +466,7 @@ router.get("/explore", optionalClientId, async (req: Request, res: Response) => 
 
     // Apply search filter if provided
     if (search) {
-      query = createSearchFilter(search, ['displayTitle', 'hook', 'summary', 'keywords'])(query);
+      query = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(query);
     }
 
     // Apply sorting
@@ -502,7 +479,7 @@ router.get("/explore", optionalClientId, async (req: Request, res: Response) => 
       .where(eq(books.status, 'active'));
       
     if (search) {
-      countQuery = createSearchFilter(search, ['displayTitle', 'hook', 'summary', 'keywords'])(countQuery);
+      countQuery = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(countQuery);
     }
 
     const totalCountResult = await countQuery;

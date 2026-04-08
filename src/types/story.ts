@@ -1,8 +1,7 @@
-import { Book } from "./book.js";
-import type { CharacterMemory, CharacterStatus, CharacterUpdates, StoryMC } from "./character.js";
-import type { PlaceMemory, PlaceMood, PlaceType, PlaceUpdates } from "./places.js";
-import type { DBPage } from "./schema.js";
-import type { Gender } from "./user.js";
+import type { Book } from "./book.js";
+import type { CharacterMemory, CharacterUpdates } from "./character.js";
+import type { PlaceMemory, PlaceUpdates } from "./places.js";
+import type { DBPage, DBUserSession } from "./schema.js";
 
 /**
  * Available moods for story pages
@@ -509,11 +508,12 @@ export type StoryPage = {
 };
 
 export type StoryGeneration = StoryPage & {
-  viableEnding?: Partial<Ending>
+  viableEnding?: Partial<Ending>;
+  isMajorEvent?: boolean;
 }
 
 // export type PersistedStoryPage = StoryPage & { id: string, bookId: string, parentId?: string | null };
-export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'parentId' | 'branchId' | 'page'>;
+export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page'>;
 // export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
 export type UserStoryPage = PersistedStoryPage & { selectedAction?: Action };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
@@ -658,9 +658,12 @@ export type UserPageProgress = {
   pageId: string;
   actionId: string;
   nextPageId?: string;
-  branchId?: string;
   createdAt: number;
 }
+
+export type UserActiveSession = Pick<DBUserSession, 'bookId' | 'pageId' | 'previousPageId'> & {
+  branchId: string;
+};
 
 /**
  * Complete story progress information for a user
@@ -679,7 +682,7 @@ export type StoryProgress = {
   /** Current story state with psychological profile and progression */
   state?: StoryState | null;
   /** Active user session linking user to current book and page */
-  session?: { bookId: string; pageId: string } | null;
+  session?: UserActiveSession | null;
 };
 
 /**
@@ -935,6 +938,23 @@ export type BranchStats = {
 };
 
 /**
+ * Parameters for setting an active user session
+ * 
+ * Contains all required and optional parameters needed to create or update
+ * a user's active session in a specific book and page.
+ */
+export type SetActiveSessionParams = {
+  /** User ID who owns the session */
+  userId: string;
+  /** Book ID where the session is active */
+  bookId: string;
+  /** Current page ID in the session */
+  pageId: string;
+  /** Previous page ID (optional, for tracking navigation) */
+  previousPageId?: string;
+};
+
+/**
  * Cache entry for branch paths
  */
 export type CacheEntry = {
@@ -975,7 +995,7 @@ export type StateReconstructionDeps = {
   getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
   /** Get state delta by page ID */
   getDelta: (pageId: string) => Promise<StateDelta | null>;
-  /** Get story state by page ID (fallback) */
+  /** Get story state by page ID (DB + cache fallback) */
   getStoryState?: (pageId: string) => Promise<StoryState | null>;
 };
 

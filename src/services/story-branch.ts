@@ -5,34 +5,64 @@
  * for improved navigation, state reconstruction, and performance.
  */
 
-import { dbWrite } from "../db/client.js";
+import { dbRead, dbWrite } from "../db/client.js";
 import { storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
-import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, StoryStateCleanupResult, TraversalOptions, StateReconstructionDeps, BranchPath } from "../types/story.js";
-import { getBookFromDB, getBookPages, getPageFromDB, getUserBooks } from "./book.js";
+import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps, BranchPath } from "../types/story.js";
+import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache, createEmptyStoryState } from "../utils/branch-traversal.js";
 import { getStoryPageById } from "./book.js";
 import { getStoryStateFromDB, mapStoryStateFromDb, getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
+import { setDeletedState } from "./story-state-cache.js";
 import { getStateSnapshot } from "./snapshots.js";
 import { getStateDelta } from "./deltas.js";
 import { getErrorMessage } from "../utils/error.js";
+import { MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
+import { generateId } from "../utils/uuid.js";
 
 // ============================================================================
 // ENHANCED STORY FUNCTIONS WITH BRANCH TRAVERSAL
 // ============================================================================
+
+export function generateBranchId(): string {
+  // TODO: I want more sophisticated unique name like "little-purple-fox", etc
+  return generateId();
+}
 
 /**
  * Gets story state with branch-aware reconstruction
  * 
  * This function enhances the standard story state retrieval by:
  * 1. Attempting to get the story state from database
- * 2. If not found, reconstructing from branch path
+ * 2. If not found, reconstructing from branch path using snapshots/deltas
  * 3. Providing fallback state reconstruction for missing data
+ * 4. Creating minimal valid state with branch context
  * 
  * @param userId - User identifier for the story state
  * @param pageId - Page identifier for the story state
- * @param options - Branch traversal options
+ * @param options - Branch traversal options for cache and validation control
  * @returns Promise resolving to story state or null
+ * 
+ * Behavior:
+ * - First attempts database lookup via getStoryStateFromDB()
+ * - If database lookup fails, reconstructs using branch traversal
+ * - Uses snapshots and deltas for efficient reconstruction
+ * - Applies branch path context and minimal state creation
+ * - Provides comprehensive fallback mechanisms for data integrity
+ * 
+ * @example
+ * ```typescript
+ * // Enhanced state retrieval with branch awareness
+ * const state = await getStoryStateWithBranch("user123", "page456", {
+ *   useCache: true,
+ *   validatePath: true
+ * });
+ * if (state) {
+ *   console.log(`State reconstructed for page ${state.page}`);
+ * } else {
+ *   console.log("State reconstruction failed");
+ * }
+ * ```
  */
 export async function getStoryStateWithBranch(
   userId: string,
@@ -49,14 +79,9 @@ export async function getStoryStateWithBranch(
     // Second attempt: Reconstruct from branch path using advanced reconstruction
     console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page ${pageId}`);
     
-    // Get the target page first to determine its branchId
-    const targetPage = await getPageFromDB(pageId);
-    const targetBranchId = targetPage?.branchId || undefined;
-    console.log(`[getStoryStateWithBranch] Target branchId for reconstruction: ${targetBranchId || 'main'}`);
-    
     // Create dependencies for reconstruction with branch-aware page retrieval
     const reconstructionDeps: StateReconstructionDeps = {
-      getPageById: async (id: string) => await getPageFromDB(id, targetBranchId),
+      getPageById: async (id: string) => await getPageFromDB(id),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
       getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
       getDelta: async (id: string) => await getStateDelta(userId, id),
@@ -178,7 +203,7 @@ export async function goToPreviousPageWithBranch(
     }
 
     // Update session to point to previous page
-    await setActiveSession(userId, progress.session.bookId, previousPage.id);
+    await setActiveSession({userId, bookId: progress.session.bookId, pageId: previousPage.id});
     
     // Get updated branch path from previous page
     const updatedBranchPath = await getBranchPath(previousPage.id, userId, options);
@@ -308,59 +333,110 @@ export async function preWarmBranchCacheForUsers(userIds: string[]): Promise<voi
 }
 
 /**
- * Cleans up old story states with branch awareness
+ * Strategic cleanup of story states using hybrid retention strategy
  * 
- * @param userId - User ID to cleanup
- * @param maxStatesToKeep - Maximum states to keep per user
- * @returns Promise resolving when cleanup is complete
+ * Combines fixed checkpoints with interval snapshots for optimal performance:
+ * 1. Always keep: First page, Last page (current)
+ * 2. Keep every Nth page: page % SNAPSHOT_INTERVAL === 0  
+ * 3. Keep middle page: If totalPages >= MIN_PAGES_FOR_MIDDLE
+ * 
+ * @param userId - The user's unique identifier
+ * @param bookId - The book's unique identifier
+ * @returns Promise that resolves when cleanup is complete
+ * 
+ * Performance: Max 10 delta applications between snapshots
+ * Storage: ~13 states per 100-page book vs 3 states in simple strategy
  */
-export async function cleanupOldStoryStates(
-  userId: string,
-  maxStatesToKeep: number = 10
-): Promise<StoryStateCleanupResult> {
+export async function cleanupStoryStatesWithStrategy(userId: string, bookId: string): Promise<void> {
   try {
-    // Get user's books to find all associated pages
-    const userBooks = await getUserBooks(userId);
+    // Get book information to retrieve totalPages
+    const bookInfo = await getBookFromDB(bookId);
+    if (!bookInfo) {
+      console.log(`[cleanupOldStoryStates] ⚠️ Book not found for user ${userId}, book ${bookId}`);
+      return;
+    }
+
+    const totalPages = bookInfo.totalPages;
+    console.log(`[cleanupOldStoryStates] 📚 Using totalPages from book schema: ${totalPages}`);
     
-    let deletedCount = 0;
-    let keptCount = 0;
+    // Get all story states for this user/book combination, ordered by page number
+    const allStates = await dbRead
+      .select({ 
+        pageId: storyStates.pageId,
+        page: storyStates.page,
+        updatedAt: storyStates.updatedAt 
+      })
+      .from(storyStates)
+      .where(and(
+        eq(storyStates.userId, userId),
+        eq(storyStates.bookId, bookId)
+      ))
+      .orderBy(storyStates.page);
+
+    if (allStates.length === 0) {
+      console.log(`[cleanupOldStoryStates] ℹ️ No states to cleanup for user ${userId}, book ${bookId}`);
+      return;
+    }
+    const pagesToKeep = new Set<string>();
     
-    for (const book of userBooks) {
-      // Get all pages for this book
-      const bookPages = await getBookPages(book.id);
-      
-      // Sort by creation time (newest first)
-      const sortedPages = bookPages.sort((a, b) => 
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-      
-      // Keep only the most recent pages
-      const pagesToKeep = sortedPages.slice(0, maxStatesToKeep);
-      const pagesToDelete = sortedPages.slice(maxStatesToKeep);
-      
-      // Delete old story states
-      for (const page of pagesToDelete) {
-        try {
-          await dbWrite
-            .delete(storyStates)
-            .where(and(
-              eq(storyStates.userId, userId),
-              eq(storyStates.pageId, page.id)
-            ));
-          deletedCount++;
-        } catch (error) {
-          console.warn(`[cleanupOldStoryStates] ⚠️ Failed to delete state for page ${page.id}:`, getErrorMessage(error));
-        }
-      }
-      
-      keptCount += pagesToKeep.length;
+    // 1. Always keep first page
+    pagesToKeep.add(allStates[0].pageId);
+    console.log(`[cleanupOldStoryStates] 📍 Keeping first page: ${allStates[0].pageId} (page ${allStates[0].page})`);
+    
+    // 2. Always keep last page (current)
+    const lastState = allStates[allStates.length - 1];
+    pagesToKeep.add(lastState.pageId);
+    console.log(`[cleanupOldStoryStates] 📍 Keeping last page: ${lastState.pageId} (page ${lastState.page})`);
+    
+    // 3. Keep middle page for substantial books
+    if (totalPages >= MIN_PAGES_FOR_MIDDLE) {
+      const middleIndex = Math.floor(allStates.length / 2);
+      const middleState = allStates[middleIndex];
+      pagesToKeep.add(middleState.pageId);
+      console.log(`[cleanupOldStoryStates] 📍 Keeping middle page: ${middleState.pageId} (page ${middleState.page})`);
     }
     
-    console.log(`[cleanupOldStoryStates] 🧹 Cleaned up ${deletedCount} old states, kept ${keptCount} for user ${userId}`);
+    // 4. Keep interval snapshots
+    const intervalStates = allStates.filter(state => state.page % SNAPSHOT_INTERVAL === 0);
+    for (const state of intervalStates) {
+      pagesToKeep.add(state.pageId);
+    }
+    console.log(`[cleanupOldStoryStates] 📍 Keeping ${intervalStates.length} interval snapshots (every ${SNAPSHOT_INTERVAL} pages)`);
     
-    return { deletedCount, keptCount };
+    // 5. Identify states to delete
+    const statesToDelete = allStates.filter(state => !pagesToKeep.has(state.pageId));
+    
+    if (statesToDelete.length > 0) {
+      console.log(`[cleanupOldStoryStates] 🗑️ Preparing to delete ${statesToDelete.length} states, keeping ${pagesToKeep.size} states`);
+      
+      for (const stateToDelete of statesToDelete) {
+        // Cache the state before deletion for safety net
+        const fullState = await getStoryState(userId, stateToDelete.pageId);
+        if (fullState) {
+          setDeletedState(userId, stateToDelete.pageId, fullState);
+          console.log(`[cleanupOldStoryStates] 💾 Cached state before deletion for user ${userId}, page ${stateToDelete.pageId} (page ${stateToDelete.page})`);
+        }
+        
+        await dbWrite
+          .delete(storyStates)
+          .where(and(
+            eq(storyStates.userId, userId),
+            eq(storyStates.bookId, bookId),
+            eq(storyStates.pageId, stateToDelete.pageId)
+          ));
+      }
+      
+      console.log(`[cleanupOldStoryStates] ✨ Strategic cleanup complete: ${statesToDelete.length} deleted, ${pagesToKeep.size} kept for user ${userId}, book ${bookId}`);
+    } else {
+      console.log(`[cleanupOldStoryStates] ✅ No cleanup needed: all ${pagesToKeep.size} states are strategic checkpoints`);
+    }
+    
+    // Log performance metrics
+    const keepRatio = (pagesToKeep.size / allStates.length * 100).toFixed(1);
+    console.log(`[cleanupOldStoryStates] 📊 Storage efficiency: ${keepRatio}% of states retained (${pagesToKeep.size}/${allStates.length})`);
+    
   } catch (error) {
-    console.error(`[cleanupOldStoryStates] ❌ Failed to cleanup old states for user ${userId}:`, getErrorMessage(error));
-    return { deletedCount: 0, keptCount: 0 };
+    console.error(`Failed to cleanup story states for user ${userId}, book ${bookId}:`, getErrorMessage(error));
+    // Don't throw error here - cleanup failure shouldn't break the main operation
   }
 }

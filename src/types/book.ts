@@ -1,6 +1,6 @@
 import type { CharacterStatus, StoryMC } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
-import type { Difficulty, Ending, PsychologicalFlags, StoryPage, StoryState } from "./story.js";
+import type { StoryPage, StoryState } from "./story.js";
 import type { Gender } from "./user.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
@@ -79,7 +79,7 @@ export type BookCreationResponse = {
   /** First story page content */
   firstPage: StoryPage;
   /** Initial ending for the story */
-  initialState: Pick<StoryState, 'mood' | 'place' | 'timeOfDay' | 'flags' | 'difficulty' | 'viableEnding'>;
+  initialState: Pick<StoryState, 'flags' | 'difficulty' | 'viableEnding'>;
   /** Initial place memory setup */
   initialPlace: {
     name: string;
