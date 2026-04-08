@@ -35,9 +35,9 @@ import { getEnv } from "../utils/env.js";
 console.log(`👋 Running in ${IS_TEST ? 'test' : process.env['NODE_ENV']} environment`);
 
 // Environment variables and flags
-const DATABASE_URL = getEnv("DATABASE_URL", "postgresql://test:test@localhost:5432/test");
-const DATABASE_READ_URL = getEnv('DATABASE_READ_URL', DATABASE_URL);
 const DATABASE_TEST_URL = getEnv("DATABASE_TEST_URL", "postgresql://test:test@localhost:5432/test");
+const DATABASE_URL = getEnv("DATABASE_URL", DATABASE_TEST_URL);
+const DATABASE_READ_URL = getEnv('DATABASE_READ_URL', DATABASE_URL);
 const DATABASE_LOGGING = getEnv('DATABASE_LOGGING', 'false') === "true";
 
 // Production safeguard: disallow localhost DB in production
@@ -49,7 +49,7 @@ if (IS_PRODUCTION && DATABASE_URL.includes("localhost")) {
  * Primary write connection
  * @note Uses DATABASE_TEST_URL in test environment, DATABASE_URL otherwise
  */
-export const dbWrite: NeonHttpDatabase<typeof schema> = drizzle(neon(IS_TEST ? DATABASE_TEST_URL : DATABASE_URL, {
+export const dbWrite: NeonHttpDatabase<typeof schema> = drizzle(neon(DATABASE_URL, {
   fetchOptions: { cache: "no-store" },
 }), {
   schema,

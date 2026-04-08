@@ -194,7 +194,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
 router.post("/", requireClientId, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, gender, image } = req.body;
+    const { name, gender } = req.body;
 
     // Prepare user data for upsert (exclude timestamp fields from frontend)
     const userData: DBNewUser = {

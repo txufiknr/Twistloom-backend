@@ -1,5 +1,5 @@
 import type { AIResponse } from "../types/ai-chat.js";
-import { Gender } from "../types/user.js";
+import type { Gender } from "../types/user.js";
 import { convertSingleToDoubleQuotes } from "./quote.js";
 
 /**

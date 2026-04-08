@@ -3,13 +3,13 @@ import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai
 import type { AIChatConfig, AIChatConfigCaps, AIDocument } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMC, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES, BOOK_AVERAGE_PAGES } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
 import { aiPrompt } from "./ai-chat.js";
 import { determineOptimalEnding, maybeAddTrauma, updateState } from "./story.js";
 import { formatPlacesForPrompt, processPlaceUpdates } from "./places.js";
-import { DEFAULT_BOOK_MAX_PAGES, MAX_PAGE_HISTORY, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
+import { BOOK_MAX_PAGES, MAX_PAGE_HISTORY, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { createStyleInput } from "./player-profile.js";
 import { formatCharactersForPrompt, processCharacterUpdates } from "./characters.js";
 import { generateRandomCharacter } from "./characters.js";
@@ -202,7 +202,7 @@ function buildBookMetaPrompt(book?: Book, state?: StoryState): string {
 - Title: ${title}
 - Summary: ${summary}
 - Keywords: ${keywords.join(', ')}
-- Target pages: ${totalPages}
+- Target pages: ${totalPages} total
 - Language: ${language}
 
 CHARACTERS:
@@ -221,10 +221,11 @@ function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedSt
   const charactersSlot = MAX_CHARACTERS - Object.values(characters).length;
   const placesSlot = MAX_PLACES - Object.values(places).length;
 
-  return `This book is targetted to be ${totalPages} pages long, per page contains max ${MAX_WORDS_PER_PAGE} words.
-TASK: Now you write page ${page} of ${maxPage}.
+  return `TASK: Now you write page ${page} of ${maxPage}.
 
 HARD RULES:
+- Write in first-person POV
+- Keep max ${MAX_WORDS_PER_PAGE} words per page.
 - Keep consistent writing style and language.
 - Continue directly from selected action.
 - Continue from current situation.
@@ -366,7 +367,7 @@ EXAMPLE OUTPUT FORMAT (JSON):
         }
       }
     ],
-    "updatedCharacters": [], // Like above, but only include necessary fields (empty if none)
+    "updatedCharacters": [], // Like above (only include necessary fields, empty if none)
     "relationshipUpdates": [
       {
         "source": "MC",
@@ -399,8 +400,8 @@ EXAMPLE OUTPUT FORMAT (JSON):
         }
       }
     ],
-    "updatedPlaces": [], // Like above, but only include necessary fields (empty if none)
-  }
+    "updatedPlaces": [] // Like above (only include necessary fields, empty if none)
+  },
   "viableEnding": { // Only if re-adjusted
     "text": "Write your doom ending plan—how the story should end",
     "type": "One of: ${Object.keys(endingTypes).join('", "')}"
@@ -972,6 +973,7 @@ Generate the following complete book setup:
 - HOOK: 1-2 sentences that immediately create intrigue and psychological tension
 - SUMMARY: 50-100 words that sets up the psychological thriller premise
 - KEYWORDS: 3-5 short relevant tags (kebab-case) for story categorization
+- TOTAL PAGES: Around ~${BOOK_AVERAGE_PAGES}, max ${BOOK_MAX_PAGES}
 - FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery
 - ACTIONS: 1-${MAX_ACTION_CHOICES_FIRST_PAGE} first-person POV verb or dialogue to continue
 - INITIAL PSYCHOLOGICAL FLAGS: Set trust, fear, guilt, curiosity levels (low/medium/high)
@@ -985,7 +987,7 @@ ${getEndingArchetypesText()}
 RESPONSE FORMAT (JSON structure):
 {
   "title": "Book Title",
-  "totalPages": ${DEFAULT_BOOK_MAX_PAGES},
+  "totalPages": ${BOOK_AVERAGE_PAGES},
   "language": "Detect language code from theme (e.g. 'en')",
   "hook": "...",
   "summary": "...",
@@ -1136,7 +1138,7 @@ export async function initializeBook(
     const initialState: StoryState = {
       pageId: '', // Will be set after page creation
       page: 1,
-      maxPage: DEFAULT_BOOK_MAX_PAGES,
+      maxPage: BOOK_MAX_PAGES,
       ...generatedInitialState, // mood, place, timeOfDay, flags, difficulty, viableEnding
       traumaTags: [],
       psychologicalProfile: createInitialPsychologicalProfile(),

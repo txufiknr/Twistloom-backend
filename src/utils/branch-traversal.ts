@@ -91,7 +91,7 @@ export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE
 import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots.js';
 import { createStateDelta, applyStateDelta } from '../services/deltas.js';
 import { getErrorMessage } from "./error.js";
-import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
+import { BOOK_MAX_PAGES } from "../config/story.js";
 import { getPageFromDB, mapToPersistedStoryPage } from "../services/book.js";
 
 // Re-export for backward compatibility
@@ -648,7 +648,7 @@ export async function reconstructStoryState(
       const currentPageIndex = branchPath.pages.length - 1;
       
       // Get book information to retrieve totalPages for optimal snapshot selection
-      let totalPages = DEFAULT_BOOK_MAX_PAGES; // Fallback to default
+      let totalPages = BOOK_MAX_PAGES; // Fallback to default
       if (deps.getBook) {
         try {
           const currentPage = await withCircuitBreaker(
@@ -807,7 +807,7 @@ export function createEmptyStoryState(pageId: string, pageNumber: number): Story
   return {
     pageId,
     page: pageNumber,
-    maxPage: DEFAULT_BOOK_MAX_PAGES,
+    maxPage: BOOK_MAX_PAGES,
     flags: {
       trust: 'medium',
       fear: 'low',

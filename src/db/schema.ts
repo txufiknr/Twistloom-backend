@@ -22,7 +22,7 @@ import type {
 import type { CharacterMemory, CharacterUpdates } from "../types/character.js";
 import type { PlaceMemory, PlaceUpdates } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
-import { DEFAULT_BOOK_MAX_PAGES } from "../config/story.js";
+import { BOOK_MAX_PAGES } from "../config/story.js";
 
 /** Pre-defined columns */
 const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -321,7 +321,7 @@ export const books = pgTable(
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     title: text("title").notNull(),
-    totalPages: integer("total_pages").notNull().default(DEFAULT_BOOK_MAX_PAGES),
+    totalPages: integer("total_pages").notNull().default(BOOK_MAX_PAGES),
     language: text("language"),
     hook: text("hook"),
     summary: text("summary"),

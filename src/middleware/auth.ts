@@ -1,9 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { handleUnauthorizedError } from '../utils/error.js';
-import { validate as uuidValidate } from "uuid";
 import { dbWrite } from '../db/client.js';
 import { userDevices } from '../db/schema.js';
-import '../types/express.js';
+import { isValidUuid } from '../utils/uuid.js';
 
 /**
  * Middleware to validate X-Client-Id header
@@ -15,7 +14,7 @@ export function requireClientId(req: Request, res: Response, next: NextFunction)
   const userId = req.header("X-Client-Id");
 
   // Validate userId is a valid UUID
-  if (!userId || !uuidValidate(userId)) {
+  if (!userId || !isValidUuid(userId)) {
     handleUnauthorizedError(res, "Invalid client id");
     return;
   }
@@ -35,7 +34,7 @@ export function requireClientId(req: Request, res: Response, next: NextFunction)
  */
 export function optionalClientId(req: Request, _res: Response, next: NextFunction): void {
   const userId = req.header('X-Client-Id');
-  if (userId && uuidValidate(userId)) {
+  if (userId && isValidUuid(userId)) {
     req.userId = userId;
     
     // Track first-seen device metadata
