@@ -38,16 +38,25 @@ export type AIModelSelection = Partial<Record<AIChatProvider, string[]>>;
 export interface AIPromptOptions {
   /** Object of providers and their respective models to include in the fallback chain */
   modelSelection?: AIModelSelection;
+  /** Custom system prompt to override default behavior */
+  systemPrompt?: string;
   /** Usage context string for logging and rate limiting (e.g., 'story-page') */
   context?: string;
   /** Additional configuration for the AI model */
   config?: AIChatConfig;
+  /** Documents to provide as context to the AI model */
+  documents?: AIDocument[];
   /** Whether to parse the output as JSON */
   outputAsJson?: boolean;
-  /** Custom system prompt */
-  systemPrompt?: string;
-  /** Documents to attach */
-  documents?: AIDocument[];
+  /** JSON structure to use for parsing */
+  // outputJsonStructure?: Record<string, unknown>;
+  outputJsonStructure?: Record<string, {
+    type: string;
+    items?: { type: string };
+  }>;
+  /** Keys that must exist in the parsed JSON output */
+  // outputJsonRequired?: Array<keyof T>;
+  outputJsonRequired?: string[];
 }
 
 /**
@@ -94,18 +103,9 @@ export type AIDocument = {
  * Extends basic prompt options with additional parameters for fine-tuned
  * control over AI model behavior and output formatting.
  */
-export interface PromptWithFallbackOptions {
-  /** Custom system prompt to override default behavior */
-  systemPrompt?: string;
+export type PromptWithFallbackOptions = Omit<AIPromptOptions, 'modelSelection'> & {
   /** Array of model names to use for fallback attempts */
   models?: string[];
-  /** Usage context string for logging and rate limiting */
-  context?: string;
-  /** Additional provider-specific options */
-  config?: AIChatConfig;
-  /** Documents to provide as context to the AI model */
-  documents?: AIDocument[];
-  // [key: string]: any;
 }
 
 // ============================================================================

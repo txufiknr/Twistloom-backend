@@ -1,7 +1,7 @@
-import type { CharacterStatus, StoryMC } from "./character.js";
+import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
 import type { StoryPage, StoryState } from "./story.js";
-import type { Gender } from "./user.js";
+import type { DBUserSession } from "./schema.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 
@@ -90,11 +90,37 @@ export type BookCreationResponse = {
     familiarity: number; // 0-1, important for reuse priority
   };
   /** Initial character memories setup */
-  initialCharacters: Array<{
-    name: string;
-    gender: Gender;
-    status: CharacterStatus;
-    relationshipToMC?: string;
-    bio?: string;
-  }>;
+  initialCharacters: Array<Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio'>>;
+};
+
+/**
+ * Parameters for initializeBook function
+ * 
+ * Defines the input parameters required to initialize a new book
+ * with AI-generated content and setup.
+ */
+export type InitializeBookParams = {
+  /** User ID who owns the book */
+  userId: string;
+  /** Book theme or topic for AI generation */
+  theme: string;
+  /** Optional main character candidate for personalization */
+  mcCandidate?: StoryMCCandidate;
+};
+
+/**
+ * Return type for initializeBook function
+ * 
+ * Defines the complete result structure returned after successfully
+ * initializing a new book with all its components.
+ */
+export type InitializeBookResult = {
+  /** Complete book metadata and structure */
+  book: Book;
+  /** First generated story page */
+  firstPage: StoryPage;
+  /** Initial story state configuration */
+  initialState: StoryState;
+  /** User session for the new book */
+  session: DBUserSession | null;
 };

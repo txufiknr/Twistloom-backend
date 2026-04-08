@@ -1,5 +1,5 @@
 {
-  "id": "2cacf803-c79b-4a86-ae4c-9282a9dc0abc",
+  "id": "7975b2e5-b7b6-4f67-8499-eb8c9fcb971e",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -467,6 +467,12 @@
       "name": "story_state_deltas",
       "schema": "",
       "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
         "user_id": {
           "name": "user_id",
           "type": "uuid",
@@ -600,9 +606,11 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {
-        "story_state_deltas_user_id_book_id_page_id_pk": {
-          "name": "story_state_deltas_user_id_book_id_page_id_pk",
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "story_state_deltas_user_book_page_unique": {
+          "name": "story_state_deltas_user_book_page_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "user_id",
             "book_id",
@@ -610,7 +618,6 @@
           ]
         }
       },
-      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -619,6 +626,12 @@
       "name": "story_state_snapshots",
       "schema": "",
       "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
         "user_id": {
           "name": "user_id",
           "type": "uuid",
@@ -808,9 +821,11 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {
-        "story_state_snapshots_user_id_book_id_page_id_pk": {
-          "name": "story_state_snapshots_user_id_book_id_page_id_pk",
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "story_state_snapshots_user_book_page_unique": {
+          "name": "story_state_snapshots_user_book_page_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "user_id",
             "book_id",
@@ -818,7 +833,6 @@
           ]
         }
       },
-      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

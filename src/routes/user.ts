@@ -35,7 +35,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { requireClientId } from "../middleware/auth.js";
 import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
-import type { KnownGender, LikeTargetType } from "../types/user.js";
+import type { LikeTargetType } from "../types/user.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { updateUserLastActivity } from "../services/user.js";

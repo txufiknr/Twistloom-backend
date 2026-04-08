@@ -19,7 +19,7 @@ import type { DBNewBook } from "../types/schema.js";
 import { createInitialHiddenState, createInitialPsychologicalProfile } from "./books.js";
 import type { StoryGeneration, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import type { Book, BookCreationResponse } from "../types/book.js";
+import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { deepEqualSimple } from "./parser.js";
 import { getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
 import { getStoryProgress, insertStoryState, insertUserPageProgress, setActiveSession } from "../services/story.js";
@@ -214,7 +214,7 @@ ${formatPlacesForPrompt(state)}`;
 
 function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedStoryPage): string {
   const { page, maxPage, contextHistory, flags, psychologicalProfile, hiddenState, characters, places } = state;
-  const { totalPages, mc } = book;
+  const { mc } = book;
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
   const styleInput = createStyleInput(state);
   const narrativeStyle = createNarrativeStyle(styleInput);
@@ -350,10 +350,10 @@ EXAMPLE OUTPUT FORMAT (JSON):
       {
         "name": "Lisa",
         "gender": "One of: ${genders.join('", "')}",
-        "role": "schoolmate", 
-        "bio": "Cheerful but secretive, knows more than she lets on",
+        "role": "Character role (e.g. schoolmate)", 
+        "bio": "e.g. Cheerful but secretive, knows more than she lets on",
         "status": "One of: ${characterStatuses.join('", "')}",
-        "relationshipToMC": "Close childhood friend, always supportive",
+        "relationshipToMC": "e.g. Close childhood friend, always supportive",
         "relationships": [],
         "pastInteractions": [],
         "lastInteractionAtPage": 1,
@@ -984,7 +984,7 @@ Generate the following complete book setup:
 ENDING TYPES:
 ${getEndingArchetypesText()}
 
-RESPONSE FORMAT (JSON structure):
+RESPONSE FORMAT (EXACT JSON STRUCTURE, ALL MANDATORY):
 {
   "title": "Book Title",
   "totalPages": ${BOOK_AVERAGE_PAGES},
@@ -1032,9 +1032,10 @@ RESPONSE FORMAT (JSON structure):
   "initialCharacters": [
     {
       "name": "Character Name",
+      "role": "Character role (e.g. schoolmate)",
       "gender": "One of: ${genders.join('", "')}",
       "status": "One of: ${characterStatuses.join('", "')}",
-      "relationshipToMC": "friend",
+      "relationshipToMC": "e.g. Close childhood friend, always supportive",
       "bio": "Brief character description"
     }
   ]
@@ -1057,33 +1058,27 @@ RESPONSE FORMAT (JSON structure):
  * The function provides a complete story foundation with proper database
  * relationships and type-safe operations throughout the pipeline.
  * 
- * @param userId - The user's unique identifier for ownership and session
- * @param theme - User's desired story theme or concept
- * @param mcCandidate - Partial character profile to customize the main character
+ * @param params.userId - The user's unique identifier for ownership and session
+ * @param params.theme - User's desired story theme or concept
+ * @param params.mcCandidate - Partial character profile to customize the main character
  * @returns Promise resolving to complete book setup with all components
  * 
  * @example
  * ```typescript
- * const bookSetup = await initializeBook(
- *   "user123",
- *   "haunted mansion mystery",
- *   { name: "Sarah", age: 28, gender: "female" }
- * );
+ * const bookSetup = await initializeBook({
+ *   userId: "user123",
+ *   theme: "haunted mansion mystery",
+ *   mcCandidate: { name: "Sarah", age: 28, gender: "female" }
+ * });
  * 
  * console.log(`Created book: ${bookSetup.book.displayTitle}`);
  * console.log(`First page: ${bookSetup.firstPage.text}`);
  * console.log(`Initial difficulty: ${bookSetup.initialState.difficulty}`);
  * ```
  */
-export async function initializeBook(
-  userId: string,
-  theme: string,
-  mcCandidate?: StoryMCCandidate
-): Promise<{
-  book: Book;
-  firstPage: PersistedStoryPage;
-  initialState: StoryState;
-}> {
+export async function initializeBook(params: InitializeBookParams): Promise<InitializeBookResult> {
+  const { userId, theme, mcCandidate } = params;
+
   try {
     // 1. Generate complete main character from candidate
     const mc = generateRandomCharacter(mcCandidate);
@@ -1096,7 +1091,31 @@ export async function initializeBook(
       config: AI_CHAT_CONFIG_DEFAULT,
       modelSelection: AI_CHAT_MODELS_WRITING,
       context: 'book-creation',
-      outputAsJson: true
+      outputAsJson: true,
+      outputJsonStructure: {
+        title: { type: 'string' },
+        totalPages: { type: 'number' },
+        language: { type: 'string' },
+        hook: { type: 'string' },
+        summary: { type: 'string' },
+        keywords: { type: 'array', items: { type: 'string' } },
+        firstPage: { type: 'object' },
+        initialState: { type: 'object' },
+        initialPlace: { type: 'object' },
+        initialCharacters: { type: 'array', items: { type: 'object' } }
+      },
+      outputJsonRequired: [
+        'title',
+        'totalPages',
+        'language',
+        'hook',
+        'summary',
+        'keywords',
+        'firstPage',
+        'initialState',
+        'initialPlace',
+        'initialCharacters',
+      ],
     });
 
     // 4. Validate AI response
@@ -1134,9 +1153,12 @@ export async function initializeBook(
     const book = mapBookFromDb(dbBook);
     const bookId = book.id;
 
-    // 6. Create initial story state with generated psychological profile
+    // 6. Persist first page as root page of the book
+    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, { bookId });
+
+    // 7. Create initial story state with generated psychological profile
     const initialState: StoryState = {
-      pageId: '', // Will be set after page creation
+      pageId: firstPage.id,
       page: 1,
       maxPage: BOOK_MAX_PAGES,
       ...generatedInitialState, // mood, place, timeOfDay, flags, difficulty, viableEnding
@@ -1151,10 +1173,10 @@ export async function initializeBook(
             {
               name: char.name,
               gender: char.gender,
-              role: char.relationshipToMC || 'character',
-              bio: char.bio || '',
+              role: char.role,
+              bio: char.bio,
               status: char.status,
-              relationshipToMC: char.relationshipToMC || 'unknown',
+              relationshipToMC: char.relationshipToMC,
               relationships: [],
               pastInteractions: [],
               lastInteractionAtPage: 1,
@@ -1188,21 +1210,18 @@ export async function initializeBook(
       contextHistory: ''
     };
 
-    // 7. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, { bookId });
-
-    // 8. Update state with pageId and persist to database
-    initialState.pageId = firstPage.id;
+    // 8. Persist story state to database
     await insertStoryState(userId, bookId, firstPage.id, initialState);
 
     // 9. Set user's active session to the new book and page
-    await setActiveSession({userId, bookId, pageId: firstPage.id});
+    const session = await setActiveSession({userId, bookId, pageId: firstPage.id});
 
     // 10. Return complete book setup
     return {
       book,
       firstPage,
-      initialState
+      initialState,
+      session
     };
 
   } catch (error) {
@@ -1263,9 +1282,28 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
     config,
     modelSelection: AI_CHAT_MODELS_WRITING,
     context: isUserAction ? 'story-page' : 'story-page-candidate',
-    outputAsJson: true,
     systemPrompt,
-    documents
+    documents,
+    outputAsJson: true,
+    outputJsonStructure: {
+      text: { type: 'string' },
+      mood: { type: 'string' },
+      place: { type: 'string' },
+      timeOfDay: { type: 'string' },
+      charactersPresent: { type: 'array', items: { type: 'string' } },
+      keyEvents: { type: 'array', items: { type: 'string' } },
+      importantObjects: { type: 'array', items: { type: 'string' } },
+      actions: { type: 'array', items: { type: 'object' } },
+      addTraumaTag: { type: 'string' },
+      characterUpdates: { type: 'object' },
+      placeUpdates: { type: 'object' },
+      viableEnding: { type: 'object' },
+      isMajorEvent: { type: 'boolean' }
+    },
+    outputJsonRequired: [
+      'text',
+      'actions',
+    ]
   });
   
   // 4. Handle AI response validation

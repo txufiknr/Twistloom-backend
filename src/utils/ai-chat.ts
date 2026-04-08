@@ -11,7 +11,7 @@ import { parseAISafely } from "./parser.js";
 
 import type Groq from 'groq-sdk';
 import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
-import type { GenerateContentParameters, GenerateContentResponse } from "@google/genai";
+import { Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
 import type { V2ChatRequest, V2ChatResponse } from "cohere-ai/api";
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
@@ -122,7 +122,7 @@ export async function githubPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const systemPromptWithDocuments = `${systemPrompt ?? PROMPT_SYSTEM}${documents ? documents!.map((doc) => `${doc.title}\n${doc.text}`.trim()).join('\n\n') : ''}`;
       return await getGitHubClient().chat.completions.create({
         model,
@@ -135,6 +135,19 @@ export async function githubPrompt(
         top_p: config.topP,
         stream: false,
         stop: config.stopSequences,
+        response_format: outputAsJson ? (outputJsonStructure ? {
+          type: "json_schema",
+          json_schema: {
+            name: context ?? "output-format",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: outputJsonStructure,
+              required: outputJsonRequired,
+              additionalProperties: false
+            }
+          }
+        } : { type: 'json_object' }) : undefined,
       } satisfies ChatCompletionCreateParamsNonStreaming);
     },
     (response) => {
@@ -180,7 +193,23 @@ export async function geminiPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const jsonSchema = outputAsJson ? {
+        type: Type.OBJECT,
+        properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
+          const schemaProperty: Schema = {
+            type: value.type === 'array' ? Type.ARRAY : value.type as Type,
+          };
+          
+          if (value.type === 'array' && value.items) {
+            schemaProperty.items = { type: value.items.type as Type };
+          }
+          
+          acc[key] = schemaProperty;
+          return acc;
+        }, {} as Record<string, Schema>) : undefined,
+        required: outputJsonRequired || []
+      } satisfies Schema : undefined;
       const response = await getGeminiClient().models.generateContent({
         model,
         contents: [{ parts: [{ text: `${systemPrompt ?? PROMPT_SYSTEM}\n\n${prompt}` }] }],
@@ -190,6 +219,7 @@ export async function geminiPrompt(
           topP: config.topP,
           topK: config.topK,
           stopSequences: config.stopSequences,
+          responseSchema: jsonSchema
         },
       } satisfies GenerateContentParameters);
       
@@ -274,7 +304,7 @@ export async function groqPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { data, response } = await getGroqClient().chat.completions.create({
         messages: [
           { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
@@ -286,6 +316,19 @@ export async function groqPrompt(
         top_p: config.topP,
         stop: config.stopSequences,
         stream: false,
+        response_format: outputAsJson ? (outputJsonStructure ? {
+          type: "json_schema",
+          json_schema: {
+            name: context ?? "output-format",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: outputJsonStructure,
+              required: outputJsonRequired,
+              additionalProperties: false
+            }
+          }
+        } : { type: 'json_object' }) : undefined,
       } satisfies ChatCompletionCreateParamsBase).withResponse();
 
       // Log rate limit information from response headers
@@ -358,7 +401,7 @@ export async function coherePrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson } = opts;
       return await getCohereClient().chat({
         model,
         messages: [
@@ -371,6 +414,7 @@ export async function coherePrompt(
         p: config.topP,
         k: config.topK,
         stopSequences: config.stopSequences,
+        responseFormat: outputAsJson ? { type: 'json_object' } : undefined,
       } satisfies V2ChatRequest);
     },
     (response) => {
@@ -430,7 +474,7 @@ export async function cerebrasPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       return await getCerebrasClient().chat.completions.create({
         model,
         messages: [
@@ -442,6 +486,19 @@ export async function cerebrasPrompt(
         top_p: config.topP,
         stream: false,
         stop: config.stopSequences,
+        response_format: outputAsJson ? (outputJsonStructure ? {
+          type: "json_schema",
+          json_schema: {
+            name: context ?? "output-format",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: outputJsonStructure,
+              required: outputJsonRequired,
+              additionalProperties: false
+            }
+          }
+        } : { type: 'json_object' }) : undefined,
       } satisfies ChatCompletionCreateParamsBase) as ChatCompletion.ChatCompletionResponse;
     },
     (response) => {
@@ -493,7 +550,7 @@ export async function mistralPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       return await getMistralClient().chat.complete({
         model,
         messages: [
@@ -505,6 +562,19 @@ export async function mistralPrompt(
         topP: config.topP,
         stop: config.stopSequences,
         stream: false,
+        responseFormat: outputAsJson ? (outputJsonStructure ? {
+          type: "json_schema",
+          jsonSchema: {
+            name: context ?? "output-format",
+            strict: true,
+            schemaDefinition: {
+              type: "object",
+              properties: outputJsonStructure,
+              required: outputJsonRequired,
+              additionalProperties: false
+            }
+          }
+        } : { type: 'json_object' }) : undefined,
       } satisfies ChatCompletionRequest);
     },
     (response) => {
@@ -624,9 +694,11 @@ export async function aiPrompt<T = string>(
     modelSelection = AI_CHAT_MODELS_WRITING,
     context,
     config = AI_CHAT_CONFIG_DEFAULT,
-    outputAsJson = false,
     systemPrompt,
-    documents
+    // documents,
+    outputAsJson = false,
+    // outputJsonStructure,
+    // outputJsonRequired,
   } = options;
 
   // Define provider order from modelSelection or use empty array
@@ -650,16 +722,26 @@ export async function aiPrompt<T = string>(
         prompt
       });
 
-      const opts: Partial<PromptWithFallbackOptions> = { context, config, models, systemPrompt, documents };
+      const opts: Partial<PromptWithFallbackOptions> = {
+        ...options,
+        // context,
+        models,
+        config,
+        // systemPrompt,
+        // documents,
+        outputAsJson,
+        // outputJsonStructure,
+        // outputJsonRequired,
+      };
       
       switch (provider) {
-        case 'github': result = await githubPrompt(prompt, opts); break;
-        case 'gemini': result = await geminiPrompt(prompt, opts); break;
-        case 'cohere': result = await coherePrompt(prompt, opts); break;
-        case 'mistral': result = await mistralPrompt(prompt, opts); break;
-        case 'groq': result = await groqPrompt(prompt, opts); break;
-        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break;
-        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;
+        case 'github': result = await githubPrompt(prompt, opts); break;     // ✅ JSON schema
+        case 'gemini': result = await geminiPrompt(prompt, opts); break;     // ✅ JSON schema
+        case 'cohere': result = await coherePrompt(prompt, opts); break;     // ☑️ JSON object
+        case 'mistral': result = await mistralPrompt(prompt, opts); break;   // ✅ JSON schema
+        case 'groq': result = await groqPrompt(prompt, opts); break;         // ✅ JSON schema
+        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break; // ✅ JSON schema
+        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ❌ No structured JSON (HTTP API limitation)
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, getErrorMessage(error));

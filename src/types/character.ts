@@ -36,17 +36,89 @@ export type StoryMC = Required<StoryMCCandidate>;
 // ============================================================================
 
 /**
+ * Available relationship types for character connections
+ * 
+ * Lightweight set of relationship categories to avoid over-complexity
+ * while enabling meaningful character dynamics.
+ */
+export const relationshipTypes = [
+  "friend",      // Close personal bond
+  "family",      // Blood or chosen family
+  "knows",       // Acquaintance/familiarity
+  "stranger",    // Unknown character
+  "enemy",       // Hostile relationship
+  "mentor",      // Teacher/student, guidance relationship
+  "rival"        // Competitive relationship
+] as const;
+
+/**
+ * Union type of all possible relationship type values
+ */
+export type RelationshipType = typeof relationshipTypes[number];
+
+/**
+ * Available relationship status values for dynamic evolution
+ * 
+ * These represent the emotional state that can change over time,
+ * enabling plot developments and betrayals.
+ */
+export const relationshipStatuses = [
+  "trusting",    // Positive, reliable connection
+  "neutral",     // Indifferent, baseline state
+  "suspicious",  // Distrustful, hiding something
+  "hostile"      // Actively opposed
+] as const;
+
+/**
+ * Union type of all possible relationship status values
+ */
+export type RelationshipStatus = typeof relationshipStatuses[number];
+
+/**
+ * Individual relationship between two characters
+ * 
+ * Represents a directional connection from one character to another,
+ * with type and current emotional status.
+ */
+export type CharacterRelationship = {
+  /** Target character name */
+  target: string;
+  /** Type of relationship connection */
+  type: RelationshipType;
+  /** Current emotional status of relationship */
+  status: RelationshipStatus;
+};
+
+/**
+ * Relationship update structure for AI output
+ * 
+ * Used to modify existing relationships or create new ones
+ * based on story events.
+ */
+export type RelationshipUpdate = {
+  /** Source character initiating the relationship change */
+  source: string;
+  /** Target character being related to */
+  target: string;
+  /** New relationship type (optional) */
+  type?: RelationshipType;
+  /** New relationship status */
+  status: RelationshipStatus;
+};
+
+/**
  * Available character statuses for tracking narrative relationships
  * 
  * These statuses determine how characters behave and interact with the MC,
  * driving their behavior more than basic demographics.
  */
 export const characterStatuses = [
-  "trusting",    // Friendly, helpful, reliable
-  "suspicious",  // Distrustful, hiding something, potentially hostile
-  "neutral",     // Indifferent, background character
+  ...relationshipStatuses,
+  // "trusting",    // Friendly, helpful, reliable
+  // "suspicious",  // Distrustful, hiding something, potentially hostile
+  // "neutral",     // Indifferent, background character
   "missing",     // Disappeared, absent from story
-  "hostile",     // Actively working against MC
+  // "hostile",     // Actively working against MC
   "injured",
   "dead"         // Deceased, may appear in memories/ghosts
 ] as const;
@@ -136,76 +208,6 @@ export type CharacterMemory = {
  * @interface CharacterUpdate
  */
 export type CharacterUpdate = Pick<CharacterMemory, 'name' | 'gender' | 'status' | 'pastInteractions' | 'lastInteractionAtPage' | 'narrativeFlags'>;
-
-/**
- * Available relationship types for character connections
- * 
- * Lightweight set of relationship categories to avoid over-complexity
- * while enabling meaningful character dynamics.
- */
-export const relationshipTypes = [
-  "friend",      // Close personal bond
-  "family",      // Blood or chosen family
-  "knows",       // Acquaintance/familiarity
-  "stranger",    // Unknown character
-  "enemy"        // Hostile relationship
-] as const;
-
-/**
- * Union type of all possible relationship type values
- */
-export type RelationshipType = typeof relationshipTypes[number];
-
-/**
- * Available relationship status values for dynamic evolution
- * 
- * These represent the emotional state that can change over time,
- * enabling plot developments and betrayals.
- */
-export const relationshipStatuses = [
-  "trusting",    // Positive, reliable connection
-  "neutral",     // Indifferent, baseline state
-  "uneasy",      // Suspicious but not hostile
-  "suspicious",  // Distrustful, hiding something
-  "hostile"      // Actively opposed
-] as const;
-
-/**
- * Union type of all possible relationship status values
- */
-export type RelationshipStatus = typeof relationshipStatuses[number];
-
-/**
- * Individual relationship between two characters
- * 
- * Represents a directional connection from one character to another,
- * with type and current emotional status.
- */
-export type CharacterRelationship = {
-  /** Target character name */
-  target: string;
-  /** Type of relationship connection */
-  type: RelationshipType;
-  /** Current emotional status of relationship */
-  status: RelationshipStatus;
-};
-
-/**
- * Relationship update structure for AI output
- * 
- * Used to modify existing relationships or create new ones
- * based on story events.
- */
-export type RelationshipUpdate = {
-  /** Source character initiating the relationship change */
-  source: string;
-  /** Target character being related to */
-  target: string;
-  /** New relationship type (optional) */
-  type?: RelationshipType;
-  /** New relationship status */
-  status: RelationshipStatus;
-};
 
 /**
  * Complete character updates structure for AI JSON output

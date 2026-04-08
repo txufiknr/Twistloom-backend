@@ -60,22 +60,14 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       });
     }
 
-    // Initialize book with AI
-    const { book, firstPage, initialState } = await initializeBook(
-      req.userId!,
+    // Initialize book and set active session
+    const book = await initializeBook({
+      userId: req.userId!,
       theme,
       mcCandidate
-    );
-
-    // Create reading session
-    const session = await setActiveSession({userId: req.userId!, bookId: book.id, pageId: firstPage.id});
-
-    res.status(201).json({
-      book,
-      firstPage,
-      initialState,
-      session
     });
+
+    res.status(201).json(book);
   } catch (error) {
     handleApiError(res, "Failed to create book", error);
   }

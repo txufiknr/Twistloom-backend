@@ -44,16 +44,18 @@ CREATE TABLE "pages" (
 );
 --> statement-breakpoint
 CREATE TABLE "story_state_deltas" (
+	"id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
 	"page_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
 	"delta" jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "story_state_deltas_user_id_book_id_page_id_pk" PRIMARY KEY("user_id","book_id","page_id")
+	CONSTRAINT "story_state_deltas_user_book_page_unique" UNIQUE("user_id","book_id","page_id")
 );
 --> statement-breakpoint
 CREATE TABLE "story_state_snapshots" (
+	"id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
 	"page_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
@@ -63,7 +65,7 @@ CREATE TABLE "story_state_snapshots" (
 	"is_major_checkpoint" boolean DEFAULT false NOT NULL,
 	"reason" text NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "story_state_snapshots_user_id_book_id_page_id_pk" PRIMARY KEY("user_id","book_id","page_id")
+	CONSTRAINT "story_state_snapshots_user_book_page_unique" UNIQUE("user_id","book_id","page_id")
 );
 --> statement-breakpoint
 CREATE TABLE "story_states" (

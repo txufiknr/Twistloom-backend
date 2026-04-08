@@ -425,6 +425,7 @@ export const userPageProgress = pgTable(
 export const storyStateSnapshots = pgTable(
   "story_state_snapshots",
   {
+    id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     pageId: pageId("cascade"), // Delete if page is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
@@ -436,8 +437,8 @@ export const storyStateSnapshots = pgTable(
     updatedAt,
   },
   (t) => [
-    // Composite primary key for unique user+book+page combinations
-    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Unique constraint for user+book+page combinations
+    unique("story_state_snapshots_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
     // Index for user's snapshots in a book
     index("story_state_snapshots_user_book_idx").on(t.userId, t.bookId),
     // Index for finding specific page snapshots
@@ -484,6 +485,7 @@ export const storyStateSnapshots = pgTable(
 export const storyStateDeltas = pgTable(
   "story_state_deltas",
   {
+    id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     pageId: pageId("cascade"), // Delete if page is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
@@ -492,8 +494,8 @@ export const storyStateDeltas = pgTable(
     updatedAt,
   },
   (t) => [
-    // Composite primary key for unique user+book+page combinations
-    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Unique constraint for user+book+page combinations
+    unique("story_state_deltas_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
     // Index for user's deltas in a book
     index("story_state_deltas_user_book_idx").on(t.userId, t.bookId),
     // Index for finding specific page deltas

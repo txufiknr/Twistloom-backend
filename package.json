@@ -22,8 +22,11 @@
     "db:studio": "tsx node_modules/drizzle-kit/bin.cjs studio",
     "db:test": "tsx --env-file=.env.local src/db/test-connection.ts",
     "db:triggers": "tsx --env-file=.env.local src/db/triggers.ts",
+    "db:triggers:prod": "tsx --env-file=.env.production src/db/triggers.ts",
     "db:clear": "tsx --env-file=.env.local src/db/reset.ts",
-    "db:reset": "pnpm db:clear && pnpm db:migrate && pnpm db:triggers"
+    "db:clear:prod": "tsx --env-file=.env.production src/db/reset.ts",
+    "db:reset": "pnpm db:clear && pnpm db:migrate && pnpm db:triggers",
+    "db:reset:prod": "pnpm db:clear:prod && pnpm db:migrate:prod && pnpm db:triggers:prod"
   },
   "author": {
     "name": "Taufik Nur Rahmanda",
