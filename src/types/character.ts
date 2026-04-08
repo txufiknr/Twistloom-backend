@@ -27,6 +27,8 @@ export type StoryMCCandidate = {
   age?: number;
   /** Character's gender, affects narrative voice and social dynamics */
   gender?: KnownGender;
+  /** Character's bio */
+  bio?: string;
 };
 
 export type StoryMC = Required<StoryMCCandidate>;

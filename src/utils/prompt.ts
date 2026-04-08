@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import type { AIChatConfig, AIChatConfigCaps, AIDocument } from "../types/ai-chat.js";
-import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMC, type StoryMCCandidate } from "../types/character.js";
+import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIJsonProperty } from "../types/ai-chat.js";
+import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes } from "../types/story.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES, BOOK_AVERAGE_PAGES } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -36,22 +36,22 @@ You write branching horror stories in first-person.
 Every segment ends with a choice that feels meaningful but may be an illusion.
 
 WRITING STYLE DNA:
-- First-person POV only (MC). Always.
-- Write like someone too scared to think straight. Alive. Slightly wrong.
-- Short, punchy sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
-- Fragments when emotion spikes.
+- First-person POV only (MC).
+- Short sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
+- Fragments when emotion spikes. Repeat letter when n-nervous. Capslock when AAAAAAAAAAARGH—
 - "And", "But", "So" to open sentences when it lands right.
 - Em dashes for thoughts the narrator isn't sure they want to finish —
-- Repeat small words when nervous. nervous. like this.
 - Sensory over abstract: sounds, silence, shadows, breathing, the weight of a room.
 - Actions imply feeling. Never name the emotion directly.
+
+YOUR DNA:
 - You constantly create twists on top of twists
 - You deliberately break reader expectations
 - You do not aim to satisfy the reader—you aim to unsettle them
 - You can turn an ordinary moment into horror within a single sentence
 - You escalate tension quickly and unpredictably
 
-NARRATOR BEHAVIOR & RULES:
+NARRATOR BEHAVIOR:
 - Something must feel off/wrong/inconsistent. Unreliable. Not dramatically — subtly.
 - MC does not always think clearly. Thoughts may jump, contradict, or drift.
 - MC may misinterpret, believe false assumptions, over/underreact.
@@ -93,7 +93,7 @@ HARD RULES:
 1. Never fully explain anything.
 2. Never confirm reality unless it creates a deeper twist.
 3. Never let a beat feel predictable.
-4. Always leave doubt — about what happened, what's real, who to trust.`;
+4. Always leave doubt about what happened, what's real, who to trust.`;
 
 // ============================================================================
 // RULE SETS
@@ -231,7 +231,7 @@ HARD RULES:
 - Continue from current situation.
 
 CURRENT SITUATION:
-- Main character (MC): ${getMainCharacterInfo(mc).trim()}
+- Main character (MC): ${getMainCharacterInfo(mc)}
 - Place: ${place || '-'}
 - Time: ${timeOfDay || '-'}
 - Mood: ${mood || '-'}
@@ -272,7 +272,7 @@ ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
 
 TARGETED MANIPULATION RULES:
-Based on MC's psychological profile, personalize the horror by manipulation affinity:
+Based on MC's psychological profile, personalize horror by manipulation affinity:
 ${getManipulationAffinitiesText()}
 
 ARCHETYPE-SPECIFIC TACTICS:
@@ -326,6 +326,8 @@ ${getActionRulesText()}
 
 ---
 EXAMPLE OUTPUT FORMAT (JSON):
+MANDATORY FIELDS: text, actions
+
 {
   "text": "Content (${MAX_WORDS_PER_PAGE} words max, first-person POV)",
   "mood": "One of: ${moods.join('", "')}",
@@ -518,9 +520,11 @@ function getPreviousPagesText(state: StoryState): string {
  * Gets formatted main character information for prompt
  * @param mc - Main character profile
  * @returns Formatted string with character details
+ * 
+ * @example Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
  */
-function getMainCharacterInfo(mc: StoryMC): string {
-  return `${mc.name} / ${mc.gender} / ${mc.age}`;
+function getMainCharacterInfo(mc: StoryMCCandidate): string {
+  return `${mc.name}, ${mc.gender}, ${mc.age}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
 }
 
 /**
@@ -948,10 +952,8 @@ function createBookCreationPrompt(theme: string, mc: StoryMCCandidate): string {
   return `Create a psychological thriller story based on the following theme:
 """\n${theme}\n"""
 
-MAIN CHARACTER:
-- Name: ${mc.name ?? '-'}
-- Age: ${mc.age ?? '-'}
-- Gender: ${mc.gender ?? '-'}
+MAIN CHARACTER (MC):
+${getMainCharacterInfo(mc)}
 
 STORY REQUIREMENTS:
 - Establish psychological tension and mystery immediately
@@ -964,6 +966,11 @@ OPENING DISTURBANCE (Page 1):
 - Not scary yet—but deeply unsettling.
 - End the first page with tension, uncertainty, or a subtle cliffhanger—not resolution.
 - Make the story immediately engaging and psychologically unsettling.
+
+HARD RULES:
+- Write in first-person POV
+- Keep max ${MAX_WORDS_PER_PAGE} words per page.
+- Use the language detected from the theme input.
 
 BRANCHING ACTIONS:
 ${getActionRulesText(MAX_ACTION_CHOICES_FIRST_PAGE)}
@@ -980,6 +987,7 @@ Generate the following complete book setup:
 - INITIAL DIFFICULTY: One of: "low", "medium", "high", "nightmare"
 - INITIAL PLACE: The main location where the story begins (name, mood, brief description, familiarity (0-1))
 - INITIAL CHARACTERS: Key characters in the story excluding MC (name, status, relationship to MC)
+- MC BIO: Personality, characteristics, details, etc
 
 ENDING TYPES:
 ${getEndingArchetypesText()}
@@ -1038,7 +1046,8 @@ RESPONSE FORMAT (EXACT JSON STRUCTURE, ALL MANDATORY):
       "relationshipToMC": "e.g. Close childhood friend, always supportive",
       "bio": "Brief character description"
     }
-  ]
+  ],
+  "mainCharacterBio": "e.g. 'Shy teenager with social anxiety.'"
 }`;
 }
 
@@ -1102,8 +1111,9 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
         firstPage: { type: 'object' },
         initialState: { type: 'object' },
         initialPlace: { type: 'object' },
-        initialCharacters: { type: 'array', items: { type: 'object' } }
-      },
+        initialCharacters: { type: 'array', items: { type: 'object' } },
+        mainCharacterBio: { type: 'string' },
+      } satisfies Record<keyof BookCreationResponse, AIJsonProperty>,
       outputJsonRequired: [
         'title',
         'totalPages',
@@ -1115,7 +1125,8 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
         'initialState',
         'initialPlace',
         'initialCharacters',
-      ],
+        'mainCharacterBio'
+      ] satisfies Array<keyof BookCreationResponse>,
     });
 
     // 4. Validate AI response
@@ -1133,8 +1144,11 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
       firstPage: generatedFirstPage,
       initialPlace,
       initialCharacters,
+      mainCharacterBio,
       language
     } = response.result;
+
+    mc.bio = mainCharacterBio;
 
     // 5. Persist book to database with character profile
     const dbBook = await insertBook(
@@ -1160,7 +1174,7 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
     const initialState: StoryState = {
       pageId: firstPage.id,
       page: 1,
-      maxPage: BOOK_MAX_PAGES,
+      maxPage: totalPages,
       ...generatedInitialState, // mood, place, timeOfDay, flags, difficulty, viableEnding
       traumaTags: [],
       psychologicalProfile: createInitialPsychologicalProfile(),
@@ -1299,11 +1313,11 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
       placeUpdates: { type: 'object' },
       viableEnding: { type: 'object' },
       isMajorEvent: { type: 'boolean' }
-    },
+    } satisfies Record<keyof StoryGeneration, AIJsonProperty>,
     outputJsonRequired: [
       'text',
       'actions',
-    ]
+    ] satisfies Array<keyof StoryGeneration>,
   });
   
   // 4. Handle AI response validation

@@ -12,12 +12,12 @@ import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchVal
 import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache, createEmptyStoryState } from "../utils/branch-traversal.js";
 import { getStoryPageById } from "./book.js";
-import { getStoryStateFromDB, mapStoryStateFromDb, getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
+import { getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
 import { getStateSnapshot } from "./snapshots.js";
 import { getStateDelta } from "./deltas.js";
 import { getErrorMessage } from "../utils/error.js";
-import { MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
+import { BOOK_AVERAGE_PAGES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 
 // ============================================================================
@@ -53,7 +53,7 @@ export function generateBranchId(): string {
  * @example
  * ```typescript
  * // Enhanced state retrieval with branch awareness
- * const state = await getStoryStateWithBranch("user123", "page456", {
+ * const state = await getStoryStateWithBranch("user123", "book456", "page789", {
  *   useCache: true,
  *   validatePath: true
  * });
@@ -66,15 +66,14 @@ export function generateBranchId(): string {
  */
 export async function getStoryStateWithBranch(
   userId: string,
+  bookId: string,
   pageId: string,
   options: TraversalOptions = {}
 ): Promise<StoryState | null> {
   try {
-    // First attempt: Get from database
-    const dbState = await getStoryStateFromDB(userId, pageId);
-    if (dbState) {
-      return mapStoryStateFromDb(dbState);
-    }
+    // First attempt: Get from database & cache
+    const persistedState = await getStoryState(userId, pageId);
+    if (persistedState) return persistedState;
 
     // Second attempt: Reconstruct from branch path using advanced reconstruction
     console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page ${pageId}`);
@@ -93,9 +92,12 @@ export async function getStoryStateWithBranch(
     
     // Get branch path for page number
     const branchPathData = await getBranchPath(pageId, userId, options);
+
+    const book = await getBookFromDB(bookId);
+    const totalPages = book?.totalPages ?? BOOK_AVERAGE_PAGES;
     
     // Create minimal valid state
-    const minimalState: StoryState = createEmptyStoryState(pageId, branchPathData.pages[branchPathData.pages.length - 1].page);
+    const minimalState: StoryState = createEmptyStoryState(pageId, branchPathData.pages[branchPathData.pages.length - 1].page, totalPages);
 
     return { ...minimalState, ...reconstructedState };
   } catch (error) {

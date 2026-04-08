@@ -35,6 +35,7 @@ export type AIModelSelection = Partial<Record<AIChatProvider, string[]>>;
  * These options control how prompts are processed and which providers
  * are available for fallback scenarios.
  */
+// export interface AIPromptOptions<T> {
 export interface AIPromptOptions {
   /** Object of providers and their respective models to include in the fallback chain */
   modelSelection?: AIModelSelection;
@@ -49,15 +50,17 @@ export interface AIPromptOptions {
   /** Whether to parse the output as JSON */
   outputAsJson?: boolean;
   /** JSON structure to use for parsing */
-  // outputJsonStructure?: Record<string, unknown>;
-  outputJsonStructure?: Record<string, {
-    type: string;
-    items?: { type: string };
-  }>;
+  outputJsonStructure?: Record<string, AIJsonProperty>;
+  // outputJsonStructure?: Record<keyof T, AIJsonProperty>;
   /** Keys that must exist in the parsed JSON output */
   // outputJsonRequired?: Array<keyof T>;
   outputJsonRequired?: string[];
 }
+
+export type AIJsonProperty = {
+  type: string;
+  items?: { type: string };
+};
 
 /**
  * AI chat configuration parameters
@@ -103,6 +106,7 @@ export type AIDocument = {
  * Extends basic prompt options with additional parameters for fine-tuned
  * control over AI model behavior and output formatting.
  */
+// export type PromptWithFallbackOptions<T> = Omit<AIPromptOptions<T>, 'modelSelection'> & {
 export type PromptWithFallbackOptions = Omit<AIPromptOptions, 'modelSelection'> & {
   /** Array of model names to use for fallback attempts */
   models?: string[];

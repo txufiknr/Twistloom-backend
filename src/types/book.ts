@@ -91,6 +91,8 @@ export type BookCreationResponse = {
   };
   /** Initial character memories setup */
   initialCharacters: Array<Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio'>>;
+  /** Main character's bio */
+  mainCharacterBio: string;
 };
 
 /**

@@ -52,7 +52,7 @@
 import { dbRead } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE } from "../config/story.js";
+import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_AVERAGE_PAGES } from "../config/story.js";
 import type { DBPage } from "../types/schema.js";
 import type { PersistedStoryPage, StoryState, StateSnapshot, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry } from "../types/story.js";
 import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
@@ -91,7 +91,6 @@ export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE
 import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots.js';
 import { createStateDelta, applyStateDelta } from '../services/deltas.js';
 import { getErrorMessage } from "./error.js";
-import { BOOK_MAX_PAGES } from "../config/story.js";
 import { getPageFromDB, mapToPersistedStoryPage } from "../services/book.js";
 
 // Re-export for backward compatibility
@@ -484,7 +483,8 @@ async function findOptimalSnapshot(
     // No snapshot found - return empty state
     const emptyState = createEmptyStoryState(
       branchPath.pages[currentPageIndex].id,
-      branchPath.pages[currentPageIndex].page
+      branchPath.pages[currentPageIndex].page,
+      totalPages
     );
     
     return {
@@ -575,6 +575,7 @@ export async function reconstructStoryState(
     validatePath: options.validatePath
   });
   
+  let totalPages = BOOK_AVERAGE_PAGES; // Fallback to default
   try {
     // Check cache first (no retry needed for cache operations)
     if (options.useCache !== false) {
@@ -648,7 +649,6 @@ export async function reconstructStoryState(
       const currentPageIndex = branchPath.pages.length - 1;
       
       // Get book information to retrieve totalPages for optimal snapshot selection
-      let totalPages = BOOK_MAX_PAGES; // Fallback to default
       if (deps.getBook) {
         try {
           const currentPage = await withCircuitBreaker(
@@ -775,7 +775,7 @@ export async function reconstructStoryState(
       phase: 'reconstruction_failed'
     });
     
-    const fallbackState = createEmptyStoryState(currentPageId, 1);
+    const fallbackState = createEmptyStoryState(currentPageId, 1, totalPages);
     const result: StateReconstructionResult = {
       state: fallbackState,
       snapshotsUsed: 0,
@@ -801,13 +801,14 @@ export async function reconstructStoryState(
  * 
  * @param pageId - Page ID for the state
  * @param pageNumber - Page number
+ * @param totalPages - Total number of pages
  * @returns Empty story state
  */
-export function createEmptyStoryState(pageId: string, pageNumber: number): StoryState {
+export function createEmptyStoryState(pageId: string, pageNumber: number, totalPages: number): StoryState {
   return {
     pageId,
     page: pageNumber,
-    maxPage: BOOK_MAX_PAGES,
+    maxPage: totalPages,
     flags: {
       trust: 'medium',
       fear: 'low',
