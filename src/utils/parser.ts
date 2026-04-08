@@ -1,4 +1,5 @@
 import type { AIResponse } from "../types/ai-chat.js";
+import { Gender } from "../types/user.js";
 import { convertSingleToDoubleQuotes } from "./quote.js";
 
 /**
@@ -341,12 +342,12 @@ export function deepEqualSimple(obj1: any, obj2: any): boolean {
  * @example
  * normalizeGender('FEMALE') // Returns: 'female'
  * normalizeGender('Male') // Returns: 'male'
- * normalizeGender('') // Returns: null
- * normalizeGender(null) // Returns: null
+ * normalizeGender('') // Returns: 'unknown'
+ * normalizeGender(null) // Returns: 'unknown'
  */
-export function normalizeGender(gender?: string | null): 'male' | 'female' | null {
+export function normalizeGender(gender?: string | null): Gender {
   const normalized = safeString(gender, { trim: true, lowercase: true, minLength: 1 });
-  if (!normalized) return null;
+  if (!normalized) return 'unknown';
   
   return normalized.startsWith('f') ? 'female' : 'male';
 }

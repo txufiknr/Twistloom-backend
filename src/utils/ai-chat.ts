@@ -645,6 +645,10 @@ export async function aiPrompt<T = string>(
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
+      console.log(`[${provider}] 💬 Full prompt (system: ${(systemPrompt ?? PROMPT_SYSTEM).length} chars, user: ${prompt.length} chars)`, {
+        systemPrompt,
+        prompt
+      });
 
       const opts: Partial<PromptWithFallbackOptions> = { context, config, models, systemPrompt, documents };
       

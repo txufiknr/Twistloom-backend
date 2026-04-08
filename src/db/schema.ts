@@ -34,7 +34,7 @@ const date = text("date").notNull(); // YYYY-MM-DD format
 const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
 const lastActive = timestamp("last_active", { withTimezone: true }).defaultNow().notNull();
-const branchId = uuid("branch_id").notNull().default("main"); // Which reality you're in
+const branchId = text("branch_id").notNull().default("main"); // Which reality you're in
 
 /**
  * Create story pages table
@@ -87,122 +87,122 @@ export const pages = pgTable(
   ]
 );
 
-/**
- * Create characters table
- * @summary Store character memory with relationships and narrative flags
- * @example
- * {
- *   "id": "char123",
- *   "book_id": "book456",
- *   "name": "Lina",
- *   "role": "best friend",
- *   "bio": "Cheerful but secretive",
- *   "status": "trusting",
- *   "relationship_to_mc": "Close childhood friend",
- *   "relationships": [...],
- *   "past_interactions": [...],
- *   "last_interaction_at_page": 3,
- *   "narrative_flags": {...},
- *   "places": [...],
- *   "created_at": "2023-01-01T00:00:00.000Z"
- * }
- */
-export const characters = pgTable(
-  "characters",
-  {
-    id: uuid("id").primaryKey(),
-    bookId: bookId("cascade"), // Delete if book is deleted
-    name: text("name").notNull(),
-    gender,
-    role: text("role").notNull(),
-    bio: text("bio").notNull(),
+// /**
+//  * Create characters table
+//  * @summary Store character memory with relationships and narrative flags
+//  * @example
+//  * {
+//  *   "id": "char123",
+//  *   "book_id": "book456",
+//  *   "name": "Lina",
+//  *   "role": "best friend",
+//  *   "bio": "Cheerful but secretive",
+//  *   "status": "trusting",
+//  *   "relationship_to_mc": "Close childhood friend",
+//  *   "relationships": [...],
+//  *   "past_interactions": [...],
+//  *   "last_interaction_at_page": 3,
+//  *   "narrative_flags": {...},
+//  *   "places": [...],
+//  *   "created_at": "2023-01-01T00:00:00.000Z"
+//  * }
+//  */
+// export const characters = pgTable(
+//   "characters",
+//   {
+//     id: uuid("id").primaryKey(),
+//     bookId: bookId("cascade"), // Delete if book is deleted
+//     name: text("name").notNull(),
+//     gender,
+//     role: text("role").notNull(),
+//     bio: text("bio").notNull(),
 
-    // status: text("status").notNull(), // CharacterStatus enum
-    // relationshipToMC: text("relationship_to_mc").notNull(),
-    // relationships: jsonb("relationships").$type<any[]>().notNull().default(sql`'[]'::jsonb`), // CharacterRelationship[] structure
-    // pastInteractions: jsonb("past_interactions").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Sliding window (max 5)
-    // lastInteractionAtPage: integer("last_interaction_at_page").notNull(),
-    // narrativeFlags: jsonb("narrative_flags").$type<any>().notNull(), // NarrativeFlags structure
-    // places: jsonb("places").$type<any[]>().notNull().default(sql`'[]'::jsonb`), // CharacterPlaceRelation[] structure
+//     // status: text("status").notNull(), // CharacterStatus enum
+//     // relationshipToMC: text("relationship_to_mc").notNull(),
+//     // relationships: jsonb("relationships").$type<any[]>().notNull().default(sql`'[]'::jsonb`), // CharacterRelationship[] structure
+//     // pastInteractions: jsonb("past_interactions").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Sliding window (max 5)
+//     // lastInteractionAtPage: integer("last_interaction_at_page").notNull(),
+//     // narrativeFlags: jsonb("narrative_flags").$type<any>().notNull(), // NarrativeFlags structure
+//     // places: jsonb("places").$type<any[]>().notNull().default(sql`'[]'::jsonb`), // CharacterPlaceRelation[] structure
 
-    createdAt,
-    updatedAt,
-  },
-  (t) => [
-    // Index for book queries
-    index("characters_book_idx").on(t.bookId),
-    // Index for character name lookup
-    index("characters_name_idx").on(t.name),
-    // // Index for status filtering
-    // index("characters_status_idx").on(t.status),
-    // // Index for recent interactions
-    // index("characters_interaction_idx").on(t.lastInteractionAtPage.desc()),
-    // Index for gender-based filtering
-    index("characters_gender_idx").on(t.gender),
-    // Unique constraint on (bookId, name) to ensure character names are unique per book
-    unique("characters_book_name_unique").on(t.bookId, t.name),
-  ]
-);
+//     createdAt,
+//     updatedAt,
+//   },
+//   (t) => [
+//     // Index for book queries
+//     index("characters_book_idx").on(t.bookId),
+//     // Index for character name lookup
+//     index("characters_name_idx").on(t.name),
+//     // // Index for status filtering
+//     // index("characters_status_idx").on(t.status),
+//     // // Index for recent interactions
+//     // index("characters_interaction_idx").on(t.lastInteractionAtPage.desc()),
+//     // Index for gender-based filtering
+//     index("characters_gender_idx").on(t.gender),
+//     // Unique constraint on (bookId, name) to ensure character names are unique per book
+//     unique("characters_book_name_unique").on(t.bookId, t.name),
+//   ]
+// );
 
-/**
- * Create places table
- * @summary Store place memory with visit history and emotional associations
- * @example
- * {
- *   "id": "place123",
- *   "book_id": "book456",
- *   "name": "Old River",
- *   "type": "river",
- *   "context": "Narrow river behind school",
- *   "location_hint": "Behind school, flows toward town",
- *   "visit_count": 3,
- *   "last_visited_at_page": 8,
- *   "familiarity": 0.4,
- *   "mood_history": ["eerie", "threatening"],
- *   "event_tags": ["betrayal", "discovery"],
- *   "known_characters": ["Lina", "MC"],
- *   "sensory_details": {...},
- *   "current_mood": "threatening",
- *   "created_at": "2023-01-01T00:00:00.000Z"
- * }
- */
-export const places = pgTable(
-  "places",
-  {
-    id: id(),
-    bookId: bookId("cascade"), // Delete if book is deleted
-    name: text("name").notNull(),
-    type: text("type").notNull(), // PlaceType enum
-    context: text("context").notNull(), // 1-sentence description
-    locationHint: text("location_hint"), // Optional spatial relationship
+// /**
+//  * Create places table
+//  * @summary Store place memory with visit history and emotional associations
+//  * @example
+//  * {
+//  *   "id": "place123",
+//  *   "book_id": "book456",
+//  *   "name": "Old River",
+//  *   "type": "river",
+//  *   "context": "Narrow river behind school",
+//  *   "location_hint": "Behind school, flows toward town",
+//  *   "visit_count": 3,
+//  *   "last_visited_at_page": 8,
+//  *   "familiarity": 0.4,
+//  *   "mood_history": ["eerie", "threatening"],
+//  *   "event_tags": ["betrayal", "discovery"],
+//  *   "known_characters": ["Lina", "MC"],
+//  *   "sensory_details": {...},
+//  *   "current_mood": "threatening",
+//  *   "created_at": "2023-01-01T00:00:00.000Z"
+//  * }
+//  */
+// export const places = pgTable(
+//   "places",
+//   {
+//     id: id(),
+//     bookId: bookId("cascade"), // Delete if book is deleted
+//     name: text("name").notNull(),
+//     type: text("type").notNull(), // PlaceType enum
+//     context: text("context").notNull(), // 1-sentence description
+//     locationHint: text("location_hint"), // Optional spatial relationship
 
-    // visitCount: integer("visit_count").notNull().default(1),
-    // lastVisitedAtPage: integer("last_visited_at_page").notNull(),
-    // familiarity: real("familiarity").notNull().default(0.1), // 0-1 scale
-    // moodHistory: jsonb("mood_history").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // PlaceMood[] sliding window
-    // eventTags: jsonb("event_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // ["betrayal", "discovery", etc.]
-    // knownCharacters: jsonb("known_characters").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Character names encountered
-    // sensoryDetails: jsonb("sensory_details").$type<any>(), // SensoryDetails structure
-    // currentMood: text("current_mood").notNull(), // PlaceMood enum
+//     // visitCount: integer("visit_count").notNull().default(1),
+//     // lastVisitedAtPage: integer("last_visited_at_page").notNull(),
+//     // familiarity: real("familiarity").notNull().default(0.1), // 0-1 scale
+//     // moodHistory: jsonb("mood_history").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // PlaceMood[] sliding window
+//     // eventTags: jsonb("event_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // ["betrayal", "discovery", etc.]
+//     // knownCharacters: jsonb("known_characters").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Character names encountered
+//     // sensoryDetails: jsonb("sensory_details").$type<any>(), // SensoryDetails structure
+//     // currentMood: text("current_mood").notNull(), // PlaceMood enum
 
-    createdAt,
-    updatedAt,
-  },
-  (t) => [
-    // Index for book queries
-    index("places_book_idx").on(t.bookId),
-    // Index for place name lookup
-    index("places_name_idx").on(t.name),
-    // Index for place type filtering
-    index("places_type_idx").on(t.type),
-    // Unique constraint on (bookId, name) to ensure place names are unique per book
-    unique("places_book_name_unique").on(t.bookId, t.name),
-    // // Index for familiarity sorting
-    // index("places_familiarity_idx").on(t.familiarity.desc()),
-    // // Index for recent visits
-    // index("places_recent_visit_idx").on(t.lastVisitedAtPage.desc()),
-  ]
-);
+//     createdAt,
+//     updatedAt,
+//   },
+//   (t) => [
+//     // Index for book queries
+//     index("places_book_idx").on(t.bookId),
+//     // Index for place name lookup
+//     index("places_name_idx").on(t.name),
+//     // Index for place type filtering
+//     index("places_type_idx").on(t.type),
+//     // Unique constraint on (bookId, name) to ensure place names are unique per book
+//     unique("places_book_name_unique").on(t.bookId, t.name),
+//     // // Index for familiarity sorting
+//     // index("places_familiarity_idx").on(t.familiarity.desc()),
+//     // // Index for recent visits
+//     // index("places_recent_visit_idx").on(t.lastVisitedAtPage.desc()),
+//   ]
+// );
 
 /**
  * Create story state table
@@ -335,7 +335,7 @@ export const books = pgTable(
     updatedAt,
   },
   (t) => [
-    index("books_trending_idx").on(t.trendingScore),
+    index("books_trending_score_idx").on(t.trendingScore),
     // Optimize time-window queries
     index("books_recent_idx").on(t.updatedAt),
     // Optimize trending queries with compound ordering
@@ -425,7 +425,6 @@ export const userPageProgress = pgTable(
 export const storyStateSnapshots = pgTable(
   "story_state_snapshots",
   {
-    id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     pageId: pageId("cascade"), // Delete if page is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
@@ -449,8 +448,6 @@ export const storyStateSnapshots = pgTable(
     index("story_state_snapshots_major_idx").on(t.isMajorCheckpoint, t.createdAt.desc()),
     // Index for snapshot reason filtering
     index("story_state_snapshots_reason_idx").on(t.reason),
-    // Index for efficient page range queries using JSON path
-    index("story_state_snapshots_page_range_idx").on(t.bookId, sql`(state->>'page')::int`),
   ]
 );
 
@@ -459,7 +456,6 @@ export const storyStateSnapshots = pgTable(
  * @summary Store state changes between pages for efficient delta reconstruction
  * @example
  * {
- *   "id": "delta123",
  *   "user_id": "user456",
  *   "book_id": "book789",
  *   "page_id": "page456",
@@ -488,7 +484,6 @@ export const storyStateSnapshots = pgTable(
 export const storyStateDeltas = pgTable(
   "story_state_deltas",
   {
-    id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     pageId: pageId("cascade"), // Delete if page is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
@@ -505,8 +500,6 @@ export const storyStateDeltas = pgTable(
     index("story_state_deltas_page_idx").on(t.pageId),
     // Index for recent deltas (for cleanup)
     index("story_state_deltas_created_idx").on(t.createdAt.desc()),
-    // Index for efficient page range queries using JSON path
-    index("story_state_deltas_page_range_idx").on(t.bookId, sql`(delta->>'page')::int`),
   ]
 );
 

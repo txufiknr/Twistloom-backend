@@ -69,6 +69,7 @@ export type BookCreationResponse = {
   title: string;
   /** Total number of pages in the book */
   totalPages: number;
+  /** Language code (e.g. 'en') */
   language: string;
   /** Hook text (1-2 sentences, intriguing) */
   hook: string;

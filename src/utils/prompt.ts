@@ -222,14 +222,14 @@ function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedSt
   const placesSlot = MAX_PLACES - Object.values(places).length;
 
   return `This book is targetted to be ${totalPages} pages long, per page contains max ${MAX_WORDS_PER_PAGE} words.
-Task: Now you write page ${page} of ${maxPage}.
+TASK: Now you write page ${page} of ${maxPage}.
 
-Hard Rules:
+HARD RULES:
 - Keep consistent writing style and language.
 - Continue directly from selected action.
 - Continue from current situation.
 
-CURRENT SITUATION (from previous page):
+CURRENT SITUATION:
 - Main character (MC): ${getMainCharacterInfo(mc).trim()}
 - Place: ${place || '-'}
 - Time: ${timeOfDay || '-'}
@@ -971,7 +971,7 @@ Generate the following complete book setup:
 - TITLE: A catchy, mysterious title (1-4 words)
 - HOOK: 1-2 sentences that immediately create intrigue and psychological tension
 - SUMMARY: 50-100 words that sets up the psychological thriller premise
-- KEYWORDS: 3-5 relevant tags or genre (lowercase) for story categorization
+- KEYWORDS: 3-5 short relevant tags (kebab-case) for story categorization
 - FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery
 - ACTIONS: 1-${MAX_ACTION_CHOICES_FIRST_PAGE} first-person POV verb or dialogue to continue
 - INITIAL PSYCHOLOGICAL FLAGS: Set trust, fear, guilt, curiosity levels (low/medium/high)
@@ -984,12 +984,12 @@ ${getEndingArchetypesText()}
 
 RESPONSE FORMAT (JSON structure):
 {
-  "displayTitle": "Book Title",
+  "title": "Book Title",
   "totalPages": ${DEFAULT_BOOK_MAX_PAGES},
   "language": "Detect language code from theme (e.g. 'en')",
-  "hook": "Hook text",
-  "summary": "Book summary",
-  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "hook": "...",
+  "summary": "...",
+  "keywords": ["genre", "topic", "..."],
   "firstPage": {
     "text": "Prologue text",
     "mood": "One of: ${moods.join('", "')}",
@@ -1024,7 +1024,7 @@ RESPONSE FORMAT (JSON structure):
     "name": "Location Name",
     "type": "One of: ${placeTypes.join('", "')}",
     "currentMood": "One of: ${placeMoods.join('", "')}",
-    "context": "Brief description of the place",
+    "context": "Brief place description",
     "familiarity": 0.1,
   },
   "initialCharacters": [

@@ -35,7 +35,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { requireClientId } from "../middleware/auth.js";
 import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
-import type { LikeTargetType } from "../types/user.js";
+import type { KnownGender, LikeTargetType } from "../types/user.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { updateUserLastActivity } from "../services/user.js";
@@ -177,7 +177,6 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  * Body: {
  *   "name": "John Doe",
  *   "gender": "male",
- *   "image": "https://ik.imagekit.io/abc123/profile.jpg"
  * }
  * 
  * // Response
@@ -187,7 +186,6 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  *     "userId": "user123",
  *     "name": "John Doe",
  *     "gender": "male",
- *     "image": "https://ik.imagekit.io/abc123/profile.jpg",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
  *     "updatedAt": "2023-01-01T00:00:00.000Z"
  *   }
@@ -203,7 +201,6 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       userId,
       name: name?.trim() || null,
       gender: normalizeGender(gender),
-      image: image?.trim() || null,
     };
 
     // Perform upsert operation (create or replace)
@@ -215,7 +212,6 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
         set: {
           name: userData.name,
           gender: userData.gender,
-          image: userData.image,
           lastActive: new Date(),
           updatedAt: new Date(),
         },
