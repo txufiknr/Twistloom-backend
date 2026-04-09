@@ -92,6 +92,7 @@ import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots
 import { createStateDelta, applyStateDelta } from '../services/deltas.js';
 import { getErrorMessage } from "./error.js";
 import { getPageFromDB, mapToPersistedStoryPage } from "../services/book.js";
+import { createEmptyStoryState } from "./story.js";
 
 // Re-export for backward compatibility
 export { shouldCreateSnapshot, createStateSnapshot, createStateDelta, applyStateDelta };
@@ -795,49 +796,6 @@ export async function reconstructStoryState(
     return result;
   }
 }
-
-/**
- * Creates an empty story state with default values
- * 
- * @param pageId - Page ID for the state
- * @param pageNumber - Page number
- * @param totalPages - Total number of pages
- * @returns Empty story state
- */
-export function createEmptyStoryState(pageId: string, pageNumber: number, totalPages: number): StoryState {
-  return {
-    pageId,
-    page: pageNumber,
-    maxPage: totalPages,
-    flags: {
-      trust: 'medium',
-      fear: 'low',
-      guilt: 'low',
-      curiosity: 'medium'
-    },
-    traumaTags: [],
-    psychologicalProfile: {
-      archetype: 'survivor',
-      stability: 'stable',
-      dominantTraits: ['curious', 'cautious'],
-      manipulationAffinity: 'emotional'
-    },
-    hiddenState: {
-      truthLevel: 'ambiguous',
-      threatProximity: 'distant',
-      realityStability: 'stable'
-    },
-    memoryIntegrity: 'stable',
-    difficulty: 'medium',
-    viableEnding: undefined,
-    characters: {},
-    places: {},
-    pageHistory: [],
-    actionsHistory: [],
-    contextHistory: ''
-  };
-}
-
 
 // ============================================================================
 // SNAPSHOT CREATION STRATEGY

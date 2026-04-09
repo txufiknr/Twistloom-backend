@@ -10,7 +10,7 @@ import { storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps, BranchPath } from "../types/story.js";
 import { getBookFromDB, getPageFromDB } from "./book.js";
-import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache, createEmptyStoryState } from "../utils/branch-traversal.js";
+import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
 import { getStoryPageById } from "./book.js";
 import { getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
@@ -19,6 +19,7 @@ import { getStateDelta } from "./deltas.js";
 import { getErrorMessage } from "../utils/error.js";
 import { BOOK_AVERAGE_PAGES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
+import { createEmptyStoryState } from "../utils/story.js";
 
 // ============================================================================
 // ENHANCED STORY FUNCTIONS WITH BRANCH TRAVERSAL

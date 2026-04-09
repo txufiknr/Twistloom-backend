@@ -1,7 +1,8 @@
-import { MAX_PAST_INTERACTIONS } from "../config/story.js";
+import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, NarrativeFlags, RelationshipUpdate, StoryMC, StoryMCCandidate } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
-import type { Gender } from "../types/user.js";
+import type { Gender, KnownGender } from "../types/user.js";
+import { ucfirst } from "./formatter.js";
 
 // ============================================================================
 // CHARACTER MEMORY MANAGEMENT SYSTEM
@@ -275,54 +276,13 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
     'James', 'Benjamin', 'William', 'Jacob', 'Michael', 'Caleb', 'Daniel', 'Jackson',
     'Sebastian', 'Jack', 'Owen', 'Grayson', 'Julian', 'Levi', 'Mateo', 'Josiah',
     'Henry', 'Theodore', 'Wyatt', 'Gabriel', 'Samuel', 'Carter', 'Jayden', 'John',
-    'Dylan', 'Luke', 'Asher', 'Oscar', 'Isaac', 'Parker', 'Nolan', 'Ryan',
+    'Dylan', 'Luke', 'Asher', 'Oscar', 'Isaac', 'Parker', 'Nolan', 'Ryan', 'Peter',
     'Miles', 'Ezra', 'Hudson', 'Nathaniel', 'Connor', 'Jeremiah', 'Cameron', 'Santiago',
-    'Evan', 'Angel', 'Adrian', 'Xavier', 'Kai', 'Jaxson', 'Easton', 'Everett',
+    'Evan', 'Angel', 'Adrian', 'Xavier', 'Kai', 'Jaxson', 'Easton', 'Everett', 'Glenn',
     'Maverick', 'Silas', 'Carson', 'Luka', 'Rowan', 'Axel', 'Bodhi', 'River',
     'Kai', 'Zen', 'Phoenix', 'Orion', 'Atlas', 'Arlo', 'Sage', 'Wilder', 'Finn',
-    'Jasper', 'Cyrus', 'Ronan', 'Koa', 'Zion', 'Apollo', 'Stellan', 'Caspian',
+    'Jasper', 'Cyrus', 'Ronan', 'Zion', 'Apollo', 'Stellan', 'Caspian',
     'Storm', 'Blaze', 'Ace', 'Rex', 'Wolf', 'Fox', 'Hawk', 'Jett', 'Dash', 'Knox'
-  ];
-
-  const femaleNames = [
-    'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Charlotte', 'Amelia',
-    'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella',
-    'Madison', 'Scarlett', 'Victoria', 'Aria', 'Grace', 'Chloe', 'Camila', 'Penelope',
-    'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Luna', 'Aubrey', 'Ellie',
-    'Stella', 'Natalie', 'Zoe', 'Leah', 'Hazel', 'Violet', 'Aurora', 'Savannah',
-    'Audrey', 'Brooklyn', 'Bella', 'Claire', 'Skylar', 'Lucy', 'Paisley', 'Everly',
-    'Anna', 'Caroline', 'Nova', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya',
-    'Willow', 'Kinsley', 'Naomi', 'Aaliyah', 'Elena', 'Sarah', 'Ariana', 'Allison',
-    'Gabriella', 'Alice', 'Madelyn', 'Cora', 'Ruby', 'Eva', 'Seraphina', 'Lyra',
-    'Iris', 'Luna', 'Willow', 'Hazel', 'Ivy', 'Ruby', 'Sage', 'Dawn', 'Skye', 'Wren',
-    'Poppy', 'Briar', 'Fern', 'Olive', 'Jade', 'Pearl', 'Celeste', 'Orla', 'Elara',
-    'Kehlani', 'Billie', 'Zendaya', 'Remi', 'Nyla', 'Kai', 'Indigo', 'Aurelia', 'Sienna',
-    'Calliope', 'Juniper', 'Marlowe', 'Thea', 'Elodie', 'Wrenley', 'Arden', 'Loxley',
-    'Sloane', 'Blair', 'Quinn', 'Reese', 'Rowan', 'Sutton', 'Kensington', 'Presley',
-    'Monroe', 'Harlow', 'Kinslee', 'Ensley', 'Finley', 'Tinsley', 'Brinley', 'Rylie',
-    'Oakley', 'Ember', 'Nova', 'Lyra', 'Athena', 'Freya', 'Lilith', 'Persephone',
-    'Ophelia', 'Cassia', 'Elara', 'Seraphine', 'Evangeline', 'Genevieve', 'Maxine',
-    'Juno', 'Calypso', 'Andromeda', 'Celestia', 'Nebula', 'Solstice', 'Equinox',
-    'Zenith', 'Vesper', 'Liora', 'Zara', 'Amara', 'Idris', 'Clementine', 'Marigold',
-    'Primrose', 'Bluebell', 'Snowdrop', 'Lisa', 'Lavender', 'Amanda', 'Yuna'
-  ];
-
-  const femaleLastNames = [
-    'Rose', 'Willow', 'Hazel', 'Ivy', 'Ruby', 'Sage', 'Dawn', 'Skye',
-    'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
-    'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow',
-    'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',
-    'Iris', 'Lily', 'Daisy', 'Tulip', 'Violet', 'Poppy', 'Marigold', 'Azalea', 'Camellia', 'Jasmine',
-    'Rosewood', 'Moonlight', 'Starlight', 'Sunshine', 'Rainbow', 'Butterfly', 'Phoenix', 'Serenity',
-    'Harmony', 'Melody', 'Rhythm', 'Cadence', 'Lyric', 'Sonnet', 'Poem', 'Verse', 'Story', 'Tale',
-    'Whisper', 'Echo', 'Silence', 'Calm', 'Peace', 'Zen', 'Bliss', 'Joy', 'Glee', 'Cheer', 'Vera',
-    'Sparkle', 'Glitter', 'Shimmer', 'Glimmer', 'Glow', 'Shine', 'Bright', 'Radiant', 'Luminous',
-    'Celeste', 'Stella', 'Nova', 'Luna', 'Aurora', 'Orion', 'Vega', 'Lyra', 'Cassiopeia', 'Carinae',
-    'Meteora', 'Lynn', 'Nyx',
-    'Rosa', 'Maria', 'Sofia', 'Isabella', 'Catalina', 'Valentina', 'Emilia', 'Camila', 'Lucia', 'Gabriela',
-    'Yoon', 'Lim', 'Han', 'Shin', 'Chen', 'Apolonia', 'Cassiopeia', 'Lunaria', 'Stellaria',
-    'Patel', 'Shah', 'Verma', 'Malhotra', 'Agarwal', 'Jain',
-    'Garcia', 'Rivera', 'Oliveira', 'Ferreira', 'Costa', 'Almeida', 'Rocha'
   ];
 
   // Male-preferring last names (stronger masculine associations)
@@ -339,6 +299,46 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
     'Barnes', 'Ross', 'Henderson', 'Coleman', 'Jenkins', 'Perry', 'Powell', 'Long', 'Patterson',
     'Hughes', 'Flores', 'Washington', 'Butler', 'Simmons', 'Foster', 'Gonzalez', 'Bryant', 'Alexander',
     'Russell', 'Griffin', 'Diaz', 'Hayes', 'Myers', 'Ford', 'Hamilton', 'Graham', 'Sullivan', 'Wallace'
+  ];
+
+  const femaleNames = [
+    'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Charlotte', 'Amelia',
+    'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella',
+    'Madison', 'Scarlett', 'Victoria', 'Aria', 'Grace', 'Chloe', 'Camila', 'Penelope',
+    'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Luna', 'Aubrey', 'Ellie',
+    'Stella', 'Natalie', 'Zoe', 'Leah', 'Hazel', 'Violet', 'Aurora', 'Savannah',
+    'Audrey', 'Brooklyn', 'Bella', 'Claire', 'Skylar', 'Lucy', 'Paisley', 'Everly',
+    'Anna', 'Caroline', 'Nova', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya',
+    'Kinsley', 'Naomi', 'Aaliyah', 'Elena', 'Sarah', 'Ariana', 'Allison', 'Kara',
+    'Gabriella', 'Alice', 'Madelyn', 'Cora', 'Ruby', 'Eva', 'Seraphina', 'Lyra',
+    'Rose', 'Iris', 'Luna', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Wren', 'Clara',
+    'Poppy', 'Briar', 'Fern', 'Olive', 'Jade', 'Pearl', 'Celeste', 'Orla', 'Elara',
+    'Kehlani', 'Billie', 'Zendaya', 'Remi', 'Nyla', 'Kai', 'Indigo', 'Aurelia', 'Sienna',
+    'Calliope', 'Juniper', 'Marlowe', 'Thea', 'Elodie', 'Wrenley', 'Arden', 'Loxley',
+    'Sloane', 'Blair', 'Quinn', 'Reese', 'Kensington', 'Presley', 'Rachel',
+    'Monroe', 'Harlow', 'Kinslee', 'Ensley', 'Finley', 'Tinsley', 'Brinley', 'Rylie',
+    'Oakley', 'Ember', 'Nova', 'Lyra', 'Athena', 'Freya', 'Lilith', 'Persephone',
+    'Ophelia', 'Cassia', 'Elara', 'Seraphine', 'Evangeline', 'Genevieve', 'Maxine',
+    'Juno', 'Celestia', 'Nebula', 'Solstice', 'Equinox', 'Roche', 'Velvet',
+    'Zenith', 'Vesper', 'Liora', 'Zara', 'Amara', 'Idris', 'Clementine', 'Marigold',
+    'Primrose', 'Bluebell', 'Snowdrop', 'Lisa', 'Lavender', 'Amanda', 'Yuna'
+  ];
+
+  const femaleLastNames = [
+    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye',
+    'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
+    'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow',
+    'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',
+    'Iris', 'Lily', 'Daisy', 'Tulip', 'Violet', 'Poppy', 'Marigold', 'Azalea', 'Camellia', 'Jasmine',
+    'Rosewood', 'Moonlight', 'Starlight', 'Sunshine', 'Rainbow', 'Butterfly', 'Phoenix', 'Serenity',
+    'Harmony', 'Melody', 'Rhythm', 'Cadence', 'Lyric', 'Sonnet', 'Poem', 'Verse', 'Story', 'Tale',
+    'Whisper', 'Echo', 'Silence', 'Calm', 'Peace', 'Zen', 'Bliss', 'Joy', 'Glee', 'Cheer', 'Vera',
+    'Sparkle', 'Glitter', 'Shimmer', 'Glimmer', 'Glow', 'Shine', 'Bright', 'Radiant', 'Luminous',
+    'Celeste', 'Stella', 'Nova', 'Luna', 'Aurora', 'Orion', 'Vega', 'Lyra', 'Cassiopeia', 'Carinae',
+    'Meteora', 'Lynn', 'Nyx', 'Patel', 'Shah', 'Verma', 'Malhotra', 'Agarwal', 'Jain', 'Gabriela',
+    'Rosa', 'Maria', 'Sofia', 'Isabella', 'Catalina', 'Valentina', 'Emilia', 'Camila', 'Lucia',
+    'Yoon', 'Lim', 'Han', 'Shin', 'Chen', 'Apolonia', 'Cassiopeia', 'Lunaria', 'Stellaria',
+    'Garcia', 'Rivera', 'Oliveira', 'Ferreira', 'Costa', 'Almeida', 'Rocha'
   ];
 
   // Gender-neutral last names (modern and Gen-Z appropriate)
@@ -368,17 +368,120 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
     lastNamePool = neutralLastNames;
   }
   
+  // Generate random name and last name with retry logic to prevent duplicates
   const randomName = candidate?.name ?? namePool[Math.floor(Math.random() * namePool.length)];
-  const randomLastName = lastNamePool[Math.floor(Math.random() * lastNamePool.length)];
+  let randomLastName = lastNamePool[Math.floor(Math.random() * lastNamePool.length)];
+  
+  // Retry if first and last name are the same (e.g., "Parker Parker", "Rose Rose")
+  let attempts = 0;
+  const maxAttempts = 10;
+  while (randomName === randomLastName && attempts < maxAttempts) {
+    randomLastName = lastNamePool[Math.floor(Math.random() * lastNamePool.length)];
+    attempts++;
+  }
+  
   const fullName = `${randomName} ${randomLastName}`;
   
-  // Age generation based on story context (young adult range for thriller stories)
-  const age = candidate?.age ?? Math.floor(Math.random() * 15) + 20; // 20-35 range
+  // Age generation based on story config
+  const age = candidate?.age ?? Math.floor(Math.random() * (MAX_CHARACTER_AGE - MIN_CHARACTER_AGE + 1)) + MIN_CHARACTER_AGE;
 
   return {
     name: fullName,
     age,
     gender,
-    bio: '',
+    bio: generateRandomCharacterBio(gender),
   };
+}
+
+function generateRandomCharacterBio(gender: KnownGender): string {
+  // Personality trait pools by gender
+  const maleTraits = [
+    'analytical', 'logical', 'competitive', 'ambitious', 'confident', 'strategic',
+    'independent', 'reserved', 'practical', 'disciplined', 'loyal', 'protective'
+  ];
+  
+  const femaleTraits = [
+    'empathetic', 'intuitive', 'creative', 'adaptable', 'diplomatic', 'patient',
+    'nurturing', 'expressive', 'collaborative', 'harmonious', 'perceptive'
+  ];
+  
+  const neutralTraits = [
+    'balanced', 'versatile', 'thoughtful', 'reliable', 'open-minded', 'curious',
+    'flexible', 'resilient', 'observant', 'fair-minded', 'authentic'
+  ];
+  
+  // Characteristic pools
+  const characteristics = [
+    'quick-witted', 'detail-oriented', 'methodical', 'spontaneous', 'cautious',
+    'adventurous', 'reserved', 'idealistic', 'pragmatic', 'competitive',
+    'easygoing', 'serious', 'playful', 'conscientious', 'independent'
+  ];
+  
+  const appearanceDetails = [
+    'is tall and lean', 'is short and muscular', 'has average height with distinctive features',
+    'has striking eyes', 'has unusual hair color', 'has subtle scars', 'has elegant hands',
+    'has weathered appearance', 'has youthful energy', 'has mature presence', 'has distinctive voice'
+  ];
+  
+  const behavioralQuirks = [
+    'taps fingers when thinking', 'hums when focused', 'always early', 'collects unusual objects',
+    'talks to themselves', 'excellent listener', 'remembers small details',
+    'dislikes sudden noises', 'has specific routine', 'overly polite', 'secretly creative'
+  ];
+  
+  const backgroundHints = [
+    'mysterious past', 'privileged upbringing', 'struggled in youth', 'traveled extensively',
+    'formal training', 'self-taught skills', 'family tragedy', 'hidden talent',
+    'unusual hobby', 'secret ambition', 'complex relationships', 'survivor mindset'
+  ];
+  
+  // Select appropriate pools
+  const genderSpecificTraits = gender === 'male' ? maleTraits : femaleTraits;
+  const traitPool = [...genderSpecificTraits, ...neutralTraits];
+  
+  // Generate 3-5 random traits
+  const numTraits = Math.floor(Math.random() * 3) + 3; // 3-5 traits
+  const selectedTraits: string[] = [];
+  const usedIndices = new Set<number>();
+  
+  for (let i = 0; i < numTraits && i < traitPool.length; i++) {
+    let index;
+    do {
+      index = Math.floor(Math.random() * traitPool.length);
+    } while (usedIndices.has(index));
+    
+    selectedTraits.push(traitPool[index]);
+    usedIndices.add(index);
+  }
+  
+  // Generate other characteristics
+  const characteristic = characteristics[Math.floor(Math.random() * characteristics.length)];
+  const appearance = appearanceDetails[Math.floor(Math.random() * appearanceDetails.length)];
+  const quirk = behavioralQuirks[Math.floor(Math.random() * behavioralQuirks.length)];
+  const background = backgroundHints[Math.floor(Math.random() * backgroundHints.length)];
+  
+  // Build bio based on gender and traits with proper grammar
+  const subject = gender === 'male' ? 'He' : 'She';
+  const possessive = gender === 'male' ? 'His' : 'Her';
+  
+  // Build trait sentence with proper comma placement (optimized for small arrays)
+  let traitSentence: string;
+  if (selectedTraits.length === 1) {
+    traitSentence = `${selectedTraits[0]}.`;
+  } else if (selectedTraits.length === 2) {
+    traitSentence = `${selectedTraits[0]} and ${selectedTraits[1]}.`;
+  } else {
+    traitSentence = `${selectedTraits.slice(0, -1).join(', ')}, and ${selectedTraits[selectedTraits.length - 1]}.`;
+  }
+  
+  // Build characteristic sentence with proper grammar and meaning
+  const characteristicSentence = `${subject} is ${characteristic} and ${appearance}.`;
+  
+  // Build quirk sentence with proper grammar
+  const quirkSentence = `${subject} ${quirk}.`;
+  
+  // Build background sentence with proper grammar
+  const backgroundSentence = `${possessive} background suggests ${background}.`;
+  
+  return `${ucfirst(traitSentence)} ${characteristicSentence} ${quirkSentence} ${backgroundSentence}`;
 }

@@ -1,4 +1,4 @@
-import type { AIChatProvider, AIDocument, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
@@ -11,8 +11,8 @@ import { parseAISafely } from "./parser.js";
 
 import type Groq from 'groq-sdk';
 import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
-import { Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
-import type { V2ChatRequest, V2ChatResponse } from "cohere-ai/api";
+import { type GenerateContentConfig, Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
+import type { V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "cohere-ai/api";
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 
@@ -123,7 +123,7 @@ export async function githubPrompt(
     options,
     async (model, prompt, opts) => {
       const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const systemPromptWithDocuments = `${systemPrompt ?? PROMPT_SYSTEM}${documents ? documents!.map((doc) => `${doc.title}\n${doc.text}`.trim()).join('\n\n') : ''}`;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
       return await getGitHubClient().chat.completions.create({
         model,
         messages: [
@@ -193,8 +193,8 @@ export async function geminiPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const jsonSchema = outputAsJson ? {
+      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const responseSchema = outputAsJson ? {
         type: Type.OBJECT,
         properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
           const schemaProperty: Schema = {
@@ -210,17 +210,12 @@ export async function geminiPrompt(
         }, {} as Record<string, Schema>) : undefined,
         required: outputJsonRequired || []
       } satisfies Schema : undefined;
+
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
       const response = await getGeminiClient().models.generateContent({
         model,
-        contents: [{ parts: [{ text: `${systemPrompt ?? PROMPT_SYSTEM}\n\n${prompt}` }] }],
-        config: {
-          maxOutputTokens: config.maxOutputToken,
-          temperature: config.temperature,
-          topP: config.topP,
-          topK: config.topK,
-          stopSequences: config.stopSequences,
-          responseSchema: jsonSchema
-        },
+        contents: [{ parts: [{ text: `${systemPromptWithDocuments}\n\n${prompt}` }] }],
+        config: { ...config, responseSchema } satisfies GenerateContentConfig,
       } satisfies GenerateContentParameters);
       
       // Prompt-level safety block
@@ -304,17 +299,20 @@ export async function groqPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+
       const { data, response } = await getGroqClient().chat.completions.create({
         messages: [
-          { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
+          { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
         model,
-        max_tokens: config.maxOutputToken,
-        temperature: config.temperature,
-        top_p: config.topP,
-        stop: config.stopSequences,
+        max_tokens: maxOutputToken,
+        temperature,
+        top_p: topP,
+        stop: stopSequences,
         stream: false,
         response_format: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
@@ -405,10 +403,16 @@ export async function coherePrompt(
       return await getCohereClient().chat({
         model,
         messages: [
-          { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
+          { role: 'system', content: formatSystemPromptWithDocuments({
+            // No need to include documents in Cohere's system prompt.
+            // Cohere's V2 API natively supports RAG via documents field.
+            systemPrompt
+          }) },
           { role: 'user', content: prompt },
         ],
-        documents: !documents || documents.length === 0 ? undefined : documents.map((data: AIDocument) => ({ data })),
+        documents: documents && documents.length > 0
+          ? documents.map((data: AIDocument) => ({ data })) satisfies V2ChatRequestDocumentsItem[]
+          : undefined,
         maxTokens: config.maxOutputToken,
         temperature: config.temperature,
         p: config.topP,
@@ -474,18 +478,21 @@ export async function cerebrasPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+
       return await getCerebrasClient().chat.completions.create({
         model,
         messages: [
-          { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
+          { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
-        max_tokens: config.maxOutputToken,
-        temperature: config.temperature,
-        top_p: config.topP,
+        max_tokens: maxOutputToken,
+        temperature,
+        top_p: topP,
         stream: false,
-        stop: config.stopSequences,
+        stop: stopSequences,
         response_format: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
           json_schema: {
@@ -550,17 +557,20 @@ export async function mistralPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+
       return await getMistralClient().chat.complete({
         model,
         messages: [
-          { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
+          { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
-        maxTokens: config.maxOutputToken,
-        temperature: config.temperature,
-        topP: config.topP,
-        stop: config.stopSequences,
+        maxTokens: maxOutputToken,
+        temperature,
+        topP,
+        stop: stopSequences,
         stream: false,
         responseFormat: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
@@ -627,8 +637,10 @@ export async function nvidiaPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
       const apiKey = requireEnv('NVIDIA_API_KEY');
+
       // docs: https://docs.api.nvidia.com/nim/reference/create_chat_completion_v1_chat_completions_post
       const res = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
         method: 'POST',
@@ -639,7 +651,7 @@ export async function nvidiaPrompt(
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: systemPrompt ?? PROMPT_SYSTEM },
+            { role: 'system', content: systemPromptWithDocuments },
             { role: 'user', content: prompt },
           ],
           max_tokens: config.maxOutputToken,
@@ -692,13 +704,11 @@ export async function aiPrompt<T = string>(
 ): Promise<AIResponse<T>> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
-    context,
     config = AI_CHAT_CONFIG_DEFAULT,
-    systemPrompt,
-    // documents,
     outputAsJson = false,
-    // outputJsonStructure,
-    // outputJsonRequired,
+    outputJsonFallbackField,
+    systemPrompt,
+    context,
   } = options;
 
   // Define provider order from modelSelection or use empty array
@@ -724,24 +734,19 @@ export async function aiPrompt<T = string>(
 
       const opts: Partial<PromptWithFallbackOptions> = {
         ...options,
-        // context,
         models,
         config,
-        // systemPrompt,
-        // documents,
         outputAsJson,
-        // outputJsonStructure,
-        // outputJsonRequired,
       };
       
       switch (provider) {
-        case 'github': result = await githubPrompt(prompt, opts); break;     // ✅ JSON schema
-        case 'gemini': result = await geminiPrompt(prompt, opts); break;     // ✅ JSON schema
-        case 'cohere': result = await coherePrompt(prompt, opts); break;     // ☑️ JSON object
-        case 'mistral': result = await mistralPrompt(prompt, opts); break;   // ✅ JSON schema
-        case 'groq': result = await groqPrompt(prompt, opts); break;         // ✅ JSON schema
-        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break; // ✅ JSON schema
-        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ❌ No structured JSON (HTTP API limitation)
+        case 'github': result = await githubPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
+        case 'gemini': result = await geminiPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
+        case 'cohere': result = await coherePrompt(prompt, opts); break;     // ☑️ JSON object | ✅ document via RAG
+        case 'mistral': result = await mistralPrompt(prompt, opts); break;   // ✅ JSON schema | ☑️ document via system prompt
+        case 'groq': result = await groqPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
+        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break; // ✅ JSON schema | ☑️ document via system prompt
+        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ❌ No structured JSON (HTTP API limitation) | ☑️ document via system prompt
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, getErrorMessage(error));
@@ -749,18 +754,19 @@ export async function aiPrompt<T = string>(
     }
 
     if (result) {
-      // Parse the output into the expected type T
       try {
+        // Parse the output into the expected type T
         let parsedResult: T;
         
         if (outputAsJson) {
           // For JSON-like output, try to parse as object using parseAISafely
-          const compatibleResponse: AIResponse<Record<string, any>> = {
+          const compatibleResponse: AIResponse<Record<string, unknown>> = {
             ...result,
-            result: { output: result.output } // Wrap in object to satisfy Record<string, any>
+            result: undefined
           };
           parsedResult = parseAISafely(compatibleResponse, {
-            logContext: `${provider}-${context || 'ai-prompt'}` 
+            logContext: `${provider}-${context || 'ai-prompt'}`,
+            fallbackField: outputJsonFallbackField
           }) as T;
         } else {
           // For non-JSON output, treat as string
@@ -770,7 +776,7 @@ export async function aiPrompt<T = string>(
         return {
           ...result,
           result: parsedResult
-        } as AIResponse<T>;
+        } satisfies AIResponse<T>;
       } catch (parseError) {
         console.warn(`[${provider}] ⚠️ Failed to parse as type T, trying next provider:`, parseError);
         result = null; // Continue to next provider
@@ -785,4 +791,110 @@ export async function aiPrompt<T = string>(
   }
 
   return { provider: 'none', output: '' };
+}
+
+/**
+ * Type-safe AI prompt options builder
+ * 
+ * Creates AI prompt options with JSON schema and required fields automatically applied.
+ * This eliminates the need to manually specify outputJsonStructure and outputJsonRequired
+ * when using structured JSON output with AI providers.
+ * 
+ * @param schema - Schema definition mapping field names to their JSON property types
+ * @param required - Array of required field names that must be present in AI response
+ * @param baseOptions - Additional AI prompt options (config, modelSelection, etc.)
+ * @returns Complete AI prompt options with schema applied and JSON output enabled
+ * 
+ * @example
+ * ```typescript
+ * // Create options for StoryGeneration type
+ * const storyOptions = createAIOptionsWithSchema({
+ *   text: { type: 'string' },
+ *   mood: { type: 'string' },
+ *   actions: { type: 'array', items: { type: 'object' } }
+ * }, ['text', 'actions'], {
+ *   modelSelection: AI_CHAT_MODELS_WRITING,
+ *   context: 'story-generation'
+ * });
+ * 
+ * // Use with aiPrompt
+ * const response = await aiPrompt<StoryGeneration>(prompt, storyOptions);
+ * ```
+ */
+export function createAIOptionsWithSchema<T extends Record<string, any>>(
+  schema: { [K in keyof T]: AIJsonProperty },
+  required: (keyof T)[],
+  fallbackField: keyof T,
+  baseOptions: Omit<AIPromptOptions,
+    'outputAsJson' |
+    'outputJsonStructure' |
+    'outputJsonRequired' |
+    'outputJsonFallbackField'
+  > = {}
+): AIPromptOptions {
+  return {
+    ...baseOptions,
+    outputAsJson: true,
+    outputJsonStructure: schema as Record<string, AIJsonProperty>,
+    outputJsonRequired: required as string[],
+    outputJsonFallbackField: fallbackField as string
+  };
+}
+
+/**
+ * Formats AI documents into a prompt string
+ * 
+ * @param documents - Array of AI documents to format
+ * @returns Formatted string with document titles and snippets, or empty string if no documents
+ * 
+ * @example
+ * ```typescript
+ * const formatted = formatDocumentsToPrompt([
+ *   { title: 'Story Context', snippet: 'User is in a dark forest...' },
+ *   { title: 'Character Info', snippet: 'Main character: John...' }
+ * ]);
+ * // Returns: "Story Context\nUser is in a dark forest...\n\nCharacter Info\nMain character: John..."
+ * ```
+ */
+function formatDocumentsToPrompt(documents?: AIDocument[]): string {
+  return documents 
+    ? documents
+        .filter((doc): doc is AIDocument => !!doc)
+        .map((doc) => `${doc.title ? `${doc.title}:\n` : ''}${doc.snippet}`.trim())
+        .join('\n\n')
+    : '';
+}
+
+/**
+ * Formats system prompt with documents for AI providers
+ * 
+ * This function handles document attachment differently based on provider capabilities:
+ * - RAG providers (Cohere): Documents sent via dedicated `documents` field
+ * - System prompt providers (GitHub, Gemini, etc.): Documents embedded in system prompt
+ * 
+ * @param options - AI prompt options containing system prompt and documents
+ * @returns Formatted system prompt string with documents properly attached
+ * 
+ * @example
+ * ```typescript
+ * const formatted = formatSystemPromptWithDocuments({
+ *   systemPrompt: 'You are a helpful assistant...',
+ *   documents: [
+ *     { title: 'Context', snippet: 'User is exploring...' },
+ *     { title: 'Rules', snippet: 'Be concise...' }
+ *   ]
+ * });
+ * // Returns: "You are a helpful assistant...\n\nContext\nUser is exploring...\n\nRules\nBe concise..."
+ * ```
+ */
+export function formatSystemPromptWithDocuments(options: Pick<AIPromptOptions, 'systemPrompt' | 'documents'>): string {
+  const { systemPrompt: customSystemPrompt, documents } = options;
+  const systemPrompt = customSystemPrompt ?? PROMPT_SYSTEM;
+  
+  if (!documents || documents.length === 0) {
+    return systemPrompt;
+  }
+  
+  const formattedDocuments = formatDocumentsToPrompt(documents);
+  return `${systemPrompt}\n\n${formattedDocuments}`;
 }

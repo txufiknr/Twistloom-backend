@@ -190,6 +190,11 @@ export type ActionHint = {
   type: ActionHintType;
 }
 
+export type TrustLevel = "low" | "medium" | "high";
+export type FearLevel = "low" | "medium" | "high";
+export type GuiltLevel = "low" | "medium" | "high";
+export type CuriosityLevel = "low" | "medium" | "high";
+
 /**
  * Psychological flags that influence narrative direction
  * 
@@ -198,13 +203,13 @@ export type ActionHint = {
  */
 export type PsychologicalFlags = {
   /** Level of trust in other characters and environment */
-  trust: "low" | "medium" | "high";
+  trust: TrustLevel;
   /** Current fear level affecting perception and actions */
-  fear: "low" | "medium" | "high";
+  fear: FearLevel;
   /** Accumulated guilt from past actions and consequences */
-  guilt: "low" | "medium" | "high";
+  guilt: GuiltLevel;
   /** Drive to investigate vs avoid danger */
-  curiosity: "low" | "medium" | "high";
+  curiosity: CuriosityLevel;
 };
 
 export type Ending = {

@@ -83,7 +83,7 @@ export type RelationshipStatus = typeof relationshipStatuses[number];
  * with type and current emotional status.
  */
 export type CharacterRelationship = {
-  /** Target character name */
+  /** Target character name (excluding MC, for MC use `relationshipToMC`) */
   target: string;
   /** Type of relationship connection */
   type: RelationshipType;
@@ -98,9 +98,9 @@ export type CharacterRelationship = {
  * based on story events.
  */
 export type RelationshipUpdate = {
-  /** Source character initiating the relationship change */
+  /** Source character initiating the relationship change (excluding MC) */
   source: string;
-  /** Target character being related to */
+  /** Target character being related to (excluding MC) */
   target: string;
   /** New relationship type (optional) */
   type?: RelationshipType;

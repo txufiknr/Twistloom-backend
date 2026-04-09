@@ -6,6 +6,8 @@ export const BOOK_MAX_PAGES = 150;
 export const BOOK_AVERAGE_PAGES = 120;
 
 export const MAX_CHARACTERS = 6;
+export const MIN_CHARACTER_AGE = 13;
+export const MAX_CHARACTER_AGE = 25;
 export const MAX_PLACES = 6;
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;

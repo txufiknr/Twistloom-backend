@@ -41,6 +41,7 @@
   "exclude": [
     "node_modules",
     "dist",
+    "**/*.bak.*",
     "drizzle" // Database migrations handled separately
   ]
 }

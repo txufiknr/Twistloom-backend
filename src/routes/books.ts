@@ -35,7 +35,7 @@ import { extractPaginationParams, createPaginatedResponse, createSearchFilter, a
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession } from "../services/story.js";
-import { getBook } from "../services/book.js";
+import { getBook, updateBook } from "../services/book.js";
 
 const router = Router();
 
@@ -255,17 +255,10 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
     if (newImageId) updateData.imageId = newImageId;
 
     // Update the book
-    const updatedBook = await dbWrite
-      .update(books)
-      .set(updateData)
-      .where(and(
-        eq(books.id, id as string),
-        eq(books.userId, userId)
-      ))
-      .returning();
+    const updatedBook = await updateBook(book.id, updateData);
 
     res.json({
-      book: updatedBook[0],
+      book: updatedBook,
       imageUploaded: !!newImageUrl,
       oldImageQueuedForDeletion: oldImageIdQueued,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),

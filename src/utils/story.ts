@@ -1,5 +1,6 @@
 import { MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_TRAUMA_TAGS } from "../config/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType } from "../types/story.js";
+import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { summarizeStoryContext } from "./prompt.js";
@@ -723,4 +724,44 @@ export function updateAdvancedEndingSystems(state: StoryState): void {
       setupFakeToRealEnding(state, triggerPage, "fake_relief_twist");
     }
   }
+}
+
+/**
+ * Creates an empty story state with default values
+ * 
+ * @param pageId - Page ID for the state
+ * @param pageNumber - Page number
+ * @param totalPages - Total number of pages
+ * @returns Empty story state
+ */
+export function createEmptyStoryState(pageId: string, pageNumber: number, totalPages: number): StoryState {
+  return {
+    ...STORY_STATE_DEFAULTS,
+    pageId,
+    page: pageNumber,
+    maxPage: totalPages,
+  };
+}
+
+/**
+ * Creates initial hidden state for new stories
+ * 
+ * @returns Baseline hidden state for story start
+ */
+export function createInitialHiddenState(): HiddenState {
+  return {
+    ...HIDDEN_STATE_DEFAULTS,
+    endingPlan: {
+      type: 'fake_relief_twist' satisfies EndingPlanType,
+      armed: false,
+      triggerPage: 15,
+      fakeToReal: false
+    } satisfies EndingPlan,
+    profileShift: {
+      detected: false,
+      shiftType: 'curiosity_collapse' satisfies ProfileShiftType,
+      detectedAt: 0,
+      originalEnding: 'fake_escape' satisfies EndingType
+    } satisfies ProfileShift
+  } satisfies HiddenState;
 }

@@ -3,8 +3,27 @@
  * 
  * These providers represent the supported AI services that can be used
  * for chat completions and text generation tasks.
+ * 
+ * Only Cohere V2 API has Built-in RAG Support.
  */
-export type AIChatProvider = 'github' | 'gemini' | 'cohere' | 'mistral' | 'groq' | 'cerebras' | 'nvidia';
+export type AIChatProvider =
+  // @see https://docs.github.com/en/rest/models/inference
+  'github' |
+  // @see https://ai.google.dev/gemini-api/docs/file-search
+  // @see https://ai.google.dev/api/generate-content
+  'gemini' |
+  'cohere' |
+  // @see https://docs.mistral.ai/api/endpoint/chat
+  'mistral' |
+  // @see https://console.groq.com/docs/api-reference
+  'groq' |
+  // @see https://docs.cerebras.ai/en/latest/cerebras-basics/api-endpoints.html
+  // @see https://inference-docs.cerebras.ai/api-reference/chat-completions
+  'cerebras' |
+  // @see https://docs.nvidia.com/ai-enterprise/nim-llm/1.0/api-reference.html
+  // @see https://docs.nvidia.com/nim/large-language-models/latest/api-reference.html
+  // @see https://docs.nvidia.com/nim/large-language-models/latest/system-example.html
+  'nvidia';
 
 /**
  * AI response structure returned from chat completion APIs
@@ -35,7 +54,6 @@ export type AIModelSelection = Partial<Record<AIChatProvider, string[]>>;
  * These options control how prompts are processed and which providers
  * are available for fallback scenarios.
  */
-// export interface AIPromptOptions<T> {
 export interface AIPromptOptions {
   /** Object of providers and their respective models to include in the fallback chain */
   modelSelection?: AIModelSelection;
@@ -51,10 +69,10 @@ export interface AIPromptOptions {
   outputAsJson?: boolean;
   /** JSON structure to use for parsing */
   outputJsonStructure?: Record<string, AIJsonProperty>;
-  // outputJsonStructure?: Record<keyof T, AIJsonProperty>;
   /** Keys that must exist in the parsed JSON output */
-  // outputJsonRequired?: Array<keyof T>;
   outputJsonRequired?: string[];
+  /** Key to use when JSON parsing fails entirely (string value) */
+  outputJsonFallbackField?: string;
 }
 
 export type AIJsonProperty = {
@@ -96,8 +114,8 @@ export type AIChatConfigCaps = {
 export type AIDocument = { 
   /** Optional document title for context */
   title?: string; 
-  /** Main document text content */
-  text: string;
+  /** Main document content snippet */
+  snippet: string;
 };
 
 /**
@@ -106,7 +124,6 @@ export type AIDocument = {
  * Extends basic prompt options with additional parameters for fine-tuned
  * control over AI model behavior and output formatting.
  */
-// export type PromptWithFallbackOptions<T> = Omit<AIPromptOptions<T>, 'modelSelection'> & {
 export type PromptWithFallbackOptions = Omit<AIPromptOptions, 'modelSelection'> & {
   /** Array of model names to use for fallback attempts */
   models?: string[];

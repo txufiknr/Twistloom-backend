@@ -77,6 +77,8 @@ export type BookCreationResponse = {
   summary: string;
   /** Keywords (3-5 relevant tags) */
   keywords: string[];
+  /** Main character's complete info */
+  mainCharacter: StoryMC;
   /** First story page content */
   firstPage: StoryPage;
   /** Initial ending for the story */
@@ -89,10 +91,8 @@ export type BookCreationResponse = {
     context?: string;
     familiarity: number; // 0-1, important for reuse priority
   };
-  /** Initial character memories setup */
+  /** Initial character memories setup (excluding MC) */
   initialCharacters: Array<Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio'>>;
-  /** Main character's bio */
-  mainCharacterBio: string;
 };
 
 /**

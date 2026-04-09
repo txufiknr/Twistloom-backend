@@ -17,7 +17,15 @@ import { and, eq, asc } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState } from "../types/story.js";
+import { formatPlacesForPrompt } from "../utils/places.js";
+import { formatBookMetaForPrompt } from "../utils/books.js";
+import { formatCharactersForPrompt } from "../utils/characters.js";
+import type { AIDocument } from "../types/ai-chat.js";
+import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
+import { IS_PRODUCTION } from "../config/constants.js";
+import { geminiGenerateImage } from "../utils/ai-image.js";
+import { uploadBookCover } from "./image.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -484,4 +492,93 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   };
+}
+
+/**
+ * Core system prompt defining the AI writer's persona and fundamental behavior
+ * 
+ * This prompt establishes the psychological thriller writer persona inspired by
+ * R.L. Stine but darker, with specific rules for narrative manipulation and
+ * psychological horror elements.
+ * 
+ * @todo embed in document
+ */
+export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocument[] {
+  if (!book) return [];
+  
+  const bookMeta = { title: `BOOK META`, snippet: formatBookMetaForPrompt(book) };
+  if (!state) return [bookMeta];
+  
+  const charactersMeta = { title: `CHARACTERS`, snippet: formatCharactersForPrompt(state.characters) };
+  const placesMeta = { title: `PLACES`, snippet: formatPlacesForPrompt(state) };
+
+  return [bookMeta, charactersMeta, placesMeta];
+}
+
+export async function generateBookCover(book: Book, state?: StoryState): Promise<string[]> {
+  const mcGender = book.mc.gender;
+  const mcAppearance = mcGender == 'male' ? 'handsome' : 'beautiful';
+  try {
+    const bookMeta = buildBookMetaDocuments(book, state);
+    const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcGender} protagonist.`;
+    const fullPrompt = formatSystemPromptWithDocuments({systemPrompt: taskPrompt, documents: bookMeta});
+    const coverImages = await geminiGenerateImage(fullPrompt, {
+      numberOfImages: 1,
+      aspectRatio: "3:4",
+      outputDir: "./book-images",
+      filename: `${book.id}-${book.title}`,
+    });
+    if (coverImages.length > 0) {
+      console.log(`[generateBookCover] 🌟 Generated cover image for book ${book.id}:`, coverImages);
+    } else {
+      console.warn(`[generateBookCover] ❓ No cover image generated for book ${book.id}`);
+    }
+    return coverImages;
+  } catch(error) {
+    console.error('[generateBookCover] ❌ Error generating book cover:', {bookId: book.id, error: getErrorMessage(error)});
+    // Fail silently, return empty on image generation failure
+    return [];
+  }
+}
+
+export async function generateAndUpdateBookCover(book: Book, state?: StoryState): Promise<void> {
+  try {
+    const coverImages = await generateBookCover(book, state);
+    if (coverImages.length === 0) return;
+
+    let uploadedImage = coverImages[0];
+    let uploadedImageId: string | undefined;
+    
+    // Upload to ImageKit in production
+    if (IS_PRODUCTION) {
+      try {
+        const uploadResult = await uploadBookCover(
+          uploadedImage,
+          book.id,
+          book.title,
+          book.keywords
+        );
+        
+        if (uploadResult?.url) {
+          uploadedImage = uploadResult.url;
+          uploadedImageId = uploadResult.fileId;
+          console.log(`[generateAndUpdateBookCover] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
+        } else {
+          console.warn(`[generateAndUpdateBookCover] ❌ Failed to upload to ImageKit, using local image`);
+        }
+      } catch (error) {
+        console.error('[generateAndUpdateBookCover] ❌ ImageKit upload failed:', {bookId: book.id, error: getErrorMessage(error)});
+        // Fall back to local image if upload fails
+      }
+    }
+
+    await updateBook(book.id, {
+      image: uploadedImage,
+      imageId: uploadedImageId
+    });
+    console.log(`[generateAndUpdateBookCover] ✅ Updated cover image for book ${book.id}`);
+  } catch(error) {
+    console.error('[generateAndUpdateBookCover] ❌ Error generating and updating book cover:', {bookId: book.id, error: getErrorMessage(error)});
+    // Fail silently, don't throw error
+  }
 }

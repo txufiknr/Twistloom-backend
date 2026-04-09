@@ -1,31 +1,31 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIJsonProperty } from "../types/ai-chat.js";
+import type { AIChatConfig, AIChatConfigCaps, AIDocument } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES, BOOK_AVERAGE_PAGES } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, NEAR_ENDING_PAGES, MAX_PLACES, BOOK_AVERAGE_PAGES, MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
-import { aiPrompt } from "./ai-chat.js";
-import { determineOptimalEnding, maybeAddTrauma, updateState } from "./story.js";
-import { formatPlacesForPrompt, processPlaceUpdates } from "./places.js";
+import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
+import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, maybeAddTrauma, updateState } from "./story.js";
+import { processPlaceUpdates } from "./places.js";
 import { BOOK_MAX_PAGES, MAX_PAGE_HISTORY, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { createStyleInput } from "./player-profile.js";
-import { formatCharactersForPrompt, processCharacterUpdates } from "./characters.js";
-import { generateRandomCharacter } from "./characters.js";
+import { processCharacterUpdates } from "./characters.js";
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import { createInitialHiddenState, createInitialPsychologicalProfile } from "./books.js";
 import type { StoryGeneration, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { deepEqualSimple } from "./parser.js";
-import { getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCover, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
 import { getStoryProgress, insertStoryState, insertUserPageProgress, setActiveSession } from "../services/story.js";
 import type { BuildNextPageParams, ChooseActionParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
 import { shouldCreateSnapshot, createStateSnapshot, getLastSnapshotPage } from "../services/snapshots.js";
+import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
+import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -178,38 +178,8 @@ Rules — Escalate naturally as page count increases. Near the ending, behave as
 function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: string, documents: AIDocument[] } {
   return {
     systemPrompt: PROMPT_SYSTEM,
-    documents: [{
-      text: buildBookMetaPrompt(book, state)
-    }]
+    documents: buildBookMetaDocuments(book, state)
   };
-}
-
-/**
- * Core system prompt defining the AI writer's persona and fundamental behavior
- * 
- * This prompt establishes the psychological thriller writer persona inspired by
- * R.L. Stine but darker, with specific rules for narrative manipulation and
- * psychological horror elements.
- * 
- * @todo embed in document
- */
-function buildBookMetaPrompt(book?: Book, state?: StoryState): string {
-  if (!state || !book) return ``;
-
-  const { characters } = state;
-  const { language, title, summary, keywords, totalPages } = book;
-  return `BOOK META:
-- Title: ${title}
-- Summary: ${summary}
-- Keywords: ${keywords.join(', ')}
-- Target pages: ${totalPages} total
-- Language: ${language}
-
-CHARACTERS:
-${formatCharactersForPrompt(characters)}
-
-PLACES:
-${formatPlacesForPrompt(state)}`;
 }
 
 function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedStoryPage): string {
@@ -309,7 +279,7 @@ Usage — Preserve dialect, tone, and personality consistently. Reflect current 
 
 Creation — ${charactersSlot === 0 ? `No new characters. Limit of ${MAX_CHARACTERS} reached.` : `Up to ${charactersSlot} more allowed. Create only when genuinely new to the story. Bio: concise, suggestive over descriptive, include personality traits and age if plot-sensitive. Set narrativeFlags to match behavior and twist setup.`}
 
-Updates — When status, interactions, or relevance changes: merge pastInteractions (keep last 5), update lastInteractionAtPage, adjust narrativeFlags to reflect plot developments.
+Updates — When status, interactions, or relevance changes: merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS}), update lastInteractionAtPage, adjust narrativeFlags to reflect plot developments.
 
 ---
 PLACE RULES:
@@ -348,7 +318,7 @@ MANDATORY FIELDS: text, actions
   ],
   "addTraumaTag": "mysterious footstep",
   "characterUpdates": {
-    "newCharacters": [
+    "newCharacters": [ // New characters appear on this page
       {
         "name": "Lisa",
         "gender": "One of: ${genders.join('", "')}",
@@ -356,8 +326,14 @@ MANDATORY FIELDS: text, actions
         "bio": "e.g. Cheerful but secretive, knows more than she lets on",
         "status": "One of: ${characterStatuses.join('", "')}",
         "relationshipToMC": "e.g. Close childhood friend, always supportive",
-        "relationships": [],
-        "pastInteractions": [],
+        "relationships": [
+          {
+            "target": "Mona", // Any other character name excluding MC
+            "type": "One of: ${relationshipTypes.join('", "')}",
+            "status": "One of: ${relationshipStatuses.join('", "')}"
+          }
+        ],
+        "pastInteractions": ["..."],
         "lastInteractionAtPage": 1,
         "narrativeFlags": {
           "isSuspicious": false,
@@ -372,7 +348,7 @@ MANDATORY FIELDS: text, actions
     "updatedCharacters": [], // Like above (only include necessary fields, empty if none)
     "relationshipUpdates": [
       {
-        "source": "MC",
+        "source": "Mona",
         "target": "Lisa",
         "type": "One of: ${relationshipTypes.join('", "')}",
         "status": "One of: ${relationshipStatuses.join('", "')}"
@@ -429,19 +405,29 @@ function getActionTypesText(): string {
 
 function getActionRulesText(limit: number = MAX_ACTION_CHOICES): string {
   return `Generate next 1-${limit} actions to choose:
+• Actions represent the reader's decision - must feel natural and immediate
+• Actions must be short, meaningful, each lead to very different path
 • Action can be verb (what to do next) or dialogue (say/answer)
-• Short, immediate, meaningful, clearly different
-• At least has one that is risky, irrational, or dangerous
+• You can mix both types naturally depending on the situation
+• Choice pattern: safe / risky / ambiguous
 • Occasionally include deceptive choice
-• Each action should have a hint that provides key continuity
-• If dialogue, should keep the tone and style of the character
-• Example: A. "Y-Yes... I'll go with you." / B. Run away, fast
+• Avoid over-explaining actions
+• Example: A. "Y-Yes... maybe." / B. Run away, fast
 
 ACTION TYPES:
 ${getActionTypesText()}
 
+DIALOGUE ACTIONS:
+• Should keep the tone and style of main character
+• MC may say something inappropriate or with unintended consequences
+• Dialogue used sparingly for internal scenes or interactions
+• Write as direct speech (no quotes)
+• Must be short, natural, and emotionally meaningful
+• Reflect different tones (fear, denial, curiosity, anger, etc.)
+
 ACTION HINT:
-Hint to guide AI build the next page and continue the story`;
+• Each action should have a hint that provides key continuity
+• Purpose: guide AI build the next page and continue the story`;
 }
 
 /**
@@ -523,8 +509,9 @@ function getPreviousPagesText(state: StoryState): string {
  * 
  * @example Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
  */
-function getMainCharacterInfo(mc: StoryMCCandidate): string {
-  return `${mc.name}, ${mc.gender}, ${mc.age}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
+function getMainCharacterInfo(mc?: StoryMCCandidate): string {
+  if (!mc || Object.values(mc).every((i) => i === undefined)) return 'No main character info yet.';
+  return `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
 }
 
 /**
@@ -948,12 +935,12 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * });
  * ```
  */
-function createBookCreationPrompt(theme: string, mc: StoryMCCandidate): string {
+function createBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
   return `Create a psychological thriller story based on the following theme:
 """\n${theme}\n"""
 
-MAIN CHARACTER (MC):
-${getMainCharacterInfo(mc)}
+MAIN CHARACTER CANDIDATE:
+${getMainCharacterInfo(mcCandidate)}
 
 STORY REQUIREMENTS:
 - Establish psychological tension and mystery immediately
@@ -980,6 +967,7 @@ Generate the following complete book setup:
 - HOOK: 1-2 sentences that immediately create intrigue and psychological tension
 - SUMMARY: 50-100 words that sets up the psychological thriller premise
 - KEYWORDS: 3-5 short relevant tags (kebab-case) for story categorization
+- MAIN CHARACTER (MC): Complete main character info from candidate or detect from theme input
 - TOTAL PAGES: Around ~${BOOK_AVERAGE_PAGES}, max ${BOOK_MAX_PAGES}
 - FIRST PAGE: ${MAX_WORDS_PER_PAGE} words max, first-person POV, establishing immediate mood and mystery
 - ACTIONS: 1-${MAX_ACTION_CHOICES_FIRST_PAGE} first-person POV verb or dialogue to continue
@@ -987,7 +975,6 @@ Generate the following complete book setup:
 - INITIAL DIFFICULTY: One of: "low", "medium", "high", "nightmare"
 - INITIAL PLACE: The main location where the story begins (name, mood, brief description, familiarity (0-1))
 - INITIAL CHARACTERS: Key characters in the story excluding MC (name, status, relationship to MC)
-- MC BIO: Personality, characteristics, details, etc
 
 ENDING TYPES:
 ${getEndingArchetypesText()}
@@ -1000,6 +987,12 @@ RESPONSE FORMAT (EXACT JSON STRUCTURE, ALL MANDATORY):
   "hook": "...",
   "summary": "...",
   "keywords": ["genre", "topic", "..."],
+  "mainCharacter": {
+    "name": "Main Character Name",
+    "age": ${MIN_CHARACTER_AGE}-${MAX_CHARACTER_AGE},
+    "gender": "One of: ${genders.join('", "')}",
+    "bio": "e.g. 'Shy teenager with social anxiety.'"
+  },
   "firstPage": {
     "text": "Prologue text",
     "mood": "One of: ${moods.join('", "')}",
@@ -1046,8 +1039,7 @@ RESPONSE FORMAT (EXACT JSON STRUCTURE, ALL MANDATORY):
       "relationshipToMC": "e.g. Close childhood friend, always supportive",
       "bio": "Brief character description"
     }
-  ],
-  "mainCharacterBio": "e.g. 'Shy teenager with social anxiety.'"
+  ]
 }`;
 }
 
@@ -1090,44 +1082,23 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
 
   try {
     // 1. Generate complete main character from candidate
-    const mc = generateRandomCharacter(mcCandidate);
+    // const generatedMCCandidate = generateRandomCharacter(mcCandidate);
 
     // 2. Create AI prompt for book creation
-    const prompt = createBookCreationPrompt(theme, mc);
+    // const prompt = createBookCreationPrompt(theme, generatedMCCandidate);
+    const prompt = createBookCreationPrompt(theme, mcCandidate);
 
     // 3. Generate complete book setup using AI
-    const response = await aiPrompt<BookCreationResponse>(prompt, {
-      config: AI_CHAT_CONFIG_DEFAULT,
-      modelSelection: AI_CHAT_MODELS_WRITING,
-      context: 'book-creation',
-      outputAsJson: true,
-      outputJsonStructure: {
-        title: { type: 'string' },
-        totalPages: { type: 'number' },
-        language: { type: 'string' },
-        hook: { type: 'string' },
-        summary: { type: 'string' },
-        keywords: { type: 'array', items: { type: 'string' } },
-        firstPage: { type: 'object' },
-        initialState: { type: 'object' },
-        initialPlace: { type: 'object' },
-        initialCharacters: { type: 'array', items: { type: 'object' } },
-        mainCharacterBio: { type: 'string' },
-      } satisfies Record<keyof BookCreationResponse, AIJsonProperty>,
-      outputJsonRequired: [
-        'title',
-        'totalPages',
-        'language',
-        'hook',
-        'summary',
-        'keywords',
-        'firstPage',
-        'initialState',
-        'initialPlace',
-        'initialCharacters',
-        'mainCharacterBio'
-      ] satisfies Array<keyof BookCreationResponse>,
-    });
+    const response = await aiPrompt<BookCreationResponse>(prompt, createAIOptionsWithSchema<BookCreationResponse>(
+      BOOK_CREATION_SCHEMA_DEFINITION,
+      BOOK_CREATION_REQUIRED_FIELDS,
+      'title',
+      {
+        config: AI_CHAT_CONFIG_DEFAULT,
+        modelSelection: AI_CHAT_MODELS_WRITING,
+        context: 'book-creation',
+      }
+    ));
 
     // 4. Validate AI response
     if (!response.result) {
@@ -1144,11 +1115,9 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
       firstPage: generatedFirstPage,
       initialPlace,
       initialCharacters,
-      mainCharacterBio,
+      mainCharacter: mc,
       language
     } = response.result;
-
-    mc.bio = mainCharacterBio;
 
     // 5. Persist book to database with character profile
     const dbBook = await insertBook(
@@ -1167,19 +1136,17 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
     const book = mapBookFromDb(dbBook);
     const bookId = book.id;
 
-    // 6. Persist first page as root page of the book
+    // 6. Generate book cover image in background
+    void generateAndUpdateBookCover(book);
+
+    // 7. Persist first page as root page of the book
     const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, { bookId });
 
-    // 7. Create initial story state with generated psychological profile
+    // 8. Create initial story state with generated psychological profile
     const initialState: StoryState = {
-      pageId: firstPage.id,
-      page: 1,
-      maxPage: totalPages,
-      ...generatedInitialState, // mood, place, timeOfDay, flags, difficulty, viableEnding
-      traumaTags: [],
-      psychologicalProfile: createInitialPsychologicalProfile(),
+      ...createEmptyStoryState(firstPage.id, 1, totalPages),
+      ...generatedInitialState, // flags, difficulty, viableEnding
       hiddenState: createInitialHiddenState(),
-      memoryIntegrity: 'stable',
       characters: initialCharacters ? 
         Object.fromEntries(
           initialCharacters.map((char) => [
@@ -1219,18 +1186,15 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
           currentMood: initialPlace.currentMood
         } satisfies PlaceMemory
       } : {},
-      pageHistory: [],
-      actionsHistory: [],
-      contextHistory: ''
     };
 
-    // 8. Persist story state to database
+    // 9. Persist story state to database
     await insertStoryState(userId, bookId, firstPage.id, initialState);
 
-    // 9. Set user's active session to the new book and page
+    // 10. Set user's active session to the new book and page
     const session = await setActiveSession({userId, bookId, pageId: firstPage.id});
 
-    // 10. Return complete book setup
+    // 11. Return complete book setup
     return {
       book,
       firstPage,
@@ -1292,33 +1256,19 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
   const config = determineAIConfig(storyState, actionedPage.selectedAction);
   
   // 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
-  const response = await aiPrompt<StoryGeneration>(prompt, {
-    config,
-    modelSelection: AI_CHAT_MODELS_WRITING,
-    context: isUserAction ? 'story-page' : 'story-page-candidate',
-    systemPrompt,
-    documents,
-    outputAsJson: true,
-    outputJsonStructure: {
-      text: { type: 'string' },
-      mood: { type: 'string' },
-      place: { type: 'string' },
-      timeOfDay: { type: 'string' },
-      charactersPresent: { type: 'array', items: { type: 'string' } },
-      keyEvents: { type: 'array', items: { type: 'string' } },
-      importantObjects: { type: 'array', items: { type: 'string' } },
-      actions: { type: 'array', items: { type: 'object' } },
-      addTraumaTag: { type: 'string' },
-      characterUpdates: { type: 'object' },
-      placeUpdates: { type: 'object' },
-      viableEnding: { type: 'object' },
-      isMajorEvent: { type: 'boolean' }
-    } satisfies Record<keyof StoryGeneration, AIJsonProperty>,
-    outputJsonRequired: [
-      'text',
-      'actions',
-    ] satisfies Array<keyof StoryGeneration>,
-  });
+  // Using schema helper to eliminate type duplication
+  const response = await aiPrompt<StoryGeneration>(prompt, createAIOptionsWithSchema<StoryGeneration>(
+    STORY_GENERATION_SCHEMA_DEFINITION, 
+    STORY_GENERATION_REQUIRED_FIELDS,
+    'text',
+    {
+      config,
+      modelSelection: AI_CHAT_MODELS_WRITING,
+      context: isUserAction ? 'story-page' : 'story-page-candidate',
+      systemPrompt,
+      documents
+    }
+  ));
   
   // 4. Handle AI response validation
   if (!response.result) {

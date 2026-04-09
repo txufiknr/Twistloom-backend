@@ -369,7 +369,7 @@ export function normalizeGender(gender?: string | null): Gender {
  *   { logContext: 'title-generation' }
  * );
  */
-export function parseAISafely<T extends Record<string, any>>(
+export function parseAISafely<T extends Record<string, unknown>>(
   response: AIResponse<T>,
   options: {
     logContext?: string;
