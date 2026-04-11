@@ -53,7 +53,6 @@ export function createCharacter(
       hasSecret: narrativeFlags.hasSecret || status === "suspicious" || status === "hostile",
       potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
     },
-    // places: []
   };
 }
 

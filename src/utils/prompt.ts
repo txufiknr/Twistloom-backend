@@ -190,6 +190,8 @@ function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedSt
   const narrativeStyle = createNarrativeStyle(styleInput);
   const charactersSlot = MAX_CHARACTERS - Object.values(characters).length;
   const placesSlot = MAX_PLACES - Object.values(places).length;
+  const remainingPages = state.maxPage - state.page;
+  const isNearEnding = remainingPages <= NEAR_ENDING_PAGES;
 
   return `TASK: Now you write page ${page} of ${maxPage}.
 
@@ -200,7 +202,7 @@ HARD RULES:
 - Continue directly from selected action.
 - Continue from current situation.
 
-CURRENT SITUATION:
+CURRENT SITUATION (In previous page):
 - Main character (MC): ${getMainCharacterInfo(mc)}
 - Place: ${place || '-'}
 - Time: ${timeOfDay || '-'}
@@ -263,47 +265,137 @@ ${RULES_STORY_CONSISTENCY}
 ${RULES_DIFFICULTY_SCALING}
 
 ---
-CURRENT ENDING TYPE:
-${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
-
 CURRENT ENDING PLAN:
-${state.viableEnding?.text ?? '-'}
+Type: ${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
+Summary: ${state.viableEnding?.text ?? '-'}
 
 ENDING RULES:
 ${buildEndingRules(state)}
 
 ---
+${isNearEnding ? `` : `FALSE PREVIEW SYSTEM:
+
+You may inject a "false preview" — a misleading hint about future events.
+
+This preview must:
+- Feel believable and connected to the story - never contradict story logic
+- Be partially true, but misleading - connect to real future events indirectly
+- Encourage the reader to make wrong assumptions - never reveal it's false
+- Should distort: identity, cause of events, timing, danger source
+
+Examples:
+
+A. NPC Agreement
+"Don't trust him," she whispered.
+I knew it.
+
+B. Environmental Reinforcement
+The door was locked.
+Of course it was.
+
+C. Memory Echo
+I remembered this.
+It ends badly if I go inside.`}
+
+---
 CHARACTER RULES:
 
-Usage — Preserve dialect, tone, and personality consistently. Reflect current status in behavior. Use pastInteractions to subtly shape dialogue. Reintroduce naturally after absence. Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles.
+USAGE — Preserve dialect, tone, and personality consistently. Reflect current status in behavior. Use pastInteractions to subtly shape dialogue. Reintroduce naturally after absence. Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles.
 
-Creation — ${charactersSlot === 0 ? `No new characters. Limit of ${MAX_CHARACTERS} reached.` : `Up to ${charactersSlot} more allowed. Create only when genuinely new to the story. Bio: concise, suggestive over descriptive, include personality traits and age if plot-sensitive. Set narrativeFlags to match behavior and twist setup.`}
+CREATION — ${charactersSlot === 0 ? `No new characters. Limit of ${MAX_CHARACTERS} reached.` : `Up to ${charactersSlot} more allowed. Create only when genuinely new to the story. Bio: concise, suggestive over descriptive, include personality traits and age if plot-sensitive. Set narrativeFlags to match behavior and twist setup.`}
 
-Updates — When status, interactions, or relevance changes: merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS}), update lastInteractionAtPage, adjust narrativeFlags to reflect plot developments.
+UPDATES — When status, interactions, or relevance changes: merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS}), update lastInteractionAtPage, adjust narrativeFlags to reflect plot developments.
 
 ---
 PLACE RULES:
 
-Usage — Use existing places whenever possible. Reflect current mood and event history in descriptions. Familiar places feel more textured and real. Apply trauma tags to atmosphere — a betrayal place stays tense.
+USAGE — Use existing places whenever possible. Reflect current mood and event history in descriptions. Familiar places feel more textured and real. Apply trauma tags to atmosphere — a betrayal place stays tense.
 
-Creation — ${placesSlot === 0 ? `No new places. Limit of ${MAX_PLACES} reached.` : `Up to ${placesSlot} more allowed. Create only when the MC enters a new, meaningful location — no generic one-offs. Context: 1 sentence max, evocative over descriptive. Set currentMood to match atmosphere. Add relevant characters to knownCharacters.`}
+CREATION — ${placesSlot === 0 ? `No new places. Limit of ${MAX_PLACES} reached.` : `Up to ${placesSlot} more allowed. Create only when the MC enters a new, meaningful location — no generic one-offs. Context: 1 sentence max, evocative over descriptive. Set currentMood to match atmosphere. Add relevant characters to knownCharacters.`}
 
-Updates — On revisit or significant event: increment visitCount, update lastVisitedAtPage, add eventTags (betrayal, discovery, death, etc.), update familiarity accordingly.
+UPDATES — On revisit or significant event: increment visitCount, update lastVisitedAtPage, add eventTags (betrayal, discovery, death, trauma, etc.), update familiarity accordingly.
 
 ---
 BRANCHING ACTIONS:
-${getActionRulesText()}
+${getActionRulesText({ isNearEnding })}
 
 ---
-EXAMPLE OUTPUT FORMAT (JSON):
+REVIEW & FIX (IMPORTANT):
+
+You MUST silently evaluate your generated story using the checklist below.
+If any item fails, revise internally before producing final output.
+
+To know:
+□ There are still ${remainingPages} pages before the finale.
+
+1. Spoiler & Mystery Control
+□ Revealing core truth or ending too early? → Obscure first, then misdirect. Fragment only as last resort.
+□ Page progressing toward intended ending? → If NO: steer events, tone, or a character decision.
+□ Opening new mysteries without closing old ones? → If YES: close or meaningfully complicate at least one existing thread.
+□ Major mystery resolved too cleanly? → Inject ambiguity or doubt.
+
+2. Tension & Pacing
+□ Tone and events reflect current psychological flags? → If NO: adjust intensity (more dread, more pressure, more fracture).
+□ Escalating too fast for current page index? → Dial back. Delay. Let dread breathe.
+□ Last 2-3 pages all increased tension linearly? → Introduce relief, false safety, or silence. Pattern: build → release → false safety → escalation.
+□ Tension flat for too long? → Introduce disturbance or sudden shift.
+□ Contrast with previous page? → If NO: change emotional register (panic → silence, chaos → warmth, danger → routine).
+□ Page overloaded with events? → Simplify to one clear movement.
+□ Page too empty? → Add one meaningful change — in perception, relationship, or environment.
+□ Does this page make the reader want to continue? → If NO: add a hook, an unanswered question, or a creeping wrongness.
+
+3. Continuity & State Integrity
+□ Characters present consistent with story state? → If NO: remove or justify.
+□ Character behaviors consistent with traits and trauma? → If NO: adjust dialogue or action.
+□ Location and timeOfDay consistent with previous state? → If NO: fix transition or explain change.
+□ Referencing objects, places, or events that haven't been established? → Remove or align.
+□ Important unresolved element from previous page missing? → Reintroduce it subtly.
+□ Movement between places spatially coherent? → If NO: fix transitions.
+□ Repeating the same environmental descriptions? → Vary the sensory angle.
+
+4. Character & Relationship Integrity
+□ Character changed personality without cause? → Justify via stress, fear, or hidden motive.
+□ Relationships evolving (trust, suspicion, fear)? → If NO: introduce a micro-shift.
+□ Trauma tags influencing perception or dialogue? → If NO: reflect them in behavior or atmosphere.
+
+5. Thread & Event Management
+□ Page contributing to a known thread (main or side)? → If NO: connect it or cut the loose content.
+□ Too many active threads? → Pause or collapse one.
+□ At least one subtle hint of future consequence? → If NO: add light foreshadowing.
+□ Hints too obvious or explicit? → Make them symbolic or indirect.
+
+6. Illusion & Reality Distortion
+□ Is at least one detail subtly misleading or contradicting expectations? → If NO: add one — in behavior, environment, or dialogue.
+□ Can the reader form a believable but ultimately wrong theory? → If NO: add focused misleading anchors. (Too many competing theories → narrow the misdirection.)
+□ Could the reader misread what's happening? → If NO: increase interpretive ambiguity.
+□ Does something feel wrong in a way the reader can't name? → If NO: inject atmospheric unease — a sound, a silence, a behavior slightly off.
+
+7. Prose & Style
+□ Prose immersive, not generic? → If NO: rewrite with sensory detail and character-specific voice.
+□ Sentences varied in structure and rhythm? → If NO: break up the pattern.
+□ Over-explaining instead of implying? → Cut the exposition. Trust the implication.
+□ Dialogue natural and character-specific? → If NO: refine voice.
+□ Scene physically understandable despite distortion? → If NO: clarify what is actually happening.
+
+8. Choice Quality (Branching)
+□ Does the page end at a moment of genuine tension — not resolution? → If NO: cut or reposition the ending beat.
+□ Are action choices meaningfully distinct in consequence? → If NO: revise until each leads somewhere different.
+□ Does at least one choice feel like a trap? → If NO: add concealed consequence.
+□ Do all choices feel plausibly safe on the surface? → If NO: soften the dangerous framing.
+
+Only output the final corrected story page.
+Do NOT mention this checklist.
+
+---
+OUTPUT FORMAT (JSON):
 MANDATORY FIELDS: text, actions
 
 {
   "text": "Content (${MAX_WORDS_PER_PAGE} words max, first-person POV)",
   "mood": "One of: ${moods.join('", "')}",
-  "place": "School", // or 'unknown'
-  "timeOfDay": "evening", // e.g. time range, 'night', 'HH:mm', 'unknown'
-  "charactersPresent": ["Lisa"], // present in the scene besides MC
+  "place": "e.g. 'School' or 'unknown'",
+  "timeOfDay": "e.g. 'night', '2 AM', 'HH:mm', time range, 'unknown'",
+  "charactersPresent": ["Lisa"], // names present in the scene besides MC
   "keyEvents": string[],
   "importantObjects": string[],
   "actions": [
@@ -386,7 +478,6 @@ MANDATORY FIELDS: text, actions
   },
   "isMajorEvent": true or false
 }`;
-
 }
 
 function formatPageText(text: string): string {
@@ -403,31 +494,38 @@ function getActionTypesText(): string {
     .join('\n');
 }
 
-function getActionRulesText(limit: number = MAX_ACTION_CHOICES): string {
+function getActionRulesText({isNearEnding = true, limit = MAX_ACTION_CHOICES}: {isNearEnding?: boolean, limit?: number}): string {
   return `Generate next 1-${limit} actions to choose:
-• Actions represent the reader's decision - must feel natural and immediate
-• Actions must be short, meaningful, each lead to very different path
-• Action can be verb (what to do next) or dialogue (say/answer)
-• You can mix both types naturally depending on the situation
-• Choice pattern: safe / risky / ambiguous
-• Occasionally include deceptive choice
-• Avoid over-explaining actions
-• Example: A. "Y-Yes... maybe." / B. Run away, fast
+- Actions represent the reader's decision - must feel natural, immediate, narrative-driven
+- Action can be verb (what to do next) or dialogue (say/answer)
+- You can mix both types naturally depending on the situation
+- Example: A. "Y-Yes... maybe." / B. Run away, fast
+
+${isNearEnding ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
+- Reduce number of meaningful actions while still sustaining immersion
+- Choices may exist, but should increasingly lead to similar outcomes
+- Make actions feel constrained, inevitable, or repetitive
+- Example actions: A. Open the door / B. Knock first
+  Both → door opens` : `ACTION RULES:
+- Actions must be short, meaningful, each lead to very different path
+- Choice pattern: safe / risky / ambiguous
+- Occasionally include deceptive choice
+- Avoid over-explaining actions`}
 
 ACTION TYPES:
 ${getActionTypesText()}
 
 DIALOGUE ACTIONS:
-• Should keep the tone and style of main character
-• MC may say something inappropriate or with unintended consequences
-• Dialogue used sparingly for internal scenes or interactions
-• Write as direct speech (no quotes)
-• Must be short, natural, and emotionally meaningful
-• Reflect different tones (fear, denial, curiosity, anger, etc.)
+- Should keep the tone and style of main character
+- MC may say something inappropriate or with unintended consequences
+- Dialogue used sparingly for internal scenes or interactions
+- Write as direct speech (no quotes)
+- Must be short, natural, and emotionally meaningful
+- Reflect different tones (fear, denial, curiosity, anger, etc.)
 
 ACTION HINT:
-• Each action should have a hint that provides key continuity
-• Purpose: guide AI build the next page and continue the story`;
+- Each action should have a hint that provides key continuity
+- Purpose: guide AI build the next page and continue the story`;
 }
 
 /**
@@ -588,10 +686,10 @@ export function buildEndingRules(state: StoryState): string {
   const isNearEnding = state.page >= state.maxPage - NEAR_ENDING_PAGES;
   const endingRules = isNearEnding ? `
 - The story is approaching convergence
-- Viable ending is now inevitable regardless MC chosen action
+- Viable ending is now inevitable regardless of action
 - Final pages: disturbing > satisfying
 
-ENDING EXECUTION TEMPLATE (LAST 10 PAGES):
+ENDING EXECUTION TEMPLATE (Last ${NEAR_ENDING_PAGES} pages):
 
 PHASE 1 → "FALSE SAFETY" (if fake_to_real ending)
 Goals: Resolve main tension, slow pacing, give emotional release
@@ -626,8 +724,7 @@ If the current viable ending is no longer viable, re-determine or alter the viab
 - Detected shift: ${hiddenState.profileShift?.detected === true ? state.hiddenState.profileShift!.shiftType : '-'}
 - Recommended ending type: ${determineOptimalEnding(state)}
 
-Just an example:
-High curiosity leads to discovering uncomfortable truths
+Example: High curiosity leads to discovering uncomfortable truths
 - Profile archetype: "the_explorer"
 - Curiosity flag: "high"
 - Recommended ending type: "false_reality"`;
@@ -926,11 +1023,13 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * @param mc - Complete main character profile
  * @returns Formatted prompt string for AI book creation
  * 
+ * @todo think then output for new book
+ * 
  * Example:
  * ```typescript
  * const prompt = createBookCreationPrompt("haunted mansion mystery", {
- *   name: "Sarah Chen",
- *   age: 28,
+ *   name: "Elena Stellaria",
+ *   age: 20,
  *   gender: "female"
  * });
  * ```
@@ -960,7 +1059,7 @@ HARD RULES:
 - Use the language detected from the theme input.
 
 BRANCHING ACTIONS:
-${getActionRulesText(MAX_ACTION_CHOICES_FIRST_PAGE)}
+${getActionRulesText({limit: MAX_ACTION_CHOICES_FIRST_PAGE})}
 
 Generate the following complete book setup:
 - TITLE: A catchy, mysterious title (1-4 words)
@@ -997,7 +1096,7 @@ RESPONSE FORMAT (EXACT JSON STRUCTURE, ALL MANDATORY):
     "text": "Prologue text",
     "mood": "One of: ${moods.join('", "')}",
     "place": "Location Name",
-    "timeOfDay": "e.g. time range, 'night', 'HH:mm' or 'unknown'",
+    "timeOfDay": "e.g. 'night', '2 AM', 'HH:mm', time range, 'unknown'",
     "charactersPresent": ["Character1", "Character2"],
     "actions": [
       {
@@ -1140,7 +1239,11 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
     void generateAndUpdateBookCover(book);
 
     // 7. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, { bookId });
+    const firstPage = await insertStoryPage(userId, 1, {
+      ...generatedFirstPage,
+      aiProvider: response.provider || 'none',
+      aiModel: response.model || 'none',
+    }, { bookId });
 
     // 8. Create initial story state with generated psychological profile
     const initialState: StoryState = {
@@ -1286,7 +1389,11 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
   const newState = updateStoryStateFromGeneratedPage(storyState, generatedStoryPage);
 
   // 6. Persist generated page to database with parent-child relationship
-  const newPage = await insertStoryPage(userId, newState.page, generatedStoryPage, {
+  const newPage = await insertStoryPage(userId, newState.page, {
+    ...generatedStoryPage,
+    aiProvider: response.provider || 'none',
+    aiModel: response.model || 'none',
+  }, {
     bookId: actionedPage.bookId,
     parentId: actionedPage.id,
     branchId,

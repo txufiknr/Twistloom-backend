@@ -21,14 +21,13 @@ import {
   LOW_DIFFICULTY_MAX_PLACES,
   MEDIUM_DIFFICULTY_WEIGHTS
 } from "../config/story.js";
-import type { PlaceMemory, PlaceUpdate, PlaceMood, PlaceUpdates } from "../types/places.js";
+import type { PlaceMemory, PlaceUpdate, PlaceMood, PlaceUpdates, PlaceType } from "../types/places.js";
 import type { StoryState } from "../types/story.js";
 import { filterTruthyAndDedupe } from "./parser.js";
 
 /**
  * Creates a new place with default values
  * 
- * @param id - Unique identifier for the place
  * @param name - Place name as it appears in narrative
  * @param type - Type of place for categorization
  * @param context - Short human-readable description
@@ -42,15 +41,13 @@ import { filterTruthyAndDedupe } from "./parser.js";
  * ```
  */
 export function createPlace(
-  // placeId: string,
   name: string,
-  type: PlaceMemory['type'],
+  type: PlaceType,
   context: string,
   currentPage: number,
   currentMood: PlaceMood = "neutral"
 ): PlaceMemory {
   return {
-    // placeId,
     name,
     type,
     context,
@@ -677,9 +674,7 @@ function applyBaseDifficultyStrategy(
 export function getPlaceSuggestions(state: StoryState, traumaRelevance: string[] = []): string {
   const selectedPlace = selectNextPlace(state, traumaRelevance);
   
-  if (!selectedPlace) {
-    return "Consider introducing a new meaningful location for this scene.";
-  }
+  if (!selectedPlace) return "Consider introducing a new meaningful location for this scene.";
   
   const suggestions = [`PRIMARY SUGGESTION: ${selectedPlace.name} (${selectedPlace.type}) - ${selectedPlace.context}`];
   

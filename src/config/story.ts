@@ -1,18 +1,18 @@
 import type { ActionType, AIActionConfig } from "../types/story.js";
 
-export const MAX_WORDS_PER_PAGE = 60;
-export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 export const BOOK_MAX_PAGES = 150;
 export const BOOK_AVERAGE_PAGES = 120;
+export const NEAR_ENDING_PAGES = 10;
+export const MAX_WORDS_PER_PAGE = 60;
+export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 
 export const MAX_CHARACTERS = 6;
 export const MIN_CHARACTER_AGE = 13;
 export const MAX_CHARACTER_AGE = 25;
 export const MAX_PLACES = 6;
+
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
-
-export const NEAR_ENDING_PAGES = 10;
 
 /**
  * Maximum number of trauma tags to maintain in story state

@@ -12,6 +12,18 @@ export interface AIImageData {
   index: number;
 }
 
+/**
+ * Result from AI image generation supporting both file paths and direct buffers
+ */
+export interface AIImageResult {
+  /** File paths (only available when outputDir is provided) */
+  filePaths?: string[];
+  /** Image buffers (always available) */
+  buffers: Buffer[];
+  /** MIME types for each image */
+  mimeTypes: string[];
+}
+
 export type AIImageGenerationOptions = GenerateImagesConfig & {
   outputDir?: string;
   filename?: string;

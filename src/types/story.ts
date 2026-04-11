@@ -1,3 +1,4 @@
+import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
@@ -510,9 +511,13 @@ export type StoryPage = {
   characterUpdates?: CharacterUpdates;
   /** Updates to places (new and existing) */
   placeUpdates?: PlaceUpdates;
+  /** AI provider used for generating the page content */
+  aiProvider?: AIChatProvider | 'none';
+  /** AI model used for generating the page content */
+  aiModel?: string;
 };
 
-export type StoryGeneration = StoryPage & {
+export type StoryGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'> & {
   viableEnding?: Partial<Ending>;
   isMajorEvent?: boolean;
 }

@@ -65,10 +65,10 @@ export type RelationshipType = typeof relationshipTypes[number];
  * enabling plot developments and betrayals.
  */
 export const relationshipStatuses = [
-  "trusting",    // Positive, reliable connection
-  "neutral",     // Indifferent, baseline state
-  "suspicious",  // Distrustful, hiding something
-  "hostile"      // Actively opposed
+  "trusting",    // Positive, friendly, helpful, reliable connection
+  "neutral",     // Indifferent, baseline state, background character
+  "suspicious",  // Distrustful, hiding something, potentially hostile
+  "hostile"      // Actively opposed/working against MC
 ] as const;
 
 /**
@@ -116,11 +116,7 @@ export type RelationshipUpdate = {
  */
 export const characterStatuses = [
   ...relationshipStatuses,
-  // "trusting",    // Friendly, helpful, reliable
-  // "suspicious",  // Distrustful, hiding something, potentially hostile
-  // "neutral",     // Indifferent, background character
   "missing",     // Disappeared, absent from story
-  // "hostile",     // Actively working against MC
   "injured",
   "dead"         // Deceased, may appear in memories/ghosts
 ] as const;

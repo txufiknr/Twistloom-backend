@@ -74,6 +74,8 @@ export const pages = pgTable(
     addTraumaTag: text("add_trauma_tag"), // New trauma tag
     characterUpdates: jsonb("character_updates").$type<CharacterUpdates | null>(),
     placeUpdates: jsonb("place_updates").$type<PlaceUpdates | null>(), // PlaceUpdates structure
+    aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
+    aiModel: text("ai_model"),
     createdAt,
     updatedAt,
   },
@@ -348,6 +350,8 @@ export const books = pgTable(
     index("books_user_idx").on(t.userId),
     // Index for status filtering
     index("books_status_idx").on(t.status),
+    // Index for language filtering
+    index("books_language_idx").on(t.language),
     // // Optimize cursor-based pagination (with status filter)
     // index("books_cursor_idx").on(
     //   t.updatedAt.desc(),

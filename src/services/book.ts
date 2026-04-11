@@ -79,6 +79,8 @@ export async function insertStoryPage(
         addTraumaTag: page.addTraumaTag || null,
         characterUpdates: page.characterUpdates || null,
         placeUpdates: page.placeUpdates || null,
+        aiProvider: page.aiProvider || null,
+        aiModel: page.aiModel || null,
         createdAt: new Date(),
         updatedAt: new Date()
       } satisfies DBNewPage)
@@ -390,6 +392,8 @@ export function mapToUserStoryPage(dbPage: DBPage, selectedAction?: Action): Use
     characterUpdates: dbPage.characterUpdates || undefined,
     placeUpdates: dbPage.placeUpdates || undefined,
     selectedAction: selectedAction || undefined,
+    aiProvider: dbPage.aiProvider || 'none',
+    aiModel: dbPage.aiModel || 'none',
   } satisfies UserStoryPage;
 }
 
@@ -428,6 +432,8 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     addTraumaTag: dbPage.addTraumaTag || undefined,
     characterUpdates: dbPage.characterUpdates || undefined,
     placeUpdates: dbPage.placeUpdates || undefined,
+    aiProvider: dbPage.aiProvider || 'none',
+    aiModel: dbPage.aiModel || 'none',
   } satisfies PersistedStoryPage;
 }
 
@@ -462,6 +468,8 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     addTraumaTag: dbPage.addTraumaTag || undefined,
     characterUpdates: dbPage.characterUpdates || undefined,
     placeUpdates: dbPage.placeUpdates || undefined,
+    aiProvider: dbPage.aiProvider || 'none',
+    aiModel: dbPage.aiModel || 'none',
   } satisfies StoryPage;
 }
 
@@ -516,24 +524,25 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
 }
 
 export async function generateBookCover(book: Book, state?: StoryState): Promise<string[]> {
-  const mcGender = book.mc.gender;
-  const mcAppearance = mcGender == 'male' ? 'handsome' : 'beautiful';
   try {
     const bookMeta = buildBookMetaDocuments(book, state);
-    const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcGender} protagonist.`;
+    const mcGender = book.mc.gender;
+    const mcAge = book.mc.age;
+    const mcAppearance = mcGender == 'male' ? 'dapper' : 'lovely';
+    const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcAge} years-old ${mcGender} protagonist.`;
     const fullPrompt = formatSystemPromptWithDocuments({systemPrompt: taskPrompt, documents: bookMeta});
-    const coverImages = await geminiGenerateImage(fullPrompt, {
+    const imageResult = await geminiGenerateImage(fullPrompt, {
       numberOfImages: 1,
       aspectRatio: "3:4",
       outputDir: "./book-images",
       filename: `${book.id}-${book.title}`,
     });
-    if (coverImages.length > 0) {
-      console.log(`[generateBookCover] 🌟 Generated cover image for book ${book.id}:`, coverImages);
+    if (imageResult.buffers.length > 0) {
+      console.log(`[generateBookCover] 🌟 Generated cover image for book ${book.id}:`, imageResult.filePaths || 'memory-only');
     } else {
       console.warn(`[generateBookCover] ❓ No cover image generated for book ${book.id}`);
     }
-    return coverImages;
+    return imageResult.filePaths || [];
   } catch(error) {
     console.error('[generateBookCover] ❌ Error generating book cover:', {bookId: book.id, error: getErrorMessage(error)});
     // Fail silently, return empty on image generation failure
@@ -541,15 +550,79 @@ export async function generateBookCover(book: Book, state?: StoryState): Promise
   }
 }
 
+/**
+ * Generate book cover and upload directly to ImageKit without disk I/O
+ * 
+ * Optimized version that skips disk writing and uploads buffers directly to ImageKit.
+ * This is the preferred method for production environments.
+ * 
+ * @param book - Book object with metadata
+ * @param state - Optional story state context
+ * @returns Promise resolving to void (updates book with ImageKit URL)
+ */
+export async function generateAndUpdateBookCoverOptimized(book: Book, state?: StoryState): Promise<void> {
+  try {
+    const bookMeta = buildBookMetaDocuments(book, state);
+    const mcGender = book.mc.gender;
+    const mcAge = book.mc.age;
+    const mcAppearance = mcGender == 'male' ? 'dapper' : 'lovely';
+    const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcAge} years-old ${mcGender} protagonist.`;
+    const fullPrompt = formatSystemPromptWithDocuments({systemPrompt: taskPrompt, documents: bookMeta});
+    
+    // Generate images without writing to disk
+    const imageResult = await geminiGenerateImage(fullPrompt, {
+      numberOfImages: 1,
+      aspectRatio: "3:4",
+    });
+    
+    if (imageResult.buffers.length === 0) {
+      console.warn(`[generateAndUpdateBookCoverOptimized] ⚠️ No cover image generated for book ${book.id}`);
+      return;
+    }
+
+    console.log(`[generateAndUpdateBookCoverOptimized] 🖼️ Generated cover image buffer for book ${book.id}`);
+
+    // Upload buffer directly to ImageKit
+    if (IS_PRODUCTION) {
+      try {
+        const uploadResult = await uploadBookCover(
+          imageResult.buffers[0], // Direct buffer upload
+          book.id,
+          book.title,
+          book.keywords
+        );
+        
+        if (uploadResult?.url) {
+          await updateBook(book.id, {
+            image: uploadResult.url,
+            imageId: uploadResult.fileId
+          });
+          console.log(`[generateAndUpdateBookCoverOptimized] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
+        } else {
+          console.warn(`[generateAndUpdateBookCoverOptimized] ❌ Failed to upload to ImageKit`);
+        }
+      } catch (error) {
+        console.error('[generateAndUpdateBookCoverOptimized] ❌ ImageKit upload failed:', {bookId: book.id, error: getErrorMessage(error)});
+      }
+    } else {
+      console.log(`[generateAndUpdateBookCoverOptimized] ⏩ Skipping ImageKit upload in development`);
+    }
+  } catch(error) {
+    console.error('[generateAndUpdateBookCoverOptimized] ❌ Error generating and updating book cover:', {bookId: book.id, error: getErrorMessage(error)});
+    // Fail silently, don't throw error
+  }
+}
+
 export async function generateAndUpdateBookCover(book: Book, state?: StoryState): Promise<void> {
   try {
+    // Step 1: Generate book cover (always writes to disk for SSOT)
     const coverImages = await generateBookCover(book, state);
     if (coverImages.length === 0) return;
 
-    let uploadedImage = coverImages[0];
+    let uploadedImage = coverImages[0]; // Local file path
     let uploadedImageId: string | undefined;
     
-    // Upload to ImageKit in production
+    // Step 2: Upload to ImageKit only in production
     if (IS_PRODUCTION) {
       try {
         const uploadResult = await uploadBookCover(
@@ -560,7 +633,7 @@ export async function generateAndUpdateBookCover(book: Book, state?: StoryState)
         );
         
         if (uploadResult?.url) {
-          uploadedImage = uploadResult.url;
+          uploadedImage = uploadResult.url; // Use ImageKit URL
           uploadedImageId = uploadResult.fileId;
           console.log(`[generateAndUpdateBookCover] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
         } else {
@@ -570,8 +643,11 @@ export async function generateAndUpdateBookCover(book: Book, state?: StoryState)
         console.error('[generateAndUpdateBookCover] ❌ ImageKit upload failed:', {bookId: book.id, error: getErrorMessage(error)});
         // Fall back to local image if upload fails
       }
+    } else {
+      console.log(`[generateAndUpdateBookCover] ✅ Using local file path in development: ${uploadedImage}`);
     }
 
+    // Always update book with appropriate image source
     await updateBook(book.id, {
       image: uploadedImage,
       imageId: uploadedImageId

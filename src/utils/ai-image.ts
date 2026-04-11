@@ -28,7 +28,7 @@ import * as path from "path";
 import { getGeminiClient } from "./ai-clients.js";
 import { getGeminiLimiter } from "./ai-limiters.js";
 import { AI_IMAGE_CONFIG, AI_IMAGE_MODEL_GEMINI, AI_IMAGE_MODEL_IMAGEN, AI_IMAGE_OUTPUT_DIR } from "../config/ai-images.js";
-import type { AIImageGenerationOptions, AIImageData } from "../types/ai-images.js";
+import type { AIImageGenerationOptions, AIImageData, AIImageResult } from "../types/ai-images.js";
 import { getErrorMessage } from "./error.js";
 import { sanitizeFilename } from "./formatter.js";
 
@@ -41,7 +41,7 @@ import { sanitizeFilename } from "./formatter.js";
  * @param options - Image generation options
  * @param apiCall - Function that makes the actual API call
  * @param extractImageData - Function that extracts image data from response
- * @returns Array of saved file paths or null if all models fail
+ * @returns AIImageResult with buffers and optional file paths, or null if all models fail
  */
 async function generateImageWithFallback<T>(
   provider: string,
@@ -50,7 +50,7 @@ async function generateImageWithFallback<T>(
   options: AIImageGenerationOptions,
   apiCall: (model: string, prompt: string, opts: AIImageGenerationOptions) => Promise<T>,
   extractImageData: (response: T) => AIImageData[]
-): Promise<string[] | null> {
+): Promise<AIImageResult | null> {
   // 1️⃣ Early validation: Check if models array is provided
   if (!models || models.length === 0) {
     console.warn(`[${provider}] ⚠️ No models configured`);
@@ -73,7 +73,7 @@ async function generateImageWithFallback<T>(
       // Success handling: Process valid response and return result
       if (imageDataArray && imageDataArray.length > 0) {
         console.log(`[${provider}] ✅ Model ${model} generated ${imageDataArray.length} image(s)`);
-        return processAndSaveImages(imageDataArray, options.outputDir || AI_IMAGE_OUTPUT_DIR, options.filename, provider);
+        return processAndSaveImages(imageDataArray, options.outputDir, options.filename, provider);
       }
 
       // Empty response handling: Log when no images are generated
@@ -96,30 +96,35 @@ async function generateImageWithFallback<T>(
 }
 
 /**
- * Processes and saves generated images to disk
+ * Processes and saves generated images to disk (optional)
  * 
  * @param imageDataArray - Array of image data to process
- * @param outputDir - Directory to save images to
+ * @param outputDir - Directory to save images to (optional, if not provided only returns buffers)
  * @param filename - Optional base filename (without extension)
  * @param context - Context for logging
- * @returns Array of saved file paths
+ * @returns AIImageResult with buffers and optional file paths
  * 
  * @example
  * ```typescript
- * const imageData = [{ imageData: "base64data", mimeType: "image/jpeg", index: 0 }];
- * const paths = await processAndSaveImages(imageData, "./output", "my-image", "ai-image");
+ * // Only buffers (no disk write)
+ * const result = await processAndSaveImages(imageData, undefined, "my-image", "ai-image");
+ * 
+ * // Buffers + file paths
+ * const result = await processAndSaveImages(imageData, "./output", "my-image", "ai-image");
  * ```
  */
 function processAndSaveImages(
   imageDataArray: AIImageData[],
-  outputDir: string,
+  outputDir: string | undefined,
   filename?: string,
   context: string = "ai-image"
-): string[] {
+): AIImageResult {
   const savedPaths: string[] = [];
+  const buffers: Buffer[] = [];
+  const mimeTypes: string[] = [];
 
-  // Ensure output directory exists
-  if (!fs.existsSync(outputDir)) {
+  // Ensure output directory exists (only if outputDir is provided)
+  if (outputDir && !fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
@@ -135,22 +140,37 @@ function processAndSaveImages(
                 : imageData.mimeType?.endsWith("png") ? "png"
                 : "jpg"; // fallback to jpg if MIME type is unknown
 
-    // Generate filename
-    const baseName = filename
-      ? sanitizeFilename(`${filename}${imageData.index > 0 ? `_${imageData.index}` : ""}`)
-      : sanitizeFilename(`image_${Date.now()}_${imageData.index + 1}`);
+    // Determine MIME type (default to jpeg if unknown)
+    const mimeType = imageData.mimeType || "image/jpeg";
 
-    const filepath = path.join(outputDir, `${baseName}.${ext}`);
-    
-    // Save image to disk
+    // Always create buffer from base64 data
     const buffer = Buffer.from(imageData.imageData, "base64");
-    fs.writeFileSync(filepath, buffer);
+    buffers.push(buffer);
+    mimeTypes.push(mimeType);
 
-    console.log(`✅ [${context}] Saved: ${filepath}`);
-    savedPaths.push(path.resolve(filepath));
+    // Save to disk only if outputDir is provided
+    if (outputDir) {
+      // Generate filename
+      const baseName = filename
+        ? sanitizeFilename(`${filename}${imageData.index > 0 ? `_${imageData.index}` : ""}`)
+        : sanitizeFilename(`image_${Date.now()}_${imageData.index + 1}`);
+
+      const filepath = path.join(outputDir, `${baseName}.${ext}`);
+      
+      // Save image to disk
+      fs.writeFileSync(filepath, buffer);
+      console.log(`[${context}] ✅ Saved: ${filepath}`);
+      savedPaths.push(path.resolve(filepath));
+    } else {
+      console.log(`[${context}] 🖼️ Processed image ${imageData.index + 1} (memory only)`);
+    }
   }
 
-  return savedPaths;
+  return {
+    filePaths: outputDir ? savedPaths : undefined,
+    buffers,
+    mimeTypes
+  };
 }
 
 /**
@@ -163,22 +183,22 @@ function processAndSaveImages(
  * @param prompt - Text description of the image to generate (high-quality, photorealistic, high-detail)
  * @param options - Configuration options for image generation ({@link AIImageGenerationOptions})
  * 
- * @returns Promise resolving to array of absolute file paths of generated images.
+ * @returns Promise resolving to AIImageResult with buffers and optional file paths.
  * @throws {Error} When API key is missing or all models fail
  * 
  * @example
  * ```typescript
- * const paths = await geminiGenerateImageImagen(
+ * const result = await geminiGenerateImageImagen(
  *   "A futuristic cityscape at night with neon lights"
  * );
  * 
- * console.log("Generated images:", customPaths);
+ * console.log("Generated images:", result.buffers.length);
  * ```
  * 
  * @see https://ai.google.dev/gemini-api/docs/imagen
  * @see https://ai.google.dev/gemini-api/docs/models/imagen
  */
-export async function geminiGenerateImageImagen(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<string[]> {
+export async function geminiGenerateImageImagen(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<AIImageResult> {
   const {
     models = AI_IMAGE_MODEL_IMAGEN,
     outputDir = AI_IMAGE_OUTPUT_DIR,
@@ -229,7 +249,7 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
     }
   );
   
-  return result || [];
+  return result || { buffers: [], mimeTypes: [] };
 }
 
 
@@ -243,22 +263,22 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
  * @param prompt - Text description of the image to generate (high-quality, photorealistic, high-detail)
  * @param options - Configuration options for image generation ({@link AIImageGenerationOptions})
  * 
- * @returns Promise resolving to array of absolute file paths of generated images.
+ * @returns Promise resolving to AIImageResult with buffers and optional file paths.
  * @throws {Error} When API key is missing or all models fail
  * 
  * @example
  * ```typescript
  * // Basic usage with defaults
- * const paths = await geminiGenerateImageNative(
+ * const result = await geminiGenerateImageNative(
  *   "A futuristic cityscape at night with neon lights"
  * );
  * 
- * console.log("Generated images:", paths);
+ * console.log("Generated images:", result.buffers.length);
  * ```
  * 
  * @see https://ai.google.dev/gemini-api/docs/models/gemini
  */
-export async function geminiGenerateImageNative(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<string[]> {
+export async function geminiGenerateImageNative(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<AIImageResult> {
   const {
     models = AI_IMAGE_MODEL_GEMINI,
     outputDir = AI_IMAGE_OUTPUT_DIR,
@@ -318,7 +338,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
     }
   );
   
-  return result || [];
+  return result || { buffers: [], mimeTypes: [] };
 }
 
 /**
@@ -331,27 +351,27 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
  * @param prompt - Text description of image to generate (high-quality, photorealistic, high-detail)
  * @param options - Configuration options for image generation ({@link AIImageGenerationOptions})
  * 
- * @returns Promise resolving to array of absolute file paths of generated images.
+ * @returns Promise resolving to AIImageResult with buffers and optional file paths.
  * @throws {Error} When API key is missing or all models fail
  * 
  * @example
  * ```typescript
  * // Basic usage with defaults (tries Imagen first, then Gemini)
- * const paths = await geminiGenerateImage(
+ * const result = await geminiGenerateImage(
  *   "A futuristic cityscape at night with neon lights"
  * );
  * 
- * console.log("Generated images:", paths);
+ * console.log("Generated images:", result.buffers.length);
  * ```
  * 
  * @see https://ai.google.dev/gemini-api/docs/models/imagen
  * @see https://ai.google.dev/gemini-api/docs/models/gemini
  */
-export async function geminiGenerateImage(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<string[]> {
+export async function geminiGenerateImage(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<AIImageResult> {
   // First attempt: Try Imagen first (highest quality)
   try {
     const imagenResult = await geminiGenerateImageImagen(prompt, options);
-    if (imagenResult.length > 0) return imagenResult;
+    if (imagenResult.buffers.length > 0) return imagenResult;
     console.warn(`[geminiGenerateImage] ⚠️ No result from Imagen, trying Gemini native`);
   } catch (error) {
     console.warn(`[geminiGenerateImage] ⚠️ No result from Imagen, trying Gemini native:`, getErrorMessage(error));
@@ -360,7 +380,7 @@ export async function geminiGenerateImage(prompt: string, options: AIImageGenera
   // Fallback: Gemini native models (Nano Banana)
   try {
     const geminiResult = await geminiGenerateImageNative(prompt, options);
-    if (geminiResult.length > 0) return geminiResult;
+    if (geminiResult.buffers.length > 0) return geminiResult;
     console.warn(`[geminiGenerateImage] ⚠️ No result from Nano Banana`);
   } catch (error) {
     console.warn(`[geminiGenerateImage] ⚠️ No result from Nano Banana:`, getErrorMessage(error));
@@ -368,5 +388,5 @@ export async function geminiGenerateImage(prompt: string, options: AIImageGenera
   
   // Complete failure: all models exhausted
   console.error(`[geminiGenerateImage] ❌ Both Imagen and Nano Banana failed`);
-  return [];
+  return { buffers: [], mimeTypes: [] };
 }
