@@ -102,14 +102,12 @@ function calculateTraumaRelevance(place: PlaceMemory, traumaRelevance: string[])
   
   for (const traumaTag of traumaRelevance) {
     // Direct event tag matches
-    // TODO: unslug traumaTag, or change traumaTag to trauma
-    // TODO: use jaccard comparison
     if (place.events && place.events.some(e => e.includes(traumaTag))) {
       relevanceScore += TRAUMA_SCORE_DIRECT_MATCH;
     }
     
     // Mood matches trauma type
-    if (traumaTag.includes("betrayal") && place.currentMood === "threatening") {
+    if (traumaTag.includes("betray") && place.currentMood === "threatening") {
       relevanceScore += TRAUMA_SCORE_MOOD_MATCH;
     }
     if (traumaTag.includes("loss") && place.currentMood === "contaminated") {
