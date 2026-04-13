@@ -8,39 +8,8 @@
  * that creates authored, human-like storytelling rather than AI generation.
  */
 
-import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput } from '../types/story.js';
-
-// /**
-//  * Core inputs for Narrative Style Engine
-//  * 
-//  * These represent the fundamental inputs that determine narrative style
-//  * based on story state, player psychology, and progression.
-//  */
-// export type StyleInput = {
-//   /** Current sanity level (0.0–1.0) */
-//   sanity: number;
-//   /** Current tension level (0.0–1.0) */
-//   tension: number;
-//   /** World entropy/instability (from entropy controller) */
-//   entropy: number;
-//   /** Accumulated trauma tags affecting narrative tone */
-//   traumaTags: string[];
-//   /** Player psychological profile based on action history */
-//   profile: {
-//     /** Curiosity level from actions */
-//     curiosity: number;
-//     /** Fear level from actions */
-//     fear: number;
-//     /** Aggression level from actions */
-//     aggression: number;
-//     /** Denial level from actions */
-//     denial: number;
-//   };
-//   /** Current page number */
-//   page: number;
-//   /** Whether story is in ending phase */
-//   isEnding: boolean;
-// };
+import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput, StoryState } from '../types/story.js';
+import { createStyleInput } from './player-profile.js';
 
 /**
  * Calculates narrative style vector from story inputs
@@ -67,9 +36,7 @@ import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput } from '../
  */
 export function calculateStyleVector(input: StyleInput): StyleVector {
   // Base calculations influenced by sanity (primary driver)
-  const sanity = input.sanity;
-  const tension = input.tension;
-  const entropy = input.entropy;
+  const { sanity, tension, entropy, traumaTags, profile } = input;
   
   // Sentence length: longer when sane, shorter when fracturing
   const sentenceLength = 0.3 + sanity * 0.5;
@@ -78,7 +45,7 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
   const fragmentation = (1 - sanity) * 0.8 + entropy * 0.3;
   
   // Repetition: driven by tension and accumulated trauma
-  const repetition = tension * 0.6 + input.traumaTags.length * 0.1;
+  const repetition = tension * 0.6 + traumaTags.length * 0.1;
   
   // Contradiction: self-doubt increases as sanity drops
   const contradiction = (1 - sanity) * 0.7;
@@ -90,7 +57,7 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
   const pacing = tension * 0.7;
   
   // Sensory focus: detail-oriented when curious, abstract when distressed
-  const sensoryFocus = tension * 0.5 + input.profile.curiosity * 0.3;
+  const sensoryFocus = tension * 0.5 + profile.curiosity * 0.3;
   
   return {
     sentenceLength,
@@ -281,10 +248,11 @@ Apply these behaviors:
  * Combines mode determination and instruction generation
  * into a single, comprehensive style configuration.
  * 
- * @param input - Style input from story state
+ * @param state - Story state
  * @returns Complete narrative style for AI guidance
  */
-export function createNarrativeStyle(input: StyleInput): NarrativeStyle {
+export function createNarrativeStyle(state: StoryState): NarrativeStyle {
+  const input = createStyleInput(state);
   const vector = calculateStyleVector(input);
   const mode = determineNarrativeMode(vector, input.sanity, input.isEnding);
   const instructions = generateStyleInstructions({ mode, vector });

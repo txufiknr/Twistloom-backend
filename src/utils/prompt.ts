@@ -327,7 +327,7 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
           }
         ],
         "pastInteractions": [],
-        "lastInteractionAtPage": 0,
+        "lastInteractionAtPage": <number>,
         "narrativeFlags": {
           "isSuspicious": false,
           "isMissing": false,
@@ -379,8 +379,8 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
           }
         },
         "visitCount": 1,
-        "lastVisitedAtPage": 0,
-        "familiarity": 0.0,
+        "lastVisitedAtPage": <number>,
+        "familiarity": <number between 0.0 and 1.0>,
         "moodHistory": []
       }
     ],
@@ -389,9 +389,9 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
         "name": "...",
         "currentMood": "...",
         "events": [],
-        "visitCount": 0,
-        "lastVisitedAtPage": 0,
-        "familiarity": 0.0,
+        "visitCount": <number>,
+        "lastVisitedAtPage": <number>,
+        "familiarity": <number between 0.0 and 1.0>,
         "sensoryDetails": {},
         "weather": "..."
       }
@@ -408,9 +408,6 @@ function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedSt
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
   const { remainingPages, isFinale, phase, phaseGoal } = getStoryStateInfo(state);
   const { mc, summary } = book;
-
-  const styleInput = createStyleInput(state);
-  const narrativeStyle = createNarrativeStyle(styleInput);
 
   return `TASK: Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
 
@@ -438,7 +435,7 @@ STORY CONTEXT (until now):
 ${contextHistory}
 
 PREVIOUS PAGES:
-${getPreviousPagesText(state).trim()}
+${getPreviousPagesText(state)}
 
 PREVIOUS PAGE:
 ${formatPageTextForPrompt(actionedPage.text)}
@@ -451,7 +448,7 @@ ${formatSelectedAction(selectedAction)}
 
 ---
 NARRATIVE STYLE:
-${narrativeStyle.instructions.trim()}
+${createNarrativeStyle(state).instructions}
 
 PSYCHOLOGICAL FLAGS (Accumulated):
 ${formatPsychologicalFlags(flags)}
@@ -1237,7 +1234,7 @@ function formatSelectedAction(selectedAction?: Action): string {
   return `• [${selectedAction.type}] ${selectedAction.text}\n\nAbout selected action:
 • Hint: ${isCustomAction ? "-" : selectedAction.hint.text}
 • Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}
-• Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, don't fullfil their expectation.` : `This is just a hint for guiding you to build this next page, might be a secret, not to always put in the story.`}`;
+• Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This is just a hint for guiding you to build this next page, might be a secret, not to always put in the story.`}`;
 }
 
 /**
@@ -1287,7 +1284,7 @@ ENDING PRESSURE:
 • Introduce irreversible consequences
 • Don't fully explain everything`
 
-: `- Gradually steer story toward target viable ending
+: `- Gradually steer story toward viable ending plan
 - IMPORTANT: NEVER SPOIL this ending plan
 - Plant small hints across pages; don't fully explain or reveal early
 - Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect.
