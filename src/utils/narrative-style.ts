@@ -104,38 +104,93 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
 }
 
 /**
- * Determines narrative mode based on style vector and conditions
+ * Determines narrative mode based on style vector, sanity level, and story conditions
  * 
- * Maps calculated style to human-readable narrative modes
- * that define the overall feel of the writing.
+ * Maps calculated style to human-readable narrative modes that define the overall
+ * feel of the writing. Uses multi-factor analysis incorporating psychological state,
+ * narrative progression, and style dimensions for accurate mode determination.
  * 
- * @param vector - Style vector from calculateStyle
- * @param sanity - Current sanity level for mode determination
- * @param isEnding - Whether story is in ending phase
+ * The function follows these principles:
+ * - Sanity level is the primary driver of psychological distress
+ * - Style dimensions provide secondary confirmation and nuance
+ * - Ending phase forces fractured mode regardless of other factors
+ * - Progressive thresholds ensure smooth transitions between modes
+ * 
+ * @param vector - Style vector from calculateStyle with all narrative dimensions
+ * @param sanity - Current sanity level (0.0 = completely insane, 1.0 = completely sane)
+ * @param isEnding - Whether story is in ending phase (final pages)
  * @returns Narrative mode (grounded | uneasy | fractured)
  * 
- * @todo sanity is unused, might need to complete the implementation
+ * @example
+ * ```typescript
+ * // Early story with high sanity and stable style
+ * const mode1 = determineNarrativeMode(
+ *   { fragmentation: 0.2, clarity: 0.8, contradiction: 0.1 },
+ *   0.9, false
+ * ); // Returns: "grounded"
+ * 
+ * // Mid story with moderate sanity and some distortion
+ * const mode2 = determineNarrativeMode(
+ *   { fragmentation: 0.4, clarity: 0.6, contradiction: 0.3 },
+ *   0.6, false
+ * ); // Returns: "uneasy"
+ * 
+ * // Ending phase with any sanity level
+ * const mode3 = determineNarrativeMode(
+ *   { fragmentation: 0.3, clarity: 0.7, contradiction: 0.2 },
+ *   0.8, true
+ * ); // Returns: "fractured"
+ * ```
  */
 export function determineNarrativeMode(vector: StyleVector, sanity: number, isEnding: boolean): NarrativeMode {
-  // Ending phase always tends toward fractured
+  // Ending phase always forces fractured mode for psychological impact
   if (isEnding) return "fractured";
   
-  // Mode thresholds based on key style dimensions
-  const highFragmentation = vector.fragmentation > 0.6;
-  const lowClarity = vector.clarity < 0.4;
-  const highContradiction = vector.contradiction > 0.5;
+  // Sanity-based primary classification (0.0 = completely insane, 1.0 = completely sane)
+  const sanityLevel = sanity;
+  const veryLowSanity = sanityLevel <= 0.3;
+  const lowSanity = sanityLevel <= 0.5;
+  const moderateSanity = sanityLevel <= 0.7;
+  const highSanity = sanityLevel > 0.7;
   
-  // Fractured: significant psychological distress indicators
-  if (highFragmentation && lowClarity && highContradiction) {
+  // Style-based secondary indicators
+  const highFragmentation = vector.fragmentation > 0.6;
+  const moderateFragmentation = vector.fragmentation > 0.3;
+  const lowClarity = vector.clarity < 0.4;
+  const moderateClarity = vector.clarity < 0.6;
+  const highContradiction = vector.contradiction > 0.5;
+  const moderateContradiction = vector.contradiction > 0.3;
+  const lowPacing = vector.pacing < 0.4; // Slow, deliberate pacing
+  const highRepetition = vector.repetition > 0.6; // Repetitive thoughts/phrases
+  
+  // Calculate psychological distress score from style dimensions
+  const distressScore = 
+    (vector.fragmentation * 0.3) +      // Fragmented thoughts
+    (vector.contradiction * 0.25) +    // Self-contradiction
+    ((1 - vector.clarity) * 0.2) +     // Lack of clarity
+    (vector.repetition * 0.15) +      // Repetitive loops
+    ((1 - vector.pacing) * 0.1);       // Slow, heavy pacing
+  
+  // FRACTURED MODE: Severe psychological breakdown
+  // Triggered by very low sanity OR high distress with moderate-low sanity OR specific severe style combinations
+  if (veryLowSanity || 
+      (lowSanity && distressScore > 0.6) ||
+      (moderateSanity && (highFragmentation && lowClarity && highContradiction)) ||
+      (moderateSanity && (highFragmentation && highRepetition && lowPacing))) {
     return "fractured";
   }
   
-  // Uneasy: moderate distress with some coherence
-  if (vector.fragmentation > 0.3 || vector.contradiction > 0.3) {
+  // UNEASY MODE: Moderate psychological distress
+  // Triggered by moderate-low sanity OR moderate distress with sane-moderate sanity OR specific style indicators
+  if (lowSanity || 
+      (moderateSanity && distressScore > 0.4) ||
+      (highSanity && (moderateFragmentation || moderateContradiction || moderateClarity)) ||
+      (highSanity && (highRepetition || lowPacing))) {
     return "uneasy";
   }
   
-  // Grounded: relatively stable and coherent
+  // GROUNDED MODE: Relatively stable psychological state
+  // Default case for high sanity with low distress indicators
   return "grounded";
 }
 

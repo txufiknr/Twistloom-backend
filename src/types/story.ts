@@ -702,6 +702,8 @@ export type StoryStateInfo = {
   phase: StoryPhase;
   /** Goal or objective for the current story phase */
   phaseGoal: string;
+  /** Phase of the finale, only when isFinale is true. */
+  finalePhase?: FinalePhase;
   /** Number of characters remaining can be added */
   charactersSlot: number;
   /** Number of places remaining can be added */
@@ -709,22 +711,34 @@ export type StoryStateInfo = {
 }
 
 export const storyPhases = {
-  // PHASE: EARLY — Priority: mystery seeding, unreliability introduction, character grounding.
-  // Weight tension lightly. Prioritize intrigue over dread.
-  EARLY: 'Seed mystery, introduce unreliability, ground characters lightly.',
-  // PHASE: MID — Priority: tension rhythm, thread balance, psychological escalation.
-  // Exploit established character and flag patterns. Vary build/release cycles.
-  MID: 'Balance tension rhythm, exploit psychological profile, weave threads.',
-  // PHASE: LATE — Priority: thread convergence, payoff setup, reality fracture.
-  // No new major threads. Begin collapsing open questions toward the viable ending.
-  LATE: 'Converge threads, set up payoff, begin fracturing reality.',
-  // PHASE: FINALE — Priority: ending delivery, full psychological collapse.
-  // No new characters. No new mysteries. Every active thread must resolve or deliberately shatter.
-  // Behave as NIGHTMARE difficulty regardless of setting.
-  FINALE: 'Deliver the ending. Collapse everything. No new threads.',
+  EARLY: `Priority: mystery seeding, unreliability introduction, character grounding.
+Weight tension lightly. Prioritize intrigue over dread.`,
+  MID: `Priority: tension rhythm, thread balance, psychological escalation.
+Exploit established character and flag patterns. Vary build/release cycles.`,
+  LATE: `Priority: thread convergence, payoff setup, reality fracture.
+No new major threads. Begin collapsing open questions toward the viable ending.`,
+  FINALE: `Priority: ending delivery, full psychological collapse.
+No new characters. No new mysteries. Every active thread must resolve or deliberately shatter.
+Behave as NIGHTMARE difficulty regardless of setting.`,
+};
+
+export const finalePhases = {
+  EARLY: `PHASE 1 → "FALSE SAFETY" (if fake_to_real ending)
+Goals: Resolve main tension, slow pacing, give emotional release
+Tone: Calm, hopeful, slightly uncanny
+Rules: No obvious horror, subtle unease only`,
+  MID: `PHASE 2 → "DISTORTION"
+Goals: Break reality slightly, create doubt
+Techniques: Repeated dialogue, impossible object, memory glitch, time inconsistency
+End with: Realization sentence ("I've been here before.")`,
+  END: `PHASE 3 → "IMPACT"
+Goals: Reveal truth, reframe entire story, hit psychologically
+Structure: Reveal → Recontextualization → Final haunting line
+Final line rule: Short, clear, haunting ("It was never outside.")`,
 };
 
 export type StoryPhase = keyof typeof storyPhases;
+export type FinalePhase = keyof typeof finalePhases;
 
 export type StoryStateSnapshotReason = 'periodic' | 'major_event' | 'branch_start' | 'user_request';
 

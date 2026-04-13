@@ -1,6 +1,7 @@
 import { MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
-import { type StoryState, type PsychologicalProfile, type Archetype, type StabilityLevel, type ManipulationAffinity, type Action, type ActionedStoryPage, type EndingType, type HiddenState, type EndingPlanType, type EndingPlan, type ProfileShiftType, type ProfileShift, type StoryStateInfo, type StoryPhase, storyPhases } from "../types/story.js";
+import { storyPhases } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { summarizeStoryContext } from "./prompt.js";
@@ -817,6 +818,13 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
   const phase: StoryPhase = isFinale ? 'FINALE' : isLatePhase ? 'LATE' : isMidPhase ? 'MID' : 'EARLY';
   const phaseGoal = storyPhases[phase];
 
+  // Determine finale phase only when story is in finale
+  const finalePhase: FinalePhase | undefined = isFinale 
+    ? currentPage >= totalPages * 0.95 ? 'END' 
+    : currentPage >= totalPages * 0.85 ? 'MID' 
+    : 'EARLY'
+    : undefined;
+
   const charactersSlot = MAX_CHARACTERS - Object.keys(characters).length;
   const placesSlot = MAX_PLACES - Object.keys(places).length;
 
@@ -831,7 +839,8 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
     isFinale,
     phase,
     phaseGoal,
+    finalePhase,
     charactersSlot,
     placesSlot,
-  };
+  } satisfies StoryStateInfo;
 }

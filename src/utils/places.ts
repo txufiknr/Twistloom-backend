@@ -1,14 +1,12 @@
 import { 
   MAX_PLACE_MOOD_HISTORY, 
-  MAX_PLACE_EVENT_TAGS, 
-  INITIAL_PLACE_FAMILIARITY,
+  MAX_PLACE_EVENTS, 
   FAMILIARITY_RECENCY_DECAY,
   FAMILIARITY_RECENCY_WEIGHT,
   FAMILIARITY_EVENT_BONUS,
   FAMILIARITY_MAX_VISITS} from "../config/story.js";
-import type { PlaceMemory, PlaceUpdate, PlaceMood, PlaceUpdates, PlaceType } from "../types/places.js";
+import type { PlaceMemory, PlaceUpdate, PlaceUpdates, NewPlace } from "../types/places.js";
 import type { StoryState } from "../types/story.js";
-import { filterTruthyAndDedupe } from "./parser.js";
 
 /**
  * Creates a new place with default values
@@ -25,25 +23,13 @@ import { filterTruthyAndDedupe } from "./parser.js";
  * const place = createPlace("old_river", "Old River", "river", "narrow river behind the school", 5, "eerie");
  * ```
  */
-export function createPlace(
-  name: string,
-  type: PlaceType,
-  context: string,
-  currentPage: number,
-  currentMood: PlaceMood = "neutral"
-): PlaceMemory {
+export function createPlace(params: NewPlace, currentPage: number): PlaceMemory {
   return {
-    name,
-    type,
-    context,
+    ...params,
     visitCount: 1,
     lastVisitedAtPage: currentPage,
-    familiarity: INITIAL_PLACE_FAMILIARITY, // Starts low, increases with visits
-    moodHistory: [currentMood],
-    eventTags: [],
-    knownCharacters: [],
-    currentMood,
-  };
+    moodHistory: params.currentMood ? [params.currentMood] : [],
+  } satisfies PlaceMemory;
 }
 
 /**
@@ -60,7 +46,7 @@ export function createPlace(
  * ```typescript
  * const updated = updatePlace(existing, {
  *   visitCount: 3,
- *   eventTags: ["betrayal"],
+ *   events: ["Character A betray MC"],
  *   currentMood: "threatening"
  * });
  * ```
@@ -76,7 +62,11 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMe
   if (update.familiarity !== undefined) updated.familiarity = update.familiarity;
   if (update.currentMood !== undefined) updated.currentMood = update.currentMood;
 
-  const { moodHistory = [], eventTags = [], knownCharacters = [] } = existing;
+  const {
+    moodHistory = [],
+    events = [],
+    knownCharacters = {}
+  } = existing;
   
   // Merge mood history with sliding window
   if (update.moodHistory) {
@@ -84,13 +74,16 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMe
   }
   
   // Merge event tags with sliding window
-  if (update.eventTags) {
-    updated.eventTags = [...eventTags, ...update.eventTags].slice(-MAX_PLACE_EVENT_TAGS);
+  if (update.events) {
+    updated.events = [...events, ...update.events].slice(-MAX_PLACE_EVENTS);
   }
   
-  // Merge known characters
+  // Merge known characters (Record<string, { page: number, context: string }>)
   if (update.knownCharacters) {
-    updated.knownCharacters = filterTruthyAndDedupe([...knownCharacters, ...update.knownCharacters]);
+    updated.knownCharacters = {
+      ...knownCharacters,
+      ...update.knownCharacters,
+    };
   }
   
   // Update sensory details if provided
@@ -123,24 +116,9 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
     updatedPlaces = [],
   } = placeUpdates;
   
-  // Add new places
+  // Add new places into place memory
   for (const newPlace of newPlaces) {
-    const place = createPlace(
-      // generatePlaceId(newPlace.name, Object.keys(state.places)),
-      newPlace.name,
-      newPlace.type,
-      newPlace.context,
-      state.page,
-      newPlace.currentMood || "neutral"
-    );
-    
-    // Copy optional properties
-    if (newPlace.locationHint) place.locationHint = newPlace.locationHint;
-    if (newPlace.sensoryDetails) place.sensoryDetails = newPlace.sensoryDetails;
-    if (newPlace.knownCharacters) place.knownCharacters = newPlace.knownCharacters;
-    if (newPlace.eventTags) place.eventTags = newPlace.eventTags;
-    if (newPlace.moodHistory) place.moodHistory = newPlace.moodHistory;
-    
+    const place = createPlace(newPlace, state.page);
     state.places[place.name] = place;
   }
   
@@ -151,38 +129,7 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
       state.places[update.name] = updatePlace(existing, update);
     }
   }
-  
-  // // Maintain active place limit
-  // maintainActivePlaceLimit(state);
 }
-
-// /**
-//  * Maintains the active place limit by archiving old places
-//  * 
-//  * When the number of active places exceeds the limit, this function
-//  * archives the least recently used places to prevent memory bloat.
-//  * 
-//  * @param state - Current story state
-//  */
-// function maintainActivePlaceLimit(state: StoryState): void {
-//   const places = Object.values(state.places);
-  
-//   if (places.length <= MAX_ACTIVE_PLACES) return;
-  
-//   // Sort by last visit (least recent first) and familiarity
-//   const sortedPlaces = places.sort((a, b) => {
-//     const scoreA = a.lastVisitedAtPage + (a.familiarity * PLACE_FAMILIARITY_WEIGHT);
-//     const scoreB = b.lastVisitedAtPage + (b.familiarity * PLACE_FAMILIARITY_WEIGHT);
-//     return scoreA - scoreB;
-//   });
-  
-//   // Remove least relevant places
-//   const placesToRemove = sortedPlaces.slice(0, places.length - MAX_ACTIVE_PLACES);
-  
-//   for (const place of placesToRemove) {
-//     delete state.places[place.name];
-//   }
-// }
 
 /**
  * Formats places for prompt injection
@@ -192,11 +139,14 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * 
  * @param state - Current story state
  * @returns Formatted string for prompt inclusion
+ * · Old River (river) - eerie - visited 3 times (last visited page 12)
+ *   Context: narrow river behind the school
+ *   Events: discovered body, first meeting with Lisa
+ *   Characters: Lisa (page 15: first meeting here), Tom (page 8: saved from drowning)
  * 
  * @example
  * ```typescript
  * const placeText = formatPlacesForPrompt(state);
- * // Returns: "Old River (river) - eerie - visited 3 times\n..."
  * ```
  */
 export function formatPlacesForPrompt(state: StoryState): string {
@@ -210,11 +160,19 @@ export function formatPlacesForPrompt(state: StoryState): string {
     .sort((a, b) => b.lastVisitedAtPage - a.lastVisitedAtPage) // Sort by most recent visit first
     .map(place => {
       const context = `  Context: ${place.context}`;
-      const events = place.eventTags && place.eventTags.length > 0 ? `  Events: ${place.eventTags.join(', ')}` : '';
-      const characters = place.knownCharacters && place.knownCharacters.length > 0 ? `  Characters: ${place.knownCharacters.join(', ')}` : '';
+      const events = place.events && place.events.length > 0 ? `  Events: ${place.events.join(', ')}` : '';
+      
+      // Format knownCharacters with contextual history
+      const characterEntries = Object.entries(place.knownCharacters || {});
+      const characters = characterEntries.length > 0 
+        ? `  Characters: ${characterEntries
+            .map(([name, info]) => `${name} (page ${info.page}${info.context ? ': ' + info.context : ''})`)
+            .join(', ')}`
+        : '';
+      
       const currentPage = state.page;
       const visitStatus = place.lastVisitedAtPage === currentPage ? ' (CURRENT)' : ` (last visited page ${place.lastVisitedAtPage})`;
-      return `• ${place.name} (${place.type}) - ${place.currentMood} - visited ${place.visitCount} times${visitStatus}\n${[context, events, characters].filter(Boolean).join('\n')}`;
+      return `· ${place.name} (${place.type}) - ${place.currentMood} - visited ${place.visitCount} times${visitStatus}\n${[context, events, characters].filter(Boolean).join('\n')}`;
     })
     .join('\n');
 }
@@ -230,7 +188,7 @@ export function formatPlacesForPrompt(state: StoryState): string {
  * @returns Familiarity score between 0 and 1
  */
 export function calculatePlaceFamiliarity(place: PlaceMemory, currentPage: number): number {
-  const { visitCount = 0, eventTags = [] } = place;
+  const { visitCount = 0, events = [] } = place;
   let familiarity = 0;
   
   // Base familiarity from visit count (diminishing returns)
@@ -242,12 +200,12 @@ export function calculatePlaceFamiliarity(place: PlaceMemory, currentPage: numbe
   familiarity += recencyBonus * FAMILIARITY_RECENCY_WEIGHT;
   
   // Event significance bonus
-  const significantEvents = eventTags.filter(tag => 
-    tag.includes("betrayal") || 
-    tag.includes("death") || 
-    tag.includes("discovery") ||
-    tag.includes("trauma") ||
-    tag.includes("first_meeting")
+  const significantEvents = events.filter(e => 
+    e.includes("betray") || 
+    e.includes("death") || 
+    e.includes("discover") ||
+    e.includes("trauma") ||
+    e.includes("meet")
   ).length;
   familiarity += significantEvents * FAMILIARITY_EVENT_BONUS;
   

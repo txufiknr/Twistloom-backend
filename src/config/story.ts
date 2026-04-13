@@ -15,6 +15,8 @@ export const MIN_ACTION_CHOICES = 1;
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
+export const MAX_BRANCHING_RETRIES = 3;
+
 export const VIABLE_ENDING_LENGTH = '1-3 sentences';
 export const PLACE_CONTEXT_LENGTH = '1 sentence max';
 export const BOOK_TITLE_LENGTH = '1-5 words';
@@ -60,7 +62,7 @@ export const MAX_PLACE_MOOD_HISTORY = 5;
  * This limits the number of significant events tracked per place
  * to maintain relevance and prevent memory bloat.
  */
-export const MAX_PLACE_EVENT_TAGS = 8;
+export const MAX_PLACE_EVENTS = 8;
 
 // /**
 //  * Maximum number of known characters to store per place
@@ -114,13 +116,6 @@ export const MIN_PAGES_FOR_MIDDLE = 20; // Only keep middle if book is substanti
 // ============================================================================
 // PLACE MEMORY CONFIGURATION
 // ============================================================================
-
-/**
- * Initial familiarity score for new places
- * 
- * Places start with low familiarity that increases with visits.
- */
-export const INITIAL_PLACE_FAMILIARITY = 0.1;
 
 /**
  * Pages back to consider a place "recent"

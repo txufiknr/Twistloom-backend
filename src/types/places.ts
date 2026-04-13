@@ -85,10 +85,10 @@ export type PlaceMemory = {
   
   /** Emotional and narrative associations */
   moodHistory?: PlaceMood[];
-  // TODO: change with "events"
-  eventTags?: string[]; // ["betrayal", "discovery", "first_meeting"]
-  // TODO: change with record { name: context }
-  knownCharacters?: string[]; // Character names encountered here
+  events?: string[]; // ["MC discovered the place", "first meeting with Character A"]
+  
+  /** Characters encountered here with meaningful historical context */
+  knownCharacters?: Record<string, { page: number, context: string }>;
   
   /** Optional sensory details for consistent atmosphere */
   sensoryDetails?: SensoryDetails;
@@ -110,13 +110,13 @@ export type PlaceUpdate = Omit<PlaceMemory, 'type' | 'locationHint'>;
  * 
  * When AI introduces new places, it provides them in this format
  * for consistent integration into the place memory system.
+ * 
+ * Notes:
+ * - Initial visitCount (always 1 for new places)
+ * - Initial lastVisitedAtPage (always current page)
+ * - Initial moodHistory (starts with current mood)
  */
-export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'familiarity' | 'moodHistory'> & {
-  /** Initial visit count (always 1 for new places) */
-  visitCount?: number;
-  /** Initial mood history (starts with current mood) */
-  moodHistory?: PlaceMood[];
-};
+export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'moodHistory'>;
 
 /**
  * Complete place updates structure for AI JSON output
@@ -129,6 +129,4 @@ export type PlaceUpdates = {
   newPlaces: NewPlace[];
   /** Updates to existing places */
   updatedPlaces: PlaceUpdate[];
-  // /** Character-place relationships */
-  // characterPlaceRelation: CharacterPlaceRelation[];
 };

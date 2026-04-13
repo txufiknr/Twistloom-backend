@@ -508,8 +508,6 @@ export function mapBookFromDb(dbBook: DBBook): Book {
  * This prompt establishes the psychological thriller writer persona inspired by
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
- * 
- * @todo embed in document
  */
 export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocument[] {
   if (!book) return [];

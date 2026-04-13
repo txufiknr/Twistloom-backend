@@ -63,7 +63,7 @@ export function selectNextPlace(state: StoryState, traumaRelevance: string[] = [
  * @returns Score between 0 and 1 (higher is better)
  */
 function calculatePlaceScore(place: PlaceMemory, state: StoryState, traumaRelevance: string[]): number {
-  const { knownCharacters = [] } = place;
+  const { knownCharacters = {} } = place;
   let score = 0;
   
   // 1. Familiarity (40% weight) - Places MC knows well feel more real
@@ -79,7 +79,7 @@ function calculatePlaceScore(place: PlaceMemory, state: StoryState, traumaReleva
   score += traumaScore * PLACE_WEIGHT_TRAUMA;
   
   // 4. Character Connections (10% weight) - Places with known characters enable interactions
-  const characterScore = Math.min(1, knownCharacters.length / PLACE_MAX_CHARACTERS_SCORE);
+  const characterScore = Math.min(1, Object.keys(knownCharacters).length / PLACE_MAX_CHARACTERS_SCORE);
   score += characterScore * PLACE_WEIGHT_CHARACTERS;
   
   // 5. Randomness (5% bonus) - Prevents predictable patterns
@@ -102,7 +102,9 @@ function calculateTraumaRelevance(place: PlaceMemory, traumaRelevance: string[])
   
   for (const traumaTag of traumaRelevance) {
     // Direct event tag matches
-    if (place.eventTags && place.eventTags.includes(traumaTag)) {
+    // TODO: unslug traumaTag, or change traumaTag to trauma
+    // TODO: use jaccard comparison
+    if (place.events && place.events.some(e => e.includes(traumaTag))) {
       relevanceScore += TRAUMA_SCORE_DIRECT_MATCH;
     }
     
@@ -268,12 +270,12 @@ function applyAvoiderStrategy(
 ): PlaceMemory | null {
   // First filter: Remove places with traumatic event history
   const traumaFreePlaces = scoredPlaces.filter(sp => {
-    const { eventTags = [] } = sp.place;
-    return !eventTags.some(tag => 
-      tag.includes("death") || 
-      tag.includes("betrayal") || 
-      tag.includes("abandon") ||
-      tag.includes("trauma")
+    const { events = [] } = sp.place;
+    return !events.some(e => 
+      e.includes("death") || 
+      e.includes("betrayal") || 
+      e.includes("abandon") ||
+      e.includes("trauma")
     )
   });
   
@@ -376,12 +378,12 @@ function applyRiskTakerStrategy(
 ): PlaceMemory | null {
   // Boost scores for dangerous places
   const dangerousPlaces = scoredPlaces.map(sp => {
-    const { currentMood, eventTags = [] } = sp.place;
+    const { currentMood, events = [] } = sp.place;
     let boost = 0;
     if (currentMood === "threatening" || currentMood === "eerie") {
       boost += 0.2;
     }
-    if (eventTags.some(tag => tag.includes("danger") || tag.includes("death"))) {
+    if (events.some(e => e.includes("danger") || e.includes("death"))) {
       boost += 0.15;
     }
     return { ...sp, score: sp.score + boost };
@@ -401,12 +403,12 @@ function applyGuiltyStrategy(
   if (manipulationAffinity === "guilt") {
     // Boost places with guilt-related events
     const guiltPlaces = scoredPlaces.map(sp => {
-      const { currentMood, eventTags = [] } = sp.place;
+      const { currentMood, events = [] } = sp.place;
       let boost = 0;
-      if (eventTags.some(tag => 
-        tag.includes("betrayal") || 
-        tag.includes("abandon") || 
-        tag.includes("failure")
+      if (events.some(e => 
+        e.includes("betray") || 
+        e.includes("abandon") || 
+        e.includes("fail")
       )) {
         boost += 0.25;
       }

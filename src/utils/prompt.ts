@@ -2,8 +2,8 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMM
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS } from "../config/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases } from "../types/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
@@ -173,8 +173,6 @@ Rules — Escalate naturally as page count increases. Near the ending, behave as
  * This prompt establishes the psychological thriller writer persona inspired by
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
- * 
- * @todo embed in document
  */
 function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: string, documents: AIDocument[] } {
   return {
@@ -346,7 +344,7 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
         "status": "...",
         "narrativeFlags": {},
         "pastInteractions": [],
-        "lastInteractionAtPage": 0
+        "lastInteractionAtPage": <number>
       }
     ]
   },
@@ -372,8 +370,13 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
           "visual": "...",
           "feeling": "..."
         },
-        "eventTags": [],
-        "knownCharacters": [],
+        "events": [],
+        "knownCharacters": {
+          "<name>": {
+            "page": <number>,
+            "context": "..."
+          }
+        },
         "visitCount": 1,
         "lastVisitedAtPage": 0,
         "familiarity": 0.0,
@@ -384,7 +387,7 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
       {
         "name": "...",
         "currentMood": "...",
-        "eventTags": [],
+        "events": [],
         "visitCount": 0,
         "lastVisitedAtPage": 0,
         "familiarity": 0.0,
@@ -402,15 +405,25 @@ function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedSt
   const { page, maxPage, contextHistory, flags, psychologicalProfile, hiddenState } = state;
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
   const { remainingPages, isFinale, phase, phaseGoal } = getStoryStateInfo(state);
-  const { mc } = book;
+  const { mc, summary } = book;
 
   const styleInput = createStyleInput(state);
   const narrativeStyle = createNarrativeStyle(styleInput);
 
-  return `TASK: Now you write page ${page} of ${maxPage} — ${remainingPages} remaining. Phase: ${phase}.
+  return `TASK: Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
 
-Goal this phase: ${phaseGoal}
-${isFinale ? `Treat as NIGHTMARE difficulty. Ending must be in motion.` : ''}
+THEME REMINDER:
+${summary}
+
+CURRENT PHASE:
+${phase} — ${phaseGoal}
+
+CURRENT SITUATION (from previous page):
+- Main character (MC): ${getMainCharacterInfo(mc)!}
+- Place: ${place || 'unknown'}
+- Time: ${timeOfDay || 'unknown'}
+- Mood: ${mood || 'unknown'}
+- Characters present: ${charactersPresent.join(', ') || 'none'}
 
 HARD RULES:
 - Write in first-person (MC) POV
@@ -418,13 +431,6 @@ HARD RULES:
 - Keep consistent writing style and language.
 - Continue directly from selected action.
 - Continue from current situation.
-
-CURRENT SITUATION (In previous page):
-- Main character (MC): ${getMainCharacterInfo(mc)!}
-- Place: ${place || '-'}
-- Time: ${timeOfDay || '-'}
-- Mood: ${mood || '-'}
-- Characters present: ${charactersPresent.join(', ') || '-'}
 
 STORY CONTEXT (until now):
 ${contextHistory}
@@ -484,7 +490,7 @@ ${RULES_DIFFICULTY_SCALING}
 ---
 CURRENT ENDING PLAN:
 Type: ${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
-Summary: ${state.viableEnding?.text ?? '-'}
+Hint: ${state.viableEnding?.text ?? '-'}
 
 ENDING RULES:
 ${buildEndingRules(state)}
@@ -651,18 +657,20 @@ ${isLatePhase || isFinale ? `  - Relationships should be breaking, inverting, or
 
 placeUpdates.newPlaces
 ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
-: isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places mentioned or the MC enters for the first time in this page — no generic one-offs.
+: isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
   - locationHint: spatial relationship to known places, e.g. "500 meters behind the school (south)." — must be consistent to build a "world map"
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
   - sensoryDetails: include only senses present and relevant to the scene. Omit irrelevant sub-fields.
   - currentMood: set to match atmosphere.
-  - knownCharacters: include seen or relevant characters.`
+  - knownCharacters: include relevant characters (beside MC) with meaningful context.
+  - events: any important event happening in the scene.
+  - Might need to update other places' locationHint to link with this new place.`
 : `  - New places should not be introduced. If the MC is somewhere new, question whether it's necessary.`}
 
 placeUpdates.updatedPlaces
   - Only update on revisit or significant event.
-  - Include only changed fields: currentMood, add eventTags (betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (seen characters).
+  - Include only changed fields: currentMood, add events (1 contextual sentence: betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (with meaningful context update).
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted — update mood and sensoryDetails to reflect it.` : ''}
 
 viableEnding
@@ -675,153 +683,73 @@ ${isFinale ? `  - Do not revise. The ending is now in motion — execute it.` : 
 }
 
 function buildNextPageReviewChecklist(state: StoryState): string {
-  const { currentPage, totalPages, remainingPages, isEarlyPhase, isLatePhase, isMidPhase, isFinale, phase, phaseGoal } = getStoryStateInfo(state);
+  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale } = getStoryStateInfo(state);
 
-  return `To know:
-□ You're writing page ${currentPage} of total ${totalPages}.
-□ There are ${remainingPages} pages remaining before the finale.
-□ Current phase: ${phase}
-□ Goal for this phase: ${phaseGoal}
-${isFinale ? '□ Treat as NIGHTMARE difficulty regardless of current setting.' : ''}
-
----
-
+  return `
 1. Spoiler & Mystery Control
-□ Revealing the core truth or viable ending too early? → Obscure first. Misdirect second. Fragment only as last resort.
-□ Major mystery resolved too cleanly? → Inject doubt, contradiction, or reframe the resolution as a new question.
-${isEarlyPhase || isMidPhase ? `□ Opening new mysteries faster than existing ones develop? → Pause new threads. Deepen one existing thread first.` : ''}
-${isMidPhase ? `□ Open threads accumulating without movement? → Collapse or meaningfully advance at least one this page.` : ''}
-${isLatePhase || isFinale ? `□ New mystery introduced this page? → Remove it. Late pages seed nothing new.` : ''}
-${isLatePhase || isFinale ? `□ Page progressing toward the viable ending? → If NO: steer events, character decisions, or tone toward it now.` : ''}
-
----
+  □ Revealing the core truth or viable ending too early? → Obscure first. Misdirect second. Fragment only as last resort.
+  □ Major mystery resolved too cleanly? → Inject doubt, contradiction, or reframe the resolution as a new question.
+  ${isEarlyPhase || isMidPhase ? `□ Opening new mysteries faster than existing ones develop? → Pause new threads. Deepen one existing thread first.` : ''}
+  ${isMidPhase ? `□ Open threads accumulating without movement? → Collapse or meaningfully advance at least one this page.` : ''}
+  ${isLatePhase || isFinale ? `□ New mystery introduced this page? → Remove it. Late pages seed nothing new.` : ''}
+  ${isLatePhase || isFinale ? `□ Page progressing toward the viable ending? → If NO: steer events, character decisions, or tone toward it now.` : ''}
 
 2. Tension & Pacing
-□ Tone and events reflect current psychological flags? → If NO: adjust intensity (fear high → distorted perception, guilt high → intrusive echoes).
-□ Emotional contrast with the previous page? → If NO: shift register (panic → silence, chaos → routine, dread → warmth that feels wrong).
-□ Page overloaded with events? → Simplify to one clear movement.
-□ Page too empty — nothing changed? → Add one meaningful change: in perception, relationship, or environment.
-□ Does this page make the reader want to continue? → If NO: add a hook, unanswered question, or atmospheric wrongness they can't name.
-${isEarlyPhase ? `□ Escalating too fast? → Dial back. Plant unease, not dread. Let the wrongness stay subtle.` : ''}
-${isMidPhase ? `□ Last 2-3 pages all increased tension linearly? → Introduce relief, false safety, or routine. Pattern: build → release → false safety → escalation.` : ''}
-${isMidPhase ? `□ Tension flat for too long? → Introduce a disturbance: a behavior shift, a missing object, an unexplained sound.` : ''}
-${isLatePhase || isFinale ? `□ Any moment of relief or genuine safety this page? → Remove it or immediately corrupt it. Late pages do not offer real rest.` : ''}
-
----
+  □ Tone and events reflect current psychological flags? → If NO: adjust intensity (fear high → distorted perception, guilt high → intrusive echoes).
+  □ Emotional contrast with the previous page? → If NO: shift register (panic → silence, chaos → routine, dread → warmth that feels wrong).
+  □ Page overloaded with events? → Simplify to one clear movement.
+  □ Page too empty — nothing changed? → Add one meaningful change: in perception, relationship, or environment.
+  □ Does this page make the reader want to continue? → If NO: add a hook, unanswered question, or atmospheric wrongness they can't name.
+  ${isEarlyPhase ? `□ Escalating too fast? → Dial back. Plant unease, not dread. Let the wrongness stay subtle.` : ''}
+  ${isMidPhase ? `□ Last 2-3 pages all increased tension linearly? → Introduce relief, false safety, or routine. Pattern: build → release → false safety → escalation.` : ''}
+  ${isMidPhase ? `□ Tension flat for too long? → Introduce a disturbance: a behavior shift, a missing object, an unexplained sound.` : ''}
+  ${isLatePhase || isFinale ? `□ Any moment of relief or genuine safety this page? → Remove it or immediately corrupt it. Late pages do not offer real rest.` : ''}
 
 3. Continuity & State Integrity
-□ Characters present consistent with story state? → If NO: remove or justify.
-□ Character behaviors consistent with traits, trauma tags, and current flags? → If NO: adjust dialogue or action.
-□ Location and timeOfDay consistent with previous page? → If NO: fix transition or write the change explicitly.
-□ Referencing objects, places, or events not yet established? → Remove or align with known state.
-□ Important unresolved element from previous page missing? → Reintroduce it${isEarlyPhase ? ' subtly' : ' — more directly now'}.
-□ Movement between locations spatially coherent? → If NO: fix the transition.
-□ Reusing the same environmental descriptions as recent pages? → Vary the sensory angle.
-
----
+  □ Characters present consistent with story state? → If NO: remove or justify.
+  □ Character behaviors consistent with traits, trauma tags, and current flags? → If NO: adjust dialogue or action.
+  □ Location and timeOfDay consistent with previous page? → If NO: fix transition or write the change explicitly.
+  □ Referencing objects, places, or events not yet established? → Remove or align with known state.
+  □ Important unresolved element from previous page missing? → Reintroduce it${isEarlyPhase ? ' subtly' : ' — more directly now'}.
+  □ Movement between locations spatially coherent? → If NO: fix the transition.
+  □ Reusing the same environmental descriptions as recent pages? → Vary the sensory angle.
 
 4. Character & Relationship Integrity
-□ Character changed personality without cause? → Justify via stress, fear, or hidden motive — or make the shift feel deliberately uncanny.
-□ Trauma tags influencing perception, behavior, or dialogue? → If NO: reflect them in what the narrator notices, misreads, or can't stop thinking about.
-${isEarlyPhase || isMidPhase ? `□ Relationships evolving — trust shifting, suspicion forming? → If NO: introduce a micro-shift. A hesitation, a withheld word, a look that doesn't match the dialogue.` : ''}
-${isLatePhase || isFinale ? `□ Character arcs resolving, fracturing, or deliberately left open? → Confirm which — then make it intentional, not accidental.` : ''}
-
----
+  □ Character changed personality without cause? → Justify via stress, fear, or hidden motive — or make the shift feel deliberately uncanny.
+  □ Trauma tags influencing perception, behavior, or dialogue? → If NO: reflect them in what the narrator notices, misreads, or can't stop thinking about.
+  ${isEarlyPhase || isMidPhase ? `□ Relationships evolving — trust shifting, suspicion forming? → If NO: introduce a micro-shift. A hesitation, a withheld word, a look that doesn't match the dialogue.` : ''}
+  ${isLatePhase || isFinale ? `□ Character arcs resolving, fracturing, or deliberately left open? → Confirm which — then make it intentional, not accidental.` : ''}
 
 5. Thread & Event Management
-□ This page contributes to a known thread (main or side)? → If NO: connect it to one, or cut the loose content.
-${isEarlyPhase || isMidPhase ? `□ Too many active threads simultaneously? → Pause or collapse one. Reader tracks 3-4 comfortably; more creates noise, not tension.` : ''}
-${isEarlyPhase || isMidPhase ? `□ At least one subtle hint of future consequence? → If NO: add light foreshadowing — symbolic, indirect, deniable.` : ''}
-${isEarlyPhase || isMidPhase ? `□ Hints too obvious or on-the-nose? → Make them symbolic or indirect. The reader should feel it before they understand it.` : ''}
-${isLatePhase ? `□ Active threads still open that should be converging? → Begin closing or collapsing them toward the viable ending.` : ''}
-${isFinale ? `□ Any thread still unresolved with no deliberate ambiguity? → Resolve it, shatter it, or make its irresolution feel like the answer.` : ''}
-
----
+  □ This page contributes to a known thread (main or side)? → If NO: connect it to one, or cut the loose content.
+  ${isEarlyPhase || isMidPhase ? `□ Too many active threads simultaneously? → Pause or collapse one. Reader tracks 3-4 comfortably; more creates noise, not tension.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ At least one subtle hint of future consequence? → If NO: add light foreshadowing — symbolic, indirect, deniable.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ Hints too obvious or on-the-nose? → Make them symbolic or indirect. The reader should feel it before they understand it.` : ''}
+  ${isLatePhase ? `□ Active threads still open that should be converging? → Begin closing or collapsing them toward the viable ending.` : ''}
+  ${isFinale ? `□ Any thread still unresolved with no deliberate ambiguity? → Resolve it, shatter it, or make its irresolution feel like the answer.` : ''}
 
 6. Illusion & Reality Distortion
-□ At least one detail subtly misleads or contradicts expectations? → If NO: add one — in behavior, environment, or a word choice that doesn't quite fit.
-□ Narrator perception possibly biased, incomplete, or wrong? → If NO: introduce a misread — of a person, a sound, a silence.
-□ Something feels wrong in a way the reader can't name? → If NO: inject atmospheric unease — a texture, a timing, a behavior off by one degree.
-${isEarlyPhase || isMidPhase ? `□ Can the reader form a believable but ultimately wrong theory? → If NO: add focused misleading anchors. Too many competing theories → narrow to one convincing false trail.` : ''}
-${isLatePhase || isFinale ? `□ Is the false reality beginning to crack visibly? → If NO: let one seam show — a memory that contradicts, a character who knows something they shouldn't, a detail the narrator only now notices was wrong.` : ''}
-
----
+  □ At least one detail subtly misleads or contradicts expectations? → If NO: add one — in behavior, environment, or a word choice that doesn't quite fit.
+  □ Narrator perception possibly biased, incomplete, or wrong? → If NO: introduce a misread — of a person, a sound, a silence.
+  □ Something feels wrong in a way the reader can't name? → If NO: inject atmospheric unease — a texture, a timing, a behavior off by one degree.
+  ${isEarlyPhase || isMidPhase ? `□ Can the reader form a believable but ultimately wrong theory? → If NO: add focused misleading anchors. Too many competing theories → narrow to one convincing false trail.` : ''}
+  ${isLatePhase || isFinale ? `□ Is the false reality beginning to crack visibly? → If NO: let one seam show — a memory that contradicts, a character who knows something they shouldn't, a detail the narrator only now notices was wrong.` : ''}
 
 7. Prose & Style
-□ Prose immersive and character-specific — not generic AI narration? → If NO: rewrite with sensory grounding and the narrator's specific voice and bias.
-□ Sentence structure varied — short fragments, medium, occasional long? → A two-word sentence after a long one lands like a door closing.
-□ Over-explaining instead of implying? → Cut it. If the action implies the feeling, naming the feeling is redundant.
-□ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
-□ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
-
----
+  □ Prose immersive and character-specific — not generic AI narration? → If NO: rewrite with sensory grounding and the narrator's specific voice and bias.
+  □ Sentence structure varied — short fragments, medium, occasional long? → A two-word sentence after a long one lands like a door closing.
+  □ Over-explaining instead of implying? → Cut it. If the action implies the feeling, naming the feeling is redundant.
+  □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
+  □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
 
 8. Choice Quality
-□ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
-□ Choices meaningfully distinct in risk and emotional register? → Vary across: reckless / cautious / emotional / avoidant.
-□ At least one choice feels like a trap? → If NO: add a concealed consequence to the safest-looking option.
-□ All choices appear plausibly reasonable on the surface? → If NO: soften the dangerous framing so the trap isn't visible.
-${isEarlyPhase ? `□ Choices seed curiosity — not force immediate crisis? → Avoid options that escalate to irreversible stakes too soon.` : ''}
-${isMidPhase ? `□ Choices reflect the player's established psychological profile? → Options should feel designed for how this player thinks.` : ''}
-${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}
-
-
-
-
-1. Spoiler & Mystery Control
-□ Revealing core truth or ending too early? → Obscure first, then misdirect. Fragment only as last resort.
-□ Page progressing toward intended ending? → If NO: steer events, tone, or a character decision.
-□ Opening new mysteries without closing old ones? → If YES: close or meaningfully complicate at least one existing thread.
-□ Major mystery resolved too cleanly? → Inject ambiguity or doubt.
-
-2. Tension & Pacing
-□ Tone and events reflect current psychological flags? → If NO: adjust intensity (more dread, more pressure, more fracture).
-□ Escalating too fast for current page index? → Dial back. Delay. Let dread breathe.
-□ Last 2-3 pages all increased tension linearly? → Introduce relief, false safety, or silence. Pattern: build → release → false safety → escalation.
-□ Tension flat for too long? → Introduce disturbance or sudden shift.
-□ Contrast with previous page? → If NO: change emotional register (panic → silence, chaos → warmth, danger → routine).
-□ Page overloaded with events? → Simplify to one clear movement.
-□ Page too empty? → Add one meaningful change — in perception, relationship, or environment.
-□ Does this page make the reader want to continue? → If NO: add a hook, an unanswered question, or a creeping wrongness.
-
-3. Continuity & State Integrity
-□ Characters present consistent with story state? → If NO: remove or justify.
-□ Character behaviors consistent with traits and trauma? → If NO: adjust dialogue or action.
-□ Location and timeOfDay consistent with previous state? → If NO: fix transition or explain change.
-□ Referencing objects, places, or events that haven't been established? → Remove or align.
-□ Important unresolved element from previous page missing? → Reintroduce it subtly.
-□ Movement between places spatially coherent? → If NO: fix transitions.
-□ Repeating the same environmental descriptions? → Vary the sensory angle.
-
-4. Character & Relationship Integrity
-□ Character changed personality without cause? → Justify via stress, fear, or hidden motive.
-□ Relationships evolving (trust, suspicion, fear)? → If NO: introduce a micro-shift.
-□ Trauma tags influencing perception or dialogue? → If NO: reflect them in behavior or atmosphere.
-
-5. Thread & Event Management
-□ Page contributing to a known thread (main or side)? → If NO: connect it or cut the loose content.
-□ Too many active threads? → Pause or collapse one.
-□ At least one subtle hint of future consequence? → If NO: add light foreshadowing.
-□ Hints too obvious or explicit? → Make them symbolic or indirect.
-
-6. Illusion & Reality Distortion
-□ Is at least one detail subtly misleading or contradicting expectations? → If NO: add one — in behavior, environment, or dialogue.
-□ Can the reader form a believable but ultimately wrong theory? → If NO: add focused misleading anchors. (Too many competing theories → narrow the misdirection.)
-□ Could the reader misread what's happening? → If NO: increase interpretive ambiguity.
-□ Does something feel wrong in a way the reader can't name? → If NO: inject atmospheric unease — a sound, a silence, a behavior slightly off.
-
-7. Prose & Style
-□ Prose immersive, not generic? → If NO: rewrite with sensory detail and character-specific voice.
-□ Sentences varied in structure and rhythm? → If NO: break up the pattern.
-□ Over-explaining instead of implying? → Cut the exposition. Trust the implication.
-□ Dialogue natural and character-specific? → If NO: refine voice.
-□ Scene physically understandable despite distortion? → If NO: clarify what is actually happening.
-
-8. Choice Quality (Branching)
-□ Does the page end at a moment of genuine tension — not resolution? → If NO: cut or reposition the ending beat.
-□ Are action choices meaningfully distinct in consequence? → If NO: revise until each leads somewhere different.
-□ Does at least one choice feel like a trap? → If NO: add concealed consequence.
-□ Do all choices feel plausibly safe on the surface? → If NO: soften the dangerous framing.`;
+  □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
+  □ Choices meaningfully distinct in risk and emotional register? → Vary across: reckless / cautious / emotional / avoidant.
+  □ At least one choice feels like a trap? → If NO: add a concealed consequence to the safest-looking option.
+  □ All choices appear plausibly reasonable on the surface? → If NO: soften the dangerous framing so the trap isn't visible.
+  ${isEarlyPhase ? `□ Choices seed curiosity — not force immediate crisis? → Avoid options that escalate to irreversible stakes too soon.` : ''}
+  ${isMidPhase ? `□ Choices reflect the player's established psychological profile? → Options should feel designed for how this player thinks.` : ''}
+  ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}`;
 }
 
 function buildNextPageEvaluatorContext(state: StoryState): string {
@@ -840,9 +768,8 @@ function buildNextPageEvaluatorPrompt(state: StoryState): string {
 
   const prompt = `TASK: Evaluate quality, refine output, and re-evaluate — in that order.
 
-Page ${currentPage} of ${totalPages} — ${remainingPages} remaining. Phase: ${phase}.
-Goal this phase: ${phaseGoal}
-${isFinale ? `Treat as NIGHTMARE difficulty. Ending must be in motion.` : ''}
+Page ${currentPage} of ${totalPages} — ${remainingPages} remaining.
+Phase: ${phase} — ${phaseGoal}
 
 ---
 ${buildNextPageEvaluatorContext(state)}
@@ -983,7 +910,7 @@ function buildFirstBookEvaluatorPrompt(
   theme: string,
   mcCandidate: StoryMCCandidate | undefined,
 ): string {
-  return `TASK: Evaluate a newly generated book initialization, refine it, and re-evaluate — in that order.
+  return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
 CREATION CONTEXT:
@@ -1341,8 +1268,7 @@ function formatActionChoices(actions: Action[]): string {
  */
 export function buildEndingRules(state: StoryState): string {
   const { psychologicalProfile, hiddenState } = state;
-  const { isFinale } = getStoryStateInfo(state);
-  // TODO: finalePhase
+  const { isFinale, finalePhase } = getStoryStateInfo(state);
 
   const endingRules = isFinale ? `
 - The story is approaching convergence
@@ -1351,20 +1277,7 @@ export function buildEndingRules(state: StoryState): string {
 
 ENDING EXECUTION TEMPLATE (Last pages):
 
-PHASE 1 → "FALSE SAFETY" (if fake_to_real ending)
-Goals: Resolve main tension, slow pacing, give emotional release
-Tone: Calm, hopeful, slightly uncanny
-Rules: No obvious horror, subtle unease only
-
-PHASE 2 → "DISTORTION"
-Goals: Break reality slightly, create doubt
-Techniques: Repeated dialogue, impossible object, memory glitch, time inconsistency
-End with: Realization sentence ("I've been here before.")
-
-PHASE 3 → "IMPACT"
-Goals: Reveal truth, reframe entire story, hit psychologically
-Structure: Reveal → Recontextualization → Final haunting line
-Final line rule: Short, clear, haunting ("It was never outside.")
+${finalePhases[finalePhase!]}
 
 ENDING PRESSURE:
 • Increase chaos and urgency
@@ -1663,8 +1576,6 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * @param mc - Complete main character profile
  * @returns Formatted prompt string for AI book creation
  * 
- * @todo think then output for new book
- * 
  * Example:
  * ```typescript
  * const prompt = createBookCreationPrompt("haunted mansion mystery", {
@@ -1709,7 +1620,7 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string
   return `Book Metadata:
 - TITLE: ${BOOK_TITLE_LENGTH}. Mysterious, visceral (you feel it), memorable, not generic.
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
-- SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending type.
+- SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
 - TOTAL PAGES: Target ~${BOOK_AVERAGE_PAGES}. Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Let theme complexity and MC arc influence the count.
 
@@ -1884,8 +1795,8 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
           lastVisitedAtPage: 1,
           familiarity: initialPlace.familiarity,
           moodHistory: [initialPlace.currentMood],
-          eventTags: [],
-          knownCharacters: [],
+          events: [],
+          knownCharacters: {},
           currentMood: initialPlace.currentMood,
         } satisfies PlaceMemory
       } : {},
@@ -1987,23 +1898,49 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
   // 5. Generated content from AI response
   const generatedStoryPage = response.result;
 
-  // 6. Lazy branching: continue with the same branchId if none of the actions ever selected (no pageId)
-  // TODO: prevent race condition with concurrency lock and retry
-  const branchId = actionedPage.actions.some(a => !!a.pageId) ? generateBranchId() : actionedPage.branchId;
+  // 6. Lazy branching: Atomic branch creation with retry on conflict
+  const shouldCreateNewBranch = actionedPage.actions.some(a => !!a.pageId);
+  let branchId: string;
+  let newPage: PersistedStoryPage | undefined;
+  let retryCount = 0;
 
   // 7. Update story state with result from AI
   const newState = updateStoryStateFromGeneratedPage(storyState, generatedStoryPage);
 
-  // 8. Persist generated page to database with parent-child relationship
-  const newPage = await insertStoryPage(userId, newState.page, {
-    ...generatedStoryPage,
-    aiProvider: response.provider || 'none',
-    aiModel: response.model || 'none',
-  }, {
-    bookId: actionedPage.bookId,
-    parentId: actionedPage.id,
-    branchId,
-  });
+  // 8. Persist generated page to database with parent-child relationship and retry logic
+  while (retryCount < MAX_BRANCHING_RETRIES) {
+    branchId = shouldCreateNewBranch ? generateBranchId() : actionedPage.branchId;
+
+    try {
+      newPage = await insertStoryPage(userId, newState.page, {
+        ...generatedStoryPage,
+        aiProvider: response.provider || 'none',
+        aiModel: response.model || 'none',
+      }, {
+        bookId: actionedPage.bookId,
+        parentId: actionedPage.id,
+        branchId,
+      });
+      break; // Success, exit retry loop
+    } catch (error) {
+      // Check if it's a unique constraint violation
+      if (getErrorMessage(error).includes('pages_parent_branch_unique') && !shouldCreateNewBranch) {
+        // Another process created the main branch first, create our own branch
+        console.log(`[buildNextPage] 💥 Race condition detected for parent ${actionedPage.id}, creating new branch`);
+        retryCount++;
+        if (retryCount >= MAX_BRANCHING_RETRIES) {
+          throw new Error(`Failed to create page after ${MAX_BRANCHING_RETRIES} retries due to concurrent branch creation`);
+        }
+        continue;
+      }
+      throw error; // Re-throw non-conflict errors
+    }
+  }
+
+  // Ensure newPage was successfully created
+  if (!newPage) {
+    throw new Error('Failed to create page: newPage is undefined after retry loop');
+  }
 
   // 9. Pre-generate candidate pages for each action in the new page
   const userPage = isUserAction ? await ensureCandidatesForPage(userId, newPage) : newPage;
@@ -2041,11 +1978,13 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
     
     if (snapshotDecision.shouldCreate) {
       await createStateSnapshot(userId, bookId, pageId, newState, snapshotDecision.reason);
-      console.log(`[buildNextPage]  Created snapshot for page ${pageId}, reason: ${snapshotDecision.reason}`);
+      console.log(`[buildNextPage] 📸 Created snapshot for page ${pageId}, reason: ${snapshotDecision.reason}`);
     }
   } catch (snapshotError) {
-    console.error(`[buildNextPage]  Failed to create snapshot for page ${pageId}:`, snapshotError);
+    console.error(`[buildNextPage] ❌ Failed to create snapshot for page ${pageId}:`, snapshotError);
     // Continue even if snapshot creation fails
+  } finally {
+    // Ensure the function completes properly
   }
 
   // 13. Return the persisted story page with all database metadata
@@ -2399,12 +2338,12 @@ async function executePromptForJSON<T extends Record<string, unknown>>(
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${fieldInstructions.trim()}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 
-You MUST silently evaluate your generated story using the checklist below.
+You MUST silently evaluate your generated output using the checklist below.
 If any item fails, revise internally before producing final output.
 
 ${thinkThenOutput.trim()}
 
-Only output the final corrected story page.
+Only output the final corrected JSON.
 Do NOT mention this checklist.` : '';
 
   const finalPrompt = [
@@ -2425,8 +2364,7 @@ Do NOT mention this checklist.` : '';
 function postProcessPromptSection(prompt: string): string {
   return prompt
     .split('\n')
-    .map(line => line.trim())
-    .filter(line => line)
+    .filter(line => line.trim())
     .join('\n')
     .trim();
 }
