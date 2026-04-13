@@ -1,4 +1,4 @@
-import type { AIJsonProperty } from "../types/ai-chat.js";
+import type { AIJsonEvaluation, AIJsonProperty } from "../types/ai-chat.js";
 import type { Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, ThreatProximity, TruthLevel } from "../types/story.js";
 
 /**
@@ -24,6 +24,16 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
+
+export const EVALUATION_SCHEMA_DEFINITION = {
+  output: { type: 'object' },
+  scoreBefore: { type: 'object' },
+  scoreAfter: { type: 'object' },
+  actionFlags: { type: 'array' },
+  integrityFlags: { type: 'array' },
+} satisfies Record<keyof AIJsonEvaluation<Record<string, unknown>>, AIJsonProperty>;
+
+export const EVALUATION_REQUIRED_FIELDS = ['output', 'scoreBefore', 'scoreAfter', 'actionFlags', 'integrityFlags'] satisfies Array<keyof AIJsonEvaluation<Record<string, unknown>>>;
 
 export const PSYCHOLOGICAL_PROFILE_DEFAULTS: PsychologicalProfile = {
   archetype: 'the_explorer' satisfies Archetype,

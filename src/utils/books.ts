@@ -13,3 +13,7 @@ export function formatBookMetaForPrompt(book: Book): string {
   - Target pages: ${book.totalPages} total
   - Language: ${book.language}`;
 }
+
+export function formatPageTextForPrompt(text: string): string {
+  return text.trim().replace(/\n/g, ' ¶ ');
+}

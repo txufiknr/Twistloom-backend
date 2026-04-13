@@ -75,9 +75,160 @@ export interface AIPromptOptions {
   outputJsonFallbackField?: string;
 }
 
+export type AIBaseTypeOptions = Omit<AIPromptOptions,
+  'outputAsJson' |
+  'outputJsonStructure' |
+  'outputJsonRequired' |
+  'outputJsonFallbackField'
+>;
+
+export type AIPromptForJson<T> = {
+  schema: { [K in keyof T]: AIJsonProperty },
+  requiredFields: (keyof T)[],
+  fallbackField: keyof T,
+  baseOptions?: AIBaseTypeOptions,
+}
+
+export type AIPromptForJsonParams<T> = {
+  prompt: string;
+  configs: AIPromptForJson<T>;
+  jsonStructure: string;
+  fieldInstructions?: string;
+  thinkThenOutput?: string;
+  evaluatorPrompt?: string;
+}
+
 export type AIJsonProperty = {
   type: string;
   items?: { type: string };
+};
+
+/**
+ * Evaluation result for AI-generated JSON content with scoring and feedback
+ * 
+ * This type represents the comprehensive evaluation of AI-generated content,
+ * including before/after scoring, detailed feedback, and integrity checks.
+ * It's used by the AI evaluation system to ensure quality and consistency
+ * of generated story content and book initialization data.
+ * 
+ * @template T - The type of the evaluated output (e.g., StoryGeneration or BookCreationResponse)
+ * 
+ * @example
+ * ```typescript
+ * const evaluation: AIJsonEvaluation<StoryGeneration> = {
+ *   output: generatedStory,
+ *   scoreBefore: {
+ *     total: 72,
+ *     tension: 16,
+ *     coherence: 14,
+ *     style: 12,
+ *     progression: 13,
+ *     illusion: 6,
+ *     consistency: 6,
+ *     passed: false,
+ *     issues: [
+ *       { dimension: "tension", issue: "Escalation too linear", suggestion: "Add false calm moment" }
+ *     ]
+ *   },
+ *   scoreAfter: {
+ *     total: 78,
+ *     tension: 19,
+ *     coherence: 16,
+ *     style: 13,
+ *     progression: 14,
+ *     illusion: 8,
+ *     consistency: 8,
+ *     passed: true,
+ *     fixes: [
+ *       { dimension: "tension", change: "Added moment of false relief before final escalation" }
+ *     ]
+ *   },
+ *   actionFlags: [
+ *     { actionIndex: 1, issue: "Choice appears too safe on surface" }
+ *   ],
+ *   integrityFlags: []
+ * };
+ * ```
+ */
+export type AIJsonEvaluation<T> = {
+  /** The final evaluated and potentially corrected output content */
+  output: T;
+  
+  /** 
+   * Scoring evaluation of the original content before any corrections
+   * 
+   * This captures the initial quality assessment to show what needed improvement
+   * and provides transparency about the evaluation process.
+   */
+  scoreBefore: AIJsonScoreBefore;
+  
+  /**
+   * Scoring evaluation of the content after corrections were applied
+   * 
+   * This shows the final quality state and documents what improvements were made.
+   * If no corrections were needed, this should match scoreBefore exactly.
+   */
+  scoreAfter: AIJsonScoreAfter;
+  
+  /**
+   * Quality flags for action choices (not scored, but flagged for issues)
+   * 
+   * These identify problems with user choice options that don't affect the
+   * main content score but need attention for good user experience.
+   */
+  actionFlags: Array<{
+    /** Index of the action in the actions array (0-based) */
+    actionIndex: number;
+    /** Description of the issue with this action choice */
+    issue: string;
+  }>;
+  
+  /**
+   * Integrity flags for JSON structure and data validation
+   * 
+   * These identify structural problems, type mismatches, or constraint violations
+   * that need to be fixed for the content to be technically valid.
+   */
+  integrityFlags: Array<{
+    /** Which field or property has the integrity issue */
+    field: string;
+    /** Description of the specific integrity problem */
+    issue: string;
+  }>;
+};
+
+export type AIJsonScoreBefore = {
+  /** Total score across all dimensions (0-100) */
+  total: number;
+  /** Detailed breakdown of scores by dimension */
+  breakdown: Record<string, number>,
+  /** Whether the content passed minimum quality thresholds */
+  passed: boolean;
+  /** List of identified issues with suggested improvements */
+  issues: Array<{
+    /** Which scoring dimension this issue affects */
+    dimension: string;
+    /** Description of the specific problem identified */
+    issue: string;
+    /** Suggested fix or improvement approach */
+    suggestion: string;
+  }>;
+}
+
+export type AIJsonScoreAfter = {
+  /** Total score across all dimensions (0-100) */
+  total: number;
+  /** Detailed breakdown of scores by dimension */
+  breakdown: Record<string, number>,
+  /** Whether the corrected content passed minimum quality thresholds */
+  passed: boolean;
+  /** List of actual changes made during correction */
+  fixes: Array<{
+    /** Which scoring dimension this fix affected */
+    dimension: string;
+    /** Description of the specific change made */
+    change: string;
+  }>;
 };
 
 /**

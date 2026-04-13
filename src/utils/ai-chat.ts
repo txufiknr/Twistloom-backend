@@ -1,4 +1,4 @@
-import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
@@ -15,6 +15,7 @@ import { type GenerateContentConfig, Type, type GenerateContentParameters, type 
 import type { V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "cohere-ai/api";
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
+import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -698,16 +699,17 @@ export async function nvidiaPrompt(
  * }
  * ```
  */
-export async function aiPrompt<T = string>(
+export async function aiPrompt<T extends Record<string, unknown> | string = string>(
   prompt: string, 
-  options: AIPromptOptions = {}
+  options: AIPromptOptions = {},
+  evaluatorPrompt?: string,
 ): Promise<AIResponse<T>> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
     config = AI_CHAT_CONFIG_DEFAULT,
     outputAsJson = false,
     outputJsonFallbackField,
-    systemPrompt,
+    systemPrompt = PROMPT_SYSTEM,
     context,
   } = options;
 
@@ -727,7 +729,7 @@ export async function aiPrompt<T = string>(
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
-      console.log(`[${provider}] 💬 Full prompt (system: ${(systemPrompt ?? PROMPT_SYSTEM).length} chars, user: ${prompt.length} chars)`, {
+      console.log(`[${provider}] 💬 Full prompt (system: ${systemPrompt.length} chars, user: ${prompt.length} chars)`, {
         systemPrompt,
         prompt
       });
@@ -753,8 +755,53 @@ export async function aiPrompt<T = string>(
       result = null;
     }
 
-    if (result) {
+    if (result?.output) {
       try {
+        // Run evaluation phase if provided
+        if (evaluatorPrompt) {
+          // Call second AI prompt to score, evaluate, and outputs corrected result
+          const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
+            ...options,
+
+            // AI configurations for scoring and evaluation
+            modelSelection: AI_CHAT_MODELS_WRITING,
+            config: AI_CHAT_CONFIG_DEFAULT,
+            systemPrompt: PROMPT_SYSTEM,
+            context: [options.context, 'evaluation'].filter(Boolean).join('-'),
+
+            // Pass generated raw output as document
+            documents: [
+              {
+                title: 'GENERATED JSON (from previous AI)',
+                snippet: result.output,
+              }
+            ],
+
+            // Evaluation output schema
+            outputAsJson: true,
+            outputJsonStructure: EVALUATION_SCHEMA_DEFINITION,
+            outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
+            outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
+
+            // CRITICAL: evaluation call should exclude the evaluatorPromptBuilder to prevent the recursive loop
+          }, undefined);
+
+          const { result: evaluationResult } = response;
+
+          if (evaluationResult) {
+            const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
+            console.log("🕵️‍♂️ Evaluation result:");
+            console.log("Score before:", scoreBefore);
+            console.log("Score after:", scoreAfter);
+            console.log("Action flags:", actionFlags);
+            console.log("Integrity flags:", integrityFlags);
+            return {
+              ...result,
+              result: evaluationResult.output
+            } satisfies AIResponse<T>;
+          }
+        }
+
         // Parse the output into the expected type T
         let parsedResult: T;
         
@@ -821,22 +868,15 @@ export async function aiPrompt<T = string>(
  * const response = await aiPrompt<StoryGeneration>(prompt, storyOptions);
  * ```
  */
-export function createAIOptionsWithSchema<T extends Record<string, any>>(
-  schema: { [K in keyof T]: AIJsonProperty },
-  required: (keyof T)[],
-  fallbackField: keyof T,
-  baseOptions: Omit<AIPromptOptions,
-    'outputAsJson' |
-    'outputJsonStructure' |
-    'outputJsonRequired' |
-    'outputJsonFallbackField'
-  > = {}
+export function createAIOptionsWithSchema<T extends Record<string, unknown>>(
+  configs: AIPromptForJson<T>
 ): AIPromptOptions {
+  const { schema, requiredFields, fallbackField, baseOptions } = configs;
   return {
     ...baseOptions,
     outputAsJson: true,
-    outputJsonStructure: schema as Record<string, AIJsonProperty>,
-    outputJsonRequired: required as string[],
+    outputJsonStructure: schema,
+    outputJsonRequired: requiredFields as string[],
     outputJsonFallbackField: fallbackField as string
   };
 }

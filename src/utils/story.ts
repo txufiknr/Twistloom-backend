@@ -1,6 +1,6 @@
-import { MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_TRAUMA_TAGS } from "../config/story.js";
+import { MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift } from "../types/story.js";
+import { type StoryState, type PsychologicalProfile, type Archetype, type StabilityLevel, type ManipulationAffinity, type Action, type ActionedStoryPage, type EndingType, type HiddenState, type EndingPlanType, type EndingPlan, type ProfileShiftType, type ProfileShift, type StoryStateInfo, type StoryPhase, storyPhases } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { summarizeStoryContext } from "./prompt.js";
@@ -764,4 +764,74 @@ export function createInitialHiddenState(): HiddenState {
       originalEnding: 'fake_escape' satisfies EndingType
     } satisfies ProfileShift
   } satisfies HiddenState;
+}
+
+/**
+ * Calculates comprehensive story state information from the current story state
+ * 
+ * This function analyzes the current story progression and determines various metrics
+ * including page counts, progress percentages, and story phase classification. It uses
+ * predefined thresholds to categorize the story into phases (EARLY, MID, LATE, FINALE)
+ * and provides corresponding phase goals for narrative guidance.
+ * 
+ * Phase classification thresholds:
+ * - EARLY phase: 0% - 25% of story progress
+ * - MID phase: 25% - 70% of story progress  
+ * - LATE phase: 70% - 90% of story progress
+ * - FINALE phase: 90% - 100% of story progress
+ * 
+ * @param state - The current story state containing page and maxPage information
+ * @returns Comprehensive story state information including progress metrics and phase classification
+ * 
+ * @example
+ * ```typescript
+ * // Example usage with a story halfway through
+ * const storyState: StoryState = {
+ *   page: 10,
+ *   maxPage: 20,
+ *   // ... other state properties
+ * };
+ * 
+ * const info = getStoryStateInfo(storyState);
+ * console.log(info.phase); // 'MID'
+ * console.log(info.pageProgress); // 0.5
+ * console.log(info.remainingPages); // 10
+ * ```
+ */
+export function getStoryStateInfo(state: StoryState): StoryStateInfo {
+  const { page: currentPage, maxPage: totalPages, characters, places } = state;
+  const remainingPages = totalPages - currentPage;
+  const pageProgress = currentPage / totalPages;
+
+  /**
+   * Phase boundaries (assuming BOOK_AVERAGE_PAGES as baseline):
+   * Early — first ~25% of pages: mystery seeding, character establishment, unreliability introduction
+   * Mid — 25–70%: tension rhythm, thread weaving, psychological profiling exploitation
+   * Late — 70–90%: thread convergence, payoff setup, reality fracture escalation
+   * Finale — final ~10%: collapse, no new threads, ending delivery
+   */
+  const isEarlyPhase = pageProgress <= 0.25;
+  const isLatePhase = pageProgress >= 0.70;
+  const isMidPhase = !isEarlyPhase && !isLatePhase;
+  const isFinale = pageProgress >= 0.90;
+  const phase: StoryPhase = isFinale ? 'FINALE' : isLatePhase ? 'LATE' : isMidPhase ? 'MID' : 'EARLY';
+  const phaseGoal = storyPhases[phase];
+
+  const charactersSlot = MAX_CHARACTERS - Object.keys(characters).length;
+  const placesSlot = MAX_PLACES - Object.keys(places).length;
+
+  return {
+    currentPage,
+    totalPages,
+    remainingPages,
+    pageProgress,
+    isEarlyPhase,
+    isLatePhase,
+    isMidPhase,
+    isFinale,
+    phase,
+    phaseGoal,
+    charactersSlot,
+    placesSlot,
+  };
 }

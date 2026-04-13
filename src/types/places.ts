@@ -75,24 +75,26 @@ export type PlaceMemory = {
   type: PlaceType;
   /** Short human-readable description for immediate recall */
   context: string;
-  /** Optional spatial relationship to other places */
+  /** Spatial relationship to other places */
   locationHint?: string;
   
   /** Visit tracking metrics */
-  visitCount: number;
+  visitCount?: number;
   lastVisitedAtPage: number;
   familiarity: number; // 0-1, important for reuse priority
   
   /** Emotional and narrative associations */
-  moodHistory: PlaceMood[];
-  eventTags: string[]; // ["betrayal", "discovery", "first_meeting"]
-  knownCharacters: string[]; // Character names encountered here
+  moodHistory?: PlaceMood[];
+  // TODO: change with "events"
+  eventTags?: string[]; // ["betrayal", "discovery", "first_meeting"]
+  // TODO: change with record { name: context }
+  knownCharacters?: string[]; // Character names encountered here
   
   /** Optional sensory details for consistent atmosphere */
   sensoryDetails?: SensoryDetails;
   
   /** Current emotional atmosphere of the place */
-  currentMood: PlaceMood;
+  currentMood?: PlaceMood;
 };
 
 /**

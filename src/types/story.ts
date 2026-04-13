@@ -659,6 +659,73 @@ export type StoryState = {
   contextHistory: string;
 };
 
+/**
+ * Comprehensive information about the current state of a story
+ * 
+ * Provides detailed metrics and phase information for tracking story progress,
+ * including page counts, progress percentages, and story phase classification.
+ * 
+ * @example
+ * ```typescript
+ * const storyInfo: StoryStateInfo = {
+ *   currentPage: 5,
+ *   totalPages: 20,
+ *   remainingPages: 15,
+ *   pageProgress: 0.25,
+ *   isEarlyPhase: true,
+ *   isLatePhase: false,
+ *   isMidPhase: false,
+ *   isFinale: false,
+ *   phase: 'EARLY',
+ *   phaseGoal: 'Introduce main characters and setting'
+ * };
+ * ```
+ */
+export type StoryStateInfo = {
+  /** Current page number in the story (1-indexed) */
+  currentPage: number;
+  /** Total number of pages in the story */
+  totalPages: number;
+  /** Number of pages remaining until the story ends */
+  remainingPages: number;
+  /** Progress through the story as a decimal (0.0 to 1.0) */
+  pageProgress: number;
+  /** Whether the story is in the early phase (first 25%) */
+  isEarlyPhase: boolean;
+  /** Whether the story is in the late phase (last 30%) */
+  isLatePhase: boolean;
+  /** Whether the story is in the middle phase (25%-70%) */
+  isMidPhase: boolean;
+  /** Whether the story is in the finale phase (last 10%) */
+  isFinale: boolean;
+  /** Current story phase classification */
+  phase: StoryPhase;
+  /** Goal or objective for the current story phase */
+  phaseGoal: string;
+  /** Number of characters remaining can be added */
+  charactersSlot: number;
+  /** Number of places remaining can be added */
+  placesSlot: number;
+}
+
+export const storyPhases = {
+  // PHASE: EARLY — Priority: mystery seeding, unreliability introduction, character grounding.
+  // Weight tension lightly. Prioritize intrigue over dread.
+  EARLY: 'Seed mystery, introduce unreliability, ground characters lightly.',
+  // PHASE: MID — Priority: tension rhythm, thread balance, psychological escalation.
+  // Exploit established character and flag patterns. Vary build/release cycles.
+  MID: 'Balance tension rhythm, exploit psychological profile, weave threads.',
+  // PHASE: LATE — Priority: thread convergence, payoff setup, reality fracture.
+  // No new major threads. Begin collapsing open questions toward the viable ending.
+  LATE: 'Converge threads, set up payoff, begin fracturing reality.',
+  // PHASE: FINALE — Priority: ending delivery, full psychological collapse.
+  // No new characters. No new mysteries. Every active thread must resolve or deliberately shatter.
+  // Behave as NIGHTMARE difficulty regardless of setting.
+  FINALE: 'Deliver the ending. Collapse everything. No new threads.',
+};
+
+export type StoryPhase = keyof typeof storyPhases;
+
 export type StoryStateSnapshotReason = 'periodic' | 'major_event' | 'branch_start' | 'user_request';
 
 export type UserPageProgress = {

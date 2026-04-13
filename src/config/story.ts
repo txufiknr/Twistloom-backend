@@ -1,8 +1,8 @@
 import type { ActionType, AIActionConfig } from "../types/story.js";
 
+export const BOOK_MIN_PAGES = 100;
 export const BOOK_MAX_PAGES = 150;
 export const BOOK_AVERAGE_PAGES = 120;
-export const NEAR_ENDING_PAGES = 10;
 export const MAX_WORDS_PER_PAGE = 60;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 
@@ -11,8 +11,16 @@ export const MIN_CHARACTER_AGE = 13;
 export const MAX_CHARACTER_AGE = 25;
 export const MAX_PLACES = 6;
 
+export const MIN_ACTION_CHOICES = 1;
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
+
+export const VIABLE_ENDING_LENGTH = '1-3 sentences';
+export const PLACE_CONTEXT_LENGTH = '1 sentence max';
+export const BOOK_TITLE_LENGTH = '1-5 words';
+export const HOOK_LENGTH = '1-2 sentences';
+export const SUMMARY_LENGTH = '50-100 words';
+export const KEYWORDS_COUNT = '3-5';
 
 /**
  * Maximum number of trauma tags to maintain in story state
@@ -92,7 +100,7 @@ export const MAX_CHARACTER_PLACES = 5;
  * This maintains a sliding window of recent pages to keep
  * context relevant without overwhelming memory.
  */
-export const MAX_PAGE_HISTORY = 5;
+export const MAX_PAGE_HISTORY = 8;
 
 /**
  * Delta and snapshot cleanup configuration

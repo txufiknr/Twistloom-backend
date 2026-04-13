@@ -60,8 +60,7 @@ import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput } from '../
  *   entropy: 0.1,
  *   traumaTags: [],
  *   profile: { curiosity: 0.8, fear: 0.2, aggression: 0.1, denial: 0.1 },
- *   page: 5,
- *   isEnding: false
+ *   page: 5
  * });
  * // Returns: { sentenceLength: 0.75, fragmentation: 0.15, ... }
  * ```
@@ -114,12 +113,12 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
  * @param sanity - Current sanity level for mode determination
  * @param isEnding - Whether story is in ending phase
  * @returns Narrative mode (grounded | uneasy | fractured)
+ * 
+ * @todo sanity is unused, might need to complete the implementation
  */
 export function determineNarrativeMode(vector: StyleVector, sanity: number, isEnding: boolean): NarrativeMode {
   // Ending phase always tends toward fractured
-  if (isEnding) {
-    return "fractured";
-  }
+  if (isEnding) return "fractured";
   
   // Mode thresholds based on key style dimensions
   const highFragmentation = vector.fragmentation > 0.6;
@@ -228,7 +227,6 @@ Apply these behaviors:
  * into a single, comprehensive style configuration.
  * 
  * @param input - Style input from story state
- * @param isEnding - Whether story is in ending phase
  * @returns Complete narrative style for AI guidance
  */
 export function createNarrativeStyle(input: StyleInput): NarrativeStyle {

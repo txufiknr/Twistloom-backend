@@ -2,6 +2,7 @@
 [ ] user preferences schema (interests)
 [ ] user settings schema (font size)
 [ ] summary at the end of story (N readers ended up here)
+[ ] add evaluatorFn in `aiPrompt`
 
 paid:
 [ ] custom action prompt (max 50 chars)
