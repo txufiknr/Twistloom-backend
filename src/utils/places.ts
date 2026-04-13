@@ -132,21 +132,26 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
 }
 
 /**
- * Formats places for prompt injection
+ * Formats places for prompt injection with comprehensive narrative information
  * 
- * Creates a compact, readable string representation of relevant places
+ * Creates a rich, detailed string representation of places including weather,
+ * sensory details, character history, events, and atmospheric information
  * for inclusion in AI prompts.
  * 
  * @param state - Current story state
  * @returns Formatted string for prompt inclusion
- * · Old River (river) - eerie - visited 3 times (last visited page 12)
- *   Context: narrow river behind the school
- *   Events: discovered body, first meeting with Lisa
- *   Characters: Lisa (page 15: first meeting here), Tom (page 8: saved from drowning)
  * 
  * @example
  * ```typescript
  * const placeText = formatPlacesForPrompt(state);
+ * // Output example:
+ * // · Old River (river) - eerie, rainy - visited 3 times (last visited page 12) [familiarity: 0.8]
+ * //   Context: narrow river behind the school
+ * //   Location: 500 meters behind the school (south)
+ * //   Sensory: cold water rushing, distant thunder, damp earth smell
+ * //   Mood history: safe -> eerie -> threatening
+ * //   Events: discovered body, first meeting with Lisa
+ * //   Characters: Lisa (page 15: first meeting here), Tom (page 8: saved from drowning)
  * ```
  */
 export function formatPlacesForPrompt(state: StoryState): string {
@@ -159,20 +164,56 @@ export function formatPlacesForPrompt(state: StoryState): string {
   return allPlaces
     .sort((a, b) => b.lastVisitedAtPage - a.lastVisitedAtPage) // Sort by most recent visit first
     .map(place => {
-      const context = `  Context: ${place.context}`;
-      const events = place.events && place.events.length > 0 ? `  Events: ${place.events.join(', ')}` : '';
+      const details = [];
       
-      // Format knownCharacters with contextual history
+      // Basic context
+      details.push(`  Context: ${place.context}`);
+      
+      // Location hint if available
+      if (place.locationHint) {
+        details.push(`  Location: ${place.locationHint}`);
+      }
+      
+      // Sensory details (combine all available senses)
+      const sensoryDetails = [];
+      if (place.sensoryDetails) {
+        if (place.sensoryDetails.sound) sensoryDetails.push(place.sensoryDetails.sound);
+        if (place.sensoryDetails.visual) sensoryDetails.push(place.sensoryDetails.visual);
+        if (place.sensoryDetails.feeling) sensoryDetails.push(place.sensoryDetails.feeling);
+        if (place.sensoryDetails.smell) sensoryDetails.push(place.sensoryDetails.smell);
+      }
+      if (sensoryDetails.length > 0) {
+        details.push(`  Sensory: ${sensoryDetails.join(', ')}`);
+      }
+      
+      // Mood history for atmospheric development
+      if (place.moodHistory && place.moodHistory.length > 0) {
+        details.push(`  Mood history: ${place.moodHistory.join(' -> ')}`);
+      }
+      
+      // Events that occurred at this place
+      if (place.events && place.events.length > 0) {
+        details.push(`  Events: ${place.events.join(', ')}`);
+      }
+      
+      // Known characters with contextual history
       const characterEntries = Object.entries(place.knownCharacters || {});
-      const characters = characterEntries.length > 0 
-        ? `  Characters: ${characterEntries
-            .map(([name, info]) => `${name} (page ${info.page}${info.context ? ': ' + info.context : ''})`)
-            .join(', ')}`
-        : '';
+      if (characterEntries.length > 0) {
+        const characters = characterEntries
+          .map(([name, info]) => `${name} (page ${info.page}${info.context ? ': ' + info.context : ''})`)
+          .join(', ');
+        details.push(`  Characters: ${characters}`);
+      }
       
+      // Build the main line with comprehensive info
       const currentPage = state.page;
       const visitStatus = place.lastVisitedAtPage === currentPage ? ' (CURRENT)' : ` (last visited page ${place.lastVisitedAtPage})`;
-      return `· ${place.name} (${place.type}) - ${place.currentMood} - visited ${place.visitCount} times${visitStatus}\n${[context, events, characters].filter(Boolean).join('\n')}`;
+      const familiarityInfo = place.familiarity ? ` [familiarity: ${place.familiarity.toFixed(1)}]` : '';
+      
+      // Combine mood and weather in the main line for atmosphere
+      const atmosphere = [place.currentMood, place.weather].filter(Boolean).join(', ');
+      
+      return `· ${place.name} (${place.type}) - ${atmosphere} - visited ${place.visitCount} times${visitStatus}${familiarityInfo}\n${details.join('\n')}`;
     })
     .join('\n');
 }

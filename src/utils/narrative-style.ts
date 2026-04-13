@@ -221,30 +221,30 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   switch (mode) {
     case "grounded":
       instructions = `
-• Use clear, simple sentences.
-• Minimal fragmentation.
-• Describe events directly.
-• Slight unease but logical flow.`;
+- Use clear, simple sentences.
+- Minimal fragmentation.
+- Describe events directly.
+- Slight unease but logical flow.`;
       break;
       
     case "uneasy":
       instructions = `
-Mix short and medium sentences.
-Occasionally break sentences or thoughts.
-Use light repetition for tension.
-Allow small contradictions in thoughts.
-Emphasize growing unease and doubt.`;
+- Mix short and medium sentences.
+- Occasionally break sentences or thoughts.
+- Use light repetition for tension.
+- Allow small contradictions in thoughts.
+- Emphasize growing unease and doubt.`;
       break;
       
     case "fractured":
       instructions = `
-Use short, fragmented sentences.
-Frequently interrupt thoughts with em dashes (—).
-Repeat key words or phrases.
-Let MC doubt what they see.
-Allow contradictions without resolving them.
-Reduce clarity but maintain readability.
-Emphasize psychological distress and confusion.`;
+- Use short, fragmented sentences.
+- Frequently interrupt thoughts with em dashes (—).
+- Repeat key words or phrases.
+- Let MC doubt what they see.
+- Allow contradictions without resolving them.
+- Reduce clarity but maintain readability.
+- Emphasize psychological distress and confusion.`;
       break;
       
     default:
@@ -272,7 +272,7 @@ Apply these behaviors:
 - Focus on ${vector.sensoryFocus > 0.6 ? 'detailed sensory descriptions' : 'more abstract narrative'}
 - CRITICAL: Never suddenly jump between styles - gradual evolution only`;
   
-  return instructions + vectorInstructions;
+  return `${instructions}\n${vectorInstructions}`;
 }
 
 /**

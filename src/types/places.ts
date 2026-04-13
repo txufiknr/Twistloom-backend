@@ -46,6 +46,31 @@ export const placeMoods = [
 export type PlaceMood = typeof placeMoods[number];
 
 /**
+ * Available weather conditions for places
+ * 
+ * These weather patterns can influence atmosphere, mood,
+ * and narrative opportunities for scene setting.
+ */
+export const placeWeathers = [
+  "clear",        // Sunny, clear skies
+  "cloudy",       // Overcast, gray skies
+  "rainy",        // Rain falling
+  "stormy",       // Thunder, lightning, heavy rain
+  "foggy",        // Thick fog, low visibility
+  "windy",        // Strong winds
+  "snowy",        // Snow falling
+  "misty",        // Light mist, haze
+  "humid",        // Heavy moisture in air
+  "dry",          // Low humidity, arid
+  "unknown"       // Weather not specified
+] as const;
+
+/**
+ * Union type of all possible weather values
+ */
+export type PlaceWeather = typeof placeWeathers[number];
+
+/**
  * Sensory details for immersive place descriptions
  * 
  * These optional details help the AI create consistent
@@ -92,7 +117,8 @@ export type PlaceMemory = {
   
   /** Optional sensory details for consistent atmosphere */
   sensoryDetails?: SensoryDetails;
-  
+  /** Current weather conditions at the place */
+  weather?: PlaceWeather;
   /** Current emotional atmosphere of the place */
   currentMood?: PlaceMood;
 };

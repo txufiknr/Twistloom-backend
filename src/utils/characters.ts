@@ -201,18 +201,25 @@ export function processCharacterUpdates(
 }
 
 /**
- * Formats characters for prompt injection
+ * Formats characters for prompt injection with comprehensive narrative context
  * 
- * Creates a compact, readable string representation of relevant characters
- * for inclusion in AI prompts.
+ * Creates a rich, detailed string representation of characters including narrative flags,
+ * twist potential, relationships, and psychological state for inclusion in AI prompts.
  * 
- * @param state - Current story state
+ * @param characters - Record of character memories
  * @returns Formatted string for prompt inclusion
  * 
  * @example
  * ```typescript
- * const characterText = formatCharactersForPrompt(state);
- * // Returns: "Lina (best friend) - trusting - last seen: 3\n..."
+ * const characterText = formatCharactersForPrompt(state.characters);
+ * // Output example:
+ * // · Lina (best friend) - female, trusting - last seen: page 15 [suspicious: true, secret: true]
+ * //   Bio: Quiet girl who knows more than she lets on
+ * //   Relationship to MC: childhood friend with hidden agenda
+ * //   Recent interactions: shared secret about basement, avoided questions about parents
+ * //   Relationships: Tom (rival - hostile), Sarah (mentor - protective)
+ * //   Narrative flags: suspicious, has secret, potential twist: betrayal
+ * //   Status: healthy, active
  * ```
  */
 export function formatCharactersForPrompt(characters: Record<string, CharacterMemory>): string {
@@ -224,26 +231,72 @@ export function formatCharactersForPrompt(characters: Record<string, CharacterMe
 
   return allCharacters
     .map(character => {
-      const mainInfo = `• ${character.name} (${character.role}) - ${character.gender} - ${character.status} - last seen: page ${character.lastInteractionAtPage}`;
-      const bio = `  Bio: ${character.bio}`;
-      const relationship = `  Relationship to MC: ${character.relationshipToMC}`;
+      const details = [];
       
-      // Format recent interactions if any exist
-      const interactions = character.pastInteractions.length > 0 
-        ? `  Recent interactions: ${character.pastInteractions.slice(-MAX_PAST_INTERACTIONS).join(', ')}`
-        : '';
+      // Basic character information
+      const statusFlags = [];
+      if (character.narrativeFlags.isSuspicious) statusFlags.push('suspicious');
+      if (character.narrativeFlags.isMissing) statusFlags.push('missing');
+      if (character.narrativeFlags.isDead) statusFlags.push('dead');
+      if (character.narrativeFlags.hasSecret) statusFlags.push('secret');
+      if (character.narrativeFlags.hasInjury && character.narrativeFlags.hasInjury !== 'none') {
+        statusFlags.push(`injured: ${character.narrativeFlags.hasInjury}`);
+      }
       
-      // Format relationships if any exist
-      const relationships = character.relationships.length > 0
-        ? `  Relationships: ${character.relationships.map(r => `${r.target} (${r.type} - ${r.status})`).join(', ')}`
-        : '';
+      const flagString = statusFlags.length > 0 ? ` [${statusFlags.join(', ')}]` : '';
+      const mainInfo = `· ${character.name} (${character.role}) - ${character.gender}, ${character.status} - last seen: page ${character.lastInteractionAtPage}${flagString}`;
       
-      // Note: CharacterPlaceRelation fields are commented out, so we can't display places
-      const details = [bio, relationship, interactions, relationships]
-        .filter(Boolean)
-        .join('\n');
+      // Bio and relationship
+      details.push(`  Bio: ${character.bio}`);
+      details.push(`  Relationship to MC: ${character.relationshipToMC}`);
       
-      return `${mainInfo}\n${details}`;
+      // Recent interactions with context
+      if (character.pastInteractions.length > 0) {
+        const recentInteractions = character.pastInteractions.slice(-MAX_PAST_INTERACTIONS);
+        details.push(`  Recent interactions: ${recentInteractions.join(', ')}`);
+      }
+      
+      // Character relationships to other characters
+      if (character.relationships.length > 0) {
+        const relationships = character.relationships
+          .map(r => `${r.target} (${r.type} - ${r.status})`)
+          .join(', ');
+        details.push(`  Relationships: ${relationships}`);
+      }
+      
+      // Narrative flags and twist information
+      const narrativeInfo = [];
+      if (character.narrativeFlags.isSuspicious) narrativeInfo.push('suspicious');
+      if (character.narrativeFlags.isMissing) narrativeInfo.push('missing');
+      if (character.narrativeFlags.isDead) narrativeInfo.push('dead');
+      if (character.narrativeFlags.hasSecret) narrativeInfo.push('has secret');
+      if (character.narrativeFlags.hasInjury && character.narrativeFlags.hasInjury !== 'none') {
+        narrativeInfo.push(`injured: ${character.narrativeFlags.hasInjury}`);
+      }
+      
+      if (character.narrativeFlags.potentialTwist && character.narrativeFlags.potentialTwist !== 'none') {
+        narrativeInfo.push(`potential twist: ${character.narrativeFlags.potentialTwist}`);
+      }
+      
+      if (narrativeInfo.length > 0) {
+        details.push(`  Narrative flags: ${narrativeInfo.join(', ')}`);
+      }
+      
+      // Character status details
+      const statusDetails = [];
+      if (character.status === 'dead') {
+        statusDetails.push('deceased');
+      } else if (character.status === 'missing') {
+        statusDetails.push('disappeared');
+      } else if (character.status === 'injured') {
+        statusDetails.push('injured');
+      } else {
+        statusDetails.push('healthy, active');
+      }
+      
+      details.push(`  Status: ${statusDetails.join(', ')}`);
+      
+      return `${mainInfo}\n${details.join('\n')}`;
     })
     .join('\n\n');
 }

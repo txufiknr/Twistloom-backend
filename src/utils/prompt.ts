@@ -13,7 +13,7 @@ import { BOOK_MAX_PAGES, MAX_PAGE_HISTORY, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARI
 import { createStyleInput } from "./player-profile.js";
 import { processCharacterUpdates } from "./characters.js";
 import { genders } from "../types/user.js";
-import { type PlaceMemory, placeMoods, placeTypes } from "../types/places.js";
+import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { StoryGeneration, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
@@ -370,6 +370,7 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
           "visual": "...",
           "feeling": "..."
         },
+        "weather": "One of: ${placeWeathers.join('", "')}",
         "events": [],
         "knownCharacters": {
           "<name>": {
@@ -391,7 +392,8 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
         "visitCount": 0,
         "lastVisitedAtPage": 0,
         "familiarity": 0.0,
-        "sensoryDetails": {}
+        "sensoryDetails": {},
+        "weather": "..."
       }
     ]
   },
@@ -661,8 +663,8 @@ ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} rea
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
   - locationHint: spatial relationship to known places, e.g. "500 meters behind the school (south)." — must be consistent to build a "world map"
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
-  - sensoryDetails: include only senses present and relevant to the scene. Omit irrelevant sub-fields.
-  - currentMood: set to match atmosphere.
+  - currentMood & weather: set to match atmosphere.
+  - sensoryDetails: include only senses present and relevant to the scene.
   - knownCharacters: include relevant characters (beside MC) with meaningful context.
   - events: any important event happening in the scene.
   - Might need to update other places' locationHint to link with this new place.`
@@ -670,8 +672,8 @@ ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} rea
 
 placeUpdates.updatedPlaces
   - Only update on revisit or significant event.
-  - Include only changed fields: currentMood, add events (1 contextual sentence: betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (with meaningful context update).
-${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted — update mood and sensoryDetails to reflect it.` : ''}
+  - Include only changed fields: currentMood, weather, add events (1 contextual sentence: betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (with meaningful context update).
+${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted — update mood, weather, and sensoryDetails to reflect it.` : ''}
 
 viableEnding
   - Only include if the story trajectory has meaningfully shifted and the previously planned ending no longer fits.
