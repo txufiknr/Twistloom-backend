@@ -73,6 +73,10 @@ export interface AIPromptOptions {
   outputJsonRequired?: string[];
   /** Key to use when JSON parsing fails entirely (string value) */
   outputJsonFallbackField?: string;
+  /** Whether to log the generated prompts */
+  logPrompts?: boolean;
+  /** Whether to log the evaluation result from the AI generated JSON content with scoring and feedback. */
+  logEvaluationResult?: boolean;
 }
 
 export type AIBaseTypeOptions = Omit<AIPromptOptions,

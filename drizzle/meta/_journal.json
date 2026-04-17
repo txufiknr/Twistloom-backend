@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1775654127976,
-      "tag": "0000_wide_aqueduct",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1776045905234,
-      "tag": "0001_polite_nova",
+      "when": 1776413834243,
+      "tag": "0000_fearless_gideon",
       "breakpoints": true
     }
   ]

@@ -1,7 +1,7 @@
-import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIModelSelection, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_WRITING, TIER_S_PROVIDERS } from "../config/ai-clients.js";
 import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -58,8 +58,11 @@ async function promptWithFallback<T>(
       // Rate limiting: Apply throttling before making API call
       await getRateLimiter(provider).throttle();
       
+      // Only respect logPrompts for the very first model index
+      const modelOptions = i === 0 ? options : { ...options, logPrompts: false };
+      
       // API call: Execute the actual request to the AI provider
-      const response = await apiCall(model, prompt, options);
+      const response = await apiCall(model, prompt, modelOptions);
       
       // Response extraction: Get the output content from the response
       const output = extractOutput(response);
@@ -123,8 +126,8 @@ export async function githubPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('github', { systemPrompt, documents });
+      const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('github', opts);
       return await getGitHubClient().chat.completions.create({
         model,
         messages: [
@@ -194,7 +197,7 @@ export async function geminiPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const responseSchema = outputAsJson ? {
         type: Type.OBJECT,
         properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
@@ -212,7 +215,7 @@ export async function geminiPrompt(
         required: outputJsonRequired || []
       } satisfies Schema : undefined;
 
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', { systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
       const response = await getGeminiClient().models.generateContent({
         model,
         contents: [{ parts: [{ text: `${systemPromptWithDocuments}\n\n${prompt}` }] }],
@@ -300,9 +303,9 @@ export async function groqPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { maxOutputToken, temperature, topP, stopSequences } = config;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', { systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', opts);
 
       const { data, response } = await getGroqClient().chat.completions.create({
         messages: [
@@ -400,15 +403,11 @@ export async function coherePrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson } = opts;
+      const { documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson } = opts;
       return await getCohereClient().chat({
         model,
         messages: [
-          { role: 'system', content: formatSystemPromptWithDocuments('cohere', {
-            // No need to include documents in Cohere's system prompt.
-            // Cohere's V2 API natively supports RAG via documents field.
-            systemPrompt
-          }) },
+          { role: 'system', content: formatSystemPromptWithDocuments('cohere', opts) },
           { role: 'user', content: prompt },
         ],
         documents: documents && documents.length > 0
@@ -479,9 +478,9 @@ export async function cerebrasPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { maxOutputToken, temperature, topP, stopSequences } = config;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', { systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', opts);
 
       return await getCerebrasClient().chat.completions.create({
         model,
@@ -558,9 +557,9 @@ export async function mistralPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { maxOutputToken, temperature, topP, stopSequences } = config;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', { systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', opts);
 
       return await getMistralClient().chat.complete({
         model,
@@ -638,8 +637,8 @@ export async function nvidiaPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT } = opts;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', { systemPrompt, documents });
+      const { config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', opts);
       const apiKey = requireEnv('NVIDIA_API_KEY');
 
       // docs: https://docs.api.nvidia.com/nim/reference/create_chat_completion_v1_chat_completions_post
@@ -711,25 +710,29 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     outputJsonFallbackField,
     systemPrompt = PROMPT_SYSTEM,
     context,
+    logPrompts = false,
+    logEvaluationResult = false,
   } = options;
 
   // Define provider order from modelSelection or use empty array
   const providers = Object.keys(modelSelection) as AIChatProvider[];
   
   // If no modelSelection provided, return empty response
-  if (providers.length === 0) {
-    return { provider: 'none', output: '' };
-  }
+  if (providers.length === 0) return { provider: 'none', output: '' };
 
   // Try each provider in order
   for (const provider of providers) {
+    const isFirstIteration = providers.indexOf(provider) === 0;
     let result: AIResponse<string> | null = null;
 
     try {
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
-      console.log(`[${provider}] 💬 Built user prompt (${prompt.length} chars):`, prompt);
+      
+      // Only log prompts on the very first iteration
+      const shouldLogPrompts = logPrompts && isFirstIteration;
+      if (shouldLogPrompts) console.log(`[${provider}] 💬 Built user prompt (${prompt.length} chars):`, prompt);
 
       const opts: Partial<PromptWithFallbackOptions> = {
         ...options,
@@ -737,6 +740,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         config,
         outputAsJson,
         systemPrompt,
+        logPrompts: shouldLogPrompts,
       };
       
       switch (provider) {
@@ -761,8 +765,10 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
           const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
             ...options,
 
-            // AI configurations for scoring and evaluation
-            modelSelection: AI_CHAT_MODELS_WRITING,
+            // AI configurations for scoring and evaluation, excludes TIER_S_PROVIDERS
+            modelSelection: Object.fromEntries(
+              Object.entries(AI_CHAT_MODELS_WRITING).filter(([provider]) => !TIER_S_PROVIDERS.includes(provider as AIChatProvider))
+            ) satisfies AIModelSelection,
             config: AI_CHAT_CONFIG_DEFAULT,
             systemPrompt: PROMPT_SYSTEM,
             context: [options.context, 'evaluation'].filter(Boolean).join('-'),
@@ -788,11 +794,13 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
           if (evaluationResult) {
             const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
-            console.log("🕵️‍♂️ Evaluation result:");
-            console.log("Score before:", scoreBefore);
-            console.log("Score after:", scoreAfter);
-            console.log("Action flags:", actionFlags);
-            console.log("Integrity flags:", integrityFlags);
+            if (logEvaluationResult) {
+              console.log("🕵️‍♂️ Evaluation result:");
+              console.log("Score before:", scoreBefore);
+              console.log("Score after:", scoreAfter);
+              console.log("Action flags:", actionFlags);
+              console.log("Integrity flags:", integrityFlags);
+            }
             return {
               ...result,
               result: evaluationResult.output
@@ -925,18 +933,19 @@ function formatDocumentsToPrompt(documents?: AIDocument[]): string {
  * // Returns: "You are a helpful assistant...\n\nContext\nUser is exploring...\n\nRules\nBe concise..."
  * ```
  */
-export function formatSystemPromptWithDocuments(provider: AIChatProvider, options: Pick<AIPromptOptions, 'systemPrompt' | 'documents'>): string {
-  const { systemPrompt: customSystemPrompt, documents } = options;
+export function formatSystemPromptWithDocuments(provider: AIChatProvider, options: Pick<AIPromptOptions, 'systemPrompt' | 'documents' | 'logPrompts'>): string {
+  const { systemPrompt: customSystemPrompt, documents, logPrompts = false } = options;
   const systemPrompt = customSystemPrompt ?? PROMPT_SYSTEM;
   
-  // Early return when no document
-  if (!documents || documents.length === 0) {
-    console.log(`[${provider}] 💬 Built system prompt (${systemPrompt.length} chars):`, systemPrompt);
+  // Early return when no document or provider is Cohere's V2 API which
+  // natively supports RAG via documents field.
+  if (!documents || documents.length === 0 || provider === 'cohere') {
+    if (logPrompts) console.log(`[${provider}] 💬 Built system prompt (${systemPrompt.length} chars):`, systemPrompt);
     return systemPrompt;
   }
   
   const formattedDocuments = formatDocumentsToPrompt(documents);
   const systemPromptWithDocs = `${systemPrompt}\n\n${formattedDocuments}`;
-  console.log(`[${provider}] 💬 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''} (${systemPromptWithDocs.length} chars):`, systemPromptWithDocs);
+  if (logPrompts) console.log(`[${provider}] 🧾 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''} (${systemPromptWithDocs.length} chars):`, systemPromptWithDocs);
   return systemPromptWithDocs;
 }

@@ -210,33 +210,79 @@ type GenAIErrorCode =
   | 'INVALID_API_KEY'
   | 'SAFETY_BLOCKED'
   | 'NETWORK_ERROR'
+  | 'INVALID_SCHEMA'
+  | 'VALIDATION_ERROR'
+  | 'BAD_REQUEST'
+  | 'SERVICE_UNAVAILABLE'
   | 'UNKNOWN';
 
 export function classifyGenAIError(err: unknown): GenAIErrorCode {
+  console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
   const msg = getErrorMessage(err).toLowerCase();
 
+  // Check for schema validation errors
+  if (
+    msg.includes('invalid schema') ||
+    msg.includes('schema missing') ||
+    msg.includes('response_format') ||
+    msg.includes('json schema') ||
+    msg.includes('array schema')
+  ) {
+    return 'INVALID_SCHEMA';
+  }
+
+  // Check for general validation errors
+  if (
+    msg.includes('validation') ||
+    msg.includes('invalid request') ||
+    msg.includes('invalid_parameter')
+  ) {
+    return 'VALIDATION_ERROR';
+  }
+
+  // Check for quota/billing errors
   if (
     msg.includes('resource_exhausted') ||
     msg.includes('quota') ||
-    msg.includes('exceeded')
+    msg.includes('exceeded') ||
+    msg.includes('billing')
   ) {
     return 'QUOTA_EXCEEDED';
   }
 
-  if (msg.includes('429') || msg.includes('rate limit')) {
+  // Check for rate limiting
+  if (msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')) {
     return 'RATE_LIMITED';
   }
 
-  if (msg.includes('403') || msg.includes('api key')) {
+  // Check for API key issues
+  if (msg.includes('403') || msg.includes('401') || msg.includes('api key') || msg.includes('unauthorized')) {
     return 'INVALID_API_KEY';
   }
 
-  if (msg.includes('safety')) {
+  // Check for safety/content policy blocks
+  if (msg.includes('safety') || msg.includes('content policy') || msg.includes('blocked')) {
     return 'SAFETY_BLOCKED';
   }
 
-  if (msg.includes('fetch') || msg.includes('network')) {
+  // Check for network/fetch errors
+  if (msg.includes('fetch') || msg.includes('network') || msg.includes('enetunreach') || msg.includes('econnrefused')) {
     return 'NETWORK_ERROR';
+  }
+
+  // Check for bad request errors (400)
+  if (msg.includes('400') || msg.includes('bad request')) {
+    return 'BAD_REQUEST';
+  }
+
+  // Check for service unavailable errors (503)
+  if (
+    msg.includes('503') ||
+    msg.includes('unavailable') ||
+    msg.includes('high demand') ||
+    msg.includes('try again later')
+  ) {
+    return 'SERVICE_UNAVAILABLE';
   }
 
   return 'UNKNOWN';

@@ -340,7 +340,7 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   // Male-preferring last names (stronger masculine associations)
   const maleLastNames = [
     'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez',
-    'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin', 'Lee',
+    'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin', 'Lee', 'Vey',
     'Thompson', 'White', 'Harris', 'Clark', 'Ramirez', 'Lewis', 'Robinson', 'Walker',
     'Young', 'Allen', 'King', 'Wright', 'Scott', 'Torres', 'Nguyen', 'Hill', 'Flores',
     'Green', 'Adams', 'Baker', 'Gonzalez', 'Nelson', 'Carter', 'Mitchell', 'Perez',
@@ -354,16 +354,16 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   ];
 
   const femaleNames = [
-    'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Charlotte', 'Amelia',
-    'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella',
+    'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Mira', 'Charlotte', 'Amelia',
+    'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella', 'Anya',
     'Madison', 'Scarlett', 'Victoria', 'Aria', 'Grace', 'Chloe', 'Camila', 'Penelope',
     'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Luna', 'Aubrey', 'Ellie',
     'Stella', 'Natalie', 'Zoe', 'Leah', 'Hazel', 'Violet', 'Aurora', 'Savannah',
     'Audrey', 'Brooklyn', 'Bella', 'Claire', 'Skylar', 'Lucy', 'Paisley', 'Everly',
     'Anna', 'Caroline', 'Nova', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya',
     'Kinsley', 'Naomi', 'Aaliyah', 'Elena', 'Sarah', 'Ariana', 'Allison', 'Kara',
-    'Gabriella', 'Alice', 'Madelyn', 'Cora', 'Ruby', 'Eva', 'Seraphina', 'Lyra',
-    'Rose', 'Iris', 'Luna', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Wren', 'Clara',
+    'Gabriella', 'Alice', 'Madelyn', 'Cora', 'Ruby', 'Eva', 'Seraphina', 'Lyra', 'Elara',
+    'Rose', 'Iris', 'Luna', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Wren', 'Clara', 'Carla',
     'Poppy', 'Briar', 'Fern', 'Olive', 'Jade', 'Pearl', 'Celeste', 'Orla', 'Elara',
     'Kehlani', 'Billie', 'Zendaya', 'Remi', 'Nyla', 'Kai', 'Indigo', 'Aurelia', 'Sienna',
     'Calliope', 'Juniper', 'Marlowe', 'Thea', 'Elodie', 'Wrenley', 'Arden', 'Loxley',
@@ -377,7 +377,7 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   ];
 
   const femaleLastNames = [
-    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye',
+    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance',
     'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
     'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow', 'Voss',
     'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',

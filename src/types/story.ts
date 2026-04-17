@@ -73,7 +73,7 @@ export const actionTypes = {
   "protect": "Defend others, shield from harm, sacrifice",
   "create": "Build something new, artistic expression, innovate",
   "heal": "Repair damage, restore health/trust",
-  "dialogue": "Interact with other characters",
+  "dialogue": "Interact with other characters, self-talk, mutter",
   "custom": "Custom prompt from reader",
   "other": "Catch-all for uncategorized actions"
 };

@@ -94,6 +94,8 @@ export type InitializeBookParams = {
   theme: string;
   /** Optional main character candidate for personalization */
   mcCandidate?: StoryMCCandidate;
+  /** Whether to generate a cover image for the book */
+  generateCoverImage?: boolean;
 };
 
 /**

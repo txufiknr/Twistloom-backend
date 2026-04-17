@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
+import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases } from "../types/story.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -18,7 +18,7 @@ import type { StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/st
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { deepEqualSimple } from "./parser.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCover, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
 import { getStoryProgress, insertStoryState, insertUserPageProgress, setActiveSession } from "../services/story.js";
 import type { BuildNextPageParams, ChooseActionParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
@@ -955,7 +955,7 @@ function buildFirstBookEvaluatorPrompt(
 ---
 CREATION CONTEXT:
 - Theme: "${theme}"
-- MC Candidate: ${getMainCharacterInfo(mcCandidate) ?? `None — character should be inferred from theme.`}
+- MC Candidate: ${getMainCharacterInfo(mcCandidate) ?? `Character should be inferred from theme. Keep the generated one if it already fits.`}
 
 EXPECTED JSON SCHEMA:
 ${firstBookOutputFormat}
@@ -1115,7 +1115,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
  */
 function getActionTypesText(): string {
   return Object.entries(actionTypes)
-    .map(([key, value]) => `• ${key}: ${value}`)
+    .map(([key, value]) => `- ${key}: ${value}`)
     .join('\n');
 }
 
@@ -1886,7 +1886,7 @@ Initial Characters:
  * ```
  */
 export async function initializeBook(params: InitializeBookParams): Promise<InitializeBookResult> {
-  const { userId, theme, mcCandidate } = params;
+  const { userId, theme, mcCandidate, generateCoverImage = false } = params;
 
   try {
     // 1. Create AI prompt for book creation
@@ -1903,7 +1903,8 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
           config: AI_CHAT_CONFIG_DEFAULT,
           modelSelection: AI_CHAT_MODELS_WRITING,
           context: 'book-creation',
-        }
+          logPrompts: true,
+        },
       } satisfies AIPromptForJson<BookCreationResponse>,
       jsonStructure: firstBookOutputFormat,
       fieldInstructions: buildFirstBookFieldInstructions(mcCandidate),
@@ -1931,33 +1932,31 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
     } = response.result;
 
     // 4. Persist book to database with character profile
-    const dbBook = await insertBook(
-      {
-        userId,
-        title,
-        totalPages,
-        language,
-        hook,
-        summary,
-        keywords,
-        mc,
-      } satisfies DBNewBook
-    );
-
+    const newBookData: DBNewBook = {
+      userId,
+      title,
+      totalPages,
+      language,
+      hook,
+      summary,
+      keywords,
+      mc,
+    };
+    console.log(`[initializeBook] 📔 newBookData:`, newBookData);
+    const dbBook = await insertBook(newBookData);
+    
     const book = mapBookFromDb(dbBook);
+    console.log(`[initializeBook] 📔 Inserted book:`, book);
     const bookId = book.id;
 
-    // 5. Generate book cover image in background (fire-and-forget)
-    void generateAndUpdateBookCover(book);
-
-    // 6. Persist first page as root page of the book
+    // 5. Persist first page as root page of the book
     const firstPage = await insertStoryPage(userId, 1, {
       ...generatedFirstPage,
       aiProvider: response.provider || 'none',
       aiModel: response.model || 'none',
     }, { bookId });
 
-    // 7. Create initial story state with generated psychological profile
+    // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
       ...generatedInitialState, // flags, difficulty, viableEnding
@@ -2002,6 +2001,9 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
         } satisfies PlaceMemory
       } : {},
     };
+
+    // 7. Generate book cover image in background (fire-and-forget)
+    if (generateCoverImage) void generateAndUpdateBookCoverImage(book, initialState);
 
     // 8. Persist story state to database
     await insertStoryState(userId, bookId, firstPage.id, initialState);
@@ -2104,6 +2106,7 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
         config,
         modelSelection: AI_CHAT_MODELS_WRITING,
         context: isUserAction ? 'story-page' : 'story-page-candidate',
+        logPrompts: true,
         systemPrompt,
         documents
       }

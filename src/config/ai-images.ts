@@ -36,10 +36,10 @@ export const AI_IMAGE_CONFIG: AIImageGenerationOptions = {
   outputMimeType: "image/jpeg",
   /** Default compression quality for JPEG/WebP images (0-100) */
   outputCompressionQuality: 85,
-  /** Whether to enhance prompts by default for casual/exploratory use */
-  enhancePrompt: true,
-  /** Whether the model is allowed to generate images of people */
-  personGeneration: PersonGeneration.ALLOW_ALL,
+  // /** Whether to enhance prompts by default for casual/exploratory use */
+  // enhancePrompt: true,
+  // /** Whether the model is allowed to generate images of people */
+  // personGeneration: PersonGeneration.ALLOW_ALL,
   /** Default image size */
   imageSize: "1K",
 };

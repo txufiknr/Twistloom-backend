@@ -110,7 +110,7 @@ const router = Router();
  */
 router.post("/", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate } = req.body;
+    const { theme, mcCandidate, generateCoverImage } = req.body;
     
     if (!theme) {
       return res.status(400).json({ 
@@ -165,11 +165,21 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       }
     }
 
+    // Validate generateCoverImage if provided
+    if (generateCoverImage !== undefined) {
+      if (typeof generateCoverImage !== 'boolean') {
+        return res.status(400).json({ 
+          error: "Invalid generateCoverImage: must be a boolean" 
+        });
+      }
+    }
+
     // Initialize book and set active session
     const book = await initializeBook({
       userId: req.userId!,
       theme,
-      mcCandidate
+      mcCandidate,
+      generateCoverImage
     });
 
     res.status(201).json(book);

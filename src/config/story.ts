@@ -21,7 +21,7 @@ export const MAX_BRANCHING_RETRIES = 3;
 
 export const VIABLE_ENDING_LENGTH = '1-3 sentences';
 export const PLACE_CONTEXT_LENGTH = '1 sentence max';
-export const BOOK_TITLE_LENGTH = '1-5 words';
+export const BOOK_TITLE_LENGTH = '2-6 words';
 export const HOOK_LENGTH = '1-2 sentences';
 export const SUMMARY_LENGTH = '50-100 words';
 export const KEYWORDS_COUNT = '3-5';

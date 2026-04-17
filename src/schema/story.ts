@@ -31,8 +31,8 @@ export const EVALUATION_SCHEMA_DEFINITION = {
   output: { type: 'object' },
   scoreBefore: { type: 'object' },
   scoreAfter: { type: 'object' },
-  actionFlags: { type: 'array' },
-  integrityFlags: { type: 'array' },
+  actionFlags: { type: 'array', items: { type: 'object' } },
+  integrityFlags: { type: 'array', items: { type: 'object' } },
 } satisfies Record<keyof AIJsonEvaluation<Record<string, unknown>>, AIJsonProperty>;
 
 export const EVALUATION_REQUIRED_FIELDS = ['output', 'scoreBefore', 'scoreAfter', 'actionFlags', 'integrityFlags'] satisfies Array<keyof AIJsonEvaluation<Record<string, unknown>>>;

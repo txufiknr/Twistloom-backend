@@ -220,7 +220,7 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
         imageSize = AI_IMAGE_CONFIG.imageSize,
         outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
         outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
-        enhancePrompt = AI_IMAGE_CONFIG.enhancePrompt,
+        // enhancePrompt = AI_IMAGE_CONFIG.enhancePrompt,
       } = opts;
 
       // Docs: https://ai.google.dev/gemini-api/docs/imagen
@@ -233,7 +233,7 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
           imageSize,
           outputMimeType,
           outputCompressionQuality,
-          enhancePrompt,
+          // enhancePrompt,
         },
       });
     },
@@ -296,7 +296,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
     async (model, prompt, opts) => {
       const {
         imageSize = AI_IMAGE_CONFIG.imageSize,
-        personGeneration = AI_IMAGE_CONFIG.personGeneration,
+        // personGeneration = AI_IMAGE_CONFIG.personGeneration,
         aspectRatio = AI_IMAGE_CONFIG.aspectRatio,
         outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
         outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
@@ -311,7 +311,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
           imageConfig: {
             aspectRatio,
             imageSize,
-            personGeneration,
+            // personGeneration,
             outputMimeType,
             outputCompressionQuality,
           },

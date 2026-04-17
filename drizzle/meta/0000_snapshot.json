@@ -1,5 +1,5 @@
 {
-  "id": "7975b2e5-b7b6-4f67-8499-eb8c9fcb971e",
+  "id": "a3bf0f9c-6a21-4597-8f7b-913c7693246a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -31,7 +31,7 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": 150
+          "default": 120
         },
         "language": {
           "name": "language",
@@ -183,6 +183,21 @@
           "columns": [
             {
               "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "books_language_idx": {
+          "name": "books_language_idx",
+          "columns": [
+            {
+              "expression": "language",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -368,6 +383,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "ai_provider": {
+          "name": "ai_provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ai_model": {
+          "name": "ai_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -458,7 +485,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "pages_parent_branch_unique": {
+          "name": "pages_parent_branch_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "parent_id",
+            "branch_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -877,6 +913,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "threads": {
+          "name": "threads",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "trauma_tags": {
           "name": "trauma_tags",
           "type": "jsonb",
@@ -910,9 +953,9 @@
           "notNull": true,
           "default": "'low'"
         },
-        "ending": {
-          "name": "ending",
-          "type": "text",
+        "viable_ending": {
+          "name": "viable_ending",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

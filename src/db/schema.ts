@@ -36,6 +36,8 @@ const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().n
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
 const lastActive = timestamp("last_active", { withTimezone: true }).defaultNow().notNull();
 const branchId = text("branch_id").notNull().default("main"); // Which reality you're in
+const image = text("image"); // ImageKit URL
+const imageId = text("image_id"); // ImageKit file ID for deletion
 
 /**
  * Create story pages table
@@ -129,7 +131,7 @@ export const storyStates = pgTable(
     hiddenState: jsonb("hidden_state").$type<HiddenState>().notNull(), // Hidden narrative state structure
     memoryIntegrity: text("memory_integrity").$type<MemoryIntegrity>().notNull().default("stable"), // "stable" | "fragmented" | "corrupted"
     difficulty: text("difficulty").$type<Difficulty>().notNull().default("low"), // "low" | "medium" | "high" | "nightmare"
-    viableEnding: text("ending").$type<Ending>(),
+    viableEnding: jsonb("viable_ending").$type<Ending>(),
     characters: jsonb("characters").$type<Record<string, CharacterMemory>>().notNull().default(sql`'{}'::jsonb`), // Character records
     places: jsonb("places").$type<Record<string, PlaceMemory>>().notNull().default(sql`'{}'::jsonb`), // Place records
     pageHistory: jsonb("page_history").$type<ActionedStoryPage[]>().notNull().default(sql`'[]'::jsonb`), // Page history with sliding window
@@ -168,8 +170,8 @@ export const users = pgTable(
     userId: userId().primaryKey(),
     name: text("name"),
     gender,
-    image: text("image"), // Profile image ImageKit URL
-    imageId: text("image_id"), // ImageKit file ID for deletion
+    image, // Profile image ImageKit URL
+    imageId, // ImageKit file ID for deletion
     lastActive,
     createdAt,
     updatedAt,
@@ -214,8 +216,8 @@ export const books = pgTable(
     language: text("language"),
     hook: text("hook"),
     summary: text("summary"),
-    image: text("image"), // Cover image ImageKit URL
-    imageId: text("image_id"), // ImageKit file ID for deletion
+    image, // Cover image ImageKit URL
+    imageId, // ImageKit file ID for deletion
     trendingScore: real("trending_score").default(0),
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['cardiff mosque', 'peel street mosque', 'world war ii', 'muslim community']
     status: text("status").$type<BookStatus | null>().default('active'),

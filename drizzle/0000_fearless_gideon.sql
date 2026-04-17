@@ -2,7 +2,7 @@ CREATE TABLE "books" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
 	"title" text NOT NULL,
-	"total_pages" integer DEFAULT 150 NOT NULL,
+	"total_pages" integer DEFAULT 120 NOT NULL,
 	"language" text,
 	"hook" text,
 	"summary" text,
@@ -39,8 +39,11 @@ CREATE TABLE "pages" (
 	"add_trauma_tag" text,
 	"character_updates" jsonb,
 	"place_updates" jsonb,
+	"ai_provider" text,
+	"ai_model" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "pages_parent_branch_unique" UNIQUE("parent_id","branch_id")
 );
 --> statement-breakpoint
 CREATE TABLE "story_state_deltas" (
@@ -75,12 +78,13 @@ CREATE TABLE "story_states" (
 	"page" integer NOT NULL,
 	"max_page" integer NOT NULL,
 	"flags" jsonb NOT NULL,
+	"threads" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"trauma_tags" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"psychological_profile" jsonb NOT NULL,
 	"hidden_state" jsonb NOT NULL,
 	"memory_integrity" text DEFAULT 'stable' NOT NULL,
 	"difficulty" text DEFAULT 'low' NOT NULL,
-	"ending" text,
+	"viable_ending" jsonb,
 	"characters" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"places" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"page_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
@@ -194,6 +198,7 @@ CREATE INDEX "books_recent_idx" ON "books" USING btree ("updated_at");--> statem
 CREATE INDEX "books_trending_idx" ON "books" USING btree ("status" DESC NULLS LAST,"trending_score" DESC NULLS LAST,"updated_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "books_user_idx" ON "books" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "books_status_idx" ON "books" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "books_language_idx" ON "books" USING btree ("language");--> statement-breakpoint
 CREATE INDEX "deleted_images_created_idx" ON "deleted_images" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "pages_book_page_idx" ON "pages" USING btree ("book_id","page");--> statement-breakpoint
 CREATE INDEX "pages_book_order_idx" ON "pages" USING btree ("book_id","page" DESC NULLS LAST);--> statement-breakpoint

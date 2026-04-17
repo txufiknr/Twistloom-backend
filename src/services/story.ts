@@ -220,12 +220,12 @@ export async function insertStoryState(
         hiddenState: state.hiddenState,
         memoryIntegrity: state.memoryIntegrity,
         difficulty: state.difficulty,
+        viableEnding: state.viableEnding,
         characters: state.characters,
         places: state.places,
         pageHistory: state.pageHistory,
         actionsHistory: state.actionsHistory,
         contextHistory: state.contextHistory,
-        viableEnding: state.viableEnding,
       })
       .onConflictDoUpdate({
         target: [storyStates.userId, storyStates.bookId, storyStates.pageId],
@@ -238,12 +238,12 @@ export async function insertStoryState(
           hiddenState: state.hiddenState,
           memoryIntegrity: state.memoryIntegrity,
           difficulty: state.difficulty,
+          viableEnding: state.viableEnding,
           characters: state.characters,
           places: state.places,
           pageHistory: state.pageHistory,
           actionsHistory: state.actionsHistory,
           contextHistory: state.contextHistory,
-          viableEnding: state.viableEnding,
           updatedAt: new Date(),
         }
       });
@@ -414,17 +414,19 @@ export async function insertUserPageProgress(params: {
   nextPageId: string;
 }): Promise<void> {
   try {
+    const userPageProgressData: DBNewUserPageProgress = {
+      userId: params.userId,
+      bookId: params.bookId,
+      pageId: params.pageId,
+      action: params.action,
+      nextPageId: params.nextPageId,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
     await dbWrite
       .insert(userPageProgress)
-      .values({
-        userId: params.userId,
-        bookId: params.bookId,
-        pageId: params.pageId,
-        action: params.action,
-        nextPageId: params.nextPageId,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      } satisfies DBNewUserPageProgress)
+      .values(userPageProgressData)
       .onConflictDoUpdate({
         target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.pageId],
         set: {
