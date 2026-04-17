@@ -83,7 +83,7 @@ await insertStoryState(userId, bookId, pageId, state);
 
 **chooseAction Integration:**
 ```typescript
-// After updateState() call
+// After advanceStoryState() call
 const previousState = await getStoryState(userId, actionedPage.id);
 if (previousState) {
   await createStateDeltaRecord(userId, activeSession.bookId, userPage.id, previousState, updatedState);

@@ -3,19 +3,18 @@ import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
-import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, maybeAddTrauma, updateState } from "./story.js";
+import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, maybeAddTrauma, advanceStoryState, processThreadUpdates } from "./story.js";
 import { processPlaceUpdates } from "./places.js";
 import { BOOK_MAX_PAGES, MAX_PAGE_HISTORY, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
-import { createStyleInput } from "./player-profile.js";
 import { processCharacterUpdates } from "./characters.js";
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { StoryGeneration, UserStoryPage } from "../types/story.js";
+import type { StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { deepEqualSimple } from "./parser.js";
@@ -27,6 +26,7 @@ import { shouldCreateSnapshot, createStateSnapshot, getLastSnapshotPage } from "
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
+import type { StoryThread } from "../types/thread.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -36,7 +36,7 @@ export const PROMPT_SYSTEM = `You are a legendary thriller writer in the traditi
 You write branching horror stories in first-person.
 Every segment ends with a choice that feels meaningful but may be an illusion.
 
-WRITING STYLE DNA:
+WRITING STYLE:
 - First-person POV only (MC).
 - Short sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
 - Fragments when emotion spikes. Repeat letter when n-nervous. Capslock when AAAAAAAAAAARGH—
@@ -70,7 +70,7 @@ CHARACTERS RULES:
 No one is safe. No one is predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode. The reader should never feel certain who to trust — including the narrator.
 
 PAGE FORMAT:
-- Write ONE short page (${MAX_WORDS_PER_PAGE} words max). Tight. Tense.
+- Max ${MAX_WORDS_PER_PAGE} words per page. Tight. Tense.
 - Write narrative style and tone in target language.
 - Ensure each continuation page maintains a consistent narrative style that flows smoothly from the previous page based on chosen action.
 - End at a moment of tension or revelation — never resolution.
@@ -79,22 +79,18 @@ PAGE FORMAT:
 - No markdown except italic if needed.
 
 BRANCHING STORY RULES:
-- Offer exactly 1-${MAX_ACTION_CHOICES} choices (verb or dialogue).
 - Choices feel meaningful. Some are traps. Some are illusions.
 - No choice should feel truly safe.
 - Exploit the gap between what the narrator knows and what the reader suspects.
 
-FORBIDDEN PATTERNS:
-❌ Overly formal or polished language
-❌ Long perfectly structured paragraphs
-❌ Explaining everything clearly
-❌ Consistent sentence structure across the page
-
 HARD RULES:
-1. Never fully explain anything.
-2. Never confirm reality unless it creates a deeper twist.
-3. Never let a beat feel predictable.
-4. Always leave doubt about what happened, what's real, who to trust.`;
+- NEVER use overly formal or polished language
+- NEVER use long perfectly structured paragraphs
+- NEVER use consistent sentence structure across the page
+- NEVER fully explain anything
+- NEVER confirm reality unless it creates a deeper twist
+- NEVER let a beat feel predictable
+- ALWAYS leave doubt about what happened, what's real, who to trust`;
 
 // ============================================================================
 // RULE SETS
@@ -404,9 +400,10 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
 }`;
 
 function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedStoryPage): string {
-  const { page, maxPage, contextHistory, flags, psychologicalProfile, hiddenState } = state;
+  const { page, maxPage, contextHistory, flags, psychologicalProfile, hiddenState, threads } = state;
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
-  const { remainingPages, isFinale, phase, phaseGoal } = getStoryStateInfo(state);
+  const stateInfo = getStoryStateInfo(state);
+  const { remainingPages, isFinale, phase, phaseGoal } = stateInfo;
   const { mc, summary } = book;
 
   return `TASK: Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
@@ -444,7 +441,7 @@ ACTION CHOICES:
 ${formatActionChoices(actions)}
 
 CHOSEN ACTION:
-${formatSelectedAction(selectedAction)}
+${formatSelectedAction(selectedAction, actions)}
 
 ---
 NARRATIVE STYLE:
@@ -485,6 +482,13 @@ ${RULES_STORY_CONSISTENCY}
 
 ---
 ${RULES_DIFFICULTY_SCALING}
+
+---
+ACTIVE THREADS:
+${formatActiveThreads(threads)}
+
+THREAD RULES:
+${formatThreadRules(threads, stateInfo)}
 
 ---
 CURRENT ENDING PLAN:
@@ -648,7 +652,7 @@ ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now.
   - Update lastInteractionAtPage
   - Adjust narrativeFlags to reflect plot developments.
 
-characterUpdates.relationshipUpdates
+relationshipUpdates
   - Changes in relationship between any two named characters (excluding MC).
   - Omit if no relationships shifted this page.
 ${isEarlyPhase ? `  - Subtle shifts only — early relationships should feel ambiguous, not defined.` : ''}
@@ -671,6 +675,40 @@ placeUpdates.updatedPlaces
   - Only update on revisit or significant event.
   - Include only changed fields: currentMood, weather, add events (1 contextual sentence: betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (with meaningful context update).
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted — update mood, weather, and sensoryDetails to reflect it.` : ''}
+
+threadUpdates.newThreads
+${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`
+: isLatePhase ? `  - Avoid introducing new threads. Focus on resolving existing ones.`
+: isEarlyPhase ? `  - Introduce 1-2 core mysteries if this is early in the story. Each thread should have a compelling question that connects to the psychological premise.`
+: isMidPhase ? `  - Introduce new threads only if essential to plot (max 1 per page). New threads should branch from existing mysteries.`
+: `  - New threads should be rare now.`}
+${isEarlyPhase || isMidPhase ? `  - title: Short, evocative name for the mystery (e.g., "Lisa's Identity", "The River Incident")
+  - question: The central mystery question (e.g., "Who is Lisa really?", "What happened at the river that night?")
+  - priority: "main" for central mysteries, "secondary" for supporting mysteries, "minor" for background details
+  - truth: "true" if the thread leads to genuine revelation, "false" if it's a deliberate misdirection, "unknown" if ambiguous
+  - importance: 0.0-1.0 (how frequently this thread should appear in the narrative)` : ''}
+
+threadUpdates.updateThreads
+${isEarlyPhase || isMidPhase ? `  - Update existing threads when their status, priority, or urgency meaningfully changes.
+  - id: Must match an existing thread ID from the story state
+  - status: "open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved)
+  - urgency: 0.0-1.0 (increase as thread approaches resolution)
+  - resolution: Only include when thread is being closed or resolved (brief summary of the answer)` : ''}
+${isLatePhase ? `  - Update thread status to "revealed" or "closed" as threads converge toward the ending.` : ''}
+${isFinale ? `  - Every main thread must be resolved (status: "closed" with resolution text).` : ''}
+
+threadUpdates.addClues
+${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mysteries.
+  - threadId: Must match an existing thread ID
+  - clue: Short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water")
+  - isFalse: Set to true if this is a deliberate misdirection (false clue)` : ''}
+${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
+${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
+
+threadUpdates.closeThreads
+${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
+  - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
+${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 
 viableEnding
   - Only include if the story trajectory has meaningfully shifted and the previously planned ending no longer fits.
@@ -721,11 +759,14 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 
 5. Thread & Event Management
   □ This page contributes to a known thread (main or side)? → If NO: connect it to one, or cut the loose content.
-  ${isEarlyPhase || isMidPhase ? `□ Too many active threads simultaneously? → Pause or collapse one. Reader tracks 3-4 comfortably; more creates noise, not tension.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ Too many active threads simultaneously? → Pause or collapse one. Reader tracks ${MAX_ACTIVE_THREADS} comfortably; more creates noise, not tension.` : ''}
   ${isEarlyPhase || isMidPhase ? `□ At least one subtle hint of future consequence? → If NO: add light foreshadowing — symbolic, indirect, deniable.` : ''}
   ${isEarlyPhase || isMidPhase ? `□ Hints too obvious or on-the-nose? → Make them symbolic or indirect. The reader should feel it before they understand it.` : ''}
   ${isLatePhase ? `□ Active threads still open that should be converging? → Begin closing or collapsing them toward the viable ending.` : ''}
-  ${isFinale ? `□ Any thread still unresolved with no deliberate ambiguity? → Resolve it, shatter it, or make its irresolution feel like the answer.` : ''}
+  ${isFinale ? `□ Any thread still unresolved with no deliberate ambiguity or resolution text? → Resolve it, shatter it, or make its irresolution feel like the answer.` : ''}
+  ${isFinale ? `□ New threads introduced in finale? → Remove all newThreads. Finale must close, not open.` : ''}
+  ${isLatePhase ? `□ New threads introduced in late phase? → Only add if absolutely essential to resolve existing threads.` : ''}
+  ${isEarlyPhase || isMidPhase ? `□ New thread has compelling question connected to psychological premise? → If NO: strengthen the question or remove the thread.` : ''}
 
 6. Illusion & Reality Distortion
   □ At least one detail subtly misleads or contradicts expectations? → If NO: add one — in behavior, environment, or a word choice that doesn't quite fit.
@@ -1079,7 +1120,7 @@ function getActionTypesText(): string {
 }
 
 function getActionRulesText({isFinale = true, limit = MAX_ACTION_CHOICES}: {isFinale?: boolean, limit?: number}): string {
-  return `Generate next 1-${limit} actions to choose:
+  return `Generate 1-${limit} actions to choose:
 - Actions represent the reader's decision - must feel natural, immediate, narrative-driven
 - Action can be verb (what to do next) or dialogue (say/answer)
 - You can mix both types naturally depending on the situation
@@ -1221,29 +1262,190 @@ function getHintGuidanceForAI(hintType: ActionHintType): string {
 }
 
 /**
- * Formats selected action for AI prompt with explicit hint processing
- * 
- * Includes processed hint guidance to ensure AI follows narrative
- * direction without robotic writing or premature reveals.
+ * Formats action choices for AI prompt
+ * @param actions - Array of action objects
+ * @returns Formatted string with action choices (A, B, C, etc.)
  */
-function formatSelectedAction(selectedAction?: Action): string {
-  if (!selectedAction) return 'No action chosen. Continue the story naturally.';
-
-  const isCustomAction = selectedAction.type == 'custom';
-
-  return `• [${selectedAction.type}] ${selectedAction.text}\n\nAbout selected action:
-• Hint: ${isCustomAction ? "-" : selectedAction.hint.text}
-• Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}
-• Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This is just a hint for guiding you to build this next page, might be a secret, not to always put in the story.`}`;
+function formatActionChoices(actions: Action[]): string {
+  return actions.map((action, index) => `${String.fromCharCode(65 + index)}. [${action.type}] ${action.text}`).join('\n');
 }
 
 /**
- * Formats action choices for AI prompt
- * @param actions - Array of action objects
- * @returns Formatted string with action choices
+ * Formats selected action for AI prompt with explicit hint processing
+ * 
+ * Includes processed hint guidance to ensure AI follows narrative
+ * direction without robotic writing and maintains A/B/C formatting consistency.
  */
-function formatActionChoices(actions: Action[]): string {
-  return actions.map(action => `• [${action.type}] ${action.text}`).join('\n');
+function formatSelectedAction(selectedAction?: Action, allActions?: Action[]): string {
+  if (!selectedAction) return 'No action chosen. Continue the story naturally toward viable ending plan.';
+
+  const isCustomAction = selectedAction.type == 'custom';
+
+  // Find the index of selected action to get the letter
+  let selectedLetter = '';
+  if (allActions) {
+    const selectedIndex = allActions.findIndex(action => action.text === selectedAction.text);
+    if (selectedIndex >= 0) {
+      selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
+    }
+  }
+
+  return `${selectedLetter ? `${selectedLetter}. ` : '• '}[${selectedAction.type}] ${selectedAction.text}
+
+About selected action:
+· Hint: ${isCustomAction ? "-" : selectedAction.hint.text}
+· Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}
+· Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This is just a hint for guiding you to build this next page, might be a secret, not to always put in the story.`}`;
+}
+
+/**
+ * Formats active story threads for AI prompt with structured display
+ * 
+ * Creates a formatted string showing all active threads with their key metadata
+ * including question, status, priority, urgency, and recent clues. This helps the AI
+ * understand which mysteries are active and how they should be developed.
+ * 
+ * @param threads - Array of active story thread objects
+ * @returns Formatted string with thread information in bullet-point format
+ * 
+ * @example
+ * ```typescript
+ * const threads = [
+ *   { title: "Lisa's Identity", question: "Who is Lisa really?", status: "developing", priority: "high", urgency: 0.85, clues: ["She knows my mother", "She wasn't in yearbook"] }
+ * ];
+ * const formatted = formatActiveThreads(threads);
+ * // Returns:
+ * // • Lisa's Identity
+ * //   Question: Who is Lisa really?
+ * //   Status: developing
+ * //   Priority: high
+ * //   Urgency: 0.85
+ * //   Clues: She knows my mother, She wasn't in yearbook
+ * ```
+ */
+function formatActiveThreads(threads: StoryThread[]): string {
+  if (!threads || threads.length === 0) {
+    return 'No active threads yet.';
+  }
+
+  return threads.map(t => `• ${t.title}
+  Question: ${t.question}
+  Status: ${t.status}
+  Priority: ${t.priority}
+  Urgency: ${t.urgency.toFixed(2)}
+  Clues: ${t.clues.length > 0 ? t.clues.slice(-2).join(", ") : "No clues yet"}`).join("\n");
+}
+
+/**
+ * Generates thread management rules based on story progression and current state
+ * 
+ * This function provides context-specific guidance for handling story threads
+ * at different stages of the narrative. Rules vary based on whether the story
+ * is in its initial phase, mid-game progression, or finale, ensuring appropriate
+ * pacing and resolution of mysteries.
+ * 
+ * @param threads - Array of current story thread objects
+ * @param stateInfo - Story state information including phase flags and page progress
+ * @returns Formatted string with thread management rules
+ * 
+ * @example
+ * ```typescript
+ * // Early game (no threads)
+ * formatThreadRules([], { isEarlyPhase: true, isMidPhase: false, isLatePhase: false, isFinale: false, pageProgress: 0.10 })
+ * // Returns: Rules for introducing initial threads
+ * 
+ * // Mid game with active threads
+ * formatThreadRules(threads, { isEarlyPhase: false, isMidPhase: true, isLatePhase: false, isFinale: false, pageProgress: 0.50 })
+ * // Returns: Rules for developing and managing existing threads
+ * 
+ * // Finale
+ * formatThreadRules(threads, { isEarlyPhase: false, isMidPhase: false, isLatePhase: true, isFinale: true, pageProgress: 0.95 })
+ * // Returns: Rules for resolving all threads
+ * ```
+ */
+function formatThreadRules(threads: StoryThread[], stateInfo: StoryStateInfo): string {
+  const { isEarlyPhase, isMidPhase, isFinale } = stateInfo;
+
+  // Count active (non-closed) threads
+  const activeThreads = threads.filter(t => t.status !== 'closed');
+  const atThreadLimit = activeThreads.length >= MAX_ACTIVE_THREADS;
+
+  // Finale: Focus on resolution
+  if (isFinale) {
+    return `
+- Do NOT introduce new threads
+- Every main thread must resolve
+- Tie threads to the viable ending
+- Reveal critical truths gradually
+- Leave some ambiguity for unsettling effect`;
+  }
+
+  // No threads yet: Initial thread creation rules
+  if (threads.length === 0) {
+    if (isEarlyPhase) {
+      // Early phase (pages 1-25%): Introduce 1-2 core mysteries
+      return `
+- Introduce 1-2 core mysteries (main threads)
+- Each thread should have a compelling question
+- Threads must connect to the psychological premise
+- Avoid overwhelming the reader
+- Focus on atmosphere and unease over answers`;
+    }
+
+    if (isMidPhase) {
+      // Mid phase (pages 25-70%): Can introduce additional threads
+      return `
+- Introduce 1 new thread if story momentum allows
+- New threads should branch from existing mysteries
+- Ensure each thread has resolution potential
+- Balance mystery with character development`;
+    }
+
+    // Late phase with no threads: Unusual state, allow cautious introduction
+    return `
+- Introduce 1 critical thread immediately
+- Must be high-impact and psychologically relevant
+- Ensure quick path to development and resolution`;
+  }
+
+  // Active threads: Development and management rules
+  if (isEarlyPhase) {
+    // Early phase: Focus on development
+    return `
+${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} active threads limit)` : `- Do NOT introduce new threads unless absolutely necessary`}
+- Focus on 1-2 threads per page (do not expand all)
+${atThreadLimit ? `- Pause or collapse one thread before introducing new ones` : ``}
+- If thread is "developing" → deepen mystery or add clue
+- If urgency is high → build toward reveal or twist
+- If thread is false → reinforce wrong belief subtly
+- Add false clues to mislead reader and enforce wrong beliefs
+- Plant seeds for future threads, but don't activate yet
+- Every main thread must eventually resolve`;
+  }
+
+  if (isMidPhase) {
+    // Mid phase: Balance development with progression
+    return `
+${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} active threads limit)` : `- Introduce new threads only if essential to plot`}
+${atThreadLimit ? `- Collapse or close one thread before introducing new ones` : `- Maximum 1 new thread per page (if needed)`}
+- Focus on 1-2 threads per page (do not expand all)
+- If thread is "developing" → deepen mystery or add clue
+- If urgency is high → move toward reveal or twist
+- If thread is false → reinforce wrong belief subtly
+- Add false clues to manipulate reader's mind and enforce wrong beliefs
+- Start closing low-priority threads
+- Avoid opening threads you cannot resolve
+- Every main thread must eventually resolve`;
+  }
+
+  // Late phase: Focus on resolution
+  return `
+${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} active threads limit)` : `- Do NOT introduce new threads`}
+- Focus on resolving existing threads
+- Prioritize high-urgency threads
+- Reveal false clues as misdirection before resolving
+- Connect thread resolutions to each other
+- Every main thread must resolve before finale`;
 }
 
 /**
@@ -1823,43 +2025,66 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
 
 /**
  * Builds the next story page using AI generation with dynamic configuration
- * 
+ *
  * This function orchestrates the complete story generation pipeline with page-based architecture:
- * 1. Creates personalized prompt with character and story context
- * 2. Determines optimal AI configuration based on story progress and psychological state
- * 3. Sends prompt to AI with dynamic parameters (candidate vs main story context)
- * 4. Safely parses AI response into structured story output
- * 5. Pre-generates candidate pages for each action (main story only)
- * 6. Persists page and state to database with parent-child relationships
- * 7. Updates user session to point to new page
- * 
+ * 0. Advance story state based on user action and previous AI turn updates
+ * 0.5. Increment page number (only after state advancement succeeds)
+ * 1. Create personalized prompt with character, story context, and previous action
+ * 2. Determine optimal AI configuration based on story progress and psychological state
+ * 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
+ * 4. Handle AI response validation
+ * 5. Extract generated content from AI response
+ * 6. Lazy branching: Atomic branch creation with retry on conflict
+ * 7. Apply current AI turn's updates to story state
+ * 8. Persist generated page to database with parent-child relationship and retry logic
+ * 9. Pre-generate candidate pages for each action in the new page
+ * 10. Create delta from previous state to new state for efficient reconstruction
+ * 11. Persist story state for the generated page (page-based state management)
+ * 12. Create snapshot if conditions are met
+ * 13. Return the persisted story page with all database metadata
+ *
  * The function uses the sophisticated configuration system from determineAIConfig()
  * to balance creativity, consistency, and reliability throughout the story progression.
  * For main story pages, it also pre-generates candidate pages for branching narrative.
- * 
- * @param userId - The user's unique identifier for database operations
- * @param mc - Main character profile containing name, gender, and psychological data
- * @param state - Current story state with progression, flags, and hidden values
- * @param actionedPage - Previous page with selected action for context
- * @param isUserAction - Whether to pre-generate candidates for next page (default: true)
+ *
+ * @param params.userId - The user's unique identifier for database operations
+ * @param params.book - Book metadata for context
+ * @param params.previousState - Current story state with progression, flags, and hidden values
+ * @param params.actionedPage - Previous page with selected action for context
+ * @param params.isUserAction - Whether to pre-generate candidates for next page (default: true)
  * @returns Promise resolving to persisted story page with database ID and metadata
- * 
+ *
  * @example
  * ```typescript
  * // Generate main story page with candidates for next actions
- * const mainPage = await buildNextPage("user123", character, storyState, currentPage, true);
+ * const mainPage = await buildNextPage({
+ *   userId: "user123",
+ *   book: currentBook,
+ *   previousState: storyState,
+ *   actionedPage: currentPage,
+ *   isUserAction: true
+ * });
  * // Returns: { id: "page456", bookId: "book789", text: "The door creaked open...", actions: [...] }
- * 
+ *
  * // Generate candidate page without additional candidates
- * const candidatePage = await buildNextPage("user123", character, storyState, currentPage, false);
+ * const candidatePage = await buildNextPage({
+ *   userId: "user123",
+ *   book: currentBook,
+ *   previousState: storyState,
+ *   actionedPage: currentPage,
+ *   isUserAction: false
+ * });
  * // Returns: { id: "page457", bookId: "book789", text: "Reality began to distort...", actions: [...] }
  * ```
  */
 export async function buildNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
   const { userId, book, previousState, actionedPage, isUserAction } = params;
   
-  // Update story state for context (increments page, update context summary, actions history)
-  const storyState = await updateState(previousState, actionedPage);
+  // 0. Advance story state based on user action and previous AI turn updates
+  const advancedState = await advanceStoryState(previousState, actionedPage);
+
+  // 0.5. Increment page number (only after state advancement succeeds)
+  const storyState = { ...advancedState, page: previousState.page + 1 };
 
   // 1. Create personalized prompt with character, story context, and previous action
   const { systemPrompt, documents } = buildSystemPrompt(book, storyState);
@@ -1903,8 +2128,8 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
   let newPage: PersistedStoryPage | undefined;
   let retryCount = 0;
 
-  // 7. Update story state with result from AI
-  const newState = updateStoryStateFromGeneratedPage(storyState, generatedStoryPage);
+  // 7. Apply current AI turn's updates to story state
+  const newState = applyAIUpdatesToState(storyState, generatedStoryPage);
 
   // 8. Persist generated page to database with parent-child relationship and retry logic
   while (retryCount < MAX_BRANCHING_RETRIES) {
@@ -1991,17 +2216,18 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
 }
 
 /**
- * Updates story state based on generated page content from AI
- * 
- * Handles consolidation of AI-generated updates including viable endings,
- * trauma tags, character updates, and place updates into the current story state.
- * 
+ * Applies current AI turn's updates to story state
+ *
+ * This function processes updates (viable ending, trauma, characters, places, threads)
+ * generated by the AI in the current turn and applies them to the story state.
+ * This is called after AI generation succeeds.
+ *
  * @param storyState - Current story state to update
- * @param generatedPage - AI-generated page content with potential updates
- * @returns Updated story state with all AI modifications applied
+ * @param generatedPage - AI-generated page content with current turn's updates
+ * @returns Updated story state with current AI modifications applied
  */
-function updateStoryStateFromGeneratedPage(
-  storyState: StoryState, 
+function applyAIUpdatesToState(
+  storyState: StoryState,
   generatedPage: StoryGeneration
 ): StoryState {
   // Create new state with viable ending updates
@@ -2021,6 +2247,9 @@ function updateStoryStateFromGeneratedPage(
 
   // Process place updates from AI output
   processPlaceUpdates(newState, generatedPage.placeUpdates);
+
+  // Process thread updates from AI output
+  processThreadUpdates(newState, generatedPage.threadUpdates);
 
   return newState;
 }

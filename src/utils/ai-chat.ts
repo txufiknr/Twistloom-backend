@@ -124,7 +124,7 @@ export async function githubPrompt(
     options,
     async (model, prompt, opts) => {
       const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('github', { systemPrompt, documents });
       return await getGitHubClient().chat.completions.create({
         model,
         messages: [
@@ -212,7 +212,7 @@ export async function geminiPrompt(
         required: outputJsonRequired || []
       } satisfies Schema : undefined;
 
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', { systemPrompt, documents });
       const response = await getGeminiClient().models.generateContent({
         model,
         contents: [{ parts: [{ text: `${systemPromptWithDocuments}\n\n${prompt}` }] }],
@@ -302,7 +302,7 @@ export async function groqPrompt(
     async (model, prompt, opts) => {
       const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { maxOutputToken, temperature, topP, stopSequences } = config;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', { systemPrompt, documents });
 
       const { data, response } = await getGroqClient().chat.completions.create({
         messages: [
@@ -404,7 +404,7 @@ export async function coherePrompt(
       return await getCohereClient().chat({
         model,
         messages: [
-          { role: 'system', content: formatSystemPromptWithDocuments({
+          { role: 'system', content: formatSystemPromptWithDocuments('cohere', {
             // No need to include documents in Cohere's system prompt.
             // Cohere's V2 API natively supports RAG via documents field.
             systemPrompt
@@ -481,7 +481,7 @@ export async function cerebrasPrompt(
     async (model, prompt, opts) => {
       const { systemPrompt, documents, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { maxOutputToken, temperature, topP, stopSequences } = config;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', { systemPrompt, documents });
 
       return await getCerebrasClient().chat.completions.create({
         model,
@@ -560,7 +560,7 @@ export async function mistralPrompt(
     async (model, prompt, opts) => {
       const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       const { maxOutputToken, temperature, topP, stopSequences } = config;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', { systemPrompt, documents });
 
       return await getMistralClient().chat.complete({
         model,
@@ -639,7 +639,7 @@ export async function nvidiaPrompt(
     options,
     async (model, prompt, opts) => {
       const { systemPrompt, documents, config = AI_CHAT_CONFIG_DEFAULT } = opts;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments({ systemPrompt, documents });
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', { systemPrompt, documents });
       const apiKey = requireEnv('NVIDIA_API_KEY');
 
       // docs: https://docs.api.nvidia.com/nim/reference/create_chat_completion_v1_chat_completions_post
@@ -729,16 +729,14 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
-      console.log(`[${provider}] 💬 Full prompt (system: ${systemPrompt.length} chars, user: ${prompt.length} chars)`, {
-        systemPrompt,
-        prompt
-      });
+      console.log(`[${provider}] 💬 Built user prompt (${prompt.length} chars):`, prompt);
 
       const opts: Partial<PromptWithFallbackOptions> = {
         ...options,
         models,
         config,
         outputAsJson,
+        systemPrompt,
       };
       
       switch (provider) {
@@ -927,14 +925,18 @@ function formatDocumentsToPrompt(documents?: AIDocument[]): string {
  * // Returns: "You are a helpful assistant...\n\nContext\nUser is exploring...\n\nRules\nBe concise..."
  * ```
  */
-export function formatSystemPromptWithDocuments(options: Pick<AIPromptOptions, 'systemPrompt' | 'documents'>): string {
+export function formatSystemPromptWithDocuments(provider: AIChatProvider, options: Pick<AIPromptOptions, 'systemPrompt' | 'documents'>): string {
   const { systemPrompt: customSystemPrompt, documents } = options;
   const systemPrompt = customSystemPrompt ?? PROMPT_SYSTEM;
   
+  // Early return when no document
   if (!documents || documents.length === 0) {
+    console.log(`[${provider}] 💬 Built system prompt (${systemPrompt.length} chars):`, systemPrompt);
     return systemPrompt;
   }
   
   const formattedDocuments = formatDocumentsToPrompt(documents);
-  return `${systemPrompt}\n\n${formattedDocuments}`;
+  const systemPromptWithDocs = `${systemPrompt}\n\n${formattedDocuments}`;
+  console.log(`[${provider}] 💬 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''} (${systemPromptWithDocs.length} chars):`, systemPromptWithDocs);
+  return systemPromptWithDocs;
 }

@@ -391,6 +391,7 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     page: dbStoryState.page,
     maxPage: dbStoryState.maxPage,
     flags: dbStoryState.flags,
+    threads: dbStoryState.threads,
     traumaTags: dbStoryState.traumaTags,
     psychologicalProfile: dbStoryState.psychologicalProfile,
     hiddenState: dbStoryState.hiddenState,

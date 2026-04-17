@@ -1,8 +1,9 @@
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
-import type { CharacterMemory, CharacterUpdates } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
 import type { DBPage, DBUserSession } from "./schema.js";
+import type { StoryThread, ThreadUpdates } from "./thread.js";
 
 /**
  * Available moods for story pages
@@ -509,8 +510,12 @@ export type StoryPage = {
   addTraumaTag?: string;
   /** Updates to characters (new and existing) */
   characterUpdates?: CharacterUpdates;
+  /** Updates to character relationships */
+  relationshipUpdates?: RelationshipUpdate[];
   /** Updates to places (new and existing) */
   placeUpdates?: PlaceUpdates;
+  /** Updates to story threads (new threads, thread modifications, clues) */
+  threadUpdates?: ThreadUpdates;
   /** AI provider used for generating the page content */
   aiProvider?: AIChatProvider | 'none';
   /** AI model used for generating the page content */
@@ -606,14 +611,12 @@ export type StoryState = {
    */
   difficulty: Difficulty;
 
-  // /**
-  //  * Cached ending archetype assigned at story progression milestone
-  //  * 
-  //  * This is set dynamically between 30-50% story progress to allow
-  //  * proper foreshadowing while maintaining narrative consistency.
-  //  * undefined until the assignment timing is reached.
-  //  */
-  // cachedEndingArchetype?: Ending;
+  /**
+   * Planned viable ending for story direction and foreshadowing
+   * 
+   * This is set dynamically between early-late story progress to allow
+   * proper foreshadowing while maintaining narrative consistency.
+   */
   viableEnding?: Ending;
 
   /**
@@ -657,6 +660,8 @@ export type StoryState = {
    * as the story progresses using specialized summarization models.
    */
   contextHistory: string;
+
+  threads: StoryThread[];
 };
 
 /**

@@ -46,9 +46,67 @@ const router = Router();
  * Accepts theme and main character candidate, initializes story with AI.
  * Returns complete book information with first page and initial state.
  * 
- * @param theme - Story theme (e.g., "abandoned asylum", "haunted mansion")
- * @param mcCandidate - Main character information for story generation
- * @returns Book object with first page and initial story state
+ * @param theme - Story theme (e.g., "abandoned asylum", "haunted mansion") - Required
+ * @param mcCandidate.name - Character's display name - Optional
+ * @param mcCandidate.age - Character's age in years - Optional
+ * @param mcCandidate.gender - Character's gender (male/female/other) - Optional
+ * @param mcCandidate.bio - Character's bio - Optional
+ * 
+ * @example
+ * // Request
+ * POST /api/books
+ * Headers: X-Client-Id: user123
+ * Body: {
+ *   "theme": "haunted mansion mystery",
+ *   "mcCandidate": {
+ *     "name": "Sarah",
+ *     "age": 28,
+ *     "gender": "female",
+ *     "bio": "Shy librarian with hidden past"
+ *   }
+ * }
+ * 
+ * // Response
+ * {
+ *   "book": {
+ *     "id": "book123",
+ *     "title": "The Whispering Halls",
+ *     "hook": "Sarah never believed in ghosts until she found the diary",
+ *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
+ *     "keywords": ["mystery", "thriller", "haunted"],
+ *     "image": "https://example.com/cover.jpg",
+ *     "status": "active",
+ *     "totalPages": 50,
+ *     "language": "en",
+ *     "mc": {
+ *       "name": "Sarah",
+ *       "age": 28,
+ *       "gender": "female",
+ *       "bio": "Shy librarian with hidden past"
+ *     },
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-01T00:00:00.000Z"
+ *   },
+ *   "firstPage": {
+ *     "id": "page456",
+ *     "page": 1,
+ *     "text": "The library was silent except for the rain...",
+ *     "actions": [...]
+ *   },
+ *   "initialState": {
+ *     "page": 1,
+ *     "maxPage": 50,
+ *     "flags": {...},
+ *     "threads": [],
+ *     "traumaTags": [],
+ *     "psychologicalProfile": {...}
+ *   },
+ *   "session": {
+ *     "userId": "user123",
+ *     "bookId": "book123",
+ *     "pageId": "page456"
+ *   }
+ * }
  */
 router.post("/", requireClientId, async (req: Request, res: Response) => {
   try {
@@ -58,6 +116,53 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       return res.status(400).json({ 
         error: "Missing required field: theme is required" 
       });
+    }
+
+    if (typeof theme !== 'string' || theme.trim().length === 0) {
+      return res.status(400).json({ 
+        error: "Invalid theme: must be a non-empty string" 
+      });
+    }
+
+    // Validate mcCandidate if provided
+    if (mcCandidate) {
+      if (typeof mcCandidate !== 'object' || mcCandidate === null) {
+        return res.status(400).json({ 
+          error: "Invalid mcCandidate: must be an object" 
+        });
+      }
+
+      if (mcCandidate.name !== undefined) {
+        if (typeof mcCandidate.name !== 'string' || mcCandidate.name.trim().length === 0) {
+          return res.status(400).json({ 
+            error: "Invalid mcCandidate.name: must be a non-empty string" 
+          });
+        }
+      }
+
+      if (mcCandidate.age !== undefined) {
+        if (typeof mcCandidate.age !== 'number' || mcCandidate.age < 0 || mcCandidate.age > 150) {
+          return res.status(400).json({ 
+            error: "Invalid mcCandidate.age: must be a number between 0 and 150" 
+          });
+        }
+      }
+
+      if (mcCandidate.gender !== undefined) {
+        if (typeof mcCandidate.gender !== 'string' || !['male', 'female', 'other'].includes(mcCandidate.gender)) {
+          return res.status(400).json({ 
+            error: "Invalid mcCandidate.gender: must be 'male', 'female', or 'other'" 
+          });
+        }
+      }
+
+      if (mcCandidate.bio !== undefined) {
+        if (typeof mcCandidate.bio !== 'string' || mcCandidate.bio.trim().length === 0) {
+          return res.status(400).json({ 
+            error: "Invalid mcCandidate.bio: must be a non-empty string" 
+          });
+        }
+      }
     }
 
     // Initialize book and set active session

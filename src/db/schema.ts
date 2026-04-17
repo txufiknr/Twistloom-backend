@@ -23,6 +23,7 @@ import type { CharacterMemory, CharacterUpdates } from "../types/character.js";
 import type { PlaceMemory, PlaceUpdates } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
 import { BOOK_AVERAGE_PAGES } from "../config/story.js";
+import type { StoryThread } from "../types/thread.js";
 
 /** Pre-defined columns */
 const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -122,6 +123,7 @@ export const storyStates = pgTable(
     page: integer("page").notNull(),
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
+    threads: jsonb("threads").$type<StoryThread[]>().notNull().default(sql`'[]'::jsonb`), // Known threads
     traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Sliding window (MAX_TRAUMA_TAGS)
     psychologicalProfile: jsonb("psychological_profile").$type<PsychologicalProfile>().notNull(), // PsychologicalProfile structure
     hiddenState: jsonb("hidden_state").$type<HiddenState>().notNull(), // Hidden narrative state structure

@@ -528,7 +528,7 @@ export async function generateBookCover(book: Book, state?: StoryState): Promise
     const mcAge = book.mc.age;
     const mcAppearance = mcGender == 'male' ? 'dapper' : 'lovely';
     const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcAge} years-old ${mcGender} protagonist.`;
-    const fullPrompt = formatSystemPromptWithDocuments({systemPrompt: taskPrompt, documents: bookMeta});
+    const fullPrompt = formatSystemPromptWithDocuments('gemini', {systemPrompt: taskPrompt, documents: bookMeta});
     const imageResult = await geminiGenerateImage(fullPrompt, {
       numberOfImages: 1,
       aspectRatio: "3:4",
@@ -565,7 +565,7 @@ export async function generateAndUpdateBookCoverOptimized(book: Book, state?: St
     const mcAge = book.mc.age;
     const mcAppearance = mcGender == 'male' ? 'dapper' : 'lovely';
     const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcAge} years-old ${mcGender} protagonist.`;
-    const fullPrompt = formatSystemPromptWithDocuments({systemPrompt: taskPrompt, documents: bookMeta});
+    const fullPrompt = formatSystemPromptWithDocuments('gemini', {systemPrompt: taskPrompt, documents: bookMeta});
     
     // Generate images without writing to disk
     const imageResult = await geminiGenerateImage(fullPrompt, {

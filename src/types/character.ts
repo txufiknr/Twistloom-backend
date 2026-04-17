@@ -218,6 +218,4 @@ export type CharacterUpdates = {
   newCharacters: CharacterMemory[];
   /** Updates to existing characters */
   updatedCharacters: CharacterUpdate[];
-  /** Updates to character relationships */
-  relationshipUpdates?: RelationshipUpdate[];
 };

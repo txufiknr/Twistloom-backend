@@ -18,7 +18,9 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   actions: { type: 'array', items: { type: 'object' } },
   addTraumaTag: { type: 'string' },
   characterUpdates: { type: 'object' },
+  relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
+  threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
   isMajorEvent: { type: 'boolean' }
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
@@ -55,6 +57,7 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
     guilt: 'low',
     curiosity: 'medium'
   },
+  threads: [],
   traumaTags: [],
   psychologicalProfile: PSYCHOLOGICAL_PROFILE_DEFAULTS,
   hiddenState: HIDDEN_STATE_DEFAULTS,

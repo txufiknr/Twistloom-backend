@@ -14,46 +14,32 @@ export type BookStatus = 'active' | 'archived' | 'draft';
 export type Book = {
   /** Unique identifier for the book */
   id: string;
-  
   /** User ID who owns this book */
   userId: string;
-  
   /** Book title (catchy, mysterious) */
   title: string;
-  
   /** Total number of pages in the book */
   totalPages: number;
-  
   /** Book language */
   language: string;
-  
   /** Hook text (1-2 sentences, intriguing) */
   hook: string;
-  
   /** Summary (50-100 words, sets up psychological tension) */
   summary: string;
-  
   /** Cover image ImageKit URL */
   image?: string;
-  
   /** ImageKit file ID for deletion */
   imageId?: string;
-  
   /** Trending score for book discovery */
   trendingScore: number;
-  
   /** Keywords for book discovery (e.g. ['cardiff mosque', 'peel street mosque']) */
   keywords: string[];
-  
   /** Book status ('active' | 'archived' | 'draft') */
   status: BookStatus;
-  
   /** Main character profile with name, age, gender */
   mc: StoryMC;
-  
   /** When the book was created */
   createdAt: Date;
-  
   /** When the book was last updated */
   updatedAt: Date;
 };

@@ -170,7 +170,8 @@ export function updateRelationship(character: CharacterMemory, update: Relations
  */
 export function processCharacterUpdates(
   state: StoryState,
-  characterUpdates?: CharacterUpdates
+  characterUpdates?: CharacterUpdates,
+  relationshipUpdates?: RelationshipUpdate[],
 ): void {
   // Process character updates if they exist
   if (!characterUpdates) return;
@@ -189,7 +190,6 @@ export function processCharacterUpdates(
   }
 
   // Process relationship updates
-  const { relationshipUpdates } = characterUpdates;
   if (relationshipUpdates && relationshipUpdates.length > 0) {
     for (const relUpdate of relationshipUpdates) {
       const sourceCharacter = state.characters[relUpdate.source];
@@ -367,7 +367,7 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
     'Poppy', 'Briar', 'Fern', 'Olive', 'Jade', 'Pearl', 'Celeste', 'Orla', 'Elara',
     'Kehlani', 'Billie', 'Zendaya', 'Remi', 'Nyla', 'Kai', 'Indigo', 'Aurelia', 'Sienna',
     'Calliope', 'Juniper', 'Marlowe', 'Thea', 'Elodie', 'Wrenley', 'Arden', 'Loxley',
-    'Sloane', 'Blair', 'Quinn', 'Reese', 'Kensington', 'Presley', 'Rachel',
+    'Sloane', 'Blair', 'Quinn', 'Reese', 'Kensington', 'Presley', 'Rachel', 'Lena',
     'Monroe', 'Harlow', 'Kinslee', 'Ensley', 'Finley', 'Tinsley', 'Brinley', 'Rylie',
     'Oakley', 'Ember', 'Nova', 'Lyra', 'Athena', 'Freya', 'Lilith', 'Persephone',
     'Ophelia', 'Cassia', 'Elara', 'Seraphine', 'Evangeline', 'Genevieve', 'Maxine',
@@ -379,7 +379,7 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   const femaleLastNames = [
     'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye',
     'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
-    'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow',
+    'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow', 'Voss',
     'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',
     'Iris', 'Lily', 'Daisy', 'Tulip', 'Violet', 'Poppy', 'Marigold', 'Azalea', 'Camellia', 'Jasmine',
     'Rosewood', 'Moonlight', 'Starlight', 'Sunshine', 'Rainbow', 'Butterfly', 'Phoenix', 'Serenity',

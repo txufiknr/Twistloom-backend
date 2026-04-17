@@ -1,6 +1,6 @@
 import type { AIChatConfig } from "../types/ai-chat.js";
 
-export const DEFAULT_MAX_OUTPUT_TOKEN: number = 1500;
+export const DEFAULT_MAX_OUTPUT_TOKEN: number = 3000;
 
 /** Temperature controls randomness (0.6 - 0.85): > 0.85 → messy / incoherent, < 0.6 → robotic */
 export const DEFAULT_TEMPERATURE: number = 0.7;

@@ -2,7 +2,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { handleUnauthorizedError } from '../utils/error.js';
 import { dbWrite } from '../db/client.js';
 import { userDevices } from '../db/schema.js';
-import { isValidUuid } from '../utils/uuid.js';
+import { generateId, isValidUuid } from '../utils/uuid.js';
+import { IS_PRODUCTION } from '../config/constants.js';
 
 /**
  * Middleware to validate X-Client-Id header
@@ -11,11 +12,11 @@ import { isValidUuid } from '../utils/uuid.js';
  * @param next - Express next middleware function
  */
 export function requireClientId(req: Request, res: Response, next: NextFunction): void {
-  const userId = req.header("X-Client-Id");
+  const userId = req.header("X-Client-Id") ?? (IS_PRODUCTION ? undefined : generateId());
 
   // Validate userId is a valid UUID
   if (!userId || !isValidUuid(userId)) {
-    handleUnauthorizedError(res, "Invalid client id");
+    handleUnauthorizedError(res, "Invalid client ID");
     return;
   }
 
