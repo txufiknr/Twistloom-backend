@@ -18,6 +18,7 @@ import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import type { StateDelta, StoryState, Action } from "../types/story.js";
 import type { CharacterMemory } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
+import type { StoryThread } from "../types/thread.js";
 import { 
   createPsychologicalFlagsDelta,
   createPsychologicalProfileDelta,
@@ -94,6 +95,17 @@ function areActionsDifferent(actions1: Action[], actions2: Action[]): boolean {
 }
 
 /**
+ * Efficiently compares two arrays of threads
+ * 
+ * @param threads1 - First threads array
+ * @param threads2 - Second threads array
+ * @returns True if arrays are different
+ */
+function areThreadsDifferent(threads1: StoryThread[], threads2: StoryThread[]): boolean {
+  return !deepEqualSimple(threads1, threads2);
+}
+
+/**
  * Creates a delta for actions history changes
  * 
  * @param fromActions - Original actions history
@@ -130,6 +142,78 @@ function createActionsHistoryDelta(fromActions: Action[], toActions: Action[]): 
     } else {
       // Length changed but not just additions - full replacement
       return { fullActionsHistory: toActions };
+    }
+  }
+  return null;
+}
+
+/**
+ * Creates a delta for threads changes
+ * 
+ * @param fromThreads - Original threads array
+ * @param toThreads - Updated threads array
+ * @returns Threads delta or null if no changes
+ */
+function createThreadsDelta(fromThreads: StoryThread[], toThreads: StoryThread[]): {
+  addedThreads?: StoryThread[];
+  updatedThreads?: Array<{ id: string; updates: Partial<StoryThread> }>;
+  removedThreads?: string[];
+  fullThreads?: StoryThread[];
+} | null {
+  if (areThreadsDifferent(toThreads, fromThreads)) {
+    // Handle edge cases first
+    if (fromThreads.length === 0 && toThreads.length > 0) {
+      // From empty to non-empty - all threads are additions
+      return { addedThreads: toThreads };
+    } else if (toThreads.length === 0) {
+      // To empty - full replacement
+      return { fullThreads: toThreads };
+    }
+    
+    // Track thread IDs for comparison
+    const fromThreadIds = new Set(fromThreads.map(t => t.id));
+    const toThreadIds = new Set(toThreads.map(t => t.id));
+    
+    // Find added threads
+    const addedThreads = toThreads.filter(t => !fromThreadIds.has(t.id));
+    
+    // Find removed threads
+    const removedThreads = fromThreads.filter(t => !toThreadIds.has(t.id)).map(t => t.id);
+    
+    // Find updated threads (same ID but different content)
+    const updatedThreads: Array<{ id: string; updates: Partial<StoryThread> }> = [];
+    for (const toThread of toThreads) {
+      if (fromThreadIds.has(toThread.id)) {
+        const fromThread = fromThreads.find(t => t.id === toThread.id);
+        if (fromThread && areThreadsDifferent([fromThread], [toThread])) {
+          // Find the specific fields that changed
+          const updates: Record<string, unknown> = {};
+          for (const key of Object.keys(toThread) as Array<keyof StoryThread>) {
+            if (key !== 'id' && JSON.stringify(toThread[key]) !== JSON.stringify(fromThread[key])) {
+              updates[key] = toThread[key];
+            }
+          }
+          if (Object.keys(updates).length > 0) {
+            updatedThreads.push({ id: toThread.id, updates });
+          }
+        }
+      }
+    }
+    
+    // Determine the most efficient delta format
+    if (addedThreads.length > 0 || removedThreads.length > 0 || updatedThreads.length > 0) {
+      const result: {
+        addedThreads?: StoryThread[];
+        updatedThreads?: Array<{ id: string; updates: Partial<StoryThread> }>;
+        removedThreads?: string[];
+      } = {};
+      if (addedThreads.length > 0) result.addedThreads = addedThreads;
+      if (updatedThreads.length > 0) result.updatedThreads = updatedThreads;
+      if (removedThreads.length > 0) result.removedThreads = removedThreads;
+      return result;
+    } else {
+      // Threads are completely different - store full replacement
+      return { fullThreads: toThreads };
     }
   }
   return null;
@@ -295,6 +379,12 @@ export function createStateDelta(
     Object.assign(delta, actionsDelta);
   }
 
+  // Track threads changes
+  const threadsDelta = createThreadsDelta(fromState.threads, toState.threads);
+  if (threadsDelta) {
+    Object.assign(delta, threadsDelta);
+  }
+
   return delta;
 }
 
@@ -402,11 +492,38 @@ export function applyStateDelta(baseState: StoryState, delta: StateDelta): Story
     // Incremental additions (most common case)
     newState.actionsHistory = [...newState.actionsHistory, ...delta.addedActions];
   }
-  
+
+  // Threads management
+  if (delta.fullThreads) {
+    // Full threads replacement (when threads are completely different)
+    newState.threads = delta.fullThreads;
+  } else {
+    // Apply incremental thread changes
+    if (delta.addedThreads) {
+      // Add new threads
+      newState.threads = [...newState.threads, ...delta.addedThreads];
+    }
+
+    if (delta.removedThreads) {
+      // Remove threads by ID
+      newState.threads = newState.threads.filter(thread => !delta.removedThreads!.includes(thread.id));
+    }
+
+    if (delta.updatedThreads) {
+      // Update existing threads
+      for (const { id, updates } of delta.updatedThreads) {
+        const threadIndex = newState.threads.findIndex(t => t.id === id);
+        if (threadIndex !== -1) {
+          newState.threads[threadIndex] = { ...newState.threads[threadIndex], ...updates };
+        }
+      }
+    }
+  }
+
   // Update page information
   newState.pageId = delta.pageId;
   newState.page = delta.page;
-  
+
   return newState;
 }
 

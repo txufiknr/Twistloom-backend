@@ -12,6 +12,8 @@ CREATE TABLE "books" (
 	"keywords" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"status" text DEFAULT 'active',
 	"mc" jsonb NOT NULL,
+	"likes_count" integer DEFAULT 0 NOT NULL,
+	"read_count" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -169,6 +171,9 @@ CREATE TABLE "user_sessions" (
 CREATE TABLE "users" (
 	"user_id" uuid PRIMARY KEY NOT NULL,
 	"name" text,
+	"username" text,
+	"email" text,
+	"pen_name" text,
 	"gender" text,
 	"image" text,
 	"image_id" text,

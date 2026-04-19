@@ -8,6 +8,7 @@ import { deletedImages } from "../db/schema.js";
 import multer, { type FileFilterCallback } from "multer";
 import { MAX_IMAGE_UPLOAD_SIZE } from "../config/image.js";
 import type { ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
+import type { Book } from "../types/book.js";
 
 let imageKitClient: ImageKit | null = null;
 
@@ -419,16 +420,15 @@ function generateImageFilename(entityId: string, prefix: string, extension: stri
  */
 export async function uploadBookCover(
   imageSource: ImageUploadSource,
-  bookId: string,
-  bookTitle: string,
-  keywords: string[]
+  bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
 ): Promise<ImageKit.Files.FileUploadResponse | null> {
-  return uploadImageKit(imageSource, bookId, {
+  const { id, title, keywords } = bookMeta;
+  return uploadImageKit(imageSource, id, {
     folder: 'books',
-    tags: [...keywords, 'book-cover', `book-id:${bookId}`],
+    tags: [...keywords, 'book-cover', `book-id:${id}`],
     customMetadata: {
-      bookId,
-      bookTitle,
+      bookId: id,
+      bookTitle: title,
     },
     filenamePrefix: 'cover',
   });
@@ -476,6 +476,21 @@ export async function uploadUserProfile(
   });
 }
 
+/**
+ * Deletes a file from ImageKit with fallback to deletion queue
+ * 
+ * Attempts to delete the file directly from ImageKit. If deletion fails,
+ * queues the file for retry by the cleanup cron job. This ensures reliability
+ * even during temporary API failures.
+ * 
+ * @param fileId - ImageKit file ID to delete
+ * @returns Promise resolving when deletion is attempted
+ * 
+ * @example
+ * ```typescript
+ * await deleteFileFromImageKit('file_id_123');
+ * ```
+ */
 export async function deleteFileFromImageKit(fileId: string) {
   const imagekit = getImageKitClient();
   if (!imagekit) return;
@@ -486,7 +501,7 @@ export async function deleteFileFromImageKit(fileId: string) {
   } catch (error) {
     // Queue for retry by cleanup cron job
     try {
-      await dbWrite.insert(deletedImages).values({ fileId });
+      await queueImageForDeletion(fileId);
       console.log(`[imagekit] 🔄 File ${fileId} queued for retry by cleanup job:`, getErrorMessage(error));
     } catch (dbError) {
       console.error(`[imagekit] ❌ Failed to queue image deletion for ${fileId}:`, getErrorMessage(dbError));
@@ -494,6 +509,20 @@ export async function deleteFileFromImageKit(fileId: string) {
   }
 }
 
+/**
+ * Bulk deletes multiple files from ImageKit
+ * 
+ * Deletes multiple files in a single API call for better performance.
+ * Unlike single file deletion, this does not have automatic fallback to queue.
+ * 
+ * @param fileIds - Array of ImageKit file IDs to delete
+ * @returns Promise resolving when deletion is attempted
+ * 
+ * @example
+ * ```typescript
+ * await deleteFilesFromImageKit(['file_id_1', 'file_id_2', 'file_id_3']);
+ * ```
+ */
 export async function deleteFilesFromImageKit(fileIds: string[]) {
   const imagekit = getImageKitClient();
   if (!imagekit) return;
@@ -506,6 +535,20 @@ export async function deleteFilesFromImageKit(fileIds: string[]) {
   }
 }
 
+/**
+ * Deletes a folder and all its contents from ImageKit
+ * 
+ * Permanently deletes the specified folder and all files within it.
+ * This operation cannot be undone.
+ * 
+ * @param folderPath - Path of the folder to delete (e.g., 'books/2024/01/15')
+ * @returns Promise resolving when deletion is attempted
+ * 
+ * @example
+ * ```typescript
+ * await deleteFolderFromImageKit('books/2024/01/15');
+ * ```
+ */
 export async function deleteFolderFromImageKit(folderPath: string) {
   const imagekit = getImageKitClient();
   if (!imagekit) return;
@@ -515,6 +558,35 @@ export async function deleteFolderFromImageKit(folderPath: string) {
     console.log(`[imagekit] 🗑️ Folder "${folderPath}" and all its contents deleted.`);
   } catch (error) {
     console.error(`[imagekit] ❌ Failed to delete folder "${folderPath}"`, getErrorMessage(error));
+  }
+}
+
+/**
+ * Queues an image for deletion in the deleted_images table
+ * 
+ * This function is used to track images that need to be deleted from ImageKit.
+ * A separate cleanup process will handle the actual deletion.
+ * 
+ * @param imageId - ImageKit file ID to queue for deletion
+ * @returns Promise resolving when deletion is queued
+ * 
+ * @example
+ * ```typescript
+ * await queueImageForDeletion('file_id_123');
+ * ```
+ */
+export async function queueImageForDeletion(imageId: string): Promise<void> {
+  try {
+    await dbWrite
+      .insert(deletedImages)
+      .values({
+        fileId: imageId,
+        createdAt: new Date(),
+      });
+    console.log(`[queueImageForDeletion] 🗑️ Queued image ${imageId} for deletion`);
+  } catch (error) {
+    console.error('[queueImageForDeletion] ❌ Error queuing image for deletion:', {fileId: imageId, error: getErrorMessage(error)});
+    // Don't throw - deletion queue failure shouldn't block the main operation
   }
 }
 

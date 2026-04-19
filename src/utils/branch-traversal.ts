@@ -54,7 +54,7 @@ import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_AVERAGE_PAGES } from "../config/story.js";
 import type { DBPage } from "../types/schema.js";
-import type { PersistedStoryPage, StoryState, StateSnapshot, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry } from "../types/story.js";
+import type { PersistedStoryPage, StoryState, StateSnapshot, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry, Action, ActionType, ActionHintType } from "../types/story.js";
 import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
 import { 
   GET_STORY_STATE_CIRCUIT_THRESHOLD,
@@ -732,6 +732,55 @@ export async function reconstructStoryState(
       // Ensure final state matches current page
       currentState.pageId = currentPageId;
       currentState.page = branchPath.pages[currentPageIndex].page;
+      
+      // Set maxPage from book schema (obtained during reconstruction)
+      currentState.maxPage = totalPages;
+      
+      // Reconstruct pageHistory from branch path (pages from root to current)
+      // pageHistory maintains a sliding window of recent pages for context
+      // selectedAction is reconstructed by matching pageId with parent's actions
+      const fallbackAction: Action = {
+        text: 'Continue',
+        type: 'explore' satisfies ActionType,
+        hint: {
+          text: 'Continue to the next page',
+          type: 'none' satisfies ActionHintType
+        }
+      } satisfies Action;
+
+      currentState.pageHistory = branchPath.pages.map((page, index) => {
+        // Root page has no parent, so no selectedAction
+        if (index === 0) {
+          return {
+            ...page,
+            selectedAction: fallbackAction
+          };
+        }
+
+        // Find the action in parent page that led to this page
+        const parentPage = branchPath.pages[index - 1];
+        const selectedAction = parentPage.actions?.find(action => action.pageId === page.id);
+
+        if (selectedAction) {
+          return {
+            ...page,
+            selectedAction
+          };
+        }
+
+        // Fallback if no matching action found (shouldn't happen in valid branch)
+        console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
+        return {
+          ...page,
+          selectedAction: fallbackAction
+        };
+      });
+      
+      // Ensure threads are present (should be handled by deltas, but verify)
+      if (!currentState.threads || currentState.threads.length === 0) {
+        console.warn(`[reconstructStoryState] ⚠️ No threads in reconstructed state for page ${currentPageId}, initializing empty array`);
+        currentState.threads = [];
+      }
       
       const result: StateReconstructionResult = {
         state: currentState,

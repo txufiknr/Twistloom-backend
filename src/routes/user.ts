@@ -36,10 +36,12 @@ import { requireClientId } from "../middleware/auth.js";
 import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
-import { handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, sql, and, desc } from "drizzle-orm";
+import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
+import { eq, and, desc } from "drizzle-orm";
 import { updateUserLastActivity } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
+import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
+import { getEnrichedUserSelect } from "../services/user-controller.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 import { imageUpload, uploadUserProfile } from "../services/image.js";
 
@@ -98,51 +100,42 @@ const router = Router();
 router.get("/", requireClientId, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
+    const cacheKey = CACHE_KEYS.USER_PROFILE(userId);
+    
+    // Fetch function for cache
+    const fetchUserProfile = async () => {
+      const userWithCounts = await dbRead
+        .select(getEnrichedUserSelect())
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
 
-    // Single query with subqueries for counts
-    const userWithCounts = await dbRead
-      .select({
-        userId: users.userId,
-        name: users.name,
-        gender: users.gender,
-        image: users.image,
-        lastActive: users.lastActive,
-        createdAt: users.createdAt,
-        updatedAt: users.updatedAt,
-        totalLiked: sql<number>`(
-          SELECT COUNT(*)::int
-          FROM ${userLikes}
-          WHERE ${userLikes.userId} = ${userId}
-        )`.as('totalLiked'),
-        totalSaved: sql<number>`(
-          SELECT COUNT(*)::int
-          FROM ${userFavorites}
-          WHERE ${userFavorites.userId} = ${userId}
-        )`.as('totalSaved'),
-        totalReads: sql<number>`(
-          SELECT COUNT(*)::int
-          FROM ${userSessions}
-          WHERE ${userSessions.userId} = ${userId}
-        )`.as('totalReads'),
-      })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
+      const userData = userWithCounts.length > 0 ? userWithCounts[0] : null;
 
-    const userData = userWithCounts.length > 0 ? userWithCounts[0] : null;
+      if (!userData) {
+        throw new Error("User profile not found");
+      }
 
-    if (!userData) {
-      return handleNotFoundError(res, "User profile not found");
-    }
-
-    res.json({
-      success: true,
-      data: userData,
-    });
+      return {
+        success: true,
+        data: userData,
+      };
+    };
+    
+    // Use cache with fallback to database
+    const result = await withCache(cacheKey, fetchUserProfile, CACHE_TTL.USER_PROFILE);
+    
+    // Add HTTP cache headers for CDN/edge caching
+    res.set('Cache-Control', 'private, max-age=60, stale-while-revalidate=30');
+    
+    res.json(result);
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
   } catch (error) {
+    if (getErrorMessage(error) === "User profile not found") {
+      return handleNotFoundError(res, "User profile not found");
+    }
     handleApiError(res, "Failed to retrieve user profile", error);
   }
 });
@@ -223,6 +216,9 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       message: "User created successfully",
       data: row,
     });
+
+    // Invalidate user profile cache
+    await invalidateUserProfileCache(userId);
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
@@ -396,6 +392,9 @@ router.put("/", requireClientId, imageUpload.single('imageFile'), async (req: Re
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
       oldImageQueuedForDeletion: oldImageIdQueued,
     });
+
+    // Invalidate user profile cache
+    await invalidateUserProfileCache(userId);
   } catch (error) {
     handleApiError(res, "Failed to update user profile", error);
   }
@@ -515,6 +514,9 @@ router.delete("/", requireClientId, async (req: Request, res: Response) => {
       },
     });
 
+    // Invalidate user profile cache
+    await invalidateUserProfileCache(userId);
+
   } catch (error) {
     handleApiError(res, "Failed to delete user account", error);
   }
@@ -615,6 +617,13 @@ router.post("/likes", requireClientId, async (req: Request, res: Response) => {
       data: result[0] || null,
     });
 
+    // Invalidate caches when liking a book
+    if (targetType === 'book') {
+      await invalidateExploreCache(); // likesCount changed
+      await invalidateUserBooksCache(userId); // isLiked flag changed
+      await invalidateUserProfileCache(userId); // likedBooksCount changed
+    }
+
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
   } catch (error) {
@@ -691,6 +700,13 @@ router.delete("/likes", requireClientId, async (req: Request, res: Response) => 
       success: true,
       message: "Like removed successfully",
     });
+
+    // Invalidate caches when unliking a book
+    if (targetType === 'book') {
+      await invalidateExploreCache(); // likesCount changed
+      await invalidateUserBooksCache(userId); // isLiked flag changed
+      await invalidateUserProfileCache(userId); // likedBooksCount changed
+    }
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
@@ -853,6 +869,9 @@ router.post("/favorites", requireClientId, async (req: Request, res: Response) =
       data: result[0],
     });
 
+    // Invalidate user profile cache (savedBooksCount changed)
+    await invalidateUserProfileCache(userId);
+
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
   } catch (error) {
@@ -919,6 +938,9 @@ router.delete("/favorites", requireClientId, async (req: Request, res: Response)
       success: true,
       message: "Book removed from favorites successfully",
     });
+
+    // Invalidate user profile cache (savedBooksCount changed)
+    await invalidateUserProfileCache(userId);
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
@@ -1074,6 +1096,11 @@ router.post("/comments", requireClientId, async (req: Request, res: Response) =>
       message: "Comment created successfully",
       data: row,
     });
+
+    // Invalidate explore cache if parent comment (commentsCount changes)
+    if (!parentCommentId) {
+      await invalidateExploreCache();
+    }
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
@@ -1239,6 +1266,11 @@ router.delete("/comments/:commentId", requireClientId, async (req: Request, res:
         eq(userComments.id, commentId as string),
         eq(userComments.userId, userId)
       ));
+
+    // Invalidate explore cache if parent comment (commentsCount changes)
+    if (!existingComment[0].parentCommentId) {
+      await invalidateExploreCache();
+    }
 
     res.json({
       success: true,

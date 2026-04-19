@@ -26,16 +26,19 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalClientId, requireClientId } from "../middleware/auth.js";
-import { books, pages, userSessions, deletedImages } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
 import { initializeBook, chooseAction } from "../utils/prompt.js";
-import { imageUpload, uploadBookCover } from "../services/image.js";
+import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession } from "../services/story.js";
-import { getBook, updateBook } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage } from "../services/book.js";
+import type { EnrichedBookData } from "../services/book-controller.js";
+import { getEnrichedBookSelect } from "../services/book-controller.js";
+import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 
 const router = Router();
 
@@ -182,9 +185,80 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
       generateCoverImage
     });
 
+    // Invalidate user's book cache
+    await invalidateUserBooksCache(req.userId!);
+    
+    // Invalidate user profile cache (booksCount changed)
+    await invalidateUserProfileCache(req.userId!);
+    
+    // Invalidate explore cache if book is active
+    if (book.book.status === 'active') {
+      await invalidateExploreCache();
+    }
+
     res.status(201).json(book);
   } catch (error) {
     handleApiError(res, "Failed to create book", error);
+  }
+});
+
+/**
+ * POST /api/books/insert
+ * 
+ * Test route for directly inserting a book with provided data.
+ * Bypasses AI generation and uses the provided book data directly.
+ * Useful for testing and manual book creation.
+ * 
+ * @param userId - User identifier (from auth middleware)
+ * @param title - Book title
+ * @param totalPages - Total number of pages
+ * @param language - Book language (e.g., 'en')
+ * @param hook - Optional hook text
+ * @param summary - Optional summary text
+ * @param keywords - Optional keywords array
+ * @param mc - Main character object with name, age, gender, bio
+ * @param image - Optional image URL
+ * @param imageId - Optional image ID
+ * @param trendingScore - Optional trending score
+ * @param id - Optional book ID (will be generated if not provided)
+ * 
+ * @example
+ * POST /api/books/insert
+ * Headers: X-Client-Id: user123
+ * Body: {
+ *   "title": "The House That Breathes Below",
+ *   "totalPages": 120,
+ *   "language": "en",
+ *   "hook": "The basement door wasn't just open—it was breathing.",
+ *   "summary": "Daniel Vey returns to the abandoned Vey Manor...",
+ *   "keywords": ["psychological-horror", "false-memory"],
+ *   "mc": {
+ *     "name": "Daniel Vey",
+ *     "age": 22,
+ *     "gender": "male",
+ *     "bio": "A skeptic with a habit of lying to himself..."
+ *   }
+ * }
+ */
+router.post("/insert", requireClientId, async (req: Request, res: Response) => {
+  try {
+    const bookData = req.body;
+    const userId = req.userId!;
+
+    // Add userId to the book data
+    const bookWithUserId = {
+      ...bookData,
+      userId
+    };
+
+    const insertedBook = await insertBook(bookWithUserId);
+
+    res.status(201).json({
+      book: insertedBook,
+      message: "Book inserted successfully"
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to insert book", error);
   }
 });
 
@@ -207,58 +281,66 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
     const userId = req.userId!;
     
-    // Build base query
-    let query = dbRead
-      .select({
-        id: books.id,
-        title: books.title,
-        hook: books.hook,
-        summary: books.summary,
-        image: books.image,
-        status: books.status,
-        createdAt: books.createdAt,
-        updatedAt: books.updatedAt,
-        lastReadAt: userSessions.updatedAt, // Join to check active session
-        lastPage: userSessions.pageId
-      })
-      .from(books)
-      .leftJoin(
-        userSessions,
-        and(
-          eq(userSessions.bookId, books.id),
-          eq(userSessions.userId, userId),
+    // Skip caching for search queries (dynamic)
+    const shouldCache = !search;
+    const cacheKey = CACHE_KEYS.USER_BOOKS(userId, page);
+    
+    // Fetch function for cache
+    const fetchBooks = async () => {
+      // Build base query with enriched fields
+      let query = dbRead
+        .select({
+          ...getEnrichedBookSelect(userId),
+          lastReadAt: userSessions.updatedAt, // Join to check active session
+          lastPage: userSessions.pageId
+        })
+        .from(books)
+        .leftJoin(users, eq(books.userId, users.userId))
+        .leftJoin(
+          userSessions,
+          and(
+            eq(userSessions.bookId, books.id),
+            eq(userSessions.userId, userId),
+          )
         )
-      )
-      .where(eq(books.userId, userId));
+        .where(eq(books.userId, userId));
 
-    // Apply search filter if provided
-    if (search) {
-      query = createSearchFilter(search, ['title', 'hook', 'summary'])(query);
-    }
+      // Apply search filter if provided
+      if (search) {
+        query = createSearchFilter(search, ['title', 'hook', 'summary'])(query);
+      }
 
-    // Apply sorting
-    query = applySorting(query, sortBy, sortOrder);
+      // Apply sorting
+      query = applySorting(query, sortBy, sortOrder);
 
-    // Get total count for pagination
-    let countQuery = dbRead
-      .select({ count: books.id })
-      .from(books)
-      .where(eq(books.userId, userId));
-      
-    if (search) {
-      countQuery = createSearchFilter(search, ['title', 'hook', 'summary'])(countQuery);
-    }
+      // Get total count for pagination
+      let countQuery = dbRead
+        .select({ count: books.id })
+        .from(books)
+        .where(eq(books.userId, userId));
+        
+      if (search) {
+        countQuery = createSearchFilter(search, ['title', 'hook', 'summary'])(countQuery);
+      }
 
-    const totalCountResult = await countQuery;
-    const totalCount = totalCountResult.length;
+      const totalCountResult = await countQuery;
+      const totalCount = totalCountResult.length;
 
-    // Apply pagination
-    const offset = (page - 1) * limit;
-    const userBooks = await query.limit(limit).offset(offset);
+      // Apply pagination
+      const offset = (page - 1) * limit;
+      const userBooks: EnrichedBookData[] = await query.limit(limit).offset(offset);
 
-    const pagination = calculatePaginationMeta(page, limit, totalCount);
+      const pagination = calculatePaginationMeta(page, limit, totalCount);
 
-    res.json(createPaginatedResponse(userBooks, pagination));
+      return createPaginatedResponse(userBooks, pagination);
+    };
+    
+    // Use cache if applicable, otherwise fetch directly
+    const result = shouldCache
+      ? await withCache(cacheKey, fetchBooks, CACHE_TTL.PER_USER_BOOKS)
+      : await fetchBooks();
+    
+    res.json(result);
   } catch (error) {
     handleApiError(res, "Failed to retrieve books", error);
   }
@@ -298,6 +380,7 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
         id: books.id,
         userId: books.userId,
         title: books.title,
+        keywords: books.keywords,
         imageId: books.imageId
       })
       .from(books)
@@ -329,25 +412,22 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
 
     // Process image upload if source is provided
     if (imageSource) {
-      const uploadResult = await uploadBookCover(
-        imageSource,
-        book.id,
-        title || book.title,
-        keywords || []
+      const uploadResult = await uploadBookCoverImage(
+        {
+          id: book.id,
+          title: title || book.title,
+          keywords: keywords || book.keywords
+        },
+        imageSource
       );
-
+      
       if (uploadResult) {
         newImageUrl = uploadResult.url;
         newImageId = uploadResult.fileId;
-
-        // Queue old image for deletion if it exists
+        
+        // Delete old image from ImageKit (with fallback to deletion queue)
         if (book.imageId) {
-          await dbWrite
-            .insert(deletedImages)
-            .values({
-              fileId: book.imageId,
-              createdAt: new Date(),
-            });
+          await deleteFileFromImageKit(book.imageId);
           oldImageIdQueued = true;
         }
       } else {
@@ -371,6 +451,14 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
 
     // Update the book
     const updatedBook = await updateBook(book.id, updateData);
+
+    // Invalidate user's book cache
+    await invalidateUserBooksCache(userId);
+    
+    // Invalidate explore cache if book status changed to/from active
+    if (updateData.status || updatedBook.status === 'active') {
+      await invalidateExploreCache();
+    }
 
     res.json({
       book: updatedBook,
@@ -519,6 +607,10 @@ router.post("/:id/sessions", requireClientId, async (req: Request, res: Response
     // Create or update existing session
     const session = await setActiveSession({userId, bookId, pageId});
 
+    // Invalidate caches on session start
+    await invalidateExploreCache(); // readCount changed via trigger
+    await invalidateUserProfileCache(userId); // readsCount changed
+
     res.status(201).json({
       session,
       book
@@ -545,53 +637,62 @@ router.post("/:id/sessions", requireClientId, async (req: Request, res: Response
 router.get("/explore", optionalClientId, async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
+    const userId = req.userId || null;
     
-    // Build base query
-    let query = dbRead
-      .select({
-        id: books.id,
-        title: books.title,
-        hook: books.hook,
-        summary: books.summary,
-        image: books.image,
-        keywords: books.keywords,
-        status: books.status,
-        trendingScore: books.trendingScore,
-        createdAt: books.createdAt,
-        updatedAt: books.updatedAt,
-        mc: books.mc
-      })
-      .from(books)
-      .where(eq(books.status, 'active'));
+    // Only cache page 1 without search (rapidly changing)
+    const shouldCache = page === 1 && !search;
+    const cacheKey = CACHE_KEYS.EXPLORE_PAGE_1;
+    
+    // Fetch function for cache
+    const fetchBooks = async () => {
+      // Build base query with enriched fields
+      let query = dbRead
+        .select(getEnrichedBookSelect(userId))
+        .from(books)
+        .leftJoin(users, eq(books.userId, users.userId))
+        .where(eq(books.status, 'active'));
 
-    // Apply search filter if provided
-    if (search) {
-      query = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(query);
+      // Apply search filter if provided
+      if (search) {
+        query = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(query);
+      }
+
+      // Apply sorting
+      query = applySorting(query, sortBy, sortOrder);
+
+      // Get total count for pagination
+      let countQuery = dbRead
+        .select({ count: books.id })
+        .from(books)
+        .where(eq(books.status, 'active'));
+        
+      if (search) {
+        countQuery = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(countQuery);
+      }
+
+      const totalCountResult = await countQuery;
+      const totalCount = totalCountResult.length;
+
+      // Apply pagination
+      const offset = (page - 1) * limit;
+      const booksResult: EnrichedBookData[] = await query.limit(limit).offset(offset);
+
+      const pagination = calculatePaginationMeta(page, limit, totalCount);
+
+      return createPaginatedResponse(booksResult, pagination);
+    };
+    
+    // Use cache if applicable, otherwise fetch directly
+    const result = shouldCache
+      ? await withCache(cacheKey, fetchBooks, CACHE_TTL.EXPLORE_PAGE_1)
+      : await fetchBooks();
+    
+    // Add HTTP cache headers for CDN/edge caching (works alongside Redis)
+    if (shouldCache) {
+      res.set('Cache-Control', 'public, max-age=60, s-maxage=60, stale-while-revalidate=30');
     }
-
-    // Apply sorting
-    query = applySorting(query, sortBy, sortOrder);
-
-    // Get total count for pagination
-    let countQuery = dbRead
-      .select({ count: books.id })
-      .from(books)
-      .where(eq(books.status, 'active'));
-      
-    if (search) {
-      countQuery = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(countQuery);
-    }
-
-    const totalCountResult = await countQuery;
-    const totalCount = totalCountResult.length;
-
-    // Apply pagination
-    const offset = (page - 1) * limit;
-    const booksResult = await query.limit(limit).offset(offset);
-
-    const pagination = calculatePaginationMeta(page, limit, totalCount);
-
-    res.json(createPaginatedResponse(booksResult, pagination));
+    
+    res.json(result);
   } catch (error) {
     handleApiError(res, "Failed to explore books", error);
   }
@@ -648,6 +749,15 @@ router.delete("/:id", requireClientId, async (req: Request, res: Response) => {
         eq(books.id, id as string),
         eq(books.userId, userId)
       ));
+
+    // Invalidate user's book cache
+    await invalidateUserBooksCache(userId);
+    
+    // Invalidate user profile cache (booksCount changed)
+    await invalidateUserProfileCache(userId);
+    
+    // Invalidate explore cache
+    await invalidateExploreCache();
 
     res.json({
       message: "Book deleted successfully",

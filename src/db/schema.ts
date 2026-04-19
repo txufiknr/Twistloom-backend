@@ -169,6 +169,9 @@ export const users = pgTable(
   {
     userId: userId().primaryKey(),
     name: text("name"),
+    username: text("username"),
+    email: text("email"),
+    penName: text("pen_name"),
     gender,
     image, // Profile image ImageKit URL
     imageId, // ImageKit file ID for deletion
@@ -222,6 +225,8 @@ export const books = pgTable(
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['cardiff mosque', 'peel street mosque', 'world war ii', 'muslim community']
     status: text("status").$type<BookStatus | null>().default('active'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
+    likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
+    readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
     createdAt,
     updatedAt,
   },

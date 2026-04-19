@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, AI_CHAT_CONFIG_SUMMARIZE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, StoryMC, type StoryMCCandidate } from "../types/character.js";
+import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases } from "../types/story.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -34,7 +34,7 @@ import type { StoryThread } from "../types/thread.js";
 
 export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R. L. Stine — but darker, more deceptive, and psychologically cruel.
 You write branching horror stories in first-person.
-Every segment ends with a choice that feels meaningful but may be an illusion.
+Every page ends with a choice that feels meaningful but may be an illusion.
 
 WRITING STYLE:
 - First-person POV only (MC).
@@ -531,6 +531,8 @@ CHARACTER RULES:
 - Reintroduce naturally after absence.
 - Characters may shift suddenly if narrativeFlags suggest it — never explain the change.
 - Use relationships to build tension triangles.
+- Respect character's bio.
+- Sometimes they also misunderstand, reinforcing illusion or false theory through dialog or action.
 
 ---
 PLACE RULES:
@@ -1119,7 +1121,7 @@ function getActionTypesText(): string {
     .join('\n');
 }
 
-function getActionRulesText({isFinale = true, limit = MAX_ACTION_CHOICES}: {isFinale?: boolean, limit?: number}): string {
+function getActionRulesText({isFinale = false, limit = MAX_ACTION_CHOICES}: {isFinale?: boolean, limit?: number}): string {
   return `Generate 1-${limit} actions to choose:
 - Actions represent the reader's decision - must feel natural, immediate, narrative-driven
 - Action can be verb (what to do next) or dialogue (say/answer)
@@ -1169,7 +1171,7 @@ function getArchetypeTacticsText(): string {
  */
 function getEndingArchetypesText(): string {
   return Object.entries(endingTypes)
-    .map(([key, value]) => `• ${key}: ${value}`)
+    .map(([key, value]) => `- ${key}: ${value}`)
     .join('\n');
 }
 
@@ -1839,6 +1841,7 @@ Initial State:
 - difficulty should reflect how hostile the world is to this MC at the start.
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme.
 
+Ending Archetypes:
 ${getEndingArchetypesText()}
 
 Initial Place:

@@ -940,6 +940,18 @@ export type StateDelta = {
   
   /** Full actions history replacement (when actions are completely different) */
   fullActionsHistory?: Action[];
+  
+  /** Threads added in this delta */
+  addedThreads?: StoryThread[];
+  
+  /** Threads updated in this delta */
+  updatedThreads?: Array<{ id: string; updates: Partial<StoryThread> }>;
+  
+  /** Threads removed in this delta */
+  removedThreads?: string[];
+  
+  /** Full threads replacement (when threads are completely different) */
+  fullThreads?: StoryThread[];
 };
 
 /**

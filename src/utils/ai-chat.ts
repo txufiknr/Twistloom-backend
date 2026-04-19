@@ -8,7 +8,6 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure } from './ai-logger.js';
 import { classifyGenAIError, getErrorMessage } from "./error.js";
 import { parseAISafely } from "./parser.js";
-
 import type Groq from 'groq-sdk';
 import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
 import { type GenerateContentConfig, Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
@@ -732,7 +731,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       
       // Only log prompts on the very first iteration
       const shouldLogPrompts = logPrompts && isFirstIteration;
-      if (shouldLogPrompts) console.log(`[${provider}] 💬 Built user prompt (${prompt.length} chars):`, prompt);
+      logPromptWithSeparators(provider, '💬 Built user prompt', prompt, shouldLogPrompts);
 
       const opts: Partial<PromptWithFallbackOptions> = {
         ...options,
@@ -940,12 +939,30 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
   // Early return when no document or provider is Cohere's V2 API which
   // natively supports RAG via documents field.
   if (!documents || documents.length === 0 || provider === 'cohere') {
-    if (logPrompts) console.log(`[${provider}] 💬 Built system prompt (${systemPrompt.length} chars):`, systemPrompt);
+    logPromptWithSeparators(provider, '💬 Built system prompt', systemPrompt, logPrompts);
     return systemPrompt;
   }
   
   const formattedDocuments = formatDocumentsToPrompt(documents);
   const systemPromptWithDocs = `${systemPrompt}\n\n${formattedDocuments}`;
-  if (logPrompts) console.log(`[${provider}] 🧾 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''} (${systemPromptWithDocs.length} chars):`, systemPromptWithDocs);
+  const message = `🧾 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''}`;
+  logPromptWithSeparators(provider, message, systemPromptWithDocs, logPrompts);
   return systemPromptWithDocs;
+}
+
+/**
+ * Logs a prompt with clear section boundaries (separators above and below)
+ * 
+ * @param provider - AI provider name for logging context
+ * @param message - Descriptive message with emoji (e.g., "💬 Built user prompt")
+ * @param content - The actual prompt content to log
+ * @param shouldLog - Whether to log (respects logPrompts flag)
+ */
+function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
+  if (!shouldLog) return;
+  
+  const separator = '═'.repeat(80);
+  console.log(`\n${separator}`);
+  console.log(`[${provider}] ${message} (${content.length} chars):`, content);
+  console.log(`${separator}\n`);
 }

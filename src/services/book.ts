@@ -13,6 +13,7 @@
 
 import { dbRead, dbWrite } from "../db/client.js";
 import { pages, books, userPageProgress } from "../db/schema.js";
+import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
@@ -25,7 +26,11 @@ import type { AIDocument } from "../types/ai-chat.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/constants.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
-import { uploadBookCover } from "./image.js";
+import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
+import { sanitizeText } from "../utils/text-processing.js";
+import { generateId } from "../utils/uuid.js";
+import type { StoryMC } from "../types/character.js";
+import type { ImageUploadSource } from "../types/image.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -144,46 +149,20 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
  * @returns Promise resolving to the inserted book record
  */
 export async function insertBook(book: DBNewBook): Promise<DBBook> {
-  const result = await dbWrite.insert(books).values({
+  const newBookData: DBNewBook = {
     ...book,
-    // id: book.id,
-    // userId: book.userId,
-    // title: book.title,
-    // totalPages: book.totalPages,
-    // language: book.language,
-    // hook: book.hook,
-    // summary: book.summary,
-    // image: book.image || null,
-    // imageId: book.imageId || null,
-    // trendingScore: book.trendingScore,
-    // keywords: book.keywords,
-    status: 'active',
-    // mc: book.mc,
-    // createdAt: new Date(),
-    // updatedAt: new Date()
-  }).returning();
-  // const result = await dbWrite.insert(books).values({
-  //   userId: '019d996c-00a1-75e9-af41-6ff12073740d',
-  //   title: 'The House That Breathes Below',
-  //   totalPages: 120,
-  //   language: 'en',
-  //   hook: 'The basement door wasn’t just open—it was breathing. And it remembered the sound of your voice.',
-  //   summary: 'Daniel Vey returns to the abandoned Vey Manor to settle his late uncle’s estate, only to find the basement door he swore he sealed shut standing ajar. The house doesn’t just echo with ghosts—it echoes with *him*, replaying memories he never lived. The deeper he descends, the more the walls whisper in a voice that isn’t his own. But the real horror isn’t what’s down there. It’s what’s still happening *upstairs*.',
-  //   keywords: [
-  //     'psychological-horror',
-  //     'false-memory',
-  //     'haunted-basement',
-  //     'unreliable-narrator',
-  //     'family-curse'
-  //   ],
-  //   mc: {
-  //     name: 'Daniel Vey',
-  //     age: 22,
-  //     gender: 'male',
-  //     bio: 'A skeptic with a habit of lying to himself—especially about the night he ‘imagined’ hearing his uncle scream. Prides himself on logic, but the house knows his tells: the way his fingers twitch when he’s hiding something, the way he hums when he’s afraid. It’s listening.'
-  //   }
-  // } satisfies DBNewBook).returning();
+    id: book.id ?? generateId(),
+    title: sanitizeText(book.title),
+    hook: book.hook ? sanitizeText(book.hook) : null,
+    summary: book.summary ? sanitizeText(book.summary) : null,
+    status: 'active' satisfies BookStatus,
+    mc: book.mc satisfies StoryMC,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
 
+  console.log(`[insertBook] 📔 newBookData:`, newBookData);
+  const result = await dbWrite.insert(books).values(newBookData).returning();
   return result[0];
 }
 
@@ -566,11 +545,11 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
  * @param state - Optional story state context
  * @returns Promise resolving to void (updates book with ImageKit URL)
  */
-export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryState): Promise<void> {
+export async function generateCoverImages(book: Book, state?: StoryState, total?: number): Promise<Buffer<ArrayBufferLike>[]> {
   // Skip generation in development since there's no way to persist without ImageKit
   if (!IS_PRODUCTION) {
     console.log(`[generateAndUpdateBookCoverImage] ⏩ Skipping cover generation in development`);
-    return;
+    return [];
   }
 
   try {
@@ -586,41 +565,102 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
     });
     
     // Generate images without writing to disk
-    const imageResult = await geminiGenerateImage(fullPrompt, {
-      numberOfImages: 1,
+    const { buffers } = await geminiGenerateImage(fullPrompt, {
+      numberOfImages: total || 1, // TODO: 3 for premium users
       aspectRatio: "3:4",
     });
     
-    if (imageResult.buffers.length === 0) {
+    if (buffers.length > 0) {
+      console.log(`[generateAndUpdateBookCoverImage] 🖼️ Generated ${buffers.length} cover image buffer(s) for book ${book.id}`);
+    } else {
       console.warn(`[generateAndUpdateBookCoverImage] ⚠️ No cover image generated for book ${book.id}`);
-      return;
     }
 
-    console.log(`[generateAndUpdateBookCoverImage] 🖼️ Generated cover image buffer for book ${book.id}`);
-
-    // Upload buffer directly to ImageKit
-    try {
-      const uploadResult = await uploadBookCover(
-        imageResult.buffers[0], // Direct buffer upload
-        book.id,
-        book.title,
-        book.keywords
-      );
-      
-      if (uploadResult?.url) {
-        await updateBook(book.id, {
-          image: uploadResult.url,
-          imageId: uploadResult.fileId
-        });
-        console.log(`[generateAndUpdateBookCoverImage] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
-      } else {
-        console.warn(`[generateAndUpdateBookCoverImage] ❌ Failed to upload to ImageKit`);
-      }
-    } catch (error) {
-      console.error('[generateAndUpdateBookCoverImage] ❌ ImageKit upload failed:', {bookId: book.id, error: getErrorMessage(error)});
-    }
+    return buffers;
   } catch(error) {
     console.error('[generateAndUpdateBookCoverImage] ❌ Error generating and updating book cover:', {bookId: book.id, error: getErrorMessage(error)});
     // Fail silently, don't throw error
+    return [];
+  }
+}
+
+/**
+ * Updates book cover image with ImageKit upload
+ * 
+ * Handles image upload to ImageKit. Does NOT update the book record or queue deletion.
+ * Callers should handle book update and deletion queue separately.
+ * 
+ * @param bookMeta - Book metadata (id, title, keywords)
+ * @param image - Image source (buffer, file, URL, or base64)
+ * @returns Promise resolving to upload result or null on failure
+ * 
+ * @example
+ * ```typescript
+ * const result = await uploadBookCoverImage(
+ *   { id: 'book123', title: 'My Book', keywords: ['mystery'] },
+ *   imageBuffer
+ * );
+ * if (result) {
+ *   await updateBook(bookId, { image: result.url, imageId: result.fileId });
+ *   await queueImageForDeletion(oldImageId);
+ * }
+ * ```
+ */
+export async function uploadBookCoverImage(
+  bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
+  image: ImageUploadSource
+): Promise<ImageKit.Files.FileUploadResponse | null> {
+  try {
+    const uploadResult = await uploadBookCover(image, bookMeta);
+    
+    if (!uploadResult?.url) {
+      console.warn(`[uploadBookCoverImage] ⚠️ Failed to upload to ImageKit for book ${bookMeta.id}`);
+      return null;
+    }
+    
+    console.log(`[uploadBookCoverImage] 🌐 Uploaded to ImageKit: ${uploadResult.url}`);
+    return uploadResult;
+  } catch (error) {
+    console.error('[uploadBookCoverImage] ❌ Error uploading cover image:', {bookId: bookMeta.id, error: getErrorMessage(error)});
+    return null;
+  }
+}
+
+/**
+ * Generates AI cover image and updates book with new image
+ * 
+ * This function:
+ * - Generates cover image using AI based on book content and state
+ * - Uploads the generated image to ImageKit
+ * - Updates the book record with new image URL and ID
+ * - Deletes old image from ImageKit (with fallback to deletion queue)
+ * 
+ * @param book - Book object with metadata for image generation
+ * @param state - Optional story state context for generation
+ * @returns Promise resolving when cover is generated and updated
+ * 
+ * @example
+ * ```typescript
+ * await generateAndUpdateBookCoverImage(book, storyState);
+ * ```
+ */
+export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryState): Promise<void> {
+  const buffers = await generateCoverImages(book, state, 1);
+  if (buffers.length === 0) return; // Cover image generation failed
+
+  const oldImageId = book.imageId;
+  const uploadResult = await uploadBookCoverImage(book, buffers[0]); // Direct buffer upload
+  
+  if (uploadResult) {
+    // Update book with new image URL and ID
+    await updateBook(book.id, {
+      image: uploadResult.url,
+      imageId: uploadResult.fileId
+    });
+    
+    // Delete old image from ImageKit (with fallback to deletion queue)
+    if (oldImageId) {
+      await deleteFileFromImageKit(oldImageId);
+    }
   }
 }

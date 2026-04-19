@@ -1,5 +1,5 @@
 {
-  "id": "a3bf0f9c-6a21-4597-8f7b-913c7693246a",
+  "id": "ea427283-6b6e-4335-aa9f-acc342bf4ee4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -89,6 +89,20 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "likes_count": {
+          "name": "likes_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "read_count": {
+          "name": "read_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "created_at": {
           "name": "created_at",
@@ -1949,6 +1963,24 @@
         },
         "name": {
           "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "username": {
+          "name": "username",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pen_name": {
+          "name": "pen_name",
           "type": "text",
           "primaryKey": false,
           "notNull": false

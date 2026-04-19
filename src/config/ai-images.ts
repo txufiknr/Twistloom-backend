@@ -2,7 +2,7 @@
  * Configuration for AI image generation settings
  */
 
-import { PersonGeneration } from "@google/genai";
+// import { PersonGeneration } from "@google/genai";
 import type { AIImageGenerationOptions } from "../types/ai-images.js";
 
 /** Default output directory for generated images */
