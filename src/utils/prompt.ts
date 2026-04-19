@@ -187,22 +187,22 @@ const firstBookOutputFormat: string = `{
   "mainCharacter": {
     "name": "Full Name",
     "age": <number between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
-    "gender": "One of: ${genders.join('", "')}",
+    "gender": "One of: ${formatOneOf(genders)}",
     "bio": "Trait-forward description. Include at least one psychological vulnerability."
   },
   "firstPage": {
     "text": "...",
-    "mood": "One of: ${moods.join('", "')}",
+    "mood": "One of: ${formatOneOf(moods)}",
     "place": "Location Name",
     "timeOfDay": "e.g. 'night', '2 AM', or 'unknown'",
     "charactersPresent": ["Must match names in initialCharacters"],
     "actions": [
       {
         "text": "First-person action or dialogue",
-        "type": "One of: ${Object.keys(actionTypes).join('", "')}",
+        "type": "One of: ${formatOneOf(Object.keys(actionTypes))}",
         "hint": {
           "text": "Subtle implication of consequence",
-          "type": "One of: ${actionHintTypes.join('", "')}"
+          "type": "One of: ${formatOneOf(actionHintTypes)}"
         }
       }
     ]
@@ -217,13 +217,13 @@ const firstBookOutputFormat: string = `{
     "difficulty": "One of: low | medium | high | nightmare",
     "viableEnding": {
       "text": "Specific ending plan for this MC and theme (1-2 sentences)",
-      "type": "One of: ${Object.keys(endingTypes).join('", "')}"
+      "type": "One of: ${formatOneOf(Object.keys(endingTypes))}"
     }
   },
   "initialPlace": {
     "name": "Location Name",
-    "type": "One of: ${placeTypes.join('", "')}",
-    "currentMood": "One of: ${placeMoods.join('", "')}",
+    "type": "One of: ${formatOneOf(placeTypes)}",
+    "currentMood": "One of: ${formatOneOf(placeMoods)}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>
   },
@@ -231,8 +231,8 @@ const firstBookOutputFormat: string = `{
     {
       "name": "Full Name",
       "role": "e.g. 'schoolmate', 'neighbor'",
-      "gender": "One of: ${genders.join('", "')}",
-      "status": "One of: ${characterStatuses.join('", "')}",
+      "gender": "One of: ${formatOneOf(genders)}",
+      "status": "One of: ${formatOneOf(characterStatuses)}",
       "relationshipToMC": "Specific dynamic, not generic, 1-2 sentences (e.g. 'Close childhood friend who knows too much.')",
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal."
     }
@@ -282,7 +282,7 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
 
 {
   "text": "...",
-  "mood": "One of: ${moods.join('", "')}",
+  "mood": "One of: ${formatOneOf(moods)}",
   "place": "...",
   "timeOfDay": "...",
   "charactersPresent": [],
@@ -299,10 +299,10 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
   "actions": [
     {
       "text": "...",
-      "type": "One of: ${Object.keys(actionTypes).join('", "')}",
+      "type": "One of: ${formatOneOf(Object.keys(actionTypes))}",
       "hint": {
         "text": "...",
-        "type": "One of: ${actionHintTypes.join('", "')}"
+        "type": "One of: ${formatOneOf(actionHintTypes)}"
       }
     }
   ],
@@ -310,16 +310,16 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
     "newCharacters": [
       {
         "name": "...",
-        "gender": "One of: ${genders.join('", "')}",
+        "gender": "One of: ${formatOneOf(genders)}",
         "role": "...",
         "bio": "...",
-        "status": "One of: ${characterStatuses.join('", "')}",
+        "status": "One of: ${formatOneOf(characterStatuses)}",
         "relationshipToMC": "...",
         "relationships": [
           {
             "target": "...",
-            "type": "One of: ${relationshipTypes.join('", "')}",
-            "status": "One of: ${relationshipStatuses.join('", "')}"
+            "type": "One of: ${formatOneOf(relationshipTypes)}",
+            "status": "One of: ${formatOneOf(relationshipStatuses)}"
           }
         ],
         "pastInteractions": [],
@@ -328,9 +328,9 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
           "isSuspicious": false,
           "isMissing": false,
           "isDead": false,
-          "hasInjury": "One of: ${injurySeverities.join('", "')}",
+          "hasInjury": "One of: ${formatOneOf(injurySeverities)}",
           "hasSecret": false,
-          "potentialTwist": "One of: ${potentialTwistTypes.join('", "')}"
+          "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         }
       }
     ],
@@ -348,8 +348,8 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
     {
       "source": "...",
       "target": "...",
-      "type": "One of: ${relationshipTypes.join('", "')}",
-      "status": "One of: ${relationshipStatuses.join('", "')}"
+      "type": "One of: ${formatOneOf(relationshipTypes)}",
+      "status": "One of: ${formatOneOf(relationshipStatuses)}"
     }
   ],
   "placeUpdates": {
@@ -359,14 +359,14 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
         "type": "...",
         "context": "...",
         "locationHint": "...",
-        "currentMood": "One of: ${placeMoods.join('", "')}",
+        "currentMood": "One of: ${formatOneOf(placeMoods)}",
         "sensoryDetails": {
           "smell": "...",
           "sound": "...",
           "visual": "...",
           "feeling": "..."
         },
-        "weather": "One of: ${placeWeathers.join('", "')}",
+        "weather": "One of: ${formatOneOf(placeWeathers)}",
         "events": [],
         "knownCharacters": {
           "<name>": {
@@ -395,7 +395,7 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
   },
   "viableEnding": {
     "text": "...",
-    "type": "One of: ${Object.keys(endingTypes).join('", "')}"
+    "type": "One of: ${formatOneOf(Object.keys(endingTypes))}"
   }
 }`;
 
@@ -492,8 +492,7 @@ ${formatThreadRules(threads, stateInfo)}
 
 ---
 CURRENT ENDING PLAN:
-Type: ${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
-Hint: ${state.viableEnding?.text ?? '-'}
+${formatEndingPlan(state)}
 
 ENDING RULES:
 ${buildEndingRules(state)}
@@ -797,6 +796,9 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 function buildNextPageEvaluatorContext(state: StoryState): string {
   return `STORY CONTEXT:
 ${getPreviousPagesText(state).trim()}
+
+PREVIOUS ENDING PLAN:
+${formatEndingPlan(state)}
 
 EXPECTED JSON SCHEMA:
 ${nextPageOutputFormat}
@@ -1264,6 +1266,15 @@ function getHintGuidanceForAI(hintType: ActionHintType): string {
 }
 
 /**
+ * Formats an array of strings for inclusion in prompts
+ * @param items - Array of strings to format
+ * @returns Formatted string with items quoted and joined by commas
+ */
+function formatOneOf(items: string[] | readonly string[]): string {
+  return `'${items.join(`', '`)}'`;
+}
+
+/**
  * Formats action choices for AI prompt
  * @param actions - Array of action objects
  * @returns Formatted string with action choices (A, B, C, etc.)
@@ -1450,6 +1461,11 @@ ${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} acti
 - Every main thread must resolve before finale`;
 }
 
+function formatEndingPlan(state: StoryState): string {
+  return `Type: ${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
+Hint: ${state.viableEnding?.text ?? '-'}`;
+}
+
 /**
  * Builds a complete prompt with all placeholders replaced by actual values
  * 
@@ -1469,7 +1485,7 @@ ${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} acti
  * // Returns: "Continue this branching psychological thriller..." with all placeholders filled
  * ```
  */
-export function buildEndingRules(state: StoryState): string {
+function buildEndingRules(state: StoryState): string {
   const { psychologicalProfile, hiddenState } = state;
   const { isFinale, finalePhase } = getStoryStateInfo(state);
 
@@ -1517,7 +1533,7 @@ Example: High curiosity leads to discovering uncomfortable truths
  * @param flags - Psychological flags object
  * @returns Formatted string for prompt inclusion
  */
-export function formatPsychologicalFlags(flags: PsychologicalFlags): string {
+function formatPsychologicalFlags(flags: PsychologicalFlags): string {
   return `• Trust: ${flags.trust}
 • Fear: ${flags.fear}
 • Guilt: ${flags.guilt}
@@ -1533,7 +1549,7 @@ export function formatPsychologicalFlags(flags: PsychologicalFlags): string {
  * @param profile - Psychological profile object
  * @returns Formatted string for prompt inclusion
  */
-export function formatPsychologicalProfile(profile: PsychologicalProfile): string {
+function formatPsychologicalProfile(profile: PsychologicalProfile): string {
   return `• Archetype: ${profile.archetype}
 • Stability: ${profile.stability}
 • Traits: ${profile.dominantTraits.join(', ')}
@@ -1549,7 +1565,7 @@ export function formatPsychologicalProfile(profile: PsychologicalProfile): strin
  * @param state - Story state containing route information
  * @returns Formatted string for prompt inclusion
  */
-export function formatRouteContext(state: StoryState): string {
+function formatRouteContext(state: StoryState): string {
   return `• Past actions: ${state.actionsHistory.map(a => `${a.text} (type: ${a.type})`).join('; ')}
 • Trauma tags: ${state.traumaTags.join(', ')}
 • Difficulty: ${state.difficulty}`;
@@ -1564,7 +1580,7 @@ export function formatRouteContext(state: StoryState): string {
  * @param hiddenState - Hidden state object
  * @returns Formatted string for prompt inclusion
  */
-export function formatHiddenState(hiddenState: HiddenState): string {
+function formatHiddenState(hiddenState: HiddenState): string {
   const { truthLevel, threatProximity, realityStability } = hiddenState;
   const truthInfluence = truthLevels[truthLevel as keyof typeof truthLevels];
   const threatInfluence = threatProximities[threatProximity as keyof typeof threatProximities];
