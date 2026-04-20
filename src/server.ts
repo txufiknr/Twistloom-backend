@@ -40,13 +40,9 @@ process.on("exit", (code) => {
 /* -------------------------------------------------- */
 
 if (!process.env.AUTH_SECRET) {
-  console.error(' AUTH_SECRET environment variable is required for NextAuth authentication');
-  console.error(' Generate one with: openssl rand -base64 32');
+  console.error('🔐 AUTH_SECRET environment variable is required for NextAuth authentication');
+  console.error('🔐 Generate one with: openssl rand -base64 32');
   process.exit(1);
-}
-
-if (!process.env.FRONTEND_URL) {
-  console.warn(' FRONTEND_URL not set, using default: https://twistloom.vercel.app');
 }
 
 /* -------------------------------------------------- */
