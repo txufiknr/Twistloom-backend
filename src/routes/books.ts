@@ -25,7 +25,7 @@
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
-import { optionalClientId, requireClientId } from "../middleware/auth.js";
+import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
@@ -112,7 +112,7 @@ const router = Router();
  *   }
  * }
  */
-router.post("/", requireClientId, async (req: Request, res: Response) => {
+router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     
@@ -250,7 +250,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/insert", requireClientId, async (req: Request, res: Response) => {
+router.post("/insert", requireAuth, async (req: Request, res: Response) => {
   try {
     const bookData = req.body;
     const userId = req.userId!;
@@ -286,7 +286,7 @@ router.post("/insert", requireClientId, async (req: Request, res: Response) => {
  * @query sortOrder - Sort direction (default: desc)
  * @returns Paginated list of user's books with progress
  */
-router.get("/", requireClientId, async (req: Request, res: Response) => {
+router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
     const userId = req.userId!;
@@ -372,7 +372,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  * @param imageFile - New cover image file from multipart upload (optional)
  * @returns Updated book information
  */
-router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
+router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.userId!;
@@ -495,7 +495,7 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
  * @param branchId - Optional current branch ID for validation
  * @returns New page with updated story state and enriched actions
  */
-router.post("/:identifier/generate", requireClientId, async (req: Request, res: Response) => {
+router.post("/:identifier/generate", requireAuth, async (req: Request, res: Response) => {
   try {
     const { identifier } = req.params;
     const { actionText, currentPageId, branchId } = req.body;
@@ -577,7 +577,7 @@ router.post("/:identifier/generate", requireClientId, async (req: Request, res: 
  * @param page - Page number within the branch
  * @returns Page with actions and book metadata
  */
-router.get("/:identifier/:branchId/:page", optionalClientId, async (req: Request, res: Response) => {
+router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, res: Response) => {
   try {
     const { identifier, branchId, page } = req.params;
 
@@ -652,7 +652,7 @@ router.get("/:identifier/:branchId/:page", optionalClientId, async (req: Request
  * @param pageId - Current page ID in reading session
  * @returns Session information with progress
  */
-router.post("/:id/sessions", requireClientId, async (req: Request, res: Response) => {
+router.post("/:id/sessions", requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { pageId } = req.body;
@@ -700,7 +700,7 @@ router.post("/:id/sessions", requireClientId, async (req: Request, res: Response
  * @query sortOrder - Sort direction (default: desc)
  * @returns Paginated list of published books
  */
-router.get("/explore", optionalClientId, async (req: Request, res: Response) => {
+router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
     const userId = req.userId || null;
@@ -773,7 +773,7 @@ router.get("/explore", optionalClientId, async (req: Request, res: Response) => 
  * @param id - Book ID to delete
  * @returns Success message with deletion details
  */
-router.delete("/:id", requireClientId, async (req: Request, res: Response) => {
+router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.userId!;

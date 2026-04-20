@@ -1,7 +1,7 @@
 /**
  * @overview Rate Limiting Middleware Module (Upstash Redis)
  * 
- * Provides serverless-safe rate limiting per client ID using Upstash Redis.
+ * Provides serverless-safe rate limiting per user using Upstash Redis.
  * Optimized for high-performance, low-latency rate limiting with automatic TTL expiration.
  * 
  * Features:
@@ -20,7 +20,7 @@
  * @note
  * - Requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN environment variables
  * - Falls back to database-backed rate limiting if Redis is unavailable
- * - Only applies rate limiting to requests with userId (set by auth middleware)
+ * - Only applies rate limiting to requests with userId (set by NextAuth auth middleware)
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -101,7 +101,7 @@ const redis = createRedisClient();
  * ```
  * 
  * @note
- * - Requires userId to be set on request (via requireClientId or optionalClientId)
+ * - Requires userId to be set on request (via NextAuth requireAuth or optionalAuth middleware)
  * - Automatically expires old entries via TTL (no cleanup needed)
  * - Falls back gracefully if Redis is unavailable
  * - Serverless-safe (Upstash REST API, no persistent connections)
@@ -174,22 +174,22 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
 
 /**
  * Global rate limiting middleware (100 requests per minute).
- * Can be applied globally using app.use(rateLimitByClientId).
+ * Can be applied globally using app.use(rateLimitByUser).
  * 
  * @example
  * ```typescript
- * import { rateLimitByClientId } from './middleware/rate-limit.js';
+ * import { rateLimitByUser } from './middleware/rate-limit.js';
  * 
  * app.use(express.json());
  * app.use(cors());
- * app.use(rateLimitByClientId); // Apply globally
+ * app.use(rateLimitByUser); // Apply globally
  * app.use("/api", routes);
  * ```
  * 
  * @note
- * - Only applies rate limiting to requests with userId (set by auth middleware)
+ * - Only applies rate limiting to requests with userId (set by NextAuth auth middleware)
  * - Public endpoints without userId are not rate limited
  * - Can be overridden per-route with custom rateLimit() configuration
  * - Requires Upstash Redis environment variables
  */
-export const rateLimitByClientId = rateLimit(DEFAULT_RATE_LIMIT);
+export const rateLimitByUser = rateLimit(DEFAULT_RATE_LIMIT);

@@ -4,7 +4,8 @@
 
 import express from "express";
 import cors from "cors";
-import { rateLimitByClientId } from "./middleware/rate-limit.js";
+import cookieParser from "cookie-parser";
+import { rateLimitByUser } from "./middleware/rate-limit.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 
@@ -13,8 +14,14 @@ const app = express();
 
 // Configure middleware
 app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
-app.use(cors({ origin: true })); // Enable CORS for all origins
-app.use(rateLimitByClientId); // Global rate limiting (100 req/min per client ID)
+app.use(cookieParser()); // Parse cookies for NextAuth authentication
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'https://twistloom.vercel.app',
+  credentials: true, // CRITICAL: Allow cookies for NextAuth authentication
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+})); // Enable CORS with credentials for cookie-based auth
+app.use(rateLimitByUser); // Global rate limiting (100 req/min per user)
 
 // Handle favicon requests to prevent 404 errors
 app.get("/favicon.png", (_, res) => {

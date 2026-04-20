@@ -21,7 +21,7 @@
 
 import type { Request, Response } from "express";
 import { Router } from "express";
-import { requireClientId } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/nextauth.js";
 import { handleApiError } from "../utils/error.js";
 import { getUserBookSnapshots, getLatestMajorCheckpoint, deleteAllSnapshots, getSnapshotStatistics } from "../services/snapshots.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
@@ -42,7 +42,7 @@ const router = Router();
  * @param limit - Maximum number of snapshots to retrieve (default: 50)
  * @returns Array of snapshots with metadata and usage statistics
  */
-router.get("/books/:bookId/snapshots", requireClientId, async (req: Request, res: Response) => {
+router.get("/books/:bookId/snapshots", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId } = req.params;
@@ -100,7 +100,7 @@ router.get("/books/:bookId/snapshots", requireClientId, async (req: Request, res
  * @param pageId - Page identifier to reconstruct
  * @returns Reconstruction analysis and performance data
  */
-router.get("/books/:bookId/reconstruction/:pageId", requireClientId, async (req: Request, res: Response) => {
+router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId, pageId } = req.params;
@@ -154,7 +154,7 @@ router.get("/books/:bookId/reconstruction/:pageId", requireClientId, async (req:
  * 
  * @returns System health status and metrics
  */
-router.get("/system/health", requireClientId, async (req: Request, res: Response) => {
+router.get("/system/health", requireAuth, async (req: Request, res: Response) => {
   try {
     // Basic health metrics
     const health = {
@@ -187,7 +187,7 @@ router.get("/system/health", requireClientId, async (req: Request, res: Response
  * 
  * @route GET /admin/books/:bookId/snapshots/statistics
  */
-router.get("/books/:bookId/snapshots/statistics", requireClientId, async (req: Request, res: Response) => {
+router.get("/books/:bookId/snapshots/statistics", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId } = req.params;
@@ -219,7 +219,7 @@ router.get("/books/:bookId/snapshots/statistics", requireClientId, async (req: R
  * 
  * @route DELETE /admin/books/:bookId/snapshots
  */
-router.delete("/books/:bookId/snapshots", requireClientId, async (req: Request, res: Response) => {
+router.delete("/books/:bookId/snapshots", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId } = req.params;

@@ -32,7 +32,7 @@
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
-import { requireClientId } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/nextauth.js";
 import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
@@ -97,7 +97,7 @@ const router = Router();
  *   }
  * }
  */
-router.get("/", requireClientId, async (req: Request, res: Response) => {
+router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const cacheKey = CACHE_KEYS.USER_PROFILE(userId);
@@ -184,7 +184,7 @@ router.get("/", requireClientId, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/", requireClientId, async (req: Request, res: Response) => {
+router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { name, gender } = req.body;
@@ -286,7 +286,7 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
  *   "oldImageQueuedForDeletion": false
  * }
  */
-router.put("/", requireClientId, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
+router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { name, gender, imageUrl } = req.body;
@@ -446,7 +446,7 @@ router.put("/", requireClientId, imageUpload.single('imageFile'), async (req: Re
  *   }
  * }
  */
-router.delete("/", requireClientId, async (req: Request, res: Response) => {
+router.delete("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
 
@@ -566,7 +566,7 @@ router.delete("/", requireClientId, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/likes", requireClientId, async (req: Request, res: Response) => {
+router.post("/likes", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { targetType, targetId } = req.body;
@@ -662,7 +662,7 @@ router.post("/likes", requireClientId, async (req: Request, res: Response) => {
  *   "message": "Like removed successfully"
  * }
  */
-router.delete("/likes", requireClientId, async (req: Request, res: Response) => {
+router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { targetType, targetId } = req.query;
@@ -754,7 +754,7 @@ router.delete("/likes", requireClientId, async (req: Request, res: Response) => 
  *   ]
  * }
  */
-router.get("/likes", requireClientId, async (req: Request, res: Response) => {
+router.get("/likes", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { targetType, limit = "50", offset = "0" } = req.query;
@@ -828,7 +828,7 @@ router.get("/likes", requireClientId, async (req: Request, res: Response) => {
  *   }
  * }
  */
-router.post("/favorites", requireClientId, async (req: Request, res: Response) => {
+router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId } = req.body;
@@ -909,7 +909,7 @@ router.post("/favorites", requireClientId, async (req: Request, res: Response) =
  *   "message": "Book removed from favorites successfully"
  * }
  */
-router.delete("/favorites", requireClientId, async (req: Request, res: Response) => {
+router.delete("/favorites", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId } = req.query;
@@ -986,7 +986,7 @@ router.delete("/favorites", requireClientId, async (req: Request, res: Response)
  *   ]
  * }
  */
-router.get("/favorites", requireClientId, async (req: Request, res: Response) => {
+router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { limit = "50", offset = "0" } = req.query;
@@ -1058,7 +1058,7 @@ router.get("/favorites", requireClientId, async (req: Request, res: Response) =>
  *   }
  * }
  */
-router.post("/comments", requireClientId, async (req: Request, res: Response) => {
+router.post("/comments", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId, parentCommentId, content } = req.body;
@@ -1153,7 +1153,7 @@ router.post("/comments", requireClientId, async (req: Request, res: Response) =>
  *   }
  * }
  */
-router.put("/comments/:commentId", requireClientId, async (req: Request, res: Response) => {
+router.put("/comments/:commentId", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { commentId } = req.params;
@@ -1236,7 +1236,7 @@ router.put("/comments/:commentId", requireClientId, async (req: Request, res: Re
  *   "message": "Comment deleted successfully"
  * }
  */
-router.delete("/comments/:commentId", requireClientId, async (req: Request, res: Response) => {
+router.delete("/comments/:commentId", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { commentId } = req.params;
@@ -1326,7 +1326,7 @@ router.delete("/comments/:commentId", requireClientId, async (req: Request, res:
  *   ]
  * }
  */
-router.get("/comments", requireClientId, async (req: Request, res: Response) => {
+router.get("/comments", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const { bookId, limit = "50", offset = "0" } = req.query;

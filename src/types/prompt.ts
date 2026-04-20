@@ -1,5 +1,5 @@
 import type { Book } from "./book.js";
-import type { StoryState, ActionedStoryPage, Action, UserStoryPage } from "./story.js";
+import type { StoryState, ActionedStoryPage, UserStoryPage } from "./story.js";
 
 /**
  * Parameters for building the next page in a story
