@@ -169,8 +169,9 @@ export const users = pgTable(
   {
     userId: userId().primaryKey(),
     name: text("name"),
-    username: text("username"),
-    email: text("email"),
+    username: text("username").unique("users_username_unique"), // Unique constraint for login
+    email: text("email").unique("users_email_unique"), // Unique constraint for login
+    passwordHash: text("password_hash"), // Hashed password for email/password authentication
     penName: text("pen_name"),
     gender,
     image, // Profile image ImageKit URL
@@ -182,7 +183,6 @@ export const users = pgTable(
   (t) => [
     // Index for gender-based analytics
     index("users_gender_idx").on(t.gender),
-    
     // Index for user creation trends
     index("users_created_at_idx").on(t.createdAt),
   ]

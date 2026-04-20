@@ -42,6 +42,7 @@
     "@neondatabase/serverless": "^1.0.2",
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.1",
+    "bcrypt": "^6.0.0",
     "cohere-ai": "^7.20.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -49,7 +50,7 @@
     "express": "^5.2.1",
     "groq-sdk": "^0.37.0",
     "jose": "^6.2.2",
-    "lru-cache": "^11.2.2",
+    "lru-cache": "^11.3.5",
     "multer": "^2.1.1",
     "next-auth": "5.0.0-beta.31",
     "openai": "^6.33.0",
@@ -58,16 +59,17 @@
     "uuid": "^13.0.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.37.0",
+    "@eslint/js": "^10.0.1",
+    "@types/bcrypt": "^6.0.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/multer": "^2.1.0",
-    "@types/node": "^24.8.1",
+    "@types/node": "^25.6.0",
     "drizzle-kit": "^0.31.8",
-    "eslint": "^9.37.0",
+    "eslint": "^10.2.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.46.1"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.58.2"
   }
 }

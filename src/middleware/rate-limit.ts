@@ -26,6 +26,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { Ratelimit } from '@upstash/ratelimit';
 import { Redis } from '@upstash/redis';
+import { LRUCache } from 'lru-cache';
 import { getErrorMessage, handleTooManyRequestsError } from '../utils/error.js';
 
 /**
@@ -193,3 +194,74 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
  * - Requires Upstash Redis environment variables
  */
 export const rateLimitByUser = rateLimit(DEFAULT_RATE_LIMIT);
+
+/**
+ * Simple in-memory IP-based rate limiter for unauthenticated endpoints.
+ * 
+ * Used for endpoints where the user is not yet authenticated (e.g., login, signup).
+ * The global rateLimitByUser middleware requires req.userId, which doesn't exist
+ * before authentication. This IP-based limiter fills that gap for security.
+ * 
+ * Security Purpose:
+ * - Prevents brute force attacks on login/signup endpoints
+ * - Limits attempts per IP address instead of per user
+ * - Simple in-memory implementation (no Redis needed)
+ * 
+ * Implementation:
+ * - Uses LRU cache for automatic memory management
+ * - Max 10,000 IPs cached (prevents unbounded memory growth)
+ * - Automatic eviction when cache is full
+ * - Configurable via environment variables
+ * 
+ * Limitations:
+ * - In-memory only (resets on server restart)
+ * - Per-IP (can be bypassed with proxy rotation)
+ * - Not distributed across multiple server instances
+ * 
+ * Environment Variables:
+ * - AUTH_RATE_LIMIT_MAX_ATTEMPTS: Maximum attempts per window (default: 5)
+ * - AUTH_RATE_LIMIT_WINDOW_MS: Time window in milliseconds (default: 60000)
+ * 
+ * @example
+ * ```typescript
+ * import { checkRateLimitByIP } from '../middleware/rate-limit.js';
+ * 
+ * router.post('/api/auth/login', async (req, res) => {
+ *   const ip = req.ip || req.socket.remoteAddress || 'unknown';
+ *   if (!checkRateLimitByIP(ip)) {
+ *     return res.status(429).json({ error: 'Too many attempts' });
+ *   }
+ *   // ... rest of handler
+ * });
+ * ```
+ * 
+ * @param ip - IP address to check
+ * @returns true if request is allowed, false if rate limited
+ */
+const IP_RATE_LIMIT = parseInt(process.env.AUTH_RATE_LIMIT_MAX_ATTEMPTS || '5', 10); // Max attempts per window
+const IP_RATE_WINDOW = parseInt(process.env.AUTH_RATE_LIMIT_WINDOW_MS || '60000', 10); // Time window in milliseconds
+
+// LRU cache for IP rate limiting (max 10,000 entries to prevent memory bloat)
+const ipRateLimitCache = new LRUCache<string, { count: number; resetTime: number }>({
+  max: 10000, // Maximum number of IPs to track
+  ttl: IP_RATE_WINDOW, // Auto-expire entries after time window
+});
+
+export function checkRateLimitByIP(ip: string): boolean {
+  const now = Date.now();
+  const record = ipRateLimitCache.get(ip);
+
+  if (!record || now > record.resetTime) {
+    // Reset or first attempt
+    ipRateLimitCache.set(ip, { count: 1, resetTime: now + IP_RATE_WINDOW });
+    return true;
+  }
+
+  if (record.count >= IP_RATE_LIMIT) {
+    return false; // Rate limited
+  }
+
+  record.count++;
+  ipRateLimitCache.set(ip, record);
+  return true;
+}

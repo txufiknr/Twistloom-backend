@@ -2,6 +2,7 @@ import express from "express";
 import userRouter from "./user.js";
 import booksRouter from "./books.js";
 import adminRouter from "./admin.js";
+import authRouter from "./auth.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 
 const router = express.Router();
@@ -14,7 +15,8 @@ router.get("/", (_req, res) => {
     endpoints: {
       "/user": "Get and manage user profile information",
       "/books": "Create and manage psychological thriller books",
-      "/admin": "Administrative tools and debugging endpoints"
+      "/admin": "Administrative tools and debugging endpoints",
+      "/auth": "Authentication endpoints"
     }
   });
 });
@@ -23,5 +25,6 @@ router.get("/", (_req, res) => {
 router.use("/user", userRouter);
 router.use("/books", booksRouter);
 router.use("/admin", adminRouter);
+router.use("/auth", authRouter);
 
 export default router;
