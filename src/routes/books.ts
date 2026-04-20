@@ -35,8 +35,8 @@ import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { setActiveSession } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage } from "../services/book.js";
+import { setActiveSession, getStoryProgress } from "../services/story.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook } from "../services/book.js";
 import type { EnrichedBookData } from "../services/book-controller.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -482,21 +482,23 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
 });
 
 /**
- * POST /api/books/:id/generate
+ * POST /api/books/:identifier/generate
  * 
  * Generates new story pages based on user actions or continuation.
  * Accepts action text string (e.g. "Investigate the noise") which is matched
  * against current page actions to get the full Action object.
  * Uses chooseAction function for complete story progression pipeline.
  * 
- * @param id - Book ID
+ * @param identifier - Book slug or UUID v7
  * @param actionText - Action text string (e.g. "Investigate the noise")
+ * @param currentPageId - Optional current page ID for validation
+ * @param branchId - Optional current branch ID for validation
  * @returns New page with updated story state and enriched actions
  */
-router.post("/:id/generate", requireClientId, async (req: Request, res: Response) => {
+router.post("/:identifier/generate", requireClientId, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const { actionText } = req.body;
+    const { identifier } = req.params;
+    const { actionText, currentPageId, branchId } = req.body;
     const userId = req.userId!;
 
     if (!actionText) {
@@ -505,18 +507,42 @@ router.post("/:id/generate", requireClientId, async (req: Request, res: Response
       });
     }
 
-    // Verify book ownership
-    const book = await dbRead
-      .select()
-      .from(books)
-      .where(and(
-        eq(books.id, id as string),
-        eq(books.userId, userId)
-      ))
-      .limit(1);
+    // Handle array case for identifier (Express can return string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    if (!book.length) {
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(identifierStr);
+    if (!book) {
       return handleNotFoundError(res, "Book not found");
+    }
+
+    // Verify book ownership
+    if (book.userId !== userId) {
+      return res.status(403).json({ 
+        error: "Forbidden: You do not own this book" 
+      });
+    }
+
+    // Optional validation: validate currentPageId and branchId against user's active session
+    if (currentPageId || branchId) {
+      const { session: activeSession } = await getStoryProgress(userId);
+      if (!activeSession) {
+        return res.status(400).json({ 
+          error: "No active session found" 
+        });
+      }
+
+      if (currentPageId && activeSession.pageId !== currentPageId) {
+        return res.status(400).json({ 
+          error: "Invalid current page ID" 
+        });
+      }
+
+      if (branchId && activeSession.bookId !== book.id) {
+        return res.status(400).json({ 
+          error: "Invalid branch ID for current session" 
+        });
+      }
     }
 
     // Process user action choice using chooseAction function
@@ -541,52 +567,75 @@ router.post("/:id/generate", requireClientId, async (req: Request, res: Response
 });
 
 /**
- * GET /api/books/:id/:pageId
+ * GET /api/books/:identifier/:branchId/:page
  * 
- * Retrieves a specific story page with full context.
- * Includes page content, available actions, and psychological state.
+ * Retrieves a specific page within a branch of a book.
+ * Accepts both slug and UUID v7 as identifier.
  * 
- * @param id - Book ID
- * @param pageId - Page ID to retrieve
- * @returns Page content with actions and state
+ * @param identifier - Book slug or UUID v7
+ * @param branchId - Branch identifier (e.g., "main", "abc123")
+ * @param page - Page number within the branch
+ * @returns Page with actions and book metadata
  */
-router.get("/:id/:pageId", requireClientId, async (req: Request, res: Response) => {
+router.get("/:identifier/:branchId/:page", optionalClientId, async (req: Request, res: Response) => {
   try {
-    const { id, pageId } = req.params;
+    const { identifier, branchId, page } = req.params;
 
-    const userId = req.userId!;
+    // Handle array case for identifier (Express can return string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    // Verify book ownership and get page
-    const page = await dbRead
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(identifierStr);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Get page within branch by page number
+    const pageData = await dbRead
       .select({
         id: pages.id,
-        pageNumber: pages.page,
-        content: pages.text,
+        page: pages.page,
+        bookId: pages.bookId,
+        branchId: pages.branchId,
+        parentId: pages.parentId,
+        text: pages.text,
+        mood: pages.mood,
+        place: pages.place,
+        timeOfDay: pages.timeOfDay,
         actions: pages.actions,
         charactersPresent: pages.charactersPresent,
-        places: pages.place,
         keyEvents: pages.keyEvents,
         importantObjects: pages.importantObjects,
-        createdAt: pages.createdAt
+        createdAt: pages.createdAt,
+        updatedAt: pages.updatedAt
       })
       .from(pages)
-      .innerJoin(
-        books,
+      .where(
         and(
-          eq(books.id, pages.bookId),
-          eq(books.id, id as string),
-          eq(books.userId, userId)
+          eq(pages.bookId, book.id),
+          eq(pages.branchId, branchId as string),
+          eq(pages.page, parseInt(page as string))
         )
       )
-      .where(eq(pages.id, pageId as string))
       .limit(1);
 
-    if (!page.length) {
+    if (!pageData.length) {
       return handleNotFoundError(res, "Page not found");
     }
 
+    // Enrich actions with navigation metadata for frontend URL building
+    const enrichedPage = {
+      ...pageData[0],
+      actions: enrichActions(pageData[0].actions, { page: pageData[0].page, branchId: pageData[0].branchId })
+    };
+
     res.json({
-      page: page[0],
+      page: enrichedPage,
+      book: {
+        id: book.id,
+        title: book.title,
+        slug: (book as any).slug
+      }
     });
   } catch (error) {
     handleApiError(res, "Failed to retrieve page", error);

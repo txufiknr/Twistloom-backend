@@ -1,6 +1,7 @@
 CREATE TABLE "books" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
+	"slug" text,
 	"title" text NOT NULL,
 	"total_pages" integer DEFAULT 120 NOT NULL,
 	"language" text,
@@ -15,7 +16,8 @@ CREATE TABLE "books" (
 	"likes_count" integer DEFAULT 0 NOT NULL,
 	"read_count" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "books_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
 CREATE TABLE "deleted_images" (

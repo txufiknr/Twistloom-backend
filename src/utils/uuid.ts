@@ -26,14 +26,10 @@ const MAX_UUID_LENGTH = 100;
  */
 export function isValidUuid(uuid: unknown): uuid is string {
   // Type and format validation
-  if (!uuid || typeof uuid !== 'string' || !uuidValidate(uuid)) {
-    return false;
-  }
+  if (!uuid || typeof uuid !== 'string') return false;
   
   // Security: Prevent potential DoS attacks with extremely long strings
-  if (uuid.length > MAX_UUID_LENGTH) {
-    return false;
-  }
+  if (uuid.length > MAX_UUID_LENGTH) return false;
   
-  return true;
+  return uuidValidate(uuid);
 }

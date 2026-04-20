@@ -14,7 +14,7 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { pages, books, userPageProgress } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
-import { and, eq, asc } from "drizzle-orm";
+import { and, eq, asc, or } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus } from "../types/book.js";
@@ -200,7 +200,47 @@ export async function getBook(bookId: string): Promise<Book | null> {
   if (dbResult) {
     return mapBookFromDb(dbResult);
   }
-  
+
+  return null;
+}
+
+/**
+ * Resolves a book by identifier (slug or UUID v7)
+ * 
+ * This function uses a single OR query to match either slug or UUID,
+ * enabling the frontend to use both interchangeably without breaking changes.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @returns Promise resolving to the book record or null if not found
+ * 
+ * @example
+ * ```typescript
+ * // Lookup by slug
+ * const book = await resolveBook("twistloom");
+ * 
+ * // Lookup by UUID
+ * const book = await resolveBook("0190f1234567");
+ * 
+ * // Returns null if not found
+ * const book = await resolveBook("nonexistent");
+ * ```
+ */
+export async function resolveBook(identifier: string): Promise<Book | null> {
+  const book = await dbRead
+    .select()
+    .from(books)
+    .where(
+      or(
+        eq(books.slug, identifier),
+        eq(books.id, identifier)
+      )
+    )
+    .limit(1);
+
+  if (book.length > 0) {
+    return mapBookFromDb(book[0]);
+  }
+
   return null;
 }
 

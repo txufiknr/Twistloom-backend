@@ -214,6 +214,7 @@ export const books = pgTable(
   {
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
+    slug: text("slug").unique(), // SEO-friendly URL identifier (null if not implemented)
     title: text("title").notNull(),
     totalPages: integer("total_pages").notNull().default(BOOK_AVERAGE_PAGES),
     language: text("language"),
