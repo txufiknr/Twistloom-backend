@@ -315,6 +315,9 @@ import { formatFeedRows } from '../services/feed.js';
 > # Example: Test API request
 > (Invoke-WebRequest -Uri "https://twistloom-backend.vercel.app/api/endpoint?limit=15" -Method GET -Headers @{"Content-Type"="application/json"; "X-App-Version"="1.0.0"; "X-Platform"="web"} -UseBasicParsing).Content
 > 
+> # Example: Test SSE request
+> Invoke-WebRequest -Uri "http://192.168.1.6:3000/api/books/prompt" -Method GET -Headers @{"Content-Type"="text/event-stream"} -UseBasicParsing
+> 
 > # Example: Clean up test files and run type checking
 > Remove-Item test-*.js; pnpm typecheck
 > ```

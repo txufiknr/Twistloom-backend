@@ -33,6 +33,7 @@ import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { aiStreamSSE } from "../utils/ai-chat-stream.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
+import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -780,5 +781,6 @@ If character details are not essential for the theme, you can omit the MC line.`
     systemPrompt,
     context: 'book-creation-prompt',
     logPrompts: false,
+    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1000}
   }, signal);
 }

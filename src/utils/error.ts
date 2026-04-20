@@ -321,8 +321,26 @@ function isUndiciAbortError(error: unknown): boolean {
  * ```
  */
 export function getErrorMessage(error: unknown, fallback: string = 'Unknown error'): string {
+  // Handle nested error shape where error.message contains a JSON string with another error object
+  // Example: { error: { message: '{"error": {"code": 503, "message": "..."}}', code: 503, status: "..." } }
+  if (typeof error === 'object' && error !== null) {
+    const errObj = error as any;
+    if (errObj.error && typeof errObj.error === 'object' && errObj.error.message) {
+      const outerMessage = errObj.error.message;
+      if (typeof outerMessage === 'string') {
+        try {
+          const parsed = JSON.parse(outerMessage);
+          if (parsed.error && parsed.error.message) {
+            return parsed.error.message;
+          }
+        } catch {
+          // If parsing fails, continue to normal handling
+        }
+      }
+    }
+  }
+
   return error instanceof Error ? error.message : error ? String(error) : fallback;
-  // return String((error as any)?.message ?? error);
 }
 
 /**

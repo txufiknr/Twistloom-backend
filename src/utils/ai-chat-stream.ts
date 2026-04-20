@@ -186,6 +186,9 @@ export async function aiStreamSSE(
                     // Handle backpressure
                     await handleBackpressure(controller);
                     
+                    // Debug: Log chunk content
+                    console.log(`[${provider}] 🧩 SSE chunk:`, chunk);
+                    
                     controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
                   }
                   

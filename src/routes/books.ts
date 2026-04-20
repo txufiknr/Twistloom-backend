@@ -225,16 +225,22 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * SSE Response:
  * event: start
- * data: {"provider":"gemini","model":"gemini-2.5-flash"}
+ * data: {"type":"start","provider":"gemini","model":"gemini-3-flash-preview"}
+ * 
+ * event: error
+ * data: {"type":"error","message":"Model gemini-3-flash-preview failed: ..."}
+ * 
+ * event: start
+ * data: {"type":"start","provider":"gemini","model":"gemini-2.5-flash"}
  * 
  * event: chunk
- * data: Story about haunted mansion with ghost in the underground basement
+ * data: {"type":"chunk","content":"Story about your best friend disappearing after joining a","done":false}
  * 
  * event: chunk
- * data:  MC: Sarah Chloe, Female, 23
+ * data: {"type":"chunk","content":" mysterious online community, forcing you to infiltrate its depths to find them, only to uncover a chilling truth about its real purpose and your own connection to it.\nMC: Maya, Female, 19","done":false}
  * 
  * event: end
- * data: {"provider":"gemini","model":"gemini-2.5-flash"}
+ * data: {"type":"end","provider":"gemini","model":"gemini-2.5-flash"}
  */
 router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
   // Set SSE headers
