@@ -190,7 +190,7 @@ function handleFileUpload(uploadObj: ImageUploadObject, prefix: string, entityId
         fileContent = Buffer.from(arrayBuffer);
       } catch (error) {
         console.error('[handleFileUpload] ❌ Failed to convert ArrayBufferLike to Buffer:', getErrorMessage(error));
-        throw new Error('Invalid ArrayBufferLike: cannot convert to Buffer');
+        throw new Error('Invalid ArrayBufferLike: cannot convert to Buffer', { cause: error });
       }
     } else {
       console.error('[handleFileUpload] ❌ Invalid ArrayBufferLike: missing required properties');

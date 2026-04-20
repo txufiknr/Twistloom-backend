@@ -18,12 +18,13 @@
  */
 
 import { Router } from 'express';
-import { dbRead } from '../db/client.js';
+import { dbRead, dbWrite } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { eq, or } from 'drizzle-orm';
-import { verifyPassword } from '../utils/password.js';
-import { handleUnauthorizedError, handleApiError } from '../utils/error.js';
+import { hashPassword, verifyPassword } from '../utils/password.js';
+import { handleApiError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
+import { generateId } from '../utils/uuid.js';
 
 const router = Router();
 
@@ -138,6 +139,227 @@ router.post('/verify-credentials', async (req, res) => {
   } catch (error) {
     console.error('Credential verification error:', error);
     handleApiError(res, 'Failed to verify credentials', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/signup
+ * 
+ * Registers a new user account with email/password authentication.
+ * 
+ * Request Body:
+ * {
+ *   email: string;
+ *   username: string;
+ *   gender: string;
+ *   password: string;
+ *   receiveEmails: boolean;
+ *   agreedToTerms: boolean;
+ * }
+ * 
+ * Response (Success - 201):
+ * {
+ *   userId: string;
+ * }
+ * 
+ * Response (Error - 400): Invalid input
+ * Response (Error - 409): Email or username already exists
+ * Response (Error - 429): Too many requests (rate limiting)
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Rate limited to prevent abuse
+ * - Password is hashed using bcrypt
+ * - Email and username must be unique
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/signup', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({
+ *     email: 'user@example.com',
+ *     username: 'johndoe',
+ *     gender: 'male',
+ *     password: 'securePassword123',
+ *     receiveEmails: true,
+ *     agreedToTerms: true,
+ *   }),
+ * });
+ */
+router.post('/signup', async (req, res) => {
+  try {
+    // Rate limiting based on IP address
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
+    const { email, username, gender, password, receiveEmails: _receiveEmails, agreedToTerms } = req.body;
+
+    // Validate input
+    if (!email || !username || !password || !gender) {
+      return res.status(400).json({ error: 'Email, username, password, and gender are required' });
+    }
+
+    if (!agreedToTerms) {
+      return res.status(400).json({ error: 'You must agree to the terms' });
+    }
+
+    // Check if email or username already exists
+    const existing = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(or(eq(users.email, email), eq(users.username, username)))
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ error: 'Email or username already exists' });
+    }
+
+    // Hash password
+    const passwordHash = await hashPassword(password);
+
+    // Create user
+    const newUser = await dbWrite
+      .insert(users)
+      .values({
+        userId: generateId(),
+        email,
+        username,
+        passwordHash,
+        gender,
+      })
+      .returning({ userId: users.userId });
+
+    res.status(201).json({ userId: newUser[0].userId });
+  } catch (error) {
+    console.error('Signup error:', error);
+    handleApiError(res, 'Failed to create account', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/forgot-password
+ * 
+ * Requests a password reset email for the user.
+ * 
+ * Request Body:
+ * {
+ *   email: string;
+ * }
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Password reset email sent";
+ * }
+ * 
+ * Response (Error - 400): Invalid email format
+ * Response (Error - 404): Email not found
+ * Response (Error - 429): Too many requests (rate limiting)
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Rate limited to prevent email spam
+ * - Always returns success for existing emails (prevents email enumeration)
+ * - Sends reset link via email (not implemented yet - placeholder)
+ * 
+ * @note
+ * This is a placeholder implementation. The actual email sending logic
+ * needs to be implemented with an email service (e.g., Resend, SendGrid).
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/forgot-password', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ email: 'user@example.com' }),
+ * });
+ */
+router.post('/forgot-password', async (req, res) => {
+  try {
+    // Rate limiting based on IP address
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
+    const { email } = req.body;
+
+    // Validate input
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Check if email exists (don't reveal if it doesn't to prevent email enumeration)
+    const user = await dbRead
+      .select({ userId: users.userId, email: users.email })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+
+    // TODO: Implement actual email sending logic
+    // If user exists, send password reset email
+    // For now, just return success to prevent email enumeration
+    if (user && user.length > 0) {
+      console.log(`Password reset requested for: ${email}`);
+      // Email sending logic would go here
+      // Example: await sendPasswordResetEmail(email, user[0].userId);
+    }
+
+    // Always return success (prevents email enumeration)
+    res.json({ message: 'Password reset email sent' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    handleApiError(res, 'Failed to process request', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/logout
+ * 
+ * Logs out the current user by clearing the NextAuth session.
+ * 
+ * Request Body: None
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Logged out successfully";
+ * }
+ * 
+ * Security:
+ * - NextAuth handles actual session clearing on the frontend
+ * - This endpoint is for any backend cleanup if needed
+ * 
+ * @note
+ * With NextAuth, logout is primarily handled on the frontend via:
+ * await signOut({ callbackUrl: '/' });
+ * 
+ * This backend endpoint is provided for future extensibility
+ * (e.g., invalidating refresh tokens, logging logout events, etc.)
+ * 
+ * @example
+ * // Frontend usage (primary method)
+ * import { signOut } from 'next-auth/react';
+ * await signOut({ callbackUrl: '/' });
+ * 
+ * // Backend endpoint (if needed for cleanup)
+ * await fetch('/api/auth/logout', { method: 'POST' });
+ */
+router.post('/logout', async (req, res) => {
+  try {
+    // NextAuth handles session clearing on the frontend
+    // This endpoint is for any backend cleanup if needed
+    
+    // TODO: Add any backend cleanup logic here
+    // - Invalidate refresh tokens (if implemented)
+    // - Log logout event for analytics
+    // - Clear server-side session data
+    
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    handleApiError(res, 'Failed to logout', error, 500);
   }
 });
 

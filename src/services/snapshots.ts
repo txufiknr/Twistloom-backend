@@ -324,7 +324,7 @@ export async function createStateSnapshot(
       snapshotReason: reason
     });
 
-    throw new Error(`Unable to create state snapshot: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to create state snapshot: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -498,7 +498,7 @@ export async function optimizeSnapshots(
     return result;
   } catch (error) {
     console.error(`[optimizeSnapshots] ❌ Failed to optimize snapshots for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to optimize snapshots: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to optimize snapshots: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -530,7 +530,7 @@ export async function deleteAllSnapshots(
     console.log(`[deleteAllSnapshots] ✅ All snapshots deleted`);
   } catch (error) {
     console.error(`[deleteAllSnapshots] ❌ Failed to delete snapshots for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to delete snapshots: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to delete snapshots: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -579,6 +579,6 @@ export async function getSnapshotStatistics(
     return stats;
   } catch (error) {
     console.error(`[getSnapshotStatistics] ❌ Failed to get statistics for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to get snapshot statistics: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to get snapshot statistics: ${getErrorMessage(error)}`, { cause: error });
   }
 }

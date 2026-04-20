@@ -102,6 +102,9 @@ importers:
       eslint:
         specifier: ^10.2.1
         version: 10.2.1
+      globals:
+        specifier: ^17.5.0
+        version: 17.5.0
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1911,6 +1914,10 @@ packages:
   glob@10.4.5:
     resolution: {integrity: sha512-7Bv8RF0k6xjo7d4A/PxYLbUCfb6c+Vpd2/mB2yRDlew7Jb5hEXiCD9ibfO7wpk8i4sevK6DFny9h7EYbM3/sHg==}
     hasBin: true
+
+  globals@17.5.0:
+    resolution: {integrity: sha512-qoV+HK2yFl/366t2/Cb3+xxPUo5BuMynomoDmiaZBIdbs+0pYbjfZU+twLhGKp4uCZ/+NbtpVepH5bGCxRyy2g==}
+    engines: {node: '>=18'}
 
   google-auth-library@10.5.0:
     resolution: {integrity: sha512-7ABviyMOlX5hIVD60YOfHw4/CxOfBhyduaYB+wbFWCWoni4N7SLcV46hrVRktuBbZjFC9ONyqamZITN7q3n32w==}
@@ -4659,6 +4666,8 @@ snapshots:
       minipass: 7.1.2
       package-json-from-dist: 1.0.1
       path-scurry: 1.11.1
+
+  globals@17.5.0: {}
 
   google-auth-library@10.5.0:
     dependencies:

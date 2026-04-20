@@ -8,7 +8,7 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
-import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps, BranchPath } from "../types/story.js";
+import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps } from "../types/story.js";
 import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
 import { getStoryPageById } from "./book.js";
@@ -232,10 +232,9 @@ export async function goToPreviousPageWithBranch(
  */
 export async function validateBranchIntegrity(pageId: string, userId: string): Promise<BranchValidationResult> {
   const issues: string[] = [];
-  let path: BranchPath | null = null;
 
   try {
-    path = await getBranchPath(pageId, userId, { validatePath: true });
+    const path = await getBranchPath(pageId, userId, { validatePath: true });
     
     // Additional validation checks
     if (path.depth > 50) {

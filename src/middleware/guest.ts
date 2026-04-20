@@ -40,7 +40,7 @@ async function createGuestUser(retryCount = 0): Promise<string> {
   } catch (error) {
     // If insertion fails (e.g., duplicate key), generate a new ID and retry
     if (retryCount >= MAX_GUEST_CREATION_RETRIES) {
-      throw new Error(`Failed to create guest user after ${MAX_GUEST_CREATION_RETRIES} retries`);
+      throw new Error(`Failed to create guest user after ${MAX_GUEST_CREATION_RETRIES} retries`, { cause: error });
     }
     console.warn(`Guest user creation failed (attempt ${retryCount + 1}/${MAX_GUEST_CREATION_RETRIES}), retrying with new ID:`, error);
     return createGuestUser(retryCount + 1);

@@ -183,7 +183,7 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   const { mode, vector } = style;
   
   // Mode-specific base instructions
-  let instructions = "";
+  let instructions: string;
   
   switch (mode) {
     case "grounded":

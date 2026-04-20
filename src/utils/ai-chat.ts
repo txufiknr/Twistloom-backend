@@ -831,7 +831,6 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         } satisfies AIResponse<T>;
       } catch (parseError) {
         console.warn(`[${provider}] ⚠️ Failed to parse as type T, trying next provider:`, parseError);
-        result = null; // Continue to next provider
       }
     }
 

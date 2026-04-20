@@ -115,7 +115,7 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
     } satisfies StoryProgress;
   } catch (error) {
     console.error(`Failed to get story progress for user ${userId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve story progress: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to retrieve story progress: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -252,7 +252,7 @@ export async function insertStoryState(
     await cleanupStoryStatesWithStrategy(userId, bookId);
   } catch (error) {
     console.error(`Failed to update story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));
-    throw new Error(`Unable to update story state: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to update story state: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -296,7 +296,7 @@ export async function deactivateSession(userId: string, bookId: string) {
     }
   } catch (error) {
     console.error(`Failed to deactivate session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to deactivate session: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to deactivate session: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 

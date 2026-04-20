@@ -582,7 +582,7 @@ export async function getStateDelta(
       deltaFound: false
     });
 
-    throw new Error(`Unable to retrieve state delta: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to retrieve state delta: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -613,7 +613,7 @@ export async function getUserBookDeltas(
     return deltas.map(d => d.delta);
   } catch (error) {
     console.error(`[getUserBookDeltas] ❌ Failed to get deltas for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve user deltas: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to retrieve user deltas: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -650,7 +650,7 @@ export async function getPageRangeDeltas(
     return deltas.map(row => row.delta);
   } catch (error) {
     console.error(`[getPageRangeDeltas] ❌ Failed to get range deltas for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve range deltas: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to retrieve range deltas: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -728,7 +728,7 @@ export async function createStateDeltaRecord(
       deltaSize: 0
     });
 
-    throw new Error(`Unable to create state delta: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to create state delta: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -790,7 +790,7 @@ export async function cleanupOldDeltas(
     return result;
   } catch (error) {
     console.error(`[cleanupOldDeltas] ❌ Failed to cleanup deltas for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to cleanup deltas: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to cleanup deltas: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -818,7 +818,7 @@ export async function deleteAllDeltas(
     console.log(`[deleteAllDeltas] ✅ All deltas deleted`);
   } catch (error) {
     console.error(`[deleteAllDeltas] ❌ Failed to delete deltas for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to delete deltas: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to delete deltas: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -872,6 +872,6 @@ export async function getDeltaStatistics(
     };
   } catch (error) {
     console.error(`[getDeltaStatistics] ❌ Failed to get statistics for user ${userId}, book ${bookId}:`, getErrorMessage(error));
-    throw new Error(`Unable to get delta statistics: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to get delta statistics: ${getErrorMessage(error)}`, { cause: error });
   }
 }

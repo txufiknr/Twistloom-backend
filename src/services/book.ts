@@ -96,7 +96,7 @@ export async function insertStoryPage(
     return mapToPersistedStoryPage(result[0]);
   } catch (error) {
     console.error(`Failed to insert story page for page ${pageNumber}:`, getErrorMessage(error));
-    throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -321,7 +321,7 @@ export async function getPageFromDB(pageId: string): Promise<DBPage | null> {
     return result[0] || null;
   } catch (error) {
     console.error(`Failed to get page ${pageId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve page: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to retrieve page: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -395,7 +395,7 @@ export async function getStoryPageById(userId: string, bookId: string, pageId: s
     return null;
   } catch (error) {
     console.error(`Failed to get story page for book ${bookId}, page ${pageId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve story page: ${getErrorMessage(error)}`);
+    throw new Error(`Unable to retrieve story page: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 

@@ -2040,7 +2040,7 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
 
   } catch (error) {
     console.error(`Failed to initialize book for user ${userId} with theme "${theme}":`, getErrorMessage(error));
-    throw new Error(`Book initialization failed: ${getErrorMessage(error)}`);
+    throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -2175,7 +2175,7 @@ export async function buildNextPage(params: BuildNextPageParams): Promise<Persis
         console.log(`[buildNextPage] 💥 Race condition detected for parent ${actionedPage.id}, creating new branch`);
         retryCount++;
         if (retryCount >= MAX_BRANCHING_RETRIES) {
-          throw new Error(`Failed to create page after ${MAX_BRANCHING_RETRIES} retries due to concurrent branch creation`);
+          throw new Error(`Failed to create page after ${MAX_BRANCHING_RETRIES} retries due to concurrent branch creation`, { cause: error });
         }
         continue;
       }

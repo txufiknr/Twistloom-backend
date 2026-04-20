@@ -68,6 +68,7 @@
     "@types/node": "^25.6.0",
     "drizzle-kit": "^0.31.8",
     "eslint": "^10.2.1",
+    "globals": "^17.5.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.58.2"
