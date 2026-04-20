@@ -2,6 +2,14 @@ import type { AIChatConfig } from "../types/ai-chat.js";
 
 export const DEFAULT_MAX_OUTPUT_TOKEN: number = 3000;
 
+/**
+ * NVIDIA API request timeout in milliseconds
+ * 
+ * This timeout prevents hanging requests to NVIDIA's inference API.
+ * If a request takes longer than this duration, it will be automatically aborted.
+ */
+export const NVIDIA_REQUEST_TIMEOUT_MS: number = 60000;
+
 /** Temperature controls randomness (0.6 - 0.85): > 0.85 → messy / incoherent, < 0.6 → robotic */
 export const DEFAULT_TEMPERATURE: number = 0.7;
 /** Top-p (nucleus) sampling: 0.0 = all tokens, 1.0 = only most likely tokens */

@@ -957,7 +957,7 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
  * @param content - The actual prompt content to log
  * @param shouldLog - Whether to log (respects logPrompts flag)
  */
-function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
+export function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
   if (!shouldLog) return;
   
   const separator = '═'.repeat(80);

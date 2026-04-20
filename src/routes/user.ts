@@ -55,9 +55,7 @@ const router = Router();
  * 
  * @route GET /user
  * @description Get user profile with engagement counts
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -78,7 +76,6 @@ const router = Router();
  * @example
  * // Request
  * GET /user
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -148,9 +145,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route POST /user
  * @description Create or replace user profile
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -166,7 +161,6 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * POST /user
- * Headers: X-Client-Id: user123
  * Body: {
  *   "name": "John Doe",
  *   "gender": "male",
@@ -236,9 +230,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route PUT /user
  * @description Partially update user profile
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * @header Content-Type - multipart/form-data for file uploads or application/json
@@ -259,12 +251,11 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request with file upload
  * PUT /user
- * Headers: X-Client-Id: user123, Content-Type: multipart/form-data
+ * Headers: Content-Type: multipart/form-data
  * Body: imageFile=<file>, name=John Doe
  * 
  * // Request with base64
  * PUT /user
- * Headers: X-Client-Id: user123
  * Body: {
  *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
  *   "name": "John Doe"
@@ -413,9 +404,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
  * 
  * @route DELETE /user
  * @description Delete user profile and all associated data
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -427,7 +416,6 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
  * @example
  * // Request
  * DELETE /user
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -532,9 +520,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route POST /user/likes
  * @description Like a target item
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -549,7 +535,6 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * POST /user/likes
- * Headers: X-Client-Id: user123
  * Body: {
  *   "targetType": "book",
  *   "targetId": "book456"
@@ -638,9 +623,7 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route DELETE /user/likes
  * @description Unlike a target item
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -654,7 +637,6 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * DELETE /user/likes?targetType=book&targetId=book456
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -722,9 +704,7 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route GET /user/likes
  * @description Get user likes
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -739,7 +719,6 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * GET /user/likes?targetType=book&limit=10
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -797,9 +776,7 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route POST /user/favorites
  * @description Add book to favorites
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -813,7 +790,6 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * POST /user/favorites
- * Headers: X-Client-Id: user123
  * Body: {
  *   "bookId": "book456"
  * }
@@ -886,9 +862,7 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route DELETE /user/favorites
  * @description Remove book from favorites
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -901,7 +875,6 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * DELETE /user/favorites?bookId=book456
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -956,9 +929,7 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
  * 
  * @route GET /user/favorites
  * @description Get user favorites
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -972,7 +943,6 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
  * @example
  * // Request
  * GET /user/favorites?limit=10
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -1020,9 +990,7 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route POST /user/comments
  * @description Create comment
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -1038,7 +1006,6 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * POST /user/comments
- * Headers: X-Client-Id: user123
  * Body: {
  *   "bookId": "book456",
  *   "content": "This story is amazing!"
@@ -1116,9 +1083,7 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
  * 
  * @route PUT /user/comments/:commentId
  * @description Update comment
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -1134,7 +1099,6 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
  * @example
  * // Request
  * PUT /user/comments/comment123
- * Headers: X-Client-Id: user123
  * Body: {
  *   "content": "Updated comment content"
  * }
@@ -1213,9 +1177,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
  * 
  * @route DELETE /user/comments/:commentId
  * @description Delete comment
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -1228,7 +1190,6 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
  * @example
  * // Request
  * DELETE /user/comments/comment123
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {
@@ -1291,9 +1252,7 @@ router.delete("/comments/:commentId", requireAuth, async (req: Request, res: Res
  * 
  * @route GET /user/comments
  * @description Get user comments
- * @access Private (requires X-Client-Id header)
  * 
- * @header X-Client-Id - User identification header (required)
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
@@ -1308,7 +1267,6 @@ router.delete("/comments/:commentId", requireAuth, async (req: Request, res: Res
  * @example
  * // Request
  * GET /user/comments?bookId=book456&limit=10
- * Headers: X-Client-Id: user123
  * 
  * // Response
  * {

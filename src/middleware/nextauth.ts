@@ -2,7 +2,7 @@
  * NextAuth v5 Cookie-Based Authentication Middleware
  * 
  * This module provides middleware functions to verify NextAuth JWT tokens
- * sent via httpOnly cookies, replacing the old X-Client-Id header approach.
+ * sent via httpOnly cookies.
  * 
  * Architecture:
  * - Uses NextAuth's getToken() to verify JWT cookies

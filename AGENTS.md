@@ -313,7 +313,7 @@ import { formatFeedRows } from '../services/feed.js';
 > cd "e:\Flutter\MuslimDigest\backend-neon"; pnpm tsx test-hero-image.js
 > 
 > # Example: Test API request
-> (Invoke-WebRequest -Uri "https://muslim-digest-backend.vercel.app/api/feed/saved?limit=15&collection=My+First+Collection" -Method GET -Headers @{"Content-Type"="application/json"; "X-Client-Id"="019ceaae-23e5-77af-9fcf-d6b21032f57d"; "X-App-Version"="1.0.4-beta"; "X-Platform"="android"} -UseBasicParsing).Content
+> (Invoke-WebRequest -Uri "https://twistloom-backend.vercel.app/api/endpoint?limit=15" -Method GET -Headers @{"Content-Type"="application/json"; "X-App-Version"="1.0.0"; "X-Platform"="web"} -UseBasicParsing).Content
 > 
 > # Example: Clean up test files and run type checking
 > Remove-Item test-*.js; pnpm typecheck

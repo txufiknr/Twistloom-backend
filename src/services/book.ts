@@ -31,6 +31,8 @@ import { sanitizeText } from "../utils/text-processing.js";
 import { generateId } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
+import { aiStreamSSE } from "../utils/ai-chat-stream.js";
+import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -725,4 +727,58 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
       await deleteFileFromImageKit(oldImageId);
     }
   }
+}
+
+/**
+ * Generates a creative book creation prompt using AI streaming
+ * 
+ * This function generates engaging story prompts that users can use as inspiration
+ * for creating new books. The output includes story theme, optional main character details,
+ * and story elements. Character ages are constrained to MIN_CHARACTER_AGE and MAX_CHARACTER_AGE.
+ * 
+ * @param signal - Optional AbortSignal for cancellation
+ * @returns ReadableStream that yields SSE-formatted chunks of the generated prompt
+ * 
+ * @example
+ * ```typescript
+ * const stream = await generateBookCreationPrompt();
+ * res.setHeader('Content-Type', 'text/event-stream');
+ * for await (const chunk of stream) {
+ *   res.write(chunk);
+ * }
+ * ```
+ * 
+ * Example output format:
+ * ```
+ * Story about haunted mansion with ghost in the underground basement
+ * MC: Sarah Chloe, Female, 23
+ * ```
+ */
+export async function generateBookCreationPrompt(signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+  const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
+
+Your task is to generate a concise, compelling story prompt that includes:
+1. A brief story theme (what the story is about)
+2. Optional main character details (name, gender, age, short bio)
+3. Story tone and elements (mystery, horror, psychological thriller, etc.)
+
+Constraints:
+- Character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE} years old
+- Keep the prompt concise and engaging (2-4 lines total)
+- Focus on thriller, mystery, horror, or psychological themes
+- Make it intriguing and hook the reader immediately
+
+Output format:
+Story about [theme description]
+MC: [Name], [Gender], [Age]
+
+If character details are not essential for the theme, you can omit the MC line.`;
+
+  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing.`;
+
+  return aiStreamSSE(userPrompt, {
+    systemPrompt,
+    context: 'book-creation-prompt',
+    logPrompts: false,
+  }, signal);
 }

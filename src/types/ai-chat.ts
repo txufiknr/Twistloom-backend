@@ -75,7 +75,7 @@ export interface AIPromptOptions {
   outputJsonFallbackField?: string;
   /** Whether to log the generated prompts */
   logPrompts?: boolean;
-  /** Whether to log the evaluation result from the AI generated JSON content with scoring and feedback. */
+  /** Whether to log the evaluation result */
   logEvaluationResult?: boolean;
 }
 
@@ -282,6 +282,15 @@ export type AIDocument = {
 export type PromptWithFallbackOptions = Omit<AIPromptOptions, 'modelSelection'> & {
   /** Array of model names to use for fallback attempts */
   models?: string[];
+  /**
+   * Optional AbortSignal for cancellation
+   * 
+   * Note: This parameter is currently only used by streaming functions (aiStreamSSE).
+   * Non-streaming functions (githubPrompt, geminiPrompt, etc.) do not support cancellation
+   * via AbortSignal. This is an intentional trade-off since non-streaming requests typically
+   * complete quickly and the benefit of cancellation is minimal.
+   */
+  signal?: AbortSignal;
 }
 
 // ============================================================================

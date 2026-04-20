@@ -36,7 +36,7 @@ import { extractPaginationParams, createPaginatedResponse, createSearchFilter, a
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, generateBookCreationPrompt } from "../services/book.js";
 import type { EnrichedBookData } from "../services/book-controller.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -59,7 +59,6 @@ const router = Router();
  * @example
  * // Request
  * POST /api/books
- * Headers: X-Client-Id: user123
  * Body: {
  *   "theme": "haunted mansion mystery",
  *   "mcCandidate": {
@@ -213,6 +212,70 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/books/prompt
+ * 
+ * Generates a creative book creation prompt using AI streaming.
+ * This endpoint is used for the "surprise me" feature to provide users
+ * with engaging story prompt suggestions.
+ * 
+ * Returns Server-Sent Events (SSE) stream for real-time typing effect.
+ * 
+ * @example
+ * GET /api/books/prompt
+ * 
+ * SSE Response:
+ * event: start
+ * data: {"provider":"gemini","model":"gemini-2.5-flash"}
+ * 
+ * event: chunk
+ * data: Story about haunted mansion with ghost in the underground basement
+ * 
+ * event: chunk
+ * data:  MC: Sarah Chloe, Female, 23
+ * 
+ * event: end
+ * data: {"provider":"gemini","model":"gemini-2.5-flash"}
+ */
+router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+
+  // Create abort controller for client disconnection
+  const abortController = new AbortController();
+  
+  // Handle client disconnection
+  req.on('close', () => {
+    abortController.abort();
+  });
+
+  try {
+    // Get the stream from the service
+    const stream = await generateBookCreationPrompt(abortController.signal);
+
+    // Stream chunks to client
+    for await (const chunk of stream) {
+      res.write(chunk);
+    }
+
+    res.end();
+  } catch (error) {
+    console.error('[GET /api/books/prompt] Error:', error);
+    
+    // Send SSE error event before closing
+    if (!res.headersSent) {
+      const encoder = new TextEncoder();
+      const errorMessage = error instanceof Error ? error.message : 'Failed to generate prompt';
+      res.write(encoder.encode(`event: error\ndata: ${errorMessage}\n\n`));
+    }
+    
+    res.end();
+  }
+});
+
+/**
  * POST /api/books/insert
  * 
  * Test route for directly inserting a book with provided data.
@@ -234,7 +297,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * @example
  * POST /api/books/insert
- * Headers: X-Client-Id: user123
  * Body: {
  *   "title": "The House That Breathes Below",
  *   "totalPages": 120,
