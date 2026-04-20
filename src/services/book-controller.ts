@@ -19,7 +19,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import { books, users, pages } from '../db/schema.js';
+import { books, users } from '../db/schema.js';
 
 /**
  * Enriched book data with author info and engagement metrics

@@ -18,7 +18,7 @@ import { and, eq, asc } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -370,10 +370,11 @@ async function completePageWithSelectedAction(dbPage: DBPage, userId: string): P
  * 
  * @param dbPage - Page data from database
  * @param selectedAction - User's selected action for this page (optional)
- * @returns UserStoryPage domain object with optional selectedAction
+ * @returns UserStoryPage domain object with optional selectedAction and enriched actions
  * 
  * Behavior:
  * - Maps all fields from database to domain types
+ * - Enriches actions with nextPageNumber and nextBranchId for frontend URL building
  * - Includes user's selected action if available
  * - Handles optional fields correctly
  * - Preserves data integrity during transformation
@@ -385,29 +386,15 @@ async function completePageWithSelectedAction(dbPage: DBPage, userId: string): P
  * if (userPage.selectedAction) {
  *   console.log(`User chose: ${userPage.selectedAction.text}`);
  * }
+ * console.log(`Next page: ${userPage.actions[0].nextPageNumber}`);
  * ```
  */
 export function mapToUserStoryPage(dbPage: DBPage, selectedAction?: Action): UserStoryPage {
+  const persistedPage = mapToPersistedStoryPage(dbPage);
   return {
-    id: dbPage.id,
-    bookId: dbPage.bookId,
-    parentId: dbPage.parentId,
-    branchId: dbPage.branchId,
-    page: dbPage.page,
-    text: dbPage.text,
-    mood: dbPage.mood || undefined,
-    place: dbPage.place || undefined,
-    timeOfDay: dbPage.timeOfDay || undefined,
-    charactersPresent: dbPage.charactersPresent || [],
-    keyEvents: dbPage.keyEvents || [],
-    importantObjects: dbPage.importantObjects || [],
-    actions: dbPage.actions || [],
-    addTraumaTag: dbPage.addTraumaTag || undefined,
-    characterUpdates: dbPage.characterUpdates || undefined,
-    placeUpdates: dbPage.placeUpdates || undefined,
+    ...persistedPage,
+    actions: enrichActions(dbPage.actions || [], persistedPage),
     selectedAction: selectedAction || undefined,
-    aiProvider: dbPage.aiProvider || 'none',
-    aiModel: dbPage.aiModel || 'none',
   } satisfies UserStoryPage;
 }
 
@@ -449,6 +436,41 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
   } satisfies PersistedStoryPage;
+}
+
+/**
+ * Enriches actions with navigation metadata for frontend URL building
+ * 
+ * This function computes nextPageNumber and nextBranchId for each action
+ * based on the current page context. Actions without a pageId will not
+ * have navigation metadata.
+ * 
+ * @param actions - Array of actions to enrich
+ * @param currentPage - Current page with page number and branch ID
+ * @returns Array of enriched actions with navigation metadata
+ * 
+ * Behavior:
+ * - Adds nextPageNumber (current page + 1) if action has pageId
+ * - Adds nextBranchId (current branchId) if action has pageId
+ * - Actions without pageId remain unchanged
+ * - Preserves all original action properties
+ * 
+ * Example:
+ * ```typescript
+ * const enriched = enrichActions(page.actions, page);
+ * // enriched[0].nextPageNumber === page.page + 1
+ * // enriched[0].nextBranchId === page.branchId
+ * ```
+ */
+export function enrichActions(
+  actions: Action[],
+  currentPage: Pick<PersistedStoryPage, 'page' | 'branchId'>
+): EnrichedAction[] {
+  return actions.map(action => ({
+    ...action,
+    nextPageNumber: action.pageId ? currentPage.page + 1 : undefined,
+    nextBranchId: action.pageId ? currentPage.branchId : undefined,
+  }));
 }
 
 /**

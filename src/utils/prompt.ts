@@ -2281,35 +2281,37 @@ function applyAIUpdatesToState(
  * 
  * This function orchestrates the complete action-to-page pipeline with page-based architecture:
  * 1. Retrieves current story progress (session, page, state, character) in parallel
- * 2. Checks if next page is pre-generated (candidate) and reuses if available
- * 3. Updates story state based on chosen action (increments page, generates context summary)
- * 4. Generates next page using AI with dynamic configuration
- * 5. Persists page and state to database with proper parent-child relationships
- * 6. Updates user session to point to new page
- * 7. Handles both main story progression and candidate branch generation
+ * 2. Matches actionText against current page actions to get full Action object
+ * 3. Checks if next page is pre-generated (candidate) and reuses if available
+ * 4. Updates story state based on chosen action (increments page, generates context summary)
+ * 5. Generates next page using AI with dynamic configuration
+ * 6. Persists page and state to database with proper parent-child relationships
+ * 7. Updates user session to point to new page
+ * 8. Handles both main story progression and candidate branch generation
  * 
  * The function maintains narrative consistency while supporting branching
  * storylines through the candidate pre-generation system. It ensures all database
  * operations are atomic and properly linked with parent-child page relationships.
  * 
- * @param userId - The user's unique identifier
- * @param action - The action chosen by the user from current page options
- * @param isUserAction - Whether this action is chosen by user or from a pre-generated candidate (default: true)
+ * @param params.userId - The user's unique identifier
+ * @param params.actionText - The action text chosen by the user from current page options
+ * @param params.isUserAction - Whether this action is chosen by user or from a pre-generated candidate (default: true)
+ * @param params.currentPage - Optional current page context (if already fetched)
  * @returns Promise resolving to the next generated story page with database ID and metadata
  * 
  * @example
  * ```typescript
  * // Main story progression (generates candidates for next page)
- * const nextPage = await chooseAction("user123", { type: 'explore', hint: 'investigate' });
+ * const nextPage = await chooseAction({ userId: "user123", actionText: "Investigate the noise" });
  * console.log(`Next page: ${nextPage.text}`);
  * 
  * // Candidate branch selection (uses pre-generated page, no new candidates)
- * const candidatePage = await chooseAction("user123", { type: 'attack', hint: 'fight' }, true);
+ * const candidatePage = await chooseAction({ userId: "user123", actionText: "Attack the dragon", isUserAction: false });
  * console.log(`Candidate page: ${candidatePage.text}`);
  * ```
  */
 export async function chooseAction(params: ChooseActionParams): Promise<PersistedStoryPage | null> {
-  const { userId, action, isUserAction } = params;
+  const { userId, actionText, isUserAction } = params;
   let { currentPage } = params;
 
   try {
@@ -2332,7 +2334,13 @@ export async function chooseAction(params: ChooseActionParams): Promise<Persiste
     const { bookId, pageId } = activeSession;
     const { selectedAction } = currentPage;
 
-    // 3. Check if user already made a choice on this page (in this branch)
+    // 3. Match actionText against current page actions to get full Action object
+    const action = currentPage.actions.find(a => a.text === actionText);
+    if (!action) {
+      throw new Error(`Action "${actionText}" not found in current page actions`);
+    }
+
+    // 4. Check if user already made a choice on this page (in this branch)
     if (isUserAction && selectedAction) {
       // If choice has been made, can't make another choice
       if (!deepEqualSimple(selectedAction, action)) {
@@ -2341,7 +2349,7 @@ export async function chooseAction(params: ChooseActionParams): Promise<Persiste
       }
     }
     
-    // 4. Check if next page is pre-generated (candidate) and reuse if available
+    // 5. Check if next page is pre-generated (candidate) and reuse if available
     const nextPageId = action.pageId;
     let userPage: PersistedStoryPage | null = null;
     if (nextPageId) {
@@ -2394,8 +2402,8 @@ export async function chooseAction(params: ChooseActionParams): Promise<Persiste
       userId,
       pageId: currentPage?.id,
       isUserAction,
-      action,
-    })
+      actionText,
+    });
     return null;
   }
 }
@@ -2508,7 +2516,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     if (action.pageId) continue;
     
     // Generate candidate page for this action
-    const candidatePage = await chooseAction({userId, action, isUserAction: false, currentPage: page});
+    const candidatePage = await chooseAction({userId, actionText: action.text, isUserAction: false, currentPage: page});
 
     // Skip if candidate page not generated
     if (!candidatePage) continue;

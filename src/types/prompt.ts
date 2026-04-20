@@ -23,8 +23,8 @@ export type BuildNextPageParams = {
 export type ChooseActionParams = {
   /** User identifier for whom action is being chosen */
   userId: string;
-  /** The action being chosen */
-  action: Action;
+  /** The action text being chosen (will be matched against current page actions) */
+  actionText: string;
   /** Whether this is a user-selected action or just candidate pre-generation */
   isUserAction?: boolean;
   /** Current page context */

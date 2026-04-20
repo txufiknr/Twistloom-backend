@@ -16,8 +16,8 @@
  * - GET /api/books - Retrieve user's book library
  * - GET /api/books/explore - Explore published books with search and pagination
  * - PUT /api/books/:id - Update book information and cover image
- * - POST /api/books/:id/pages - Generate new story pages
- * - GET /api/books/:id/pages/:pageId - Retrieve specific pages
+ * - POST /api/books/:id/generate - Generate new story pages
+ * - GET /api/books/:id/:pageId - Retrieve specific pages
  * - POST /api/books/:id/sessions - Manage reading sessions
  * - DELETE /api/books/:id - Delete a book and queue image for deletion
  */
@@ -30,6 +30,7 @@ import { books, pages, userSessions, deletedImages, users } from "../db/schema.j
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
 import { initializeBook, chooseAction } from "../utils/prompt.js";
+import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -178,12 +179,21 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
     }
 
     // Initialize book and set active session
-    const book = await initializeBook({
+    const result = await initializeBook({
       userId: req.userId!,
       theme,
       mcCandidate,
       generateCoverImage
     });
+
+    // Enrich actions with navigation metadata for frontend URL building
+    const enrichedResult = {
+      ...result,
+      firstPage: {
+        ...result.firstPage,
+        actions: enrichActions(result.firstPage.actions, { page: 1, branchId: 'main' })
+      }
+    };
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(req.userId!);
@@ -192,11 +202,11 @@ router.post("/", requireClientId, async (req: Request, res: Response) => {
     await invalidateUserProfileCache(req.userId!);
     
     // Invalidate explore cache if book is active
-    if (book.book.status === 'active') {
+    if (result.book.status === 'active') {
       await invalidateExploreCache();
     }
 
-    res.status(201).json(book);
+    res.status(201).json(enrichedResult);
   } catch (error) {
     handleApiError(res, "Failed to create book", error);
   }
@@ -472,25 +482,26 @@ router.put("/:id", requireClientId, imageUpload.single('imageFile'), async (req:
 });
 
 /**
- * POST /api/books/:id/pages
+ * POST /api/books/:id/generate
  * 
  * Generates new story pages based on user actions or continuation.
- * Accepts complete Action object with text, type, hint, and optional pageId.
+ * Accepts action text string (e.g. "Investigate the noise") which is matched
+ * against current page actions to get the full Action object.
  * Uses chooseAction function for complete story progression pipeline.
  * 
  * @param id - Book ID
- * @param action - Complete Action object with text, type, hint, and optional pageId
- * @returns New page with updated story state
+ * @param actionText - Action text string (e.g. "Investigate the noise")
+ * @returns New page with updated story state and enriched actions
  */
-router.post("/:id/pages", requireClientId, async (req: Request, res: Response) => {
+router.post("/:id/generate", requireClientId, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { action } = req.body;
+    const { actionText } = req.body;
     const userId = req.userId!;
 
-    if (!action || !action.text) {
+    if (!actionText) {
       return res.status(400).json({ 
-        error: "Missing required field: action is required" 
+        error: "Missing required field: actionText is required" 
       });
     }
 
@@ -509,11 +520,17 @@ router.post("/:id/pages", requireClientId, async (req: Request, res: Response) =
     }
 
     // Process user action choice using chooseAction function
-    const newPage = await chooseAction({userId, action, isUserAction: false});
+    const newPage = await chooseAction({userId, actionText, isUserAction: false});
     if (!newPage) return handleApiError(res, "Failed to generate page");
 
+    // Enrich actions with navigation metadata for frontend URL building
+    const enrichedPage = {
+      ...newPage,
+      actions: enrichActions(newPage.actions, { page: newPage.page, branchId: newPage.branchId })
+    };
+
     res.status(201).json({
-      page: newPage,
+      page: enrichedPage,
       bookProgress: {
         currentPage: newPage.id
       }
@@ -524,7 +541,7 @@ router.post("/:id/pages", requireClientId, async (req: Request, res: Response) =
 });
 
 /**
- * GET /api/books/:id/pages/:pageId
+ * GET /api/books/:id/:pageId
  * 
  * Retrieves a specific story page with full context.
  * Includes page content, available actions, and psychological state.
@@ -533,7 +550,7 @@ router.post("/:id/pages", requireClientId, async (req: Request, res: Response) =
  * @param pageId - Page ID to retrieve
  * @returns Page content with actions and state
  */
-router.get("/:id/pages/:pageId", requireClientId, async (req: Request, res: Response) => {
+router.get("/:id/:pageId", requireClientId, async (req: Request, res: Response) => {
   try {
     const { id, pageId } = req.params;
 

@@ -65,7 +65,7 @@ export const pages = pgTable(
     parentId: uuid("parent_id"),
     branchId, // Which reality you're in
     bookId: bookId("cascade"), // Delete if book is deleted
-    page: integer("page").notNull(),
+    page: integer("page").notNull(), // Page number
     text: text("text").notNull(), // 60 words max, first-person POV
     mood: text("mood"), // Current emotional atmosphere
     place: text("place"), // Current place where the story is taking place

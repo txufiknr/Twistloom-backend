@@ -527,10 +527,8 @@ export type StoryGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'> & {
   isMajorEvent?: boolean;
 }
 
-// export type PersistedStoryPage = StoryPage & { id: string, bookId: string, parentId?: string | null };
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page'>;
-// export type ActionedStoryPage = Omit<PersistedStoryPage, 'selectedAction'> & { selectedAction: Action };
-export type UserStoryPage = PersistedStoryPage & { selectedAction?: Action };
+export type UserStoryPage = Omit<PersistedStoryPage, 'actions'> & { actions: EnrichedAction[], selectedAction?: Action };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
 
 export type Action = {
@@ -542,6 +540,19 @@ export type Action = {
   hint: ActionHint;
   /** Destination page ID for the action */
   pageId?: string;
+};
+
+/**
+ * Enriched action with navigation metadata for frontend URL building
+ * 
+ * This type extends Action with computed fields that help the frontend
+ * build navigation URLs without additional API calls.
+ */
+export type EnrichedAction = Action & {
+  /** Next page number this action leads to (current page + 1 if pageId exists) */
+  nextPageNumber?: number;
+  /** Branch ID for the next page (current branchId if pageId exists) */
+  nextBranchId?: string;
 };
 
 /**
