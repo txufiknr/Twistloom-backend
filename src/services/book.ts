@@ -751,29 +751,32 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
  * 
  * Example output format:
  * ```
- * Story about haunted mansion with ghost in the underground basement
- * MC: Sarah Chloe, Female, 23
+ * A psychological thriller about a disgraced investigative journalist who returns to her childhood hometown to uncover the truth behind a series of mysterious disappearances at an abandoned asylum, only to discover that the facility's dark experiments never truly ended and someone is watching her every move from the shadows.
+ * MC: Elena Rodriguez, Female, 31, Former award-winning journalist with a sharp wit and haunted past, driven by redemption and an obsessive need for truth
+ * Tone: Dark, suspenseful, psychological horror with elements of conspiracy and paranoia
+ * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
  * ```
  */
 export async function generateBookCreationPrompt(signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
 
-Your task is to generate a concise, compelling story prompt that includes:
-1. A brief story theme (what the story is about)
-2. Optional main character details (name, gender, age, short bio)
-3. Story tone and elements (mystery, horror, psychological thriller, etc.)
+Your task is to generate a compelling story prompt that includes:
+1. A story theme (required) - a sentence or paragraph describing what the story is about
+2. Optional main character details (name, gender, age, short bio/personality)
+3. Optional story tone (dark, suspenseful, psychological, etc.)
+4. Optional story elements (atmospheric details, narrative devices, themes, etc.)
 
 Constraints:
-- Character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE} years old
-- Keep the prompt concise and engaging (2-4 lines total)
+- Character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE} years old (if including character details)
 - Focus on thriller, mystery, horror, or psychological themes
 - Make it intriguing and hook the reader immediately
+- Be creative with the format - there are no strict formatting rules
 
-Output format:
+Output example (not strict):
 Story about [theme description]
 MC: [Name], [Gender], [Age]
 
-If character details are not essential for the theme, you can omit the MC line.`;
+Only the theme is required. All other fields are optional - include them only if they add value to the story concept.`;
 
   const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing.`;
 
