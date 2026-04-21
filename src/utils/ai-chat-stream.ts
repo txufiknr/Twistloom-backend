@@ -569,7 +569,7 @@ async function* nvidiaStreamGenerator(
     let errorText = 'Unknown error';
     try {
       errorText = await res.text();
-    } catch (e) {
+    } catch {
       // Body consumption failed, use default error text
     } finally {
       // Ensure body is consumed even if text() throws
@@ -611,7 +611,7 @@ async function* nvidiaStreamGenerator(
               const delta = data.choices[0]?.delta?.content || '';
               if (delta) yield delta;
             } catch (e) {
-              console.warn('Failed to parse NVIDIA SSE chunk:', e);
+              console.warn('Failed to parse NVIDIA SSE chunk:', getErrorMessage(e));
             }
           }
         }

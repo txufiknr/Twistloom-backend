@@ -26,6 +26,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
+import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
@@ -111,7 +112,7 @@ const router = Router();
  *   }
  * }
  */
-router.post("/", requireAuth, async (req: Request, res: Response) => {
+router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     
