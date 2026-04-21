@@ -20,6 +20,7 @@
 
 import { sql } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
+import type { User } from "../types/user.js";
 
 /**
  * Enriched book data with author info and engagement metrics
@@ -36,7 +37,7 @@ export interface EnrichedBookData {
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
-  author: string | null;
+  author: User | null;
   likesCount: number;
   readCount: number;
   commentsCount: number;
@@ -87,7 +88,13 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
     updatedAt: books.updatedAt,
     mc: books.mc,
     // Author info
-    author: users.penName,
+    author: {
+      id: users.userId,
+      email: users.email,
+      username: users.username,
+      name: users.penName || users.name,
+      image: users.image,
+    },
     // Denormalized engagement metrics (O(1) performance)
     likesCount: books.likesCount,
     readCount: books.readCount,

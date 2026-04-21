@@ -771,6 +771,8 @@ Constraints:
 - Focus on thriller, mystery, horror, or psychological themes
 - Make it intriguing and hook the reader immediately
 - Be creative with the format - there are no strict formatting rules
+- Overall output length must not exceed 2500 characters
+- Do not use Markdown formatting (no bold with **, no italic with *, no headers with #) - output will be inserted into a plain textarea
 
 Output example (not strict):
 Story about [theme description]

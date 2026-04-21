@@ -44,6 +44,7 @@ const router = Router();
  *   userId: string;   // User ID for NextAuth session
  *   email: string;    // User email
  *   name: string;     // User display name
+ *   username: string; // User username
  *   image?: string;   // Profile image URL
  * }
  * 
@@ -134,6 +135,7 @@ router.post('/verify-credentials', async (req, res) => {
       userId: userData.userId,
       email: userData.email,
       name: userData.name,
+      username: userData.username,
       image: userData.image,
     });
   } catch (error) {

@@ -377,7 +377,7 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   ];
 
   const femaleLastNames = [
-    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance',
+    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance', 'Blackwood',
     'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
     'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow', 'Voss',
     'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',

@@ -22,3 +22,14 @@ export const likeTargetTypes = [
 ] as const;
 
 export type LikeTargetType = typeof likeTargetTypes[number];
+
+export interface User {
+  id: string;
+  email?: string | null;
+  username?: string | null;
+  name?: string | null;
+  image?: string | null;
+  isGuest?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
