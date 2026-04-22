@@ -2,8 +2,19 @@ import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js"
 import type { PlaceMood, PlaceType } from "./places.js";
 import type { StoryPage, StoryState } from "./story.js";
 import type { DBUserSession } from "./schema.js";
+import type { User } from "./user.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
+
+/**
+ * Book statistics for display
+ */
+export interface BookStats {
+  likesCount: number;
+  readCount: number;
+  commentsCount: number;
+  branchesCount: number;
+}
 
 /**
  * Complete book data as stored in database
@@ -16,6 +27,8 @@ export type Book = {
   id: string;
   /** User ID who owns this book */
   userId: string;
+  /** SEO-friendly URL identifier (null if not implemented) */
+  slug?: string;
   /** Book title (catchy, mysterious) */
   title: string;
   /** Total number of pages in the book */
@@ -38,11 +51,40 @@ export type Book = {
   status: BookStatus;
   /** Main character profile with name, age, gender */
   mc: StoryMC;
+  /** Book statistics */
+  stats?: BookStats;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
   updatedAt: Date;
 };
+
+/**
+ * Enriched book data with author info and engagement metrics
+ */
+export interface EnrichedBookData {
+  id: string;
+  userId: string;
+  slug: string | null;
+  title: string;
+  hook: string | null;
+  summary: string | null;
+  image: string | null;
+  keywords: string[] | null;
+  status: string | null;
+  trendingScore: number | null;
+  totalPages: number | null;
+  language: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  mc: Record<string, unknown>;
+  author: User | null;
+  stats: BookStats;
+  isLiked: boolean;
+  isRead: boolean;
+  lastReadAt?: Date | null;
+  lastPage?: string | null;
+}
 
 /**
  * AI response structure for book creation

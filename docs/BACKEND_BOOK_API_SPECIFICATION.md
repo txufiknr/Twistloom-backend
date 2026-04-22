@@ -2,14 +2,12 @@
 
 ## Overview
 
-This document specifies the complete Book API for the Twistloom backend. All endpoints follow a simplified internal API pattern for consistency.
+This document specifies the complete Book API for the Twistloom backend. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
 **Response Pattern:**
-- GET endpoints (single resource): Return resource wrapped in `{ data }` (e.g., `{ data: {...} }`)
-- GET endpoints (collections): Return resources wrapped in `{ items }` (e.g., `{ items: [...] }`)
-- GET endpoints (pagination): Return `{ items, pagination }`
-- POST endpoints: Return created resource with 201 status wrapped in `{ data }` (e.g., `{ data: {...} }`)
-- PUT endpoints: Return updated resource with 200 status wrapped in `{ data }` (e.g., `{ data: {...} }`)
+- GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ book: {...} }`, `{ books: [...] }`)
+- POST endpoints: Return created resources with 201 status (e.g., `{ book: {...} }`, `{ page: {...} }`)
+- PUT endpoints: Return updated resources with 200 status (e.g., `{ book: {...} }`)
 - DELETE endpoints: Return simple messages or operation metadata (e.g., `{ message: "..." }`)
 
 **Authentication:**
@@ -19,6 +17,19 @@ Most endpoints require authentication via NextAuth session cookies. Public endpo
 
 ## Type Definitions
 
+### BookStats
+
+Book statistics for display.
+
+```typescript
+interface BookStats {
+  likesCount: number;          // Total likes for this book
+  readCount: number;           // Total reads/sessions for this book
+  commentsCount: number;       // Total comments for this book
+  branchesCount: number;       // Total branches in this book
+}
+```
+
 ### Book
 
 Book information with enriched fields.
@@ -26,20 +37,29 @@ Book information with enriched fields.
 ```typescript
 interface Book {
   id: string;                  // Book's unique identifier (UUID)
-  title: string;               // Book title
-  hook?: string;               // Hook/description
-  description?: string;        // Full description
-  theme?: string;              // Story theme
-  coverImage?: string;         // Cover image URL
   userId: string;              // Author's user ID
+  slug?: string;               // SEO-friendly URL identifier
+  title: string;               // Book title
+  hook?: string;               // Hook/description (1-2 sentences)
+  summary?: string;            // Full description (50-100 words)
+  image?: string;              // Cover image URL
+  keywords?: string[];         // Keywords for book discovery
+  trendingScore?: number;      // Trending score for book discovery
+  status: 'active' | 'draft' | 'archived';
+  totalPages?: number;         // Total pages in book
+  language?: string;           // Book language
+  mc: Record<string, unknown>; // Main character profile
   author?: {
     id: string;
     name?: string;
     username?: string;
     image?: string;
   };
-  status: 'active' | 'draft' | 'archived';
-  totalPages?: number;         // Total pages in book
+  stats?: BookStats;           // Book statistics
+  isLiked?: boolean;           // Whether current user liked this book
+  isRead?: boolean;            // Whether current user has read this book
+  lastReadAt?: string;         // Last read timestamp (ISO 8601)
+  lastPage?: string;           // Last page ID read by current user
   createdAt: string;           // Creation timestamp (ISO 8601)
   updatedAt: string;           // Last update timestamp (ISO 8601)
 }
@@ -87,6 +107,58 @@ interface Session {
 }
 ```
 
+---
+
+## Frontend Integration
+
+### Frontend Book Type
+
+Frontend applications should use the following Book type definition to align with the backend API response structure:
+
+```typescript
+interface BookStats {
+  likesCount: number;
+  readCount: number;
+  commentsCount: number;
+  branchesCount: number;
+}
+
+interface Book {
+  id: string;
+  userId: string;
+  slug?: string;
+  title: string;
+  hook?: string;
+  summary?: string;
+  image?: string;
+  keywords?: string[];
+  trendingScore?: number;
+  status: 'active' | 'draft' | 'archived';
+  totalPages?: number;
+  language?: string;
+  mc: Record<string, unknown>;
+  author?: {
+    id: string;
+    name?: string;
+    username?: string;
+    image?: string;
+  };
+  stats?: BookStats;
+  isLiked?: boolean;
+  isRead?: boolean;
+  lastReadAt?: string;
+  lastPage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+```
+
+**Important Notes:**
+- Statistics are grouped under `stats` object (not individual fields)
+- Use `summary` instead of `description`
+- Use `image` instead of `coverImage`
+- All timestamp fields are ISO 8601 strings in frontend
+
 ### PaginationMeta
 
 Pagination metadata.
@@ -126,50 +198,68 @@ Create a new book with AI-generated story.
 **Response:**
 ```json
 {
-  "data": {
-    "book": {
-      "id": "uuid",
-      "title": "The Lost Colony",
-      "hook": "A mysterious signal from Mars...",
-      "theme": "space adventure",
-      "coverImage": "https://...",
-      "userId": "user-uuid",
-      "author": {
-        "id": "user-uuid",
-        "name": "John Doe",
-        "username": "johndoe",
-        "image": "https://..."
-      },
-      "status": "active",
-      "totalPages": 50,
-      "createdAt": "2024-01-01T00:00:00.000Z",
-      "updatedAt": "2024-01-01T00:00:00.000Z"
+  "book": {
+    "id": "uuid",
+    "userId": "user-uuid",
+    "slug": "the-lost-colony",
+    "title": "The Lost Colony",
+    "hook": "A mysterious signal from Mars...",
+    "summary": "A psychological thriller about a colony on Mars that receives an enigmatic transmission from deep space.",
+    "image": "https://...",
+    "keywords": ["mars", "colony", "signal", "mystery", "space"],
+    "trendingScore": 0.85,
+    "status": "active",
+    "totalPages": 50,
+    "language": "en",
+    "mc": {
+      "name": "Maya",
+      "age": 19,
+      "gender": "female",
+      "bio": "A skeptic with a habit of lying to herself..."
     },
-    "firstPage": {
-      "id": "page-uuid",
-      "bookId": "book-uuid",
-      "branchId": "main",
-      "page": 1,
-      "content": "...",
-      "actions": [...]
+    "author": {
+      "id": "user-uuid",
+      "name": "John Doe",
+      "username": "johndoe",
+      "image": "https://..."
     },
-    "initialState": {
-      "mc": {
-        "name": "Maya",
-        "age": 19,
-        "gender": "female",
-        "bio": "A skeptic with a habit of lying to herself..."
-      }
+    "stats": {
+      "likesCount": 150,
+      "readCount": 75,
+      "commentsCount": 25,
+      "branchesCount": 12
     },
-    "session": {
-      "id": "session-uuid",
-      "userId": "user-uuid",
-      "bookId": "book-uuid",
-      "pageId": "page-uuid",
-      "status": "active",
-      "createdAt": "2024-01-01T00:00:00.000Z",
-      "updatedAt": "2024-01-01T00:00:00.000Z"
+    "isLiked": false,
+    "isRead": true,
+    "lastReadAt": "2024-01-01T00:00:00.000Z",
+    "lastPage": "page-uuid",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  },
+  "firstPage": {
+    "id": "page-uuid",
+    "bookId": "book-uuid",
+    "branchId": "main",
+    "page": 1,
+    "content": "...",
+    "actions": [...]
+  },
+  "initialState": {
+    "mc": {
+      "name": "Maya",
+      "age": 19,
+      "gender": "female",
+      "bio": "A skeptic with a habit of lying to herself..."
     }
+  },
+  "session": {
+    "id": "session-uuid",
+    "userId": "user-uuid",
+    "bookId": "book-uuid",
+    "pageId": "page-uuid",
+    "status": "active",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
   }
 }
 ```
@@ -197,12 +287,39 @@ Insert a book into the database (admin/internal use).
 **Response:**
 ```json
 {
-  "data": {
+  "book": {
     "id": "uuid",
-    "title": "The Lost Colony",
-    "theme": "space adventure",
     "userId": "user-uuid",
+    "slug": "the-lost-colony",
+    "title": "The Lost Colony",
+    "hook": "A mysterious signal from Mars...",
+    "summary": "A psychological thriller about a colony on Mars that receives an enigmatic transmission from deep space.",
+    "image": "https://...",
+    "keywords": ["mars", "colony", "signal", "mystery", "space"],
+    "trendingScore": 0.85,
     "status": "active",
+    "totalPages": 50,
+    "language": "en",
+    "mc": {
+      "name": "Maya",
+      "age": 19,
+      "gender": "female",
+      "bio": "A skeptic with a habit of lying to herself..."
+    },
+    "author": {
+      "id": "user-uuid",
+      "name": "John Doe",
+      "username": "johndoe",
+      "image": "https://..."
+    },
+    "stats": {
+      "likesCount": 0,
+      "readCount": 0,
+      "commentsCount": 0,
+      "branchesCount": 1
+    },
+    "isLiked": false,
+    "isRead": false,
     "createdAt": "2024-01-01T00:00:00.000Z",
     "updatedAt": "2024-01-01T00:00:00.000Z"
   }
@@ -254,16 +371,44 @@ Get authenticated user's books with pagination.
 **Response:**
 ```json
 {
-  "items": [
+  "books": [
     {
       "id": "uuid",
+      "userId": "user-uuid",
+      "slug": "the-lost-colony",
       "title": "The Lost Colony",
       "hook": "A mysterious signal from Mars...",
-      "coverImage": "https://...",
+      "summary": "A psychological thriller about a colony on Mars that receives an enigmatic transmission from deep space.",
+      "image": "https://...",
+      "keywords": ["mars", "colony", "signal", "mystery", "space"],
+      "trendingScore": 0.85,
       "status": "active",
       "totalPages": 50,
+      "language": "en",
+      "mc": {
+        "name": "Maya",
+        "age": 19,
+        "gender": "female",
+        "bio": "A skeptic with a habit of lying to herself..."
+      },
+      "author": {
+        "id": "user-uuid",
+        "name": "John Doe",
+        "username": "johndoe",
+        "image": "https://..."
+      },
+      "stats": {
+        "likesCount": 150,
+        "readCount": 75,
+        "commentsCount": 25,
+        "branchesCount": 12
+      },
+      "isLiked": true,
+      "isRead": true,
       "lastReadAt": "2024-01-01T00:00:00.000Z",
-      "lastPage": "page-uuid"
+      "lastPage": "page-uuid",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
     }
   ],
   "pagination": {
@@ -307,13 +452,43 @@ hook: Updated hook
 **Response:**
 ```json
 {
-  "data": {
+  "book": {
     "id": "uuid",
+    "userId": "user-uuid",
+    "slug": "the-lost-colony",
     "title": "Updated Title",
     "hook": "Updated hook",
-    "description": "Updated description",
-    "coverImage": "https://...",
-    "coverImageId": "imagekit-file-id",
+    "summary": "Updated description",
+    "image": "https://...",
+    "imageId": "imagekit-file-id",
+    "keywords": ["mars", "colony", "signal", "mystery", "space"],
+    "trendingScore": 0.85,
+    "status": "active",
+    "totalPages": 50,
+    "language": "en",
+    "mc": {
+      "name": "Maya",
+      "age": 19,
+      "gender": "female",
+      "bio": "A skeptic with a habit of lying to herself..."
+    },
+    "author": {
+      "id": "user-uuid",
+      "name": "John Doe",
+      "username": "johndoe",
+      "image": "https://..."
+    },
+    "stats": {
+      "likesCount": 150,
+      "readCount": 75,
+      "commentsCount": 25,
+      "branchesCount": 12
+    },
+    "isLiked": true,
+    "isRead": true,
+    "lastReadAt": "2024-01-01T00:00:00.000Z",
+    "lastPage": "page-uuid",
+    "createdAt": "2024-01-01T00:00:00.000Z",
     "updatedAt": "2024-01-01T12:00:00.000Z"
   },
   "imageUploaded": true,
@@ -352,7 +527,7 @@ Generate a new page for a book based on user action.
 **Response:**
 ```json
 {
-  "data": {
+  "page": {
     "id": "new-page-uuid",
     "bookId": "book-uuid",
     "branchId": "branch-uuid",
@@ -390,7 +565,7 @@ Get a specific page within a branch of a book.
 **Response:**
 ```json
 {
-  "data": {
+  "page": {
     "id": "page-uuid",
     "bookId": "book-uuid",
     "branchId": "main",
@@ -408,9 +583,44 @@ Get a specific page within a branch of a book.
     "createdAt": "2024-01-01T00:00:00.000Z",
     "updatedAt": "2024-01-01T00:00:00.000Z"
   },
-  "bookId": "book-uuid",
-  "bookTitle": "The Lost Colony",
-  "bookSlug": "the-lost-colony"
+  "book": {
+    "id": "book-uuid",
+    "userId": "user-uuid",
+    "slug": "the-lost-colony",
+    "title": "The Lost Colony",
+    "hook": "A mysterious signal from Mars...",
+    "summary": "A psychological thriller about a colony on Mars that receives an enigmatic transmission from deep space.",
+    "image": "https://...",
+    "keywords": ["mars", "colony", "signal", "mystery", "space"],
+    "trendingScore": 0.85,
+    "status": "active",
+    "totalPages": 50,
+    "language": "en",
+    "mc": {
+      "name": "Maya",
+      "age": 19,
+      "gender": "female",
+      "bio": "A skeptic with a habit of lying to herself..."
+    },
+    "author": {
+      "id": "user-uuid",
+      "name": "John Doe",
+      "username": "johndoe",
+      "image": "https://..."
+    },
+    "stats": {
+      "likesCount": 150,
+      "readCount": 75,
+      "commentsCount": 25,
+      "branchesCount": 12
+    },
+    "isLiked": true,
+    "isRead": true,
+    "lastReadAt": "2024-01-01T00:00:00.000Z",
+    "lastPage": "page-uuid",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  }
 }
 ```
 
@@ -437,7 +647,7 @@ Create or update a reading session for the book.
 **Response:**
 ```json
 {
-  "data": {
+  "session": {
     "id": "session-uuid",
     "userId": "user-uuid",
     "bookId": "book-uuid",
@@ -447,9 +657,44 @@ Create or update a reading session for the book.
     "createdAt": "2024-01-01T00:00:00.000Z",
     "updatedAt": "2024-01-01T00:00:00.000Z"
   },
-  "bookId": "book-uuid",
-  "bookTitle": "The Lost Colony",
-  "bookSlug": "the-lost-colony"
+  "book": {
+    "id": "book-uuid",
+    "userId": "user-uuid",
+    "slug": "the-lost-colony",
+    "title": "The Lost Colony",
+    "hook": "A mysterious signal from Mars...",
+    "summary": "A psychological thriller about a colony on Mars that receives an enigmatic transmission from deep space.",
+    "image": "https://...",
+    "keywords": ["mars", "colony", "signal", "mystery", "space"],
+    "trendingScore": 0.85,
+    "status": "active",
+    "totalPages": 50,
+    "language": "en",
+    "mc": {
+      "name": "Maya",
+      "age": 19,
+      "gender": "female",
+      "bio": "A skeptic with a habit of lying to herself..."
+    },
+    "author": {
+      "id": "user-uuid",
+      "name": "John Doe",
+      "username": "johndoe",
+      "image": "https://..."
+    },
+    "stats": {
+      "likesCount": 150,
+      "readCount": 75,
+      "commentsCount": 25,
+      "branchesCount": 12
+    },
+    "isLiked": true,
+    "isRead": true,
+    "lastReadAt": "2024-01-01T00:00:00.000Z",
+    "lastPage": "page-uuid",
+    "createdAt": "2024-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-01T00:00:00.000Z"
+  }
 }
 ```
 
@@ -471,22 +716,40 @@ Get all published books for exploration (public endpoint).
 **Response:**
 ```json
 {
-  "items": [
+  "books": [
     {
       "id": "uuid",
+      "userId": "user-uuid",
+      "slug": "the-lost-colony",
       "title": "The Lost Colony",
       "hook": "A mysterious signal from Mars...",
-      "coverImage": "https://...",
-      "likesCount": 150,
-      "commentsCount": 25,
+      "summary": "A psychological thriller about a colony on Mars that receives an enigmatic transmission from deep space.",
+      "image": "https://...",
+      "keywords": ["mars", "colony", "signal", "mystery", "space"],
+      "trendingScore": 0.85,
       "status": "active",
       "totalPages": 50,
+      "language": "en",
+      "mc": {
+        "name": "Maya",
+        "age": 19,
+        "gender": "female",
+        "bio": "A skeptic with a habit of lying to herself..."
+      },
       "author": {
         "id": "user-uuid",
         "name": "John Doe",
         "username": "johndoe",
         "image": "https://..."
       },
+      "stats": {
+        "likesCount": 150,
+        "readCount": 75,
+        "commentsCount": 25,
+        "branchesCount": 12
+      },
+      "isLiked": false,
+      "isRead": false,
       "createdAt": "2024-01-01T00:00:00.000Z",
       "updatedAt": "2024-01-01T00:00:00.000Z"
     }
@@ -584,9 +847,9 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 
 ### v1.0.0 (2024-04-22)
 - Initial API specification
-- Implemented simplified internal API response pattern
-- Single item responses use `{ data }`
-- Collection responses use `{ items }`
-- Pagination responses use `{ items, pagination }`
-- Updated all book-related endpoints to follow new pattern
-- Frontend updated to handle new response format
+- Follows industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn)
+- Single item responses use resource-specific keys (e.g., `{ book }`, `{ page }`)
+- Collection responses use resource-specific keys (e.g., `{ books }`)
+- Pagination responses use `{ books, pagination }` or `{ items, pagination }`
+- Updated all book-related endpoints to follow industry standard pattern
+- Frontend updated to handle resource-specific keys

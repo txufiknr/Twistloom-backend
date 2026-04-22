@@ -2,14 +2,12 @@
 
 ## Overview
 
-This document specifies the complete User API for the Twistloom backend. All endpoints follow a simplified internal API pattern for consistency.
+This document specifies the complete User API for the Twistloom backend. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
 **Response Pattern:**
-- GET endpoints (single resource): Return resource wrapped in `{ data }` (e.g., `{ data: {...} }`)
-- GET endpoints (collections): Return resources wrapped in `{ items }` (e.g., `{ items: [...] }`)
-- GET endpoints (pagination): Return `{ items, pagination }`
-- POST endpoints: Return created resource with 201 status wrapped in `{ data }` (e.g., `{ data: {...} }`)
-- PUT endpoints: Return updated resource with 200 status wrapped in `{ data }` (e.g., `{ data: {...} }`)
+- GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ user: {...} }`, `{ likes: [...] }`)
+- POST endpoints: Return created resources with 201 status (e.g., `{ user: {...} }`, `{ like: {...} }`)
+- PUT endpoints: Return updated resources with 200 status (e.g., `{ user: {...} }`)
 - DELETE endpoints: Return simple messages or operation metadata (e.g., `{ message: "..." }`)
 
 **Authentication:**
@@ -119,7 +117,7 @@ Get the authenticated user's profile with engagement statistics.
 **Response:**
 ```json
 {
-  "data": {
+  "user": {
     "id": "uuid",
     "username": "john-doe",
     "name": "John Doe",
@@ -163,7 +161,7 @@ Major platforms (Twitter/X, Instagram, GitHub, LinkedIn) handle UUID-to-username
 **Response:**
 ```json
 {
-  "data": {
+  "user": {
     "id": "uuid",
     "username": "john-doe",
     "name": "John Doe",
@@ -210,7 +208,7 @@ Create or fully replace user profile (upsert operation).
 **Response:**
 ```json
 {
-  "data": {
+  "user": {
     "userId": "uuid",
     "name": "John Doe",
     "gender": "male",
@@ -250,7 +248,7 @@ bio: User bio
 **Response:**
 ```json
 {
-  "data": {
+  "user": {
     "userId": "uuid",
     "name": "John Doe",
     "bio": "User bio",
@@ -316,7 +314,7 @@ Like a target item (book, comment, or user).
 **Response:**
 ```json
 {
-  "data": {
+  "like": {
     "userId": "user-uuid",
     "targetType": "book",
     "targetId": "book-uuid",
@@ -364,7 +362,7 @@ Get user's likes with pagination.
 **Response:**
 ```json
 {
-  "items": [
+  "likes": [
     {
       "userId": "user-uuid",
       "targetType": "book",
@@ -395,7 +393,7 @@ Add a book to favorites.
 **Response:**
 ```json
 {
-  "data": {
+  "favorite": {
     "userId": "user-uuid",
     "bookId": "book-uuid",
     "createdAt": "2024-01-01T00:00:00.000Z"
@@ -440,7 +438,7 @@ Get user's favorite books with pagination.
 **Response:**
 ```json
 {
-  "items": [
+  "favorites": [
     {
       "userId": "user-uuid",
       "bookId": "book-uuid",
@@ -472,7 +470,7 @@ Create a comment on a book.
 **Response:**
 ```json
 {
-  "data": {
+  "comment": {
     "id": "comment-uuid",
     "userId": "user-uuid",
     "bookId": "book-uuid",
@@ -502,7 +500,7 @@ Update an existing comment (only by the original author).
 **Response:**
 ```json
 {
-  "data": {
+  "comment": {
     "id": "comment-uuid",
     "userId": "user-uuid",
     "bookId": "book-uuid",
@@ -545,7 +543,7 @@ Get user's comments with pagination.
 **Response:**
 ```json
 {
-  "items": [
+  "comments": [
     {
       "id": "comment-uuid",
       "userId": "user-uuid",
@@ -575,7 +573,7 @@ Follow a user.
 **Response:**
 ```json
 {
-  "data": {
+  "follow": {
     "followerId": "user-uuid",
     "followingId": "target-user-uuid",
     "createdAt": "2024-01-01T00:00:00.000Z"
@@ -667,14 +665,6 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 
 ## Version History
 
-### v2.0.0 (2024-04-22)
-- **BREAKING CHANGE**: Changed response pattern to simplified internal API standard
-- Single item responses now use `{ data }` instead of resource-specific keys (e.g., `{ user }`, `{ like }`)
-- Collection responses now use `{ items }` instead of resource-specific keys (e.g., `{ likes }`, `{ favorites }`)
-- Pagination responses use `{ items, pagination }` format
-- Updated all user-related endpoints to follow new pattern
-- Frontend updated to handle new response format
-
 ### v1.0.0 (2024-04-22)
 - Initial API specification
 - Added UserStats with comprehensive engagement metrics
@@ -683,4 +673,5 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 - Implemented GET /users/:identifier that accepts both UUID and username
 - Updated all user-related endpoints to respond with direct resource objects or collections, removing `success` and `data` wrappers
 - Maintained consistent error handling and cache invalidation
-- Followed documented API response formats in `BACKEND_API_REQUIREMENTS.md`
+- Followed industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn)
+- Response pattern: Single items use resource-specific keys (e.g., `{ user }`, `{ like }`), collections use resource-specific keys (e.g., `{ likes }`, `{ favorites }`)

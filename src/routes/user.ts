@@ -40,7 +40,7 @@ import { users, userDevices, userSessions, userLikes, userFavorites, userComment
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, and, desc, or } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { updateUserLastActivity } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
@@ -138,7 +138,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
       };
 
       return {
-        data: formattedUser,
+        user: formattedUser,
       };
     };
     
@@ -264,7 +264,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
       };
 
       return {
-        data: formattedUser,
+        user: formattedUser,
       };
     };
     
@@ -352,7 +352,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     res.status(201).json({
-      data: row,
+      user: row,
     });
 
     // Invalidate user profile cache
@@ -505,7 +505,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
     // Only proceed if there are actual updates
     if (Object.keys(updateData).length === 0) {
       return res.json({
-        data: user,
+        user,
         imageUploaded: !!newImageUrl,
         uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
         oldImageQueuedForDeletion: oldImageIdQueued,
@@ -523,7 +523,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
       .returning();
 
     res.json({
-      data: result[0],
+      user: result[0],
       imageUploaded: !!newImageUrl,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
       oldImageQueuedForDeletion: oldImageIdQueued,
@@ -739,7 +739,7 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     res.status(201).json({
-      data: result[0] || null,
+      like: result[0] || null,
     });
 
     // Invalidate caches when liking a book
@@ -894,7 +894,7 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
       .offset(parseInt(offset as string));
 
     res.json({
-      items: likes,
+      likes,
     });
 
     // Update user's last activity timestamp
@@ -978,7 +978,7 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     res.status(201).json({
-      data: result[0],
+      favorite: result[0],
     });
 
     // Invalidate user profile cache (savedBooksCount changed)
@@ -1105,7 +1105,7 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
       .offset(parseInt(offset as string));
 
     res.json({
-      items: favorites,
+      favorites,
     });
 
     // Update user's last activity timestamp
@@ -1193,7 +1193,7 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     res.status(201).json({
-      data: row,
+      comment: row,
     });
 
     // Invalidate explore cache if parent comment (commentsCount changes)
@@ -1294,7 +1294,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
       .returning();
 
     res.json({
-      data: result[0],
+      comment: result[0],
     });
   } catch (error) {
     handleApiError(res, "Failed to update comment", error);
@@ -1436,7 +1436,7 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
       .offset(parseInt(offset as string));
 
     res.json({
-      items: comments,
+      comments,
     });
 
     // Update user's last activity timestamp
@@ -1527,7 +1527,7 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       .limit(1);
 
     res.status(201).json({
-      data: result[0] || null,
+      follow: result[0] || null,
     });
 
     // Invalidate user profile cache (followersCount changed)

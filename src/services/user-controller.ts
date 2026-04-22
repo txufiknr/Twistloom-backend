@@ -11,7 +11,7 @@
  * - Performance considerations with indexed columns
  */
 
-import { users, userFollows } from '../db/schema.js';
+import { users } from '../db/schema.js';
 import { sql } from 'drizzle-orm';
 
 /**

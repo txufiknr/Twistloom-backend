@@ -14,6 +14,7 @@
 
 import type { Request } from "express";
 import { DEFAULT_ITEMS_PER_PAGE, MAX_ITEMS_PER_PAGE } from "../config/pagination.js";
+import type { ResourceName } from "../types/api.js";
 
 /**
  * Pagination parameters interface for type safety
@@ -42,22 +43,20 @@ export interface PaginationMeta {
   /** Items per page */
   limit: number;
   /** Total number of items */
-  total: number;
+  totalCount: number;
   /** Total number of pages */
   totalPages: number;
-  /** Next page cursor (if applicable) */
-  nextCursor?: string;
-  /** Previous page cursor (if applicable) */
-  prevCursor?: string;
+  /** Whether next page exists */
+  hasNext: boolean;
+  /** Whether previous page exists */
+  hasPrevious: boolean;
 }
 
 /**
- * Paginated response interface
+ * Paginated response interface with dynamic resource naming
  */
 export interface PaginatedResponse<T> {
-  /** Array of items */
-  items: T[];
-  /** Pagination metadata */
+  [key: string]: T[] | PaginationMeta;
   pagination: PaginationMeta;
 }
 
@@ -100,25 +99,28 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
  * 
  * @param page - Current page number
  * @param limit - Items per page
- * @param total - Total number of items
+ * @param totalCount - Total number of items
  * @returns Pagination metadata object
  * 
  * @example
  * ```typescript
  * const meta = calculatePaginationMeta(1, 20, 150);
- * // Returns: { page: 1, limit: 20, total: 150, totalPages: 8 }
+ * // Returns: { page: 1, limit: 20, totalCount: 150, totalPages: 8, hasNext: true, hasPrevious: false }
  * ```
  */
 export function calculatePaginationMeta(
   page: number,
   limit: number,
-  total: number
+  totalCount: number
 ): PaginationMeta {
+  const totalPages = Math.ceil(totalCount / limit);
   return {
     page,
     limit,
-    total,
-    totalPages: Math.ceil(total / limit)
+    totalCount,
+    totalPages,
+    hasNext: page < totalPages,
+    hasPrevious: page > 1
   };
 }
 
@@ -127,20 +129,25 @@ export function calculatePaginationMeta(
  * 
  * @param items - Array of items to paginate
  * @param pagination - Pagination metadata
+ * @param resourceName - Name for the items array (default: "items")
  * @returns Paginated response object
  * 
  * @example
  * ```typescript
- * const response = createPaginatedResponse(books, paginationMeta);
+ * const response = createPaginatedResponse(books, paginationMeta, 'books');
+ * // Returns: { books: [...], pagination: { page: 1, limit: 20, ... } }
+ * 
+ * const response = createPaginatedResponse(likes, paginationMeta);
  * // Returns: { items: [...], pagination: { page: 1, limit: 20, ... } }
  * ```
  */
 export function createPaginatedResponse<T>(
   items: T[],
-  pagination: PaginationMeta
+  pagination: PaginationMeta,
+  resourceName?: ResourceName
 ): PaginatedResponse<T> {
   return {
-    items,
+    [resourceName || 'items']: items,
     pagination
   };
 }

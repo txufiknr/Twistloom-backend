@@ -38,9 +38,9 @@ import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, generateBookCreationPrompt } from "../services/book.js";
-import type { EnrichedBookData } from "../services/book-controller.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
+import type { EnrichedBookData } from "../types/book.js";
 
 const router = Router();
 
@@ -206,9 +206,7 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       await invalidateExploreCache();
     }
 
-    res.status(201).json({
-      data: enrichedResult,
-    });
+    res.status(201).json(enrichedResult);
   } catch (error) {
     handleApiError(res, "Failed to create book", error);
   }
@@ -335,7 +333,7 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
     const insertedBook = await insertBook(bookWithUserId);
 
     res.status(201).json({
-      data: insertedBook,
+      book: insertedBook,
     });
   } catch (error) {
     handleApiError(res, "Failed to insert book", error);
@@ -412,7 +410,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
 
       const pagination = calculatePaginationMeta(page, limit, totalCount);
 
-      return createPaginatedResponse(userBooks, pagination);
+      return createPaginatedResponse(userBooks, pagination, 'books');
     };
     
     // Use cache if applicable, otherwise fetch directly
@@ -541,7 +539,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     }
 
     res.json({
-      data: updatedBook,
+      book: updatedBook,
       imageUploaded: !!newImageUrl,
       oldImageQueuedForDeletion: oldImageIdQueued,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
@@ -626,7 +624,7 @@ router.post("/:identifier/generate", requireAuth, async (req: Request, res: Resp
     };
 
     res.status(201).json({
-      data: enrichedPage,
+      page: enrichedPage,
       currentPage: newPage.id,
     });
   } catch (error) {
@@ -698,10 +696,8 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     };
 
     res.json({
-      data: enrichedPage,
-      bookId: book.id,
-      bookTitle: book.title,
-      bookSlug: (book as any).slug,
+      page: enrichedPage,
+      book
     });
   } catch (error) {
     handleApiError(res, "Failed to retrieve page", error);
@@ -744,10 +740,8 @@ router.post("/:id/sessions", requireAuth, async (req: Request, res: Response) =>
     await invalidateUserProfileCache(userId); // readsCount changed
 
     res.status(201).json({
-      data: session,
-      bookId: book.id,
-      bookTitle: book.title,
-      bookSlug: (book as any).slug,
+      session,
+      book
     });
   } catch (error) {
     handleApiError(res, "Failed to manage session", error);
@@ -813,7 +807,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
 
       const pagination = calculatePaginationMeta(page, limit, totalCount);
 
-      return createPaginatedResponse(booksResult, pagination);
+      return createPaginatedResponse(booksResult, pagination, 'books');
     };
     
     // Use cache if applicable, otherwise fetch directly

@@ -20,33 +20,6 @@
 
 import { sql } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
-import type { User } from "../types/user.js";
-
-/**
- * Enriched book data with author info and engagement metrics
- */
-export interface EnrichedBookData {
-  id: string;
-  title: string;
-  hook: string | null;
-  summary: string | null;
-  image: string | null;
-  keywords: string[] | null;
-  status: string | null;
-  trendingScore: number | null;
-  createdAt: Date;
-  updatedAt: Date;
-  mc: Record<string, unknown>;
-  author: User | null;
-  likesCount: number;
-  readCount: number;
-  commentsCount: number;
-  branchesCount: number;
-  isLiked: boolean;
-  isRead: boolean;
-  lastReadAt?: Date | null;
-  lastPage?: string | null;
-}
 
 /**
  * Builds an enriched book select object with all required fields
@@ -77,6 +50,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
   return {
     // Basic book fields
     id: books.id,
+    userId: books.userId,
+    slug: books.slug,
     title: books.title,
     hook: books.hook,
     summary: books.summary,
@@ -84,6 +59,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
     keywords: books.keywords,
     status: books.status,
     trendingScore: books.trendingScore,
+    totalPages: books.totalPages,
+    language: books.language,
     createdAt: books.createdAt,
     updatedAt: books.updatedAt,
     mc: books.mc,
@@ -96,20 +73,22 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
       image: users.image,
     },
     // Denormalized engagement metrics (O(1) performance)
-    likesCount: books.likesCount,
-    readCount: books.readCount,
-    // Comments count (only parent comments, indexed by bookId)
-    commentsCount: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM user_comments 
-      WHERE book_id = books.id AND parent_comment_id IS NULL
-    ), 0)`,
-    // Branches count (distinct branchId from pages, indexed by bookId)
-    branchesCount: sql<number>`COALESCE((
-      SELECT COUNT(DISTINCT branch_id) 
-      FROM pages 
-      WHERE book_id = books.id
-    ), 0)`,
+    stats: {
+      likesCount: books.likesCount,
+      readCount: books.readCount,
+      // Comments count (only parent comments, indexed by bookId)
+      commentsCount: sql<number>`COALESCE((
+        SELECT COUNT(*) 
+        FROM user_comments 
+        WHERE book_id = books.id AND parent_comment_id IS NULL
+      ), 0)`,
+      // Branches count (distinct branchId from pages, indexed by bookId)
+      branchesCount: sql<number>`COALESCE((
+        SELECT COUNT(DISTINCT branch_id) 
+        FROM pages 
+        WHERE book_id = books.id
+      ), 0)`,
+    },
     // User-specific flags (indexed by userId and targetId/bookId)
     isLiked: currentUserId 
       ? sql<boolean>`EXISTS (
