@@ -1,4 +1,4 @@
-import type { Book } from "../types/book.js";
+import type { Book, BookSortOption } from "../types/book.js";
 
 /**
  * Formats book metadata for prompt
@@ -16,4 +16,14 @@ export function formatBookMetaForPrompt(book: Book): string {
 
 export function formatPageTextForPrompt(text: string): string {
   return text.trim().replace(/\n/g, ' ¶ ');
+}
+
+/**
+ * Validates book sort option
+ * 
+ * @param sortBy - Sort option to validate
+ * @returns True if valid sort option
+ */
+export function isValidBookSortOption(sortBy: string): sortBy is BookSortOption {
+  return ['popular', 'newest', 'trending', 'top-picks'].includes(sortBy);
 }

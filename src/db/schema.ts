@@ -210,6 +210,8 @@ export const users = pgTable(
  *   },
  *   "created_at": "2023-01-01T00:00:00.000Z"
  * }
+ * 
+ * @todo add `topPick` (timestamp)
  */
 export const books = pgTable(
   "books",
@@ -230,6 +232,7 @@ export const books = pgTable(
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
+    topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     createdAt,
     updatedAt,
   },

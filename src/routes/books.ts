@@ -37,10 +37,11 @@ import { extractPaginationParams, createPaginatedResponse, createSearchFilter, a
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting } from "../services/book.js";
+import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { EnrichedBookData } from "../types/book.js";
+import type { BookSortOption, EnrichedBookData } from "../types/book.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
@@ -853,17 +854,21 @@ router.post("/:id/sessions", requireAuth, async (req: Request, res: Response) =>
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of books per page (default: 20)
  * @query search - Search query for title, summary, keywords
- * @query sortBy - Field to sort by (default: updatedAt)
- * @query sortOrder - Sort direction (default: desc)
+ * @query sortBy - Sort option: popular, newest, trending, top-picks (default: newest)
  * @returns Paginated list of published books
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy } = extractPaginationParams(req);
     const userId = req.userId || null;
     
-    // Only cache page 1 without search (rapidly changing)
-    const shouldCache = page === 1 && !search;
+    // Validate and normalize sortBy parameter
+    const normalizedSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
+      ? (sortBy as BookSortOption) 
+      : 'newest';
+    
+    // Only cache page 1 without search and with default sort (rapidly changing)
+    const shouldCache = page === 1 && !search && normalizedSortBy === 'newest';
     const cacheKey = CACHE_KEYS.EXPLORE_PAGE_1;
     
     // Fetch function for cache
@@ -880,8 +885,8 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
         query = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(query);
       }
 
-      // Apply sorting
-      query = applySorting(query, sortBy, sortOrder);
+      // Apply book-specific sorting
+      query = applyBookSorting(query, normalizedSortBy);
 
       // Get total count for pagination
       let countQuery = dbRead
@@ -989,6 +994,34 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
     });
   } catch (error) {
     handleApiError(res, "Failed to delete book", error);
+  }
+});
+
+/**
+ * GET /api/books/stats
+ * 
+ * Retrieves public book statistics.
+ * Returns aggregate statistics about all books in the platform.
+ * Accessible to both authenticated and guest users.
+ * 
+ * @returns Object containing storiesCreated, branchesExplored, and pagesCrafted
+ * 
+ * @example
+ * GET /api/books/stats
+ * 
+ * Response:
+ * {
+ *   "storiesCreated": 1234,
+ *   "branchesExplored": 5678,
+ *   "pagesCrafted": 9012
+ * }
+ */
+router.get("/stats", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const stats = await getPublicBookStats();
+    res.json(stats);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve book stats", error);
   }
 });
 

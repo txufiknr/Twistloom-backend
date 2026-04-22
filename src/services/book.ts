@@ -12,12 +12,12 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { pages, books, userPageProgress } from "../db/schema.js";
+import { pages, books, userPageProgress, userFavorites } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
-import { and, eq, asc, or } from "drizzle-orm";
+import { and, eq, asc, or, desc, sql, count } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
-import type { Book, BookStatus } from "../types/book.js";
+import type { Book, BookSortOption, BookStatus } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -723,6 +723,130 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
     // Delete old image from ImageKit (with fallback to deletion queue)
     if (oldImageId) {
       await deleteFileFromImageKit(oldImageId);
+    }
+  }
+}
+
+/**
+ * Retrieves public book statistics
+ * 
+ * Returns aggregate statistics about all books in the platform:
+ * - storiesCreated: Total number of books created
+ * - branchesExplored: Total number of unique branches across all pages
+ * - pagesCrafted: Total number of pages created
+ * 
+ * @returns Promise resolving to object containing the three stats
+ * 
+ * @example
+ * ```typescript
+ * const stats = await getPublicBookStats();
+ * console.log(`Stories: ${stats.storiesCreated}`);
+ * console.log(`Branches: ${stats.branchesExplored}`);
+ * console.log(`Pages: ${stats.pagesCrafted}`);
+ * ```
+ */
+export async function getPublicBookStats(): Promise<{
+  storiesCreated: number;
+  branchesExplored: number;
+  pagesCrafted: number;
+}> {
+  try {
+    // Get total number of books (stories created)
+    const booksCount = await dbRead
+      .select({ count: books.id })
+      .from(books);
+
+    // Get total number of unique branches (count distinct branchId from pages)
+    const branchesCount = await dbRead
+      .select({ branchId: pages.branchId })
+      .from(pages);
+
+    const uniqueBranches = new Set(branchesCount.map(b => b.branchId).filter(Boolean));
+
+    // Get total number of pages
+    const pagesCount = await dbRead
+      .select({ count: pages.id })
+      .from(pages);
+
+    return {
+      storiesCreated: booksCount.length,
+      branchesExplored: uniqueBranches.size,
+      pagesCrafted: pagesCount.length,
+    };
+  } catch (error) {
+    console.error('Failed to get public book stats:', getErrorMessage(error));
+    throw new Error(`Unable to retrieve public book stats: ${getErrorMessage(error)}`, { cause: error });
+  }
+}
+
+/**
+ * Applies book-specific sorting to a query based on sort option
+ * 
+ * @param query - Drizzle query builder
+ * @param sortBy - Sort option (popular, newest, trending, top-picks)
+ * @returns Modified query builder with sorting applied
+ * 
+ * Behavior:
+ * - popular: Sorts by branchesCount/totalPages ratio (highest first)
+ * - newest: Sorts by createdAt (latest first)
+ * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
+ * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
+ * 
+ * @remarks
+ * Uses `any` type for query parameter because Drizzle ORM query builder types
+ * are extremely complex generic types that don't fit well into simple type constraints.
+ * Type safety is maintained through the actual database operations and SQL generation.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
+  switch (sortBy) {
+    case 'popular': {
+      // Sort by branchesCount/totalPages ratio
+      // Subquery to count distinct branches per book
+      const branchesSubquery = dbRead
+        .select({
+          bookId: pages.bookId,
+          branchCount: sql<number>`COUNT(DISTINCT ${pages.branchId})`.as('branchCount'),
+        })
+        .from(pages)
+        .groupBy(pages.bookId)
+        .as('branches_count');
+
+      return query
+        .leftJoin(branchesSubquery, eq(books.id, branchesSubquery.bookId))
+        .orderBy(
+          sql`(COALESCE(${branchesSubquery.branchCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`
+        );
+    }
+
+    case 'trending': {
+      // Subquery to count favorites per book
+      const favoritesSubquery = dbRead
+        .select({
+          bookId: userFavorites.bookId,
+          favoritedCount: count(userFavorites.userId).as('favoritedCount'),
+        })
+        .from(userFavorites)
+        .groupBy(userFavorites.bookId)
+        .as('favorites_count');
+
+      return query
+        .leftJoin(favoritesSubquery, eq(books.id, favoritesSubquery.bookId))
+        .orderBy(
+          sql`(${books.readCount} * 0.5 + ${books.likesCount} * 0.3 + COALESCE(${favoritesSubquery.favoritedCount}, 0) * 0.2) DESC`
+        );
+    }
+
+    case 'top-picks': {
+      // Sort by latest topPick timestamp (only books marked as top picks)
+      return query
+        .where(sql`${books.topPick} IS NOT NULL`)
+        .orderBy(desc(books.topPick));
+    }
+
+    case 'newest':
+    default: {
+      return query.orderBy(desc(books.createdAt));
     }
   }
 }

@@ -53,6 +53,8 @@ export type Book = {
   mc: StoryMC;
   /** Book statistics */
   stats?: BookStats;
+  /** When the book was marked as top pick */
+  topPick?: Date;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
@@ -75,6 +77,7 @@ export interface EnrichedBookData {
   trendingScore: number | null;
   totalPages: number | null;
   language: string | null;
+  topPick?: Date;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
@@ -163,3 +166,14 @@ export interface CreateBookResponse {
   initialState: StoryState;
   session: DBUserSession | null;
 }
+
+/**
+ * Book sorting options
+ * 
+ * Available options:
+ * - popular: Sorts by branchesCount/totalPages ratio (most branched stories)
+ * - newest: Sorts by createdAt timestamp (latest books)
+ * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
+ * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
+ */
+export type BookSortOption = 'popular' | 'newest' | 'trending' | 'top-picks';
