@@ -11,7 +11,7 @@
  * - Performance considerations with indexed columns
  */
 
-import { users } from '../db/schema.js';
+import { users, userFollows } from '../db/schema.js';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -44,6 +44,9 @@ export function getEnrichedUserSelect() {
     // Basic user fields
     userId: users.userId,
     name: users.name,
+    username: users.username,
+    email: users.email,
+    bio: users.bio,
     gender: users.gender,
     image: users.image,
     lastActive: users.lastActive,
@@ -69,6 +72,17 @@ export function getEnrichedUserSelect() {
       SELECT COUNT(*) 
       FROM user_favorites 
       WHERE user_id = users.user_id
+    ), 0)`,
+    followersCount: sql<number>`COALESCE((
+      SELECT COUNT(*) 
+      FROM user_follows 
+      WHERE following_id = users.user_id
+    ), 0)`,
+    likesReceived: sql<number>`COALESCE((
+      SELECT COUNT(*) 
+      FROM books 
+      INNER JOIN user_likes ON books.id = user_likes.target_id
+      WHERE books.user_id = users.user_id AND user_likes.target_type = 'book'
     ), 0)`,
   };
 }

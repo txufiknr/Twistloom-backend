@@ -206,7 +206,9 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       await invalidateExploreCache();
     }
 
-    res.status(201).json(enrichedResult);
+    res.status(201).json({
+      data: enrichedResult,
+    });
   } catch (error) {
     handleApiError(res, "Failed to create book", error);
   }
@@ -333,8 +335,7 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
     const insertedBook = await insertBook(bookWithUserId);
 
     res.status(201).json({
-      book: insertedBook,
-      message: "Book inserted successfully"
+      data: insertedBook,
     });
   } catch (error) {
     handleApiError(res, "Failed to insert book", error);
@@ -540,7 +541,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     }
 
     res.json({
-      book: updatedBook,
+      data: updatedBook,
       imageUploaded: !!newImageUrl,
       oldImageQueuedForDeletion: oldImageIdQueued,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
@@ -625,10 +626,8 @@ router.post("/:identifier/generate", requireAuth, async (req: Request, res: Resp
     };
 
     res.status(201).json({
-      page: enrichedPage,
-      bookProgress: {
-        currentPage: newPage.id
-      }
+      data: enrichedPage,
+      currentPage: newPage.id,
     });
   } catch (error) {
     handleApiError(res, "Failed to generate page", error);
@@ -699,12 +698,10 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     };
 
     res.json({
-      page: enrichedPage,
-      book: {
-        id: book.id,
-        title: book.title,
-        slug: (book as any).slug
-      }
+      data: enrichedPage,
+      bookId: book.id,
+      bookTitle: book.title,
+      bookSlug: (book as any).slug,
     });
   } catch (error) {
     handleApiError(res, "Failed to retrieve page", error);
@@ -747,8 +744,10 @@ router.post("/:id/sessions", requireAuth, async (req: Request, res: Response) =>
     await invalidateUserProfileCache(userId); // readsCount changed
 
     res.status(201).json({
-      session,
-      book
+      data: session,
+      bookId: book.id,
+      bookTitle: book.title,
+      bookSlug: (book as any).slug,
     });
   } catch (error) {
     handleApiError(res, "Failed to manage session", error);

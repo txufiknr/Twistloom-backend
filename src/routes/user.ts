@@ -10,10 +10,11 @@
  * - Conflict resolution with upsert patterns
  * - Consistent error handling and validation
  * - Analytics-friendly user tracking
- * - Social interactions (likes, favorites, comments)
+ * - Social interactions (likes, favorites, comments, follows)
  * 
  * Endpoints:
- * - GET /user - Get user profile
+ * - GET /user - Get authenticated user profile
+ * - GET /users/:identifier - Get user profile by UUID or username (public)
  * - POST /user - Create or fully replace user profile
  * - PUT /user - Partially update user profile
  * - DELETE /user - Delete user profile and all associated data
@@ -27,23 +28,26 @@
  * - PUT /user/comments/:commentId - Update comment
  * - DELETE /user/comments/:commentId - Delete comment
  * - GET /user/comments - Get user comments
+ * - POST /users/:id/follow - Follow a user
+ * - DELETE /users/:id/follow - Unfollow a user
  */
 
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
-import { users, userDevices, userSessions, userLikes, userFavorites, userComments, deletedImages } from "../db/schema.js";
+import { users, userDevices, userSessions, userLikes, userFavorites, userComments, userFollows, deletedImages } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, or } from "drizzle-orm";
 import { updateUserLastActivity } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUserSelect } from "../services/user-controller.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 import { imageUpload, uploadUserProfile } from "../services/image.js";
+import { isValidUuid } from "../utils/uuid.js";
 
 const router = Router();
 
@@ -113,9 +117,28 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         throw new Error("User profile not found");
       }
 
+      // Format response to match frontend expectations
+      const formattedUser = {
+        id: userData.userId,
+        username: userData.username,
+        name: userData.name,
+        email: userData.email,
+        bio: userData.bio,
+        image: userData.image,
+        createdAt: userData.createdAt,
+        updatedAt: userData.updatedAt,
+        stats: {
+          booksCount: userData.booksCount,
+          readsCount: userData.readsCount,
+          likedBooksCount: userData.likedBooksCount,
+          savedBooksCount: userData.savedBooksCount,
+          followersCount: userData.followersCount,
+          likesReceived: userData.likesReceived,
+        },
+      };
+
       return {
-        success: true,
-        data: userData,
+        data: formattedUser,
       };
     };
     
@@ -129,6 +152,129 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
+  } catch (error) {
+    if (getErrorMessage(error) === "User profile not found") {
+      return handleNotFoundError(res, "User profile not found");
+    }
+    handleApiError(res, "Failed to retrieve user profile", error);
+  }
+});
+
+/**
+ * GET /users/:identifier
+ * 
+ * Fetch user profile by identifier (UUID or username).
+ * Industry standard implementation (Twitter/X, Instagram, GitHub, LinkedIn):
+ * - Backend accepts both UUID and username in single endpoint
+ * - Backend resolves UUID-to-username server-side
+ * - Returns user data directly with single API call
+ * - Frontend optionally redirects to canonical username URL for SEO
+ * - Eliminates double API call penalty
+ * 
+ * @route GET /users/:identifier
+ * @description Get user profile by UUID or username
+ * 
+ * @param identifier - UUID or username
+ * 
+ * @returns {Object} User profile response
+ * @returns {Object} user - User profile object
+ * @returns {string} user.id - User's unique identifier
+ * @returns {string} user.username - User's username
+ * @returns {string} user.name - User's display name
+ * @returns {string|null} user.bio - User's bio
+ * @returns {string|null} user.image - User's profile image URL
+ * @returns {string} user.createdAt - Account creation timestamp
+ * @returns {Object} user.stats - User statistics
+ * @returns {number} user.stats.booksCount - Number of books created
+ * @returns {number} user.stats.likesReceived - Total likes received on user's books
+ * @returns {number} user.stats.followersCount - Number of followers
+ * 
+ * @example
+ * // Request with UUID
+ * GET /users/123e4567-e89b-12d3-a456-426614174000
+ * 
+ * // Request with username
+ * GET /users/john-doe
+ * 
+ * // Response
+ * {
+ *   "user": {
+ *     "id": "uuid",
+ *     "username": "john-doe",
+ *     "name": "John Doe",
+ *     "bio": "User bio",
+ *     "image": "https://...",
+ *     "createdAt": "2024-01-01T00:00:00Z",
+ *     "stats": {
+ *       "booksCount": 10,
+ *       "likesReceived": 500,
+ *       "followersCount": 100
+ *     }
+ *   }
+ * }
+ */
+router.get("/users/:identifier", async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+    
+    // Ensure identifier is a string (Express params can be string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+    
+    // Determine if identifier is UUID or username
+    const isUuid = isValidUuid(identifierStr);
+    
+    // Build query based on identifier type
+    const whereCondition = isUuid
+      ? eq(users.userId, identifierStr)
+      : eq(users.username, identifierStr);
+    
+    const cacheKey = CACHE_KEYS.USER_PROFILE(isUuid ? identifierStr : `username:${identifierStr}`);
+    
+    // Fetch function for cache
+    const fetchUserProfile = async () => {
+      const userWithCounts = await dbRead
+        .select(getEnrichedUserSelect())
+        .from(users)
+        .where(whereCondition)
+        .limit(1);
+
+      const userData = userWithCounts.length > 0 ? userWithCounts[0] : null;
+
+      if (!userData) {
+        throw new Error("User profile not found");
+      }
+
+      // Format response to match frontend expectations
+      const formattedUser = {
+        id: userData.userId,
+        username: userData.username,
+        name: userData.name,
+        bio: userData.bio,
+        image: userData.image,
+        createdAt: userData.createdAt,
+        updatedAt: userData.updatedAt,
+        stats: {
+          booksCount: userData.booksCount,
+          readsCount: userData.readsCount,
+          likedBooksCount: userData.likedBooksCount,
+          savedBooksCount: userData.savedBooksCount,
+          followersCount: userData.followersCount,
+          likesReceived: userData.likesReceived,
+        },
+      };
+
+      return {
+        data: formattedUser,
+      };
+    };
+    
+    // Use cache with fallback to database
+    const result = await withCache(cacheKey, fetchUserProfile, CACHE_TTL.USER_PROFILE);
+    
+    // Add HTTP cache headers for CDN/edge caching
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
+    
+    res.json(result);
   } catch (error) {
     if (getErrorMessage(error) === "User profile not found") {
       return handleNotFoundError(res, "User profile not found");
@@ -206,8 +352,6 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     res.status(201).json({
-      success: true,
-      message: "User created successfully",
       data: row,
     });
 
@@ -237,6 +381,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * @body {Object} Partial user profile data (for JSON requests)
  * @body {string} [name] - User's display name (optional)
+ * @body {string} [bio] - User's bio/description (optional)
  * @body {string} [gender] - User's gender (optional)
  * @body {string} [imageUrl] - User's profile image URL to upload (optional)
  * @body {File} [imageFile] - User's profile image file (multipart) (optional)
@@ -280,13 +425,14 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, gender, imageUrl } = req.body;
+    const { name, bio, gender, imageUrl } = req.body;
 
     // Check if user exists
     const existingUser = await dbRead
       .select({ 
         userId: users.userId,
         name: users.name,
+        bio: users.bio,
         gender: users.gender,
         image: users.image,
         imageId: users.imageId,
@@ -350,6 +496,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
     // Only include non-null and non-empty values for update
     const updateData = filterObjectEntries({
       name: name?.trim() || null,
+      bio: bio?.trim() || null,
       gender: normalizeGender(gender),
       image: newImageUrl || null,
       imageId: newImageId || null,
@@ -358,7 +505,6 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
     // Only proceed if there are actual updates
     if (Object.keys(updateData).length === 0) {
       return res.json({
-        success: true,
         data: user,
         imageUploaded: !!newImageUrl,
         uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
@@ -377,7 +523,6 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
       .returning();
 
     res.json({
-      success: true,
       data: result[0],
       imageUploaded: !!newImageUrl,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
@@ -487,19 +632,16 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
     ]);
 
     res.json({
-      success: true,
       message: "User account deleted successfully",
-      data: {
-        deletedRecords: {
-          userProfile: deletedProfile.length,
-          userFavorites: deletedFavorites.length,
-          userLikes: deletedLikes.length,
-          userSessions: deletedSessions.length,
-          userDevices: deletedDevices.length,
-          userComments: deletedComments.length,
-        },
-        imageQueuedForDeletion: !!userToDelete.imageId,
+      deletedRecords: {
+        userProfile: deletedProfile.length,
+        userFavorites: deletedFavorites.length,
+        userLikes: deletedLikes.length,
+        userSessions: deletedSessions.length,
+        userDevices: deletedDevices.length,
+        userComments: deletedComments.length,
       },
+      imageQueuedForDeletion: !!userToDelete.imageId,
     });
 
     // Invalidate user profile cache
@@ -597,8 +739,6 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     res.status(201).json({
-      success: true,
-      message: "Like created successfully",
       data: result[0] || null,
     });
 
@@ -679,7 +819,6 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
     }
 
     res.json({
-      success: true,
       message: "Like removed successfully",
     });
 
@@ -755,8 +894,7 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
       .offset(parseInt(offset as string));
 
     res.json({
-      success: true,
-      data: likes,
+      items: likes,
     });
 
     // Update user's last activity timestamp
@@ -840,8 +978,6 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     res.status(201).json({
-      success: true,
-      message: "Book added to favorites successfully",
       data: result[0],
     });
 
@@ -908,7 +1044,6 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
     }
 
     res.json({
-      success: true,
       message: "Book removed from favorites successfully",
     });
 
@@ -970,8 +1105,7 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
       .offset(parseInt(offset as string));
 
     res.json({
-      success: true,
-      data: favorites,
+      items: favorites,
     });
 
     // Update user's last activity timestamp
@@ -1059,8 +1193,6 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     res.status(201).json({
-      success: true,
-      message: "Comment created successfully",
       data: row,
     });
 
@@ -1162,7 +1294,6 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
       .returning();
 
     res.json({
-      success: true,
       data: result[0],
     });
   } catch (error) {
@@ -1234,7 +1365,6 @@ router.delete("/comments/:commentId", requireAuth, async (req: Request, res: Res
     }
 
     res.json({
-      success: true,
       message: "Comment deleted successfully",
     });
 
@@ -1306,14 +1436,169 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
       .offset(parseInt(offset as string));
 
     res.json({
-      success: true,
-      data: comments,
+      items: comments,
     });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve comments", error);
+  }
+});
+
+// ===== USER FOLLOWS ROUTES =====
+
+/**
+ * POST /users/:id/follow
+ * 
+ * Follow a user. Uses upsert operation to handle both creation and idempotent follows.
+ * 
+ * @route POST /users/:id/follow
+ * @description Follow a user
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @param {string} id - ID of the user to follow
+ * 
+ * @returns {Object} Follow creation response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} data - Created follow record
+ * 
+ * @example
+ * // Request
+ * POST /users/user456/follow
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "User followed successfully",
+ *   "data": {
+ *     "followerId": "user123",
+ *     "followingId": "user456",
+ *     "createdAt": "2023-01-01T00:00:00.000Z"
+ *   }
+ * }
+ */
+router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { id: followingId } = req.params;
+
+    // Ensure followingId is a string (Express params can be string[])
+    const followingIdStr = Array.isArray(followingId) ? followingId[0] : followingId;
+
+    if (userId === followingIdStr) {
+      return res.status(400).json({
+        success: false,
+        error: "You cannot follow yourself",
+      });
+    }
+
+    // Check if user exists
+    const targetUser = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(eq(users.userId, followingIdStr))
+      .limit(1);
+
+    if (targetUser.length === 0) {
+      return handleNotFoundError(res, "User not found");
+    }
+
+    // Perform upsert operation (create or return existing)
+    const [row] = await dbWrite
+      .insert(userFollows)
+      .values({
+        followerId: userId,
+        followingId: followingIdStr,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    // If row is null, follow already existed - fetch it
+    const result = row ? [row] : await dbRead
+      .select()
+      .from(userFollows)
+      .where(and(
+        eq(userFollows.followerId, userId),
+        eq(userFollows.followingId, followingIdStr)
+      ))
+      .limit(1);
+
+    res.status(201).json({
+      data: result[0] || null,
+    });
+
+    // Invalidate user profile cache (followersCount changed)
+    await invalidateUserProfileCache(followingIdStr);
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to follow user", error);
+  }
+});
+
+/**
+ * DELETE /users/:id/follow
+ * 
+ * Unfollow a user.
+ * 
+ * @route DELETE /users/:id/follow
+ * @description Unfollow a user
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @param {string} id - ID of the user to unfollow
+ * 
+ * @returns {Object} Unfollow response
+ * @returns {boolean} success - Operation status
+ * @returns {string} message - Confirmation message
+ * 
+ * @example
+ * // Request
+ * DELETE /users/user456/follow
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "User unfollowed successfully"
+ * }
+ */
+router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { id: followingId } = req.params;
+
+    // Ensure followingId is a string (Express params can be string[])
+    const followingIdStr = Array.isArray(followingId) ? followingId[0] : followingId;
+
+    // Delete the follow
+    const result = await dbWrite
+      .delete(userFollows)
+      .where(and(
+        eq(userFollows.followerId, userId),
+        eq(userFollows.followingId, followingIdStr)
+      ))
+      .returning();
+
+    if (result.length === 0) {
+      return handleNotFoundError(res, "Follow relationship not found");
+    }
+
+    res.json({
+      message: "User unfollowed successfully",
+    });
+
+    // Invalidate user profile cache (followersCount changed)
+    await invalidateUserProfileCache(followingIdStr);
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to unfollow user", error);
   }
 });
 

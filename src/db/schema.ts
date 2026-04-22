@@ -160,6 +160,7 @@ export const storyStates = pgTable(
  *   "user_id": "user123",
  *   "name": "John Doe",
  *   "gender": "male",
+ *   "bio": "I'm a writer and a reader.",
  *   "created_at": "2023-01-01T00:00:00.000Z",
  *   "updated_at": "2023-01-01T00:00:00.000Z"
  * }
@@ -173,6 +174,7 @@ export const users = pgTable(
     email: text("email").unique("users_email_unique"), // Unique constraint for login
     passwordHash: text("password_hash"), // Hashed password for email/password authentication
     penName: text("pen_name"),
+    bio: text("bio"), // User bio/description
     gender,
     image, // Profile image ImageKit URL
     imageId, // ImageKit file ID for deletion
@@ -567,6 +569,38 @@ export const userComments = pgTable(
     
     // Index for book comment ordering
     index("user_comments_book_order_idx").on(t.bookId, t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Create user follows table
+ * @summary Store user follow relationships
+ * @example
+ * {
+ *   "follower_id": "user123",
+ *   "following_id": "user456",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userFollows = pgTable(
+  "user_follows",
+  {
+    followerId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    followingId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    createdAt,
+  },
+  (t) => [
+    // Composite primary key: one follow per follower+following combination
+    primaryKey({ columns: [t.followerId, t.followingId] }),
+    
+    // Index for user's followers
+    index("user_follows_following_idx").on(t.followingId),
+    
+    // Index for user's following
+    index("user_follows_follower_idx").on(t.followerId),
+    
+    // Index for recent follows
+    index("user_follows_created_idx").on(t.createdAt.desc()),
   ]
 );
 

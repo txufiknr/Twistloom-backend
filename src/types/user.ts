@@ -23,13 +23,27 @@ export const likeTargetTypes = [
 
 export type LikeTargetType = typeof likeTargetTypes[number];
 
+/**
+ * User statistics for profile display
+ */
+export interface UserStats {
+  booksCount: number;
+  readsCount: number;
+  likedBooksCount: number;
+  savedBooksCount: number;
+  followersCount: number;
+  likesReceived: number;
+}
+
 export interface User {
   id: string;
   email?: string | null;
   username?: string | null;
   name?: string | null;
+  bio?: string | null;
   image?: string | null;
   isGuest?: boolean;
+  stats?: UserStats;
   createdAt?: string;
   updatedAt?: string;
 }
