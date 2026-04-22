@@ -165,9 +165,6 @@ export const THEME_SUSPICIOUS_PATTERNS: readonly RegExp[] = [
   /chmod\s+/i,
   /\|\s*rm/i,
   
-  // Base64 encoded content (suspiciously long)
-  /[A-Za-z0-9+/]{50,}={0,2}/,
-  
   // URL schemes that could be dangerous
   /(data:|vbscript:|file:)/i,
   /data:\s*text\/html/i,

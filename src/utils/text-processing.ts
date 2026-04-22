@@ -1,6 +1,42 @@
 import { correctDoubleQuotes } from "./quote.js";
 
 /**
+ * Finds all keywords from a list that appear as whole words in the text
+ * @summary Uses regex with word boundaries to prevent false positives from substring matches
+ * @description Prevents false positives like "elected" matching "selected" by ensuring
+ * keywords are matched as whole words only using \b word boundaries.
+ *
+ * @param text - Text to search within
+ * @param keywords - Array of keywords to search for (readonly supported)
+ * @returns Array of matched keywords (original case), empty array if none found
+ *
+ * @example
+ * ```typescript
+ * hasKeywords("the selected item", ["elected"]); // [] - "elected" doesn't match "selected"
+ * hasKeywords("the elected official", ["elected"]); // ["elected"] - exact word match
+ * hasKeywords("president was elected", ["president", "elected"]); // ["president", "elected"] - matches both
+ * ```
+ */
+export function hasKeywords(text: string | undefined | null, keywords: readonly string[]): string[] {
+  if (!text || !keywords || keywords.length === 0) return [];
+
+  const textLower = text.toLowerCase();
+  const matched: string[] = [];
+
+  for (const keyword of keywords) {
+    // Escape special regex characters in the keyword
+    const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Use word boundaries to match whole words only
+    const regex = new RegExp(`\\b${escapedKeyword}\\b`);
+    if (regex.test(textLower)) {
+      matched.push(keyword);
+    }
+  }
+
+  return matched;
+}
+
+/**
  * Enhanced HTML entity decoding with fallback
  * Handles numeric entities, named entities, and common edge cases
  */

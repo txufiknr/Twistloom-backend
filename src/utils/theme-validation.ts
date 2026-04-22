@@ -25,6 +25,7 @@ import type {
 import { executePromptForJSON } from './prompt.js';
 import { AI_CHAT_CONFIG_DEFAULT } from '../config/ai-chat.js';
 import { AI_CHAT_MODELS_WRITING } from '../config/ai-clients.js';
+import { hasKeywords } from './text-processing.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -46,7 +47,6 @@ import { AI_CHAT_MODELS_WRITING } from '../config/ai-clients.js';
  */
 export function validateThemeHeuristic(theme: string): HeuristicValidationResult {
   const normalizedTheme = theme.toLowerCase().trim();
-  const detectedWords: string[] = [];
   const detectedPatterns: string[] = [];
   let povViolation = false;
 
@@ -69,12 +69,8 @@ export function validateThemeHeuristic(theme: string): HeuristicValidationResult
     };
   }
 
-  // 2. Check blacklist words
-  for (const word of THEME_BLACKLIST) {
-    if (normalizedTheme.includes(word.toLowerCase())) {
-      detectedWords.push(word);
-    }
-  }
+  // 2. Check blacklist words (using word boundaries to prevent false positives)
+  const detectedWords = hasKeywords(normalizedTheme, THEME_BLACKLIST);
 
   // 3. Check suspicious patterns
   for (const pattern of THEME_SUSPICIOUS_PATTERNS) {
