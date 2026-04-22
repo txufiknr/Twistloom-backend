@@ -588,6 +588,8 @@ data: <json_payload>
 | `theme_validation_complete` | `ThemeValidationResult` | Theme validation completed |
 | `book_initialization_start` | `{}` | Book initialization started |
 | `ai_generation_start` | `{}` | AI content generation started |
+| `ai_evaluation_start` | `{}` | AI evaluation phase started (if evaluatorPrompt provided) |
+| `ai_evaluation_complete` | `{}` | AI evaluation phase completed |
 | `ai_generation_complete` | `{}` | AI content generation completed |
 | `finalizing_start` | `{}` | Database operations started |
 | `complete` | `CreateBookResponse` | Book creation completed with full data |
@@ -670,6 +672,12 @@ event: book_initialization_start
 data: {}
          ↓
 event: ai_generation_start
+data: {}
+         ↓
+event: ai_evaluation_start (if evaluatorPrompt provided)
+data: {}
+         ↓
+event: ai_evaluation_complete (if evaluatorPrompt provided)
 data: {}
          ↓
 event: ai_generation_complete
@@ -783,6 +791,17 @@ function createBookWithSSE(theme: string, mcCandidate?: StoryMCCandidate, genera
     state.step = 'generating';
     state.status = 'in_progress';
     state.progress = 40;
+    updateUI(state);
+  });
+
+  eventSource.addEventListener('ai_evaluation_start', (e) => {
+    // Evaluation phase (optional, only if evaluatorPrompt provided)
+    state.progress = 50;
+    updateUI(state);
+  });
+
+  eventSource.addEventListener('ai_evaluation_complete', (e) => {
+    state.progress = 60;
     updateUI(state);
   });
 
@@ -1173,6 +1192,12 @@ event: book_initialization_start
 data: {}
 
 event: ai_generation_start
+data: {}
+
+event: ai_evaluation_start
+data: {}
+
+event: ai_evaluation_complete
 data: {}
 
 event: ai_generation_complete

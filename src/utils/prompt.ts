@@ -1940,7 +1940,7 @@ export async function initializeBook(
       thinkThenOutput: firstBookReviewChecklist,
       // STEP 3: EVALUATING (inside `executePromptForJSON`)
       evaluatorPrompt: buildFirstBookEvaluatorPrompt(theme, mcCandidate),
-    });
+    }, onProgress);
 
     // 3. Validate AI response
     if (!response.result) {
@@ -2604,16 +2604,17 @@ Keep the summary under ${MAX_WORDS_SUMMARIZED_CONTEXT} words while preserving al
 }
 
 /**
- * Executes a prompt for JSON output
+ * Executes a prompt and returns structured JSON response
  * 
- * This function generates JSON output based on the provided prompt and configuration.
- * It is used for generating JSON data in a specific format.
+ * This function is used for generating JSON data in a specific format.
  * 
  * @param params - Parameters for the prompt
+ * @param onProgress - Optional progress callback for SSE events
  * @returns AI response with JSON output
  */
 export async function executePromptForJSON<T extends Record<string, unknown>>(
-  params: AIPromptForJsonParams<T>
+  params: AIPromptForJsonParams<T>,
+  onProgress?: ProgressCallback
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
@@ -2635,12 +2636,23 @@ Do NOT mention this checklist.` : '';
     thinkThenOutputPart
   ].filter(p => p.trim()).map(postProcessPromptSection).join('\n\n---\n');
 
+  // Emit evaluation start event if evaluatorPrompt is provided
+  if (evaluatorPrompt) {
+    await onProgress?.({ type: 'ai_evaluation_start' });
+  }
+
   const response = await aiPrompt<T>(
     finalPrompt,
     createAIOptionsWithSchema<T>(configs),
     // STEP 3: EVALUATING (inside `aiPrompt`)
     evaluatorPrompt,
   );
+
+  // Emit evaluation complete event if evaluatorPrompt was provided
+  if (evaluatorPrompt) {
+    await onProgress?.({ type: 'ai_evaluation_complete' });
+  }
+
   return response;
 }
 
