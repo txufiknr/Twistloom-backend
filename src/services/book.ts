@@ -31,9 +31,6 @@ import { sanitizeText } from "../utils/text-processing.js";
 import { generateId } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { aiStreamSSE } from "../utils/ai-chat-stream.js";
-import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -728,64 +725,4 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
       await deleteFileFromImageKit(oldImageId);
     }
   }
-}
-
-/**
- * Generates a creative book creation prompt using AI streaming
- * 
- * This function generates engaging story prompts that users can use as inspiration
- * for creating new books. The output includes story theme, optional main character details,
- * and story elements. Character ages are constrained to MIN_CHARACTER_AGE and MAX_CHARACTER_AGE.
- * 
- * @param signal - Optional AbortSignal for cancellation
- * @returns ReadableStream that yields SSE-formatted chunks of the generated prompt
- * 
- * @example
- * ```typescript
- * const stream = await generateBookCreationPrompt();
- * res.setHeader('Content-Type', 'text/event-stream');
- * for await (const chunk of stream) {
- *   res.write(chunk);
- * }
- * ```
- * 
- * Example output format:
- * ```
- * A psychological thriller about a disgraced investigative journalist who returns to her childhood hometown to uncover the truth behind a series of mysterious disappearances at an abandoned asylum, only to discover that the facility's dark experiments never truly ended and someone is watching her every move from the shadows.
- * MC: Elena Rodriguez, Female, 31, Former award-winning journalist with a sharp wit and haunted past, driven by redemption and an obsessive need for truth
- * Tone: Dark, suspenseful, psychological horror with elements of conspiracy and paranoia
- * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
- * ```
- */
-export async function generateBookCreationPrompt(signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
-  const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
-
-Your task is to generate a compelling story prompt that includes:
-1. A story theme (required) - a sentence or paragraph describing what the story is about
-2. Optional main character details (name, gender, age, short bio/personality)
-3. Optional story tone (dark, suspenseful, psychological, etc.)
-4. Optional story elements (atmospheric details, narrative devices, themes, etc.)
-
-Constraints:
-- Character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE} years old (if including character details)
-- Focus on thriller, mystery, horror, or psychological themes
-- Make it intriguing and hook the reader immediately
-- Be creative with the format - there are no strict formatting rules
-- Overall output length must not exceed 2500 characters
-- Do not use Markdown formatting (no bold with **, no italic with *, no headers with #) - output will be inserted into a plain textarea
-
-Output example (not strict):
-Story about [theme description]
-MC: [Name], [Gender], [Age]
-
-Only the theme is required. All other fields are optional - include them only if they add value to the story concept.`;
-
-  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing.`;
-
-  return aiStreamSSE(userPrompt, {
-    systemPrompt,
-    context: 'book-creation-prompt',
-    logPrompts: false,
-    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1000}
-  }, signal);
 }

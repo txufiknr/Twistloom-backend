@@ -30,17 +30,19 @@ import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
-import { initializeBook, chooseAction } from "../utils/prompt.js";
+import { initializeBook, chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, generateBookCreationPrompt } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook } from "../services/book.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { CreateBookResponse, EnrichedBookData } from "../types/book.js";
+import { DBPage } from "../types/schema.js";
+import { EnrichedAction } from "../types/story.js";
 
 const router = Router();
 
@@ -693,7 +695,9 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     const enrichedPage = {
       ...pageData[0],
       actions: enrichActions(pageData[0].actions, { page: pageData[0].page, branchId: pageData[0].branchId })
-    };
+    }
+    // TODO: ensure type
+    // satisfies Omit<DBPage, 'actions'> & { actions: EnrichedAction[] };
 
     res.json({
       page: enrichedPage,

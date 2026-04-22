@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_THEME_LENGTH } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
@@ -27,6 +27,7 @@ import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } 
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
 import type { StoryThread } from "../types/thread.js";
+import { aiStreamSSE } from "./ai-chat-stream.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2617,6 +2618,68 @@ Do NOT mention this checklist.` : '';
     evaluatorPrompt,
   );
   return response;
+}
+
+/**
+ * Generates a creative book creation prompt using AI streaming
+ * 
+ * This function generates engaging story prompts that users can use as inspiration
+ * for creating new books. The output includes story theme, optional main character details,
+ * and story elements. Character ages are constrained to MIN_CHARACTER_AGE and MAX_CHARACTER_AGE.
+ * 
+ * @param signal - Optional AbortSignal for cancellation
+ * @returns ReadableStream that yields SSE-formatted chunks of the generated prompt
+ * 
+ * @example
+ * ```typescript
+ * const stream = await generateBookCreationPrompt();
+ * res.setHeader('Content-Type', 'text/event-stream');
+ * for await (const chunk of stream) {
+ *   res.write(chunk);
+ * }
+ * ```
+ * 
+ * Example output format:
+ * ```
+ * A psychological thriller about a disgraced investigative journalist who returns to her childhood hometown to uncover the truth behind a series of mysterious disappearances at an abandoned asylum, only to discover that the facility's dark experiments never truly ended and someone is watching her every move from the shadows.
+ * MC: Elena Rodriguez, Female, 31, Former award-winning journalist with a sharp wit and haunted past, driven by redemption and an obsessive need for truth
+ * Tone: Dark, suspenseful, psychological horror with elements of conspiracy and paranoia
+ * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
+ * ```
+ */
+export async function generateBookCreationPrompt(signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+  const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
+
+Your task is to generate a compelling story prompt that includes:
+1. A story theme (required) - a sentence or paragraph describing what the story is about
+2. Optional main character details (name, gender, age, short bio/personality)
+3. Optional story tone (dark, suspenseful, psychological, etc.)
+4. Optional story elements (atmospheric details, narrative devices, themes, etc.)
+
+Constraints:
+- Character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE} years old (if including character details)
+- Focus on thriller, mystery, horror, or psychological themes
+- Make it intriguing and hook the reader immediately
+- Be creative with the format - there are no strict formatting rules
+- Overall output length must not exceed ${MAX_THEME_LENGTH} characters
+- Do not use Markdown formatting (no bold with **, no italic with *, no headers with #) - output will be inserted into a plain textarea
+- Character gender can be either: ${formatOneOf(genders)}
+- MC gender must be explicit: 'male' or 'female'
+
+Output example (not strict):
+Story about [theme description]
+MC: [Name], [Gender], [Age]
+
+Only the theme is required. All other fields are optional - include them only if they add value to the story concept.`;
+
+  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing.`;
+
+  return aiStreamSSE(userPrompt, {
+    systemPrompt,
+    context: 'book-creation-prompt',
+    logPrompts: false,
+    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1000}
+  }, signal);
 }
 
 function postProcessPromptSection(prompt: string): string {
