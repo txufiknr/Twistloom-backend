@@ -26,6 +26,7 @@ import { executePromptForJSON } from './prompt.js';
 import { AI_CHAT_CONFIG_DEFAULT } from '../config/ai-chat.js';
 import { AI_CHAT_MODELS_WRITING } from '../config/ai-clients.js';
 import { hasKeywords } from './text-processing.js';
+import type { ProgressCallback } from '../types/sse.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -272,42 +273,56 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
  * If heuristic validation passes, proceeds to AI validation.
  * 
  * @param theme - Theme string to validate
+ * @param onProgress - Optional callback for progress events (SSE)
  * @returns Complete validation result
  * 
  * @example
  * ```typescript
+ * // Without progress callback (POST endpoint)
  * const result = await validateTheme("A magical adventure in an enchanted forest");
- * // Returns: { isValid: true, heuristicResult: {...}, aiResult: {...} }
+ * 
+ * // With progress callback (SSE endpoint)
+ * const result = await validateTheme(theme, (event) => {
+ *   res.write(`data: ${JSON.stringify(event)}\n\n`);
+ * });
  * ```
  */
-export async function validateTheme(theme: string): Promise<ThemeValidationResult> {
+export async function validateTheme(
+  theme: string,
+  onProgress?: ProgressCallback
+): Promise<ThemeValidationResult> {
+  // Emit validation start event
+  await onProgress?.({ type: 'theme_validation_start' });
+
   // 1. Heuristic validation (fast)
   const heuristicResult = validateThemeHeuristic(theme);
 
   if (!heuristicResult.isValid) {
-    // Heuristic failed - return immediately
-    return {
+    // Heuristic failed - return immediately with validation complete event
+    const result: ThemeValidationResult = {
       isValid: false,
       heuristicResult,
     };
+    await onProgress?.({ type: 'theme_validation_complete', data: result });
+    return result;
   }
 
   // 2. AI validation (smart)
   const aiResult = await validateThemeWithAI(theme);
 
-  if (aiResult.isViolating) {
-    // AI validation failed
-    return {
-      isValid: false,
-      heuristicResult,
-      aiResult,
-    };
-  }
-
-  // Both validations passed
-  return {
-    isValid: true,
+  const result: ThemeValidationResult = {
+    isValid: !aiResult.isViolating,
     heuristicResult,
     aiResult,
   };
+
+  if (aiResult.isViolating) {
+    // AI validation failed
+    await onProgress?.({ type: 'theme_validation_complete', data: result });
+    return result;
+  }
+
+  // Both validations passed
+  await onProgress?.({ type: 'theme_validation_complete', data: result });
+  return result;
 }

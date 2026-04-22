@@ -29,6 +29,7 @@ import { formatPageTextForPrompt } from "./books.js";
 import type { StoryThread } from "../types/thread.js";
 import { aiStreamSSE } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
+import type { ProgressCallback } from "../types/sse.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -1906,14 +1907,21 @@ Initial Characters:
  * console.log(`Initial difficulty: ${bookSetup.initialState.difficulty}`);
  * ```
  */
-export async function initializeBook(params: InitializeBookParams): Promise<InitializeBookResult> {
+export async function initializeBook(
+  params: InitializeBookParams,
+  onProgress?: ProgressCallback
+): Promise<InitializeBookResult> {
   const { userId, theme, mcCandidate, generateCoverImage = false } = params;
 
   try {
+    // Emit book initialization start event
+    await onProgress?.({ type: 'book_initialization_start' });
+
     // 1. Create AI prompt for book creation
     const prompt = createBookCreationPrompt(theme, mcCandidate);
 
     // 2. Generate complete book setup using AI
+    await onProgress?.({ type: 'ai_generation_start' });
     const response = await executePromptForJSON<BookCreationResponse>({
       prompt,
       configs: {
@@ -1939,7 +1947,10 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
       throw new Error('Failed to generate book creation: AI response result is undefined');
     }
 
+    await onProgress?.({ type: 'ai_generation_complete' });
+
     // STEP 4: FINALIZING
+    await onProgress?.({ type: 'finalizing_start' });
     const {
       title,
       totalPages,

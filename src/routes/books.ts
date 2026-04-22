@@ -30,8 +30,7 @@ import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
-import { initializeBook, chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
-import { validateTheme } from "../utils/theme-validation.js";
+import { chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
@@ -39,9 +38,12 @@ import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook } from "../services/book.js";
-import { getEnrichedBookSelect, handleThemeValidationError } from "../services/book-controller.js";
+import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { CreateBookResponse, EnrichedBookData } from "../types/book.js";
+import type { EnrichedBookData } from "../types/book.js";
+import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
+import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
+import type { ProgressCallback } from "../types/sse.js";
 
 const router = Router();
 
@@ -176,94 +178,130 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       });
     }
 
-    // Theme validation (heuristic + AI)
-    const validationResult = await validateTheme(theme);
-    if (!validationResult.isValid) {
-      return handleThemeValidationError(res, validationResult);
-    }
+    // Use shared core logic (without progress callback for synchronous response)
+    const result = await createBookCore(
+      {
+        userId: req.userId!,
+        theme,
+        mcCandidate,
+        generateCoverImage
+      },
+      // No progress callback for POST endpoint (synchronous response)
+      undefined
+    );
 
-    // Validate mcCandidate if provided
-    if (mcCandidate) {
-      if (typeof mcCandidate !== 'object' || mcCandidate === null) {
-        return res.status(400).json({ 
-          error: "Invalid mcCandidate: must be an object" 
-        });
-      }
-
-      if (mcCandidate.name !== undefined) {
-        if (typeof mcCandidate.name !== 'string' || mcCandidate.name.trim().length === 0) {
-          return res.status(400).json({ 
-            error: "Invalid mcCandidate.name: must be a non-empty string" 
-          });
-        }
-      }
-
-      if (mcCandidate.age !== undefined) {
-        if (typeof mcCandidate.age !== 'number' || mcCandidate.age < 0 || mcCandidate.age > 150) {
-          return res.status(400).json({ 
-            error: "Invalid mcCandidate.age: must be a number between 0 and 150" 
-          });
-        }
-      }
-
-      if (mcCandidate.gender !== undefined) {
-        if (typeof mcCandidate.gender !== 'string' || !['male', 'female', 'other'].includes(mcCandidate.gender)) {
-          return res.status(400).json({ 
-            error: "Invalid mcCandidate.gender: must be 'male', 'female', or 'other'" 
-          });
-        }
-      }
-
-      if (mcCandidate.bio !== undefined) {
-        if (typeof mcCandidate.bio !== 'string' || mcCandidate.bio.trim().length === 0) {
-          return res.status(400).json({ 
-            error: "Invalid mcCandidate.bio: must be a non-empty string" 
-          });
-        }
-      }
-    }
-
-    // Validate generateCoverImage if provided
-    if (generateCoverImage !== undefined) {
-      if (typeof generateCoverImage !== 'boolean') {
-        return res.status(400).json({ 
-          error: "Invalid generateCoverImage: must be a boolean" 
-        });
-      }
-    }
-
-    // STEP 2: INITIALIZING BOOK
-    // Initialize book and set active session
-    const result = await initializeBook({
-      userId: req.userId!,
-      theme,
-      mcCandidate,
-      generateCoverImage
-    });
-
-    // Enrich actions with navigation metadata for frontend URL building
-    const enrichedResult = {
-      ...result,
-      firstPage: {
-        ...result.firstPage,
-        actions: enrichActions(result.firstPage.actions, { page: 1, branchId: 'main' })
-      }
-    } satisfies CreateBookResponse;
-
-    // Invalidate user's book cache
-    await invalidateUserBooksCache(req.userId!);
-    
-    // Invalidate user profile cache (booksCount changed)
-    await invalidateUserProfileCache(req.userId!);
-    
-    // Invalidate explore cache if book is active
-    if (result.book.status === 'active') {
-      await invalidateExploreCache();
-    }
-
-    res.status(201).json(enrichedResult);
+    res.status(201).json(result);
   } catch (error) {
-    handleApiError(res, "Failed to create book", error);
+    handleBookCreationError(res, error);
+  }
+});
+
+/**
+ * GET /api/books/stream
+ * 
+ * Creates a new psychological thriller book with AI-generated content using SSE.
+ * Provides real-time progress updates for each step in the book creation process.
+ * 
+ * Accepts theme and main character candidate as query parameters.
+ * Emits SSE events for theme validation, book initialization, AI generation,
+ * and finalization steps.
+ * 
+ * @param theme - Story theme (required query parameter)
+ * @param mcCandidate.name - Character's display name (optional query parameter)
+ * @param mcCandidate.age - Character's age in years (optional query parameter)
+ * @param mcCandidate.gender - Character's gender (optional query parameter)
+ * @param mcCandidate.bio - Character's bio (optional query parameter)
+ * @param generateCoverImage - Whether to generate cover image (optional query parameter)
+ * 
+ * @example
+ * GET /api/books/stream?theme=haunted+mansion+mystery
+ * 
+ * SSE Events:
+ * data: {"type":"theme_validation_start"}
+ * 
+ * data: {"type":"theme_validation_complete","data":{"isValid":true,...}}
+ * 
+ * data: {"type":"book_initialization_start"}
+ * 
+ * data: {"type":"ai_generation_start"}
+ * 
+ * data: {"type":"ai_generation_complete"}
+ * 
+ * data: {"type":"finalizing_start"}
+ * 
+ * data: {"type":"complete","data":{"book":{...},"firstPage":{...},...}}
+ * 
+ * data: {"type":"error","error":"Theme validation failed"}
+ */
+router.get("/stream", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { theme, mcCandidate, generateCoverImage } = req.query;
+
+    // Validate theme
+    if (!theme || typeof theme !== 'string' || theme.trim().length === 0) {
+      return res.status(400).json({ 
+        error: "Missing required parameter: theme is required" 
+      });
+    }
+
+    // Parse mcCandidate if provided
+    let parsedMcCandidate;
+    if (mcCandidate) {
+      try {
+        parsedMcCandidate = typeof mcCandidate === 'string' 
+          ? JSON.parse(mcCandidate) 
+          : mcCandidate;
+      } catch {
+        return res.status(400).json({ 
+          error: "Invalid mcCandidate: must be valid JSON" 
+        });
+      }
+    }
+
+    // Parse generateCoverImage if provided
+    let parsedGenerateCoverImage: boolean | undefined;
+    if (generateCoverImage) {
+      if (typeof generateCoverImage === 'string') {
+        parsedGenerateCoverImage = generateCoverImage === 'true';
+      } else if (typeof generateCoverImage === 'boolean') {
+        parsedGenerateCoverImage = generateCoverImage;
+      }
+    }
+
+    // Initialize SSE headers
+    initSSEHeaders(res);
+
+    // Create progress callback for SSE events
+    const onProgress: ProgressCallback = (event) => {
+      sendSSEEvent(res, event);
+    };
+
+    // Create book with progress events
+    const result = await createBookCore(
+      {
+        userId: req.userId!,
+        theme,
+        mcCandidate: parsedMcCandidate,
+        generateCoverImage: parsedGenerateCoverImage
+      },
+      onProgress
+    );
+
+    // Send final complete event
+    sendSSEEvent(res, { type: 'complete', data: result });
+
+    // End response
+    res.end();
+  } catch (error) {
+    // Send error event if headers not sent
+    if (!res.headersSent) {
+      initSSEHeaders(res);
+    }
+    sendSSEEvent(res, { 
+      type: 'error', 
+      error: error instanceof Error ? error.message : String(error) 
+    });
+    res.end();
   }
 });
 

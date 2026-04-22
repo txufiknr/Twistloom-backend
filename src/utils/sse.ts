@@ -9,6 +9,7 @@
  * - Stream transformation utilities for converting text streams to SSE-formatted streams
  * - Backpressure handling and cancellation support via AbortSignal
  * - Optimized headers for serverless and proxy environments
+ * - Express response utilities for SSE endpoints
  * 
  * @module sse
  * @example
@@ -21,6 +22,9 @@
  * return new Response(sseStream, { headers: SSE_HEADERS });
  * ```
  */
+
+import type { Response } from 'express';
+import type { BookCreationProgressEvent } from '../types/sse.js';
 
 /**
  * SSE event interface representing a single Server-Sent Event
@@ -404,4 +408,92 @@ export function streamFromGenerator(
       }
     }
   });
+}
+
+/**
+ * Sends SSE event to Express response
+ * 
+ * Utility function for sending SSE events in Express route handlers.
+ * Formats the event with both event type and data for better client-side handling.
+ * Removes redundant type field from data payload since event field already conveys type.
+ * 
+ * @param res - Express response object
+ * @param event - Progress event to send
+ * 
+ * @example
+ * ```typescript
+ * router.get('/stream', (req, res) => {
+ *   initSSEHeaders(res);
+ *   sendSSEEvent(res, { type: 'theme_validation_start' });
+ *   sendSSEEvent(res, { type: 'complete', data: result });
+ *   res.end();
+ * });
+ * ```
+ */
+export function sendSSEEvent(res: Response, event: BookCreationProgressEvent): void {
+  const { type, ...data } = event;
+  res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+/**
+ * SSE response headers for Express
+ * 
+ * Headers specifically optimized for Express.js SSE responses.
+ * Different from SSE_HEADERS (serverless) - Express handles headers differently.
+ * 
+ * @constant
+ * @example
+ * ```typescript
+ * router.get('/stream', (req, res) => {
+ *   initSSEHeaders(res);
+ * });
+ * ```
+ */
+export const EXPRESS_SSE_HEADERS = {
+  'Content-Type': 'text/event-stream',
+  'Cache-Control': 'no-cache',
+  'Connection': 'keep-alive',
+  'X-Accel-Buffering': 'no', // Disable nginx buffering
+} as const;
+
+/**
+ * Initializes SSE response headers for Express
+ * 
+ * Sets the required headers for SSE streaming in Express responses.
+ * These headers ensure proper SSE behavior across different proxies
+ * and load balancers. Uses EXPRESS_SSE_HEADERS for consistency.
+ * 
+ * @param res - Express response object
+ * 
+ * @example
+ * ```typescript
+ * router.get('/stream', (req, res) => {
+ *   initSSEHeaders(res);
+ *   // ... stream events
+ * });
+ * ```
+ */
+export function initSSEHeaders(res: Response): void {
+  Object.entries(EXPRESS_SSE_HEADERS).forEach(([key, value]) => {
+    res.setHeader(key, value);
+  });
+}
+
+/**
+ * Sends SSE keep-alive comment
+ * 
+ * Sends a comment to keep the SSE connection alive during long operations.
+ * This prevents timeouts in proxies and load balancers.
+ * 
+ * @param res - Express response object
+ * 
+ * @example
+ * ```typescript
+ * setInterval(() => {
+ *   sendSSEKeepAlive(res);
+ * }, 30000); // Every 30 seconds
+ * ```
+ */
+export function sendSSEKeepAlive(res: Response): void {
+  res.write(': keep-alive\n\n');
 }
