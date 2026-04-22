@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_SUMMARIZING, AI_CHAT_MODELS_WRITING } from "../config/ai
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases } from "../types/story.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_THEME_LENGTH } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { createStateDeltaRecord } from "../services/deltas.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
@@ -28,6 +28,7 @@ import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "
 import { formatPageTextForPrompt } from "./books.js";
 import type { StoryThread } from "../types/thread.js";
 import { aiStreamSSE } from "./ai-chat-stream.js";
+import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2589,7 +2590,16 @@ Keep the summary under ${MAX_WORDS_SUMMARIZED_CONTEXT} words while preserving al
   return response.output || currentContext; // Fallback to existing context if summarization fails
 }
 
-async function executePromptForJSON<T extends Record<string, unknown>>(
+/**
+ * Executes a prompt for JSON output
+ * 
+ * This function generates JSON output based on the provided prompt and configuration.
+ * It is used for generating JSON data in a specific format.
+ * 
+ * @param params - Parameters for the prompt
+ * @returns AI response with JSON output
+ */
+export async function executePromptForJSON<T extends Record<string, unknown>>(
   params: AIPromptForJsonParams<T>
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
@@ -2661,7 +2671,7 @@ Constraints:
 - Focus on thriller, mystery, horror, or psychological themes
 - Make it intriguing and hook the reader immediately
 - Be creative with the format - there are no strict formatting rules
-- Overall output length must not exceed ${MAX_THEME_LENGTH} characters
+- Overall output length must not exceed ${MAX_THEME_LENGTH_PROMPT} characters
 - Do not use Markdown formatting (no bold with **, no italic with *, no headers with #) - output will be inserted into a plain textarea
 - Character gender can be either: ${formatOneOf(genders)}
 - MC gender must be explicit: 'male' or 'female'

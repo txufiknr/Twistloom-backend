@@ -20,6 +20,8 @@
 
 import { sql } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
+import type { Response } from "express";
+import type { ThemeValidationCategory, ThemeValidationResult } from "../types/theme-validation.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -105,4 +107,95 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         )`
       : sql<boolean>`false`,
   };
+}
+
+/**
+ * Handles theme validation errors with structured response format
+ * 
+ * Returns error response matching frontend specification for validation errors.
+ * Includes detected words, patterns, AI explanations, and suggestions.
+ * 
+ * @param res - Express response object
+ * @param validationResult - Validation result from theme validation
+ * @returns Express response with 400 status and structured error body
+ * 
+ * @example
+ * ```typescript
+ * const validationResult = await validateTheme(theme);
+ * if (!validationResult.isValid) {
+ *   return handleThemeValidationError(res, validationResult);
+ * }
+ * ```
+ */
+export function handleThemeValidationError(
+  res: Response,
+  validationResult: ThemeValidationResult
+): Response {
+  let category: ThemeValidationCategory = 'OTHER';
+  let detectedWords: string[] = [];
+  let detectedPatterns: string[] = [];
+  let aiExplanation: string | undefined;
+  let suggestion: string | undefined;
+  let message = 'Your story theme is invalid.';
+
+  // Extract information from heuristic result
+  if (validationResult.heuristicResult) {
+    detectedWords = validationResult.heuristicResult.detectedWords;
+    detectedPatterns = validationResult.heuristicResult.detectedPatterns;
+
+    // Determine category from heuristic violations
+    if (detectedWords.length > 0) {
+      category = 'INAPPROPRIATE_CONTENT';
+      message = 'Your story theme contains inappropriate content.';
+    } else if (detectedPatterns.some(p => p.includes('Invalid POV'))) {
+      category = 'INVALID_THEME';
+      message = 'Your story theme contains invalid POV instructions.';
+    } else if (detectedPatterns.some(p => p.includes('Invalid theme format'))) {
+      category = 'INVALID_THEME';
+      message = 'Your story theme is not a valid story theme.';
+    } else if (detectedPatterns.length > 0) {
+      category = 'SUSPICIOUS_PATTERN';
+      message = 'Your story theme contains suspicious patterns.';
+    }
+  }
+
+  // Extract information from AI result (overrides heuristic if available)
+  if (validationResult.aiResult) {
+    category = validationResult.aiResult.category as ThemeValidationCategory;
+    aiExplanation = validationResult.aiResult.detectedItems
+      .map(item => item.reason)
+      .join('; ');
+    suggestion = validationResult.aiResult.suggestion || undefined;
+    message = validationResult.aiResult.category === 'INAPPROPRIATE_CONTENT'
+      ? 'Your story theme contains inappropriate content.'
+      : validationResult.aiResult.category === 'INVALID_THEME'
+      ? 'Your story theme is invalid.'
+      : 'Your story theme violates content policies.';
+  }
+
+  // Build error response matching spec
+  const errorResponse = {
+    error: {
+      type: 'VALIDATION_ERROR' as const,
+      code: 'THEME_INVALID' as const,
+      message,
+      details: {
+        category,
+        detectedWords,
+        detectedPatterns,
+        aiExplanation,
+        suggestion,
+      },
+    },
+  };
+
+  // Log validation failure for monitoring
+  console.error('[Theme Validation] Failed:', {
+    category,
+    detectedWords,
+    detectedPatterns,
+    aiExplanation,
+  });
+
+  return res.status(400).json(errorResponse);
 }

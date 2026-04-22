@@ -14,7 +14,6 @@
 
 import type { Response } from "express";
 import { IS_DEVELOPMENT } from "../config/constants.js";
-// import type { GeminiResponse, ErrorInfo, QuotaFailure, RetryInfo, Help } from "../types/gemini.js";
 
 /**
  * Standardized error response interface

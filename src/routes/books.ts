@@ -31,6 +31,7 @@ import { books, pages, userSessions, deletedImages, users } from "../db/schema.j
 import { handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
 import { initializeBook, chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
+import { validateTheme } from "../utils/theme-validation.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
@@ -38,11 +39,9 @@ import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook } from "../services/book.js";
-import { getEnrichedBookSelect } from "../services/book-controller.js";
+import { getEnrichedBookSelect, handleThemeValidationError } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { CreateBookResponse, EnrichedBookData } from "../types/book.js";
-import { DBPage } from "../types/schema.js";
-import { EnrichedAction } from "../types/story.js";
 
 const router = Router();
 
@@ -128,6 +127,12 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       return res.status(400).json({ 
         error: "Invalid theme: must be a non-empty string" 
       });
+    }
+
+    // Theme validation (heuristic + AI)
+    const validationResult = await validateTheme(theme);
+    if (!validationResult.isValid) {
+      return handleThemeValidationError(res, validationResult);
     }
 
     // Validate mcCandidate if provided
