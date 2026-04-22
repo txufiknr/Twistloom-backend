@@ -40,7 +40,7 @@ import { setActiveSession, getStoryProgress } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, generateBookCreationPrompt } from "../services/book.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { EnrichedBookData } from "../types/book.js";
+import type { CreateBookResponse, EnrichedBookData } from "../types/book.js";
 
 const router = Router();
 
@@ -193,7 +193,7 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
         ...result.firstPage,
         actions: enrichActions(result.firstPage.actions, { page: 1, branchId: 'main' })
       }
-    };
+    } satisfies CreateBookResponse;
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(req.userId!);
