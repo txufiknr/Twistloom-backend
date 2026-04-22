@@ -760,6 +760,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       try {
         // Run evaluation phase if provided
         if (evaluatorPrompt) {
+          // STEP 3: EVALUATING
           // Call second AI prompt to score, evaluate, and outputs corrected result
           const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
             ...options,

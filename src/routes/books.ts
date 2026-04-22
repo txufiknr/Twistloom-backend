@@ -59,7 +59,7 @@ const router = Router();
  * @param mcCandidate.bio - Character's bio - Optional
  * 
  * @example
- * // Request
+ * // Request (valid theme)
  * POST /api/books
  * Body: {
  *   "theme": "haunted mansion mystery",
@@ -71,7 +71,7 @@ const router = Router();
  *   }
  * }
  * 
- * // Response
+ * // Response (success)
  * {
  *   "book": {
  *     "id": "book123",
@@ -112,11 +112,58 @@ const router = Router();
  *     "pageId": "page456"
  *   }
  * }
+ * 
+ * @example
+ * // Request (invalid theme - contains inappropriate content)
+ * POST /api/books
+ * Body: {
+ *   "theme": "A story about prophet muhammad"
+ * }
+ * 
+ * // Response (validation error - 400)
+ * {
+ *   "error": {
+ *     "type": "VALIDATION_ERROR",
+ *     "code": "THEME_INVALID",
+ *     "message": "Your story theme contains inappropriate content.",
+ *     "details": {
+ *       "category": "INAPPROPRIATE_CONTENT",
+ *       "detectedWords": ["prophet muhammad"],
+ *       "detectedPatterns": [],
+ *       "aiExplanation": "depicting religious figures in fictional stories",
+ *       "suggestion": "Please avoid using real religious figures in your story theme."
+ *     }
+ *   }
+ * }
+ * 
+ * @example
+ * // Request (invalid theme - POV instruction)
+ * POST /api/books
+ * Body: {
+ *   "theme": "Tell a story in third person perspective"
+ * }
+ * 
+ * // Response (validation error - 400)
+ * {
+ *   "error": {
+ *     "type": "VALIDATION_ERROR",
+ *     "code": "THEME_INVALID",
+ *     "message": "Your story theme contains invalid POV instructions.",
+ *     "details": {
+ *       "category": "INVALID_THEME",
+ *       "detectedWords": [],
+ *       "detectedPatterns": ["Invalid POV instruction: third\\sperson"],
+ *       "aiExplanation": "explicit non-1st person POV instruction",
+ *       "suggestion": "Twistloom generates 1st person POV stories only. Remove POV instructions from your theme."
+ *     }
+ *   }
+ * }
  */
 router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     
+    // STEP 1: VALIDATING THEME
     if (!theme) {
       return res.status(400).json({ 
         error: "Missing required field: theme is required" 
@@ -185,6 +232,7 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       }
     }
 
+    // STEP 2: INITIALIZING BOOK
     // Initialize book and set active session
     const result = await initializeBook({
       userId: req.userId!,

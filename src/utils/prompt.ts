@@ -1930,6 +1930,7 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
       jsonStructure: firstBookOutputFormat,
       fieldInstructions: buildFirstBookFieldInstructions(mcCandidate),
       thinkThenOutput: firstBookReviewChecklist,
+      // STEP 3: EVALUATING (inside `executePromptForJSON`)
       evaluatorPrompt: buildFirstBookEvaluatorPrompt(theme, mcCandidate),
     });
 
@@ -1938,6 +1939,7 @@ export async function initializeBook(params: InitializeBookParams): Promise<Init
       throw new Error('Failed to generate book creation: AI response result is undefined');
     }
 
+    // STEP 4: FINALIZING
     const {
       title,
       totalPages,
@@ -2625,6 +2627,7 @@ Do NOT mention this checklist.` : '';
   const response = await aiPrompt<T>(
     finalPrompt,
     createAIOptionsWithSchema<T>(configs),
+    // STEP 3: EVALUATING (inside `aiPrompt`)
     evaluatorPrompt,
   );
   return response;

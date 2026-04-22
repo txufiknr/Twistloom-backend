@@ -233,9 +233,6 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
         },
       },
       jsonStructure: JSON.stringify(THEME_VALIDATION_SCHEMA, null, 2),
-      fieldInstructions: '',
-      thinkThenOutput: '',
-      evaluatorPrompt: '',
     });
 
     if (!response.result) {
