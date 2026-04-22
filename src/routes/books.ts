@@ -28,7 +28,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
-import { handleApiError, handleNotFoundError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
 import { chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
@@ -42,9 +42,21 @@ import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookSortOption, EnrichedBookData } from "../types/book.js";
+import type { StoryMCCandidate } from "../types/character.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
+import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
+import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
+
+/**
+ * Formats an array of items for error messages
+ * @param items - Array of strings to format
+ * @returns Formatted string with items quoted and joined by commas
+ */
+function formatOneOf(items: string[] | readonly string[]): string {
+  return `'${items.join(`', '`)}'`;
+}
 
 const router = Router();
 
@@ -166,7 +178,6 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     
-    // STEP 1: VALIDATING THEME
     if (!theme) {
       return res.status(400).json({ 
         error: "Missing required field: theme is required" 
@@ -198,75 +209,156 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/books/stream
- * 
+ * POST /api/books/stream
+ *
  * Creates a new psychological thriller book with AI-generated content using SSE.
  * Provides real-time progress updates for each step in the book creation process.
- * 
- * Accepts theme and main character candidate as query parameters.
+ *
+ * Accepts theme and main character candidate in request body.
  * Emits SSE events for theme validation, book initialization, AI generation,
  * and finalization steps.
- * 
- * @param theme - Story theme (required query parameter)
- * @param mcCandidate.name - Character's display name (optional query parameter)
- * @param mcCandidate.age - Character's age in years (optional query parameter)
- * @param mcCandidate.gender - Character's gender (optional query parameter)
- * @param mcCandidate.bio - Character's bio (optional query parameter)
- * @param generateCoverImage - Whether to generate cover image (optional query parameter)
- * 
+ *
+ * @param theme - Story theme (required)
+ * @param mcCandidate.name - Character's display name (optional)
+ * @param mcCandidate.age - Character's age in years (optional, 0-150)
+ * @param mcCandidate.gender - Character's gender (optional, male/female)
+ * @param mcCandidate.bio - Character's bio (optional)
+ * @param generateCoverImage - Whether to generate cover image (optional, default: false)
+ *
  * @example
- * GET /api/books/stream?theme=haunted+mansion+mystery
- * 
+ * POST /api/books/stream
+ * Body: {
+ *   "theme": "haunted mansion mystery",
+ *   "mcCandidate": {
+ *     "name": "Sarah",
+ *     "age": 28,
+ *     "gender": "female",
+ *     "bio": "Shy librarian with hidden past"
+ *   },
+ *   "generateCoverImage": true
+ * }
+ *
  * SSE Events:
- * data: {"type":"theme_validation_start"}
- * 
- * data: {"type":"theme_validation_complete","data":{"isValid":true,...}}
- * 
- * data: {"type":"book_initialization_start"}
- * 
- * data: {"type":"ai_generation_start"}
- * 
- * data: {"type":"ai_generation_complete"}
- * 
- * data: {"type":"finalizing_start"}
- * 
- * data: {"type":"complete","data":{"book":{...},"firstPage":{...},...}}
- * 
- * data: {"type":"error","error":"Theme validation failed"}
+ * event: theme_validation_start
+ * data: {}
+ *
+ * event: theme_validation_complete
+ * data: {"isValid":true,...}
+ *
+ * event: book_initialization_start
+ * data: {}
+ *
+ * event: ai_generation_start
+ * data: {}
+ *
+ * event: ai_evaluation_start
+ * data: {}
+ *
+ * event: ai_evaluation_complete
+ * data: {}
+ *
+ * event: ai_generation_complete
+ * data: {}
+ *
+ * event: finalizing_start
+ * data: {}
+ *
+ * event: complete
+ * data: {"book":{...},"firstPage":{...},...}
+ *
+ * event: error
+ * data: {"error":"Theme validation failed"}
  */
-router.get("/stream", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.post("/stream", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate, generateCoverImage } = req.query;
+    const { theme, mcCandidate, generateCoverImage } = req.body;
 
-    // Validate theme
+    // STEP 1: VALIDATING THEME
+    // Validate theme (required)
     if (!theme || typeof theme !== 'string' || theme.trim().length === 0) {
-      return res.status(400).json({ 
-        error: "Missing required parameter: theme is required" 
+      return res.status(400).json({
+        error: "Missing required field: theme is required and must be a non-empty string"
       });
     }
 
-    // Parse mcCandidate if provided
-    let parsedMcCandidate;
-    if (mcCandidate) {
-      try {
-        parsedMcCandidate = typeof mcCandidate === 'string' 
-          ? JSON.parse(mcCandidate) 
-          : mcCandidate;
-      } catch {
-        return res.status(400).json({ 
-          error: "Invalid mcCandidate: must be valid JSON" 
-        });
-      }
+    // Validate theme length
+    if (theme.trim().length > MAX_THEME_LENGTH) {
+      return res.status(400).json({
+        error: `Theme exceeds maximum length of ${MAX_THEME_LENGTH} characters`
+      });
     }
 
-    // Parse generateCoverImage if provided
-    let parsedGenerateCoverImage: boolean | undefined;
-    if (generateCoverImage) {
-      if (typeof generateCoverImage === 'string') {
-        parsedGenerateCoverImage = generateCoverImage === 'true';
-      } else if (typeof generateCoverImage === 'boolean') {
-        parsedGenerateCoverImage = generateCoverImage;
+    // STEP 2: VALIDATING MC CANDIDATE
+    // Validate mcCandidate if provided
+    let parsedMcCandidate: StoryMCCandidate | undefined;
+    if (mcCandidate !== undefined && mcCandidate !== null) {
+      // Ensure mcCandidate is an object
+      if (typeof mcCandidate !== 'object' || Array.isArray(mcCandidate)) {
+        return res.status(400).json({
+          error: "Invalid mcCandidate: must be an object"
+        });
       }
+
+      // Validate name (optional)
+      if (mcCandidate.name !== undefined) {
+        if (typeof mcCandidate.name !== 'string' || mcCandidate.name.trim().length === 0) {
+          return res.status(400).json({
+            error: "Invalid mcCandidate.name: must be a non-empty string if provided"
+          });
+        }
+      }
+
+      // Validate age (optional)
+      if (mcCandidate.age !== undefined) {
+        if (typeof mcCandidate.age !== 'number' || !Number.isInteger(mcCandidate.age)) {
+          return res.status(400).json({
+            error: "Invalid mcCandidate.age: must be an integer"
+          });
+        }
+        if (mcCandidate.age < MIN_CHARACTER_AGE || mcCandidate.age > MAX_CHARACTER_AGE) {
+          return res.status(400).json({
+            error: `Invalid mcCandidate.age: must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}`
+          });
+        }
+      }
+
+      // Validate gender (optional)
+      if (mcCandidate.gender !== undefined) {
+        if (typeof mcCandidate.gender !== 'string') {
+          return res.status(400).json({
+            error: "Invalid mcCandidate.gender: must be a string"
+          });
+        }
+        const genders = ['male', 'female'];
+        if (!genders.includes(mcCandidate.gender)) {
+          return res.status(400).json({
+            error: `Invalid mcCandidate.gender: must be one of ${formatOneOf(genders)}`
+          });
+        }
+      }
+
+      // Validate bio (optional)
+      if (mcCandidate.bio !== undefined) {
+        if (typeof mcCandidate.bio !== 'string' || mcCandidate.bio.trim().length === 0) {
+          return res.status(400).json({
+            error: "Invalid mcCandidate.bio: must be a non-empty string if provided"
+          });
+        }
+      }
+
+      parsedMcCandidate = mcCandidate as StoryMCCandidate;
+    }
+
+    // STEP 3: VALIDATING GENERATE COVER IMAGE
+    // Validate generateCoverImage if provided
+    let parsedGenerateCoverImage: boolean | undefined;
+    if (generateCoverImage !== undefined) {
+      if (typeof generateCoverImage !== 'boolean') {
+        return res.status(400).json({
+          error: "Invalid generateCoverImage: must be a boolean"
+        });
+      }
+      parsedGenerateCoverImage = generateCoverImage;
     }
 
     // Initialize SSE headers
@@ -281,7 +373,7 @@ router.get("/stream", guestOrAuthMiddleware, async (req: Request, res: Response)
     const result = await createBookCore(
       {
         userId: req.userId!,
-        theme,
+        theme: theme.trim(),
         mcCandidate: parsedMcCandidate,
         generateCoverImage: parsedGenerateCoverImage
       },
@@ -298,9 +390,9 @@ router.get("/stream", guestOrAuthMiddleware, async (req: Request, res: Response)
     if (!res.headersSent) {
       initSSEHeaders(res);
     }
-    sendSSEEvent(res, { 
-      type: 'error', 
-      error: error instanceof Error ? error.message : String(error) 
+    sendSSEEvent(res, {
+      type: 'error',
+      error: getErrorMessage(error)
     });
     res.end();
   }

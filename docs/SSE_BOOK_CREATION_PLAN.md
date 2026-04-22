@@ -4,7 +4,7 @@
 
 Migrate the current single-response POST /api/books endpoint to support SSE (Server-Sent Events) for real-time progress tracking, while maintaining DRY principles to avoid code duplication.
 
-**Goal**: Create `GET /api/books/stream` endpoint that emits step-by-step progress events, while reusing the core logic from POST /api/books.
+**Goal**: Create `POST /api/books/stream` endpoint that emits step-by-step progress events, while reusing the core logic from POST /api/books.
 
 **Status**: ✅ COMPLETED
 
@@ -67,9 +67,9 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
 
 ### Core Principle
 
-Extract the core business logic into reusable functions that accept optional progress callbacks. Both POST (synchronous) and GET /stream (SSE) endpoints will use the same core logic, with:
+Extract the core business logic into reusable functions that accept optional progress callbacks. Both POST (synchronous) and POST /stream (SSE) endpoints will use the same core logic, with:
 - POST: No callbacks (existing behavior)
-- GET /stream: Progress callbacks that emit SSE events
+- POST /stream: Progress callbacks that emit SSE events
 
 ---
 
@@ -90,6 +90,8 @@ export type BookCreationProgressEvent =
   | { type: 'theme_validation_complete'; data: ThemeValidationResult }
   | { type: 'book_initialization_start' }
   | { type: 'ai_generation_start' }
+  | { type: 'ai_evaluation_start' }
+  | { type: 'ai_evaluation_complete' }
   | { type: 'ai_generation_complete' }
   | { type: 'finalizing_start' }
   | { type: 'complete'; data: CreateBookResponse }
@@ -325,99 +327,104 @@ export function initSSEHeaders(res: Response): void {
  * 
  * @param res - Express response object
  */
-export function sendSSEKeepAlive(res: Response): void {
-  res.write(': keep-alive\n\n');
-}
-```
-
-### Phase 5: Create GET /api/books/stream Endpoint ✅
-
 **File**: `src/routes/books.ts`
 
 ```typescript
 /**
- * GET /api/books/stream
- * 
- * Creates a new psychological thriller book with AI-generated content.
- * Returns Server-Sent Events (SSE) stream with real-time progress.
- * 
- * Query parameters:
+ * POST /api/books/stream
+ *
+ * Creates a new psychological thriller book with AI-generated content using SSE.
+ * Provides real-time progress updates for each step in the book creation process.
+ *
+ * Request Body:
  * - theme: Story theme (required)
- * - mcCandidate: JSON stringified character candidate (optional)
+ * - mcCandidate: Main character candidate object (optional)
  * - generateCoverImage: boolean (optional, default: false)
- * 
+ *
  * @example
- * GET /api/books/stream?theme=haunted%20mansion&mcCandidate={"name":"Sarah","age":28,"gender":"female"}
- * 
+ * POST /api/books/stream
+ * Body: {
+ *   "theme": "haunted mansion",
+ *   "mcCandidate": {"name":"Sarah","age":28,"gender":"female"}
+ * }
+ *
  * SSE Events:
  * - theme_validation_start
  * - theme_validation_complete
  * - book_initialization_start
  * - ai_generation_start
+ * - ai_evaluation_start (if evaluatorPrompt provided)
+ * - ai_evaluation_complete (if evaluatorPrompt provided)
  * - ai_generation_complete
  * - finalizing_start
  * - complete (with book data)
  * - error (if failed)
  */
-router.get("/stream", guestOrAuthMiddleware, async (req: Request, res: Response) => {
-  const { theme, mcCandidate, generateCoverImage } = req.query;
-  
-  // Initialize SSE headers
-  initSSEHeaders(res);
-  
-  try {
-    // Parse query parameters
-    if (!theme || typeof theme !== 'string') {
-      sendSSEEvent(res, { 
-        type: 'error', 
-        error: 'Missing required query parameter: theme' 
+router.post("/stream", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  const { theme, mcCandidate, generateCoverImage } = req.body;
+
+  // Robust validation for theme
+  if (!theme || typeof theme !== 'string' || theme.trim().length === 0) {
+    return res.status(400).json({
+      error: "Missing required field: theme is required and must be a non-empty string"
+    });
+  }
+
+  if (theme.trim().length > MAX_THEME_LENGTH) {
+    return res.status(400).json({
+      error: `Theme exceeds maximum length of ${MAX_THEME_LENGTH} characters`
+    });
+  }
+
+  // Robust validation for mcCandidate
+  let parsedMcCandidate: StoryMCCandidate | undefined;
+  if (mcCandidate !== undefined && mcCandidate !== null) {
+    if (typeof mcCandidate !== 'object' || Array.isArray(mcCandidate)) {
+      return res.status(400).json({
+        error: "Invalid mcCandidate: must be an object"
       });
-      return res.end();
-    }
-    
-    let parsedMcCandidate: StoryMCCandidate | undefined;
-    if (mcCandidate) {
-      try {
-        parsedMcCandidate = typeof mcCandidate === 'string' 
-          ? JSON.parse(mcCandidate) 
-          : mcCandidate;
-      } catch {
-        sendSSEEvent(res, { 
-          type: 'error', 
-          error: 'Invalid mcCandidate: must be valid JSON' 
-        });
-        return res.end();
-      }
     }
 
-    let parsedGenerateCoverImage: boolean | undefined;
-    if (generateCoverImage) {
-      if (typeof generateCoverImage === 'string') {
-        parsedGenerateCoverImage = generateCoverImage === 'true';
-      } else if (typeof generateCoverImage === 'boolean') {
-        parsedGenerateCoverImage = generateCoverImage;
-      }
-    }
-    
-    // Create book with progress callbacks
-    const result = await createBookCore(
-      {
-        userId: req.userId!,
-        theme,
-        mcCandidate: parsedMcCandidate,
-        generateCoverImage: parsedGenerateCoverImage
-      },
-      (event) => sendSSEEvent(res, event)
-    );
-    
-    res.end();
-  } catch (error) {
-    sendSSEEvent(res, { 
-      type: 'error', 
-      error: getErrorMessage(error) 
-    });
-    res.end();
+    // Validate name, age, gender, bio fields with proper constraints
+    // (see full implementation for complete validation logic)
+    parsedMcCandidate = mcCandidate as StoryMCCandidate;
   }
+
+  // Robust validation for generateCoverImage
+  let parsedGenerateCoverImage: boolean | undefined;
+  if (generateCoverImage !== undefined) {
+    if (typeof generateCoverImage !== 'boolean') {
+      return res.status(400).json({
+        error: "Invalid generateCoverImage: must be a boolean"
+      });
+    }
+    parsedGenerateCoverImage = generateCoverImage;
+  }
+
+  // Initialize SSE headers
+  initSSEHeaders(res);
+
+  // Create progress callback for SSE events
+  const onProgress: ProgressCallback = (event) => {
+    sendSSEEvent(res, event);
+  };
+
+  // Create book with progress events
+  const result = await createBookCore(
+    {
+      userId: req.userId!,
+      theme: theme.trim(),
+      mcCandidate: parsedMcCandidate,
+      generateCoverImage: parsedGenerateCoverImage
+    },
+    onProgress
+  );
+
+  // Send final complete event
+  sendSSEEvent(res, { type: 'complete', data: result });
+
+  // End response
+  res.end();
 });
 ```
 
@@ -545,24 +552,43 @@ Creates a new psychological thriller book with AI-generated content. Returns com
 
 ---
 
-### GET /api/books/stream
+### POST /api/books/stream
 
 Creates a new psychological thriller book with AI-generated content using Server-Sent Events (SSE). Emits real-time progress events for each step in the book creation process.
 
 **Authentication**: Required (guest or auth user)
 
-**Request Method**: GET
+**Request Method**: POST
 
-**Query Parameters**:
-```
-theme: string (required)                    - Story theme
-mcCandidate: string (optional)              - JSON stringified character candidate
-generateCoverImage: boolean (optional)     - Generate cover image (default: false)
+**Content-Type**: application/json
+
+**Request Body**:
+```typescript
+{
+  theme: string;                    // Required: Story theme
+  mcCandidate?: {                   // Optional: Main character candidate
+    name?: string;                  // Character name
+    age?: number;                   // Age (0-150)
+    gender?: 'male' | 'female';     // Strict, explicit
+    bio?: string;                   // Character bio
+  };
+  generateCoverImage?: boolean;     // Optional: Generate cover image (default: false)
+}
 ```
 
 **Example Request**:
 ```
-GET /api/books/stream?theme=haunted+mansion&mcCandidate={"name":"Sarah","age":28,"gender":"female"}&generateCoverImage=true
+POST /api/books/stream
+Body: {
+  "theme": "haunted mansion",
+  "mcCandidate": {
+    "name": "Sarah",
+    "age": 28,
+    "gender": "female",
+    "bio": "Shy librarian with hidden past"
+  },
+  "generateCoverImage": true
+}
 ```
 
 **Response Headers**:
@@ -658,7 +684,8 @@ data: <json_payload>
 ## SSE Event Flow
 
 ```
-Client Request (GET /api/books/stream)
+Client Request (POST /api/books/stream)
+Body: { theme, mcCandidate?, generateCoverImage? }
          ↓
 Server: Initialize SSE headers
          ↓
@@ -720,13 +747,15 @@ Server: Close connection
 
 The backend provides two endpoints for book creation:
 1. **POST /api/books** - Synchronous, single response (backward compatible)
-2. **GET /api/books/stream** - SSE streaming with real-time progress (recommended for better UX)
+2. **POST /api/books/stream** - SSE streaming with real-time progress (recommended for better UX)
 
 Frontend should prefer the SSE endpoint for better user experience, with POST as fallback.
 
-### Option 1: Using EventSource (Recommended)
+**Note**: Since the SSE endpoint uses POST (not GET), you cannot use the native `EventSource` API which only supports GET. Instead, use the Fetch API with stream reading to consume SSE events.
 
-EventSource is the simplest way to consume SSE events. It automatically handles reconnection and provides a clean event-based API.
+### Using Fetch with SSE (Recommended)
+
+For POST-based SSE, use the Fetch API with stream reading. This provides full control over the SSE connection and works with POST requests.
 
 **Basic Implementation**:
 ```typescript
@@ -738,179 +767,34 @@ interface BookCreationState {
   error?: string;
 }
 
-function createBookWithSSE(theme: string, mcCandidate?: StoryMCCandidate, generateCoverImage?: boolean) {
+async function createBookWithSSE(theme: string, mcCandidate?: StoryMCCandidate, generateCoverImage?: boolean) {
   const state: BookCreationState = {
     step: 'idle',
     status: 'in_progress',
     progress: 0,
   };
 
-  // Build query parameters
-  const params = new URLSearchParams({ theme });
+  // Build request body
+  const body: any = { theme };
   if (mcCandidate) {
-    params.append('mcCandidate', JSON.stringify(mcCandidate));
+    body.mcCandidate = mcCandidate;
   }
   if (generateCoverImage !== undefined) {
-    params.append('generateCoverImage', String(generateCoverImage));
+    body.generateCoverImage = generateCoverImage;
   }
 
-  const eventSource = new EventSource(`/api/books/stream?${params.toString()}`);
-
-  // Track progress steps
-  const steps = ['theme_validation_start', 'book_initialization_start', 'ai_generation_start', 'finalizing_start'];
-  let currentStepIndex = 0;
-
-  eventSource.addEventListener('theme_validation_start', (e) => {
-    state.step = 'validating_theme';
-    state.status = 'in_progress';
-    state.progress = 10;
-    updateUI(state);
+  const response = await fetch('/api/books/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
+    body: JSON.stringify(body),
   });
-
-  eventSource.addEventListener('theme_validation_complete', (e) => {
-    const result = JSON.parse(e.data);
-    if (!result.isValid) {
-      eventSource.close();
-      state.step = 'error';
-      state.error = result.heuristicResult.reason || result.aiResult?.reason || 'Theme validation failed';
-      updateUI(state);
-      return;
-    }
-    state.progress = 20;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('book_initialization_start', (e) => {
-    state.step = 'initializing';
-    state.status = 'in_progress';
-    state.progress = 30;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('ai_generation_start', (e) => {
-    state.step = 'generating';
-    state.status = 'in_progress';
-    state.progress = 40;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('ai_evaluation_start', (e) => {
-    // Evaluation phase (optional, only if evaluatorPrompt provided)
-    state.progress = 50;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('ai_evaluation_complete', (e) => {
-    state.progress = 60;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('ai_generation_complete', (e) => {
-    state.progress = 70;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('finalizing_start', (e) => {
-    state.step = 'finalizing';
-    state.status = 'in_progress';
-    state.progress = 80;
-    updateUI(state);
-  });
-
-  eventSource.addEventListener('complete', (e) => {
-    const bookData = JSON.parse(e.data);
-    state.step = 'complete';
-    state.status = 'complete';
-    state.progress = 100;
-    state.bookData = bookData;
-    updateUI(state);
-    eventSource.close();
-  });
-
-  eventSource.addEventListener('error', (e) => {
-    eventSource.close();
-    state.step = 'error';
-    state.error = 'Connection error occurred';
-    updateUI(state);
-  });
-
-  return eventSource;
-}
-
-function updateUI(state: BookCreationState) {
-  // Update your UI based on state
-  console.log('Current state:', state);
-}
-```
-
-**Error Handling with EventSource**:
-```typescript
-function createBookWithErrorHandling(theme: string) {
-  const eventSource = new EventSource(`/api/books/stream?theme=${encodeURIComponent(theme)}`);
-
-  eventSource.addEventListener('error', (e) => {
-    // EventSource error event (connection issues)
-    console.error('SSE connection error:', e);
-    eventSource.close();
-    showError('Connection lost. Please try again.');
-  });
-
-  eventSource.onerror = (e) => {
-    // Generic error handler
-    console.error('SSE error:', e);
-    eventSource.close();
-    showError('An error occurred during book creation.');
-  };
-
-  return eventSource;
-}
-```
-
-**Cleanup on Component Unmount**:
-```typescript
-import { useEffect, useRef } from 'react';
-
-function BookCreationForm() {
-  const eventSourceRef = useRef<EventSource | null>(null);
-
-  useEffect(() => {
-    return () => {
-      // Cleanup EventSource on unmount
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-    };
-  }, []);
-
-  const handleSubmit = (theme: string) => {
-    eventSourceRef.current = createBookWithSSE(theme);
-  };
-
-  // ...
-}
-```
-
----
-
-### Option 2: Using Fetch with Stream
-
-For more control over the SSE connection, use the Fetch API with stream reading.
-
-**Implementation**:
-```typescript
-async function createBookWithFetch(theme: string, mcCandidate?: StoryMCCandidate, generateCoverImage?: boolean) {
-  const params = new URLSearchParams({ theme });
-  if (mcCandidate) {
-    params.append('mcCandidate', JSON.stringify(mcCandidate));
-  }
-  if (generateCoverImage !== undefined) {
-    params.append('generateCoverImage', String(generateCoverImage));
-  }
-
-  const response = await fetch(`/api/books/stream?${params.toString()}`);
 
   if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create book');
   }
 
   const reader = response.body?.getReader();
@@ -921,65 +805,179 @@ async function createBookWithFetch(theme: string, mcCandidate?: StoryMCCandidate
   }
 
   let buffer = '';
+  let currentEventType = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
 
-    if (done) {
-      break;
-    }
+      if (done) {
+        break;
+      }
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
 
-    for (const line of lines) {
-      if (line.startsWith('event: ')) {
-        const eventType = line.slice(7).trim();
-        // Store event type for next data line
-        // (implementation depends on your parsing logic)
-      } else if (line.startsWith('data: ')) {
-        const data = line.slice(6).trim();
-        try {
-          const parsedData = JSON.parse(data);
-          handleSSEEvent(eventType, parsedData);
-        } catch (e) {
-          console.error('Failed to parse SSE data:', e);
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          currentEventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim();
+          if (!data) continue;
+          try {
+            const parsedData = JSON.parse(data);
+            handleSSEEvent(currentEventType, parsedData, state);
+          } catch (e) {
+            console.error('Failed to parse SSE data:', e);
+          }
         }
       }
     }
+  } finally {
+    reader.releaseLock();
   }
+
+  return state;
 }
 
-function handleSSEEvent(eventType: string, data: any) {
+function handleSSEEvent(eventType: string, data: any, state: BookCreationState) {
   switch (eventType) {
     case 'theme_validation_start':
-      console.log('Theme validation started');
+      state.step = 'validating_theme';
+      state.status = 'in_progress';
+      state.progress = 10;
+      updateUI(state);
       break;
     case 'theme_validation_complete':
-      console.log('Theme validation complete:', data);
+      if (!data.isValid) {
+        state.step = 'error';
+        state.error = data.heuristicResult.reason || data.aiResult?.reason || 'Theme validation failed';
+        updateUI(state);
+        return;
+      }
+      state.progress = 20;
+      updateUI(state);
+      break;
+    case 'book_initialization_start':
+      state.step = 'initializing';
+      state.status = 'in_progress';
+      state.progress = 30;
+      updateUI(state);
+      break;
+    case 'ai_generation_start':
+      state.step = 'generating';
+      state.status = 'in_progress';
+      state.progress = 40;
+      updateUI(state);
+      break;
+    case 'ai_evaluation_start':
+      state.progress = 50;
+      updateUI(state);
+      break;
+    case 'ai_evaluation_complete':
+      state.progress = 60;
+      updateUI(state);
+      break;
+    case 'ai_generation_complete':
+      state.progress = 70;
+      updateUI(state);
+      break;
+    case 'finalizing_start':
+      state.step = 'finalizing';
+      state.status = 'in_progress';
+      state.progress = 80;
+      updateUI(state);
       break;
     case 'complete':
-      console.log('Book created:', data);
+      state.step = 'complete';
+      state.status = 'complete';
+      state.progress = 100;
+      state.bookData = data;
+      updateUI(state);
       break;
     case 'error':
-      console.error('Error:', data.error);
+      state.step = 'error';
+      state.error = data.error;
+      updateUI(state);
       break;
     default:
       console.log('Unknown event:', eventType, data);
   }
 }
+
+function updateUI(state: BookCreationState) {
+  // Update your UI based on state
+  console.log('Current state:', state);
+}
 ```
 
 **AbortController for Cancellation**:
 ```typescript
-async function createBookWithCancellation(theme: string, signal: AbortSignal) {
-  const params = new URLSearchParams({ theme });
-  const response = await fetch(`/api/books/stream?${params.toString()}`, { signal });
+async function createBookWithCancellation(theme: string, mcCandidate?: StoryMCCandidate, signal?: AbortSignal) {
+  const body: any = { theme };
+  if (mcCandidate) {
+    body.mcCandidate = mcCandidate;
+  }
+
+  const response = await fetch('/api/books/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
+    body: JSON.stringify(body),
+    signal,
+  });
 
   // ... stream processing
 
   // If signal.abort() is called, the fetch will be aborted
+}
+```
+
+**React Hook Implementation**:
+```typescript
+import { useState, useRef, useCallback } from 'react';
+
+function useBookCreation() {
+  const [state, setState] = useState<BookCreationState>({
+    step: 'idle',
+    status: 'in_progress',
+    progress: 0,
+  });
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const createBook = useCallback(async (theme: string, mcCandidate?: StoryMCCandidate, generateCoverImage?: boolean) => {
+    // Cancel previous request if exists
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    abortControllerRef.current = new AbortController();
+
+    try {
+      const result = await createBookWithSSE(theme, mcCandidate, generateCoverImage, abortControllerRef.current.signal);
+      setState(result);
+    } catch (error) {
+      setState(prev => ({
+        ...prev,
+        step: 'error',
+        error: error instanceof Error ? error.message : 'An error occurred',
+      }));
+    } finally {
+      abortControllerRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  const cleanup = useCallback(() => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  }, []);
+
+  return { state, createBook, cleanup };
 }
 ```
 
@@ -999,8 +997,13 @@ Ensure authentication cookies are included with the request. Most browsers inclu
 
 **For Cross-Origin Requests**:
 ```typescript
-const response = await fetch('/api/books/stream?theme=haunted+mansion', {
+const response = await fetch('/api/books/stream', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
   credentials: 'include', // Include cookies for cross-origin requests
+  body: JSON.stringify({ theme: 'haunted mansion' }),
 });
 ```
 
@@ -1069,50 +1072,53 @@ function calculateProgress(currentStep: string, stepProgress: number): number {
 
 **Validation Errors**:
 ```typescript
-eventSource.addEventListener('theme_validation_complete', (e) => {
-  const result = JSON.parse(e.data);
-  if (!result.isValid) {
+// In handleSSEEvent function
+case 'theme_validation_complete':
+  if (!data.isValid) {
     // Show validation error to user
-    const reason = result.heuristicResult.reason || result.aiResult?.reason;
+    const reason = data.heuristicResult.reason || data.aiResult?.reason;
     showValidationUI({
       isValid: false,
       message: reason || 'Theme validation failed',
       suggestions: ['Try a different theme', 'Be more specific', 'Avoid sensitive topics']
     });
   }
-});
+  break;
 ```
 
 **Network Errors**:
 ```typescript
-eventSource.onerror = (e) => {
+try {
+  const result = await createBookWithSSE(theme, mcCandidate);
+} catch (error) {
   showNetworkError({
     message: 'Connection lost during book creation',
-    retryAction: () => createBookWithSSE(theme),
-    fallbackAction: () => createBookWithPOST(theme)
+    retryAction: () => createBookWithSSE(theme, mcCandidate),
+    fallbackAction: () => createBookWithPOST(theme, mcCandidate)
   });
-};
+}
 ```
 
 **Timeout Handling**:
 ```typescript
-function createBookWithTimeout(theme: string, timeoutMs = 300000) {
-  const eventSource = new EventSource(`/api/books/stream?theme=${encodeURIComponent(theme)}`);
-
+async function createBookWithTimeout(theme: string, mcCandidate?: StoryMCCandidate, timeoutMs = 300000, signal?: AbortSignal) {
+  const controller = new AbortController();
   const timeout = setTimeout(() => {
-    eventSource.close();
+    controller.abort();
     showTimeoutError('Book creation timed out. Please try again.');
   }, timeoutMs);
 
-  eventSource.addEventListener('complete', () => {
+  try {
+    const result = await createBookWithSSE(theme, mcCandidate, controller.signal);
     clearTimeout(timeout);
-  });
-
-  eventSource.addEventListener('error', () => {
+    return result;
+  } catch (error) {
     clearTimeout(timeout);
-  });
-
-  return eventSource;
+    if (error.name === 'AbortError') {
+      throw new Error('Book creation timed out');
+    }
+    throw error;
+  }
 }
 ```
 
@@ -1161,6 +1167,25 @@ async function createBookWithFallback(theme: string) {
 
 ## Testing Strategy
 
+### Manual Testing
+
+Test the SSE endpoint using PowerShell:
+
+```powershell
+$body = @{
+    theme = "haunted mansion"
+    mcCandidate = @{
+        name = "Sarah"
+        age = 28
+        gender = "female"
+        bio = "Shy librarian with hidden past"
+    }
+    generateCoverImage = $true
+} | ConvertTo-Json -Depth 10
+
+Invoke-WebRequest -Uri "http://localhost:3000/api/books/stream" -Method POST -Body $body -ContentType "application/json" -UseBasicParsing
+```
+
 ### Unit Tests
 
 - Test `createBookCore` with and without progress callbacks
@@ -1169,15 +1194,14 @@ async function createBookWithFallback(theme: string) {
 
 ### Integration Tests
 
-- Test GET /api/books/stream endpoint
+- Test POST /api/books/stream endpoint
 - Verify SSE event sequence
-- Test error scenarios
-
-### Manual Testing
+- Test error handling
+- Test validation errors
 
 ```powershell
 # Test SSE endpoint with PowerShell
-Invoke-WebRequest -Uri "http://localhost:3000/api/books/stream?theme=haunted+mansion" -Method GET -Headers @{"Content-Type"="text/event-stream"} -UseBasicParsing
+Invoke-WebRequest -Uri "http://localhost:3000/api/books/stream?theme=haunted+mansion" -Method POST -Headers @{"Content-Type"="text/event-stream"} -UseBasicParsing
 ```
 
 **Expected SSE Event Sequence:**
@@ -1224,7 +1248,7 @@ data: {"book":{...},"firstPage":{...},...}
 - Refactor POST /api/books to use shared logic
 
 ### Phase 3: SSE Endpoint (Week 3)
-- Create GET /api/books/stream endpoint
+- Create POST /api/books/stream endpoint
 - Test SSE event flow
 
 ### Phase 4: Frontend Integration (Week 4)
@@ -1258,18 +1282,19 @@ data: {"book":{...},"firstPage":{...},...}
 
 **Files Modified:**
 - `src/utils/theme-validation.ts` - Added progress callback support
-- `src/utils/prompt.ts` - Added progress callback support to initializeBook
+- `src/utils/prompt.ts` - Added progress callback support to initializeBook and executePromptForJSON
 - `src/utils/sse.ts` - Added Express SSE utilities
-- `src/routes/books.ts` - Added GET /api/books/stream endpoint, refactored POST endpoint
+- `src/routes/books.ts` - Added POST /api/books/stream endpoint with robust validation, refactored POST endpoint
 
 **Key Features:**
 - ✅ SSE types with progress event definitions
-- ✅ Progress callbacks in validateTheme and initializeBook
+- ✅ Progress callbacks in validateTheme, initializeBook, and executePromptForJSON
 - ✅ Shared core logic via createBookCore function
 - ✅ SSE utilities (initSSEHeaders, sendSSEEvent, sendSSEKeepAlive)
-- ✅ GET /api/books/stream endpoint with real-time progress
+- ✅ POST /api/books/stream endpoint with real-time progress
 - ✅ POST /api/books refactored to use shared logic
 - ✅ Separate header constants for Express vs serverless
+- ✅ Robust validation for theme, mcCandidate, and generateCoverImage
 
 **Next Steps:**
 - Manual testing with PowerShell command
