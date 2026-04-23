@@ -1,0 +1,1024 @@
+# Users API Documentation
+
+## Overview
+
+The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), and user discovery. All endpoints support authenticated users with appropriate authorization checks.
+
+**Base URL:** `/user` for authenticated user operations, `/users` for public user operations
+
+**Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Public endpoints allow guest access for user profile viewing.
+
+---
+
+## Table of Contents
+
+1. [User Profile Management](#user-profile-management)
+   - [Get Authenticated User Profile](#get-user)
+   - [Get User Profile by Identifier](#get-usersidentifier)
+   - [Create/Replace User Profile](#post-user)
+   - [Update User Profile](#put-user)
+   - [Delete User Profile](#delete-user)
+2. [Likes](#likes)
+   - [Like Target](#post-userlikes)
+   - [Unlike Target](#delete-userlikes)
+   - [Get User Likes](#get-userlikes)
+3. [Favorites](#favorites)
+   - [Add Book to Favorites](#post-userfavorites)
+   - [Remove Book from Favorites](#delete-userfavorites)
+   - [Get User Favorites](#get-userfavorites)
+4. [Comments](#comments)
+   - [Create Comment](#post-usercomments)
+   - [Update Comment](#put-usercommentscommentid)
+   - [Delete Comment](#delete-usercommentscommentid)
+   - [Get User Comments](#get-usercomments)
+5. [Follows](#follows)
+   - [Follow User](#post-usersidfollow)
+   - [Unfollow User](#delete-usersidfollow)
+   - [Get User Followers](#get-usersidfollowers)
+   - [Get User Following](#get-usersidfollowing)
+   - [Get Authenticated User's Followers](#get-userfollowers)
+   - [Get Authenticated User's Following](#get-userfollowing)
+
+---
+
+## User Profile Management
+
+### GET /user
+
+Retrieves the authenticated user's profile information with engagement statistics (books count, reads count, likes, favorites, followers).
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (200 OK):**
+```json
+{
+  "user": {
+    "id": "user123",
+    "username": "john-doe",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "bio": "Psychological thriller enthusiast",
+    "image": "https://ik.imagekit.io/abc123/profile.jpg",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-15T10:30:00.000Z",
+    "stats": {
+      "booksCount": 10,
+      "readsCount": 150,
+      "likedBooksCount": 25,
+      "savedBooksCount": 8,
+      "followersCount": 42,
+      "likesReceived": 156
+    }
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: User profile not found
+
+---
+
+### GET /users/:identifier
+
+Fetch user profile by identifier (UUID or username). Industry standard implementation that accepts both UUID and username in a single endpoint. Backend resolves UUID-to-username server-side.
+
+**Authentication:** Optional (via no middleware - public access)
+
+**Path Parameters:**
+- `identifier` (string, required): User UUID or username
+
+**Response (200 OK):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "username": "john-doe",
+    "name": "John Doe",
+    "bio": "User bio",
+    "image": "https://...",
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-15T10:30:00Z",
+    "stats": {
+      "booksCount": 10,
+      "readsCount": 150,
+      "likedBooksCount": 25,
+      "savedBooksCount": 8,
+      "followersCount": 42,
+      "likesReceived": 156
+    }
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: User profile not found
+
+---
+
+### POST /user
+
+Creates a new user profile or fully replaces an existing user's profile. Uses upsert operation to handle both creation and replacement scenarios.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
+```json
+{
+  "name": "John Doe",
+  "gender": "male"
+}
+```
+
+**Parameters:**
+- `name` (string, optional): User's display name
+- `gender` (string, optional): User's gender (e.g., "male", "female", "other")
+
+**Response (201 Created):**
+```json
+{
+  "user": {
+    "userId": "user123",
+    "name": "John Doe",
+    "gender": "male",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-01T00:00:00.000Z"
+  }
+}
+```
+
+---
+
+### PUT /user
+
+Partially updates the authenticated user's profile. Only provided fields are updated, existing fields remain unchanged. Supports multiple image upload methods: URL, base64, or multipart file.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+- `Content-Type`: multipart/form-data for file uploads or application/json
+
+**Request Body (JSON):**
+```json
+{
+  "name": "John Doe",
+  "bio": "Psychological thriller enthusiast",
+  "gender": "male",
+  "imageUrl": "https://example.com/new-avatar.jpg"
+}
+```
+
+**Or multipart/form-data:**
+- `imageFile` (file, optional): Profile image file
+- `name` (string, optional): Updated name
+- `bio` (string, optional): Updated bio
+- `gender` (string, optional): Updated gender
+- `imageUrl` (string, optional): Profile image URL
+
+**Response (200 OK):**
+```json
+{
+  "user": {
+    "userId": "user123",
+    "name": "John Doe",
+    "bio": "Psychological thriller enthusiast",
+    "gender": "male",
+    "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-15T12:00:00.000Z"
+  },
+  "imageUploaded": true,
+  "uploadSource": "file",
+  "oldImageQueuedForDeletion": false
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid image upload
+- `404 Not Found`: User profile not found
+
+---
+
+### DELETE /user
+
+Deletes the authenticated user's profile and all associated data from the system. This operation is irreversible and removes all user data including profile information, favorites, likes, comments, reading sessions, and device registrations.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (200 OK):**
+```json
+{
+  "message": "User account deleted successfully",
+  "deletedRecords": {
+    "userProfile": 1,
+    "userFavorites": 8,
+    "userLikes": 15,
+    "userSessions": 42,
+    "userDevices": 2,
+    "userComments": 5
+  },
+  "imageQueuedForDeletion": true
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: User profile not found
+
+---
+
+## Likes
+
+### POST /user/likes
+
+Like a book, comment, or another user. Uses upsert operation to handle both creation and idempotent likes.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
+```json
+{
+  "targetType": "book",
+  "targetId": "book456"
+}
+```
+
+**Parameters:**
+- `targetType` (string, required): Type of target ("book" | "comment" | "user")
+- `targetId` (string, required): ID of the target to like
+
+**Response (201 Created):**
+```json
+{
+  "like": {
+    "userId": "user123",
+    "targetType": "book",
+    "targetId": "book456",
+    "createdAt": "2023-01-01T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid target type, missing target ID
+
+---
+
+### DELETE /user/likes
+
+Unlike a book, comment, or another user.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `targetType` (string, required): Type of target ("book" | "comment" | "user")
+- `targetId` (string, required): ID of the target to unlike
+
+**Response (200 OK):**
+```json
+{
+  "message": "Like removed successfully"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid target type, missing target ID
+- `404 Not Found`: Like not found
+
+---
+
+### GET /user/likes
+
+Get all likes for the authenticated user, optionally filtered by target type.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `targetType` (string, optional): Filter by target type ("book" | "comment" | "user")
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "likes": [
+    {
+      "userId": "user123",
+      "targetType": "book",
+      "targetId": "book456",
+      "createdAt": "2023-01-01T00:00:00.000Z"
+    },
+    {
+      "userId": "user123",
+      "targetType": "comment",
+      "targetId": "comment789",
+      "createdAt": "2023-01-02T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Favorites
+
+### POST /user/favorites
+
+Add a book to user favorites (to read later). Uses upsert operation to handle both creation and idempotent favorites.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
+```json
+{
+  "bookId": "book456"
+}
+```
+
+**Parameters:**
+- `bookId` (string, required): ID of the book to favorite
+
+**Response (201 Created):**
+```json
+{
+  "favorite": {
+    "userId": "user123",
+    "bookId": "book456",
+    "createdAt": "2023-01-01T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing book ID
+
+---
+
+### DELETE /user/favorites
+
+Remove a book from user favorites.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `bookId` (string, required): ID of the book to remove from favorites
+
+**Response (200 OK):**
+```json
+{
+  "message": "Book removed from favorites successfully"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing book ID
+- `404 Not Found`: Favorite not found
+
+---
+
+### GET /user/favorites
+
+Get all favorite books for the authenticated user.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "favorites": [
+    {
+      "userId": "user123",
+      "bookId": "book456",
+      "createdAt": "2023-01-01T00:00:00.000Z"
+    },
+    {
+      "userId": "user123",
+      "bookId": "book789",
+      "createdAt": "2023-01-02T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Comments
+
+### POST /user/comments
+
+Create a comment on a book or reply to another comment.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
+```json
+{
+  "bookId": "book456",
+  "parentCommentId": "comment789",
+  "content": "This story is amazing!"
+}
+```
+
+**Parameters:**
+- `bookId` (string, required): ID of the book to comment on
+- `parentCommentId` (string, optional): ID of parent comment (for replies)
+- `content` (string, required): Comment content (max 5000 chars)
+
+**Response (201 Created):**
+```json
+{
+  "comment": {
+    "id": "comment123",
+    "userId": "user123",
+    "bookId": "book456",
+    "parentCommentId": null,
+    "content": "This story is amazing!",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-01T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing book ID, missing content
+
+---
+
+### PUT /user/comments/:commentId
+
+Update an existing comment (only by the original author).
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Path Parameters:**
+- `commentId` (string, required): ID of the comment to update
+
+**Request Body:**
+```json
+{
+  "content": "Updated comment content"
+}
+```
+
+**Parameters:**
+- `content` (string, required): Updated comment content
+
+**Response (200 OK):**
+```json
+{
+  "comment": {
+    "id": "comment123",
+    "userId": "user123",
+    "bookId": "book456",
+    "parentCommentId": null,
+    "content": "Updated comment content",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-15T12:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing content
+- `403 Forbidden`: Not the comment author
+- `404 Not Found`: Comment not found
+
+---
+
+### DELETE /user/comments/:commentId
+
+Delete a comment (only by the original author).
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Path Parameters:**
+- `commentId` (string, required): ID of the comment to delete
+
+**Response (200 OK):**
+```json
+{
+  "message": "Comment deleted successfully"
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not the comment author
+- `404 Not Found`: Comment not found
+
+---
+
+### GET /user/comments
+
+Get all comments by the authenticated user, optionally filtered by book.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `bookId` (string, optional): Filter by book ID
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "comments": [
+    {
+      "id": "comment123",
+      "userId": "user123",
+      "bookId": "book456",
+      "parentCommentId": null,
+      "content": "This story is amazing!",
+      "createdAt": "2023-01-01T00:00:00.000Z",
+      "updatedAt": "2023-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Follows
+
+### POST /users/:id/follow
+
+Follow a user. Uses upsert operation to handle both creation and idempotent follows.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Path Parameters:**
+- `id` (string, required): ID of the user to follow
+
+**Response (201 Created):**
+```json
+{
+  "follow": {
+    "followerId": "user123",
+    "followingId": "user456",
+    "createdAt": "2023-01-01T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Cannot follow yourself
+- `404 Not Found`: User not found
+
+---
+
+### DELETE /users/:id/follow
+
+Unfollow a user.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Path Parameters:**
+- `id` (string, required): ID of the user to unfollow
+
+**Response (200 OK):**
+```json
+{
+  "message": "User unfollowed successfully"
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: Follow relationship not found
+
+---
+
+### GET /users/:id/followers
+
+Get all followers of a specific user.
+
+**Authentication:** Optional (public access)
+
+**Path Parameters:**
+- `id` (string, required): ID of the user
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "followers": [
+    {
+      "userId": "user123",
+      "name": "John Doe",
+      "username": "john-doe",
+      "image": "https://example.com/avatar.jpg",
+      "followedAt": "2023-01-01T00:00:00.000Z"
+    },
+    {
+      "userId": "user789",
+      "name": "Jane Smith",
+      "username": "jane-smith",
+      "image": "https://example.com/avatar2.jpg",
+      "followedAt": "2023-01-02T00:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "totalCount": 100,
+    "totalPages": 10,
+    "hasNext": true,
+    "hasPrevious": false
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: User not found
+
+---
+
+### GET /users/:id/following
+
+Get all users that a specific user is following.
+
+**Authentication:** Optional (public access)
+
+**Path Parameters:**
+- `id` (string, required): ID of the user
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "following": [
+    {
+      "userId": "user789",
+      "name": "Jane Smith",
+      "username": "jane-smith",
+      "image": "https://example.com/avatar2.jpg",
+      "followedAt": "2023-01-01T00:00:00.000Z"
+    },
+    {
+      "userId": "user456",
+      "name": "Bob Johnson",
+      "username": "bob-johnson",
+      "image": "https://example.com/avatar3.jpg",
+      "followedAt": "2023-01-02T00:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "totalCount": 50,
+    "totalPages": 5,
+    "hasNext": true,
+    "hasPrevious": false
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: User not found
+
+---
+
+### GET /user/followers
+
+Get all followers of the authenticated user.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "followers": [
+    {
+      "userId": "user123",
+      "name": "John Doe",
+      "username": "john-doe",
+      "image": "https://example.com/avatar.jpg",
+      "followedAt": "2023-01-01T00:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "totalCount": 100,
+    "totalPages": 10,
+    "hasNext": true,
+    "hasPrevious": false
+  }
+}
+```
+
+---
+
+### GET /user/following
+
+Get all users that the authenticated user is following.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "following": [
+    {
+      "userId": "user789",
+      "name": "Jane Smith",
+      "username": "jane-smith",
+      "image": "https://example.com/avatar2.jpg",
+      "followedAt": "2023-01-01T00:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "totalCount": 50,
+    "totalPages": 5,
+    "hasNext": true,
+    "hasPrevious": false
+  }
+}
+```
+
+---
+
+## Error Handling
+
+All endpoints follow consistent error response formats:
+
+**Standard Error Response:**
+```json
+{
+  "success": false,
+  "error": "Error message description"
+}
+```
+
+**Not Found Error Response:**
+```json
+{
+  "success": false,
+  "error": "Resource not found"
+}
+```
+
+**Forbidden Error Response:**
+```json
+{
+  "success": false,
+  "error": "Forbidden: You do not have permission to access this resource"
+}
+```
+
+---
+
+## Rate Limiting
+
+Most endpoints are rate-limited to prevent abuse:
+- **Authenticated endpoints**: User-based rate limiting via Upstash Redis
+- **Unauthenticated endpoints**: IP-based rate limiting via LRU cache (5 attempts/minute default)
+- **Social interactions**: Limited to prevent spam
+
+---
+
+## Caching
+
+The API implements multi-level caching for performance:
+- **Redis caching**: User profiles, user stats
+- **HTTP caching**: Public user profiles support CDN caching with Cache-Control headers
+- **Cache invalidation**: Automatic invalidation on profile updates, likes, favorites, follows
+
+**Cache TTLs:**
+- User profile: 5 minutes
+- User stats: 5 minutes
+
+---
+
+## Authentication
+
+Most endpoints require authentication via NextAuth JWT cookies. The middleware automatically verifies the JWT and extracts user information.
+
+**Middleware Types:**
+- `requireAuth`: Requires valid authentication (returns 401 if not authenticated)
+- No middleware: Public access (for user profile viewing)
+
+---
+
+## Database Schema
+
+### Users Table
+```sql
+CREATE TABLE "users" (
+  "user_id" uuid PRIMARY KEY,
+  "name" text,
+  "username" text UNIQUE,
+  "email" text UNIQUE,
+  "password_hash" text,
+  "pen_name" text,
+  "bio" text,
+  "gender" text,
+  "image" text,
+  "image_id" text,
+  "last_active" timestamp with time zone DEFAULT now() NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+### User Likes Table
+```sql
+CREATE TABLE "user_likes" (
+  "user_id" uuid NOT NULL,
+  "target_type" text NOT NULL, -- "book" | "comment" | "user"
+  "target_id" uuid NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  PRIMARY KEY ("user_id", "target_type", "target_id")
+);
+```
+
+### User Favorites Table
+```sql
+CREATE TABLE "user_favorites" (
+  "user_id" uuid NOT NULL,
+  "book_id" uuid REFERENCES books(id) ON DELETE cascade NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  PRIMARY KEY ("user_id", "book_id")
+);
+```
+
+### User Comments Table
+```sql
+CREATE TABLE "user_comments" (
+  "id" uuid PRIMARY KEY,
+  "user_id" uuid NOT NULL,
+  "book_id" uuid REFERENCES books(id) ON DELETE cascade NOT NULL,
+  "parent_comment_id" uuid,
+  "content" text NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+### User Follows Table
+```sql
+CREATE TABLE "user_follows" (
+  "follower_id" uuid NOT NULL,
+  "following_id" uuid NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  PRIMARY KEY ("follower_id", "following_id")
+);
+```
+
+---
+
+## Testing
+
+### Example cURL Commands
+
+**Get user profile:**
+```bash
+curl https://api.twistloom.com/user \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Get user by identifier:**
+```bash
+curl https://api.twistloom.com/users/john-doe
+```
+
+**Like a book:**
+```bash
+curl -X POST https://api.twistloom.com/user/likes \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{
+    "targetType": "book",
+    "targetId": "book456"
+  }'
+```
+
+**Add to favorites:**
+```bash
+curl -X POST https://api.twistloom.com/user/favorites \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{
+    "bookId": "book456"
+  }'
+```
+
+**Follow a user:**
+```bash
+curl -X POST https://api.twistloom.com/users/user456/follow \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Get user's followers:**
+```bash
+curl https://api.twistloom.com/users/user456/followers?limit=10
+```
+
+**Get authenticated user's following:**
+```bash
+curl https://api.twistloom.com/user/following?limit=10 \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+---
+
+## Changelog
+
+### v1.0.0 (2023-01-01)
+- Initial user API implementation
+- User profile CRUD operations
+- Likes, favorites, comments management
+- Follow/unfollow functionality
+
+### v1.1.0 (2023-04-23)
+- Added GET /users/:id/followers endpoint
+- Added GET /users/:id/following endpoint
+- Added GET /user/followers endpoint
+- Added GET /user/following endpoint
+- Enhanced documentation with comprehensive API reference

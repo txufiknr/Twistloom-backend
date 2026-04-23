@@ -191,6 +191,51 @@ export const users = pgTable(
 );
 
 /**
+ * Create user auth table
+ * @summary Stores authentication-related data separate from user profile
+ * Separation of concerns for security, maintainability, and GDPR compliance
+ * 
+ * @example
+ * {
+ *   "user_id": "user123",
+ *   "failed_login_attempts": 0,
+ *   "lock_until": null,
+ *   "password_reset_token": null,
+ *   "password_reset_expires": null,
+ *   "email_verified": "2023-01-01T00:00:00.000Z",
+ *   "email_verification_token": null,
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userAuth = pgTable(
+  "user_auth",
+  {
+    userId: userId().primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+    // Account lockout fields
+    failedLoginAttempts: integer("failed_login_attempts").default(0),
+    lockUntil: timestamp("lock_until", { withTimezone: true }),
+    // Password reset fields
+    passwordResetToken: text("password_reset_token").unique("user_auth_password_reset_token_unique"),
+    passwordResetExpires: timestamp("password_reset_expires", { withTimezone: true }),
+    // Email verification fields
+    emailVerified: timestamp("email_verified", { withTimezone: true }),
+    emailVerificationToken: text("email_verification_token").unique("user_auth_email_verification_token_unique"),
+    emailVerificationExpires: timestamp("email_verification_expires", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for account lockout queries
+    index("user_auth_lock_until_idx").on(t.lockUntil).where(sql`${t.lockUntil} IS NOT NULL`),
+    // Index for password reset queries (excludes expired tokens)
+    index("user_auth_password_reset_token_idx").on(t.passwordResetToken).where(sql`${t.passwordResetToken} IS NOT NULL AND ${t.passwordResetExpires} > NOW()`),
+    // Index for email verification queries (excludes expired tokens)
+    index("user_auth_email_verification_token_idx").on(t.emailVerificationToken).where(sql`${t.emailVerificationToken} IS NOT NULL AND ${t.emailVerificationExpires} > NOW()`),
+  ]
+);
+
+/**
  * Create books table
  * @summary Store book metadata and main character information
  * @example

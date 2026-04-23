@@ -40,7 +40,8 @@ import { users, userDevices, userSessions, userLikes, userFavorites, userComment
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
+import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
@@ -644,7 +645,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
       imageQueuedForDeletion: !!userToDelete.imageId,
     });
 
-    // Invalidate user profile cache
+    // Invalidate user profile cache (Redis)
     await invalidateUserProfileCache(userId);
 
   } catch (error) {
@@ -1599,6 +1600,386 @@ router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Respon
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to unfollow user", error);
+  }
+});
+
+/**
+ * GET /users/:id/followers
+ * 
+ * Get all followers of a specific user.
+ * 
+ * @route GET /users/:id/followers
+ * @description Get user's followers
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @param {string} id - ID of the user
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Followers response
+ * @returns {Array} followers - Array of follower user profiles
+ * @returns {Object} pagination - Pagination metadata
+ * 
+ * @example
+ * // Request
+ * GET /users/user456/followers?limit=10
+ * 
+ * // Response
+ * {
+ *   "followers": [
+ *     {
+ *       "userId": "user123",
+ *       "name": "John Doe",
+ *       "username": "john-doe",
+ *       "image": "https://example.com/avatar.jpg",
+ *       "followedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 10,
+ *     "total": 100,
+ *     "totalPages": 10
+ *   }
+ * }
+ */
+router.get("/users/:id/followers", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { limit = "50", offset = "0" } = req.query;
+
+    // Ensure id is a string
+    const idStr = Array.isArray(id) ? id[0] : id;
+
+    // Check if user exists
+    const targetUser = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(eq(users.userId, idStr))
+      .limit(1);
+
+    if (targetUser.length === 0) {
+      return handleNotFoundError(res, "User not found");
+    }
+
+    // Get total count using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .where(eq(userFollows.followingId, idStr));
+    const totalCount = countResult[0].count;
+
+    // Get followers with user info
+    const limitNum = parseInt(limit as string);
+    const offsetNum = parseInt(offset as string);
+    const page = Math.floor(offsetNum / limitNum) + 1;
+
+    const followers = await dbRead
+      .select({
+        userId: users.userId,
+        name: users.name,
+        username: users.username,
+        image: users.image,
+        followedAt: userFollows.createdAt
+      })
+      .from(userFollows)
+      .leftJoin(users, eq(userFollows.followerId, users.userId))
+      .where(eq(userFollows.followingId, idStr))
+      .orderBy(desc(userFollows.createdAt))
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    const pagination = calculatePaginationMeta(page, limitNum, totalCount);
+
+    res.json({
+      followers,
+      pagination
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve followers", error);
+  }
+});
+
+/**
+ * GET /users/:id/following
+ * 
+ * Get all users that a specific user is following.
+ * 
+ * @route GET /users/:id/following
+ * @description Get who the user is following
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @param {string} id - ID of the user
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Following response
+ * @returns {Array} following - Array of user profiles being followed
+ * @returns {Object} pagination - Pagination metadata
+ * 
+ * @example
+ * // Request
+ * GET /users/user456/following?limit=10
+ * 
+ * // Response
+ * {
+ *   "following": [
+ *     {
+ *       "userId": "user789",
+ *       "name": "Jane Smith",
+ *       "username": "jane-smith",
+ *       "image": "https://example.com/avatar2.jpg",
+ *       "followedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 10,
+ *     "total": 50,
+ *     "totalPages": 5
+ *   }
+ * }
+ */
+router.get("/users/:id/following", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { limit = "50", offset = "0" } = req.query;
+
+    // Ensure id is a string
+    const idStr = Array.isArray(id) ? id[0] : id;
+
+    // Check if user exists
+    const targetUser = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(eq(users.userId, idStr))
+      .limit(1);
+
+    if (targetUser.length === 0) {
+      return handleNotFoundError(res, "User not found");
+    }
+
+    // Get total count using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .where(eq(userFollows.followerId, idStr));
+    const totalCount = countResult[0].count;
+
+    // Get following with user info
+    const limitNum = parseInt(limit as string);
+    const offsetNum = parseInt(offset as string);
+    const page = Math.floor(offsetNum / limitNum) + 1;
+
+    const following = await dbRead
+      .select({
+        userId: users.userId,
+        name: users.name,
+        username: users.username,
+        image: users.image,
+        followedAt: userFollows.createdAt
+      })
+      .from(userFollows)
+      .leftJoin(users, eq(userFollows.followingId, users.userId))
+      .where(eq(userFollows.followerId, idStr))
+      .orderBy(desc(userFollows.createdAt))
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    const pagination = calculatePaginationMeta(page, limitNum, totalCount);
+
+    res.json({
+      following,
+      pagination
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve following", error);
+  }
+});
+
+/**
+ * GET /user/followers
+ * 
+ * Get all followers of the authenticated user.
+ * 
+ * @route GET /user/followers
+ * @description Get authenticated user's followers
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Followers response
+ * @returns {Array} followers - Array of follower user profiles
+ * @returns {Object} pagination - Pagination metadata
+ * 
+ * @example
+ * // Request
+ * GET /user/followers?limit=10
+ * 
+ * // Response
+ * {
+ *   "followers": [
+ *     {
+ *       "userId": "user123",
+ *       "name": "John Doe",
+ *       "username": "john-doe",
+ *       "image": "https://example.com/avatar.jpg",
+ *       "followedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 10,
+ *     "total": 100,
+ *     "totalPages": 10
+ *   }
+ * }
+ */
+router.get("/followers", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { limit = "50", offset = "0" } = req.query;
+
+    // Get total count using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .where(eq(userFollows.followingId, userId));
+    const totalCount = countResult[0].count;
+
+    // Get followers with user info
+    const limitNum = parseInt(limit as string);
+    const offsetNum = parseInt(offset as string);
+    const page = Math.floor(offsetNum / limitNum) + 1;
+
+    const followers = await dbRead
+      .select({
+        userId: users.userId,
+        name: users.name,
+        username: users.username,
+        image: users.image,
+        followedAt: userFollows.createdAt
+      })
+      .from(userFollows)
+      .leftJoin(users, eq(userFollows.followerId, users.userId))
+      .where(eq(userFollows.followingId, userId))
+      .orderBy(desc(userFollows.createdAt))
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    const pagination = calculatePaginationMeta(page, limitNum, totalCount);
+
+    res.json({
+      followers,
+      pagination
+    });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve followers", error);
+  }
+});
+
+/**
+ * GET /user/following
+ * 
+ * Get all users that the authenticated user is following.
+ * 
+ * @route GET /user/following
+ * @description Get who authenticated user is following
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Following response
+ * @returns {Array} following - Array of user profiles being followed
+ * @returns {Object} pagination - Pagination metadata
+ * 
+ * @example
+ * // Request
+ * GET /user/following?limit=10
+ * 
+ * // Response
+ * {
+ *   "following": [
+ *     {
+ *       "userId": "user789",
+ *       "name": "Jane Smith",
+ *       "username": "jane-smith",
+ *       "image": "https://example.com/avatar2.jpg",
+ *       "followedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 10,
+ *     "total": 50,
+ *     "totalPages": 5
+ *   }
+ * }
+ */
+router.get("/following", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { limit = "50", offset = "0" } = req.query;
+
+    // Get total count using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .where(eq(userFollows.followerId, userId));
+    const totalCount = countResult[0].count;
+
+    // Get following with user info
+    const limitNum = parseInt(limit as string);
+    const offsetNum = parseInt(offset as string);
+    const page = Math.floor(offsetNum / limitNum) + 1;
+
+    const following = await dbRead
+      .select({
+        userId: users.userId,
+        name: users.name,
+        username: users.username,
+        image: users.image,
+        followedAt: userFollows.createdAt
+      })
+      .from(userFollows)
+      .leftJoin(users, eq(userFollows.followingId, users.userId))
+      .where(eq(userFollows.followerId, userId))
+      .orderBy(desc(userFollows.createdAt))
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    const pagination = calculatePaginationMeta(page, limitNum, totalCount);
+
+    res.json({
+      following,
+      pagination
+    });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve following", error);
   }
 });
 

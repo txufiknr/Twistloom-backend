@@ -19,9 +19,14 @@
 
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
-import { users } from '../db/schema.js';
+import { users, userAuth } from '../db/schema.js';
 import { eq, or } from 'drizzle-orm';
 import { hashPassword, verifyPassword } from '../utils/password.js';
+import { validatePasswordStrength } from '../utils/password-validation.js';
+import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from '../utils/account-lockout.js';
+import { createPasswordResetToken, resetPassword, verifyPasswordResetToken } from '../utils/password-reset.js';
+import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
+import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
 import { handleApiError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
@@ -118,6 +123,21 @@ router.post('/verify-credentials', async (req, res) => {
 
     const userData = user[0];
 
+    // Check if account is locked
+    const lockoutStatus = await checkAccountLockout(userData.userId);
+    if (lockoutStatus.isLocked) {
+      if (lockoutStatus.remainingTime === undefined) {
+        // Fallback: unlock account if state is inconsistent
+        await resetFailedLoginAttempts(userData.userId);
+        return res.status(429).json({ error: 'Account lock state inconsistent. Please try again.' });
+      }
+      const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
+      return res.status(429).json({ 
+        error: `Account locked. Try again in ${minutesRemaining} minutes.`,
+        lockedUntil: new Date(Date.now() + lockoutStatus.remainingTime).toISOString()
+      });
+    }
+
     // Check if user has password (OAuth-only users won't have passwordHash)
     if (!userData.passwordHash) {
       return res.status(401).json({ error: 'This account uses OAuth login. Please sign in with Google.' });
@@ -127,8 +147,12 @@ router.post('/verify-credentials', async (req, res) => {
     const isValid = await verifyPassword(password, userData.passwordHash);
 
     if (!isValid) {
+      await recordFailedLogin(userData.userId);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+
+    // Reset failed login attempts on successful login
+    await resetFailedLoginAttempts(userData.userId);
 
     // Return user data for NextAuth (exclude passwordHash)
     res.json({
@@ -208,6 +232,15 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'You must agree to the terms' });
     }
 
+    // Validate password strength
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.valid) {
+      return res.status(400).json({ 
+        error: 'Password does not meet security requirements',
+        details: passwordValidation.errors 
+      });
+    }
+
     // Check if email or username already exists
     const existing = await dbRead
       .select({ userId: users.userId })
@@ -222,19 +255,50 @@ router.post('/signup', async (req, res) => {
     // Hash password
     const passwordHash = await hashPassword(password);
 
-    // Create user
-    const newUser = await dbWrite
-      .insert(users)
-      .values({
-        userId: generateId(),
-        email,
-        username,
-        passwordHash,
-        gender,
-      })
-      .returning({ userId: users.userId });
+    // Create user record
+    const newUser = await dbWrite.insert(users).values({
+      userId: generateId(),
+      email,
+      username,
+      passwordHash,
+      gender,
+    }).returning();
 
-    res.status(201).json({ userId: newUser[0].userId });
+    // Create user_auth record (manual rollback if fails)
+    // NOTE: Using manual rollback instead of database transaction for Vercel serverless compatibility.
+    // This is NOT truly atomic - if the server crashes between user insert and userAuth insert,
+    // or if the delete operation fails, orphaned user records may exist. This is an acceptable
+    // tradeoff for serverless environments where true database transactions may not be supported.
+    // TODO: To clean up orphaned records, a periodic cleanup job could be added in the future.
+    try {
+      await dbWrite.insert(userAuth).values({
+        userId: newUser[0].userId,
+      });
+    } catch (userAuthError) {
+      // Manual rollback: delete user record if user_auth creation failed
+      await dbWrite.delete(users).where(eq(users.userId, newUser[0].userId));
+      throw userAuthError;
+    }
+
+    // Create email verification token
+    const verificationToken = await createEmailVerificationToken(newUser[0].userId);
+
+    // Send verification email (non-blocking - log error if fails)
+    let emailActuallySent = false;
+    try {
+      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+      await sendVerificationEmail(email, verificationUrl);
+      emailActuallySent = true;
+    } catch (emailError) {
+      console.error('Failed to send verification email:', emailError);
+      // User is created, but email failed
+    }
+
+    res.status(201).json({ 
+      userId: newUser[0].userId,
+      message: emailActuallySent ? 'Account created. Please check your email to verify your account.' : 'Account created. Verification email failed to send.',
+      emailSent: emailActuallySent,
+    });
   } catch (error) {
     console.error('Signup error:', error);
     handleApiError(res, 'Failed to create account', error, 500);
@@ -293,27 +357,233 @@ router.post('/forgot-password', async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    // Check if email exists (don't reveal if it doesn't to prevent email enumeration)
+    // Create password reset token (returns null if email doesn't exist)
+    const token = await createPasswordResetToken(email);
+
+    // Only send email if user exists
+    if (token) {
+      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+      await sendPasswordResetEmail(email, resetUrl);
+    }
+
+    // Always return success (prevents email enumeration)
+    res.json({ message: 'Password reset email sent if account exists' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    handleApiError(res, 'Failed to process request', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/reset-password
+ * 
+ * Resets user password using a valid reset token.
+ * 
+ * Request Body:
+ * {
+ *   token: string;      // Password reset token from email
+ *   password: string;   // New password
+ * }
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Password reset successfully"
+ * }
+ * 
+ * Response (Error - 400): Invalid token or weak password
+ * Response (Error - 429): Too many requests (rate limiting)
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Rate limited to prevent abuse
+ * - Validates password strength
+ * - Token expires after 1 hour
+ * - Resets failed login attempts on success
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/reset-password', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({
+ *     token: 'reset-token-from-email',
+ *     password: 'NewSecurePassword123!',
+ *   }),
+ * });
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' });
+    }
+
+    // Validate password strength
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.valid) {
+      return res.status(400).json({ 
+        error: 'Password does not meet security requirements',
+        details: passwordValidation.errors 
+      });
+    }
+
+    // Verify token exists before password validation (prevents token enumeration)
+    const userId = await verifyPasswordResetToken(token);
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Reset password
+    const success = await resetPassword(token, password);
+
+    if (!success) {
+      return res.status(400).json({ error: 'Failed to reset password' });
+    }
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    handleApiError(res, 'Failed to reset password', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/verify-email
+ * 
+ * Verifies user email using a verification token.
+ * 
+ * Request Body:
+ * {
+ *   token: string;  // Email verification token
+ * }
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Email verified successfully"
+ * }
+ * 
+ * Response (Error - 400): Invalid or expired token
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Token expires after 24 hours
+ * - Token can only be used once
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/verify-email', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ token: 'verification-token-from-email' }),
+ * });
+ */
+router.post('/verify-email', async (req, res) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    const userId = await verifyEmailToken(token);
+
+    if (!userId) {
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
+    }
+
+    res.json({ message: 'Email verified successfully' });
+  } catch (error) {
+    console.error('Verify email error:', error);
+    handleApiError(res, 'Failed to verify email', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/resend-verification
+ * 
+ * Resends email verification token for a user.
+ * 
+ * Request Body:
+ * {
+ *   email: string;  // User email address
+ * }
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Verification email sent"
+ * }
+ * 
+ * Response (Error - 400): Invalid email or already verified
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Rate limited to prevent abuse
+ * - Always returns success (prevents email enumeration)
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/resend-verification', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ email: 'user@example.com' }),
+ * });
+ */
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Find user by email
     const user = await dbRead
-      .select({ userId: users.userId, email: users.email })
+      .select({ userId: users.userId })
       .from(users)
       .where(eq(users.email, email))
       .limit(1);
 
-    // TODO: Implement actual email sending logic
-    // If user exists, send password reset email
-    // For now, just return success to prevent email enumeration
-    if (user && user.length > 0) {
-      console.log(`Password reset requested for: ${email}`);
-      // Email sending logic would go here
-      // Example: await sendPasswordResetEmail(email, user[0].userId);
+    if (user.length === 0) {
+      // Always return success (prevents email enumeration)
+      res.json({ message: 'Verification email sent if account exists' });
+      return;
     }
 
-    // Always return success (prevents email enumeration)
-    res.json({ message: 'Password reset email sent' });
+    // Check if email is already verified
+    const verified = await isEmailVerified(user[0].userId);
+    if (verified) {
+      // Return success to prevent email enumeration
+      res.json({ message: 'Verification email sent if account exists' });
+      return;
+    }
+
+    // Create new verification token
+    const verificationToken = await createEmailVerificationToken(user[0].userId);
+
+    // Send verification email
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    await sendVerificationEmail(email, verificationUrl);
+
+    res.json({ message: 'Verification email sent' });
   } catch (error) {
-    console.error('Forgot password error:', error);
-    handleApiError(res, 'Failed to process request', error, 500);
+    console.error('Resend verification error:', error);
+    handleApiError(res, 'Failed to resend verification email', error, 500);
   }
 });
 

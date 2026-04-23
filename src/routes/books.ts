@@ -27,9 +27,9 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, pages, userSessions, deletedImages, users } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
@@ -1114,6 +1114,610 @@ router.get("/stats", optionalAuth, async (req: Request, res: Response) => {
     res.json(stats);
   } catch (error) {
     handleApiError(res, "Failed to retrieve book stats", error);
+  }
+});
+
+/**
+ * POST /api/books/:id/like
+ * 
+ * Likes a book for the authenticated user.
+ * Increments the book's likes count and records the like in user_likes table.
+ * 
+ * @param id - Book ID to like
+ * @returns Success message with updated like status
+ * 
+ * @example
+ * POST /api/books/book123/like
+ * 
+ * Response (200):
+ * {
+ *   "message": "Book liked successfully",
+ *   "liked": true,
+ *   "likesCount": 42
+ * }
+ * 
+ * Response (409 - already liked):
+ * {
+ *   "message": "Book already liked",
+ *   "liked": true,
+ *   "likesCount": 42
+ * }
+ */
+router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+
+    // Check if book exists
+    const book = await dbRead
+      .select({ id: books.id, likesCount: books.likesCount })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Check if already liked
+    const existingLike = await dbRead
+      .select()
+      .from(userLikes)
+      .where(and(
+        eq(userLikes.userId, userId),
+        eq(userLikes.targetType, 'book'),
+        eq(userLikes.targetId, id as string)
+      ))
+      .limit(1);
+
+    if (existingLike.length > 0) {
+      return res.status(409).json({
+        message: "Book already liked",
+        liked: true,
+        likesCount: book[0].likesCount
+      });
+    }
+
+    // Add like
+    await dbWrite
+      .insert(userLikes)
+      .values({
+        userId,
+        targetType: 'book',
+        targetId: id as string,
+        createdAt: new Date(),
+      });
+
+    // Increment book likes count (atomic operation)
+    await dbWrite
+      .update(books)
+      .set({ 
+        likesCount: sql`${books.likesCount} + 1`,
+        updatedAt: new Date()
+      })
+      .where(eq(books.id, id as string));
+
+    // Invalidate explore cache (likes changed)
+    await invalidateExploreCache();
+
+    res.json({
+      message: "Book liked successfully",
+      liked: true,
+      likesCount: book[0].likesCount + 1
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to like book", error);
+  }
+});
+
+/**
+ * DELETE /api/books/:id/like
+ * 
+ * Unlikes a book for the authenticated user.
+ * Decrements the book's likes count and removes the like from user_likes table.
+ * 
+ * @param id - Book ID to unlike
+ * @returns Success message with updated like status
+ * 
+ * @example
+ * DELETE /api/books/book123/like
+ * 
+ * Response (200):
+ * {
+ *   "message": "Book unliked successfully",
+ *   "liked": false,
+ *   "likesCount": 41
+ * }
+ * 
+ * Response (404 - not liked):
+ * {
+ *   "message": "Book not liked",
+ *   "liked": false,
+ *   "likesCount": 42
+ * }
+ */
+router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+
+    // Check if book exists
+    const book = await dbRead
+      .select({ id: books.id, likesCount: books.likesCount })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Check if liked
+    const existingLike = await dbRead
+      .select()
+      .from(userLikes)
+      .where(and(
+        eq(userLikes.userId, userId),
+        eq(userLikes.targetType, 'book'),
+        eq(userLikes.targetId, id as string)
+      ))
+      .limit(1);
+
+    if (existingLike.length === 0) {
+      return res.status(404).json({
+        message: "Book not liked",
+        liked: false,
+        likesCount: book[0].likesCount
+      });
+    }
+
+    // Remove like
+    await dbWrite
+      .delete(userLikes)
+      .where(and(
+        eq(userLikes.userId, userId),
+        eq(userLikes.targetType, 'book'),
+        eq(userLikes.targetId, id as string)
+      ));
+
+    // Decrement book likes count (atomic operation)
+    await dbWrite
+      .update(books)
+      .set({ 
+        likesCount: sql`GREATEST(${books.likesCount} - 1, 0)`,
+        updatedAt: new Date()
+      })
+      .where(eq(books.id, id as string));
+
+    // Invalidate explore cache (likes changed)
+    await invalidateExploreCache();
+
+    res.json({
+      message: "Book unliked successfully",
+      liked: false,
+      likesCount: Math.max(0, book[0].likesCount - 1)
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to unlike book", error);
+  }
+});
+
+/**
+ * POST /api/books/:id/favorite
+ * 
+ * Adds a book to the authenticated user's favorites.
+ * Records the favorite in user_favorites table.
+ * 
+ * @param id - Book ID to favorite
+ * @returns Success message with favorite status
+ * 
+ * @example
+ * POST /api/books/book123/favorite
+ * 
+ * Response (201):
+ * {
+ *   "message": "Book added to favorites",
+ *   "favorited": true
+ * }
+ * 
+ * Response (409 - already favorited):
+ * {
+ *   "message": "Book already in favorites",
+ *   "favorited": true
+ * }
+ */
+router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+
+    // Check if book exists
+    const book = await dbRead
+      .select({ id: books.id })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Check if already favorited
+    const existingFavorite = await dbRead
+      .select()
+      .from(userFavorites)
+      .where(and(
+        eq(userFavorites.userId, userId),
+        eq(userFavorites.bookId, id as string)
+      ))
+      .limit(1);
+
+    if (existingFavorite.length > 0) {
+      return res.status(409).json({
+        message: "Book already in favorites",
+        favorited: true
+      });
+    }
+
+    // Add favorite
+    await dbWrite
+      .insert(userFavorites)
+      .values({
+        userId,
+        bookId: id as string,
+        createdAt: new Date(),
+      });
+
+    // Invalidate user's book cache
+    await invalidateUserBooksCache(userId);
+
+    res.status(201).json({
+      message: "Book added to favorites",
+      favorited: true
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to favorite book", error);
+  }
+});
+
+/**
+ * DELETE /api/books/:id/favorite
+ * 
+ * Removes a book from the authenticated user's favorites.
+ * Removes the favorite from user_favorites table.
+ * 
+ * @param id - Book ID to unfavorite
+ * @returns Success message with favorite status
+ * 
+ * @example
+ * DELETE /api/books/book123/favorite
+ * 
+ * Response (200):
+ * {
+ *   "message": "Book removed from favorites",
+ *   "favorited": false
+ * }
+ * 
+ * Response (404 - not favorited):
+ * {
+ *   "message": "Book not in favorites",
+ *   "favorited": false
+ * }
+ */
+router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+
+    // Check if book exists
+    const book = await dbRead
+      .select({ id: books.id })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Check if favorited
+    const existingFavorite = await dbRead
+      .select()
+      .from(userFavorites)
+      .where(and(
+        eq(userFavorites.userId, userId),
+        eq(userFavorites.bookId, id as string)
+      ))
+      .limit(1);
+
+    if (existingFavorite.length === 0) {
+      return res.status(404).json({
+        message: "Book not in favorites",
+        favorited: false
+      });
+    }
+
+    // Remove favorite
+    await dbWrite
+      .delete(userFavorites)
+      .where(and(
+        eq(userFavorites.userId, userId),
+        eq(userFavorites.bookId, id as string)
+      ));
+
+    // Invalidate user's book cache
+    await invalidateUserBooksCache(userId);
+
+    res.json({
+      message: "Book removed from favorites",
+      favorited: false
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to unfavorite book", error);
+  }
+});
+
+/**
+ * GET /api/books/:id/comments
+ * 
+ * Retrieves all comments for a specific book.
+ * Supports pagination for large comment threads.
+ * 
+ * @param id - Book ID
+ * @query page - Page number for pagination (default: 1)
+ * @query limit - Number of comments per page (default: 20)
+ * @returns Paginated list of comments with user info
+ * 
+ * @example
+ * GET /api/books/book123/comments?page=1&limit=20
+ * 
+ * Response (200):
+ * {
+ *   "comments": [
+ *     {
+ *       "id": "comment123",
+ *       "userId": "user456",
+ *       "userName": "John Doe",
+ *       "userImage": "https://example.com/avatar.jpg",
+ *       "bookId": "book123",
+ *       "parentCommentId": null,
+ *       "content": "This story is amazing!",
+ *       "createdAt": "2023-01-01T00:00:00.000Z",
+ *       "updatedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 20,
+ *     "total": 42,
+ *     "totalPages": 3
+ *   }
+ * }
+ */
+router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
+
+    // Check if book exists
+    const book = await dbRead
+      .select({ id: books.id })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Get total count using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userComments)
+      .where(eq(userComments.bookId, id as string));
+    const totalCount = countResult[0].count;
+
+    // Get comments with user info
+    const offset = (page - 1) * limit;
+    const comments = await dbRead
+      .select({
+        id: userComments.id,
+        userId: userComments.userId,
+        userName: users.name,
+        userImage: users.image,
+        bookId: userComments.bookId,
+        parentCommentId: userComments.parentCommentId,
+        content: userComments.content,
+        createdAt: userComments.createdAt,
+        updatedAt: userComments.updatedAt
+      })
+      .from(userComments)
+      .leftJoin(users, eq(userComments.userId, users.userId))
+      .where(eq(userComments.bookId, id as string))
+      .orderBy(desc(userComments.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    const pagination = calculatePaginationMeta(page, limit, totalCount);
+
+    res.json({
+      comments,
+      pagination
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve comments", error);
+  }
+});
+
+/**
+ * POST /api/books/:id/comments
+ * 
+ * Creates a new comment on a book.
+ * Supports threaded comments via parentCommentId.
+ * 
+ * @param id - Book ID
+ * @param content - Comment content (required, max 5000 chars)
+ * @param parentCommentId - Parent comment ID for replies (optional)
+ * @returns Created comment with user info
+ * 
+ * @example
+ * POST /api/books/book123/comments
+ * Body: {
+ *   "content": "This story is amazing!",
+ *   "parentCommentId": "comment789" // optional, for replies
+ * }
+ * 
+ * Response (201):
+ * {
+ *   "id": "comment123",
+ *   "userId": "user456",
+ *   "userName": "John Doe",
+ *   "userImage": "https://example.com/avatar.jpg",
+ *   "bookId": "book123",
+ *   "parentCommentId": null,
+ *   "content": "This story is amazing!",
+ *   "createdAt": "2023-01-01T00:00:00.000Z",
+ *   "updatedAt": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+router.post("/:id/comments", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { content, parentCommentId } = req.body;
+    const userId = req.userId!;
+
+    if (!content || typeof content !== 'string' || content.trim().length === 0) {
+      return res.status(400).json({
+        error: "Content is required and must be a non-empty string"
+      });
+    }
+
+    if (content.length > 5000) {
+      return res.status(400).json({
+        error: "Content exceeds maximum length of 5000 characters"
+      });
+    }
+
+    // Check if book exists
+    const book = await dbRead
+      .select({ id: books.id })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Validate parentCommentId if provided
+    if (parentCommentId) {
+      const parentComment = await dbRead
+        .select({ id: userComments.id, bookId: userComments.bookId })
+        .from(userComments)
+        .where(eq(userComments.id, parentCommentId))
+        .limit(1);
+
+      if (!parentComment.length) {
+        return res.status(400).json({
+          error: "Parent comment not found"
+        });
+      }
+
+      if (parentComment[0].bookId !== id) {
+        return res.status(400).json({
+          error: "Parent comment does not belong to this book"
+        });
+      }
+    }
+
+    // Create comment
+    const newComment = await dbWrite
+      .insert(userComments)
+      .values({
+        userId,
+        bookId: id as string,
+        parentCommentId: parentCommentId || null,
+        content: content.trim(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    // Get user info for response
+    const commentWithUser = await dbRead
+      .select({
+        id: userComments.id,
+        userId: userComments.userId,
+        userName: users.name,
+        userImage: users.image,
+        bookId: userComments.bookId,
+        parentCommentId: userComments.parentCommentId,
+        content: userComments.content,
+        createdAt: userComments.createdAt,
+        updatedAt: userComments.updatedAt
+      })
+      .from(userComments)
+      .leftJoin(users, eq(userComments.userId, users.userId))
+      .where(eq(userComments.id, newComment[0].id))
+      .limit(1);
+
+    res.status(201).json(commentWithUser[0]);
+  } catch (error) {
+    handleApiError(res, "Failed to create comment", error);
+  }
+});
+
+/**
+ * DELETE /api/comments/:id
+ * 
+ * Deletes a comment.
+ * Only the comment author can delete their own comments.
+ * 
+ * @param id - Comment ID to delete
+ * @returns Success message
+ * 
+ * @example
+ * DELETE /api/comments/comment123
+ * 
+ * Response (200):
+ * {
+ *   "message": "Comment deleted successfully"
+ * }
+ */
+router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.userId!;
+
+    // Check if comment exists and user owns it
+    const comment = await dbRead
+      .select({ id: userComments.id, userId: userComments.userId })
+      .from(userComments)
+      .where(eq(userComments.id, id as string))
+      .limit(1);
+
+    if (!comment.length) {
+      return handleNotFoundError(res, "Comment not found");
+    }
+
+    if (comment[0].userId !== userId) {
+      return res.status(403).json({
+        error: "Forbidden: You can only delete your own comments"
+      });
+    }
+
+    // Delete comment
+    await dbWrite
+      .delete(userComments)
+      .where(eq(userComments.id, id as string));
+
+    res.json({
+      message: "Comment deleted successfully"
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to delete comment", error);
   }
 });
 

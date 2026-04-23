@@ -751,27 +751,29 @@ export async function getPublicBookStats(): Promise<{
   pagesCrafted: number;
 }> {
   try {
-    // Get total number of books (stories created)
+    // Get total number of books (stories created) using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
     const booksCount = await dbRead
-      .select({ count: books.id })
+      .select({ count: sql<number>`count(*)::int` })
       .from(books);
 
-    // Get total number of unique branches (count distinct branchId from pages)
+    // Get total number of unique branches using SQL COUNT(DISTINCT)
+    // Using SQL COUNT(DISTINCT) is more efficient than transferring all branchId values and counting unique ones in JavaScript.
     const branchesCount = await dbRead
-      .select({ branchId: pages.branchId })
+      .select({ count: sql<number>`count(DISTINCT branch_id)::int` })
       .from(pages);
 
-    const uniqueBranches = new Set(branchesCount.map(b => b.branchId).filter(Boolean));
-
-    // Get total number of pages
+    // Get total number of pages using SQL COUNT(*)
+    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
     const pagesCount = await dbRead
-      .select({ count: pages.id })
+      .select({ count: sql<number>`count(*)::int` })
       .from(pages);
 
     return {
-      storiesCreated: booksCount.length,
-      branchesExplored: uniqueBranches.size,
-      pagesCrafted: pagesCount.length,
+      storiesCreated: booksCount[0].count,
+      branchesExplored: branchesCount[0].count,
+      pagesCrafted: pagesCount[0].count,
     };
   } catch (error) {
     console.error('Failed to get public book stats:', getErrorMessage(error));
@@ -806,7 +808,7 @@ export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'):
       const branchesSubquery = dbRead
         .select({
           bookId: pages.bookId,
-          branchCount: sql<number>`COUNT(DISTINCT ${pages.branchId})`.as('branchCount'),
+          branchCount: sql<number>`COUNT(DISTINCT branch_id)`.as('branchCount'),
         })
         .from(pages)
         .groupBy(pages.bookId)
