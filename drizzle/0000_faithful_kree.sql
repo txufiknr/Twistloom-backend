@@ -15,6 +15,7 @@ CREATE TABLE "books" (
 	"mc" jsonb NOT NULL,
 	"likes_count" integer DEFAULT 0 NOT NULL,
 	"read_count" integer DEFAULT 0 NOT NULL,
+	"top_pick" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "books_slug_unique" UNIQUE("slug")
@@ -138,6 +139,13 @@ CREATE TABLE "user_favorites" (
 	CONSTRAINT "user_favorites_user_id_book_id_pk" PRIMARY KEY("user_id","book_id")
 );
 --> statement-breakpoint
+CREATE TABLE "user_follows" (
+	"follower_id" uuid NOT NULL,
+	"following_id" uuid NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "user_follows_follower_id_following_id_pk" PRIMARY KEY("follower_id","following_id")
+);
+--> statement-breakpoint
 CREATE TABLE "user_likes" (
 	"user_id" uuid NOT NULL,
 	"target_type" text NOT NULL,
@@ -175,13 +183,17 @@ CREATE TABLE "users" (
 	"name" text,
 	"username" text,
 	"email" text,
+	"password_hash" text,
 	"pen_name" text,
+	"bio" text,
 	"gender" text,
 	"image" text,
 	"image_id" text,
 	"last_active" timestamp with time zone DEFAULT now() NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "users_username_unique" UNIQUE("username"),
+	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
 ALTER TABLE "books" ADD CONSTRAINT "books_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -196,6 +208,8 @@ ALTER TABLE "story_states" ADD CONSTRAINT "story_states_page_id_pages_id_fk" FOR
 ALTER TABLE "story_states" ADD CONSTRAINT "story_states_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_comments" ADD CONSTRAINT "user_comments_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_favorites" ADD CONSTRAINT "user_favorites_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_follows" ADD CONSTRAINT "user_follows_follower_id_users_user_id_fk" FOREIGN KEY ("follower_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_follows" ADD CONSTRAINT "user_follows_following_id_users_user_id_fk" FOREIGN KEY ("following_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_page_progress" ADD CONSTRAINT "user_page_progress_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_page_progress" ADD CONSTRAINT "user_page_progress_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_sessions" ADD CONSTRAINT "user_sessions_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -235,6 +249,9 @@ CREATE INDEX "user_devices_first_seen_idx" ON "user_devices" USING btree ("first
 CREATE INDEX "user_favorites_user_idx" ON "user_favorites" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "user_favorites_book_idx" ON "user_favorites" USING btree ("book_id");--> statement-breakpoint
 CREATE INDEX "user_favorites_created_idx" ON "user_favorites" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "user_follows_following_idx" ON "user_follows" USING btree ("following_id");--> statement-breakpoint
+CREATE INDEX "user_follows_follower_idx" ON "user_follows" USING btree ("follower_id");--> statement-breakpoint
+CREATE INDEX "user_follows_created_idx" ON "user_follows" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "user_likes_user_idx" ON "user_likes" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "user_likes_target_idx" ON "user_likes" USING btree ("target_type","target_id");--> statement-breakpoint
 CREATE INDEX "user_likes_created_idx" ON "user_likes" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint

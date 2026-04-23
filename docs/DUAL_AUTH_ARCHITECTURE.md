@@ -694,7 +694,7 @@ done
 ### Backend
 - [x] Add passwordHash field to users schema
 - [x] Add unique constraints to email and username
-- [ ] Run database migration (`pnpm db:generate && pnpm db:migrate`)
+- [x] Run database migration (`pnpm db:generate && pnpm db:migrate`)
 - [x] Create password hashing utilities
 - [x] Create credential verification endpoint
 - [x] Add IP-based rate limiting with LRU cache

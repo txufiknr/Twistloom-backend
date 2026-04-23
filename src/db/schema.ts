@@ -588,8 +588,8 @@ export const userComments = pgTable(
 export const userFollows = pgTable(
   "user_follows",
   {
-    followerId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    followingId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    followerId: uuid("follower_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    followingId: uuid("following_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
     createdAt,
   },
   (t) => [
