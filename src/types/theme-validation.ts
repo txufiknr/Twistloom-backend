@@ -96,7 +96,7 @@ export interface ThemeValidationResult {
 
 /**
  * Theme validation error response
- * 
+ *
  * Error response format matching frontend specification.
  * Used when theme validation fails to provide structured
  * error information to the client.
@@ -119,6 +119,8 @@ export interface ThemeValidationError {
       detectedPatterns: string[];
       /** AI-generated explanation of the violation */
       aiExplanation?: string;
+      /** AI confidence score (0.0 to 1.0) */
+      aiConfidence?: number;
       /** Suggestion for how to fix the issue */
       suggestion?: string;
     };

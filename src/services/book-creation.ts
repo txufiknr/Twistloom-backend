@@ -15,6 +15,7 @@ import { handleThemeValidationError } from './book-controller.js';
 import type { Response } from 'express';
 import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache } from './cache.js';
 import { enrichActions } from './book.js';
+import { getErrorMessage } from '../utils/error.js';
 
 /**
  * Book creation parameters
@@ -135,7 +136,7 @@ export async function createBookCore(
 
     return enrichedResult;
   } catch (error) {
-    await onProgress?.({ type: 'error', error: error instanceof Error ? error.message : String(error) });
+    await onProgress?.({ type: 'error', error: getErrorMessage(error) });
     throw error;
   }
 }

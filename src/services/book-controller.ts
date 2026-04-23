@@ -160,12 +160,14 @@ export function handleThemeValidationError(
   }
 
   // Extract information from AI result (overrides heuristic if available)
+  let aiConfidence: number | undefined;
   if (validationResult.aiResult) {
     category = validationResult.aiResult.category as ThemeValidationCategory;
     aiExplanation = validationResult.aiResult.detectedItems
       .map(item => item.reason)
       .join('; ');
     suggestion = validationResult.aiResult.suggestion || undefined;
+    aiConfidence = validationResult.aiResult.confidence;
     message = validationResult.aiResult.category === 'INAPPROPRIATE_CONTENT'
       ? 'Your story theme contains inappropriate content.'
       : validationResult.aiResult.category === 'INVALID_THEME'
@@ -184,6 +186,7 @@ export function handleThemeValidationError(
         detectedWords,
         detectedPatterns,
         aiExplanation,
+        aiConfidence,
         suggestion,
       },
     },

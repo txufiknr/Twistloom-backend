@@ -668,53 +668,72 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 
 /**
  * Performs complete theme validation (heuristic + AI)
- * 
+ *
  * Orchestrates the two-layer validation approach:
  * 1. Fast heuristic validation (blacklist + patterns)
  * 2. Smart AI validation (contextual analysis)
- * 
+ *
  * If heuristic validation fails, returns immediately without AI validation.
  * If heuristic validation passes, proceeds to AI validation.
- * 
+ *
+ * Emits SSE progress events when onProgress callback is provided:
+ * - theme_validation_start: Before validation begins
+ * - theme_validation_complete: After validation completes (with result)
+ *
  * @param theme - Theme string to validate
+ * @param onProgress - Optional callback for progress events (SSE)
  * @returns Complete validation result
- * 
+ *
  * @example
  * ```typescript
+ * // Without progress callback (POST endpoint)
  * const result = await validateTheme("A magical adventure in an enchanted forest");
  * // Returns: { isValid: true, heuristicResult: {...}, aiResult: {...} }
+ *
+ * // With progress callback (SSE endpoint)
+ * const result = await validateTheme(theme, (event) => {
+ *   res.write(`data: ${JSON.stringify(event)}\n\n`);
+ * });
  * ```
  */
-export async function validateTheme(theme: string): Promise<ThemeValidationResult> {
+export async function validateTheme(
+  theme: string,
+  onProgress?: ProgressCallback
+): Promise<ThemeValidationResult> {
+  // Emit validation start event
+  await onProgress?.({ type: 'theme_validation_start' });
+
   // 1. Heuristic validation (fast)
   const heuristicResult = validateThemeHeuristic(theme);
 
   if (!heuristicResult.isValid) {
-    // Heuristic failed - return immediately
-    return {
+    // Heuristic failed - return immediately with validation complete event
+    const result: ThemeValidationResult = {
       isValid: false,
       heuristicResult,
     };
+    await onProgress?.({ type: 'theme_validation_complete', data: result });
+    return result;
   }
 
   // 2. AI validation (smart)
   const aiResult = await validateThemeWithAI(theme);
 
-  if (aiResult.isViolating) {
-    // AI validation failed
-    return {
-      isValid: false,
-      heuristicResult,
-      aiResult,
-    };
-  }
-
-  // Both validations passed
-  return {
-    isValid: true,
+  const result: ThemeValidationResult = {
+    isValid: !aiResult.isViolating,
     heuristicResult,
     aiResult,
   };
+
+  if (aiResult.isViolating) {
+    // AI validation failed
+    await onProgress?.({ type: 'theme_validation_complete', data: result });
+    return result;
+  }
+
+  // Both validations passed
+  await onProgress?.({ type: 'theme_validation_complete', data: result });
+  return result;
 }
 ```
 
@@ -997,6 +1016,308 @@ import { handleThemeValidationError } from '../services/book-controller.js';
 **Source**: Frontend configuration at `src/lib/config/form.ts`
 
 **Result**: Backend validation now has comprehensive coverage matching frontend specifications, ensuring consistent content filtering across the application.
+
+---
+
+## Frontend Error Handling
+
+### Validation Error Response Format
+
+When theme validation fails, the backend returns a structured error response:
+
+```typescript
+{
+  error: {
+    type: 'VALIDATION_ERROR',
+    code: 'THEME_INVALID',
+    message: string,
+    details: {
+      category: ThemeValidationCategory,
+      detectedWords: string[],
+      detectedPatterns: string[],
+      aiExplanation?: string,
+      aiConfidence?: number,
+      suggestion?: string
+    }
+  }
+}
+```
+
+### Error Categories
+
+- `INAPPROPRIATE_CONTENT` - Blacklisted words, religious figures, public figures
+- `SUSPICIOUS_PATTERN` - SQL injection, XSS, code execution attempts
+- `INVALID_THEME` - Gibberish, non-story content, POV instructions
+- `POLICY_VIOLATION` - Other policy violations detected by AI
+- `OTHER` - Other validation errors
+
+### Frontend Implementation (React/Next.js)
+
+**Error Response Types:**
+```typescript
+interface ValidationErrorResponse {
+  error: {
+    type: 'VALIDATION_ERROR';
+    code: 'THEME_INVALID';
+    message: string;
+    details: {
+      category: ThemeValidationCategory;
+      detectedWords: string[];
+      detectedPatterns: string[];
+      aiExplanation?: string;
+      aiConfidence?: number;
+      suggestion?: string;
+    };
+  };
+}
+
+type ThemeValidationCategory =
+  | 'INAPPROPRIATE_CONTENT'
+  | 'SUSPICIOUS_PATTERN'
+  | 'INVALID_THEME'
+  | 'POLICY_VIOLATION'
+  | 'OTHER';
+```
+
+**Error Handler Component:**
+```typescript
+import React from 'react';
+
+interface ValidationErrorDisplayProps {
+  error: ValidationErrorResponse;
+  onRetry?: () => void;
+  onEdit?: () => void;
+}
+
+export function ValidationErrorDisplay({ error, onRetry, onEdit }: ValidationErrorDisplayProps) {
+  const { message, details } = error.error;
+
+  const getCategoryIcon = (category: ThemeValidationCategory) => {
+    switch (category) {
+      case 'INAPPROPRIATE_CONTENT':
+        return '🚫';
+      case 'SUSPICIOUS_PATTERN':
+        return '⚠️';
+      case 'INVALID_THEME':
+        return '✏️';
+      case 'POLICY_VIOLATION':
+        return '📋';
+      default:
+        return '❓';
+    }
+  };
+
+  const getCategoryColor = (category: ThemeValidationCategory) => {
+    switch (category) {
+      case 'INAPPROPRIATE_CONTENT':
+        return 'text-red-600';
+      case 'SUSPICIOUS_PATTERN':
+        return 'text-orange-600';
+      case 'INVALID_THEME':
+        return 'text-yellow-600';
+      case 'POLICY_VIOLATION':
+        return 'text-purple-600';
+      default:
+        return 'text-gray-600';
+    }
+  };
+
+  return (
+    <div className="border border-red-300 bg-red-50 rounded-lg p-4">
+      <div className="flex items-start gap-3">
+        <span className="text-2xl">{getCategoryIcon(details.category)}</span>
+        <div className="flex-1">
+          <h3 className="font-semibold text-red-900">{message}</h3>
+
+          {/* Detected Words */}
+          {details.detectedWords.length > 0 && (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-red-700">Detected Words:</p>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {details.detectedWords.map((word, index) => (
+                  <span
+                    key={index}
+                    className="inline-block px-2 py-1 bg-red-200 text-red-800 rounded text-sm"
+                  >
+                    {word}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Detected Patterns */}
+          {details.detectedPatterns.length > 0 && (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-red-700">Detected Patterns:</p>
+              <ul className="list-disc list-inside mt-1 text-sm text-red-800">
+                {details.detectedPatterns.map((pattern, index) => (
+                  <li key={index}>{pattern}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* AI Explanation */}
+          {details.aiExplanation && (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-red-700">AI Explanation:</p>
+              <p className="mt-1 text-sm text-red-800">{details.aiExplanation}</p>
+            </div>
+          )}
+
+          {/* AI Confidence */}
+          {details.aiConfidence !== undefined && (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-red-700">AI Confidence:</p>
+              <p className="mt-1 text-sm text-red-800">{(details.aiConfidence * 100).toFixed(1)}%</p>
+            </div>
+          )}
+
+          {/* Suggestion */}
+          {details.suggestion && (
+            <div className="mt-3">
+              <p className="text-sm font-medium text-red-700">Suggestion:</p>
+              <p className="mt-1 text-sm text-red-800">{details.suggestion}</p>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="mt-4 flex gap-2">
+            {onEdit && (
+              <button
+                onClick={onEdit}
+                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
+              >
+                Edit Theme
+              </button>
+            )}
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 text-sm"
+              >
+                Try Again
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+```
+
+**API Call with Error Handling:**
+```typescript
+async function createBookWithValidation(theme: string, mcCandidate?: StoryMCCandidate) {
+  try {
+    const response = await fetch('/api/books', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      credentials: 'include',
+      body: JSON.stringify({ theme, mcCandidate }),
+    });
+
+    if (!response.ok) {
+      const errorData: ValidationErrorResponse = await response.json();
+
+      // Check if it's a validation error
+      if (errorData.error?.type === 'VALIDATION_ERROR') {
+        // Handle validation error
+        setValidationError(errorData);
+        return null;
+      }
+
+      // Handle other errors
+      throw new Error(errorData.error?.message || 'Failed to create book');
+    }
+
+    const result = await response.json();
+    return result;
+  } catch (error) {
+    console.error('Book creation failed:', error);
+    throw error;
+  }
+}
+```
+
+**SSE Error Handling:**
+```typescript
+function handleSSEEvent(eventType: string, data: any) {
+  switch (eventType) {
+    case 'theme_validation_complete':
+      if (!data.isValid) {
+        // Extract validation details
+        const validationError: ValidationErrorResponse = {
+          error: {
+            type: 'VALIDATION_ERROR',
+            code: 'THEME_INVALID',
+            message: getValidationMessage(data),
+            details: {
+              category: data.heuristicResult?.detectedWords.length > 0
+                ? 'INAPPROPRIATE_CONTENT'
+                : data.heuristicResult?.detectedPatterns.some(p => p.includes('POV'))
+                ? 'INVALID_THEME'
+                : 'SUSPICIOUS_PATTERN',
+              detectedWords: data.heuristicResult?.detectedWords || [],
+              detectedPatterns: data.heuristicResult?.detectedPatterns || [],
+              aiExplanation: data.aiResult?.detectedItems
+                ?.map(item => item.reason)
+                .join('; '),
+              aiConfidence: data.aiResult?.confidence,
+              suggestion: data.aiResult?.suggestion,
+            },
+          },
+        };
+        setValidationError(validationError);
+      }
+      break;
+    // ... other event handlers
+  }
+}
+
+function getValidationMessage(data: any): string {
+  if (data.heuristicResult?.detectedWords.length > 0) {
+    return 'Your story theme contains inappropriate content.';
+  }
+  if (data.heuristicResult?.detectedPatterns.some((p: string) => p.includes('POV'))) {
+    return 'Your story theme contains invalid POV instructions.';
+  }
+  if (data.heuristicResult?.detectedPatterns.length > 0) {
+    return 'Your story theme contains suspicious patterns.';
+  }
+  if (data.aiResult?.category === 'INVALID_THEME') {
+    return 'Your story theme is invalid.';
+  }
+  return 'Your story theme violates content policies.';
+}
+```
+
+**Error Logging for Monitoring:**
+```typescript
+function logValidationError(error: ValidationErrorResponse) {
+  console.error('[Theme Validation Error]', {
+    category: error.error.details.category,
+    detectedWords: error.error.details.detectedWords,
+    detectedPatterns: error.error.details.detectedPatterns,
+    aiExplanation: error.error.details.aiExplanation,
+    suggestion: error.error.details.suggestion,
+  });
+
+  // Send to monitoring service (e.g., Sentry, LogRocket)
+  if (typeof window !== 'undefined' && (window as any).Sentry) {
+    (window as any).Sentry.captureException(new Error(error.error.message), {
+      tags: {
+        validationCategory: error.error.details.category,
+      },
+      extra: error.error.details,
+    });
+  }
+}
+```
 
 ---
 
