@@ -39,7 +39,6 @@ Image prompt
 Image importance score
 
 At initialize book:
-- Generate initial 2 places & 2 characters (beside MC) (bikin const initial total) 
 - Fully connected graph (places connection, characters connection, place-character connection)
 
 
@@ -48,7 +47,6 @@ At initialize book:
 
 I'd like to see your designs proposal for:
 
-“First Page Quality Scorer” (auto-reject weak generations)
 “Action Diversity Validator”
 “Narrative Hook Detector”
 

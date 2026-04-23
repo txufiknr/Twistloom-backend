@@ -899,20 +899,33 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
  * Tracks reading progress and manages active sessions.
  * 
  * @param id - Book ID
- * @param pageId - Current page ID in reading session
+ * @param pageId - Current page ID in reading session (optional - auto-finds page 1 if not provided)
  * @returns Session information with progress
  */
-router.post("/:id/sessions", requireAuth, async (req: Request, res: Response) => {
+router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { pageId } = req.body;
-    const userId = req.userId!;
+    const userId = req.userId!; // Always defined even for guests
     const bookId = id as string;
 
+    // If no pageId provided, find the first page of the book
+    let targetPageId = pageId;
     if (!pageId) {
-      return res.status(400).json({ 
-        error: "Missing required field: pageId is required" 
-      });
+      const firstPage = await dbRead
+        .select({ id: pages.id })
+        .from(pages)
+        .where(and(
+          eq(pages.bookId, bookId),
+          eq(pages.page, 1)
+        ))
+        .limit(1);
+      
+      if (!firstPage.length) {
+        return res.status(404).json({ error: "Book has no pages" });
+      }
+      
+      targetPageId = firstPage[0].id;
     }
 
     const book = await getBook(bookId);
@@ -921,7 +934,11 @@ router.post("/:id/sessions", requireAuth, async (req: Request, res: Response) =>
     }
 
     // Create or update existing session
-    const session = await setActiveSession({userId, bookId, pageId});
+    const session = await setActiveSession({
+      userId, // Guest middleware always sets userId to a string (user ID or guest ID)
+      bookId, 
+      pageId: targetPageId!
+    });
 
     // Invalidate caches on session start
     await invalidateExploreCache(); // readCount changed via trigger

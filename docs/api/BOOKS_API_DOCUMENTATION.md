@@ -480,9 +480,9 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
 
 ### POST /api/books/:id/sessions
 
-Creates or updates a reading session for the book. Tracks reading progress and manages active sessions.
+Creates or updates a reading session for a book. Tracks reading progress and manages active sessions.
 
-**Authentication:** Required (via `requireAuth`)
+**Authentication:** Optional (via `guestOrAuthMiddleware`)
 
 **Path Parameters:**
 - `id` (string, required): Book ID
@@ -490,12 +490,12 @@ Creates or updates a reading session for the book. Tracks reading progress and m
 **Request Body:**
 ```json
 {
-  "pageId": "page456"
+  "pageId": "page456" // Optional - if not provided, auto-finds page 1
 }
 ```
 
 **Parameters:**
-- `pageId` (string, required): Current page ID in reading session
+- `pageId` (string, optional): Current page ID in reading session. If not provided, automatically finds and uses page 1 of the book.
 
 **Response (201 Created):**
 ```json
@@ -518,8 +518,8 @@ Creates or updates a reading session for the book. Tracks reading progress and m
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Missing pageId, no active session found (if validating)
-- `404 Not Found`: Book not found
+- `400 Bad Request`: Invalid pageId format
+- `404 Not Found`: Book not found, or book has no pages
 
 ---
 
