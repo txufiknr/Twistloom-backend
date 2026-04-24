@@ -745,7 +745,9 @@ export async function reconstructStoryState(
         hint: {
           text: 'Continue to the next page',
           type: 'none' satisfies ActionHintType
-        }
+        },
+        // TODO: fill it with current pageId and branchId
+        destination: {}
       } satisfies Action;
 
       currentState.pageHistory = branchPath.pages.map((page, index) => {
@@ -759,7 +761,7 @@ export async function reconstructStoryState(
 
         // Find the action in parent page that led to this page
         const parentPage = branchPath.pages[index - 1];
-        const selectedAction = parentPage.actions?.find(action => action.pageId === page.id);
+        const selectedAction = parentPage.actions?.find(action => action.destination?.pageId === page.id);
 
         if (selectedAction) {
           return {

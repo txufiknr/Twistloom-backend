@@ -126,7 +126,10 @@ interface Action {
   text: string;               // Action text
   type: ActionType;          // Category of action for psychological impact
   hint: ActionHint;          // Consequence hint for the action (for AI guidance)
-  pageId?: string;           // Destination page ID for the action
+  destination: {
+    branchId?: string;       // Destination branch ID for the action
+    pageId?: string;         // Destination page ID for the action
+  };
 }
 ```
 
@@ -137,7 +140,7 @@ Action with navigation metadata for frontend URL building.
 ```typescript
 interface EnrichedAction extends Action {
   nextPageNumber?: number;   // Next page number this action leads to
-  nextBranchId?: string;     // Branch ID for the next page
+  isUserChosen?: boolean;    // Whether this action was chosen by the current user
 }
 ```
 
@@ -245,8 +248,8 @@ type BookSortingOptions =
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
 4. [Book Reading](#book-reading)
-   - [Generate New Pages](#post-apibooksidentifiergenerate)
    - [Get Specific Page](#get-apibooksidentifierbranchidpage)
+   - [Mark Page Visited](#post-apibooksidentifierbranchidpagevisit)
    - [Start Reading Session](#post-apibooksidsessions)
 5. [Social Interactions](#social-interactions)
    - [Like Book](#post-apibooksidlike)
@@ -277,7 +280,7 @@ type BookSortingOptions =
 
 ### POST /api/books
 
-Creates a new psychological thriller book with AI-generated content. Accepts a story theme and optional main character details. The AI generates the book's title, hook, summary, first page, and initial story state.
+Creates a new psychological thriller book with AI-generated content. Accepts a story theme and optional main character details. The AI generates the book's title, hook, summary, first page, and initial story state. Candidate pages for each action in the first page are pre-generated automatically in the background for immediate navigation.
 
 **Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
 
@@ -597,67 +600,6 @@ Deletes a book and all its associated data (pages, sessions, story states). If t
 
 ## Book Reading
 
-### POST /api/books/:identifier/generate
-
-Generates new story pages based on user actions or continuation. Accepts action text string which is matched against current page actions to get the full Action object.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Path Parameters:**
-- `identifier` (string, required): Book slug or UUID v7
-
-**Request Body:**
-```json
-{
-  "actionText": "Investigate the noise",
-  "currentPageId": "page456",
-  "branchId": "main"
-}
-```
-
-**Parameters:**
-- `actionText` (string, required): Action text to match
-- `currentPageId` (string, optional): Current page ID for validation
-- `branchId` (string, optional): Current branch ID for validation
-
-**Response (201 Created):**
-```json
-{
-  "page": {
-    "id": "page789",
-    "page": 2,
-    "text": "The noise came from behind the bookshelf...",
-    "mood": "tense",
-    "place": "library",
-    "timeOfDay": "night",
-    "actions": [
-      {
-        "text": "Open the bookshelf",
-        "type": "explore",
-        "hint": {
-          "text": "A hidden passage awaits",
-          "type": "dark_discovery"
-        },
-        "navigation": {
-          "bookId": "book123",
-          "branchId": "main",
-          "page": 3
-        }
-      }
-    ],
-    "createdAt": "2023-01-01T00:01:00.000Z"
-  },
-  "currentPage": "page789"
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: Invalid actionText, validation failed
-- `403 Forbidden`: Not the book owner
-- `404 Not Found`: Book not found
-
----
-
 ### GET /api/books/:identifier/:branchId/:page
 
 Retrieves a specific page within a branch of a book. Accepts both slug and UUID v7 as identifier.
@@ -707,6 +649,59 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
 
 **Error Responses:**
 - `404 Not Found`: Book or page not found
+
+---
+
+### POST /api/books/:identifier/:branchId/:page/visit
+
+Marks a page as visited by updating user session and page progress. This is called when a user navigates to a page (not during pre-generation). The frontend should call this endpoint after the user lands on a page to track reading progress.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `branchId` (string, required): Branch identifier (e.g., "main", "abc123")
+- `page` (number, required): Page number within the branch
+
+**Request Body:**
+```json
+{
+  "action": {
+    "text": "Investigate the noise",
+    "type": "explore",
+    "hint": {
+      "text": "Something waits in the shadows",
+      "type": "dark_discovery"
+    }
+  },
+  "previousPageId": "page456"
+}
+```
+
+**Parameters:**
+- `action` (object, required): The action chosen to reach this page
+  - `text` (string): Action text
+  - `type` (string): Action type (explore, escape, social, risk, ignore, attack, deceive, protect, create, heal, dialogue, custom, other)
+  - `hint` (object): Consequence hint
+- `previousPageId` (string, required): The previous page ID (for navigation history)
+
+**Response (200 OK):**
+```json
+{
+  "pageId": "page789",
+  "branchId": "main",
+  "page": 5
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing action or previousPageId
+- `404 Not Found`: Book or page not found
+
+**Note:** 
+- Page generation happens automatically via pre-generation when books are created or pages are generated
+- This endpoint only tracks user navigation and progress, not page generation
+- Candidate pages are pre-generated in the background for immediate navigation
 
 ---
 
@@ -1475,6 +1470,18 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 ---
 
 ## Version History
+
+### v1.3.0 (2026-04-24)
+- Updated Action type to use nested destination object with branchId and pageId
+- Added isUserChosen field to EnrichedAction for user-specific action tracking
+- Added POST /api/books/:identifier/:branchId/:page/visit endpoint for tracking user navigation
+- Removed POST /api/books/:identifier/generate endpoint (page generation is now automatic)
+- Updated GET page response to filter actions without complete destination (both branchId and pageId required)
+- Added user choice validation to prevent selecting alternate branches on revisited pages
+- Updated POST /visit response to return { pageId, branchId, page } for navigation context
+- Removed redundant nextBranchId from EnrichedAction (use action.destination.branchId directly)
+- Enhanced pre-generation with retry logic and exponential backoff
+- Decoupled page generation from user session updates
 
 ### v1.2.0 (2025-04-24)
 - Added tags filtering to explore endpoint (OR logic for multiple tags)

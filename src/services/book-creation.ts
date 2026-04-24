@@ -123,7 +123,7 @@ export async function createBookCore(
       ...result,
       firstPage: {
         ...result.firstPage,
-        actions: enrichActions(result.firstPage.actions, { page: 1, branchId: 'main' })
+        actions: enrichActions(result.firstPage.actions, { page: 1, branchId: 'main' }, undefined)
       }
     } satisfies CreateBookResponse;
 

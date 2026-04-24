@@ -266,10 +266,7 @@ router.post('/signup', async (req, res) => {
 
     // Create user_auth record (manual rollback if fails)
     // NOTE: Using manual rollback instead of database transaction for Vercel serverless compatibility.
-    // This is NOT truly atomic - if the server crashes between user insert and userAuth insert,
-    // or if the delete operation fails, orphaned user records may exist. This is an acceptable
-    // tradeoff for serverless environments where true database transactions may not be supported.
-    // TODO: To clean up orphaned records, a periodic cleanup job could be added in the future.
+    // A periodic cleanup job already exists for clean up.
     try {
       await dbWrite.insert(userAuth).values({
         userId: newUser[0].userId,

@@ -538,8 +538,11 @@ export type Action = {
   type: ActionType;
   /** Consequence hint for the action (for AI guidance) */
   hint: ActionHint;
-  /** Destination page ID for the action */
-  pageId?: string;
+  /** Destination meta for the action */
+  destination: {
+    branchId?: string;
+    pageId?: string;
+  };
 };
 
 /**
@@ -551,8 +554,8 @@ export type Action = {
 export type EnrichedAction = Action & {
   /** Next page number this action leads to (current page + 1 if pageId exists) */
   nextPageNumber?: number;
-  /** Branch ID for the next page (current branchId if pageId exists) */
-  nextBranchId?: string;
+  /** Whether this action was chosen by the current user (for navigation validation) */
+  isUserChosen?: boolean;
 };
 
 /**

@@ -257,6 +257,56 @@ export async function insertStoryState(
 }
 
 /**
+ * Marks a page as visited by updating user session and page progress
+ * 
+ * This function is called when a user actually navigates to a page (not during pre-generation).
+ * It updates the active session to point to the new page and records the action choice.
+ * 
+ * @param userId - The user's unique identifier
+ * @param bookId - The book's unique identifier
+ * @param pageId - The page identifier being visited
+ * @param previousPageId - The previous page identifier (for navigation history)
+ * @param action - The action chosen to reach this page
+ * @returns Promise that resolves when session and progress are updated
+ * 
+ * Behavior:
+ * - Updates user session to point to the new page
+ * - Inserts page progress record with action choice
+ * - Updates user's last activity timestamp
+ * 
+ * Example:
+ * ```typescript
+ * await markPageVisited("user123", "book456", "page789", "page456", action);
+ * ```
+ */
+export async function markPageVisited(
+  userId: string,
+  bookId: string,
+  pageId: string,
+  previousPageId: string,
+  action: Action
+): Promise<void> {
+  try {
+    // Update active session to point to the new page
+    await setActiveSession({ userId, bookId, pageId, previousPageId });
+    
+    // Insert page progress record
+    await insertUserPageProgress({
+      userId,
+      bookId,
+      pageId: previousPageId,
+      action,
+      nextPageId: pageId
+    });
+    
+    console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId}`);
+  } catch (error) {
+    console.error(`[markPageVisited] ❌ Failed to mark page visited:`, getErrorMessage(error));
+    throw new Error(`Unable to mark page visited: ${getErrorMessage(error)}`, { cause: error });
+  }
+}
+
+/**
  * Deactivates a user's session for a specific book
  * 
  * @param userId - The user's unique identifier

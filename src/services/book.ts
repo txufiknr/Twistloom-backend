@@ -13,6 +13,7 @@
 
 import { dbRead, dbWrite } from "../db/client.js";
 import { pages, books, userPageProgress } from "../db/schema.js";
+import { deepEqualSimple } from "../utils/parser.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -414,7 +415,7 @@ async function completePageWithSelectedAction(dbPage: DBPage, userId: string): P
  * 
  * Behavior:
  * - Maps all fields from database to domain types
- * - Enriches actions with nextPageNumber and nextBranchId for frontend URL building
+ * - Enriches actions with nextPageNumber for frontend URL building
  * - Includes user's selected action if available
  * - Handles optional fields correctly
  * - Preserves data integrity during transformation
@@ -481,35 +482,39 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
 /**
  * Enriches actions with navigation metadata for frontend URL building
  * 
- * This function computes nextPageNumber and nextBranchId for each action
- * based on the current page context. Actions without a pageId will not
- * have navigation metadata.
+ * This function adds computed fields to actions that help the frontend
+ * build navigation URLs without additional API calls. It calculates
+ * the next page number and branch ID for each action based on whether
+ * the action has a pre-generated destination. It also marks actions
+ * that the user has previously chosen.
  * 
- * @param actions - Array of actions to enrich
- * @param currentPage - Current page with page number and branch ID
+ * @param actions - Array of actions from a story page
+ * @param currentPage - Current page metadata (page number and branch ID)
+ * @param chosenAction - The action the user previously chose for this page (optional)
  * @returns Array of enriched actions with navigation metadata
  * 
  * Behavior:
- * - Adds nextPageNumber (current page + 1) if action has pageId
- * - Adds nextBranchId (current branchId) if action has pageId
+ * - Actions with pageId get nextPageNumber computed
  * - Actions without pageId remain unchanged
+ * - The user's chosen action is marked with isUserChosen: true
  * - Preserves all original action properties
  * 
  * Example:
  * ```typescript
- * const enriched = enrichActions(page.actions, page);
+ * const enriched = enrichActions(page.actions, page, userChosenAction);
  * // enriched[0].nextPageNumber === page.page + 1
- * // enriched[0].nextBranchId === page.branchId
+ * // enriched[0].isUserChosen === true (if user chose this action)
  * ```
  */
 export function enrichActions(
   actions: Action[],
-  currentPage: Pick<PersistedStoryPage, 'page' | 'branchId'>
+  currentPage: Pick<PersistedStoryPage, 'page' | 'branchId'>,
+  chosenAction?: Action
 ): EnrichedAction[] {
   return actions.map(action => ({
     ...action,
-    nextPageNumber: action.pageId ? currentPage.page + 1 : undefined,
-    nextBranchId: action.pageId ? currentPage.branchId : undefined,
+    nextPageNumber: action.destination?.pageId ? currentPage.page + 1 : undefined,
+    isUserChosen: chosenAction ? deepEqualSimple(chosenAction, action) : undefined,
   }));
 }
 

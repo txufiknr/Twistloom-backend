@@ -18,20 +18,18 @@ export type BuildNextPageParams = {
   previousState: StoryState;
   /** Previous page with selected action for context */
   actionedPage: ActionedStoryPage;
-  /** Whether this is a user-selected action or just candidate pre-generation */
-  isUserAction?: boolean;
 };
 
 /**
- * Parameters for choosing an action in a story
+ * Parameters for generating a candidate page for an action
  */
-export type ChooseActionParams = {
-  /** User identifier for whom action is being chosen */
+export type GenerateCandidatePageParams = {
+  /** User identifier for whom candidate page is being generated */
   userId: string;
-  /** The action text being chosen (will be matched against current page actions) */
+  /** The action text for which to generate a candidate (will be matched against current page actions) */
   actionText: string;
-  /** Whether this is a user-selected action or just candidate pre-generation */
-  isUserAction?: boolean;
   /** Current page context */
   currentPage?: UserStoryPage | null;
+  /** Optional current story state (avoids database lookup when provided) */
+  currentState?: StoryState | null;
 };

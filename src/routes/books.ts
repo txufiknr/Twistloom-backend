@@ -27,46 +27,44 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments, userPageProgress } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
+import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql, or } from "drizzle-orm";
-import { chooseAction, generateBookCreationPromptStream } from "../utils/prompt.js";
+import { formatOneOf, generateBookCreationPromptStream } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { setActiveSession, getStoryProgress } from "../services/story.js";
+import { setActiveSession, markPageVisited } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags } from "../services/book.js";
 import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import type { BookSortOption, EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
+import type { Action } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 
-/**
- * Formats an array of items for error messages
- * @param items - Array of strings to format
- * @returns Formatted string with items quoted and joined by commas
- */
-function formatOneOf(items: string[] | readonly string[]): string {
-  return `'${items.join(`', '`)}'`;
-}
-
 const router = Router();
 
 /**
  * POST /api/books
- * 
+ *
  * Creates a new psychological thriller book with AI-generated content.
  * Accepts theme and main character candidate, initializes story with AI.
  * Returns complete book information with first page and initial state.
- * 
+ *
+ * **Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
+ * - Guest users can create books without signup
+ * - Guest-created books are associated with a temporary guest user ID
+ * - When guest signs up, all their books migrate to their authenticated account via `migrateGuestData()`
+ *
  * @param theme - Story theme (e.g., "abandoned asylum", "haunted mansion") - Required
  * @param mcCandidate.name - Character's display name - Optional
  * @param mcCandidate.age - Character's age in years - Optional
@@ -216,6 +214,11 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
  *
  * Creates a new psychological thriller book with AI-generated content using SSE.
  * Provides real-time progress updates for each step in the book creation process.
+ *
+ * **Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
+ * - Guest users can create books without signup
+ * - Guest-created books are associated with a temporary guest user ID
+ * - When guest signs up, all their books migrate to their authenticated account via `migrateGuestData()`
  *
  * Accepts theme and main character candidate in request body.
  * Emits SSE events for theme validation, book initialization, AI generation,
@@ -758,89 +761,6 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
 });
 
 /**
- * POST /api/books/:identifier/generate
- * 
- * Generates new story pages based on user actions or continuation.
- * Accepts action text string (e.g. "Investigate the noise") which is matched
- * against current page actions to get the full Action object.
- * Uses chooseAction function for complete story progression pipeline.
- * 
- * @param identifier - Book slug or UUID v7
- * @param actionText - Action text string (e.g. "Investigate the noise")
- * @param currentPageId - Optional current page ID for validation
- * @param branchId - Optional current branch ID for validation
- * @returns New page with updated story state and enriched actions
- */
-router.post("/:identifier/generate", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { identifier } = req.params;
-    const { actionText, currentPageId, branchId } = req.body;
-    const userId = req.userId!;
-
-    if (!actionText) {
-      return res.status(400).json({ 
-        error: "Missing required field: actionText is required" 
-      });
-    }
-
-    // Handle array case for identifier (Express can return string[])
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
-
-    // Resolve book by identifier (slug first, then UUID)
-    const book = await resolveBook(identifierStr);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
-
-    // Verify book ownership
-    if (book.userId !== userId) {
-      return res.status(403).json({ 
-        error: "Forbidden: You do not own this book" 
-      });
-    }
-
-    // Optional validation: validate currentPageId and branchId against user's active session
-    if (currentPageId || branchId) {
-      const { session: activeSession } = await getStoryProgress(userId);
-      if (!activeSession) {
-        return res.status(400).json({ 
-          error: "No active session found" 
-        });
-      }
-
-      if (currentPageId && activeSession.pageId !== currentPageId) {
-        return res.status(400).json({ 
-          error: "Invalid current page ID" 
-        });
-      }
-
-      if (branchId && activeSession.bookId !== book.id) {
-        return res.status(400).json({ 
-          error: "Invalid branch ID for current session" 
-        });
-      }
-    }
-
-    // Process user action choice using chooseAction function
-    const newPage = await chooseAction({userId, actionText, isUserAction: false});
-    if (!newPage) return handleApiError(res, "Failed to generate page");
-
-    // Enrich actions with navigation metadata for frontend URL building
-    const enrichedPage = {
-      ...newPage,
-      actions: enrichActions(newPage.actions, { page: newPage.page, branchId: newPage.branchId })
-    };
-
-    res.status(201).json({
-      page: enrichedPage,
-      currentPage: newPage.id,
-    });
-  } catch (error) {
-    handleApiError(res, "Failed to generate page", error);
-  }
-});
-
-/**
  * GET /api/books/:identifier/:branchId/:page
  * 
  * Retrieves a specific page within a branch of a book.
@@ -897,13 +817,32 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
       return handleNotFoundError(res, "Page not found");
     }
 
+    // Query user's chosen action for this page (if authenticated)
+    let userChosenAction: Action | undefined;
+    if (req.user) {
+      const userProgress = await dbRead
+        .select()
+        .from(userPageProgress)
+        .where(
+          and(
+            eq(userPageProgress.userId, req.user.id),
+            eq(userPageProgress.pageId, pageData[0].id)
+          )
+        )
+        .limit(1);
+      
+      if (userProgress.length > 0) {
+        userChosenAction = userProgress[0].action as Action;
+      }
+    }
+
     // Enrich actions with navigation metadata for frontend URL building
+    // Filter out actions without complete destination (both branchId and pageId must be present)
+    const visibleActions = pageData[0].actions.filter((action: any) => action.destination?.branchId && action.destination?.pageId);
     const enrichedPage = {
       ...pageData[0],
-      actions: enrichActions(pageData[0].actions, { page: pageData[0].page, branchId: pageData[0].branchId })
+      actions: enrichActions(visibleActions, { page: pageData[0].page, branchId: pageData[0].branchId }, userChosenAction)
     }
-    // TODO: ensure type
-    // satisfies Omit<DBPage, 'actions'> & { actions: EnrichedAction[] };
 
     res.json({
       page: enrichedPage,
@@ -911,6 +850,121 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     });
   } catch (error) {
     handleApiError(res, "Failed to retrieve page", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:branchId/:page/visit
+ * 
+ * Marks a page as visited by updating user session and page progress.
+ * This is called when a user navigates to a page (not during pre-generation).
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param branchId - Branch identifier
+ * @param page - Page number
+ * @param action - The action chosen to reach this page
+ * @param previousPageId - The previous page ID
+ * @returns Success confirmation
+ */
+router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier, branchId, page } = req.params;
+    const { action, previousPageId } = req.body;
+    const userId = req.userId!;
+
+    if (!action) {
+      return res.status(400).json({ 
+        error: "Missing required field: action is required" 
+      });
+    }
+
+    if (!previousPageId) {
+      return res.status(400).json({ 
+        error: "Missing required field: previousPageId is required" 
+      });
+    }
+
+    // Handle array case for identifier (Express can return string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(identifierStr);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Get the page by branch and page number to get the pageId and branchId
+    const pageData = await dbRead
+      .select({ id: pages.id, branchId: pages.branchId, page: pages.page })
+      .from(pages)
+      .where(
+        and(
+          eq(pages.bookId, book.id),
+          eq(pages.branchId, branchId as string),
+          eq(pages.page, parseInt(page as string))
+        )
+      )
+      .limit(1);
+
+    if (!pageData.length) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    const pageId = pageData[0].id;
+    const pageBranchId = pageData[0].branchId;
+    const pageNumber = pageData[0].page;
+
+    // Validate that the action exists on the previous page
+    const previousPageData = await dbRead
+      .select({ actions: pages.actions })
+      .from(pages)
+      .where(eq(pages.id, previousPageId))
+      .limit(1);
+
+    if (!previousPageData.length) {
+      return handleNotFoundError(res, "Previous page not found");
+    }
+
+    const isValidAction = previousPageData[0].actions.some((a: Action) => 
+      deepEqualSimple(a, action)
+    );
+
+    if (!isValidAction) {
+      return res.status(400).json({
+        error: "Invalid action",
+        message: "The provided action does not exist on the previous page"
+      });
+    }
+
+    // Validate user's action choice: check if user already chose a different action on previous page
+    const previousPageProgress = await dbRead
+      .select()
+      .from(userPageProgress)
+      .where(
+        and(
+          eq(userPageProgress.userId, userId),
+          eq(userPageProgress.pageId, previousPageId)
+        )
+      )
+      .limit(1);
+
+    if (previousPageProgress.length > 0) {
+      const previouslyChosenAction = previousPageProgress[0].action as Action;
+      if (!deepEqualSimple(previouslyChosenAction, action)) {
+        // TODO: except for premium user
+        return res.status(400).json({
+          error: "Choice made, can't make another choice",
+          message: "You already chose a different action on this page"
+        });
+      }
+    }
+
+    // Mark page as visited
+    await markPageVisited(userId, book.id, pageId, previousPageId, action);
+
+    res.json({ pageId, branchId: pageBranchId, page: pageNumber });
+  } catch (error) {
+    handleApiError(res, "Failed to mark page visited", error);
   }
 });
 

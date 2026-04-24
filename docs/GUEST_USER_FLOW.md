@@ -11,7 +11,7 @@ Twistloom supports a seamless guest user experience that allows users to immedia
 | Feature | Guest Users | Authenticated Users |
 |----------|--------------|-------------------|
 | **Read Books** | ✅ Full access | ✅ Full access |
-| **Create Books** | ❌ Requires signup | ✅ Full access |
+| **Create Books** | ✅ Full access (data migrates on signup) | ✅ Full access |
 | **Reading Sessions** | ✅ Session-based tracking | ✅ User-based tracking |
 | **Progress Saving** | ✅ Per session | ✅ Persistent |
 | **Bookmarks/Favorites** | ❌ Requires signup | ✅ Full access |
@@ -24,31 +24,124 @@ Twistloom supports a seamless guest user experience that allows users to immedia
 **File:** `src/middleware/guest.ts`
 
 ```typescript
-import { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { dbRead, dbWrite } from '../db/client.js';
+import { users } from '../db/schema.js';
 import { verifyNextAuthToken } from './nextauth.js';
+import { generateId } from '../utils/uuid.js';
+
+const GUEST_COOKIE_NAME = 'twistloom_guest_id';
 
 /**
- * Middleware that allows both authenticated users and guests
- * Sets req.userId for authenticated users, leaves undefined for guests
+ * Middleware that handles both authenticated and guest users
+ * Tries NextAuth authentication first, falls back to guest cookie
+ * Creates new guest user if neither exists
  */
-export function guestOrAuthMiddleware(req: Request, res: Response, next: NextFunction) {
+export async function guestOrAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const token = req.cookies?.['next-auth.session-token'];
-    
-    if (token) {
-      const payload = verifyNextAuthToken(token);
-      if (payload) {
-        req.userId = payload.userId;
-        req.user = payload; // User data available
+    // Try NextAuth authentication first
+    const user = await verifyNextAuthToken(req);
+
+    if (user) {
+      // Authenticated user
+      req.guestAuth = {
+        isAuthenticated: true,
+        userId: user.id,
+        isGuest: false,
+        user,
+      };
+      req.user = user;
+      next();
+      return;
+    }
+
+    // Guest user - check for guest cookie
+    const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+    let guestId = guestCookie;
+
+    if (!guestId) {
+      // Create new guest user in database
+      guestId = await createGuestUser();
+      
+      // Set guest cookie in response
+      res.cookie(GUEST_COOKIE_NAME, guestId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 60 * 60 * 24 * 30, // 30 days
+        path: '/',
+      });
+    }
+
+    req.guestAuth = {
+      isAuthenticated: false,
+      userId: guestId,
+      isGuest: true,
+    };
+    req.userId = guestId; // Set req.userId for rate limiting and route handlers
+
+    next();
+  } catch (error) {
+    console.error('Guest middleware error:', error);
+    // On error, treat as unauthenticated guest
+    req.guestAuth = {
+      isAuthenticated: false,
+      userId: null,
+      isGuest: true,
+    };
+    next();
+  }
+}
+
+/**
+ * Migrates data from a guest user to an authenticated user
+ * Transfers all books, sessions, and other data from guest to authenticated user
+ */
+export async function migrateGuestData(guestId: string, authenticatedUserId: string): Promise<void> {
+  // Migrate all books from guest to authenticated user
+  await dbWrite
+    .update(books)
+    .set({ userId: authenticatedUserId })
+    .where(eq(books.userId, guestId));
+
+  // Migrate all sessions from guest to authenticated user
+  await dbWrite
+    .update(userSessions)
+    .set({ userId: authenticatedUserId })
+    .where(eq(userSessions.userId, guestId));
+
+  // Delete guest user from database
+  await dbWrite.delete(users).where(eq(users.userId, guestId));
+}
+
+/**
+ * Middleware to migrate guest data to authenticated user
+ * Should be used on login/callback endpoints
+ */
+export async function migrateGuestMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = await verifyNextAuthToken(req);
+
+    if (user) {
+      const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+
+      if (guestCookie && user.id !== guestCookie) {
+        // Migrate guest data to authenticated user
+        await migrateGuestData(guestCookie, user.id);
+
+        // Remove guest cookie
+        res.clearCookie(GUEST_COOKIE_NAME, {
+          path: '/',
+        });
       }
     }
-    // If no token, user remains undefined (guest)
+
+    next();
   } catch (error) {
-    // Invalid token - treat as guest
-    console.warn('Invalid auth token, treating as guest:', error);
+    console.error('Guest migration middleware error:', error);
+    // Continue even if migration fails
+    next();
   }
-  
-  next();
 }
 ```
 
@@ -70,7 +163,7 @@ Creates or updates reading sessions for both guests and authenticated users.
 {
   "session": {
     "id": "session789",
-    "userId": "user456", // null for guests
+    "userId": "guest456", // Guest user ID or authenticated user ID (never null)
     "bookId": "book123",
     "pageId": "page456",
     "previousPageId": null,
@@ -92,9 +185,10 @@ Creates or updates reading sessions for both guests and authenticated users.
 **Database Schema:**
 ```sql
 -- userSessions table stores both guest and user sessions
+-- userId is never null - guests have valid guest user IDs
 CREATE TABLE user_sessions (
   id UUID PRIMARY KEY,
-  user_id UUID REFERENCES users(id), -- null for guests
+  user_id UUID REFERENCES users(id), -- Can be guest user ID
   book_id UUID NOT NULL REFERENCES books(id),
   page_id UUID NOT NULL REFERENCES pages(id),
   previous_page_id UUID REFERENCES pages(id),
@@ -104,27 +198,111 @@ CREATE TABLE user_sessions (
 );
 ```
 
-### 3. Book Page Access
+### 3. Book Creation
 
-**Endpoint:** `GET /api/books/:id/:pageId`
+**Endpoint:** `POST /api/books`
 
-Uses `optionalAuth` middleware to allow both guests and authenticated users.
+Uses `guestOrAuthMiddleware` to allow both guests and authenticated users to create books. Guest-created books are associated with a temporary guest user ID and migrate to the authenticated user on signup.
 
-**Response:**
+**Request Body:**
 ```json
 {
-  "id": "page456",
-  "pageNumber": 1,
-  "page": "The hallway stretched endlessly before me...",
-  "mood": "eerie",
-  "actions": ["investigate noise", "run away"],
-  "readingSession": {
-    "id": "session789",
-    "currentPage": "page456",
-    "progress": 0.65
+  "theme": "haunted mansion mystery",
+  "mcCandidate": {
+    "name": "Sarah",
+    "age": 28,
+    "gender": "female",
+    "bio": "Shy librarian with hidden past"
   }
 }
 ```
+
+**Response (201 Created):**
+```json
+{
+  "book": {
+    "id": "book123",
+    "title": "The Whispering Halls",
+    "userId": "guest456", // Guest user ID
+    "status": "active"
+  },
+  "firstPage": {
+    "id": "page456",
+    "page": 1,
+    "text": "The library was silent except for the rain..."
+  }
+}
+```
+
+**Guest Book Creation Flow:**
+1. Guest submits book creation request without authentication
+2. `guestOrAuthMiddleware` creates a guest user (if not exists) and sets `req.userId`
+3. Book is created with the guest user ID
+4. Guest receives book data and can immediately start reading
+5. When guest signs up, `migrateGuestData()` transfers all books to the new account
+
+**Database Schema:**
+```sql
+-- books table stores both guest and user books
+-- userId references users.id (guest users are valid users in the users table)
+CREATE TABLE books (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id), -- Can be guest user ID
+  title TEXT,
+  status TEXT DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 4. Book Page Access
+
+**Endpoint:** `GET /api/books/:identifier/:branchId/:page`
+
+Retrieves a specific page within a branch of a book. Accepts both slug and UUID v7 as identifier. Uses `optionalAuth` middleware to allow both guests and authenticated users.
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `branchId` (string, required): Branch identifier (e.g., "main", "abc123")
+- `page` (number, required): Page number within the branch
+
+**Response (200 OK):**
+```json
+{
+  "page": {
+    "id": "page456",
+    "page": 1,
+    "text": "The library was silent except for the rain...",
+    "mood": "eerie",
+    "place": "library",
+    "timeOfDay": "night",
+    "actions": [
+      {
+        "text": "Investigate the noise",
+        "type": "explore",
+        "hint": {
+          "text": "Something waits in the shadows",
+          "type": "dark_discovery"
+        },
+        "navigation": {
+          "bookId": "book123",
+          "branchId": "main",
+          "page": 2
+        }
+      }
+    ],
+    "createdAt": "2023-01-01T00:00:00.000Z"
+  },
+  "book": {
+    "id": "book123",
+    "title": "The Whispering Halls",
+    "slug": "the-whispering-halls",
+    "totalPages": 120
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: Book or page not found
 
 ## Frontend Implementation (Next.js)
 
@@ -134,37 +312,19 @@ Create a custom hook to manage reading sessions:
 
 ```typescript
 // hooks/useReadingSession.ts
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useSession } from 'next-auth/react';
 
 interface ReadingSession {
   id: string;
   bookId: string;
   pageId: string;
-  progress: number;
 }
 
 export function useReadingSession(bookId: string) {
   const { data: session } = useSession();
   const [readingSession, setReadingSession] = useState<ReadingSession | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-
-  // Load existing session on mount
-  useEffect(() => {
-    const loadSession = async () => {
-      try {
-        const response = await fetch(`/api/books/${bookId}/current-session`);
-        const data = await response.json();
-        if (data.session) {
-          setReadingSession(data.session);
-        }
-      } catch (error) {
-        console.error('Failed to load reading session:', error);
-      }
-    };
-
-    loadSession();
-  }, [bookId]);
 
   // Create/update session when page changes
   const updateSession = async (pageId: string) => {
@@ -175,7 +335,7 @@ export function useReadingSession(bookId: string) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pageId }),
       });
-      
+
       const data = await response.json();
       setReadingSession(data.session);
     } catch (error) {
@@ -228,7 +388,7 @@ export default function BookReader({ bookId, initialPageId }: BookReaderProps) {
           Create Account to Save Progress
         </button>
         <p className="guest-hint">
-          Your progress is saved in this browser session only
+          Your progress and books will migrate when you sign up
         </p>
       </div>
     );
@@ -253,7 +413,15 @@ export default function BookReader({ bookId, initialPageId }: BookReaderProps) {
 }
 ```
 
-### 3. Account Creation with Progress Migration
+### 3. Account Creation with Automatic Migration
+
+**Note:** Data migration is handled automatically by the backend's `migrateGuestMiddleware` on login/signup. No manual migration API calls are needed from the frontend.
+
+When a guest user signs up or logs in:
+1. The backend `migrateGuestMiddleware` detects the guest cookie
+2. Automatically transfers all books and sessions from guest to authenticated user
+3. Removes the guest cookie
+4. Guest user is deleted from database
 
 ```typescript
 // components/AccountMigration.tsx
@@ -272,7 +440,7 @@ export default function AccountMigration() {
     setIsMigrating(true);
 
     try {
-      // 1. Create account
+      // 1. Create account via backend
       const signupResponse = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -287,41 +455,18 @@ export default function AccountMigration() {
         throw new Error('Failed to create account');
       }
 
-      const { userId } = await signupResponse.json();
-
-      // 2. Get current guest session
-      const guestSessionResponse = await fetch('/api/books/current-session');
-      const guestSession = await guestSessionResponse.json();
-
-      // 3. Migrate reading progress (if exists)
-      if (guestSession.session) {
-        await fetch('/api/users/migrate-guest-progress', {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${userId}` // New user token
-          },
-          body: JSON.stringify({
-            guestSessionId: guestSession.session.id,
-            bookId: guestSession.session.bookId,
-            currentPageId: guestSession.session.pageId,
-            progress: guestSession.session.progress
-          }),
-        });
-      }
-
-      // 4. Sign in with new account
+      // 2. Sign in with new account (migration happens automatically via backend middleware)
       await signIn('credentials', {
         emailOrUsername: email,
         password,
         redirect: false,
       });
 
-      // 5. Redirect to book with preserved progress
-      router.push(`/books/${guestSession.session.bookId}`);
-      
+      // 3. Redirect to library (all guest books and progress have been migrated)
+      router.push('/library');
+
     } catch (error) {
-      console.error('Migration failed:', error);
+      console.error('Signup failed:', error);
       // Show error to user
     } finally {
       setIsMigrating(false);
@@ -331,8 +476,8 @@ export default function AccountMigration() {
   return (
     <form onSubmit={handleSignup} className="migration-form">
       <h2>Save Your Reading Progress</h2>
-      <p>Create an account to save your reading progress across devices</p>
-      
+      <p>Create an account to save your books and progress across devices</p>
+
       <div className="form-group">
         <label>Email:</label>
         <input
@@ -342,7 +487,7 @@ export default function AccountMigration() {
           required
         />
       </div>
-      
+
       <div className="form-group">
         <label>Password:</label>
         <input
@@ -352,69 +497,13 @@ export default function AccountMigration() {
           required
         />
       </div>
-      
+
       <button type="submit" disabled={isMigrating}>
         {isMigrating ? 'Creating Account...' : 'Create Account & Save Progress'}
       </button>
     </form>
   );
 }
-```
-
-### 4. Progress Migration Endpoint
-
-**Backend Endpoint:** `POST /api/users/migrate-guest-progress`
-
-```typescript
-// routes/user.ts
-router.post('/migrate-guest-progress', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { guestSessionId, bookId, currentPageId, progress } = req.body;
-    const userId = req.userId!;
-
-    // Verify guest session exists and belongs to this user's session
-    const guestSession = await dbRead
-      .select()
-      .from(userSessions)
-      .where(and(
-        eq(userSessions.id, guestSessionId),
-        isNull(userSessions.userId) // Must be a guest session
-      ))
-      .limit(1);
-
-    if (!guestSession.length) {
-      return res.status(404).json({ error: 'Guest session not found' });
-    }
-
-    // Create new user session with migrated progress
-    await dbWrite.insert(userSessions).values({
-      userId,
-      bookId,
-      pageId: currentPageId,
-      status: 'active',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
-
-    // Mark guest session as migrated
-    await dbWrite
-      .update(userSessions)
-      .set({ 
-        status: 'migrated',
-        updatedAt: new Date(),
-      })
-      .where(eq(userSessions.id, guestSessionId));
-
-    res.json({ 
-      message: 'Progress migrated successfully',
-      bookId,
-      currentPageId 
-    });
-
-  } catch (error) {
-    handleApiError(res, 'Failed to migrate progress', error, 500);
-  }
-});
 ```
 
 ## User Experience Flow
@@ -432,13 +521,15 @@ Guest reads book → Sees "Reading as guest" banner → Can navigate pages → P
 ### 3. Account Creation Decision Point
 ```
 Guest reaches chapter end → Sees migration prompt → Can dismiss → Continues as guest
-                      → Can accept → Creates account → Progress migrated → Auto-signed in
+                      → Can accept → Creates account → Automatic migration via backend middleware → Auto-signed in
 ```
 
 ### 4. Post-Migration
 ```
-New user account → Full authenticated experience → Persistent progress → All features available
+New user account → Full authenticated experience → All guest books and progress transferred → All features available
 ```
+
+**Note:** Migration is handled automatically by the backend's `migrateGuestMiddleware` on login/signup. No manual migration steps are required from the frontend.
 
 ## Best Practices
 
@@ -481,23 +572,20 @@ New user account → Full authenticated experience → Persistent progress → A
 - [ ] Network failure during migration
 - [ ] Account already exists during migration
 
-## Implementation Timeline
+## Implementation Status
 
-### Phase 1: Basic Guest Support (Week 1)
-- Implement guest middleware
-- Create reading session endpoints
-- Update book page access
+**Status:** ✅ Complete
 
-### Phase 2: Migration System (Week 2)
-- Build account migration flow
-- Implement progress transfer
-- Add migration endpoint
+The guest user flow has been fully implemented with the following components:
 
-### Phase 3: Polish & Optimization (Week 3)
-- Add guest prompts and banners
-- Implement session cleanup
-- Performance optimization
-- Comprehensive testing
+- ✅ Guest middleware with automatic user creation and cookie management
+- ✅ Reading session endpoints supporting both guests and authenticated users
+- ✅ Book creation endpoints supporting guests with automatic migration
+- ✅ Book page access with optional authentication
+- ✅ Automatic data migration via `migrateGuestMiddleware` on login/signup
+- ✅ Guest cookie management with secure settings
+
+**Migration Mechanism:** All guest data (books, sessions, progress) automatically migrates to authenticated users when they sign up or log in, handled by the backend's `migrateGuestMiddleware`.
 
 ## Conclusion
 
