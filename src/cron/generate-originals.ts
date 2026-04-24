@@ -1,16 +1,16 @@
 /**
- * @summary Weekly cron job to generate Twistloom Originals (auto-generated books)
- * @description Generates one original psychological thriller book per week using AI
+ * @summary Daily cron job to generate Twistloom Originals (auto-generated books)
+ * @description Generates one original psychological thriller book per day using AI
  * 
  * Idempotency:
  * - Safe to run multiple times: creates new books with unique IDs
  * - Uses system user ID for ownership (configured via env var)
  * - AI generates unique themes each time
  * 
- * Should be run once per week via cron job
+ * Should be run once per day via cron job
  */
 import { getErrorMessage } from "../utils/error.js";
-import { generateBookCreationPrompt } from "../utils/prompt.js";
+import { generateBookCreationPromptText } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
 
@@ -22,17 +22,9 @@ export async function generateOriginalBook(): Promise<void> {
   try {
     console.log("[generate-originals] 🎨 Starting Twistloom Original generation...");
 
-    // Step 1: Generate creative theme using AI
+    // Step 1: Generate creative theme using AI (non-streaming for cron job)
     console.log("[generate-originals] 💭 Generating creative theme...");
-    const themeStream = await generateBookCreationPrompt();
-    let theme = "";
-    
-    for await (const chunk of themeStream) {
-      const chunkText = chunk.toString();
-      theme += chunkText;
-    }
-    
-    theme = theme.trim();
+    const theme = await generateBookCreationPromptText();
     console.log(`[generate-originals] 💭 Generated theme: "${theme.substring(0, 100)}${theme.length > 100 ? '...' : ''}"`);
 
     // Step 2: Create book with the generated theme

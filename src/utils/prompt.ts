@@ -2719,6 +2719,34 @@ Only the theme is required. All other fields are optional - include them only if
   }, signal);
 }
 
+/**
+ * Generates a creative book creation prompt using AI (non-streaming)
+ * 
+ * This is a non-streaming version of generateBookCreationPrompt() for use in
+ * background jobs like cron tasks where streaming is not needed.
+ * 
+ * @param signal - Optional AbortSignal for cancellation
+ * @returns Promise resolving to the generated prompt text
+ * 
+ * @example
+ * ```typescript
+ * const theme = await generateBookCreationPromptText();
+ * console.log(theme);
+ * ```
+ */
+export async function generateBookCreationPromptText(signal?: AbortSignal): Promise<string> {
+  const stream = await generateBookCreationPrompt(signal);
+  
+  let text = "";
+  const decoder = new TextDecoder();
+  
+  for await (const chunk of stream) {
+    text += decoder.decode(chunk, { stream: true });
+  }
+  
+  return text;
+}
+
 function postProcessPromptSection(prompt: string): string {
   return prompt
     .split('\n')

@@ -65,5 +65,12 @@ jobs:
           DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
           IMAGEKIT_API_KEY_PRIVATE: ${{ secrets.IMAGEKIT_API_KEY_PRIVATE }}
           SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NODE_ENV: production
         timeout-minutes: 30  # Conservative timeout for AI generation
