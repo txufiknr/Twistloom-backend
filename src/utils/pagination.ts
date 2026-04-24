@@ -153,33 +153,6 @@ export function createPaginatedResponse<T>(
 }
 
 /**
- * Applies search filter to a query builder
- * 
- * @param search - Search string
- * @param searchFields - Fields to search in
- * @returns Search filter function
- * 
- * @example
- * ```typescript
- * const searchFilter = createSearchFilter("mystery", ["title", "summary"]);
- * // Returns filter function for query builder
- * ```
- */
-export function createSearchFilter(
-  search: string,
-  searchFields: string[]
-): (query: any) => any {
-  return (query: any) => {
-    if (!search) return query;
-
-    // Create OR conditions for search fields
-    const searchConditions = searchFields.map(field => `${field} ILIKE '%${search}%'`);
-
-    return query.where(`(${searchConditions.join(' OR ')})`);
-  };
-}
-
-/**
  * Applies sorting to a query builder
  * 
  * @param query - Query builder

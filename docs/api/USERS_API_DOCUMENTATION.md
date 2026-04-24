@@ -2,42 +2,163 @@
 
 ## Overview
 
-The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), and user discovery. All endpoints support authenticated users with appropriate authorization checks.
+The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), and user discovery. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
 **Base URL:** `/user` for authenticated user operations, `/users` for public user operations
 
 **Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Public endpoints allow guest access for user profile viewing.
 
+**Response Pattern:**
+- GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ user: {...} }`, `{ likes: [...] }`)
+- POST endpoints: Return created resources with 201 status (e.g., `{ user: {...} }`, `{ like: {...} }`)
+- PUT endpoints: Return updated resources with 200 status (e.g., `{ user: {...} }`)
+- DELETE endpoints: Return simple messages or operation metadata (e.g., `{ message: "..." }`)
+
 ---
 
 ## Table of Contents
 
-1. [User Profile Management](#user-profile-management)
+1. [Type Definitions](#type-definitions)
+2. [User Profile Management](#user-profile-management)
    - [Get Authenticated User Profile](#get-user)
    - [Get User Profile by Identifier](#get-usersidentifier)
    - [Create/Replace User Profile](#post-user)
    - [Update User Profile](#put-user)
    - [Delete User Profile](#delete-user)
-2. [Likes](#likes)
+3. [Likes](#likes)
    - [Like Target](#post-userlikes)
    - [Unlike Target](#delete-userlikes)
    - [Get User Likes](#get-userlikes)
-3. [Favorites](#favorites)
+4. [Favorites](#favorites)
    - [Add Book to Favorites](#post-userfavorites)
    - [Remove Book from Favorites](#delete-userfavorites)
    - [Get User Favorites](#get-userfavorites)
-4. [Comments](#comments)
+5. [Comments](#comments)
    - [Create Comment](#post-usercomments)
    - [Update Comment](#put-usercommentscommentid)
    - [Delete Comment](#delete-usercommentscommentid)
    - [Get User Comments](#get-usercomments)
-5. [Follows](#follows)
+6. [Follows](#follows)
    - [Follow User](#post-usersidfollow)
    - [Unfollow User](#delete-usersidfollow)
    - [Get User Followers](#get-usersidfollowers)
    - [Get User Following](#get-usersidfollowing)
    - [Get Authenticated User's Followers](#get-userfollowers)
    - [Get Authenticated User's Following](#get-userfollowing)
+7. [Error Handling](#error-handling)
+8. [HTTP Headers](#http-headers)
+9. [Caching Strategy](#caching-strategy)
+10. [Rate Limiting](#rate-limiting)
+11. [Authentication](#authentication)
+12. [Database Schema](#database-schema)
+13. [Testing](#testing)
+14. [Changelog](#changelog)
+
+---
+
+## Type Definitions
+
+### UserStats
+
+User statistics for profile display.
+
+```typescript
+interface UserStats {
+  booksCount: number;        // Number of books created by user
+  readsCount: number;        // Number of reading sessions
+  likedBooksCount: number;   // Number of books user liked
+  savedBooksCount: number;   // Number of books saved to favorites
+  followersCount: number;    // Number of followers
+  likesReceived: number;     // Total likes received on user's books
+}
+```
+
+### User
+
+User profile information.
+
+```typescript
+interface User {
+  id: string;                // User's unique identifier (UUID)
+  email?: string | null;     // User's email address
+  username?: string | null;  // User's unique username
+  name?: string | null;      // User's display name
+  bio?: string | null;       // User's bio/description
+  image?: string | null;     // User's profile image URL
+  isGuest?: boolean;         // Whether user is a guest
+  stats?: UserStats;         // User statistics
+  createdAt?: string;        // Account creation timestamp (ISO 8601)
+  updatedAt?: string;        // Last update timestamp (ISO 8601)
+}
+```
+
+### Like
+
+User like record.
+
+```typescript
+interface Like {
+  userId: string;            // User who created the like
+  targetType: 'book' | 'comment' | 'user';  // Type of target
+  targetId: string;          // ID of the liked item
+  createdAt: string;         // Like creation timestamp (ISO 8601)
+}
+```
+
+### Favorite
+
+User favorite record.
+
+```typescript
+interface Favorite {
+  userId: string;            // User who created the favorite
+  bookId: string;            // ID of the favorited book
+  createdAt: string;         // Favorite creation timestamp (ISO 8601)
+}
+```
+
+### Comment
+
+User comment record.
+
+```typescript
+interface Comment {
+  id: string;                // Comment's unique identifier
+  userId: string;            // User who created the comment
+  bookId: string;            // ID of the book
+  parentCommentId?: string;   // ID of parent comment (for replies)
+  content: string;           // Comment content
+  createdAt: string;         // Comment creation timestamp (ISO 8601)
+  updatedAt: string;         // Last update timestamp (ISO 8601)
+}
+```
+
+### Follow
+
+User follow relationship.
+
+```typescript
+interface Follow {
+  followerId: string;        // User who is following
+  followingId: string;       // User being followed
+  createdAt: string;         // Follow creation timestamp (ISO 8601)
+}
+```
+
+### PaginationMeta
+
+Pagination metadata for list endpoints.
+
+```typescript
+interface PaginationMeta {
+  page: number;              // Current page number (1-based)
+  limit: number;             // Number of items per page
+  total: number;             // Total number of items
+  totalPages: number;        // Total number of pages
+  hasNext: boolean;          // Whether there is a next page
+  hasPrevious: boolean;      // Whether there is a previous page
+}
+```
 
 ---
 
@@ -685,7 +806,7 @@ Get all followers of a specific user.
   "pagination": {
     "page": 1,
     "limit": 10,
-    "totalCount": 100,
+    "total": 100,
     "totalPages": 10,
     "hasNext": true,
     "hasPrevious": false
@@ -775,7 +896,7 @@ Get all followers of the authenticated user.
   "pagination": {
     "page": 1,
     "limit": 10,
-    "totalCount": 100,
+    "total": 100,
     "totalPages": 10,
     "hasNext": true,
     "hasPrevious": false
@@ -852,18 +973,35 @@ All endpoints follow consistent error response formats:
 }
 ```
 
+**HTTP Status Codes:**
+- `200 OK`: Successful GET or PUT request
+- `201 Created`: Successful POST request
+- `400 Bad Request`: Invalid request data
+- `401 Unauthorized`: Authentication required
+- `403 Forbidden`: Permission denied
+- `404 Not Found`: Resource not found
+- `500 Internal Server Error`: Server error
+
 ---
 
-## Rate Limiting
+## HTTP Headers
 
-Most endpoints are rate-limited to prevent abuse:
-- **Authenticated endpoints**: User-based rate limiting via Upstash Redis
-- **Unauthenticated endpoints**: IP-based rate limiting via LRU cache (5 attempts/minute default)
-- **Social interactions**: Limited to prevent spam
+### Request Headers
+
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (`android`, `ios`, `web`)
+- `Content-Type`: `application/json` or `multipart/form-data` (for file uploads)
+- `Cookie`: NextAuth session cookie (for authenticated endpoints)
+
+### Response Headers
+
+- `Cache-Control`: Cache directives (varies by endpoint)
+  - `private, max-age=60, stale-while-revalidate=30` for authenticated user data
+  - `public, max-age=60, stale-while-revalidate=30` for public user profiles
 
 ---
 
-## Caching
+## Caching Strategy
 
 The API implements multi-level caching for performance:
 - **Redis caching**: User profiles, user stats
@@ -873,6 +1011,15 @@ The API implements multi-level caching for performance:
 **Cache TTLs:**
 - User profile: 5 minutes
 - User stats: 5 minutes
+
+---
+
+## Rate Limiting
+
+Rate limits are enforced on a per-user basis to prevent abuse:
+
+- GET endpoints: 100 requests per minute
+- POST/PUT/DELETE endpoints: 50 requests per minute
 
 ---
 
@@ -1010,11 +1157,17 @@ curl https://api.twistloom.com/user/following?limit=10 \
 
 ## Changelog
 
-### v1.0.0 (2023-01-01)
-- Initial user API implementation
-- User profile CRUD operations
-- Likes, favorites, comments management
-- Follow/unfollow functionality
+### v2.0.0 (2024-04-24)
+- Consolidated API documentation from BACKEND_USER_API_SPECIFICATION.md
+- Added comprehensive Type Definitions section with TypeScript interfaces
+- Added HTTP Headers section with request/response header documentation
+- Added Caching Strategy section with Redis and HTTP caching details
+- Updated Rate Limiting section with specific rate limits per endpoint type
+- Added Response Pattern section explaining industry-standard API patterns
+- Fixed pagination response field name from "totalCount" to "total" to match actual implementation
+- Enhanced error handling documentation with HTTP status codes
+- Maintained all existing endpoints and functionality
+- Aligned documentation with actual canonical route implementation in src/routes/user.ts
 
 ### v1.1.0 (2023-04-23)
 - Added GET /users/:id/followers endpoint
@@ -1022,3 +1175,9 @@ curl https://api.twistloom.com/user/following?limit=10 \
 - Added GET /user/followers endpoint
 - Added GET /user/following endpoint
 - Enhanced documentation with comprehensive API reference
+
+### v1.0.0 (2023-01-01)
+- Initial user API implementation
+- User profile CRUD operations
+- Likes, favorites, comments management
+- Follow/unfollow functionality

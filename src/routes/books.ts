@@ -29,18 +29,18 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, or } from "drizzle-orm";
 import { chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
-import { extractPaginationParams, createPaginatedResponse, createSearchFilter, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
+import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, getStoryProgress } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags } from "../services/book.js";
 import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
-import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
+import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import type { BookSortOption, EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
@@ -201,6 +201,9 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       // No progress callback for POST endpoint (synchronous response)
       undefined
     );
+
+    // Invalidate popular tags cache since new book may have new keywords
+    await invalidatePopularTagsCache();
 
     res.status(201).json(result);
   } catch (error) {
@@ -569,9 +572,16 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         )
         .where(eq(books.userId, userId));
 
-      // Apply search filter if provided
+      // Apply search filter if provided using Drizzle sql template literals
       if (search) {
-        query = createSearchFilter(search, ['title', 'hook', 'summary'])(query);
+        const searchPattern = `%${search}%`;
+        const searchConditions = [
+          sql`${books.title} ILIKE ${searchPattern}`,
+          sql`${books.hook} ILIKE ${searchPattern}`,
+          sql`${books.summary} ILIKE ${searchPattern}`
+        ];
+        // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries involving joins
+        query = (query as any).where(and(eq(books.userId, userId), or(...searchConditions) as any));
       }
 
       // Apply sorting
@@ -584,7 +594,14 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         .where(eq(books.userId, userId));
         
       if (search) {
-        countQuery = createSearchFilter(search, ['title', 'hook', 'summary'])(countQuery);
+        const searchPattern = `%${search}%`;
+        const searchConditions = [
+          sql`${books.title} ILIKE ${searchPattern}`,
+          sql`${books.hook} ILIKE ${searchPattern}`,
+          sql`${books.summary} ILIKE ${searchPattern}`
+        ];
+        // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries involving joins
+        countQuery = (countQuery as any).where(and(eq(books.userId, userId), or(...searchConditions) as any));
       }
 
       const totalCountResult = await countQuery;
@@ -718,6 +735,11 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(userId);
+    
+    // Invalidate popular tags cache if keywords were updated
+    if (keywords !== undefined) {
+      await invalidatePopularTagsCache();
+    }
     
     // Invalidate explore cache if book status changed to/from active
     if (updateData.status || updatedBook.status === 'active') {
@@ -963,7 +985,8 @@ router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Re
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of books per page (default: 20)
  * @query search - Search query for title, summary, keywords
- * @query sortBy - Sort option: popular, newest, trending, top-picks (default: newest)
+ * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
+ * @query sortBy - Sort option: popular, newest, trending, top-picks, originals (default: newest)
  * @returns Paginated list of published books
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
@@ -971,13 +994,17 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy } = extractPaginationParams(req);
     const userId = req.userId || null;
     
+    // Extract tags from query parameter (comma-separated)
+    const tagsParam = req.query.tags as string;
+    const tags = tagsParam ? tagsParam.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0) : [];
+    
     // Validate and normalize sortBy parameter
     const normalizedSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
       ? (sortBy as BookSortOption) 
       : 'newest';
     
-    // Only cache page 1 without search and with default sort (rapidly changing)
-    const shouldCache = page === 1 && !search && normalizedSortBy === 'newest';
+    // Only cache page 1 without search, tags, and with default sort (rapidly changing)
+    const shouldCache = page === 1 && !search && tags.length === 0 && normalizedSortBy === 'newest';
     const cacheKey = CACHE_KEYS.EXPLORE_PAGE_1;
     
     // Fetch function for cache
@@ -986,12 +1013,38 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       let query = dbRead
         .select(getEnrichedBookSelect(userId))
         .from(books)
-        .leftJoin(users, eq(books.userId, users.userId))
-        .where(eq(books.status, 'active'));
+        .leftJoin(users, eq(books.userId, users.userId));
 
-      // Apply search filter if provided
+      // Build conditions array starting with status
+      const conditions = [eq(books.status, 'active')];
+
+      // Add search conditions if provided
       if (search) {
-        query = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(query);
+        const searchPattern = `%${search}%`;
+        const searchConditions = [
+          sql`${books.title} ILIKE ${searchPattern}`,
+          sql`${books.hook} ILIKE ${searchPattern}`,
+          sql`${books.summary} ILIKE ${searchPattern}`,
+          sql`${books.keywords} ILIKE ${searchPattern}`
+        ];
+        conditions.push(or(...searchConditions) as any);
+      }
+
+      // Add tags filter if provided (OR logic - books matching ANY tag)
+      if (tags.length > 0) {
+        const tagConditions = tags.map(tag => 
+          sql`${books.keywords} @> ${JSON.stringify([tag])}::jsonb`
+        );
+        conditions.push(or(...tagConditions) as any);
+      }
+
+      // Apply all conditions in a single where clause to avoid overwriting
+      // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries involving joins
+      if (search || tags.length > 0) {
+        query = (query as any).where(and(...conditions));
+      } else {
+        // Only apply status condition if no search and no tags
+        query = (query as any).where(eq(books.status, 'active'));
       }
 
       // Apply book-specific sorting
@@ -1000,11 +1053,37 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       // Get total count for pagination
       let countQuery = dbRead
         .select({ count: books.id })
-        .from(books)
-        .where(eq(books.status, 'active'));
-        
+        .from(books);
+
+      // Build count conditions array
+      const countConditions = [eq(books.status, 'active')];
+
+      // Add search conditions to count query
       if (search) {
-        countQuery = createSearchFilter(search, ['title', 'hook', 'summary', 'keywords'])(countQuery);
+        const searchPattern = `%${search}%`;
+        const searchConditions = [
+          sql`${books.title} ILIKE ${searchPattern}`,
+          sql`${books.hook} ILIKE ${searchPattern}`,
+          sql`${books.summary} ILIKE ${searchPattern}`,
+          sql`${books.keywords} ILIKE ${searchPattern}`
+        ];
+        countConditions.push(or(...searchConditions) as any);
+      }
+
+      // Add tags filter to count query
+      if (tags.length > 0) {
+        const tagConditions = tags.map(tag => 
+          sql`${books.keywords} @> ${JSON.stringify([tag])}::jsonb`
+        );
+        countConditions.push(or(...tagConditions) as any);
+      }
+
+      // Apply all count conditions in a single where clause
+      // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries
+      if (search || tags.length > 0) {
+        countQuery = (countQuery as any).where(and(...countConditions));
+      } else {
+        countQuery = (countQuery as any).where(eq(books.status, 'active'));
       }
 
       const totalCountResult = await countQuery;
@@ -1032,6 +1111,41 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     res.json(result);
   } catch (error) {
     handleApiError(res, "Failed to explore books", error);
+  }
+});
+
+/**
+ * GET /api/books/tags/popular
+ * 
+ * Fetches popular tags/keywords from books for filtering.
+ * Returns most frequently used tags across all published books.
+ * 
+ * @query limit - Maximum number of tags to return (default: 20, max: 100)
+ * @returns Array of popular tag names sorted by frequency
+ * 
+ * @example
+ * // Request
+ * GET /api/books/tags/popular?limit=10
+ * 
+ * // Response
+ * {
+ *   "tags": ["thriller", "mystery", "horror", "suspense", "detective", "psychological", "crime", "adventure"]
+ * }
+ */
+router.get("/tags/popular", async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    
+    // Use cache for popular tags
+    const tags = await withCache(
+      CACHE_KEYS.POPULAR_TAGS,
+      async () => await getPopularTags(limit),
+      CACHE_TTL.POPULAR_TAGS
+    );
+    
+    res.json({ tags });
+  } catch (error) {
+    handleApiError(res, "Failed to fetch popular tags", error);
   }
 });
 

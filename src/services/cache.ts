@@ -198,3 +198,13 @@ export async function invalidateUserProfileCache(userId: string): Promise<boolea
   const key = CACHE_KEYS.USER_PROFILE(userId);
   return deleteCache(key);
 }
+
+/**
+ * Invalidates popular tags cache
+ * 
+ * @returns true if successful, false otherwise
+ */
+export async function invalidatePopularTagsCache(): Promise<boolean> {
+  const key = CACHE_KEYS.POPULAR_TAGS;
+  return deleteCache(key);
+}

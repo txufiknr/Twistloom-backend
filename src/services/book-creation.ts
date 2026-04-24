@@ -25,6 +25,7 @@ export interface BookCreationParams {
   theme: string;
   mcCandidate?: StoryMCCandidate;
   generateCoverImage?: boolean;
+  isOriginal?: boolean;
 }
 
 /**
@@ -66,7 +67,7 @@ export async function createBookCore(
   params: BookCreationParams,
   onProgress?: ProgressCallback
 ): Promise<CreateBookResponse> {
-  const { userId, theme, mcCandidate, generateCoverImage } = params;
+  const { userId, theme, mcCandidate, generateCoverImage, isOriginal } = params;
 
   try {
     // STEP 1: VALIDATING THEME
@@ -115,7 +116,7 @@ export async function createBookCore(
     }
 
     // STEP 2: INITIALIZING BOOK
-    const result = await initializeBook({ userId, theme, mcCandidate, generateCoverImage }, onProgress);
+    const result = await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal }, onProgress);
 
     // Enrich actions with navigation metadata
     const enrichedResult = {

@@ -25,5 +25,5 @@ export function formatPageTextForPrompt(text: string): string {
  * @returns True if valid sort option
  */
 export function isValidBookSortOption(sortBy: string): sortBy is BookSortOption {
-  return ['popular', 'newest', 'trending', 'top-picks'].includes(sortBy);
+  return ['popular', 'newest', 'trending', 'top-picks', 'originals'].includes(sortBy);
 }

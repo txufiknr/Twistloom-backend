@@ -63,6 +63,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
     trendingScore: books.trendingScore,
     totalPages: books.totalPages,
     language: books.language,
+    topPick: books.topPick,
+    isOriginal: books.isOriginal,
     createdAt: books.createdAt,
     updatedAt: books.updatedAt,
     mc: books.mc,
@@ -198,6 +200,7 @@ export function handleThemeValidationError(
     detectedWords,
     detectedPatterns,
     aiExplanation,
+    aiConfidence,
   });
 
   return res.status(400).json(errorResponse);

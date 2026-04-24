@@ -12,9 +12,9 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { pages, books, userPageProgress, userFavorites } from "../db/schema.js";
+import { pages, books, userPageProgress } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
-import { and, eq, asc, or, desc, sql, count } from "drizzle-orm";
+import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookSortOption, BookStatus } from "../types/book.js";
@@ -573,6 +573,8 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     keywords: dbBook.keywords,
     status: dbBook.status || 'active',
     mc: dbBook.mc,
+    topPick: dbBook.topPick || undefined,
+    isOriginal: dbBook.isOriginal ?? false,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   };
@@ -785,7 +787,7 @@ export async function getPublicBookStats(): Promise<{
  * Applies book-specific sorting to a query based on sort option
  * 
  * @param query - Drizzle query builder
- * @param sortBy - Sort option (popular, newest, trending, top-picks)
+ * @param sortBy - Sort option (popular, newest, trending, top-picks, originals)
  * @returns Modified query builder with sorting applied
  * 
  * Behavior:
@@ -793,6 +795,7 @@ export async function getPublicBookStats(): Promise<{
  * - newest: Sorts by createdAt (latest first)
  * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
  * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
+ * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
  * 
  * @remarks
  * Uses `any` type for query parameter because Drizzle ORM query builder types
@@ -822,21 +825,8 @@ export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'):
     }
 
     case 'trending': {
-      // Subquery to count favorites per book
-      const favoritesSubquery = dbRead
-        .select({
-          bookId: userFavorites.bookId,
-          favoritedCount: count(userFavorites.userId).as('favoritedCount'),
-        })
-        .from(userFavorites)
-        .groupBy(userFavorites.bookId)
-        .as('favorites_count');
-
-      return query
-        .leftJoin(favoritesSubquery, eq(books.id, favoritesSubquery.bookId))
-        .orderBy(
-          sql`(${books.readCount} * 0.5 + ${books.likesCount} * 0.3 + COALESCE(${favoritesSubquery.favoritedCount}, 0) * 0.2) DESC`
-        );
+      // Sort by pre-calculated trendingScore (updated daily via cron job with time decay)
+      return query.orderBy(desc(books.trendingScore));
     }
 
     case 'top-picks': {
@@ -846,9 +836,67 @@ export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'):
         .orderBy(desc(books.topPick));
     }
 
+    case 'originals': {
+      // Filter by isOriginal: true (auto-generated books via cron job)
+      // Sort by creation date (newest first)
+      return query
+        .where(eq(books.isOriginal, true))
+        .orderBy(desc(books.createdAt));
+    }
+
     case 'newest':
     default: {
       return query.orderBy(desc(books.createdAt));
     }
+  }
+}
+
+/**
+ * Get popular tags/keywords from books
+ * 
+ * @param limit - Maximum number of popular tags to return (default: 20)
+ * @returns Promise that resolves to array of popular tag names sorted by frequency
+ * 
+ * Behavior:
+ * - Uses database-level aggregation to count keyword frequencies
+ * - Expands JSONB arrays and groups by keyword
+ * - Returns most popular tags sorted by frequency
+ * - Filters out empty arrays and null values
+ * 
+ * Performance:
+ * - Uses PostgreSQL's jsonb_array_elements for efficient array expansion
+ * - Aggregates at database level (O(n log n) vs O(n) in-memory)
+ * - Single query instead of query + in-memory processing
+ * 
+ * Example:
+ * ```typescript
+ * const tags = await getPopularTags(10);
+ * // Returns: ["thriller", "mystery", "horror", "suspense", ...]
+ * ```
+ */
+export async function getPopularTags(limit: number = 20): Promise<string[]> {
+  try {
+    // Use database-level aggregation for efficient keyword counting
+    const result = await dbRead.execute(sql`
+      SELECT keyword, COUNT(*) as count
+      FROM (
+        SELECT jsonb_array_elements_text(${books.keywords}) as keyword
+        FROM ${books}
+        WHERE ${books.keywords} IS NOT NULL 
+          AND jsonb_array_length(${books.keywords}) > 0
+      ) expanded
+      WHERE keyword IS NOT NULL AND keyword != ''
+      GROUP BY keyword
+      ORDER BY count DESC
+      LIMIT ${limit}
+    `);
+
+    // Extract tag names from result
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tags = result.rows.map((row: any) => row.keyword);
+    return tags;
+  } catch (error) {
+    console.error('[getPopularTags] Failed to fetch popular tags:', getErrorMessage(error));
+    return [];
   }
 }

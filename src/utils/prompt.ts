@@ -1911,7 +1911,7 @@ export async function initializeBook(
   params: InitializeBookParams,
   onProgress?: ProgressCallback
 ): Promise<InitializeBookResult> {
-  const { userId, theme, mcCandidate, generateCoverImage = false } = params;
+  const { userId, theme, mcCandidate, generateCoverImage = false, isOriginal = false } = params;
 
   try {
     // Emit book initialization start event
@@ -1975,6 +1975,7 @@ export async function initializeBook(
       summary,
       keywords,
       mc,
+      isOriginal,
     };
     console.log(`[initializeBook] 📔 newBookData:`, newBookData);
     const dbBook = await insertBook(newBookData);

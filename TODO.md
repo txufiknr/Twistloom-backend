@@ -1,3 +1,8 @@
+cron job:
+[ ] Twistloom originals weekly cron
+[ ] Cleanup orphaned user from /signup
+
+TODO:
 [ ] similar books: jina embedding
 [ ] user preferences schema (interests)
 [ ] user settings schema (font size)

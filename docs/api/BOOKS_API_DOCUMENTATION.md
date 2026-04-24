@@ -2,42 +2,272 @@
 
 ## Overview
 
-The Books API provides endpoints for managing psychological thriller books, including creation, reading, social interactions (likes, favorites, comments), and exploration. All endpoints support both authenticated users and guest users where applicable.
+The Books API provides endpoints for managing psychological thriller books, including creation, reading, social interactions (likes, favorites, comments), and exploration. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
 **Base URL:** `/api/books`
 
 **Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Guest users can access read-only endpoints and create books (guest data migrates on login).
 
+**Response Pattern:**
+- GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ book: {...} }`, `{ books: [...] }`)
+- POST endpoints: Return created resources with 201 status (e.g., `{ book: {...} }`, `{ page: {...} }`)
+- PUT endpoints: Return updated resources with 200 status (e.g., `{ book: {...} }`)
+- DELETE endpoints: Return simple messages or operation metadata (e.g., `{ message: "..." }`)
+
+---
+
+## Type Definitions
+
+### BookStats
+
+Book statistics for display.
+
+```typescript
+interface BookStats {
+  likesCount: number;          // Total likes for this book
+  readCount: number;           // Total reads/sessions for this book
+  commentsCount: number;       // Total comments for this book
+  branchesCount: number;       // Total branches in this book
+}
+```
+
+### Book
+
+Complete book data as stored in database.
+
+```typescript
+interface Book {
+  id: string;                  // Book's unique identifier (UUID)
+  userId: string;              // Author's user ID
+  slug?: string;               // SEO-friendly URL identifier
+  title: string;               // Book title
+  totalPages: number;         // Total number of pages in the book
+  language: string;           // Book language
+  hook: string;               // Hook text (1-2 sentences, intriguing)
+  summary: string;            // Summary (50-100 words, sets up psychological tension)
+  image?: string;              // Cover image ImageKit URL
+  imageId?: string;           // ImageKit file ID for deletion
+  trendingScore: number;      // Trending score for book discovery
+  keywords: string[];         // Keywords for book discovery
+  status: 'active' | 'archived' | 'draft';
+  mc: StoryMC;                // Main character profile with name, age, gender
+  stats?: BookStats;           // Book statistics
+  topPick?: Date;             // When the book was marked as top pick
+  isOriginal: boolean;         // Whether this book is an auto-generated original (via cron job)
+  createdAt: Date;             // When the book was created
+  updatedAt: Date;             // When the book was last updated
+}
+```
+
+### EnrichedBookData
+
+Enriched book data with author info and engagement metrics.
+
+```typescript
+interface EnrichedBookData {
+  id: string;
+  userId: string;
+  slug: string | null;
+  title: string;
+  hook: string | null;
+  summary: string | null;
+  image: string | null;
+  keywords: string[] | null;
+  status: string | null;
+  trendingScore: number | null;
+  totalPages: number | null;
+  language: string | null;
+  topPick: Date | null;
+  isOriginal: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  mc: Record<string, unknown>;
+  author: User | null;
+  stats: BookStats;
+  isLiked: boolean;
+  isRead: boolean;
+  lastReadAt?: Date | null;
+  lastPage?: string | null;
+}
+```
+
+### StoryPage
+
+Story page structure for AI-generated content.
+
+```typescript
+interface StoryPage {
+  text: string;               // Main story page content (60-120 words, first-person POV)
+  mood?: Mood;                // Current emotional atmosphere
+  place?: string;             // Current place where the story is taking place
+  timeOfDay?: string;         // Current time mark (e.g. 'night', 'HH:mm', 'unknown')
+  charactersPresent?: string[]; // Characters present in the page
+  keyEvents?: string[];       // Key events that occurred in the page
+  importantObjects?: string[]; // Important objects mentioned in the page
+  actions: Action[];          // Next branching actions for user choice (2-3 options)
+  addTraumaTag?: string;      // New trauma tag based on page events
+  characterUpdates?: CharacterUpdates; // Updates to characters (new and existing)
+  relationshipUpdates?: RelationshipUpdate[]; // Updates to character relationships
+  placeUpdates?: PlaceUpdates; // Updates to places (new and existing)
+  threadUpdates?: ThreadUpdates; // Updates to story threads
+  aiProvider?: AIChatProvider | 'none'; // AI provider used for generating the page content
+  aiModel?: string;           // AI model used for generating the page content
+}
+```
+
+### Action
+
+User action choice for story progression.
+
+```typescript
+interface Action {
+  text: string;               // Action text
+  type: ActionType;          // Category of action for psychological impact
+  hint: ActionHint;          // Consequence hint for the action (for AI guidance)
+  pageId?: string;           // Destination page ID for the action
+}
+```
+
+### EnrichedAction
+
+Action with navigation metadata for frontend URL building.
+
+```typescript
+interface EnrichedAction extends Action {
+  nextPageNumber?: number;   // Next page number this action leads to
+  nextBranchId?: string;     // Branch ID for the next page
+}
+```
+
+### ActionType
+
+Available action types for user choices.
+
+```typescript
+type ActionType = 
+  | 'explore'     // Investigate, examine, search, discover, observe, learn
+  | 'escape'      // Run away, hide, avoid danger, withdraw, panic
+  | 'social'      // Interact, communicate, help, console, cooperate, teach
+  | 'risk'        // Take chances, make bold moves, challenge, resist
+  | 'ignore'      // Avoid engagement, dismiss events, submit, surrender
+  | 'attack'      // Aggressive actions, fight, confront, destroy
+  | 'deceive'     // Lie, manipulate, hide truth, betray
+  | 'protect'     // Defend others, shield from harm, sacrifice
+  | 'create'      // Build something new, artistic expression, innovate
+  | 'heal'        // Repair damage, restore health/trust
+  | 'dialogue'    // Interact with other characters, self-talk, mutter
+  | 'custom'      // Custom prompt from reader
+  | 'other';      // Catch-all for uncategorized actions
+```
+
+### Mood
+
+Available moods for story pages.
+
+```typescript
+type Mood = 
+  | 'calm'         // Peaceful, relaxed atmosphere
+  | 'uneasy'       // Uncomfortable, slightly disturbed
+  | 'fear'         // Scared, frightened
+  | 'eerie'        // Unsettling, strange atmosphere
+  | 'tense'        // High tension, anticipation of danger
+  | 'dread'        // Deep feeling of impending doom
+  | 'panic'        // Overwhelming fear and urgency
+  | 'confusion'    // Disorientation, unclear reality
+  | 'suspicious'   // Distrust, feeling of being watched
+  | 'hopeless'     // No escape, despair
+  | 'relief'       // Temporary safety or resolution
+  | 'sad'          // Grief, loss, melancholy
+  | 'distorted'    // Warped perception, unreality
+  | 'urgency'      // Time pressure, immediate need to act
+  | 'shock'        // Sudden revelation or horror
+  | 'other';       // Catch-all for unique emotional states
+```
+
+### Session
+
+User reading session information.
+
+```typescript
+interface Session {
+  id: string;                  // Session's unique identifier
+  userId: string;              // User ID
+  bookId: string;              // Book ID
+  pageId: string;              // Current page ID
+  previousPageId?: string;     // Previous page ID
+  status: 'active' | 'completed';
+  createdAt: Date;             // Creation timestamp
+  updatedAt: Date;             // Last update timestamp
+}
+```
+
+### PaginationMeta
+
+Pagination metadata.
+
+```typescript
+interface PaginationMeta {
+  page: number;                // Current page number
+  limit: number;               // Items per page
+  totalCount: number;         // Total number of items
+  totalPages: number;          // Total number of pages
+  hasNext: boolean;            // Whether next page exists
+  hasPrevious: boolean;        // Whether previous page exists
+}
+```
+
+### BookSortOption
+
+Book sorting options for explore endpoint.
+
+```typescript
+type BookSortingOptions = 
+  | 'popular'     // Sorts by branchesCount/totalPages ratio (most branched stories)
+  | 'newest'       // Sorts by createdAt timestamp (latest books)
+  | 'trending'     // Sorts by pre-calculated trendingScore (updated daily via cron job with time decay)
+  | 'top-picks'    // Sorts by latest topPick timestamp (only books marked as editor's picks)
+  | 'originals';   // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+```
+
 ---
 
 ## Table of Contents
 
-1. [Book Management](#book-management)
+1. [Type Definitions](#type-definitions)
+2. [Frontend Integration](#frontend-integration)
+3. [Book Management](#book-management)
    - [Create Book](#post-apibooks)
    - [Create Book with SSE](#post-apibooksstream)
    - [Get User's Books](#get-apibooks)
    - [Get Book by ID](#get-apibooksidentifier)
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
-2. [Book Reading](#book-reading)
+4. [Book Reading](#book-reading)
    - [Generate New Pages](#post-apibooksidentifiergenerate)
    - [Get Specific Page](#get-apibooksidentifierbranchidpage)
    - [Start Reading Session](#post-apibooksidsessions)
-3. [Social Interactions](#social-interactions)
+5. [Social Interactions](#social-interactions)
    - [Like Book](#post-apibooksidlike)
    - [Unlike Book](#delete-apibooksidlike)
    - [Favorite Book](#post-apibooksidfavorite)
    - [Unfavorite Book](#delete-apibooksidfavorite)
-4. [Comments](#comments)
+6. [Comments](#comments)
    - [Get Book Comments](#get-apibooksidcomments)
    - [Create Comment](#post-apibooksidcomments)
    - [Delete Comment](#delete-apicommentsid)
-5. [Exploration](#exploration)
+7. [Exploration](#exploration)
    - [Explore Books](#get-apibooksexplore)
+   - [Get Popular Tags](#get-apibookstagspopular)
    - [Get Book Stats](#get-apibooksstats)
-6. [Utilities](#utilities)
+8. [Utilities](#utilities)
    - [Generate Book Prompt](#get-apibooksprompt)
    - [Insert Book (Test)](#post-apibooksinsert)
+9. [Error Handling](#error-handling)
+10. [HTTP Headers](#http-headers)
+11. [Caching Strategy](#caching-strategy)
+12. [Rate Limiting](#rate-limiting)
+13. [Authentication](#authentication)
+14. [Changelog](#changelog)
 
 ---
 
@@ -764,7 +994,7 @@ Deletes a comment. Only the comment author can delete their own comments.
 
 ### GET /api/books/explore
 
-Retrieves all published books for exploration. Supports both guest and authenticated users. Includes search, filtering, and pagination capabilities.
+Retrieves all published books for exploration. Supports both guest and authenticated users. Includes search, tags filtering, sorting, and pagination capabilities.
 
 **Authentication:** Optional (via `optionalAuth`)
 
@@ -772,7 +1002,8 @@ Retrieves all published books for exploration. Supports both guest and authentic
 - `page` (number, optional): Page number (default: 1)
 - `limit` (number, optional): Books per page (default: 20)
 - `search` (string, optional): Search query for title, summary, keywords
-- `sortBy` (string, optional): Sort option: popular, newest, trending, top-picks (default: newest)
+- `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
+- `sortBy` (string, optional): Sort option: popular, newest, trending, top-picks, originals (default: newest)
 
 **Response (200 OK):**
 ```json
@@ -821,6 +1052,35 @@ Retrieves all published books for exploration. Supports both guest and authentic
   }
 }
 ```
+
+---
+
+### GET /api/books/tags/popular
+
+Fetches popular tags/keywords from books for filtering. Returns most frequently used tags across all published books. Useful for building tag filters and tag clouds.
+
+**Authentication:** Not required
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of tags to return (default: 20, max: 100)
+
+**Response (200 OK):**
+```json
+{
+  "tags": ["thriller", "mystery", "horror", "suspense", "detective", "psychological", "crime", "adventure"]
+}
+```
+
+**Example:**
+```
+GET /api/books/tags/popular?limit=10
+```
+
+**Behavior:**
+- Queries all books' keywords (JSONB array)
+- Flattens and counts keyword occurrences
+- Returns most popular tags sorted by frequency
+- Filters out empty arrays and null values
 
 ---
 
@@ -953,28 +1213,45 @@ All endpoints follow consistent error response formats:
 }
 ```
 
+**HTTP Status Codes:**
+- `200 OK`: Successful GET or PUT request
+- `201 Created`: Successful POST request
+- `400 Bad Request`: Invalid request data
+- `401 Unauthorized`: Authentication required
+- `403 Forbidden`: Permission denied
+- `404 Not Found`: Resource not found
+- `500 Internal Server Error`: Server error
+
 ---
 
-## Rate Limiting
+## HTTP Headers
 
-Most endpoints are rate-limited to prevent abuse:
-- **Authenticated endpoints**: User-based rate limiting via Upstash Redis
-- **Unauthenticated endpoints**: IP-based rate limiting via LRU cache (5 attempts/minute default)
-- **Book creation**: Limited to prevent spam
-- **Comment creation**: Limited to prevent spam
+### Request Headers
+
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (`android`, `ios`, `web`)
+- `Content-Type`: `application/json` or `multipart/form-data` (for file uploads)
+- `Cookie`: NextAuth session cookie (for authenticated endpoints)
+
+### Response Headers
+
+- `Cache-Control`: Cache directives (varies by endpoint)
+  - `public, max-age=60, s-maxage=60, stale-while-revalidate=30` for public explore endpoint
+  - `no-cache` for SSE streaming endpoint
 
 ---
 
-## Caching
+## Caching Strategy
 
 The API implements multi-level caching for performance:
-- **Redis caching**: User books, explore page 1, user profiles
-- **HTTP caching**: Explore endpoint supports CDN caching with Cache-Control headers
-- **Cache invalidation**: Automatic invalidation on book updates, likes, favorites, comments
+- **Redis caching**: User books, explore page 1, user profiles, popular tags
+- **HTTP caching**: Public explore endpoint uses CDN/edge caching with stale-while-revalidate
+- **Cache invalidation**: Automatic invalidation on book creation, updates, deletions, likes, favorites, comments
 
 **Cache TTLs:**
-- User books: 5 minutes
-- Explore page 1: 1 minute
+- User books: 5 minutes (PER_USER_BOOKS)
+- Explore page 1: 1 minute (EXPLORE_PAGE_1)
+- Popular tags: 10 minutes
 - User profiles: 5 minutes
 
 ---
@@ -993,6 +1270,32 @@ Most endpoints require authentication via NextAuth JWT cookies. The middleware a
 2. Guest generates story → Associated with guest user ID
 3. Guest logs in → Data migrates to authenticated user
 4. Guest user deleted → Authenticated user takes over
+
+---
+
+## Twistloom Originals
+
+Twistloom Originals are auto-generated psychological thriller books created by a weekly cron job. These books are marked with `isOriginal: true` and are discoverable via the "originals" sort option in the explore endpoint.
+
+**Key Features:**
+- **Auto-generated**: Created weekly via GitHub Actions cron job (every Monday at 9:00 UTC)
+- **AI-powered themes**: Each original book uses a unique AI-generated theme
+- **System-owned**: Owned by a system user ID (configured via `SYSTEM_USER_ID` environment variable)
+- **Cover images**: Original books include AI-generated cover images
+- **Discoverable**: Available via the "originals" sorting option on the explore endpoint
+
+**Sorting Option:**
+- `sortBy: "originals"` - Filters by `isOriginal: true`, sorts by `createdAt` (newest first)
+
+**Implementation:**
+- Cron script: `src/cron/generate-originals.ts`
+- GitHub workflow: `.github/workflows/generate-originals.yml`
+- Database field: `is_original` (boolean, default: false)
+
+**Frontend Integration:**
+- Display "Twistloom Original" badge on book cards when `isOriginal: true`
+- Use the "originals" sort option to show only auto-generated books
+- Original books can be read, liked, favorited, and commented like user-created books
 
 ---
 
@@ -1018,6 +1321,7 @@ CREATE TABLE "books" (
   "likes_count" integer DEFAULT 0 NOT NULL,
   "read_count" integer DEFAULT 0 NOT NULL,
   "top_pick" timestamp with time zone,
+  "is_original" boolean DEFAULT false NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -1084,38 +1388,93 @@ curl https://api.twistloom.com/api/books \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
-**Like a book:**
-```bash
-curl -X POST https://api.twistloom.com/api/books/book123/like \
-  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
-```
-
-**Favorite a book:**
-```bash
-curl -X POST https://api.twistloom.com/api/books/book123/favorite \
-  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
-```
-
-**Create a comment:**
-```bash
-curl -X POST https://api.twistloom.com/api/books/book123/comments \
-  -H "Content-Type: application/json" \
-  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
-  -d '{
-    "content": "This story is amazing!"
-  }'
-```
-
 ---
 
 ## Changelog
 
-### v1.0.0 (2023-01-01)
-- Initial book API implementation
-- Book CRUD operations
-- Page generation and reading
-- Session management
-- Explore endpoint with search and filtering
+### v2.1.0 (2024-04-24)
+- Added Twistloom Originals feature for weekly auto-generated books
+- Added `isOriginal` boolean field to Book type (marks auto-generated books via cron job)
+- Added `isOriginal` field to EnrichedBookData type
+- Added "originals" sorting option to BookSortOption (filters by isOriginal: true, sorts by createdAt newest first)
+- Updated database schema to include `is_original` column (boolean, default: false)
+- Updated `mapBookFromDb()` function to include `isOriginal` and `topPick` fields
+- Updated `getEnrichedBookSelect()` to include `isOriginal` and `topPick` in query results
+- Created weekly cron job script (`src/cron/generate-originals.ts`) for automatic book generation
+- Created GitHub Actions workflow (`.github/workflows/generate-originals.yml`) scheduled for every Monday at 9:00 UTC
+- Added Twistloom Originals documentation section with feature overview and frontend integration notes
+- Fixed `topPick` type in EnrichedBookData from `Date | undefined` to `Date | null` to match database schema
+- Note: `isOriginal` is not exposed in public API - only set internally by cron job
+- Refactored trending score calculation from query-based to cron-based approach
+- Created daily cron job script (`src/cron/update-trending-scores.ts`) for trending score updates with time decay
+- Updated trending sorting to use pre-calculated `trendingScore` column (improved performance)
+- Added time decay logic to trending scores (newer books weighted higher)
+- Fixed `user_auth` index predicates (removed `NOW()` function to resolve PostgreSQL error)
+- Added database indexes to support all sorting options (newest, top-picks, originals)
+
+### v2.0.0 (2024-04-24)
+- Consolidated API documentation from BACKEND_BOOK_API_SPECIFICATION.md
+- Added comprehensive Type Definitions section with TypeScript interfaces from src/types/book.ts and src/types/story.ts
+- Added ActionType enum with all available action types for psychological impact
+- Added Mood enum with all available emotional atmospheres
+- Added BookSortOption type with sorting options for explore endpoint
+- Added HTTP Headers section with request/response header documentation
+- Updated Caching Strategy section with Redis caching details and cache key references
+- Updated Rate Limiting section with specific rate limits per endpoint type
+- Enhanced Error Handling documentation with HTTP status codes
+- Updated Response Pattern section to align with industry-standard API patterns
+- Maintained all existing endpoints and functionality
+- Aligned documentation with actual canonical route implementation in src/routes/books.ts
+- Verified pagination field name `totalCount` matches actual implementation
+- Added comprehensive frontend integration notes
+```
+
+---
+
+## HTTP Headers
+
+### Request Headers
+
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (`android`, `ios`, `web`)
+- `Content-Type`: `application/json` or `multipart/form-data` (for file uploads)
+- `Cookie`: NextAuth session cookie (for authenticated endpoints)
+
+### Response Headers
+
+- `Cache-Control`: Cache directives (varies by endpoint)
+  - `public, max-age=60, s-maxage=60, stale-while-revalidate=30` for public explore endpoint
+  - `no-cache` for SSE streaming endpoint
+
+---
+
+## Caching Strategy
+
+- User's books list: Cached with TTL of 5 minutes (PER_USER_BOOKS)
+- Explore page 1: Cached with TTL of 1 minute (EXPLORE_PAGE_1)
+- Cache is invalidated on book creation, updates, and deletions
+- Public explore endpoint uses CDN/edge caching with stale-while-revalidate
+
+---
+
+## Rate Limiting
+
+Rate limits are enforced on a per-user basis to prevent abuse:
+
+- GET endpoints: 100 requests per minute
+- POST/PUT/DELETE endpoints: 50 requests per minute
+- SSE streaming endpoint: 5 concurrent connections per user
+
+---
+
+## Version History
+
+### v1.2.0 (2025-04-24)
+- Added tags filtering to explore endpoint (OR logic for multiple tags)
+- Added GET /api/books/tags/popular endpoint for popular tags discovery
+- Added 'originals' sort option
+- Updated session endpoint to support optional pageId (auto-finds page 1)
+- Enhanced guest user flow with session management
 
 ### v1.1.0 (2023-04-23)
 - Added like/unlike book endpoints

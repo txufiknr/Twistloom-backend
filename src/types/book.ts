@@ -55,6 +55,8 @@ export type Book = {
   stats?: BookStats;
   /** When the book was marked as top pick */
   topPick?: Date;
+  /** Whether this book is an auto-generated original (via cron job) */
+  isOriginal: boolean;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
@@ -77,7 +79,8 @@ export interface EnrichedBookData {
   trendingScore: number | null;
   totalPages: number | null;
   language: string | null;
-  topPick?: Date;
+  topPick: Date | null;
+  isOriginal: boolean;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
@@ -141,6 +144,8 @@ export type InitializeBookParams = {
   mcCandidate?: StoryMCCandidate;
   /** Whether to generate a cover image for the book */
   generateCoverImage?: boolean;
+  /** Whether this book is an auto-generated original (via cron job) */
+  isOriginal?: boolean;
 };
 
 /**
@@ -176,4 +181,4 @@ export interface CreateBookResponse {
  * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
  * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
  */
-export type BookSortOption = 'popular' | 'newest' | 'trending' | 'top-picks';
+export type BookSortOption = 'popular' | 'newest' | 'trending' | 'top-picks' | 'originals';

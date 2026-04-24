@@ -228,10 +228,10 @@ export const userAuth = pgTable(
   (t) => [
     // Index for account lockout queries
     index("user_auth_lock_until_idx").on(t.lockUntil).where(sql`${t.lockUntil} IS NOT NULL`),
-    // Index for password reset queries (excludes expired tokens)
-    index("user_auth_password_reset_token_idx").on(t.passwordResetToken).where(sql`${t.passwordResetToken} IS NOT NULL AND ${t.passwordResetExpires} > NOW()`),
-    // Index for email verification queries (excludes expired tokens)
-    index("user_auth_email_verification_token_idx").on(t.emailVerificationToken).where(sql`${t.emailVerificationToken} IS NOT NULL AND ${t.emailVerificationExpires} > NOW()`),
+    // Index for password reset queries
+    index("user_auth_password_reset_token_idx").on(t.passwordResetToken).where(sql`${t.passwordResetToken} IS NOT NULL`),
+    // Index for email verification queries
+    index("user_auth_email_verification_token_idx").on(t.emailVerificationToken).where(sql`${t.emailVerificationToken} IS NOT NULL`),
   ]
 );
 
@@ -272,7 +272,8 @@ export const books = pgTable(
     image, // Cover image ImageKit URL
     imageId, // ImageKit file ID for deletion
     trendingScore: real("trending_score").default(0),
-    keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['cardiff mosque', 'peel street mosque', 'world war ii', 'muslim community']
+    isOriginal: boolean("is_original").notNull().default(false),
+    keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['thriller', 'action', 'crime', 'horror', 'killer', 'murder', 'mystery', 'suspense']
     status: text("status").$type<BookStatus | null>().default('active'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
@@ -282,32 +283,22 @@ export const books = pgTable(
     updatedAt,
   },
   (t) => [
-    index("books_trending_score_idx").on(t.trendingScore),
+    // Optimize trending sorting by pre-calculated score (cron-based with time decay)
+    index("books_trending_score_idx").on(t.trendingScore.desc()),
+    // Optimize newest sorting by creation date
+    index("books_created_at_idx").on(t.createdAt.desc()),
+    // Optimize top-picks sorting
+    index("books_top_pick_idx").on(t.topPick.desc()).where(sql`${t.topPick} IS NOT NULL`),
+    // Optimize originals sorting (filter by isOriginal, sort by createdAt)
+    index("books_is_original_idx").on(t.isOriginal, t.createdAt.desc()),
     // Optimize time-window queries
     index("books_recent_idx").on(t.updatedAt),
-    // Optimize trending queries with compound ordering
-    index("books_trending_idx").on(
-      t.status.desc(),
-      t.trendingScore.desc(),
-      t.updatedAt.desc()
-    ),
     // Index for user book queries
     index("books_user_idx").on(t.userId),
     // Index for status filtering
     index("books_status_idx").on(t.status),
     // Index for language filtering
     index("books_language_idx").on(t.language),
-    // // Optimize cursor-based pagination (with status filter)
-    // index("books_cursor_idx").on(
-    //   t.updatedAt.desc(),
-    //   t.id.desc()
-    // ),
-    // // Optimize cursor-based pagination with status
-    // index("books_cursor_status_idx").on(
-    //   t.status,
-    //   t.updatedAt.desc(),
-    //   t.id.desc()
-    // ),
   ]
 );
 

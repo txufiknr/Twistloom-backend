@@ -72,6 +72,8 @@ export const CACHE_TTL = {
   PER_USER_BOOKS: 5 * 60,
   /** Explore page 1: 2 minutes (rapidly changing) */
   EXPLORE_PAGE_1: 2 * 60,
+  /** Popular tags: 10 minutes (changes slowly) */
+  POPULAR_TAGS: 10 * 60,
   /** User profile: 2 minutes */
   USER_PROFILE: 2 * 60,
   /** Default: 1 minute */
@@ -88,6 +90,8 @@ export const CACHE_KEYS = {
   USER_BOOKS_PATTERN: (userId: string) => `books:user:${userId}:*`,
   /** Explore page 1: books:explore:page:1 */
   EXPLORE_PAGE_1: 'books:explore:page:1',
+  /** Popular tags: books:tags:popular */
+  POPULAR_TAGS: 'books:tags:popular',
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,
 } as const;
