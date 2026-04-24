@@ -746,16 +746,21 @@ export async function reconstructStoryState(
           text: 'Continue to the next page',
           type: 'none' satisfies ActionHintType
         },
-        // TODO: fill it with current pageId and branchId
         destination: {}
       } satisfies Action;
-
+      
       currentState.pageHistory = branchPath.pages.map((page, index) => {
         // Root page has no parent, so no selectedAction
         if (index === 0) {
           return {
             ...page,
-            selectedAction: fallbackAction
+            selectedAction: {
+              ...fallbackAction,
+              destination: {
+                pageId: page.id,
+                branchId: page.branchId
+              }
+            }
           };
         }
 
@@ -774,7 +779,13 @@ export async function reconstructStoryState(
         console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
         return {
           ...page,
-          selectedAction: fallbackAction
+          selectedAction: {
+            ...fallbackAction,
+            destination: {
+              pageId: page.id,
+              branchId: page.branchId
+            }
+          }
         };
       });
       

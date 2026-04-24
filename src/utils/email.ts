@@ -17,6 +17,7 @@
  */
 
 import { Resend } from 'resend';
+import { APP_NAME } from '../config/constants';
 
 // Initialize Resend client
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -46,7 +47,7 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string): P
     await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
       to: email,
-      subject: 'Reset Your Twistloom Password',
+      subject: `Reset Your ${APP_NAME} Password`,
       html: `
         <!DOCTYPE html>
         <html>
@@ -94,7 +95,7 @@ export async function sendVerificationEmail(email: string, verificationUrl: stri
     await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
       to: email,
-      subject: 'Verify Your Twistloom Email',
+      subject: `Verify Your ${APP_NAME} Email`,
       html: `
         <!DOCTYPE html>
         <html>
@@ -141,22 +142,22 @@ export async function sendWelcomeEmail(email: string, username: string): Promise
     await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
       to: email,
-      subject: 'Welcome to Twistloom!',
+      subject: `Welcome to ${APP_NAME}!`,
       html: `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Welcome to Twistloom</title>
+          <title>Welcome to ${APP_NAME}</title>
         </head>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
           <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h1 style="color: #333;">Welcome to Twistloom, ${username}!</h1>
-            <p>Thank you for joining Twistloom. We're excited to have you on board!</p>
+            <h1 style="color: #333;">Welcome to ${APP_NAME}, ${username}!</h1>
+            <p>Thank you for joining ${APP_NAME}. We're excited to have you on board!</p>
             <p>Start creating amazing interactive stories with our AI-powered platform.</p>
             <p>If you have any questions, feel free to reach out to our support team.</p>
-            <p>Best,<br>The Twistloom Team</p>
+            <p>Best,<br>The ${APP_NAME} Team</p>
           </div>
         </body>
         </html>
