@@ -962,6 +962,10 @@ router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Reque
     // Mark page as visited
     await markPageVisited(userId, book.id, pageId, previousPageId, action);
 
+    // TODO: stats
+    // - you're 2,000th visitor
+    // - you're 2% of people ever seen this page
+
     res.json({ pageId, branchId: pageBranchId, page: pageNumber });
   } catch (error) {
     handleApiError(res, "Failed to mark page visited", error);
