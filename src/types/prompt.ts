@@ -1,6 +1,11 @@
 import type { Book } from "./book.js";
 import type { StoryState, ActionedStoryPage, UserStoryPage } from "./story.js";
 
+export type GenerateBookCreationPromptParams = {
+  logPrompts?: boolean,
+  signal?: AbortSignal;
+};
+
 /**
  * Parameters for building the next page in a story
  */

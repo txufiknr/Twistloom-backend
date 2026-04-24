@@ -30,7 +30,7 @@ import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and, desc, sql, or } from "drizzle-orm";
-import { chooseAction, generateBookCreationPrompt } from "../utils/prompt.js";
+import { chooseAction, generateBookCreationPromptStream } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
@@ -449,7 +449,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
 
   try {
     // Get the stream from the service
-    const stream = await generateBookCreationPrompt(abortController.signal);
+    const stream = await generateBookCreationPromptStream({signal: abortController.signal});
 
     // Stream chunks to client
     for await (const chunk of stream) {

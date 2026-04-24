@@ -10,7 +10,7 @@
  * Should be run once per day via cron job
  */
 import { getErrorMessage } from "../utils/error.js";
-import { generateBookCreationPromptText } from "../utils/prompt.js";
+import { generateBookCreationPrompt } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
 
@@ -24,7 +24,7 @@ export async function generateOriginalBook(): Promise<void> {
 
     // Step 1: Generate creative theme using AI (non-streaming for cron job)
     console.log("[generate-originals] 💭 Generating creative theme...");
-    const theme = await generateBookCreationPromptText();
+    const theme = await generateBookCreationPrompt({ logPrompts: true });
     console.log(`[generate-originals] 💭 Generated theme: "${theme.substring(0, 100)}${theme.length > 100 ? '...' : ''}"`);
 
     // Step 2: Create book with the generated theme

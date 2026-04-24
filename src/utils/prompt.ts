@@ -20,14 +20,14 @@ import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookRe
 import { deepEqualSimple } from "./parser.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage } from "../services/book.js";
 import { getStoryProgress, insertStoryState, insertUserPageProgress, setActiveSession } from "../services/story.js";
-import type { BuildNextPageParams, ChooseActionParams } from "../types/prompt.js";
+import type { BuildNextPageParams, ChooseActionParams, GenerateBookCreationPromptParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
 import { shouldCreateSnapshot, createStateSnapshot, getLastSnapshotPage } from "../services/snapshots.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
 import type { StoryThread } from "../types/thread.js";
-import { aiStreamSSE } from "./ai-chat-stream.js";
+import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
 
@@ -2658,33 +2658,11 @@ Do NOT mention this checklist.` : '';
 }
 
 /**
- * Generates a creative book creation prompt using AI streaming
+ * Generates the prompts for book creation theme generation
  * 
- * This function generates engaging story prompts that users can use as inspiration
- * for creating new books. The output includes story theme, optional main character details,
- * and story elements. Character ages are constrained to MIN_CHARACTER_AGE and MAX_CHARACTER_AGE.
- * 
- * @param signal - Optional AbortSignal for cancellation
- * @returns ReadableStream that yields SSE-formatted chunks of the generated prompt
- * 
- * @example
- * ```typescript
- * const stream = await generateBookCreationPrompt();
- * res.setHeader('Content-Type', 'text/event-stream');
- * for await (const chunk of stream) {
- *   res.write(chunk);
- * }
- * ```
- * 
- * Example output format:
- * ```
- * A psychological thriller about a disgraced investigative journalist who returns to her childhood hometown to uncover the truth behind a series of mysterious disappearances at an abandoned asylum, only to discover that the facility's dark experiments never truly ended and someone is watching her every move from the shadows.
- * MC: Elena Rodriguez, Female, 31, Former award-winning journalist with a sharp wit and haunted past, driven by redemption and an obsessive need for truth
- * Tone: Dark, suspenseful, psychological horror with elements of conspiracy and paranoia
- * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
- * ```
+ * @returns Object containing systemPrompt and userPrompt for book creation
  */
-export async function generateBookCreationPrompt(signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
+function getBookCreationPrompts(): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
 
 Your task is to generate a compelling story prompt that includes:
@@ -2711,21 +2689,55 @@ Only the theme is required. All other fields are optional - include them only if
 
   const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing.`;
 
+  return { systemPrompt, userPrompt };
+}
+
+/**
+ * Generates a creative book creation prompt using AI streaming
+ * 
+ * This function generates engaging story prompts that users can use as inspiration
+ * for creating new books. The output includes story theme, optional main character details,
+ * and story elements. Character ages are constrained to MIN_CHARACTER_AGE and MAX_CHARACTER_AGE.
+ * 
+ * @param signal - Optional AbortSignal for cancellation
+ * @returns ReadableStream that yields SSE-formatted chunks of the generated prompt
+ * 
+ * @example
+ * ```typescript
+ * const stream = await generateBookCreationPromptStream();
+ * res.setHeader('Content-Type', 'text/event-stream');
+ * for await (const chunk of stream) {
+ *   res.write(chunk);
+ * }
+ * ```
+ * 
+ * Example output format:
+ * ```
+ * A psychological thriller about a disgraced investigative journalist who returns to her childhood hometown to uncover the truth behind a series of mysterious disappearances at an abandoned asylum, only to discover that the facility's dark experiments never truly ended and someone is watching her every move from the shadows.
+ * MC: Elena Rodriguez, Female, 31, Former award-winning journalist with a sharp wit and haunted past, driven by redemption and an obsessive need for truth
+ * Tone: Dark, suspenseful, psychological horror with elements of conspiracy and paranoia
+ * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
+ * ```
+ */
+export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<ReadableStream<Uint8Array>> {
+  const { logPrompts = false, signal } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts();
+
   return aiStreamSSE(userPrompt, {
     systemPrompt,
     context: 'book-creation-prompt',
-    logPrompts: false,
-    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1000}
+    logPrompts: logPrompts,
+    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1500}
   }, signal);
 }
 
 /**
  * Generates a creative book creation prompt using AI (non-streaming)
  * 
- * This is a non-streaming version of generateBookCreationPrompt() for use in
- * background jobs like cron tasks where streaming is not needed.
+ * This is a non-streaming version of generateBookCreationPromptStream() for use in
+ * background jobs like cron tasks where streaming is not needed. Uses aiPrompt() directly.
  * 
- * @param signal - Optional AbortSignal for cancellation
+ * @param params - Optional parameters for the prompt generation
  * @returns Promise resolving to the generated prompt text
  * 
  * @example
@@ -2734,17 +2746,38 @@ Only the theme is required. All other fields are optional - include them only if
  * console.log(theme);
  * ```
  */
-export async function generateBookCreationPromptText(signal?: AbortSignal): Promise<string> {
-  const stream = await generateBookCreationPrompt(signal);
-  
-  let text = "";
-  const decoder = new TextDecoder();
-  
-  for await (const chunk of stream) {
-    text += decoder.decode(chunk, { stream: true });
-  }
-  
-  return text;
+export async function generateBookCreationPromptText(params: GenerateBookCreationPromptParams = {}): Promise<string> {
+  const { logPrompts = false } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts();
+
+  const response = await aiPrompt(userPrompt, {
+    systemPrompt,
+    context: 'book-creation-prompt',
+    logPrompts,
+    config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1500}
+  });
+
+  return response.output || "";
+}
+
+/**
+ * Generates a creative book creation prompt using AI (non-streaming)
+ * 
+ * This is a non-streaming version of generateBookCreationPromptStream() for use in
+ * background jobs like cron tasks where streaming is not needed. Parses SSE stream internally.
+ * 
+ * @param params - Optional parameters for the prompt generation
+ * @returns Promise resolving to the generated prompt text
+ * 
+ * @example
+ * ```typescript
+ * const theme = await generateBookCreationPrompt();
+ * console.log(theme);
+ * ```
+ */
+export async function generateBookCreationPrompt(params: GenerateBookCreationPromptParams = {}): Promise<string> {
+  const stream = await generateBookCreationPromptStream(params);
+  return parseSSEStreamContent(stream);
 }
 
 function postProcessPromptSection(prompt: string): string {

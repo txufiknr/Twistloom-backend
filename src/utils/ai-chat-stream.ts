@@ -621,3 +621,40 @@ async function* nvidiaStreamGenerator(
     }
   }
 }
+
+/**
+ * Parses SSE-formatted chunks and extracts text content
+ * 
+ * This function consumes an SSE stream and extracts the actual text content
+ * from the JSON-formatted chunks. It handles the SSE format where each chunk
+ * contains a JSON payload with type, content, and done fields.
+ * 
+ * @param stream - ReadableStream of SSE-formatted Uint8Array chunks
+ * @returns Promise resolving to the concatenated text content
+ */
+export async function parseSSEStreamContent(stream: ReadableStream<Uint8Array>): Promise<string> {
+  let text = "";
+  const decoder = new TextDecoder();
+  
+  for await (const chunk of stream) {
+    const chunkText = decoder.decode(chunk, { stream: true });
+    
+    // Parse SSE format to extract JSON data
+    // Format: "event: chunk\ndata: {\"type\":\"chunk\",\"content\":\"...\",\"done\":...}\n\n"
+    const lines = chunkText.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.substring(6));
+          if (data.type === 'chunk' && data.content) {
+            text += data.content;
+          }
+        } catch {
+          // Skip lines that can't be parsed as JSON
+        }
+      }
+    }
+  }
+  
+  return text;
+}
