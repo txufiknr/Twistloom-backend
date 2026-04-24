@@ -19,7 +19,7 @@
  */
 import { dbWrite } from "../db/client.js";
 import { books, userFavorites } from "../db/schema.js";
-import { eq, count } from "drizzle-orm";
+import { eq, sql, count } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 
 const DECAY_RANGES = [
@@ -45,6 +45,23 @@ function getDecayFactor(createdAt: Date): number {
 
 /**
  * Updates trending scores for all active books
+ * 
+ * Uses parameterized SQL template with CASE statement for secure bulk updates.
+ * Processes books in chunks to handle large datasets efficiently.
+ * 
+ * Security:
+ * - Uses Drizzle's sql template tag with parameter binding (not string interpolation)
+ * - No sql.raw() usage - all values are properly parameterized
+ * 
+ * Performance:
+ * - Single bulk UPDATE with CASE statement per chunk (not N+1 queries)
+ * - Chunking prevents query size limits for large datasets
+ * 
+ * Idempotency:
+ * - Safe to run multiple times: recalculates scores based on current data
+ * - Uses atomic updates for consistency
+ * 
+ * Should be run daily via cron job
  */
 export async function updateTrendingScores(): Promise<void> {
   const startedAt = Date.now();
@@ -65,7 +82,12 @@ export async function updateTrendingScores(): Promise<void> {
     
     console.log(`[trending-scores] 📚 Processing ${activeBooks.length} active books...`);
     
-    // Get favorited counts for all books
+    if (activeBooks.length === 0) {
+      console.log("[trending-scores] ✅ No active books to process");
+      return;
+    }
+    
+    // Get favorited counts for all books in a single query
     const favoritedCounts = await dbWrite
       .select({
         bookId: userFavorites.bookId,
@@ -79,26 +101,45 @@ export async function updateTrendingScores(): Promise<void> {
       favoritedCounts.map(f => [f.bookId, Number(f.favoritedCount)])
     );
     
-    // Calculate and update trending scores
-    let updatedCount = 0;
-    for (const book of activeBooks) {
+    // Calculate trending scores for all books
+    const updates = activeBooks.map(book => {
       const favoritedCount = favoritedMap.get(book.id) || 0;
       const decayFactor = getDecayFactor(book.createdAt);
-      
-      // Calculate trending score
       const trendingScore = (book.readCount * 0.5 + book.likesCount * 0.3 + favoritedCount * 0.2) * decayFactor;
+      return {
+        id: book.id,
+        trendingScore,
+      };
+    });
+    
+    // Batch update books in chunks of 100 to avoid query size limits
+    const CHUNK_SIZE = 100;
+    let totalUpdated = 0;
+    
+    for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+      const chunk = updates.slice(i, i + CHUNK_SIZE);
       
-      // Update the book
-      await dbWrite
-        .update(books)
-        .set({ trendingScore })
-        .where(eq(books.id, book.id));
+      // Build parameterized CASE statement for single bulk update
+      // Using sql template tag with parameter binding (secure, not sql.raw)
+      const caseExpressions = chunk.map(u => 
+        sql`WHEN ${u.id}::uuid THEN ${u.trendingScore}`
+      );
       
-      updatedCount++;
+      await dbWrite.execute(sql`
+        UPDATE books 
+        SET trending_score = CASE id 
+          ${sql.join(caseExpressions, sql`\n          `)}
+          ELSE trending_score 
+        END,
+        updated_at = NOW()
+        WHERE id IN (${sql.join(chunk.map(u => u.id), sql`, `)})
+      `);
+      
+      totalUpdated += chunk.length;
     }
     
     const durationMs = Date.now() - startedAt;
-    console.log(`[trending-scores] ✅ Updated ${updatedCount} books in ${durationMs}ms`);
+    console.log(`[trending-scores] ✅ Updated ${totalUpdated} books in ${durationMs}ms`);
   } catch (error) {
     console.error("[trending-scores] ❌ Failed to update trending scores:", getErrorMessage(error));
     throw error;

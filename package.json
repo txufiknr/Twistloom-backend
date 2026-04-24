@@ -26,7 +26,9 @@
     "db:clear": "tsx --env-file=.env.local src/db/reset.ts",
     "db:clear:prod": "tsx --env-file=.env.production src/db/reset.ts",
     "db:reset": "pnpm db:clear && pnpm db:migrate && pnpm db:triggers",
-    "db:reset:prod": "pnpm db:clear:prod && pnpm db:migrate:prod && pnpm db:triggers:prod"
+    "db:reset:prod": "pnpm db:clear:prod && pnpm db:migrate:prod && pnpm db:triggers:prod",
+    "dev:cron:trending": "tsx --env-file=.env.local src/cron/update-trending-scores.ts",
+    "start:cron:trending": "node dist/cron/update-trending-scores.js"
   },
   "author": {
     "name": "Taufik Nur Rahmanda",

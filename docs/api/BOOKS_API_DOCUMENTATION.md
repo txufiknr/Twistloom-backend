@@ -47,13 +47,14 @@ interface Book {
   summary: string;            // Summary (50-100 words, sets up psychological tension)
   image?: string;              // Cover image ImageKit URL
   imageId?: string;           // ImageKit file ID for deletion
-  trendingScore: number;      // Trending score for book discovery
+  trendingScore: number;      // Trending score for book discovery (cron-based with time decay)
   keywords: string[];         // Keywords for book discovery
   status: 'active' | 'archived' | 'draft';
   mc: StoryMC;                // Main character profile with name, age, gender
   stats?: BookStats;           // Book statistics
   topPick?: Date;             // When the book was marked as top pick
   isOriginal: boolean;         // Whether this book is an auto-generated original (via cron job)
+  branchesCount: number;       // Total unique branches (maintained by database triggers)
   createdAt: Date;             // When the book was created
   updatedAt: Date;             // When the book was last updated
 }
@@ -79,6 +80,7 @@ interface EnrichedBookData {
   language: string | null;
   topPick: Date | null;
   isOriginal: boolean;
+  branchesCount?: number;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
@@ -222,7 +224,7 @@ Book sorting options for explore endpoint.
 
 ```typescript
 type BookSortingOptions = 
-  | 'popular'     // Sorts by branchesCount/totalPages ratio (most branched stories)
+  | 'popular'     // Sorts by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by database triggers)
   | 'newest'       // Sorts by createdAt timestamp (latest books)
   | 'trending'     // Sorts by pre-calculated trendingScore (updated daily via cron job with time decay)
   | 'top-picks'    // Sorts by latest topPick timestamp (only books marked as editor's picks)
@@ -1315,13 +1317,14 @@ CREATE TABLE "books" (
   "image" text,
   "image_id" text,
   "trending_score" real DEFAULT 0,
+  "is_original" boolean DEFAULT false NOT NULL,
   "keywords" jsonb DEFAULT '[]'::jsonb NOT NULL,
   "status" text DEFAULT 'active',
   "mc" jsonb NOT NULL,
   "likes_count" integer DEFAULT 0 NOT NULL,
   "read_count" integer DEFAULT 0 NOT NULL,
+  "branches_count" integer DEFAULT 0 NOT NULL,
   "top_pick" timestamp with time zone,
-  "is_original" boolean DEFAULT false NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -1411,6 +1414,10 @@ curl https://api.twistloom.com/api/books \
 - Added time decay logic to trending scores (newer books weighted higher)
 - Fixed `user_auth` index predicates (removed `NOW()` function to resolve PostgreSQL error)
 - Added database indexes to support all sorting options (newest, top-picks, originals)
+- Added `branchesCount` column to books schema (maintained by database triggers)
+- Created database triggers to automatically maintain `branchesCount` on pages INSERT/DELETE
+- Refactored "popular" sorting to use pre-calculated `branchesCount/totalPages` ratio (improved performance)
+- Optimized `getPublicBookStats` to use SUM of pre-calculated `branchesCount` instead of COUNT(DISTINCT branch_id)
 
 ### v2.0.0 (2024-04-24)
 - Consolidated API documentation from BACKEND_BOOK_API_SPECIFICATION.md

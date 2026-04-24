@@ -12,10 +12,84 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { users } from "../db/schema.js";
-import { eq, and, gt } from "drizzle-orm";
+import { users, userAuth } from "../db/schema.js";
+import { eq, and, gt, sql } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
+
+/**
+ * Cleans up orphaned user records
+ * 
+ * Orphaned users are users that exist in the `users` table but don't have
+ * corresponding records in the `user_auth` table. This can happen during
+ * the registration process when the manual rollback fails after user_auth
+ * creation fails.
+ * 
+ * This function finds and deletes these orphaned users to maintain data consistency.
+ * 
+ * Security:
+ * - Uses Drizzle's sql template tag with parameter binding (not string interpolation)
+ * - No sql.raw() usage - all values are properly parameterized
+ * 
+ * Performance:
+ * - Single bulk DELETE with IN clause per chunk (not N+1 queries)
+ * - Chunking prevents query size limits for large datasets
+ * 
+ * Idempotency:
+ * - Safe to run multiple times: only deletes users without user_auth records
+ * - Uses LEFT JOIN to identify orphans efficiently
+ * 
+ * @returns Number of orphaned users deleted
+ * 
+ * @example
+ * ```typescript
+ * const deletedCount = await cleanupOrphanedUsers();
+ * console.log(`Deleted ${deletedCount} orphaned users`);
+ * ```
+ */
+export async function cleanupOrphanedUsers(): Promise<number> {
+  try {
+    console.log("[user] 👤 Checking for orphaned users...");
+    
+    // Find users without user_auth records using LEFT JOIN
+    const orphanedUsers = await dbWrite
+      .select({ userId: users.userId })
+      .from(users)
+      .leftJoin(userAuth, eq(users.userId, userAuth.userId))
+      .where(sql`${userAuth.userId} IS NULL`);
+    
+    if (orphanedUsers.length === 0) {
+      console.log("[user] ✨ No orphaned users found");
+      return 0;
+    }
+    
+    console.log(`[user] ⚠️ Found ${orphanedUsers.length} orphaned users, deleting...`);
+    
+    // Delete orphaned users using parameterized bulk delete
+    const userIds = orphanedUsers.map(u => u.userId);
+    
+    // Delete in batches to avoid query size limits
+    const CHUNK_SIZE = 100;
+    let totalDeleted = 0;
+    
+    for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
+      const chunk = userIds.slice(i, i + CHUNK_SIZE);
+      
+      // Using sql.join for parameterized bulk delete (secure, not sql.raw)
+      await dbWrite
+        .delete(users)
+        .where(sql`${users.userId} IN (${sql.join(chunk, sql`, `)})`);
+      
+      totalDeleted += chunk.length;
+    }
+    
+    console.log(`[user] ✅ Deleted ${totalDeleted} orphaned users`);
+    return totalDeleted;
+  } catch (error) {
+    console.error("[user] ❌ Failed to cleanup orphaned users:", getErrorMessage(error));
+    throw error;
+  }
+}
 
 /**
  * Updates user's lastActive timestamp to current time
@@ -96,7 +170,7 @@ export async function getActiveUsers(daysAgo: number = 30): Promise<string[]> {
     
     return recentUsers.map(user => user.userId);
   } catch (error) {
-    console.error("[user] Failed to get active users:", getErrorMessage(error));
+    console.error("[user] ❌ Failed to get active users:", getErrorMessage(error));
     return [];
   }
 }

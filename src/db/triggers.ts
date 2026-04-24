@@ -264,6 +264,142 @@ async function createInitialAdminUser(): Promise<any> {
 }
 
 /**
+ * Creates trigger to increment book branches count when a new branch is created
+ * 
+ * This trigger fires AFTER INSERT on pages table:
+ * 1. When a page is inserted with a new branch_id for a book
+ * 2. Increments the branches_count column in books table
+ * 3. Ensures denormalized count stays synchronized
+ * 
+ * Performance Considerations:
+ * - Uses NOT EXISTS subquery to check branch uniqueness
+ * - Monitor trigger execution time in production, especially with millions of pages
+ * - If performance degrades, consider:
+ *   - Adding an index on (book_id, branch_id) to speed up the subquery
+ *   - Using a materialized view for branch counts with periodic recalculation
+ *   - Moving to a batch update approach for high-volume scenarios
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookBranchesIncrementTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION increment_book_branches_count()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Check if book_id is not NULL before processing
+        IF NEW.book_id IS NOT NULL THEN
+          -- Check if this branch_id is new for this book
+          IF NOT EXISTS (
+            SELECT 1 FROM pages 
+            WHERE book_id = NEW.book_id 
+              AND branch_id = NEW.branch_id 
+              AND id != NEW.id
+            LIMIT 1
+          ) THEN
+            UPDATE books 
+            SET branches_count = branches_count + 1,
+                updated_at = NOW()
+            WHERE id = NEW.book_id;
+          END IF;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing trigger if it exists
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_insert_branch_trigger ON pages;
+    `);
+    
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_insert_branch_trigger
+        AFTER INSERT ON pages
+        FOR EACH ROW
+        EXECUTE FUNCTION increment_book_branches_count();
+    `);
+    
+    console.log("✅ Book branches increment trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book branches increment trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Creates trigger to decrement book branches count when the last page of a branch is deleted
+ * 
+ * This trigger fires AFTER DELETE on pages table:
+ * 1. When a page is deleted
+ * 2. Check if this was the last page with this branch_id for the book
+ * 3. Decrements the branches_count column in books table if so
+ * 4. Ensures denormalized count stays synchronized
+ * 
+ * Performance Considerations:
+ * - Uses NOT EXISTS subquery to check if branch still exists
+ * - Monitor trigger execution time in production, especially with millions of pages
+ * - If performance degrades, consider:
+ *   - Adding an index on (book_id, branch_id) to speed up the subquery
+ *   - Using a materialized view for branch counts with periodic recalculation
+ *   - Moving to a batch update approach for high-volume scenarios
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookBranchesDecrementTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION decrement_book_branches_count()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Check if book_id is not NULL before processing
+        IF OLD.book_id IS NOT NULL THEN
+          -- Check if this was the last page with this branch_id for this book
+          IF NOT EXISTS (
+            SELECT 1 FROM pages 
+            WHERE book_id = OLD.book_id 
+              AND branch_id = OLD.branch_id 
+            LIMIT 1
+          ) THEN
+            UPDATE books 
+            SET branches_count = GREATEST(branches_count - 1, 0),
+                updated_at = NOW()
+            WHERE id = OLD.book_id;
+          END IF;
+        END IF;
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing trigger if it exists
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_delete_branch_trigger ON pages;
+    `);
+    
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_delete_branch_trigger
+        AFTER DELETE ON pages
+        FOR EACH ROW
+        EXECUTE FUNCTION decrement_book_branches_count();
+    `);
+    
+    console.log("✅ Book branches decrement trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book branches decrement trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates all necessary database triggers
  * 
  * Sets up triggers for automated data consistency and business logic enforcement.
@@ -275,6 +411,7 @@ async function createInitialAdminUser(): Promise<any> {
  * - Creates user session exclusivity trigger
  * - Creates book likes count increment/decrement triggers
  * - Creates book read count increment trigger
+ * - Creates book branches count increment/decrement triggers
  * - Logs successful creation operations
  * - Handles errors gracefully with detailed logging
  * 
@@ -294,6 +431,8 @@ export async function ensureTriggers(): Promise<void> {
     await ensureBookLikesIncrementTrigger();
     await ensureBookLikesDecrementTrigger();
     await ensureBookReadCountTrigger();
+    await ensureBookBranchesIncrementTrigger();
+    await ensureBookBranchesDecrementTrigger();
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);

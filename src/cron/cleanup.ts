@@ -1,6 +1,6 @@
 /**
  * @summary Runs daily cleanup job for old user history entries and snapshot optimization
- * @description Removes history entries older than HISTORY_RETENTION_DAYS (7 days) and optimizes snapshot storage
+ * @description Removes history entries older than HISTORY_RETENTION_DAYS (7 days), optimizes snapshot storage, and cleans up orphaned user records
  * 
  * Idempotency:
  * - Safe to run multiple times: only deletes records matching criteria
@@ -15,11 +15,16 @@ import { getErrorMessage } from "../utils/error.js";
 export async function runDailyCleanup(): Promise<void> {
   // Lazy imports in cron for better memory usage and startup time
   const { processQueuedImageDeletions } = await import("../services/image.js");
+  const { cleanupOrphanedUsers } = await import("../services/user.js");
   
   const startedAt = Date.now();
   
   try {
     console.log("[cleanup] 🧹 Starting daily cleanup...");
+    
+    // Cleanup orphaned user records (idempotent operation)
+    console.log("[cleanup] 👤 Cleaning up orphaned users...");
+    const orphanedUsersDeleted = await cleanupOrphanedUsers();
     
     // Cleanup queued ImageKit deletions (idempotent operation)
     console.log("[cleanup] 🖼️ Cleaning up queued ImageKit deletions...");
@@ -73,6 +78,7 @@ export async function runDailyCleanup(): Promise<void> {
       
       const durationMs = Date.now() - startedAt;
       console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {
+        orphanedUsers: orphanedUsersDeleted,
         images: imageCleanupStats.processed,
         snapshotsDeleted: totalSnapshotsDeleted,
         snapshotsKept: totalSnapshotsOptimized

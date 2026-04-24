@@ -89,6 +89,8 @@ export const pages = pgTable(
     index("pages_book_order_idx").on(t.bookId, t.page.desc()),
     // Index for creation time
     index("pages_created_at_idx").on(t.createdAt),
+    // Composite index for trigger performance (branchesCount maintenance)
+    index("pages_book_branch_idx").on(t.bookId, t.branchId),
     // Prevent duplicate branches for same parent page
     unique("pages_parent_branch_unique").on(t.parentId, t.branchId),
   ]
@@ -278,6 +280,7 @@ export const books = pgTable(
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
+    branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     createdAt,
     updatedAt,

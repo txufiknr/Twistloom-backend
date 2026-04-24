@@ -575,6 +575,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     mc: dbBook.mc,
     topPick: dbBook.topPick || undefined,
     isOriginal: dbBook.isOriginal ?? false,
+    branchesCount: dbBook.branchesCount || 0,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   };
@@ -734,7 +735,7 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
  * 
  * Returns aggregate statistics about all books in the platform:
  * - storiesCreated: Total number of books created
- * - branchesExplored: Total number of unique branches across all pages
+ * - branchesExplored: Total number of unique branches across all books (pre-calculated)
  * - pagesCrafted: Total number of pages created
  * 
  * @returns Promise resolving to object containing the three stats
@@ -760,11 +761,11 @@ export async function getPublicBookStats(): Promise<{
       .select({ count: sql<number>`count(*)::int` })
       .from(books);
 
-    // Get total number of unique branches using SQL COUNT(DISTINCT)
-    // Using SQL COUNT(DISTINCT) is more efficient than transferring all branchId values and counting unique ones in JavaScript.
+    // Get total number of unique branches using SUM of pre-calculated branchesCount
+    // Using SUM of denormalized column is much faster than COUNT(DISTINCT branch_id) on pages table
     const branchesCount = await dbRead
-      .select({ count: sql<number>`count(DISTINCT branch_id)::int` })
-      .from(pages);
+      .select({ count: sql<number>`COALESCE(SUM(branches_count), 0)::int` })
+      .from(books);
 
     // Get total number of pages using SQL COUNT(*)
     // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
@@ -806,22 +807,10 @@ export async function getPublicBookStats(): Promise<{
 export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
   switch (sortBy) {
     case 'popular': {
-      // Sort by branchesCount/totalPages ratio
-      // Subquery to count distinct branches per book
-      const branchesSubquery = dbRead
-        .select({
-          bookId: pages.bookId,
-          branchCount: sql<number>`COUNT(DISTINCT branch_id)`.as('branchCount'),
-        })
-        .from(pages)
-        .groupBy(pages.bookId)
-        .as('branches_count');
-
-      return query
-        .leftJoin(branchesSubquery, eq(books.id, branchesSubquery.bookId))
-        .orderBy(
-          sql`(COALESCE(${branchesSubquery.branchCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`
-        );
+      // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
+      return query.orderBy(
+        sql`(COALESCE(${books.branchesCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`
+      );
     }
 
     case 'trending': {

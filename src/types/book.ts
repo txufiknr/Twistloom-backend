@@ -57,6 +57,8 @@ export type Book = {
   topPick?: Date;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal: boolean;
+  /** Total unique branches (maintained by database triggers) */
+  branchesCount: number;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
@@ -81,6 +83,7 @@ export interface EnrichedBookData {
   language: string | null;
   topPick: Date | null;
   isOriginal: boolean;
+  branchesCount?: number;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
