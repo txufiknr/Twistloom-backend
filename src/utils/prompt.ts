@@ -409,7 +409,15 @@ function buildUserPrompt(book: Book, state: StoryState, actionedPage: ActionedSt
   const { remainingPages, isFinale, phase, phaseGoal } = stateInfo;
   const { mc, summary } = book;
 
-  return `TASK: Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
+  return `TASK: Continue the story in first-person view. Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
+
+HARD RULES:
+- Write in first-person (MC) POV.
+- Don't use phrase like "The protagonist" or "The narrator", just use "I".
+- Keep max ${MAX_WORDS_PER_PAGE} words per page.
+- Keep consistent writing style and language.
+- Continue directly from selected action. Example: "I run away."
+- Continue from current situation.
 
 THEME REMINDER:
 ${summary}
@@ -423,13 +431,6 @@ CURRENT SITUATION (from previous page):
 - Time: ${timeOfDay || 'unknown'}
 - Mood: ${mood || 'unknown'}
 - Characters present: ${charactersPresent.join(', ') || 'none'}
-
-HARD RULES:
-- Write in first-person (MC) POV
-- Keep max ${MAX_WORDS_PER_PAGE} words per page.
-- Keep consistent writing style and language.
-- Continue directly from selected action.
-- Continue from current situation.
 
 STORY CONTEXT (until now):
 ${contextHistory}
@@ -2039,14 +2040,24 @@ export async function initializeBook(
     };
 
     // 7. Generate book cover image in background (fire-and-forget)
-    if (generateCoverImage) void generateAndUpdateBookCoverImage(book, initialState);
+    if (generateCoverImage) {
+      if (isOriginal) {
+        await generateAndUpdateBookCoverImage(book, initialState);
+      } else {
+        void generateAndUpdateBookCoverImage(book, initialState);
+      }
+    }
 
     // 8. Persist story state to database
     await insertStoryState(userId, bookId, firstPage.id, initialState);
 
     // 9. Pre-generate candidate pages for each action in the first page (fire-and-forget)
     // Pass book context to avoid session lookup for system-generated originals
-    void ensureCandidatesForPage(userId, firstPage, initialState, book);
+    if (isOriginal) {
+      await ensureCandidatesForPage(userId, firstPage, initialState, book);
+    } else {
+      void ensureCandidatesForPage(userId, firstPage, initialState, book);
+    }
 
     // 10. Set user's active session to the new book and page
     const session = await setActiveSession({userId, bookId, pageId: firstPage.id});

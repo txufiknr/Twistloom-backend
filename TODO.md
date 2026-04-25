@@ -1,6 +1,8 @@
 [x] heuristic theme validator bug: surprise4.txt
 
 TODO:
+[ ] cron: fix empty actions
+[ ] cron: generate cover image original
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] similar books: jina embedding
