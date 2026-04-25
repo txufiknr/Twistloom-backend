@@ -13,6 +13,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { generateBookCreationPromptText } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
+import type { CreateBookResponse } from "../types/book.js";
 
 const SYSTEM_USER_ID = process.env.SYSTEM_USER_ID || "system-user-id";
 
@@ -22,25 +23,43 @@ export async function generateOriginalBook(): Promise<void> {
   try {
     console.log("[generate-originals] 🎨 Starting Twistloom Original generation...");
 
-    // Step 1: Generate creative theme using AI (non-streaming for cron job)
-    console.log("[generate-originals] 💭 Generating creative theme...");
-    const theme = await generateBookCreationPromptText();
-    console.log(`[generate-originals] 💭 Generated theme: "${theme.substring(0, 100)}${theme.length > 100 ? '...' : ''}"`);
+    // Loop step 1-2: generate theme and try to create book; on failure regenerate theme and retry
+    const MAX_ATTEMPTS = 3;
+    let result: CreateBookResponse | undefined;
 
-    // Step 2: Create book with the generated theme
-    console.log("[generate-originals] 📔 Creating original book...");
-    const result = await createBookCore({
-      userId: SYSTEM_USER_ID,
-      theme,
-      isOriginal: true,
-      generateCoverImage: true, // Generate cover image for original books
-    });
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Step 1: Generate creative theme using AI (non-streaming for cron job)
+      console.log(`[generate-originals] 💭 Generating creative theme... (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      const theme = await generateBookCreationPromptText();
+      console.log(`[generate-originals] 💭 Generated theme: "${theme.substring(0, 100)}${theme.length > 100 ? '...' : ''}"`);
+
+      // Step 2: Try creating the book with the generated theme
+      console.log(`[generate-originals] 📔 Creating original book... (attempt ${attempt}/${MAX_ATTEMPTS})`);
+      try {
+        result = await createBookCore({
+          userId: SYSTEM_USER_ID,
+          theme,
+          isOriginal: true,
+          generateCoverImage: true, // Generate cover image for original books
+        });
+        // Success -> break out of retry loop
+        break;
+      } catch (err) {
+        console.error(`[generate-originals] ⚠️ createBookCore failed on attempt ${attempt}:`, getErrorMessage(err));
+        if (attempt < MAX_ATTEMPTS) {
+          console.log('[generate-originals] 🔁 Retrying with a new theme...');
+          continue;
+        }
+        // Last attempt failed -> rethrow to be handled by outer catch
+        throw err;
+      }
+    }
 
     console.log("[generate-originals] ✅ Original book created successfully:", {
-      bookId: result.book.id,
-      title: result.book.title,
-      totalPages: result.book.totalPages,
-      isOriginal: result.book.isOriginal,
+      bookId: result!.book.id,
+      title: result!.book.title,
+      totalPages: result!.book.totalPages,
+      isOriginal: result!.book.isOriginal,
     });
 
     // Step 3: Invalidate explore cache so new original appears

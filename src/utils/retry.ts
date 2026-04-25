@@ -18,6 +18,8 @@ export interface RetryOptions {
   exponentialBackoff?: boolean;
   /** Optional callback for retry attempts */
   onRetry?: (attempt: number, error: unknown) => void;
+  /** Optional predicate to determine whether an error should be retried. Return false to stop retrying. */
+  shouldRetry?: (error: unknown) => boolean;
 }
 
 /**
@@ -29,6 +31,7 @@ const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
   maxDelayMs: 30000,
   exponentialBackoff: true,
   onRetry: () => {},
+  shouldRetry: () => true,
 };
 
 // ============================================================================
@@ -147,6 +150,16 @@ export async function retryWithBackoff<T>(
       return await fn();
     } catch (error) {
       lastError = error;
+
+      // If caller indicated this error should not be retried, rethrow immediately
+      try {
+        if (!opts.shouldRetry(error)) {
+          throw error;
+        }
+      } catch {
+        // If shouldRetry threw or returned false, rethrow original error
+        throw error;
+      }
 
       // Don't retry on the last attempt
       if (attempt === opts.maxRetries) {

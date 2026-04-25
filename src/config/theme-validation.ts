@@ -126,7 +126,8 @@ export const THEME_BLACKLIST: readonly string[] = [
 export const THEME_SUSPICIOUS_PATTERNS: readonly RegExp[] = [
   // SQL injection patterns (comprehensive)
   /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|ALTER|CREATE|TRUNCATE)\b.*\b(FROM|INTO|TABLE|WHERE|DATABASE)\b)/i,
-  /(--|;|\/\*|\*\/|xp_|sp_)/,
+  /(--|\/\*|\*\/|xp_|sp_)/,
+  /;\s*(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|ALTER|CREATE|TRUNCATE)/i,
   /(\bOR\b.*=.*=|\bAND\b.*=.*=)/i,
   /SELECT\s+.*\s+FROM/i,
   /DROP\s+TABLE/i,
@@ -159,7 +160,8 @@ export const THEME_SUSPICIOUS_PATTERNS: readonly RegExp[] = [
   
   // Shell command patterns (comprehensive)
   /(rm\s+-rf|chmod|chown|sudo|su\s+-)/,
-  /(\|&&|\|\||;)/,
+  /(\|&&|\|\|)/,
+  /;\s*(rm|chmod|chown|sudo|su|cd|mkdir|mv|cp)/i,
   /rm\s+-rf/i,
   /sudo\s+/i,
   /chmod\s+/i,

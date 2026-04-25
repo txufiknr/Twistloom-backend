@@ -183,7 +183,7 @@ function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: str
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
   "totalPages": <number between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}>,
-  "language": "<BCP-47 language code, e.g. 'en'>",
+  "language": "<ISO 639-1 language code, e.g. 'en'>",
   "hook": "...",
   "summary": "...",
   "keywords": ["mood-tag", "theme-tag", "..."],
@@ -1079,7 +1079,7 @@ JSON INTEGRITY CHECKS (flag any violation):
 - No trailing commas
 - All mandatory fields present and populated
 - charactersPresent names exist in initialCharacters
-- language is a valid BCP-47 code
+- language is a valid ISO 639-1 code
 
 ---
 OUTPUT FORMAT (strict JSON, no extra text):
@@ -2527,6 +2527,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   // For each pending action, create a candidate
   for (const action of pendingActions) {
     // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
+    // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
     const candidatePage = await retryWithBackoffOrNull(
       () => generateCandidatePage({userId, actionText: action.text, currentPage: page, currentState, currentBook}),
       {
@@ -2535,6 +2536,15 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
         maxDelayMs: 4000,
         onRetry: (attempt, error) => {
           console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
+        },
+        // Stop retrying if error looks like a validation error (e.g. Theme validation)
+        shouldRetry: (error) => {
+          try {
+            console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
+            return true;
+          } catch {
+            return true;
+          }
         }
       }
     );

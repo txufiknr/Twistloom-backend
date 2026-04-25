@@ -303,6 +303,14 @@ export const books = pgTable(
     index("books_status_idx").on(t.status),
     // Index for language filtering
     index("books_language_idx").on(t.language),
+    // GIN index for keywords JSONB array (enables efficient array operations)
+    index("books_keywords_gin_idx").using("gin", t.keywords),
+    // GIN index for title (enables efficient ILIKE search with pg_trgm if enabled)
+    index("books_title_gin_idx").using("gin", t.title),
+    // GIN index for hook (enables efficient ILIKE search with pg_trgm if enabled)
+    index("books_hook_gin_idx").using("gin", t.hook),
+    // GIN index for summary (enables efficient ILIKE search with pg_trgm if enabled)
+    index("books_summary_gin_idx").using("gin", t.summary),
   ]
 );
 

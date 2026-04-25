@@ -36,6 +36,7 @@ import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
+import { validateSearchQuery, buildSearchConditions, createRelevanceExpression, validateLanguageCode, type SearchParams } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry } from "../services/book.js";
@@ -537,31 +538,95 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * 
  * Retrieves all books for the authenticated user.
  * Returns paginated list with metadata and reading progress.
- * Supports search and sorting.
+ * Supports search, language filtering, and sorting.
+ * 
+ * Enhanced search features:
+ * - Searches across title, hook, summary, and keywords
+ * - Language filter (ISO 639-1 codes: en, es, fr, etc.)
+ * - Fuzzy matching for typo tolerance (enabled by default)
+ * - Relevance scoring for search results
  * 
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of books per page (default: 10)
- * @query search - Search query for title, hook, summary
+ * @query search - Search query for title, hook, summary, keywords
+ * @query language - Filter by language code (e.g., "en", "es")
+ * @query fuzzy - Enable fuzzy matching for typo tolerance (default: true)
  * @query sortBy - Field to sort by (default: updatedAt)
  * @query sortOrder - Sort direction (default: desc)
  * @returns Paginated list of user's books with progress
+ * 
+ * @todo
+ * - do we need to migrate offset pagination into cursor pagination to support post-query sorting?
+ * - enable fuzzy search with jaccard
+ * - activate pg_trgm extension
+ * - modify books indexes to use pg_trgm
+ * - follow `BOOK_SEARCH_ENHANCEMENT_ROADMAP.md` roadmap docs
+ * 
+ * @example
+ * // Search for thriller books
+ * GET /api/books?search=thriller&fuzzy=true
+ * 
+ * // Filter by English language
+ * GET /api/books?language=en
+ * 
+ * // Combined search with language filter
+ * GET /api/books?search=mystery&language=en&fuzzy=true
  */
 router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
+    const language = req.query.language as string | undefined;
+    const fuzzy = req.query.fuzzy === 'false' ? false : true;
     const userId = req.userId!;
     
+    // Validate search query if provided
+    let sanitizedSearch: string | undefined;
+    if (search) {
+      const validation = validateSearchQuery(search);
+      if (!validation.isValid) {
+        return res.status(400).json({
+          error: validation.error
+        });
+      }
+      sanitizedSearch = validation.sanitized;
+    }
+
+    // Validate language code if provided
+    if (language) {
+      const langValidation = validateLanguageCode(language);
+      if (!langValidation.isValid) {
+        return res.status(400).json({
+          error: langValidation.error
+        });
+      }
+    }
+    
     // Skip caching for search queries (dynamic)
-    const shouldCache = !search;
+    const shouldCache = !search && !language;
     const cacheKey = CACHE_KEYS.USER_BOOKS(userId, page);
     
     // Fetch function for cache
     const fetchBooks = async () => {
+      // Build search conditions using utility function
+      const searchParams: SearchParams = {
+        search: sanitizedSearch,
+        language,
+        fuzzy
+      };
+      
+      const searchCondition = buildSearchConditions(searchParams, books);
+      
+      // Build complete condition upfront
+      const baseCondition = eq(books.userId, userId);
+      const finalCondition = searchCondition 
+        ? and(baseCondition, searchCondition) 
+        : baseCondition;
+
       // Build base query with enriched fields
       let query = dbRead
         .select({
           ...getEnrichedBookSelect(userId),
-          lastReadAt: userSessions.updatedAt, // Join to check active session
+          lastReadAt: userSessions.updatedAt,
           lastPage: userSessions.pageId
         })
         .from(books)
@@ -573,42 +638,27 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
             eq(userSessions.userId, userId),
           )
         )
-        .where(eq(books.userId, userId));
+        .where(finalCondition);
 
-      // Apply search filter if provided using Drizzle sql template literals
-      if (search) {
-        const searchPattern = `%${search}%`;
-        const searchConditions = [
-          sql`${books.title} ILIKE ${searchPattern}`,
-          sql`${books.hook} ILIKE ${searchPattern}`,
-          sql`${books.summary} ILIKE ${searchPattern}`
-        ];
-        // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries involving joins
-        query = (query as any).where(and(eq(books.userId, userId), or(...searchConditions) as any));
+      // Apply relevance scoring and sorting if search is enabled
+      if (sanitizedSearch) {
+        // Add relevance score to query for database-level sorting
+        const relevanceExpression = createRelevanceExpression(sanitizedSearch, books);
+        query = (query as any).addSelect({
+          relevanceScore: relevanceExpression
+        }).orderBy(desc(relevanceExpression));
+      } else {
+        // Apply regular sorting when no search
+        query = applySorting(query, sortBy, sortOrder);
       }
-
-      // Apply sorting
-      query = applySorting(query, sortBy, sortOrder);
 
       // Get total count for pagination
-      let countQuery = dbRead
-        .select({ count: books.id })
+      const countResult = await dbRead
+        .select({ count: sql`COUNT(*)::int` })
         .from(books)
-        .where(eq(books.userId, userId));
-        
-      if (search) {
-        const searchPattern = `%${search}%`;
-        const searchConditions = [
-          sql`${books.title} ILIKE ${searchPattern}`,
-          sql`${books.hook} ILIKE ${searchPattern}`,
-          sql`${books.summary} ILIKE ${searchPattern}`
-        ];
-        // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries involving joins
-        countQuery = (countQuery as any).where(and(eq(books.userId, userId), or(...searchConditions) as any));
-      }
+        .where(finalCondition);
 
-      const totalCountResult = await countQuery;
-      const totalCount = totalCountResult.length;
+      const totalCount = typeof countResult[0]?.count === 'number' ? countResult[0]?.count : 0;
 
       // Apply pagination
       const offset = (page - 1) * limit;

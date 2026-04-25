@@ -459,16 +459,25 @@ data: {"error":"Theme validation failed"}
 
 ### GET /api/books
 
-Retrieves all books for the authenticated user. Returns paginated list with metadata and reading progress. Supports search and sorting.
+Retrieves all books for the authenticated user. Returns paginated list with metadata and reading progress. Supports enhanced search, language filtering, and sorting.
 
 **Authentication:** Required (via `requireAuth`)
 
 **Query Parameters:**
 - `page` (number, optional): Page number (default: 1)
-- `limit` (number, optional): Items per page (default: 10)
-- `search` (string, optional): Search query for title, hook, summary
+- `limit` (number, optional): Items per page (default: 10, max: 100)
+- `search` (string, optional): Search query for title, hook, summary, and keywords (min 2 chars, max 200 chars)
+- `language` (string, optional): Filter by language code (ISO 639-1: en, es, fr, etc.)
+- `fuzzy` (boolean, optional): Enable fuzzy matching for typo tolerance (default: true)
 - `sortBy` (string, optional): Field to sort by (default: updatedAt)
 - `sortOrder` (string, optional): Sort direction (asc/desc, default: desc)
+
+**Enhanced Search Features:**
+- Searches across title, hook, summary, and keywords (JSONB array)
+- Language filter for internationalization
+- Fuzzy matching toggle for typo tolerance
+- Relevance scoring for search results (title: 40%, hook: 25%, summary: 20%, keywords: 15%)
+- Results sorted by relevance when search is enabled
 
 **Response (200 OK):**
 ```json
@@ -483,6 +492,7 @@ Retrieves all books for the authenticated user. Returns paginated list with meta
       "status": "active",
       "totalPages": 120,
       "language": "en",
+      "keywords": ["thriller", "mystery", "haunted"],
       "mc": {
         "name": "Sarah",
         "age": 28,
@@ -504,6 +514,7 @@ Retrieves all books for the authenticated user. Returns paginated list with meta
       "isRead": true,
       "lastReadAt": "2023-01-15T10:30:00.000Z",
       "lastPage": "page789",
+      "relevanceScore": 0.85,
       "createdAt": "2023-01-01T00:00:00.000Z",
       "updatedAt": "2023-01-15T10:30:00.000Z"
     }
@@ -517,6 +528,24 @@ Retrieves all books for the authenticated user. Returns paginated list with meta
     "hasPrevious": false
   }
 }
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid search query (too short, too long, or contains invalid characters)
+
+**Examples:**
+```
+# Search for thriller books
+GET /api/books?search=thriller
+
+# Filter by English language
+GET /api/books?language=en
+
+# Combined search with language filter
+GET /api/books?search=mystery&language=en&fuzzy=true
+
+# Disable fuzzy matching (exact matches only)
+GET /api/books?search=thriller&fuzzy=false
 ```
 
 ---

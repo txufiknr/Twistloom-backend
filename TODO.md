@@ -1,20 +1,12 @@
-[x] group github action prompt logs
-[x] Page text format: can multiple line
-[x] email templates
-[x] GET books twistloom original filter yg ada cover image aja
-[x] Visit page: trigger pre-generate yg belum
-[x] Github action cron pre-generate candidate yg belum lengkap
-[x] Hide genai original error
-[x] Fix error pre-generate page candidate
-[x] Fix error imagen, harusnya fallback next model/provider
-[x] Github action env: redis api key
+[x] heuristic theme validator bug: surprise4.txt
 
 TODO:
+[ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] similar books: jina embedding
 [ ] user preferences schema (interests)
 [ ] user settings schema (font size)
-[ ] summary at the end of story (N readers ended up here)
+[ ] summary at the end of story (N% readers ended up here)
 
 paid:
 [ ] custom action prompt (max 50 chars, prevent sql inject, etc)
