@@ -1,6 +1,8 @@
 /**
- * Retry utility functions for handling transient failures
+ * Retry utility functions for handling transient failures and deduplication
  */
+
+import { LRUCache } from "lru-cache";
 
 /**
  * Retry configuration options
@@ -28,6 +30,90 @@ const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
   exponentialBackoff: true,
   onRetry: () => {},
 };
+
+// ============================================================================
+// DEDUPLICATION TRACKER
+// ============================================================================
+
+/**
+ * Default deduplication window in milliseconds (1 minute)
+ */
+const DEFAULT_DEDUP_WINDOW_MS = 60000;
+
+/**
+ * Maximum number of entries in the deduplication cache
+ * 
+ * Prevents unbounded memory growth in serverless environments.
+ * Each entry represents a unique operation key (e.g., "retry:pageId:timestamp").
+ */
+const DEDUPE_CACHE_MAX_SIZE = 1000;
+
+/**
+ * LRU cache for deduplication tracking
+ * 
+ * Uses LRU (Least Recently Used) eviction policy to automatically remove
+ * old entries when the cache reaches max size. This prevents memory leaks
+ * in serverless environments while still providing effective deduplication.
+ * 
+ * Each entry stores the timestamp of the last execution.
+ */
+const dedupeCache = new LRUCache<string, number>({
+  max: DEDUPE_CACHE_MAX_SIZE,
+  ttl: DEFAULT_DEDUP_WINDOW_MS,
+  updateAgeOnGet: true,
+});
+
+/**
+ * Checks if an operation should be deduplicated (already executed within window)
+ *
+ * This prevents multiple concurrent executions of the same operation within
+ * a time window. Useful for preventing duplicate retries when multiple requests
+ * trigger the same operation simultaneously.
+ *
+ * Uses LRU cache for automatic cleanup and memory management, making it
+ * suitable for serverless environments (Vercel, Fly.io) where in-memory state
+ * must be carefully managed.
+ *
+ * @param key - Unique identifier for the operation (e.g., "retry:pageId:timestamp")
+ * @param windowMs - Deduplication window in milliseconds (default: 60000ms)
+ * @returns true if operation should proceed (not deduplicated), false if it should be skipped
+ *
+ * @example
+ * ```typescript
+ * const key = `retry:${pageId}:${Math.floor(Date.now() / 60000)}`;
+ * if (shouldProceedWithRetry(key)) {
+ *   // Execute operation
+ * }
+ * ```
+ *
+ * @remarks
+ * **Memory Management:**
+ * - LRU cache automatically evicts old entries when max size (1000) is reached
+ * - TTL-based cleanup removes entries after window expires
+ * - Prevents memory leaks in long-running serverless instances
+ *
+ * **Cross-Instance Limitation:**
+ * - Cache is in-memory and does not persist across serverless instances
+ * - Each Vercel/Fly.io instance has its own cache
+ * - Deduplication only works within the same instance
+ *
+ * **Suitability for Use Case:**
+ * - Acceptable for fire-and-forget operations with low probability of concurrent cross-instance access
+ * - For true cross-instance deduplication, consider using Redis or similar distributed cache
+ */
+export function shouldProceedWithRetry(key: string, windowMs: number = DEFAULT_DEDUP_WINDOW_MS): boolean {
+  const now = Date.now();
+  const lastExecution = dedupeCache.get(key);
+  
+  // Check if already executed within window
+  if (lastExecution && now - lastExecution < windowMs) {
+    return false;
+  }
+  
+  // Mark as executed (LRU cache handles cleanup automatically)
+  dedupeCache.set(key, now, { ttl: windowMs });
+  return true;
+}
 
 /**
  * Executes a function with retry logic and exponential backoff

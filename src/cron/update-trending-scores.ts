@@ -1,21 +1,29 @@
 /**
  * @summary Updates trending scores for all active books
- * @description Calculates and updates trendingScore based on engagement metrics with time decay
- * 
+ * @description Normalizes trending scores and applies time decay
+ *
+ * Hybrid Approach:
+ * - Incremental updates: Engagement events (likes, reads, favorites) update trendingScore immediately
+ * - Hourly recalc: This job normalizes scores to prevent drift and applies time decay
+ *
  * Formula:
  * trendingScore = (readCount * 0.5 + likesCount * 0.3 + favoritedCount * 0.2) * timeDecayFactor
- * 
+ *
  * Time decay:
  * - Books created in last 7 days: 1.0 (full score)
  * - Books created 7-30 days ago: 0.8
  * - Books created 30-90 days ago: 0.5
  * - Books created 90+ days ago: 0.2
- * 
+ *
+ * Note: Time decay is based on book age (creation date), not update frequency.
+ * Hourly normalization prevents drift from incremental updates, but decay factors
+ * remain independent of update frequency for consistent aging behavior.
+ *
  * Idempotency:
  * - Safe to run multiple times: recalculates scores based on current data
  * - Uses atomic updates for consistency
- * 
- * Should be run daily via cron job
+ *
+ * Should be run hourly via cron job
  */
 import { dbWrite } from "../db/client.js";
 import { books, userFavorites } from "../db/schema.js";

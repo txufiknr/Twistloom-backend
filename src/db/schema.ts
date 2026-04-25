@@ -79,6 +79,7 @@ export const pages = pgTable(
     placeUpdates: jsonb("place_updates").$type<PlaceUpdates | null>(), // PlaceUpdates structure
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
+    pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
     createdAt,
     updatedAt,
   },
@@ -93,6 +94,8 @@ export const pages = pgTable(
     index("pages_book_branch_idx").on(t.bookId, t.branchId),
     // Prevent duplicate branches for same parent page
     unique("pages_parent_branch_unique").on(t.parentId, t.branchId),
+    // Index for pending generation cron job
+    index("pages_pending_generation_idx").on(t.pendingGenerationCount),
   ]
 );
 

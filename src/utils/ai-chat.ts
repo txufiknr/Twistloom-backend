@@ -15,6 +15,7 @@ import type { V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
+import { group } from '@actions/core';
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -961,8 +962,12 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
 export function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
   if (!shouldLog) return;
   
-  const separator = '═'.repeat(80);
-  console.log(`\n${separator}`);
-  console.log(`[${provider}] ${message} (${content.length} chars):`, content);
-  console.log(`${separator}\n`);
+  // const separator = '═'.repeat(80);
+  // console.log(`\n${separator}`);
+  // console.log(`[${provider}] ${message} (${content.length} chars):`, content);
+  // console.log(`${separator}\n`);
+
+  group(`[${provider}] ${message} (${content.length} chars):`, async () => {
+    console.log(content);
+  });
 }

@@ -179,13 +179,15 @@ export async function invalidateUserBooksCache(userId: string): Promise<number> 
 }
 
 /**
- * Invalidates explore page 1 cache
- * 
+ * Invalidates explore page 1 cache (both default and trending)
+ *
  * @returns true if successful, false otherwise
  */
 export async function invalidateExploreCache(): Promise<boolean> {
-  const key = CACHE_KEYS.EXPLORE_PAGE_1;
-  return deleteCache(key);
+  // Invalidate both explore caches since trending scores affect ranking
+  await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1);
+  await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1_TRENDING);
+  return true;
 }
 
 /**

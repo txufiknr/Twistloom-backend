@@ -32,6 +32,7 @@ import { sanitizeText } from "../utils/text-processing.js";
 import { generateId } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
+import { shouldProceedWithRetry } from "../utils/retry.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -66,6 +67,9 @@ export async function insertStoryPage(
 ): Promise<PersistedStoryPage> {
   const { bookId, branchId, parentId } = pageMeta;
   try {
+    // Count actions without destinations for initial pendingGenerationCount
+    const pendingGenerationCount = page.actions.filter(action => !action.destination?.pageId).length;
+
     const newPageData: DBNewPage = {
       userId,
       bookId,
@@ -85,6 +89,7 @@ export async function insertStoryPage(
       placeUpdates: page.placeUpdates || null,
       aiProvider: page.aiProvider || null,
       aiModel: page.aiModel || null,
+      pendingGenerationCount,
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -831,10 +836,13 @@ export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'):
     }
 
     case 'originals': {
-      // Filter by isOriginal: true (auto-generated books via cron job)
+      // Filter by isOriginal: true (auto-generated books via cron job) and has cover image
       // Sort by creation date (newest first)
+      // Note: Intentionally filtering to only show originals with covers for quality control
+      // Auto-generated books without covers are excluded from the originals list
       return query
         .where(eq(books.isOriginal, true))
+        .where(sql`${books.image} IS NOT NULL`)
         .orderBy(desc(books.createdAt));
     }
 
@@ -893,4 +901,80 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
     console.error('[getPopularTags] Failed to fetch popular tags:', getErrorMessage(error));
     return [];
   }
+}
+
+/**
+ * Triggers a fire-and-forget retry of failed candidate page generations
+ * 
+ * This function initiates a retry of candidate generation for pages with incomplete actions
+ * when users visit them. Uses deduplication to prevent rapid retries within a time window.
+ * 
+ * @param userId - User ID initiating the retry
+ * @param page - Page data with actions
+ * @param userChosenAction - Optional user's chosen action for this page
+ * @param hasIncompleteActions - Whether the page has actions without destinations (if known, skips enrichment check)
+ * 
+ * Behavior:
+ * - Checks if actions are missing destinations (unless hasIncompleteActions is provided)
+ * - Uses deduplication to prevent multiple retries within the time window
+ * - Initiates retry asynchronously (fire-and-forget)
+ * - Logs errors but doesn't block the response
+ * 
+ * Deduplication:
+ * - Uses time-based keys to prevent retries within the deduplication window
+ * - Keys are automatically cleaned up after expiration
+ * - Safe for concurrent requests
+ * 
+ * Performance:
+ * - If hasIncompleteActions is true, skips enrichment check for efficiency
+ * - If hasIncompleteActions is undefined, performs enrichment check
+ * 
+ * Example:
+ * ```typescript
+ * // With pre-checked incomplete actions (efficient)
+ * await triggerCandidateGenerationRetry(userId, page, userChosenAction, true);
+ * 
+ * // Let helper check (less efficient but simpler)
+ * await triggerCandidateGenerationRetry(userId, page, userChosenAction);
+ * ```
+ */
+export async function triggerCandidateGenerationRetry(
+  userId: string,
+  page: DBPage,
+  userChosenAction?: Action,
+  hasIncompleteActions?: boolean
+): Promise<void> {
+  // Check for incomplete actions if not provided
+  if (hasIncompleteActions === undefined) {
+    const enrichedActions = enrichActions(page.actions || [], { page: page.page, branchId: page.branchId }, userChosenAction);
+    const visibleActions = enrichedActions.filter((action: EnrichedAction) => 
+      action.destination?.branchId && action.destination?.pageId
+    );
+    hasIncompleteActions = visibleActions.length < enrichedActions.length;
+  }
+
+  // Skip if all actions have destinations
+  if (!hasIncompleteActions) {
+    return;
+  }
+
+  // Generate deduplication key based on page ID and time window (default 1 minute)
+  const timeWindow = Math.floor(Date.now() / 60000);
+  const retryKey = `retry:candidate:${page.id}:${timeWindow}`;
+
+  // Check if retry should proceed (deduplication)
+  if (!shouldProceedWithRetry(retryKey, 60000)) {
+    return;
+  }
+
+  // Fire-and-forget retry
+  void (async () => {
+    try {
+      const { ensureCandidatesForPage } = await import("../utils/prompt.js");
+      const userPage = mapToUserStoryPage(page, userChosenAction);
+      await ensureCandidatesForPage(userId, userPage);
+    } catch (error) {
+      console.error(`[triggerCandidateGenerationRetry] Failed for page ${page.id}:`, getErrorMessage(error));
+    }
+  })();
 }

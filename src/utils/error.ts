@@ -216,7 +216,7 @@ type GenAIErrorCode =
   | 'UNKNOWN';
 
 export function classifyGenAIError(err: unknown): GenAIErrorCode {
-  console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
+  // console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
   const msg = getErrorMessage(err).toLowerCase();
 
   // Check for schema validation errors

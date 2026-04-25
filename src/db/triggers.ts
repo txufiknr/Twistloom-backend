@@ -86,6 +86,11 @@ async function ensureUserSessionTrigger(): Promise<void> {
  */
 async function ensureBookLikesIncrementTrigger(): Promise<void> {
   try {
+    // Note: This trigger is disabled to prevent double-counting
+    // The route handler now handles likesCount increment atomically
+    console.log("⏭️  Skipping book likes increment trigger (handled by route handler)");
+    return;
+    
     // Create the trigger function
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION increment_book_likes_count()
@@ -137,6 +142,10 @@ async function ensureBookLikesIncrementTrigger(): Promise<void> {
  */
 async function ensureBookLikesDecrementTrigger(): Promise<void> {
   try {
+    // Note: This trigger is disabled to prevent double-counting
+    // The route handler now handles likesCount decrement atomically
+    console.log("⏭️  Skipping book likes decrement trigger (handled by route handler)");
+    return;
     // Create the trigger function
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION decrement_book_likes_count()
@@ -195,8 +204,9 @@ async function ensureBookReadCountTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION increment_book_read_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        UPDATE books 
+        UPDATE books
         SET read_count = read_count + 1,
+            trending_score = trending_score + 0.5, -- Incremental update for hybrid approach
             updated_at = NOW()
         WHERE id = NEW.book_id;
         RETURN NEW;

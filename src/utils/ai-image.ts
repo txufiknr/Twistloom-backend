@@ -239,7 +239,7 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
     },
     (response) => {
       // Convert Imagen response to common format
-      return (response.generatedImages?.length ?? 0) > 0 
+      return (response.generatedImages?.length ?? 0) > 0
         ? response.generatedImages!.map((image, index) => ({
             imageData: image.image?.imageBytes || "",
             mimeType: image.image?.imageBytes ? options.outputMimeType : undefined,
@@ -248,8 +248,13 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
         : [];
     }
   );
-  
-  return result || { buffers: [], mimeTypes: [] };
+
+  // Throw error if all models failed to trigger fallback in geminiGenerateImage
+  if (!result) {
+    throw new Error(`All Imagen models failed to generate images`);
+  }
+
+  return result;
 }
 
 
@@ -337,8 +342,13 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
       return imageDataArray;
     }
   );
-  
-  return result || { buffers: [], mimeTypes: [] };
+
+  // Throw error if all models failed to trigger fallback in geminiGenerateImage
+  if (!result) {
+    throw new Error(`All Gemini native models failed to generate images`);
+  }
+
+  return result;
 }
 
 /**

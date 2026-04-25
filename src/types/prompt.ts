@@ -32,4 +32,6 @@ export type GenerateCandidatePageParams = {
   currentPage?: UserStoryPage | null;
   /** Optional current story state (avoids database lookup when provided) */
   currentState?: StoryState | null;
+  /** Optional book context (avoids session lookup when provided, e.g., for system-generated originals) */
+  currentBook?: Book | null;
 };

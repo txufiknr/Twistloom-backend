@@ -3,7 +3,7 @@ import type { ActionType, AIActionConfig } from "../types/story.js";
 export const BOOK_MIN_PAGES = 100;
 export const BOOK_MAX_PAGES = 150;
 export const BOOK_AVERAGE_PAGES = 120;
-export const MAX_WORDS_PER_PAGE = 80;
+export const MAX_WORDS_PER_PAGE = 120;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 
 export const MAX_CHARACTERS = 6;

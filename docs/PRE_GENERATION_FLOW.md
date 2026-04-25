@@ -335,11 +335,13 @@ When candidate generation fails after all retries:
 2. **No error shown to user**: Silent failure, doesn't block navigation
 3. **Filtered in API response**: GET page endpoint filters actions without complete destination
 4. **User experience**: Action simply doesn't appear (as if it never existed)
+5. **Automatic retry**: Failed generations are tracked and retried via cron job
 
 This design choice prioritizes user experience over transparency:
 - Users never see failed generation errors
 - Navigation continues smoothly
 - Frontend only shows viable actions
+- Background retry system eventually completes failed generations
 
 ## No User Validation in Pre-Generation
 
@@ -364,6 +366,7 @@ await insertStoryPage(userId, pageNumber, storyPage, { bookId, branchId, parentI
 - Persists generated page to database
 - Includes branchId for tracking story branches
 - Links to parent page for traversal history
+- Sets initial `pendingGenerationCount` based on actions without destinations
 
 ### Update Story Page
 ```typescript
@@ -470,6 +473,34 @@ export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'bra
 5. **Validate on navigation**: Only validate user choices during POST /visit
 6. **Log context**: Include userId, pageId, actionText in error logs
 
+## Retry Mechanism for Failed Generations
+
+Failed candidate generations are automatically retried via a cron job system:
+
+### Cron Job: retry-pending-generations
+**Location**: `src/cron/retry-pending-generations.ts`
+**Schedule**: Every hour via GitHub Actions
+**Purpose**: Retry failed candidate page generations for unvisited pages
+
+**How it works:**
+1. Queries pages with `pendingGenerationCount > 0`
+2. Processes up to 50 pages per run (ordered by highest pending count)
+3. For each page, calls `ensureCandidatesForPage` to retry generation
+4. Updates `pendingGenerationCount` after each attempt
+5. Logs success/failure statistics for monitoring
+
+**Database tracking:**
+- `pages.pendingGenerationCount`: Integer column tracking actions without destinations
+- Indexed for efficient cron job queries
+- Set during page insertion based on actions without destinations
+- Updated by `ensureCandidatesForPage` after generation attempts
+
+**Benefits:**
+- Automatic recovery from transient AI failures
+- No manual intervention required
+- Efficient processing with batch limits
+- Prioritizes pages with most pending actions
+
 ## Future Enhancements
 
 Potential improvements to consider:
@@ -487,7 +518,8 @@ The automatic pre-generation system provides instant navigation by proactively g
 
 **Key takeaways:**
 - Pre-generation is asynchronous and non-blocking
-- Failed generations are silent (actions filtered in API)
+- Failed generations are tracked via `pendingGenerationCount` and retried by cron job
 - Validation only happens during user navigation
 - Cascade effect creates tree of pre-generated pages
 - Destination object stores branchId and pageId for navigation
+- Automatic retry system ensures eventual completion of failed generations

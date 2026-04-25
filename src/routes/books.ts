@@ -38,13 +38,13 @@ import { extractPaginationParams, createPaginatedResponse, applySorting, calcula
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry } from "../services/book.js";
 import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import type { BookSortOption, EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
-import type { Action } from "../types/story.js";
+import type { Action, EnrichedAction } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
@@ -773,7 +773,8 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
  */
 router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { identifier, branchId, page } = req.params;
+    const { identifier, branchId, page: pageNumberStr } = req.params;
+    const pageNumber = parseInt(pageNumberStr as string);
 
     // Handle array case for identifier (Express can return string[])
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -788,6 +789,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     const pageData = await dbRead
       .select({
         id: pages.id,
+        userId: pages.userId,
         page: pages.page,
         bookId: pages.bookId,
         branchId: pages.branchId,
@@ -800,6 +802,12 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
         charactersPresent: pages.charactersPresent,
         keyEvents: pages.keyEvents,
         importantObjects: pages.importantObjects,
+        addTraumaTag: pages.addTraumaTag,
+        characterUpdates: pages.characterUpdates,
+        placeUpdates: pages.placeUpdates,
+        aiProvider: pages.aiProvider,
+        aiModel: pages.aiModel,
+        pendingGenerationCount: pages.pendingGenerationCount,
         createdAt: pages.createdAt,
         updatedAt: pages.updatedAt
       })
@@ -808,7 +816,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
         and(
           eq(pages.bookId, book.id),
           eq(pages.branchId, branchId as string),
-          eq(pages.page, parseInt(page as string))
+          eq(pages.page, pageNumber)
         )
       )
       .limit(1);
@@ -816,6 +824,8 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     if (!pageData.length) {
       return handleNotFoundError(res, "Page not found");
     }
+
+    const page = pageData[0];
 
     // Query user's chosen action for this page (if authenticated)
     let userChosenAction: Action | undefined;
@@ -826,7 +836,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
         .where(
           and(
             eq(userPageProgress.userId, req.user.id),
-            eq(userPageProgress.pageId, pageData[0].id)
+            eq(userPageProgress.pageId, page.id)
           )
         )
         .limit(1);
@@ -836,13 +846,37 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
       }
     }
 
-    // Enrich actions with navigation metadata for frontend URL building
-    // Filter out actions without complete destination (both branchId and pageId must be present)
-    const visibleActions = pageData[0].actions.filter((action: any) => action.destination?.branchId && action.destination?.pageId);
-    const enrichedPage = {
-      ...pageData[0],
-      actions: enrichActions(visibleActions, { page: pageData[0].page, branchId: pageData[0].branchId }, userChosenAction)
+    // Enrich actions with navigation metadata and filter out incomplete actions
+    const allEnrichedActions = enrichActions(page.actions, { page: page.page, branchId: page.branchId }, userChosenAction);
+    const visibleActions = allEnrichedActions.filter((action: EnrichedAction) => action.destination?.branchId && action.destination?.pageId);
+
+    // Fire-and-forget retry of failed candidate generations if any actions are missing destinations
+    // This provides immediate recovery when users visit pages with incomplete actions
+    // Supports polling/SSE for real-time action availability updates
+    // Pass pre-checked hasIncompleteActions to avoid double-enrichment
+    if (req.userId && visibleActions.length < allEnrichedActions.length) {
+      void triggerCandidateGenerationRetry(req.userId, page, userChosenAction, true);
     }
+
+    // Return enriched page with only frontend-relevant fields
+    // Exclude backend-specific fields: userId, addTraumaTag, characterUpdates, placeUpdates, aiProvider, aiModel, pendingGenerationCount
+    const enrichedPage = {
+      id: page.id,
+      page: page.page,
+      bookId: page.bookId,
+      branchId: page.branchId,
+      parentId: page.parentId,
+      text: page.text,
+      mood: page.mood,
+      place: page.place,
+      timeOfDay: page.timeOfDay,
+      charactersPresent: page.charactersPresent,
+      keyEvents: page.keyEvents,
+      importantObjects: page.importantObjects,
+      actions: visibleActions,
+      createdAt: page.createdAt,
+      updatedAt: page.updatedAt
+    };
 
     res.json({
       page: enrichedPage,
@@ -1061,9 +1095,11 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       ? (sortBy as BookSortOption) 
       : 'newest';
     
-    // Only cache page 1 without search, tags, and with default sort (rapidly changing)
-    const shouldCache = page === 1 && !search && tags.length === 0 && normalizedSortBy === 'newest';
-    const cacheKey = CACHE_KEYS.EXPLORE_PAGE_1;
+    // Cache page 1 without search and tags
+    // Trending uses shorter TTL (5 min) due to incremental updates, newest uses longer TTL (30 min)
+    const shouldCache = page === 1 && !search && tags.length === 0;
+    const cacheKey = normalizedSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
+    const cacheTTL = normalizedSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
     
     // Fetch function for cache
     const fetchBooks = async () => {
@@ -1158,12 +1194,13 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     
     // Use cache if applicable, otherwise fetch directly
     const result = shouldCache
-      ? await withCache(cacheKey, fetchBooks, CACHE_TTL.EXPLORE_PAGE_1)
+      ? await withCache(cacheKey, fetchBooks, cacheTTL)
       : await fetchBooks();
-    
+
     // Add HTTP cache headers for CDN/edge caching (works alongside Redis)
     if (shouldCache) {
-      res.set('Cache-Control', 'public, max-age=60, s-maxage=60, stale-while-revalidate=30');
+      const httpCacheMaxAge = normalizedSortBy === 'trending' ? 300 : 1800; // 5 min for trending, 30 min for newest
+      res.set('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
     }
     
     res.json(result);
@@ -1377,22 +1414,26 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
         createdAt: new Date(),
       });
 
-    // Increment book likes count (atomic operation)
-    await dbWrite
+    // Increment book likes count and trending score (atomic operation)
+    // Note: No GREATEST protection needed on increments - only decrements can go negative
+    const updatedBook = await dbWrite
       .update(books)
-      .set({ 
+      .set({
         likesCount: sql`${books.likesCount} + 1`,
+        trendingScore: sql`${books.trendingScore} + 0.3`, // Incremental update for hybrid approach
         updatedAt: new Date()
       })
-      .where(eq(books.id, id as string));
+      .where(eq(books.id, id as string))
+      .returning({ likesCount: books.likesCount });
 
     // Invalidate explore cache (likes changed)
+    // Note: Cache invalidation after DB update is acceptable - window of stale data is minimal (milliseconds)
     await invalidateExploreCache();
 
     res.json({
       message: "Book liked successfully",
       liked: true,
-      likesCount: book[0].likesCount + 1
+      likesCount: updatedBook[0]?.likesCount ?? book[0].likesCount + 1
     });
   } catch (error) {
     handleApiError(res, "Failed to like book", error);
@@ -1469,22 +1510,25 @@ router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
         eq(userLikes.targetId, id as string)
       ));
 
-    // Decrement book likes count (atomic operation)
-    await dbWrite
+    // Decrement book likes count and trending score (atomic operation)
+    const updatedBook = await dbWrite
       .update(books)
-      .set({ 
+      .set({
         likesCount: sql`GREATEST(${books.likesCount} - 1, 0)`,
+        trendingScore: sql`GREATEST(${books.trendingScore} - 0.3, 0)`, // Incremental update for hybrid approach
         updatedAt: new Date()
       })
-      .where(eq(books.id, id as string));
+      .where(eq(books.id, id as string))
+      .returning({ likesCount: books.likesCount });
 
     // Invalidate explore cache (likes changed)
+    // Note: Cache invalidation after DB update is acceptable - window of stale data is minimal (milliseconds)
     await invalidateExploreCache();
 
     res.json({
       message: "Book unliked successfully",
       liked: false,
-      likesCount: Math.max(0, book[0].likesCount - 1)
+      likesCount: updatedBook[0]?.likesCount ?? Math.max(0, book[0].likesCount - 1)
     });
   } catch (error) {
     handleApiError(res, "Failed to unlike book", error);
@@ -1548,7 +1592,7 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
       });
     }
 
-    // Add favorite
+    // Add favorite and increment trending score
     await dbWrite
       .insert(userFavorites)
       .values({
@@ -1557,7 +1601,18 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
         createdAt: new Date(),
       });
 
+    // Increment trending score for hybrid approach
+    // Note: No GREATEST protection needed on increments - only decrements can go negative
+    await dbWrite
+      .update(books)
+      .set({
+        trendingScore: sql`${books.trendingScore} + 0.2`,
+        updatedAt: new Date()
+      })
+      .where(eq(books.id, id as string));
+
     // Invalidate user's book cache
+    // Note: Cache invalidation after DB update is acceptable - window of stale data is minimal (milliseconds)
     await invalidateUserBooksCache(userId);
 
     res.status(201).json({
@@ -1626,13 +1681,22 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
       });
     }
 
-    // Remove favorite
+    // Remove favorite and decrement trending score
     await dbWrite
       .delete(userFavorites)
       .where(and(
         eq(userFavorites.userId, userId),
         eq(userFavorites.bookId, id as string)
       ));
+
+    // Decrement trending score for hybrid approach
+    await dbWrite
+      .update(books)
+      .set({
+        trendingScore: sql`GREATEST(${books.trendingScore} - 0.2, 0)`,
+        updatedAt: new Date()
+      })
+      .where(eq(books.id, id as string));
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(userId);
