@@ -14,9 +14,9 @@ export type BuildNextPageParams = {
   userId: string;
   /** Book information containing metadata and settings */
   book: Book;
-  /** Story state for previous page (page number not incremented yet) */
-  previousState: StoryState;
-  /** Previous page with selected action for context */
+  /** Story state for current page (page number not incremented yet) */
+  currentState: StoryState;
+  /** Current page with selected action for context */
   actionedPage: ActionedStoryPage;
 };
 

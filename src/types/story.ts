@@ -1,6 +1,6 @@
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, RelationshipUpdate } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, RelationshipUpdate, TagUpdates } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
 import type { DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
@@ -289,11 +289,11 @@ export type ProfileShift = {
  */
 export const truthLevels = {
   /** Grounded in reality, minimal deception */
-  "low": "Low→grounded | Minimal deception, reliable information, clear cause and effect",
+  "mostly_true": "Mostly True→grounded | Minimal deception, reliable information",
   /** Mix of truth and inconsistencies */
-  "medium": "Medium→inconsistencies | Some deception, unreliable narrator, contradictory information",
+  "partially_true": "Partially True→inconsistencies | Some deception, unreliable narrator",
   /** Heavy deception and manipulation */
-  "high": "High→deception/contradictions | Heavy deception, gaslighting, reality manipulation"
+  "mostly_false": "Mostly False→deception/contradictions | Heavy deception, gaslighting"
 };
 
 /**
@@ -304,7 +304,7 @@ export const truthLevels = {
  */
 export const threatProximities = {
   /** Distant threat, slow build */
-  "far": "Far→slow build | Distant threat, atmospheric tension, gradual escalation",
+  "distant": "Far→slow build | Distant threat, atmospheric tension, gradual escalation",
   /** Approaching danger, increasing urgency */
   "near": "Near→approaching | Approaching danger, time pressure, mounting stakes",
   /** Immediate confrontation or danger */
@@ -506,30 +506,61 @@ export type StoryPage = {
   importantObjects?: string[];
   /** Next branching actions for user choice (2-3 options) */
   actions: Action[];
-  /** New trauma tag based on page events (empty string if none) */
-  addTraumaTag?: string;
-  /** Updates to characters (new and existing) */
-  characterUpdates?: CharacterUpdates;
-  /** Updates to character relationships */
-  relationshipUpdates?: RelationshipUpdate[];
-  /** Updates to places (new and existing) */
-  placeUpdates?: PlaceUpdates;
-  /** Updates to story threads (new threads, thread modifications, clues) */
-  threadUpdates?: ThreadUpdates;
+  /** */
+  stateDelta: StateDelta;
   /** AI provider used for generating the page content */
   aiProvider?: AIChatProvider | 'none';
   /** AI model used for generating the page content */
   aiModel?: string;
 };
 
-export type StoryGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'> & {
+/**
+ * State delta representing incremental changes between pages
+ * 
+ * This structure captures the differences between story states,
+ * enabling efficient reconstruction without storing full snapshots
+ * for every page.
+ * 
+ * @interface StateDelta
+ */
+export type StateDelta = {
+  /** Updates to psychological flags (trust, fear, guilt, curiosity) */
+  flagUpdates?: Partial<PsychologicalFlags>;
+  /** Updates to trauma tags (add/remove) based on page events */
+  traumaTagUpdates?: TagUpdates;
+  /** Updates to plot flags (add/remove) for story progression */
+  plotFlagUpdates?: TagUpdates;
+  /** Updates to inventory items (add/remove) for character */
+  inventoryUpdates?: TagUpdates;
+  /** Updates to characters (new and existing) with changes */
+  characterUpdates?: CharacterUpdates;
+  /** Updates to character relationships and dynamics */
+  relationshipUpdates?: RelationshipUpdate[];
+  /** Updates to places (new and existing) with modifications */
+  placeUpdates?: PlaceUpdates;
+  /** Updates to story threads (new, modify, add clues, close) */
+  threadUpdates?: ThreadUpdates;
+  /** Partial ending information if this page leads to an ending */
   viableEnding?: Partial<Ending>;
+  /** Flag indicating if this is a major story event */
   isMajorEvent?: boolean;
-}
+  /** Updated AI-summarized context of the entire story */
+  contextHistory?: string;
+
+  psychologicalProfileUpdates?: Partial<PsychologicalProfile>;
+  hiddenStateUpdates?: Partial<HiddenState>;
+  memoryIntegrity?: MemoryIntegrity;
+  difficulty?: Difficulty;
+};
+
+export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'>;
+export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page'>;
 export type UserStoryPage = Omit<PersistedStoryPage, 'actions'> & { actions: EnrichedAction[], selectedAction?: Action };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
+
+export type PreviousPages = Array<{ page: DBPage; action: Action | null }>;
 
 export type Action = {
   /** Action text */
@@ -655,13 +686,13 @@ export type StoryState = {
    */
   places: Record<string, PlaceMemory>;
 
-  /**
-   * History of recent MAX_PAGE_HISTORY generated page content
-   * 
-   * Maintains a sliding window of recent pages for context
-   * and narrative continuity in AI prompts.
-   */
-  pageHistory: ActionedStoryPage[];
+  // /**
+  //  * History of recent MAX_PAGE_HISTORY generated page content
+  //  * 
+  //  * Maintains a sliding window of recent pages for context
+  //  * and narrative continuity in AI prompts.
+  //  */
+  // pageHistory: ActionedStoryPage[];
 
   /** History of all user actions made throughout the story */
   actionsHistory: Action[];
@@ -675,7 +706,13 @@ export type StoryState = {
    */
   contextHistory: string;
 
+  isMajorEvent: boolean;
+
   threads: StoryThread[];
+
+  plotFlags: string[];
+
+  inventory: string[];
 };
 
 /**
@@ -759,7 +796,7 @@ Final line rule: Short, clear, haunting ("It was never outside.")`,
 export type StoryPhase = keyof typeof storyPhases;
 export type FinalePhase = keyof typeof finalePhases;
 
-export type StoryStateSnapshotReason = 'periodic' | 'major_event' | 'branch_start' | 'user_request';
+// export type StoryStateSnapshotReason = 'periodic' | 'major_event' | 'branch_start' | 'user_request';
 
 export type UserPageProgress = {
   id: string;
@@ -885,120 +922,120 @@ export type StoryStateCleanupResult = {
 // STATE RECONSTRUCTION TYPES
 // ============================================================================
 
-/**
- * State delta representing incremental changes between pages
- * 
- * This structure captures the differences between story states,
- * enabling efficient reconstruction without storing full snapshots
- * for every page.
- * 
- * @interface StateDelta
- */
-export type StateDelta = {
-  /** Page ID where this delta was created */
-  pageId: string;
+// /**
+//  * State delta representing incremental changes between pages
+//  * 
+//  * This structure captures the differences between story states,
+//  * enabling efficient reconstruction without storing full snapshots
+//  * for every page.
+//  * 
+//  * @interface StateDelta
+//  */
+// export type StateDelta = {
+//   /** Page ID where this delta was created */
+//   pageId: string;
   
-  /** Page number for ordering */
-  page: number;
+//   /** Page number for ordering */
+//   page: number;
   
-  /** Characters added in this delta */
-  addedCharacters?: Record<string, CharacterMemory>;
+//   /** Characters added in this delta */
+//   addedCharacters?: Record<string, CharacterMemory>;
   
-  /** Characters updated in this delta */
-  updatedCharacters?: Record<string, Partial<CharacterMemory>>;
+//   /** Characters updated in this delta */
+//   updatedCharacters?: Record<string, Partial<CharacterMemory>>;
   
-  /** Characters removed in this delta */
-  removedCharacters?: string[];
+//   /** Characters removed in this delta */
+//   removedCharacters?: string[];
   
-  /** Places added in this delta */
-  addedPlaces?: Record<string, PlaceMemory>;
+//   /** Places added in this delta */
+//   addedPlaces?: Record<string, PlaceMemory>;
   
-  /** Places updated in this delta */
-  updatedPlaces?: Record<string, Partial<PlaceMemory>>;
+//   /** Places updated in this delta */
+//   updatedPlaces?: Record<string, Partial<PlaceMemory>>;
   
-  /** Places removed in this delta */
-  removedPlaces?: string[];
+//   /** Places removed in this delta */
+//   removedPlaces?: string[];
   
-  /** Trauma tags added in this delta */
-  addedTraumaTags?: string[];
+//   /** Trauma tags added in this delta */
+//   addedTraumaTags?: string[];
   
-  /** Trauma tags removed in this delta */
-  removedTraumaTags?: string[];
+//   /** Trauma tags removed in this delta */
+//   removedTraumaTags?: string[];
   
-  /** Psychological flags changes */
-  flagsDelta?: Partial<PsychologicalFlags>;
+//   /** Psychological flags changes */
+//   flagsDelta?: Partial<PsychologicalFlags>;
   
-  /** Psychological profile changes */
-  profileDelta?: Partial<PsychologicalProfile>;
+//   /** Psychological profile changes */
+//   profileDelta?: Partial<PsychologicalProfile>;
   
-  /** Hidden state changes */
-  hiddenStateDelta?: Partial<HiddenState>;
+//   /** Hidden state changes */
+//   hiddenStateDelta?: Partial<HiddenState>;
   
-  /** Memory integrity change */
-  memoryIntegrity?: MemoryIntegrity;
+//   /** Memory integrity change */
+//   memoryIntegrity?: MemoryIntegrity;
   
-  /** Difficulty change */
-  difficulty?: Difficulty;
+//   /** Difficulty change */
+//   difficulty?: Difficulty;
   
-  /** Viable ending change */
-  viableEnding?: Ending;
+//   /** Viable ending change */
+//   viableEnding?: Ending;
   
-  /** Context history addition */
-  contextHistoryAddition?: string;
+//   /** Context history addition */
+//   contextHistoryAddition?: string;
   
-  /** Full context history replacement (when context is completely different) */
-  fullContextHistory?: string;
+//   /** Full context history replacement (when context is completely different) */
+//   fullContextHistory?: string;
   
-  /** Actions added to history */
-  addedActions?: Action[];
+//   /** Actions added to history */
+//   addedActions?: Action[];
   
-  /** Full actions history replacement (when actions are completely different) */
-  fullActionsHistory?: Action[];
+//   /** Full actions history replacement (when actions are completely different) */
+//   fullActionsHistory?: Action[];
   
-  /** Threads added in this delta */
-  addedThreads?: StoryThread[];
+//   /** Threads added in this delta */
+//   addedThreads?: StoryThread[];
   
-  /** Threads updated in this delta */
-  updatedThreads?: Array<{ id: string; updates: Partial<StoryThread> }>;
+//   /** Threads updated in this delta */
+//   updatedThreads?: Array<{ id: string; updates: Partial<StoryThread> }>;
   
-  /** Threads removed in this delta */
-  removedThreads?: string[];
+//   /** Threads removed in this delta */
+//   removedThreads?: string[];
   
-  /** Full threads replacement (when threads are completely different) */
-  fullThreads?: StoryThread[];
-};
+//   /** Full threads replacement (when threads are completely different) */
+//   fullThreads?: StoryThread[];
+// };
 
-/**
- * State snapshot representing a complete story state at a point in time
- * 
- * Snapshots serve as checkpoints for efficient state reconstruction.
- * They contain the complete state at a specific page, allowing
- * deltas to be applied forward from that point.
- * 
- * @interface StateSnapshot
- */
-export type StateSnapshot = {
-  /** Page ID where snapshot was taken */
-  pageId: string;
+// /**
+//  * State snapshot representing a complete story state at a point in time
+//  * 
+//  * Snapshots serve as checkpoints for efficient state reconstruction.
+//  * They contain the complete state at a specific page, allowing
+//  * deltas to be applied forward from that point.
+//  * 
+//  * @interface StateSnapshot
+//  */
+// export type StateSnapshot = {
+//   /** Page ID where snapshot was taken */
+//   pageId: string;
   
-  /** Page number for ordering */
-  page: number;
+//   /** Page number for ordering */
+//   page: number;
   
-  /** Complete story state at this point */
-  state: StoryState;
+//   /** Complete story state at this point */
+//   state: StoryState;
   
-  /** Timestamp when snapshot was created */
-  createdAt: Date;
+//   /** Timestamp when snapshot was created */
+//   createdAt: Date;
   
-  /** Snapshot version for future-proofing */
-  version: number;
+//   /** Snapshot version for future-proofing */
+//   version: number;
   
-  /** Whether this is a major event checkpoint */
-  isMajorCheckpoint: boolean;
+//   /** Whether this is a major event checkpoint */
+//   isMajorCheckpoint: boolean;
   
-  /** Reason for snapshot creation */
-  reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request';
-};
+//   /** Reason for snapshot creation */
+//   reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request';
+// };
 
 /**
  * State reconstruction result with metadata
@@ -1113,10 +1150,10 @@ export type StateReconstructionDeps = {
   getPageById: (pageId: string) => Promise<DBPage | null>;
   /** Get book by ID to retrieve totalPages */
   getBook: (bookId: string) => Promise<{ totalPages: number } | null>;
-  /** Get state snapshot by page ID */
-  getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
-  /** Get state delta by page ID */
-  getDelta: (pageId: string) => Promise<StateDelta | null>;
+  // /** Get state snapshot by page ID */
+  // getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
+  // /** Get state delta by page ID */
+  // getDelta: (pageId: string) => Promise<StateDelta | null>;
   /** Get story state by page ID (DB + cache fallback) */
   getStoryState?: (pageId: string) => Promise<StoryState | null>;
 };

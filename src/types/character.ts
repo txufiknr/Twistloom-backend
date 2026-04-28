@@ -219,3 +219,8 @@ export type CharacterUpdates = {
   /** Updates to existing characters */
   updatedCharacters: CharacterUpdate[];
 };
+
+export type TagUpdates = {
+  add: string[];
+  remove: string[];
+}

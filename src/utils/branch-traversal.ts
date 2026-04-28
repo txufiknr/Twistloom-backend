@@ -53,8 +53,8 @@ import { dbRead } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_AVERAGE_PAGES } from "../config/story.js";
-import type { DBPage } from "../types/schema.js";
-import type { PersistedStoryPage, StoryState, StateSnapshot, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry, Action, ActionType, ActionHintType } from "../types/story.js";
+import type { DBPage, DBStoryState } from "../types/schema.js";
+import type { PersistedStoryPage, StoryState, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry } from "../types/story.js";
 import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
 import { 
   GET_STORY_STATE_CIRCUIT_THRESHOLD,
@@ -65,8 +65,6 @@ import {
   GET_PAGE_BY_ID_CIRCUIT_TIMEOUT,
   GET_BOOK_CIRCUIT_THRESHOLD,
   GET_BOOK_CIRCUIT_TIMEOUT,
-  GET_DELTA_CIRCUIT_THRESHOLD,
-  GET_DELTA_CIRCUIT_TIMEOUT,
   BRANCH_PATH_MAX_RETRIES,
   BRANCH_PATH_BASE_DELAY,
   SNAPSHOT_SELECTION_MAX_RETRIES,
@@ -78,24 +76,22 @@ import {
   GET_STORY_STATE_KEY_PREFIX,
   GET_BRANCH_PATH_KEY_PREFIX,
   GET_PAGE_BY_ID_KEY_PREFIX,
-  GET_BOOK_KEY_PREFIX,
-  GET_DELTA_KEY_PREFIX
-} from "../config/branch-traversal.js";
+  GET_BOOK_KEY_PREFIX} from "../config/branch-traversal.js";
 import { retryOperation, withCircuitBreaker, createReliabilityMeasurement, completeReliabilityMeasurement } from "./reliability.js";
-import { getUserBookSnapshots } from "../services/snapshots.js";
+// import { getUserBookSnapshots } from "../services/snapshots.bak.js";
 
 // Re-export centralized cache constants for backward compatibility
 export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
 
 // Re-export centralized functions for use within this module
-import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots.js';
-import { createStateDelta, applyStateDelta } from '../services/deltas.js';
+// import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots.bak.js';
+// import { createStateDelta, applyStateDelta } from '../services/deltas.bak.js';
 import { getErrorMessage } from "./error.js";
 import { getPageFromDB, mapToPersistedStoryPage } from "../services/book.js";
-import { createEmptyStoryState } from "./story.js";
+import { applyStateDelta, createEmptyStoryState } from "./story.js";
 
 // Re-export for backward compatibility
-export { shouldCreateSnapshot, createStateSnapshot, createStateDelta, applyStateDelta };
+// export { shouldCreateSnapshot, createStateSnapshot, createStateDelta, applyStateDelta };
 
 // ============================================================================
 // CONFIGURATION
@@ -440,15 +436,16 @@ async function findOptimalSnapshot(
     state: StoryState;
     type: 'interval' | 'first' | 'middle' | 'last';
     deltasNeeded: number;
-    snapshot: StateSnapshot; // Include original snapshot data
+    // snapshot: StateSnapshot; // Include original snapshot data
   }> = [];
   
   // Check each page for snapshots
   for (let i = 0; i <= currentPageIndex; i++) {
     const page = branchPath.pages[i];
-    const snapshot = await deps.getSnapshot(page.id);
+    // const snapshot = await deps.getSnapshot(page.id);
+    const storyState = await deps.getStoryState?.(page.id);
     
-    if (snapshot) {
+    if (storyState) {
       const deltasNeeded = currentPageIndex - i;
       let type: 'interval' | 'first' | 'middle' | 'last';
       
@@ -472,10 +469,10 @@ async function findOptimalSnapshot(
         index: i,
         pageId: page.id,
         page: page.page,
-        state: snapshot.state,
+        state: storyState,
         type,
         deltasNeeded,
-        snapshot // Include original snapshot data for major checkpoint detection
+        // snapshot // Include original snapshot data for major checkpoint detection
       });
     }
   }
@@ -500,8 +497,8 @@ async function findOptimalSnapshot(
   // Prioritize snapshots by type and deltas needed
   const prioritizedSnapshots = availableSnapshots.sort((a, b) => {
     // NEW: First priority - Major checkpoints (most reliable states)
-    if (a.snapshot?.isMajorCheckpoint && !b.snapshot?.isMajorCheckpoint) return -1;
-    if (b.snapshot?.isMajorCheckpoint && !a.snapshot?.isMajorCheckpoint) return 1;
+    if (a.state?.isMajorEvent && !b.state?.isMajorEvent) return -1;
+    if (b.state?.isMajorEvent && !a.state?.isMajorEvent) return 1;
     
     // Second priority: Interval snapshots (optimal performance)
     if (a.type === 'interval' && b.type !== 'interval') return -1;
@@ -700,12 +697,13 @@ export async function reconstructStoryState(
         const page = branchPath.pages[i];
         
         try {
-          const delta = await withCircuitBreaker(
-            () => deps.getDelta!(page.id),
-            `${GET_DELTA_KEY_PREFIX}:${userId}`,
-            GET_DELTA_CIRCUIT_THRESHOLD,
-            GET_DELTA_CIRCUIT_TIMEOUT
-          );
+          const delta = page.stateDelta;
+          // const delta = await withCircuitBreaker(
+          //   () => deps.getDelta!(page.id),
+          //   `${GET_DELTA_KEY_PREFIX}:${userId}`,
+          //   GET_DELTA_CIRCUIT_THRESHOLD,
+          //   GET_DELTA_CIRCUIT_TIMEOUT
+          // );
           
           if (delta) {
             currentState = await retryOperation(
@@ -739,55 +737,55 @@ export async function reconstructStoryState(
       // Reconstruct pageHistory from branch path (pages from root to current)
       // pageHistory maintains a sliding window of recent pages for context
       // selectedAction is reconstructed by matching pageId with parent's actions
-      const fallbackAction: Action = {
-        text: 'Continue',
-        type: 'explore' satisfies ActionType,
-        hint: {
-          text: 'Continue to the next page',
-          type: 'none' satisfies ActionHintType
-        },
-        destination: {}
-      } satisfies Action;
+      // const fallbackAction: Action = {
+      //   text: 'Continue',
+      //   type: 'explore' satisfies ActionType,
+      //   hint: {
+      //     text: 'Continue to the next page',
+      //     type: 'none' satisfies ActionHintType
+      //   },
+      //   destination: {}
+      // } satisfies Action;
       
-      currentState.pageHistory = branchPath.pages.map((page, index) => {
-        // Root page has no parent, so no selectedAction
-        if (index === 0) {
-          return {
-            ...page,
-            selectedAction: {
-              ...fallbackAction,
-              destination: {
-                pageId: page.id,
-                branchId: page.branchId
-              }
-            }
-          };
-        }
+      // currentState.pageHistory = branchPath.pages.map((page, index) => {
+      //   // Root page has no parent, so no selectedAction
+      //   if (index === 0) {
+      //     return {
+      //       ...page,
+      //       selectedAction: {
+      //         ...fallbackAction,
+      //         destination: {
+      //           pageId: page.id,
+      //           branchId: page.branchId
+      //         }
+      //       }
+      //     };
+      //   }
 
-        // Find the action in parent page that led to this page
-        const parentPage = branchPath.pages[index - 1];
-        const selectedAction = parentPage.actions?.find(action => action.destination?.pageId === page.id);
+      //   // Find the action in parent page that led to this page
+      //   const parentPage = branchPath.pages[index - 1];
+      //   const selectedAction = parentPage.actions?.find(action => action.destination?.pageId === page.id);
 
-        if (selectedAction) {
-          return {
-            ...page,
-            selectedAction
-          };
-        }
+      //   if (selectedAction) {
+      //     return {
+      //       ...page,
+      //       selectedAction
+      //     };
+      //   }
 
-        // Fallback if no matching action found (shouldn't happen in valid branch)
-        console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
-        return {
-          ...page,
-          selectedAction: {
-            ...fallbackAction,
-            destination: {
-              pageId: page.id,
-              branchId: page.branchId
-            }
-          }
-        };
-      });
+      //   // Fallback if no matching action found (shouldn't happen in valid branch)
+      //   console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
+      //   return {
+      //     ...page,
+      //     selectedAction: {
+      //       ...fallbackAction,
+      //       destination: {
+      //         pageId: page.id,
+      //         branchId: page.branchId
+      //       }
+      //     }
+      //   };
+      // });
       
       // Ensure threads are present (should be handled by deltas, but verify)
       if (!currentState.threads || currentState.threads.length === 0) {
@@ -863,68 +861,68 @@ export async function reconstructStoryState(
 // SNAPSHOT CREATION STRATEGY
 // ============================================================================
 
-/**
- * Analyzes snapshot usage patterns for cleanup optimization
- * 
- * This function provides detailed analysis of snapshot patterns
- * to inform cleanup decisions and identify optimization opportunities.
- * 
- * @param userId - User identifier
- * @param bookId - Book identifier
- * @returns Snapshot analysis with recommendations
- */
-export async function analyzeSnapshotUsage(
-  userId: string,
-  bookId: string
-): Promise<{
-  totalSnapshots: number;
-  majorCheckpoints: number;
-  periodicSnapshots: number;
-  branchStartSnapshots: number;
-  majorEventSnapshots: number;
-  averagePageGap: number;
-  oldestSnapshot: Date | null;
-  newestSnapshot: Date | null;
-  recommendations: string[];
-}> {
-  const snapshots = await getUserBookSnapshots(userId, bookId, 100); // Get more for analysis
+// /**
+//  * Analyzes snapshot usage patterns for cleanup optimization
+//  * 
+//  * This function provides detailed analysis of snapshot patterns
+//  * to inform cleanup decisions and identify optimization opportunities.
+//  * 
+//  * @param userId - User identifier
+//  * @param bookId - Book identifier
+//  * @returns Snapshot analysis with recommendations
+//  */
+// export async function analyzeSnapshotUsage(
+//   userId: string,
+//   bookId: string
+// ): Promise<{
+//   totalSnapshots: number;
+//   majorCheckpoints: number;
+//   periodicSnapshots: number;
+//   branchStartSnapshots: number;
+//   majorEventSnapshots: number;
+//   averagePageGap: number;
+//   oldestSnapshot: Date | null;
+//   newestSnapshot: Date | null;
+//   recommendations: string[];
+// }> {
+//   const snapshots = await getUserBookSnapshots(userId, bookId, 100); // Get more for analysis
   
-  const majorCheckpoints = snapshots.filter(s => s.isMajorCheckpoint);
-  const periodicSnapshots = snapshots.filter(s => s.reason === 'periodic');
-  const branchStartSnapshots = snapshots.filter(s => s.reason === 'branch_start');
-  const majorEventSnapshots = snapshots.filter(s => s.reason === 'major_event');
+//   const majorCheckpoints = snapshots.filter(s => s.isMajorCheckpoint);
+//   const periodicSnapshots = snapshots.filter(s => s.reason === 'periodic');
+//   const branchStartSnapshots = snapshots.filter(s => s.reason === 'branch_start');
+//   const majorEventSnapshots = snapshots.filter(s => s.reason === 'major_event');
   
-  const averagePageGap = snapshots.length > 1 
-    ? Math.round((snapshots[0].page - snapshots[snapshots.length - 1].page) / snapshots.length)
-    : 0;
+//   const averagePageGap = snapshots.length > 1 
+//     ? Math.round((snapshots[0].page - snapshots[snapshots.length - 1].page) / snapshots.length)
+//     : 0;
   
-  const recommendations: string[] = [];
+//   const recommendations: string[] = [];
   
-  // Generate recommendations based on patterns
-  if (averagePageGap > 10) {
-    recommendations.push("Consider more frequent periodic snapshots (current gap > 10 pages)");
-  }
+//   // Generate recommendations based on patterns
+//   if (averagePageGap > 10) {
+//     recommendations.push("Consider more frequent periodic snapshots (current gap > 10 pages)");
+//   }
   
-  if (majorCheckpoints.length < snapshots.length * 0.2) {
-    recommendations.push("Few major checkpoints detected - consider marking more significant events");
-  }
+//   if (majorCheckpoints.length < snapshots.length * 0.2) {
+//     recommendations.push("Few major checkpoints detected - consider marking more significant events");
+//   }
   
-  if (periodicSnapshots.length > majorCheckpoints.length * 3) {
-    recommendations.push("High ratio of periodic to major checkpoints - cleanup may be needed");
-  }
+//   if (periodicSnapshots.length > majorCheckpoints.length * 3) {
+//     recommendations.push("High ratio of periodic to major checkpoints - cleanup may be needed");
+//   }
   
-  return {
-    totalSnapshots: snapshots.length,
-    majorCheckpoints: majorCheckpoints.length,
-    periodicSnapshots: periodicSnapshots.length,
-    branchStartSnapshots: branchStartSnapshots.length,
-    majorEventSnapshots: majorEventSnapshots.length,
-    averagePageGap,
-    oldestSnapshot: snapshots[snapshots.length - 1]?.createdAt || null,
-    newestSnapshot: snapshots[0]?.createdAt || null,
-    recommendations
-  };
-}
+//   return {
+//     totalSnapshots: snapshots.length,
+//     majorCheckpoints: majorCheckpoints.length,
+//     periodicSnapshots: periodicSnapshots.length,
+//     branchStartSnapshots: branchStartSnapshots.length,
+//     majorEventSnapshots: majorEventSnapshots.length,
+//     averagePageGap,
+//     oldestSnapshot: snapshots[snapshots.length - 1]?.createdAt || null,
+//     newestSnapshot: snapshots[0]?.createdAt || null,
+//     recommendations
+//   };
+// }
 
 /**
  * Selects optimal snapshots to keep based on importance and page progression
@@ -960,9 +958,9 @@ export async function analyzeSnapshotUsage(
  * ```
  */
 export function selectOptimalSnapshots(
-  snapshots: StateSnapshot[],
+  snapshots: DBStoryState[],
   maxSnapshots: number = 20
-): StateSnapshot[] {
+): DBStoryState[] {
   if (snapshots.length <= maxSnapshots) {
     return snapshots;
   }
@@ -971,8 +969,8 @@ export function selectOptimalSnapshots(
   const sorted = [...snapshots].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   
   // Always keep major checkpoints - these are critical for story integrity
-  const majorCheckpoints = sorted.filter(s => s.isMajorCheckpoint);
-  const regularSnapshots = sorted.filter(s => !s.isMajorCheckpoint);
+  const majorCheckpoints = sorted.filter(s => s.isMajorEvent);
+  const regularSnapshots = sorted.filter(s => !s.isMajorEvent);
   
   // Calculate how many regular snapshots we can keep after reserving space for checkpoints
   const remainingSlots = maxSnapshots - majorCheckpoints.length;

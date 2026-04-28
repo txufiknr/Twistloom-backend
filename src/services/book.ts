@@ -33,6 +33,7 @@ import { generateId } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { shouldProceedWithRetry } from "../utils/retry.js";
+import { extractStateDelta } from "../utils/story.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -62,6 +63,7 @@ import { shouldProceedWithRetry } from "../utils/retry.js";
 export async function insertStoryPage(
   userId: string,
   pageNumber: number,
+  // page: StoryGeneration & Pick<StoryPage, 'aiProvider' | 'aiModel'>,
   page: StoryPage,
   pageMeta: Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'>,
 ): Promise<PersistedStoryPage> {
@@ -84,9 +86,11 @@ export async function insertStoryPage(
       keyEvents: [], // Empty array for root page
       importantObjects: [], // Empty array for root page
       actions: page.actions,
-      addTraumaTag: page.addTraumaTag || null,
-      characterUpdates: page.characterUpdates || null,
-      placeUpdates: page.placeUpdates || null,
+      stateDelta: extractStateDelta(page),
+      // addTraumaTag: page.addTraumaTag || null,
+      // addPlotFlag: page.addPlotFlag || null,
+      // characterUpdates: page.characterUpdates || null,
+      // placeUpdates: page.placeUpdates || null,
       aiProvider: page.aiProvider || null,
       aiModel: page.aiModel || null,
       pendingGenerationCount,
@@ -99,7 +103,43 @@ export async function insertStoryPage(
       .values(newPageData)
       .returning();
 
-    return mapToPersistedStoryPage(result[0]);
+    const insertedPage = mapToPersistedStoryPage(result[0]);
+
+    // // Insert story state delta if delta fields are present
+    // const delta: StateDelta = {
+    //   flagUpdates: page.flagUpdates,
+    //   traumaTagUpdates: page.traumaTagUpdates,
+    //   plotFlagUpdates: page.plotFlagUpdates,
+    //   inventoryUpdates: page.inventoryUpdates,
+    //   characterUpdates: page.characterUpdates,
+    //   relationshipUpdates: page.relationshipUpdates,
+    //   placeUpdates: page.placeUpdates,
+    //   threadUpdates: page.threadUpdates,
+    //   viableEnding: page.viableEnding,
+    //   isMajorEvent: page.isMajorEvent,
+    //   contextHistory: page.contextHistory,
+    // };
+
+    // // Only insert delta if at least one delta field is present
+    // const hasDeltaFields = Object.values(delta).some(value => 
+    //   value !== undefined && value !== null && 
+    //   (Array.isArray(value) ? value.length > 0 : true)
+    // );
+
+    // if (hasDeltaFields) {
+    //   await dbWrite
+    //     .insert(storyStateDeltas)
+    //     .values({
+    //       userId,
+    //       pageId: insertedPage.id,
+    //       bookId,
+    //       delta,
+    //       createdAt: new Date(),
+    //       updatedAt: new Date(),
+    //     });
+    // }
+
+    return insertedPage;
   } catch (error) {
     console.error(`Failed to insert story page for page ${pageNumber}:`, getErrorMessage(error));
     throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`, { cause: error });
@@ -476,9 +516,11 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     keyEvents: dbPage.keyEvents || [],
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
-    addTraumaTag: dbPage.addTraumaTag || undefined,
-    characterUpdates: dbPage.characterUpdates || undefined,
-    placeUpdates: dbPage.placeUpdates || undefined,
+    stateDelta: dbPage.stateDelta || {},
+    // addTraumaTag: dbPage.addTraumaTag || undefined,
+    // addPlotFlag: dbPage.addPlotFlag || undefined,
+    // characterUpdates: dbPage.characterUpdates || undefined,
+    // placeUpdates: dbPage.placeUpdates || undefined,
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
   } satisfies PersistedStoryPage;
@@ -551,9 +593,11 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     keyEvents: dbPage.keyEvents || [],
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
-    addTraumaTag: dbPage.addTraumaTag || undefined,
-    characterUpdates: dbPage.characterUpdates || undefined,
-    placeUpdates: dbPage.placeUpdates || undefined,
+    stateDelta: dbPage.stateDelta || {},
+    // addTraumaTag: dbPage.addTraumaTag || undefined,
+    // addPlotFlag: dbPage.addPlotFlag || undefined,
+    // characterUpdates: dbPage.characterUpdates || undefined,
+    // placeUpdates: dbPage.placeUpdates || undefined,
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
   } satisfies StoryPage;
@@ -974,7 +1018,7 @@ export async function triggerCandidateGenerationRetry(
       const userPage = mapToUserStoryPage(page, userChosenAction);
       await ensureCandidatesForPage(userId, userPage);
     } catch (error) {
-      console.error(`[triggerCandidateGenerationRetry] Failed for page ${page.id}:`, getErrorMessage(error));
+      console.error(`[triggerCandidateGenerationRetry] ❌ Failed for page ${page.id}:`, getErrorMessage(error));
     }
   })();
 }

@@ -14,8 +14,7 @@ import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, 
 import { getStoryPageById } from "./book.js";
 import { getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
-import { getStateSnapshot } from "./snapshots.js";
-import { getStateDelta } from "./deltas.js";
+// import { getStateSnapshot } from "./snapshots.bak.js";
 import { getErrorMessage } from "../utils/error.js";
 import { BOOK_AVERAGE_PAGES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
@@ -83,8 +82,8 @@ export async function getStoryStateWithBranch(
     const reconstructionDeps: StateReconstructionDeps = {
       getPageById: async (id: string) => await getPageFromDB(id),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
-      getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
-      getDelta: async (id: string) => await getStateDelta(userId, id),
+      // getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
+      // getDelta: async (id: string) => await getStateDelta(userId, id),
       getStoryState: async (id: string) => await getStoryState(userId, id)
     };
     

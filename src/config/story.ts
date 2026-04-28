@@ -104,7 +104,7 @@ export const MAX_CHARACTER_PLACES = 5;
  * This maintains a sliding window of recent pages to keep
  * context relevant without overwhelming memory.
  */
-export const MAX_PAGE_HISTORY = 8;
+export const MAX_PAGE_HISTORY = 3;
 
 /**
  * Delta and snapshot cleanup configuration

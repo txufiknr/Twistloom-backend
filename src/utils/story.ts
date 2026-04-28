@@ -1,12 +1,215 @@
-import { MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PAGE_HISTORY, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
+import { MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration } from "../types/story.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
-import { summarizeStoryContext } from "./prompt.js";
 import { generateId } from "./uuid.js";
+import { deepEqualSimple } from "../utils/parser.js";
+
+/**
+ * Extracts state delta fields from a StoryGeneration object
+ * 
+ * This function separates the page content from state change information,
+ * returning only the delta fields that affect story state progression.
+ * 
+ * @param generation - StoryGeneration object containing both page content and state deltas
+ * @returns Clean StateDelta object with only state change fields
+ * 
+ * @example
+ * ```typescript
+ * const delta = extractStateDelta(generatedPage);
+ * // Returns: { flagUpdates, traumaTagUpdates, plotFlagUpdates, ... }
+ * ```
+ */
+export function extractStateDelta(generation: StoryGeneration): StateDelta {
+  return {
+    flagUpdates: generation.flagUpdates,
+    traumaTagUpdates: generation.traumaTagUpdates,
+    plotFlagUpdates: generation.plotFlagUpdates,
+    inventoryUpdates: generation.inventoryUpdates,
+    characterUpdates: generation.characterUpdates,
+    relationshipUpdates: generation.relationshipUpdates,
+    placeUpdates: generation.placeUpdates,
+    threadUpdates: generation.threadUpdates,
+    viableEnding: generation.viableEnding,
+    isMajorEvent: generation.isMajorEvent,
+    contextHistory: generation.contextHistory,
+  };
+}
+
+/**
+ * Calculates psychological state deltas between base and new state
+ * 
+ * This function compares two story states and extracts the differences
+ * in psychological profile, hidden state, memory integrity, and difficulty.
+ * 
+ * @param baseState - Base story state before updates
+ * @param newState - Updated story state after applying AI updates
+ * @returns Partial state delta with psychological changes
+ * 
+ * @example
+ * ```typescript
+ * const psychologicalDeltas = calculatePsychologicalDeltas(baseState, updatedState);
+ * // Returns: { psychologicalProfileUpdates, hiddenStateUpdates, ... }
+ * ```
+ */
+export function calculatePsychologicalDeltas(baseState: StoryState, newState: StoryState): Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'> {
+  const deltas: Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'> = {};
+
+  // Check for psychological profile changes
+  if (!deepEqualSimple(baseState.psychologicalProfile, newState.psychologicalProfile)) {
+    const profileUpdates: Partial<PsychologicalProfile> = {};
+    
+    // Compare each property with explicit typing
+    if (baseState.psychologicalProfile.archetype !== newState.psychologicalProfile.archetype) {
+      profileUpdates.archetype = newState.psychologicalProfile.archetype;
+    }
+    if (baseState.psychologicalProfile.stability !== newState.psychologicalProfile.stability) {
+      profileUpdates.stability = newState.psychologicalProfile.stability;
+    }
+    if (!deepEqualSimple(baseState.psychologicalProfile.dominantTraits, newState.psychologicalProfile.dominantTraits)) {
+      profileUpdates.dominantTraits = newState.psychologicalProfile.dominantTraits;
+    }
+    if (baseState.psychologicalProfile.manipulationAffinity !== newState.psychologicalProfile.manipulationAffinity) {
+      profileUpdates.manipulationAffinity = newState.psychologicalProfile.manipulationAffinity;
+    }
+    
+    if (Object.keys(profileUpdates).length > 0) {
+      deltas.psychologicalProfileUpdates = profileUpdates;
+    }
+  }
+
+  // Check for hidden state changes
+  if (!deepEqualSimple(baseState.hiddenState, newState.hiddenState)) {
+    const hiddenUpdates: Partial<HiddenState> = {};
+    
+    // Compare each property with explicit typing
+    if (baseState.hiddenState.truthLevel !== newState.hiddenState.truthLevel) {
+      hiddenUpdates.truthLevel = newState.hiddenState.truthLevel;
+    }
+    if (baseState.hiddenState.threatProximity !== newState.hiddenState.threatProximity) {
+      hiddenUpdates.threatProximity = newState.hiddenState.threatProximity;
+    }
+    if (baseState.hiddenState.realityStability !== newState.hiddenState.realityStability) {
+      hiddenUpdates.realityStability = newState.hiddenState.realityStability;
+    }
+    if (!deepEqualSimple(baseState.hiddenState.endingPlan, newState.hiddenState.endingPlan)) {
+      hiddenUpdates.endingPlan = newState.hiddenState.endingPlan;
+    }
+    if (!deepEqualSimple(baseState.hiddenState.profileShift, newState.hiddenState.profileShift)) {
+      hiddenUpdates.profileShift = newState.hiddenState.profileShift;
+    }
+    
+    if (Object.keys(hiddenUpdates).length > 0) {
+      deltas.hiddenStateUpdates = hiddenUpdates;
+    }
+  }
+
+  // Check for memory integrity changes
+  if (baseState.memoryIntegrity !== newState.memoryIntegrity) {
+    deltas.memoryIntegrity = newState.memoryIntegrity;
+  }
+
+  // Check for difficulty changes
+  if (baseState.difficulty !== newState.difficulty) {
+    deltas.difficulty = newState.difficulty;
+  }
+
+  return deltas;
+}
+
+/**
+ * Applies state delta to base story state
+ * 
+ * This function applies incremental changes from a StateDelta to a base StoryState,
+ * producing a new state with all updates applied. This is useful for reconstructing
+ * story states from stored deltas without requiring full snapshots.
+ * 
+ * @param baseState - Base story state to apply delta to
+ * @param stateDelta - State delta containing incremental changes
+ * @returns New story state with delta applied
+ * 
+ * @example
+ * ```typescript
+ * const newState = applyStateDelta(currentState, {
+ *   flagUpdates: { trust: "low" },
+ *   traumaTagUpdates: { add: ["heard a voice"], remove: [] },
+ *   plotFlagUpdates: { add: ["found key"], remove: [] }
+ * });
+ * ```
+ */
+export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): StoryState {
+  const {
+    flagUpdates,
+    traumaTagUpdates,
+    plotFlagUpdates,
+    inventoryUpdates,
+    characterUpdates,
+    relationshipUpdates,
+    placeUpdates,
+    threadUpdates,
+    viableEnding,
+    isMajorEvent,
+    contextHistory,
+    psychologicalProfileUpdates,
+    hiddenStateUpdates,
+    memoryIntegrity,
+    difficulty,
+  } = stateDelta;
+
+  // Create new state with base state values
+  const newState: StoryState = {
+    ...baseState,
+    // Apply optional delta fields
+    flags: flagUpdates ? { ...baseState.flags, ...flagUpdates } : baseState.flags,
+    isMajorEvent: isMajorEvent ?? baseState.isMajorEvent,
+    contextHistory: contextHistory ?? baseState.contextHistory,
+    viableEnding: viableEnding ? { ...baseState.viableEnding, ...viableEnding } : baseState.viableEnding,
+    // Apply new delta fields
+    psychologicalProfile: psychologicalProfileUpdates 
+      ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates } 
+      : baseState.psychologicalProfile,
+    hiddenState: hiddenStateUpdates 
+      ? { ...baseState.hiddenState, ...hiddenStateUpdates } 
+      : baseState.hiddenState,
+    memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
+    difficulty: difficulty ?? baseState.difficulty,
+  };
+
+  // Apply trauma tag updates
+  if (traumaTagUpdates) {
+    processTraumaTagUpdates(newState, traumaTagUpdates);
+  }
+
+  // Apply plot flag updates
+  if (plotFlagUpdates) {
+    processPlotFlagUpdates(newState, plotFlagUpdates);
+  }
+
+  // Apply inventory updates
+  if (inventoryUpdates) {
+    processInventoryUpdates(newState, inventoryUpdates);
+  }
+
+  // Apply character and relationship updates
+  if (characterUpdates || relationshipUpdates) {
+    processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
+  }
+
+  // Apply place updates
+  if (placeUpdates) {
+    processPlaceUpdates(newState, placeUpdates);
+  }
+
+  // Apply thread updates
+  if (threadUpdates) {
+    processThreadUpdates(newState, threadUpdates);
+  }
+
+  return newState;
+}
 
 /**
  * Advances story state based on user action and previous AI turn updates
@@ -33,19 +236,11 @@ import { generateId } from "./uuid.js";
  * ```
  */
 export async function advanceStoryState(state: StoryState, actionedPage: ActionedStoryPage): Promise<StoryState> {
-  const updatedState: StoryState = {
-    ...state,
-    // Add current page to history, maintain sliding window (last 5 pages)
-    pageHistory: [...state.pageHistory, actionedPage].slice(-MAX_PAGE_HISTORY),
-    // Add chosen action to history
-    actionsHistory: [...state.actionsHistory, actionedPage.selectedAction],
-    // Update context history with AI summarization
-    contextHistory: await summarizeStoryContext(
-      state.contextHistory,
-      actionedPage.text,
-      state.page
-    ),
-  };
+  const updatedState = updateStoryState(state, actionedPage.stateDelta);
+
+  // Add chosen action to history and increment page number
+  updatedState.actionsHistory.push(actionedPage.selectedAction);
+  updatedState.page++;
 
   // Update psychological flags based on action type
   updateFlags(updatedState, actionedPage.selectedAction);
@@ -59,19 +254,69 @@ export async function advanceStoryState(state: StoryState, actionedPage: Actione
   // Update advanced ending systems (profile shifts, fake endings)
   updateAdvancedEndingSystems(updatedState);
 
-  // Process new trauma if provided
-  maybeAddTrauma(updatedState, actionedPage.addTraumaTag);
+  return updatedState;
+}
+
+/**
+ * Applies current AI turn's updates to story state
+ *
+ * This function processes updates (viable ending, trauma, characters, places, threads)
+ * generated by the AI in the current turn and applies them to the story state.
+ * This is called after AI generation succeeds.
+ *
+ * @param storyState - Current story state to update
+ * @param generatedPage - AI-generated page content with current turn's updates
+ * @returns Updated story state with current AI modifications applied
+ */
+export function updateStoryState(
+  storyState: StoryState,
+  stateDelta: StateDelta
+): StoryState {
+  const {
+    flagUpdates,
+    traumaTagUpdates,
+    plotFlagUpdates,
+    inventoryUpdates,
+    characterUpdates,
+    relationshipUpdates,
+    placeUpdates,
+    threadUpdates,
+    viableEnding,
+    isMajorEvent,
+    contextHistory,
+  } = stateDelta;
+
+  // Create new state with viable ending updates
+  const newState: StoryState = { 
+    ...storyState,
+    isMajorEvent: isMajorEvent ?? storyState.isMajorEvent,
+    contextHistory: contextHistory ?? storyState.contextHistory,
+    flags: {...storyState.flags, ...(flagUpdates ?? {})},
+    viableEnding: {
+      text: viableEnding?.text ?? storyState.viableEnding?.text,
+      type: viableEnding?.type ?? storyState.viableEnding?.type,
+    } 
+  };
+
+  // Add or remove new trauma tag if provided
+  processTraumaTagUpdates(newState, traumaTagUpdates);
+
+  // Add or remove plot flag if provided
+  processPlotFlagUpdates(newState, plotFlagUpdates);
+
+  // Add or remove inventory if provided
+  processInventoryUpdates(newState, inventoryUpdates);
 
   // Process character updates from AI output
-  processCharacterUpdates(updatedState, actionedPage.characterUpdates, actionedPage.relationshipUpdates);
+  processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
 
   // Process place updates from AI output
-  processPlaceUpdates(updatedState, actionedPage.placeUpdates);
+  processPlaceUpdates(newState, placeUpdates);
 
   // Process thread updates from AI output
-  processThreadUpdates(updatedState, actionedPage.threadUpdates);
+  processThreadUpdates(newState, threadUpdates);
 
-  return updatedState;
+  return newState;
 }
 
 /**
@@ -139,31 +384,112 @@ function updateFlags(state: StoryState, action?: Action): void {
 }
 
 /**
- * Adds new trauma tag if provided and manages trauma collection
+ * Processes trauma tag updates from AI-generated content
  * 
- * @param state - Current story state
- * @param actionedPage - Page that may contain a new trauma tag
+ * Handles both adding and removing trauma tags based on the TagUpdates structure.
+ * Maintains the MAX_TRAUMA_TAGS limit when adding new tags.
+ * 
+ * @param state - Current story state to update
+ * @param updates - TagUpdates object with add and remove arrays
+ * 
+ * @example
+ * ```typescript
+ * processTraumaTagUpdates(state, {
+ *   add: ["heard a voice", "saw something move"],
+ *   remove: ["old trauma"]
+ * });
+ * ```
  */
-export function maybeAddTrauma(state: StoryState, traumaTag?: string): void {
-  if (traumaTag) pushTrauma(state, traumaTag);
+export function processTraumaTagUpdates(state: StoryState, updates?: { add: string[]; remove: string[] }): void {
+  if (!updates) return;
+  
+  // Remove specified tags
+  if (updates.remove.length > 0) {
+    state.traumaTags = state.traumaTags.filter(tag => !updates.remove.includes(tag));
+  }
+  
+  // Add new tags (avoid duplicates)
+  if (updates.add.length > 0) {
+    for (const tag of updates.add) {
+      if (!state.traumaTags.includes(tag)) {
+        state.traumaTags.push(tag);
+      }
+    }
+    
+    // Keep only the last MAX_TRAUMA_TAGS trauma tags for relevance
+    if (state.traumaTags.length > MAX_TRAUMA_TAGS) {
+      state.traumaTags = state.traumaTags.slice(-MAX_TRAUMA_TAGS);
+    }
+  }
 }
 
 /**
- * Adds trauma tag to the collection, maintaining the most recent MAX_TRAUMA_TAGS tags
+ * Processes plot flag updates from AI-generated content
  * 
- * Keeps the last MAX_TRAUMA_TAGS trauma tags to maintain relevance to current story events.
+ * Handles both adding and removing plot flags based on the TagUpdates structure.
+ * Plot flags track important story developments and discoveries.
  * 
- * @param state - Current story state
- * @param tag - New trauma tag to add
+ * @param state - Current story state to update
+ * @param updates - TagUpdates object with add and remove arrays
+ * 
+ * @example
+ * ```typescript
+ * processPlotFlagUpdates(state, {
+ *   add: ["found mysterious key", "discovered secret passage"],
+ *   remove: ["old irrelevant flag"]
+ * });
+ * ```
  */
-function pushTrauma(state: StoryState, tag: string): void {
-  if (!state.traumaTags.includes(tag)) {
-    state.traumaTags.push(tag);
+export function processPlotFlagUpdates(state: StoryState, updates?: { add: string[]; remove: string[] }): void {
+  if (!updates) return;
+  
+  // Remove specified flags
+  if (updates.remove.length > 0) {
+    state.plotFlags = state.plotFlags.filter(flag => !updates.remove.includes(flag));
   }
+  
+  // Add new flags (avoid duplicates)
+  if (updates.add.length > 0) {
+    for (const flag of updates.add) {
+      if (!state.plotFlags.includes(flag)) {
+        state.plotFlags.push(flag);
+      }
+    }
+  }
+}
 
-  // Keep only the last MAX_TRAUMA_TAGS trauma tags for relevance
-  if (state.traumaTags.length > MAX_TRAUMA_TAGS) {
-    state.traumaTags = state.traumaTags.slice(-MAX_TRAUMA_TAGS);
+/**
+ * Processes inventory updates from AI-generated content
+ * 
+ * Handles both adding and removing inventory items based on the TagUpdates structure.
+ * Inventory tracks items the character possesses for story interactions.
+ * 
+ * @param state - Current story state to update
+ * @param updates - TagUpdates object with add and remove arrays
+ * 
+ * @example
+ * ```typescript
+ * processInventoryUpdates(state, {
+ *   add: ["rusty key", "flashlight", "old photograph"],
+ *   remove: ["broken item", "used up item"]
+ * });
+ * ```
+ */
+export function processInventoryUpdates(state: StoryState, updates?: { add: string[]; remove: string[] }): void {
+  if (!updates) return;
+  
+  // Remove specified items
+  if (updates.remove.length > 0) {
+    state.inventory = state.inventory.filter(item => !updates.remove.includes(item));
+  }
+  
+  // Add new items (avoid duplicates)
+  if (updates.add.length > 0) {
+    for (const item of updates.add) {
+      if (!state.inventory.includes(item)) {
+        state.inventory.push(item);
+      }
+    }
   }
 }
 
@@ -250,40 +576,138 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
  * 
  * Escalates threat proximity, reality stability, memory integrity,
  * and difficulty based on page progression and current state.
+ * Uses multi-factor analysis to determine all state properties dynamically.
  * 
  * @param state - Current story state to update
  */
 function updateHiddenState(state: StoryState): void {
   const pageProgress = state.page / state.maxPage;
+  const traumaCount = state.traumaTags.length;
+  const majorEventCount = state.actionsHistory.filter(a => 
+    a.type === 'confront' || a.type === 'avoid'
+  ).length;
 
-  // Escalation over time
-  if (pageProgress > 0.6) {
-    state.hiddenState.threatProximity = "near";
+  // ========================
+  // TRUTH LEVEL CALCULATION
+  // ========================
+  let truthScore = 1.0; // Start at 100% truth
+  
+  // Reduce truth based on progress (up to 60% reduction)
+  truthScore -= pageProgress * 0.6;
+  
+  // Reduce truth based on trauma (up to 30% reduction)
+  truthScore -= Math.min(traumaCount * 0.1, 0.3);
+  
+  // Reduce truth based on major events (up to 20% reduction)
+  truthScore -= Math.min(majorEventCount * 0.05, 0.2);
+
+  // Ensure score doesn't go below 0
+  truthScore = Math.max(0, truthScore);
+
+  // Convert score to truth level
+  if (truthScore >= 0.7) {
+    state.hiddenState.truthLevel = "mostly_true";
+  } else if (truthScore >= 0.4) {
+    state.hiddenState.truthLevel = "partially_true";
+  } else {
+    state.hiddenState.truthLevel = "mostly_false";
   }
 
-  if (pageProgress > 0.8) {
+  // ========================
+  // THREAT PROXIMITY CALCULATION
+  // ========================
+  let threatScore = pageProgress * 0.4; // 40% from progress
+  threatScore += (state.difficulty === 'nightmare' ? 0.3 : 0.2); // 20-30% from difficulty
+  threatScore += Math.min(traumaCount * 0.05, 0.2); // Up to 20% from trauma
+  threatScore += Math.min(majorEventCount * 0.1, 0.3); // Up to 30% from major events
+  threatScore = Math.min(threatScore, 1.0); // Cap at 1.0
+
+  // Convert score to threat proximity
+  if (threatScore >= 0.7) {
     state.hiddenState.threatProximity = "immediate";
-    state.hiddenState.realityStability = "broken";
+  } else if (threatScore >= 0.4) {
+    state.hiddenState.threatProximity = "near";
+  } else {
+    state.hiddenState.threatProximity = "distant";
   }
 
-  // Memory corruption scaling
-  if (pageProgress > 0.5) {
+  // ========================
+  // REALITY STABILITY CALCULATION
+  // ========================
+  let stabilityScore = 1.0;
+  
+  // Reduce stability based on truth level
+  if (state.hiddenState.truthLevel === 'mostly_false') stabilityScore -= 0.4;
+  else if (state.hiddenState.truthLevel === 'partially_true') stabilityScore -= 0.2;
+  
+  // Reduce stability based on memory integrity
+  if (state.memoryIntegrity === 'corrupted') stabilityScore -= 0.3;
+  else if (state.memoryIntegrity === 'fragmented') stabilityScore -= 0.15;
+  
+  // Reduce stability based on major events
+  stabilityScore -= Math.min(majorEventCount * 0.08, 0.25);
+  
+  // Reduce stability based on progress
+  stabilityScore -= pageProgress * 0.2;
+  
+  stabilityScore = Math.max(0, stabilityScore);
+
+  // Convert score to reality stability
+  if (stabilityScore <= 0.3) {
+    state.hiddenState.realityStability = "broken";
+  } else if (stabilityScore <= 0.6) {
+    state.hiddenState.realityStability = "shaking";
+  } else {
+    state.hiddenState.realityStability = "stable";
+  }
+
+  // ========================
+  // MEMORY INTEGRITY CALCULATION
+  // ========================
+  let memoryScore = 1.0;
+  
+  // Reduce memory based on truth level
+  if (state.hiddenState.truthLevel === 'mostly_false') memoryScore -= 0.3;
+  else if (state.hiddenState.truthLevel === 'partially_true') memoryScore -= 0.15;
+  
+  // Reduce memory based on trauma
+  memoryScore -= Math.min(traumaCount * 0.08, 0.4);
+  
+  // Reduce memory based on progress
+  memoryScore -= pageProgress * 0.3;
+  
+  // Reduce memory based on major events
+  memoryScore -= Math.min(majorEventCount * 0.06, 0.2);
+  
+  memoryScore = Math.max(0, memoryScore);
+
+  // Convert score to memory integrity
+  if (memoryScore <= 0.3) {
+    state.memoryIntegrity = "corrupted";
+  } else if (memoryScore <= 0.6) {
     state.memoryIntegrity = "fragmented";
+  } else {
+    state.memoryIntegrity = "stable";
   }
 
-  if (pageProgress > 0.75) {
-    state.memoryIntegrity = "corrupted";
-  }
+  // ========================
+  // DIFFICULTY CALCULATION
+  // ========================
+  let difficultyScore = pageProgress * 0.3; // 30% from progress
+  difficultyScore += (1.0 - truthScore) * 0.4; // 40% from truth degradation
+  difficultyScore += traumaCount * 0.05; // 5% per trauma
+  difficultyScore += majorEventCount * 0.03; // 3% per major event
+  difficultyScore = Math.min(difficultyScore, 1.0); // Cap at 1.0
 
-  // Difficulty escalation
-  if (pageProgress > 0.7) {
+  // Convert score to difficulty
+  if (difficultyScore >= 0.8) {
+    state.difficulty = "nightmare";
+  } else if (difficultyScore >= 0.5) {
     state.difficulty = "high";
-  }
-
-  // Nightmare difficulty escalation
-  if (state.difficulty === "nightmare" && pageProgress > 0.4) {
-    state.hiddenState.realityStability = "broken";
-    state.memoryIntegrity = "corrupted";
+  } else if (difficultyScore >= 0.3) {
+    state.difficulty = "medium";
+  } else {
+    state.difficulty = "low";
   }
 }
 

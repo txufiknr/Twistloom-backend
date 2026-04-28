@@ -146,6 +146,17 @@ export async function updateTrendingScores(): Promise<void> {
       totalUpdated += chunk.length;
     }
     
+    // Calculate and log trending score summary
+    const scores = updates.map(u => u.trendingScore);
+    const maxScore = Math.max(...scores);
+    const minScore = Math.min(...scores);
+    const avgScore = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+    const highScoreCount = scores.filter(score => score > avgScore * 1.5).length;
+    const zeroScoreCount = scores.filter(score => score === 0).length;
+    
+    console.log(`[trending-scores] 📊 Score summary: max=${maxScore.toFixed(2)}, min=${minScore.toFixed(2)}, avg=${avgScore.toFixed(2)}`);
+    console.log(`[trending-scores] 🎯 High performers: ${highScoreCount} books, Zero scores: ${zeroScoreCount} books`);
+    
     const durationMs = Date.now() - startedAt;
     console.log(`[trending-scores] ✅ Updated ${totalUpdated} books in ${durationMs}ms`);
   } catch (error) {

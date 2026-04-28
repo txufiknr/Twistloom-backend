@@ -8,6 +8,7 @@ import type { Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile
  * All helper functions reference this to avoid duplication.
  */
 export const STORY_GENERATION_SCHEMA_DEFINITION = {
+  // Page
   text: { type: 'string' },
   mood: { type: 'string' },
   place: { type: 'string' },
@@ -16,13 +17,19 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   keyEvents: { type: 'array', items: { type: 'string' } },
   importantObjects: { type: 'array', items: { type: 'string' } },
   actions: { type: 'array', items: { type: 'object' } },
-  addTraumaTag: { type: 'string' },
+
+  // State Delta
+  flagUpdates: { type: 'object' },
+  traumaTagUpdates: { type: 'object' },
+  plotFlagUpdates: { type: 'object' },
+  inventoryUpdates: { type: 'object' },
   characterUpdates: { type: 'object' },
   relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
-  isMajorEvent: { type: 'boolean' }
+  isMajorEvent: { type: 'boolean' },
+  contextHistory: { type: 'string' }
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
@@ -59,6 +66,8 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   },
   threads: [],
   traumaTags: [],
+  plotFlags: [],
+  inventory: [],
   psychologicalProfile: PSYCHOLOGICAL_PROFILE_DEFAULTS,
   hiddenState: HIDDEN_STATE_DEFAULTS,
   memoryIntegrity: 'stable',
@@ -66,7 +75,8 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   viableEnding: undefined,
   characters: {},
   places: {},
-  pageHistory: [],
+  // pageHistory: [],
   actionsHistory: [],
-  contextHistory: ''
+  contextHistory: '',
+  isMajorEvent: false
 };

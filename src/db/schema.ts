@@ -15,12 +15,10 @@ import type {
   Action,
   ActionedStoryPage,
   StateDelta,
-  StoryState,
   Ending,
-  StoryStateSnapshotReason,
 } from "../types/story.js";
-import type { CharacterMemory, CharacterUpdates } from "../types/character.js";
-import type { PlaceMemory, PlaceUpdates } from "../types/places.js";
+import type { CharacterMemory } from "../types/character.js";
+import type { PlaceMemory } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
 import { BOOK_AVERAGE_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
@@ -74,9 +72,12 @@ export const pages = pgTable(
     keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
     importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
-    addTraumaTag: text("add_trauma_tag"), // New trauma tag
-    characterUpdates: jsonb("character_updates").$type<CharacterUpdates | null>(),
-    placeUpdates: jsonb("place_updates").$type<PlaceUpdates | null>(), // PlaceUpdates structure
+    stateDelta: jsonb("delta").$type<StateDelta>().notNull(),
+    // addTraumaTag: text("add_trauma_tag"), // New trauma tag
+    // addPlotFlag: text("add_plot_flag"), // New plot flag
+    // characterUpdates: jsonb("character_updates").$type<CharacterUpdates | null>(),
+    // placeUpdates: jsonb("place_updates").$type<PlaceUpdates | null>(), // PlaceUpdates structure
+    // isMajorEvent: boolean("is_major_event").notNull().default(false),
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
     pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
@@ -131,7 +132,9 @@ export const storyStates = pgTable(
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
     threads: jsonb("threads").$type<StoryThread[]>().notNull().default(sql`'[]'::jsonb`), // Known threads
-    traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Sliding window (MAX_TRAUMA_TAGS)
+    traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    plotFlags: jsonb("plot_flags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    inventory: jsonb("inventory").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     psychologicalProfile: jsonb("psychological_profile").$type<PsychologicalProfile>().notNull(), // PsychologicalProfile structure
     hiddenState: jsonb("hidden_state").$type<HiddenState>().notNull(), // Hidden narrative state structure
     memoryIntegrity: text("memory_integrity").$type<MemoryIntegrity>().notNull().default("stable"), // "stable" | "fragmented" | "corrupted"
@@ -142,6 +145,7 @@ export const storyStates = pgTable(
     pageHistory: jsonb("page_history").$type<ActionedStoryPage[]>().notNull().default(sql`'[]'::jsonb`), // Page history with sliding window
     actionsHistory: jsonb("actions_history").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // History of user actions
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
+    isMajorEvent: boolean("is_major_event").notNull().default(false),
     createdAt,
     updatedAt,
   },
@@ -342,120 +346,113 @@ export const userPageProgress = pgTable(
   ]
 );
 
-/**
- * Create story state snapshots table
- * @summary Store complete story state checkpoints for efficient reconstruction
- * @example
- * {
- *   "id": "snapshot123",
- *   "user_id": "user456",
- *   "book_id": "book789",
- *   "page_id": "page123",
- *   "state": {
- *     "pageId": "page123",
- *     "page": 15,
- *     "maxPage": 150,
- *     "flags": { "trust": "medium", "fear": "high" },
- *     "traumaTags": ["betrayal", "loss"],
- *     "psychologicalProfile": { "archetype": "survivor" },
- *     "hiddenState": { "memoryIntegrity": "fragmented" },
- *     "memoryIntegrity": "stable",
- *     "difficulty": "medium",
- *     "viableEnding": { "text": "...", "type": "false_reality" },
- *     "characters": {},
- *     "places": {},
- *     "pageHistory": [],
- *     "actionsHistory": [],
- *     "contextHistory": "Story context summary..."
- *   },
- *   "created_at": "2023-01-01T00:00:00.000Z",
- *   "version": 1,
- *   "is_major_checkpoint": true,
- *   "reason": "major_event"
- * }
- */
-export const storyStateSnapshots = pgTable(
-  "story_state_snapshots",
-  {
-    id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "set null" }),
-    pageId: pageId("cascade"), // Delete if page is deleted
-    bookId: bookId("cascade"), // Delete if book is deleted
-    state: jsonb("state").$type<StoryState>().notNull(),
-    createdAt,
-    version: integer("version").default(1).notNull(),
-    isMajorCheckpoint: boolean("is_major_checkpoint").default(false).notNull(),
-    reason: text("reason").$type<StoryStateSnapshotReason>().notNull(),
-    updatedAt,
-  },
-  (t) => [
-    // Unique constraint for user+book+page combinations
-    unique("story_state_snapshots_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
-    // Index for user's snapshots in a book
-    index("story_state_snapshots_user_book_idx").on(t.userId, t.bookId),
-    // Index for finding specific page snapshots
-    index("story_state_snapshots_page_idx").on(t.pageId),
-    // Index for recent snapshots (for cleanup)
-    index("story_state_snapshots_created_idx").on(t.createdAt.desc()),
-    // Index for major checkpoints prioritization
-    index("story_state_snapshots_major_idx").on(t.isMajorCheckpoint, t.createdAt.desc()),
-    // Index for snapshot reason filtering
-    index("story_state_snapshots_reason_idx").on(t.reason),
-  ]
-);
+// /**
+//  * Create story state snapshots table
+//  * @summary Store complete story state checkpoints for efficient reconstruction
+//  * @example
+//  * {
+//  *   "id": "snapshot123",
+//  *   "user_id": "user456",
+//  *   "book_id": "book789",
+//  *   "page_id": "page123",
+//  *   "state": {
+//  *     "pageId": "page123",
+//  *     "page": 15,
+//  *     "maxPage": 150,
+//  *     "flags": { "trust": "medium", "fear": "high" },
+//  *     "traumaTags": ["betrayal", "loss"],
+//  *     "psychologicalProfile": { "archetype": "survivor" },
+//  *     "hiddenState": { "memoryIntegrity": "fragmented" },
+//  *     "memoryIntegrity": "stable",
+//  *     "difficulty": "medium",
+//  *     "viableEnding": { "text": "...", "type": "false_reality" },
+//  *     "characters": {},
+//  *     "places": {},
+//  *     "pageHistory": [],
+//  *     "actionsHistory": [],
+//  *     "contextHistory": "Story context summary..."
+//  *   },
+//  *   "created_at": "2023-01-01T00:00:00.000Z",
+//  *   "version": 1,
+//  *   "is_major_checkpoint": true,
+//  *   "reason": "major_event"
+//  * }
+//  */
+// export const storyStateSnapshots = pgTable(
+//   "story_state_snapshots",
+//   {
+//     id: id(),
+//     userId: userId().references(() => users.userId, { onDelete: "set null" }),
+//     pageId: pageId("cascade"), // Delete if page is deleted
+//     bookId: bookId("cascade"), // Delete if book is deleted
+//     state: jsonb("state").$type<StoryState>().notNull(),
+//     createdAt,
+//     version: integer("version").default(1).notNull(),
+//     isMajorCheckpoint: boolean("is_major_checkpoint").default(false).notNull(),
+//     reason: text("reason").$type<StoryStateSnapshotReason>().notNull(),
+//     updatedAt,
+//   },
+//   (t) => [
+//     // Unique constraint for user+book+page combinations
+//     unique("story_state_snapshots_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
+//     // Index for user's snapshots in a book
+//     index("story_state_snapshots_user_book_idx").on(t.userId, t.bookId),
+//     // Index for finding specific page snapshots
+//     index("story_state_snapshots_page_idx").on(t.pageId),
+//     // Index for recent snapshots (for cleanup)
+//     index("story_state_snapshots_created_idx").on(t.createdAt.desc()),
+//     // Index for major checkpoints prioritization
+//     index("story_state_snapshots_major_idx").on(t.isMajorCheckpoint, t.createdAt.desc()),
+//     // Index for snapshot reason filtering
+//     index("story_state_snapshots_reason_idx").on(t.reason),
+//   ]
+// );
 
-/**
- * Create story state deltas table
- * @summary Store state changes between pages for efficient delta reconstruction
- * @example
- * {
- *   "user_id": "user456",
- *   "book_id": "book789",
- *   "page_id": "page456",
- *   "delta": {
- *     "pageId": "page456",
- *     "fromPage": 14,
- *     "toPage": 15,
- *     "changes": {
- *       "flags": {
- *         "trust": { "from": "high", "to": "medium" },
- *         "fear": { "from": "low", "to": "high" }
- *       },
- *       "traumaTags": {
- *         "added": ["betrayal"],
- *         "removed": []
- *       },
- *       "psychologicalProfile": {
- *         "stabilityLevel": { "from": "stable", "to": "fragile" }
- *       }
- *     },
- *     "timestamp": "2023-01-01T00:00:00.000Z"
- *   },
- *   "created_at": "2023-01-01T00:00:00.000Z"
- * }
- */
-export const storyStateDeltas = pgTable(
-  "story_state_deltas",
-  {
-    id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "set null" }),
-    pageId: pageId("cascade"), // Delete if page is deleted
-    bookId: bookId("cascade"), // Delete if book is deleted
-    delta: jsonb("delta").$type<StateDelta>().notNull(),
-    createdAt,
-    updatedAt,
-  },
-  (t) => [
-    // Unique constraint for user+book+page combinations
-    unique("story_state_deltas_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
-    // Index for user's deltas in a book
-    index("story_state_deltas_user_book_idx").on(t.userId, t.bookId),
-    // Index for finding specific page deltas
-    index("story_state_deltas_page_idx").on(t.pageId),
-    // Index for recent deltas (for cleanup)
-    index("story_state_deltas_created_idx").on(t.createdAt.desc()),
-  ]
-);
+// /**
+//  * Create story state deltas table
+//  * @summary Store state changes between pages for efficient delta reconstruction
+//  * @example
+//  * {
+//  *   "user_id": "user456",
+//  *   "book_id": "book789",
+//  *   "page_id": "page456",
+//  *   "delta": {
+//  *     "traumaTagUpdates": { "add": ["heard a voice", "saw something move"], "remove": [] },
+//  *     "plotFlagUpdates": { "add": ["found mysterious key", "discovered secret passage"], "remove": [] },
+//  *     "inventoryUpdates": { "add": ["rusty key", "flashlight"], "remove": ["broken item"] },
+//  *     "characterUpdates": { "add": { "Lisa": { "status": "alive", "relationship": "friend" } } },
+//  *     "relationshipUpdates": [],
+//  *     "placeUpdates": { "add": { "old mansion": { "mood": "eerie", "visited": true } } },
+//  *     "threadUpdates": { "newThreads": [], "threadModifications": [], "cluesToAdd": [], "threadsToClose": [] },
+//  *     "viableEnding": { "type": "psychological", "text": "Lisa was never real" },
+//  *     "isMajorEvent": true,
+//  *     "contextHistory": "The protagonist discovered Lisa was a hallucination..."
+//  *   },
+//  *   "created_at": "2023-01-01T00:00:00.000Z"
+//  * }
+//  */
+// export const storyStateDeltas = pgTable(
+//   "story_state_deltas",
+//   {
+//     id: id(),
+//     userId: userId().references(() => users.userId, { onDelete: "set null" }),
+//     pageId: pageId("cascade"), // Delete if page is deleted
+//     bookId: bookId("cascade"), // Delete if book is deleted
+//     delta: jsonb("delta").$type<StateDelta>().notNull(),
+//     createdAt,
+//     updatedAt,
+//   },
+//   (t) => [
+//     // Unique constraint for user+book+page combinations
+//     unique("story_state_deltas_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
+//     // Index for user's deltas in a book
+//     index("story_state_deltas_user_book_idx").on(t.userId, t.bookId),
+//     // Index for finding specific page deltas
+//     index("story_state_deltas_page_idx").on(t.pageId),
+//     // Index for recent deltas (for cleanup)
+//     index("story_state_deltas_created_idx").on(t.createdAt.desc()),
+//   ]
+// );
 
 /**
  * Create usage table to track daily AI requests

@@ -303,7 +303,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
         imageSize = AI_IMAGE_CONFIG.imageSize,
         // personGeneration = AI_IMAGE_CONFIG.personGeneration,
         aspectRatio = AI_IMAGE_CONFIG.aspectRatio,
-        outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
+        // outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
         outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
       } = opts;
 
@@ -317,7 +317,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
             aspectRatio,
             imageSize,
             // personGeneration,
-            outputMimeType,
+            // outputMimeType,
             outputCompressionQuality,
           },
         },

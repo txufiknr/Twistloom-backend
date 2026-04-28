@@ -10,6 +10,7 @@
  * 
  * Should be run periodically via cron job (e.g., every 15 minutes), but safe to run repeatedly
  */
+import { mapToUserStoryPage } from "../services/book.js";
 import { getErrorMessage } from "../utils/error.js";
 
 export async function retryPendingGenerations(): Promise<void> {
@@ -27,6 +28,7 @@ export async function retryPendingGenerations(): Promise<void> {
     
     // Query pages with pending generations (limit to prevent overwhelming the system)
     // Note: Fetch userId and pendingGenerationCount (minimal fields needed)
+    // TODO: prioritize most trending books
     const pagesWithPending = await dbRead
       .select({
         id: pages.id,
@@ -61,17 +63,7 @@ export async function retryPendingGenerations(): Promise<void> {
         }
         
         // Convert null fields to undefined for type compatibility
-        const pageForGeneration = {
-          ...fullPage,
-          mood: fullPage.mood ?? undefined,
-          place: fullPage.place ?? undefined,
-          timeOfDay: fullPage.timeOfDay ?? undefined,
-          addTraumaTag: fullPage.addTraumaTag ?? undefined,
-          characterUpdates: fullPage.characterUpdates ?? undefined,
-          placeUpdates: fullPage.placeUpdates ?? undefined,
-          aiProvider: fullPage.aiProvider ?? undefined,
-          aiModel: fullPage.aiModel ?? undefined,
-        };
+        const pageForGeneration = mapToUserStoryPage(fullPage);
         
         // Count actions without complete destination before regeneration
         const actionsBefore = fullPage.actions || [];

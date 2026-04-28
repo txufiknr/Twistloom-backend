@@ -14,8 +14,15 @@ export function formatBookMetaForPrompt(book: Book): string {
   - Language: ${book.language}`;
 }
 
+/**
+ * Formats page text for prompt by trimming whitespace, replacing double
+ * and single line breaks with a delimiter.
+ *
+ * @param {string} text - Page text to format
+ * @returns {string} Formatted page text string
+ */
 export function formatPageTextForPrompt(text: string): string {
-  return text.trim().replace(/\n/g, ' ¶ ');
+  return text.trim().replace(/\n\n/g, ' ¶ ').replace(/\n/g, ' ¶ ');
 }
 
 /**

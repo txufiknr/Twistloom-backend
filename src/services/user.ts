@@ -13,9 +13,12 @@
 
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth } from "../db/schema.js";
-import { eq, and, gt, sql } from "drizzle-orm";
+import { eq, and, gt, ne, sql } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
+import { requireEnv } from "../utils/env.js";
+
+const SYSTEM_USER_ID = requireEnv('SYSTEM_USER_ID');
 
 /**
  * Cleans up orphaned user records
@@ -56,7 +59,10 @@ export async function cleanupOrphanedUsers(): Promise<number> {
       .select({ userId: users.userId })
       .from(users)
       .leftJoin(userAuth, eq(users.userId, userAuth.userId))
-      .where(sql`${userAuth.userId} IS NULL`);
+      .where(and(
+        sql`${userAuth.userId} IS NULL`,
+        ne(users.userId, SYSTEM_USER_ID)
+      ));
     
     if (orphanedUsers.length === 0) {
       console.log("[user] ✨ No orphaned users found");

@@ -1,7 +1,7 @@
 import { dbRead, dbWrite } from "../db/client.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryState, StoryProgress, UserActiveSession, Action, SetActiveSessionParams } from "../types/story.js";
+import type { StoryState, StoryProgress, UserActiveSession, Action, SetActiveSessionParams, ActionedStoryPage, PreviousPages } from "../types/story.js";
 import type { DBNewUserPageProgress, DBStoryState, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
 import { getBook, getStoryPageById } from "./book.js";
@@ -9,6 +9,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { updateUserLastActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
+import { MAX_PAGE_HISTORY } from "../config/story.js";
 
 /**
  * Retrieves the active session for a user including both bookId, current pageId, and branchId
@@ -216,6 +217,8 @@ export async function insertStoryState(
         maxPage: state.maxPage,
         flags: state.flags,
         traumaTags: state.traumaTags,
+        plotFlags: state.plotFlags,
+        inventory: state.inventory,
         psychologicalProfile: state.psychologicalProfile,
         hiddenState: state.hiddenState,
         memoryIntegrity: state.memoryIntegrity,
@@ -223,8 +226,8 @@ export async function insertStoryState(
         viableEnding: state.viableEnding,
         characters: state.characters,
         places: state.places,
-        pageHistory: state.pageHistory,
-        actionsHistory: state.actionsHistory,
+        // pageHistory: state.pageHistory,
+        // actionsHistory: state.actionsHistory,
         contextHistory: state.contextHistory,
       })
       .onConflictDoUpdate({
@@ -234,6 +237,8 @@ export async function insertStoryState(
           maxPage: state.maxPage,
           flags: state.flags,
           traumaTags: state.traumaTags,
+          plotFlags: state.plotFlags,
+          inventory: state.inventory,
           psychologicalProfile: state.psychologicalProfile,
           hiddenState: state.hiddenState,
           memoryIntegrity: state.memoryIntegrity,
@@ -241,8 +246,8 @@ export async function insertStoryState(
           viableEnding: state.viableEnding,
           characters: state.characters,
           places: state.places,
-          pageHistory: state.pageHistory,
-          actionsHistory: state.actionsHistory,
+          // pageHistory: state.pageHistory,
+          // actionsHistory: state.actionsHistory,
           contextHistory: state.contextHistory,
           updatedAt: new Date(),
         }
@@ -443,16 +448,19 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     flags: dbStoryState.flags,
     threads: dbStoryState.threads,
     traumaTags: dbStoryState.traumaTags,
+    plotFlags: dbStoryState.plotFlags,
+    inventory: dbStoryState.inventory,
     psychologicalProfile: dbStoryState.psychologicalProfile,
     hiddenState: dbStoryState.hiddenState,
     memoryIntegrity: dbStoryState.memoryIntegrity,
     difficulty: dbStoryState.difficulty,
     characters: dbStoryState.characters || {},
     places: dbStoryState.places || {},
-    pageHistory: dbStoryState.pageHistory || [],
+    // pageHistory: dbStoryState.pageHistory || [],
     actionsHistory: dbStoryState.actionsHistory || [],
     contextHistory: dbStoryState.contextHistory || "",
     viableEnding: dbStoryState.viableEnding || undefined,
+    isMajorEvent: dbStoryState.isMajorEvent || false,
   };
 }
 
@@ -486,5 +494,75 @@ export async function insertUserPageProgress(params: {
       });
   } catch (error) {
     console.error(`[insertUserPageProgress] ❌ Failed to insert user page progress:`, getErrorMessage(error));
+  }
+}
+
+/**
+ * Gets previous pages by traversing the parent chain
+ * 
+ * This function retrieves the last MAX_PAGE_HISTORY pages by:
+ * 1. Starting from the current page (from actionedPage)
+ * 2. Traversing backwards using parentId to get previous pages
+ * 3. Using userPageProgress to track which action the user selected to reach each page
+ * 
+ * @param actionedPage - Current actioned page containing page info
+ * @param userId - User ID for tracking page progress
+ * @param bookId - Book ID for filtering pages
+ * @returns Promise resolving to array of previous pages with actions
+ * 
+ * @example
+ * ```typescript
+ * const previousPages = await getPreviousPages(actionedPage, "user123", "book456");
+ * // Returns: [{ page: DBPage, action: Action | null }, ...]
+ * ```
+ */
+export async function getPreviousPages(
+  actionedPage: ActionedStoryPage,
+  userId: string,
+  bookId: string
+): Promise<PreviousPages> {
+  try {
+    const previousPages: PreviousPages = [];
+    let currentPageId = actionedPage.parentId;
+    
+    // Traverse backwards through the parent chain
+    while (currentPageId && previousPages.length < MAX_PAGE_HISTORY) {
+      // Get the page from database
+      const pageResult = await dbRead
+        .select()
+        .from(pages)
+        .where(eq(pages.id, currentPageId))
+        .limit(1);
+      
+      const page = pageResult[0];
+      if (!page) break;
+      
+      // Get the action that led to this page from userPageProgress
+      const progressResult = await dbRead
+        .select({ action: userPageProgress.action })
+        .from(userPageProgress)
+        .where(
+          and(
+            eq(userPageProgress.userId, userId),
+            eq(userPageProgress.bookId, bookId),
+            eq(userPageProgress.nextPageId, currentPageId)
+          )
+        )
+        .orderBy(desc(userPageProgress.createdAt))
+        .limit(1);
+      
+      const action = progressResult[0]?.action || null;
+      
+      previousPages.push({ page, action });
+      currentPageId = page.parentId;
+    }
+    
+    // Reverse to get chronological order (oldest first)
+    previousPages.reverse();
+    
+    return previousPages;
+  } catch (error) {
+    console.error(`[getPreviousPages] ❌ Failed to get previous pages:`, getErrorMessage(error));
+    return [];
   }
 }

@@ -852,9 +852,11 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
         charactersPresent: pages.charactersPresent,
         keyEvents: pages.keyEvents,
         importantObjects: pages.importantObjects,
-        addTraumaTag: pages.addTraumaTag,
-        characterUpdates: pages.characterUpdates,
-        placeUpdates: pages.placeUpdates,
+        // addTraumaTag: pages.addTraumaTag,
+        // addPlotFlag: pages.addPlotFlag,
+        // characterUpdates: pages.characterUpdates,
+        // placeUpdates: pages.placeUpdates,
+        stateDelta: pages.stateDelta,
         aiProvider: pages.aiProvider,
         aiModel: pages.aiModel,
         pendingGenerationCount: pages.pendingGenerationCount,
@@ -909,7 +911,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
     }
 
     // Return enriched page with only frontend-relevant fields
-    // Exclude backend-specific fields: userId, addTraumaTag, characterUpdates, placeUpdates, aiProvider, aiModel, pendingGenerationCount
+    // Exclude backend-specific fields: userId, addTraumaTag, addPlotFlag, characterUpdates, placeUpdates, aiProvider, aiModel, pendingGenerationCount
     const enrichedPage = {
       id: page.id,
       page: page.page,
