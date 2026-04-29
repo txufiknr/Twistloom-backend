@@ -742,6 +742,27 @@ export const deletedImages = pgTable(
 );
 
 /**
+ * Processed webhook events table for idempotency with neon-http
+ * @summary Tracks Stripe webhook events that have been processed to prevent duplicates
+ * @example
+ * {
+ *   "event_id": "evt_1234567890",
+ *   "processed_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const processedEvents = pgTable(
+  "processed_events",
+  {
+    eventId: text("event_id").notNull().primaryKey(), // Stripe event ID
+    processedAt: timestamp("processed_at").defaultNow().notNull(), // When event was processed
+  },
+  (t) => [
+    // Index for cleanup queries (oldest first)
+    index("processed_events_processed_at_idx").on(t.processedAt),
+  ]
+);
+
+/**
  * Create transactions table
  * @summary Track credit purchases and usage transactions for users
  * 
@@ -768,6 +789,7 @@ export const transactions = pgTable(
     credits: integer("credits").notNull(),
     amountUsd: real("amount_usd"),
     paymentIntentId: text("payment_intent_id").unique(), // Stripe payment intent for idempotency
+    stripeEventId: text("stripe_event_id").unique(), // Stripe event ID for webhook idempotency
     createdAt,
   },
   (t) => [
@@ -779,5 +801,7 @@ export const transactions = pgTable(
     index("transactions_created_idx").on(t.createdAt.desc()),
     // Unique index for payment intent idempotency
     unique("transactions_payment_intent_unique").on(t.paymentIntentId),
+    // Unique index for Stripe event idempotency
+    unique("transactions_stripe_event_unique").on(t.stripeEventId),
   ]
 );

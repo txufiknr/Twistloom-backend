@@ -13,6 +13,7 @@
  * Endpoints:
  * - POST /payments/create-checkout-session - Create Stripe checkout session
  * - POST /payments/stripe/webhook - Handle Stripe webhook events
+ * - POST /payments/consume-credits - Consume credits for usage
  */
 
 import type { Request, Response } from "express";
@@ -21,9 +22,9 @@ import Stripe from "stripe";
 import { eq, sql } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { dbWrite } from "../db/client.js";
-import { users, transactions } from "../db/schema.js";
+import { users, transactions, processedEvents } from "../db/schema.js";
 import { CREDIT_PACKS } from "../config/credits.js";
-import { handleApiError } from "../utils/error.js";
+import { getErrorMessage, handleApiError } from "../utils/error.js";
 
 const router = Router();
 
@@ -180,24 +181,27 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
       
-      // Check for idempotency using payment_intent_id
+      // Check for idempotency using Stripe event.id (best practice)
+      const stripeEventId = event.id;
       const paymentIntentId = session.payment_intent as string;
+      
       if (!paymentIntentId) {
         console.error("[stripe] ❌ Missing payment_intent_id in session:", session.id);
         return res.status(400).json({ error: "Missing payment intent" });
       }
 
-      // Check if this payment was already processed using payment_intent_id
-      const existingTransaction = await dbWrite
-        .select()
-        .from(transactions)
-        .where(eq(transactions.paymentIntentId, paymentIntentId))
-        .limit(1);
-
-      if (existingTransaction.length > 0) {
-        console.log(`[stripe] ⚠️ Duplicate payment detected for payment_intent ${paymentIntentId}`);
+      // Step A: Try to insert event ID into processed_events table
+      try {
+        await dbWrite.insert(processedEvents).values({
+          eventId: stripeEventId,
+        });
+      } catch (insertError) {
+        // If insert fails due to unique constraint, event was already processed
+        console.log(`[stripe] 🔄 Duplicate webhook event detected: ${stripeEventId}`);
         return res.json({ received: true, duplicate: true });
       }
+
+      // Step B: Event not processed before, proceed with payment processing
       
       // Extract metadata
       const userId = session.metadata?.userId;
@@ -233,15 +237,30 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           credits: creditsAmount,
           amountUsd,
           paymentIntentId,
+          stripeEventId,
         });
       } catch (transactionError) {
-        console.error("[stripe] ❌ Failed to create transaction record:", transactionError);
-        // Credits were already added, but transaction record failed
-        // Log this for manual reconciliation but don't fail the webhook
-        console.warn(`Credits added to user ${userId} but transaction record failed for payment ${session.id}`);
+        console.error("[stripe] ❌ Failed to create transaction record for payment ${session.id}:", getErrorMessage(transactionError));
+        // Log this for manual reconciliation but don't fail webhook
+        console.warn(`[stripe] ⚠️ Transaction record failed for payment ${session.id}`);
+        return res.json({ received: true });
       }
 
-      console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${updateResult[0].credits}) for payment ${session.id}`);
+      // Update user credits
+      const creditUpdateResult = await dbWrite
+        .update(users)
+        .set({ 
+          credits: sql`${users.credits} + ${creditsAmount}` 
+        })
+        .where(eq(users.userId, userId))
+        .returning({ credits: users.credits });
+
+      if (!creditUpdateResult || creditUpdateResult.length === 0) {
+        console.error("[stripe] ❌ Failed to update user credits - user not found:", userId);
+        return res.status(400).json({ error: "User not found" });
+      }
+
+      console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${creditUpdateResult[0].credits}) for payment ${session.id}`);
     }
 
     res.json({ received: true });
@@ -256,6 +275,125 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
     const message = isSignatureError ? "Invalid webhook signature" : "Webhook processing failed";
     
     return res.status(statusCode).json({ error: message });
+  }
+});
+
+/**
+ * POST /payments/consume-credits
+ * 
+ * Consumes credits from user account for usage (AI generation, etc.).
+ * Validates credit balance before consumption and creates usage transaction.
+ * 
+ * Request Body:
+ * {
+ *   amount: number; // Amount of credits to consume (positive number)
+ * }
+ * 
+ * Response (Success - 200):
+ * {
+ *   success: true;
+ *   creditsConsumed: number;
+ *   remainingCredits: number;
+ * }
+ * 
+ * Response (Error - 400):
+ * {
+ *   error: string; // Error message
+ * }
+ * 
+ * Response (Error - 402):
+ * {
+ *   error: "Not enough credits";
+ *   required: number; // Credits needed
+ *   available: number; // Credits available
+ * }
+ * 
+ * Security:
+ * - Requires authentication
+ * - Uses database transaction for atomic operations
+ * - Validates credit balance before consumption
+ * - Creates usage transaction record
+ * 
+ * @example
+ * ```typescript
+ * const res = await fetch('/api/payments/consume-credits', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ amount: 5 }),
+ * });
+ * const { success, remainingCredits } = await res.json();
+ * ```
+ */
+router.post("/consume-credits", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { amount } = req.body;
+    
+    // Validate input
+    if (!amount || typeof amount !== 'number' || amount <= 0) {
+      return res.status(400).json({ error: "Valid amount is required (positive number)" });
+    }
+
+    const userId = req.user!.id;
+
+    // Get current user credits
+    const userResult = await dbWrite
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!userResult || userResult.length === 0) {
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    const currentCredits = userResult[0].credits;
+
+    // Check if user has enough credits
+    if (currentCredits < amount) {
+      return res.status(402).json({
+        error: "Not enough credits",
+        required: amount,
+        available: currentCredits,
+      });
+    }
+
+    // Update user credits (decrement)
+    const updateResult = await dbWrite
+      .update(users)
+      .set({ 
+        credits: sql`${users.credits} - ${amount}` 
+      })
+      .where(eq(users.userId, userId))
+      .returning({ credits: users.credits });
+
+    if (!updateResult || updateResult.length === 0) {
+      return res.status(400).json({ error: "Failed to update credits" });
+    }
+
+    // Create usage transaction record
+    try {
+      await dbWrite.insert(transactions).values({
+        userId,
+        type: "usage",
+        credits: -amount, // Negative for usage
+      });
+    } catch (transactionError) {
+      console.error("[stripe] ❌ Failed to create usage transaction record:", transactionError);
+      // Credits were already consumed, but transaction record failed
+      // Log this for manual reconciliation but don't fail the request
+      console.warn(`Credits consumed from user ${userId} but transaction record failed`);
+    }
+
+    const result = {
+      success: true,
+      creditsConsumed: amount,
+      remainingCredits: updateResult[0].credits,
+    };
+
+    console.log(`[stripe] 🎯 Consumed ${result.creditsConsumed} credits from user ${userId} (remaining: ${result.remainingCredits})`);
+    res.json(result);
+  } catch (error) {
+    handleApiError(res, "Failed to consume credits", error);
   }
 });
 

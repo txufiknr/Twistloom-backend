@@ -16,6 +16,7 @@ export async function runDailyCleanup(): Promise<void> {
   // Lazy imports in cron for better memory usage and startup time
   const { processQueuedImageDeletions } = await import("../services/image.js");
   const { cleanupOrphanedUsers } = await import("../services/user.js");
+  const { cleanupOrphanedProcessedEvents } = await import("../services/payment.js");
   
   const startedAt = Date.now();
   
@@ -30,6 +31,10 @@ export async function runDailyCleanup(): Promise<void> {
     console.log("[cleanup] 🖼️ Cleaning up queued ImageKit deletions...");
     const imageCleanupStats = await processQueuedImageDeletions(100); // Process up to 100 images per run
     
+    // Cleanup and recovery for processed events without corresponding transactions
+    console.log("[cleanup] 🔍 Cleaning up orphaned processed events...");
+    const orphanedEventsCleaned = await cleanupOrphanedProcessedEvents();
+    
     // Log results for monitoring (safe to run multiple times)
     if (imageCleanupStats.processed > 0) {
       console.log(`[cleanup] 🖼️ Processed ${imageCleanupStats.processed} ImageKit deletions: ${imageCleanupStats.successful} successful, ${imageCleanupStats.failed} failed`);
@@ -38,6 +43,12 @@ export async function runDailyCleanup(): Promise<void> {
       }
     } else {
       console.log("[cleanup] ✨ No queued ImageKit deletions to process");
+    }
+    
+    if (orphanedEventsCleaned.eventsProcessed > 0) {
+      console.log(`[cleanup] 🔍 Processed ${orphanedEventsCleaned.eventsProcessed} orphaned events: ${orphanedEventsCleaned.eventsCleaned} cleaned, ${orphanedEventsCleaned.transactionsRecovered} recovered`);
+    } else {
+      console.log("[cleanup] ✨ No orphaned processed events to clean");
     }
     
     // Optimize snapshots for all users with books (batch operation)

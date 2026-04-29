@@ -1,9 +1,11 @@
 [ ] character state: Injury detail
 [ ] prompt: tampilin injury
-[ ] Implement stripe
 [ ] Pages: Actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
+[ ] migrate user auth (orphaned user) to db transaction
+[ ] migrate candidate page pregeneration concurency lock to db transaction
 
+[x] Implement stripe
 [x] Story state: actionHistory tambah page number 
 [x] heuristic theme validator bug: surprise4.txt
 [x] If no action needed or viable, give only 1 action to continue
