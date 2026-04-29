@@ -1,9 +1,7 @@
 [ ] character state: Injury detail
 [ ] prompt: tampilin injury
-[ ] Pages: Actions kosong
+[ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
-[ ] migrate user auth (orphaned user) to db transaction
-[ ] migrate candidate page pregeneration concurency lock to db transaction
 
 [x] Implement stripe
 [x] Story state: actionHistory tambah page number 

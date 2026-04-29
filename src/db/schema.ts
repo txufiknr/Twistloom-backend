@@ -742,27 +742,6 @@ export const deletedImages = pgTable(
 );
 
 /**
- * Processed webhook events table for idempotency with neon-http
- * @summary Tracks Stripe webhook events that have been processed to prevent duplicates
- * @example
- * {
- *   "event_id": "evt_1234567890",
- *   "processed_at": "2023-01-01T00:00:00.000Z"
- * }
- */
-export const processedEvents = pgTable(
-  "processed_events",
-  {
-    eventId: text("event_id").notNull().primaryKey(), // Stripe event ID
-    processedAt: timestamp("processed_at").defaultNow().notNull(), // When event was processed
-  },
-  (t) => [
-    // Index for cleanup queries (oldest first)
-    index("processed_events_processed_at_idx").on(t.processedAt),
-  ]
-);
-
-/**
  * Create transactions table
  * @summary Track credit purchases and usage transactions for users
  * 
@@ -785,7 +764,7 @@ export const transactions = pgTable(
   {
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    type: text("type").$type<"purchase" | "usage">().notNull(),
+    type: text("type").$type<"purchase" | "usage" | "refund">().notNull(),
     credits: integer("credits").notNull(),
     amountUsd: real("amount_usd"),
     paymentIntentId: text("payment_intent_id").unique(), // Stripe payment intent for idempotency
@@ -803,5 +782,84 @@ export const transactions = pgTable(
     unique("transactions_payment_intent_unique").on(t.paymentIntentId),
     // Unique index for Stripe event idempotency
     unique("transactions_stripe_event_unique").on(t.stripeEventId),
+  ]
+);
+
+/**
+ * Webhook delivery tracking table
+ * @summary Tracks Stripe webhook delivery status for monitoring and debugging
+ * @example
+ * {
+ *   "id": "webhook123",
+ *   "event_id": "evt_1234567890",
+ *   "event_type": "checkout.session.completed",
+ *   "delivered_at": "2023-01-01T00:00:00.000Z",
+ *   "processed_at": "2023-01-01T00:00:01.000Z",
+ *   "status": "success",
+ *   "error_message": null
+ * }
+ */
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: id(),
+    eventId: text("event_id").notNull(), // Stripe event ID
+    eventType: text("event_type").notNull(), // Stripe event type
+    deliveredAt: timestamp("delivered_at").defaultNow().notNull(), // When webhook was received
+    processedAt: timestamp("processed_at"), // When webhook was processed
+    status: text("status").$type<'success' | 'failed' | 'retrying'>().notNull().default('retrying'),
+    errorMessage: text("error_message"), // Error details if failed
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for event lookup
+    index("webhook_deliveries_event_idx").on(t.eventId),
+    // Index for status filtering
+    index("webhook_deliveries_status_idx").on(t.status),
+    // Index for cleanup (old failed deliveries)
+    index("webhook_deliveries_created_idx").on(t.createdAt.desc()),
+    // Unique constraint to prevent duplicate tracking
+    unique("webhook_deliveries_event_unique").on(t.eventId),
+  ]
+);
+
+/**
+ * User notifications table
+ * @summary Stores user notifications for various system events
+ * @example
+ * {
+ *   "id": "notif123",
+ *   "user_id": "user456",
+ *   "type": "payment_success",
+ *   "title": "Payment Successful",
+ *   "message": "Your purchase of 100 credits was successful",
+ *   "data": {"credits": 100, "amount": 9.99},
+ *   "read": false,
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userNotifications = pgTable(
+  "user_notifications",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    type: text("type").notNull(), // Notification type: payment_success, refund, etc.
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    data: jsonb("data"), // Additional structured data
+    read: boolean("read").notNull().default(false),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for user's notifications
+    index("user_notifications_user_idx").on(t.userId, t.createdAt.desc()),
+    // Index for unread notifications
+    index("user_notifications_unread_idx").on(t.userId, t.read),
+    // Index for notification type
+    index("user_notifications_type_idx").on(t.type),
+    // Index for cleanup (old read notifications)
+    index("user_notifications_created_idx").on(t.createdAt.desc()),
   ]
 );

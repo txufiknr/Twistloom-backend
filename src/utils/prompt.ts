@@ -16,7 +16,10 @@ import type { DBNewBook } from "../types/schema.js";
 import type { ActionHistory, Archetype, ManipulationAffinity, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage, getBook } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook } from "../services/book.js";
+import { dbWrite } from "../db/client.js";
+import { pages } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { getStoryProgress, insertStoryState, setActiveSession, getActiveSession } from "../services/story.js";
 import type { BuildNextPageParams, GenerateCandidatePageParams, GenerateBookCreationPromptParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
@@ -51,7 +54,7 @@ WRITING STYLE:
 YOUR DNA:
 - You constantly create twists on top of twists
 - You deliberately break reader expectations
-- You do not aim to satisfy the reader—you aim to unsettle them
+- You don't aim to satisfy the reader—you aim to unsettle them
 - You can turn an ordinary moment into horror within a single sentence
 - You escalate tension quickly and unpredictably
 
@@ -650,7 +653,7 @@ contextHistory
   - Running sumary from page 1 until now — key plot developments, hard facts, major events.
   - Incorporate the overall story context while keeping all essential narrative elements.
   - Use "MC" to indicate the first-person narrator.
-  - Limit the summary to ${MAX_WORDS_SUMMARIZED_CONTEXT} words.
+  - Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.
   - Maintain the continuity of the story.
 
 flagUpdates
@@ -2657,77 +2660,99 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   // Use distributed lock to prevent concurrent processing of the same page
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
   const lockResult = await withLock(lockKey, async () => {
-    // Re-check pending actions after acquiring lock (another instance might have processed them)
-    const recheckedPendingActions = page.actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
-    if (recheckedPendingActions.length === 0) {
-      console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
-      return page;
-    }
+    // Double protection: Use database transaction with row-level lock
+    return await dbWrite.transaction(async (tx) => {
+      // Lock the page row for this transaction to prevent concurrent modifications
+      const lockedPage = await tx
+        .select()
+        .from(pages)
+        .where(eq(pages.id, page.id))
+        .for('update') // Pessimistic lock
+        .limit(1);
 
-    // Track if any actions were actually updated
-    let hasRealChanges = false;
+      if (!lockedPage.length) {
+        throw new Error('Page not found');
+      }
 
-    // For each pending action, create a candidate
-    for (const action of recheckedPendingActions) {
-      // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
-      const candidatePage = await retryWithBackoffOrNull(
-        () => generateCandidatePage({userId, action, currentPage: page, currentState, currentBook}),
-        {
-          maxRetries: 3,
-          baseDelayMs: 1000,
-          maxDelayMs: 4000,
-          onRetry: (attempt, error) => {
-            console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
-          },
-          // Stop retrying if error looks like a validation error (e.g. Theme validation)
-          shouldRetry: (error) => {
-            try {
-              // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
-              console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
-              return true;
-            } catch {
-              return true;
+      // Re-check pending actions after acquiring both locks (another instance might have processed them)
+      const recheckedPendingActions = lockedPage[0].actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+      if (recheckedPendingActions.length === 0) {
+        console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
+        return mapToUserStoryPage(lockedPage[0]);
+      }
+
+      // Track if any actions were actually updated
+      let hasRealChanges = false;
+
+      // For each pending action, create a candidate
+      for (const action of recheckedPendingActions) {
+        // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
+        const candidatePage = await retryWithBackoffOrNull(
+          () => generateCandidatePage({userId, action, currentPage: mapToUserStoryPage(lockedPage[0]), currentState, currentBook}),
+          {
+            maxRetries: 3,
+            baseDelayMs: 1000,
+            maxDelayMs: 4000,
+            onRetry: (attempt, error) => {
+              console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
+            },
+            // Stop retrying if error looks like a validation error (e.g. Theme validation)
+            shouldRetry: (error) => {
+              try {
+                // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
+                console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
+                return true;
+              } catch {
+                return true;
+              }
             }
           }
-        }
-      );
+        );
 
-      if (candidatePage) {
-        // Success: update action with destination (branchId and pageId)
-        console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for:`, action.text);
-        const actionIndex = page.actions.findIndex(a => deepEqualSimple(a, action));
-        if (actionIndex !== -1) {
-          page.actions[actionIndex] = { 
-            ...action, 
-            destination: { 
-              branchId: candidatePage.branchId, 
-              pageId: candidatePage.id 
-            } 
-          };
-          hasRealChanges = true;
+        if (candidatePage) {
+          // Success: update action with destination (branchId and pageId)
+          console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for:`, action.text);
+          // Update the locked page's actions in memory
+          const actionIndex = lockedPage[0].actions.findIndex(a => deepEqualSimple(a, action));
+          if (actionIndex !== -1) {
+            lockedPage[0].actions[actionIndex] = { 
+              ...action, 
+              destination: { 
+                branchId: candidatePage.branchId, 
+                pageId: candidatePage.id 
+              } 
+            };
+            hasRealChanges = true;
+          }
+        } else {
+          // Failed after all retries: leave destination undefined (will be filtered out in API response)
+          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
         }
-      } else {
-        // Failed after all retries: leave destination undefined (will be filtered out in API response)
-        console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
       }
-    }
 
-    // Count actions without destination after processing
-    const pendingAfter = page.actions.filter(action => !action.destination?.pageId).length;
-    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
+      // Count actions without destination after processing
+      const pendingAfter = lockedPage[0].actions.filter(action => !action.destination?.pageId).length;
+      if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
-    // Update persisted page if actions were modified or pending count changed
-    // This ensures pendingGenerationCount is always accurate even if some actions fail
-    if (hasRealChanges || pendingAfter !== recheckedPendingActions.length) {
-      const dbPage = await updateStoryPage(page.id, {
-        ...page,
-        pendingGenerationCount: pendingAfter
-      });
-      return mapToUserStoryPage(dbPage);
-    }
+      // Update persisted page if actions were modified or pending count changed
+      // This ensures pendingGenerationCount is always accurate even if some actions fail
+      if (hasRealChanges || pendingAfter !== recheckedPendingActions.length) {
+        const updatedPage = await tx
+          .update(pages)
+          .set({
+            actions: lockedPage[0].actions,
+            pendingGenerationCount: pendingAfter,
+            updatedAt: new Date()
+          })
+          .where(eq(pages.id, lockedPage[0].id))
+          .returning();
+        
+        return mapToUserStoryPage(updatedPage[0]);
+      }
 
-    // Return original page if no changes needed
-    return page;
+      // Return original page if no changes needed
+      return mapToUserStoryPage(lockedPage[0]);
+    });
   }, 300); // 5-minute lock TTL
 
   // Return the result or original page if lock couldn't be acquired

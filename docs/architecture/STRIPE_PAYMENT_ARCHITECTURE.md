@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines the complete Stripe payment system architecture, including Vercel+Neon PostgreSQL best practices, safe transaction implementation with neon-http, and comprehensive error handling.
+This document outlines the complete Stripe payment system architecture, including Vercel+Neon PostgreSQL best practices, safe transaction implementation with neon-serverless (WebSocket driver), and comprehensive security features.
 
 ---
 
@@ -25,7 +25,7 @@ User spends credits via API
 
 ### Backend Environment
 - **Runtime**: Vercel Serverless Functions
-- **Database**: Neon PostgreSQL with neon-http driver
+- **Database**: Neon PostgreSQL with neon-serverless driver (WebSocket)
 - **ORM**: Drizzle ORM
 - **Payment**: Stripe API
 
@@ -174,12 +174,12 @@ if (!pack) {
 CREATE TABLE transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type TEXT NOT NULL CHECK (type IN ('purchase', 'usage')),
+  type TEXT NOT NULL CHECK (type IN ('purchase', 'usage', 'refund')),
   credits INTEGER NOT NULL,
   amount_usd REAL,
-  payment_intent_id TEXT UNIQUE, -- Stripe payment intent for idempotency
-  stripe_event_id TEXT UNIQUE NOT NULL, -- Stripe event ID for webhook idempotency
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+  payment_intent_id TEXT UNIQUE,
+  stripe_event_id TEXT UNIQUE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Indexes
@@ -190,54 +190,89 @@ CREATE UNIQUE INDEX transactions_payment_intent_unique ON transactions(payment_i
 CREATE UNIQUE INDEX transactions_stripe_event_unique ON transactions(stripe_event_id);
 ```
 
-### Processed Events Table
+### Webhook Deliveries Table
 
 ```sql
-CREATE TABLE processed_events (
-  event_id TEXT PRIMARY KEY, -- Stripe event ID
-  processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+CREATE TABLE webhook_deliveries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id TEXT NOT NULL UNIQUE,
+  event_type TEXT NOT NULL,
+  delivered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  processed_at TIMESTAMP WITH TIME ZONE,
+  status TEXT NOT NULL DEFAULT 'retrying' CHECK (status IN ('success', 'failed', 'retrying')),
+  error_message TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Index for cleanup queries
-CREATE INDEX processed_events_processed_at_idx ON processed_events(processed_at DESC);
+-- Indexes
+CREATE INDEX webhook_deliveries_event_idx ON webhook_deliveries(event_id);
+CREATE INDEX webhook_deliveries_status_idx ON webhook_deliveries(status);
+CREATE INDEX webhook_deliveries_created_idx ON webhook_deliveries(created_at DESC);
+CREATE UNIQUE INDEX webhook_deliveries_event_unique ON webhook_deliveries(event_id);
+```
+
+### User Notifications Table
+
+```sql
+CREATE TABLE user_notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  data JSONB,
+  read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX user_notifications_user_idx ON user_notifications(user_id, created_at DESC);
+CREATE INDEX user_notifications_unread_idx ON user_notifications(user_id, read);
+CREATE INDEX user_notifications_type_idx ON user_notifications(type);
+CREATE INDEX user_notifications_created_idx ON user_notifications(created_at DESC);
 ```
 
 ---
 
-## 🔄 Safe Transaction Implementation (neon-http)
+## 🔄 Safe Transaction Implementation (neon-serverless)
 
-### "Event First" Pattern
+### Transaction-Based Pattern
 
-Since neon-http doesn't support interactive transactions, we use the "Event First" pattern:
+With neon-serverless (WebSocket driver), we use proper database transactions for atomic operations:
 
-#### Step A: Track Event First
 ```typescript
-// Try to insert event ID into processed_events table
-try {
-  await dbWrite.insert(processedEvents).values({
-    eventId: stripeEventId,
-  });
-} catch (insertError) {
-  // If insert fails due to unique constraint, event was already processed
-  console.log(`[stripe] 🔄 Duplicate webhook event detected: ${stripeEventId}`);
-  return res.json({ received: true, duplicate: true });
-}
-```
+// Use database transaction for atomic credit update and transaction record creation
+await dbWrite.transaction(async (tx) => {
+  // Check for idempotency using Stripe event.id (best practice)
+  const existingTransaction = await tx
+    .select()
+    .from(transactions)
+    .where(eq(transactions.stripeEventId, stripeEventId))
+    .limit(1);
 
-#### Step B: Process Payment
-```typescript
-// Event not processed before, proceed with payment processing
-const updateResult = await dbWrite
-  .update(users)
-  .set({ 
-    credits: sql`${users.credits} + ${creditsAmount}` 
-  })
-  .where(eq(users.userId, userId))
-  .returning({ credits: users.credits });
+  if (existingTransaction.length > 0) {
+    console.log(`[stripe] 🔄 Duplicate webhook event detected: ${stripeEventId}`);
+    return res.json({ received: true, duplicate: true });
+  }
 
-// Create transaction record
-try {
-  await dbWrite.insert(transactions).values({
+  // Update user credits
+  const updateResult = await tx
+    .update(users)
+    .set({ 
+      credits: sql`${users.credits} + ${creditsAmount}` 
+    })
+    .where(eq(users.userId, userId))
+    .returning({ credits: users.credits });
+
+  if (!updateResult || updateResult.length === 0) {
+    console.error("[stripe] ❌ Failed to update user credits - user not found:", userId);
+    throw new Error("User not found");
+  }
+
+  // Create transaction record
+  await tx.insert(transactions).values({
     userId,
     type: "purchase",
     credits: creditsAmount,
@@ -245,72 +280,16 @@ try {
     paymentIntentId,
     stripeEventId,
   });
-} catch (transactionError) {
-  console.error("[stripe] ❌ Failed to create transaction record:", getErrorMessage(transactionError));
-  // Log for manual reconciliation but don't fail webhook
-  console.warn(`Credits added to user ${userId} but transaction record failed for payment ${session.id}`);
-}
+
+  console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${updateResult[0].credits}) for payment ${session.id}`);
+});
 ```
 
-### Recovery & Cleanup
-
-#### Background Cron Job
-```typescript
-export async function cleanupOrphanedProcessedEvents(): Promise<{
-  eventsProcessed: number;
-  transactionsRecovered: number;
-  eventsCleaned: number;
-}> {
-  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-  
-  // Find processed events from last 10 minutes without corresponding successful transactions
-  const orphanedEvents = await dbWrite
-    .select({
-      eventId: processedEvents.eventId,
-      processedAt: processedEvents.processedAt,
-    })
-    .from(processedEvents)
-    .leftJoin(
-      transactions,
-      eq(processedEvents.eventId, transactions.stripeEventId)
-    )
-    .where(
-      and(
-        eq(processedEvents.processedAt, tenMinutesAgo),
-        sql`${transactions.stripeEventId} IS NULL` // No corresponding transaction
-      )
-    )
-    .orderBy(desc(processedEvents.processedAt))
-    .limit(50); // Process up to 50 orphaned events per run
-
-  // Process each orphaned event
-  for (const orphanedEvent of orphanedEvents) {
-    eventsProcessed++;
-    
-    try {
-      if (orphanedEvent.eventId.startsWith('evt_')) {
-        // For webhook events, we can't recover transaction without additional data
-        console.log(`[cleanup] 🗑️ Removing orphaned webhook event: ${orphanedEvent.eventId}`);
-        await dbWrite
-          .delete(processedEvents)
-          .where(eq(processedEvents.eventId, orphanedEvent.eventId));
-        eventsCleaned++;
-      } else {
-        console.log(`[cleanup] ⚠️ Found orphaned event but cannot recover: ${orphanedEvent.eventId}`);
-        eventsCleaned++;
-      }
-    } catch (error) {
-      console.error(`[cleanup] ❌ Failed to process orphaned event ${orphanedEvent.eventId}:`, getErrorMessage(error));
-    }
-  }
-
-  return {
-    eventsProcessed,
-    transactionsRecovered,
-    eventsCleaned,
-  };
-}
-```
+### Key Benefits
+- **Atomic operations**: Credit update and transaction record creation happen together
+- **No orphaned data**: Transaction rollback on failure prevents partial updates
+- **Simpler code**: No need for separate event tracking table or cleanup jobs
+- **Better reliability**: Transaction guarantees consistency
 
 ---
 
@@ -345,11 +324,14 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     return res.status(404).json({ error: "Credit pack not found" });
   }
 
+  // Generate idempotency key
+  const idempotencyKey = `checkout-${req.user!.id}-${packId}-${Date.now()}`;
+
   // Create Stripe checkout session
   const session = await stripe.checkout.sessions.create({
     payment_method_types: ["card"],
     mode: "payment",
-    customer_email: user.email,
+    customer_email: req.user!.email,
     line_items: [
       {
         price_data: {
@@ -364,12 +346,14 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
       },
     ],
     metadata: {
-      userId,
+      userId: req.user!.id,
       packId: pack.id,
       credits: pack.credits.toString(),
     },
     success_url: `${process.env.FRONTEND_URL}/dashboard?success=true`,
     cancel_url: `${process.env.FRONTEND_URL}/pricing`,
+  }, {
+    idempotencyKey, // Prevents duplicate session creation
   });
 
   res.json({ url: session.url });
@@ -385,80 +369,254 @@ Handles Stripe webhook events for payment processing.
 
 **Events Handled**:
 - `checkout.session.completed`: Payment successful
+- `charge.refunded`: Payment refunded
 
 **Implementation**:
 ```typescript
 router.post("/stripe/webhook", async (req: Request, res: Response) => {
-  const sig = req.headers["stripe-signature"];
-  
-  // Verify webhook signature
-  const event = stripe.webhooks.constructEvent(
-    req.body,
-    sig,
-    process.env.STRIPE_WEBHOOK_SECRET
-  );
-
-  // Handle checkout session completed events
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object as Stripe.Checkout.Session;
-    const stripeEventId = event.id;
-    const paymentIntentId = session.payment_intent as string;
-    
-    // Step A: Try to insert event ID into processed_events table
-    try {
-      await dbWrite.insert(processedEvents).values({
-        eventId: stripeEventId,
-      });
-    } catch (insertError) {
-      console.log(`[stripe] 🔄 Duplicate webhook event detected: ${stripeEventId}`);
-      return res.json({ received: true, duplicate: true });
-    }
-
-    // Step B: Event not processed before, proceed with payment processing
-    const userId = session.metadata?.userId;
-    const credits = session.metadata?.credits;
-    
-    if (!userId || !credits) {
-      console.error("[stripe] ❌ Missing metadata in checkout session:", session.id);
-      return res.status(400).json({ error: "Invalid session metadata" });
-    }
-
-    const creditsAmount = Number(credits);
-    const amountUsd = session.amount_total ? session.amount_total / 100 : undefined;
-
-    // Update user credits first
-    const creditUpdateResult = await dbWrite
-      .update(users)
-      .set({ 
-        credits: sql`${users.credits} + ${creditsAmount}` 
-      })
-      .where(eq(users.userId, userId))
-      .returning({ credits: users.credits });
-
-    if (!creditUpdateResult || creditUpdateResult.length === 0) {
-      console.error("[stripe] ❌ Failed to update user credits - user not found:", userId);
-      return res.status(400).json({ error: "User not found" });
-    }
-
-    // Create transaction record
-    try {
-      await dbWrite.insert(transactions).values({
-        userId,
-        type: "purchase",
-        credits: creditsAmount,
-        amountUsd,
-        paymentIntentId,
-        stripeEventId,
-      });
-    } catch (transactionError) {
-      console.error("[stripe] ❌ Failed to create transaction record for payment ${session.id}:", getErrorMessage(transactionError));
-      console.warn(`[stripe] ⚠️ Transaction record failed for payment ${session.id}`);
-    }
-
-    console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${creditUpdateResult[0].credits}) for payment ${session.id}`);
+  // Apply IP-based rate limiting for webhook security
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimitByIP(ip)) {
+    return res.status(429).json({ error: 'Too many webhook requests from this IP' });
   }
+  
+  // Track webhook delivery
+  let webhookDeliveryId: string | null = null;
+  
+  try {
+    const sig = req.headers["stripe-signature"];
+    
+    if (!sig) {
+      return res.status(400).json({ error: "Missing Stripe signature" });
+    }
 
-  res.json({ received: true });
+    if (!process.env.STRIPE_WEBHOOK_SECRET) {
+      return res.status(500).json({ error: "Webhook secret not configured" });
+    }
+
+    // Initialize Stripe
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+    // Verify webhook signature
+    const event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+    
+    // Create webhook delivery tracking record
+    const deliveryRecord = await dbWrite.insert(webhookDeliveries).values({
+      eventId: event.id,
+      eventType: event.type,
+      status: 'retrying',
+    }).returning();
+    webhookDeliveryId = deliveryRecord[0].id;
+
+    // Handle different event types
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as Stripe.Checkout.Session;
+      
+      // Check for idempotency using Stripe event.id (best practice)
+      const stripeEventId = event.id;
+      const paymentIntentId = session.payment_intent as string;
+      
+      if (!paymentIntentId) {
+        console.error("[stripe] ❌ Missing payment_intent_id in session:", session.id);
+        return res.status(400).json({ error: "Missing payment intent" });
+      }
+
+      // Extract metadata
+      const userId = session.metadata?.userId;
+      const credits = session.metadata?.credits;
+      const packId = session.metadata?.packId;
+      
+      if (!userId || !credits || !packId) {
+        console.error("[stripe] ❌ Missing metadata in checkout session:", session.id);
+        return res.status(400).json({ error: "Invalid session metadata" });
+      }
+
+      const creditsAmount = Number(credits);
+      const amountUsd = session.amount_total ? session.amount_total / 100 : undefined;
+
+      // Validate payment amount matches expected credit pack price (security check)
+      const pack = CREDIT_PACKS.find((p) => p.id === packId);
+      if (!pack) {
+        console.error("[stripe] ❌ Invalid pack ID in session metadata:", packId);
+        return res.status(400).json({ error: "Invalid credit pack" });
+      }
+
+      const expectedAmount = Math.round(pack.priceUSD * 100); // Convert to cents
+      const actualAmount = session.amount_total;
+
+      if (actualAmount !== expectedAmount) {
+        console.error(`[stripe] ❌ Amount mismatch: expected ${expectedAmount}, got ${actualAmount} for pack ${packId}`);
+        console.error(`[stripe] 🚨 Security incident: Price manipulation attempt detected for session ${session.id}`);
+        return res.status(400).json({ error: "Amount validation failed" });
+      }
+
+      // Use database transaction for atomic credit update and transaction record creation
+      await dbWrite.transaction(async (tx) => {
+        // Check for idempotency using Stripe event.id (best practice)
+        const existingTransaction = await tx
+          .select()
+          .from(transactions)
+          .where(eq(transactions.stripeEventId, stripeEventId))
+          .limit(1);
+
+        if (existingTransaction.length > 0) {
+          console.log(`[stripe] 🔄 Duplicate webhook event detected: ${stripeEventId}`);
+          // Update webhook delivery status as success (duplicate but processed)
+          await dbWrite.update(webhookDeliveries)
+            .set({ 
+              status: 'success', 
+              processedAt: new Date(),
+              updatedAt: new Date()
+            })
+            .where(eq(webhookDeliveries.id, webhookDeliveryId!));
+          return res.json({ received: true, duplicate: true });
+        }
+
+        // Update user credits
+        const updateResult = await tx
+          .update(users)
+          .set({ 
+            credits: sql`${users.credits} + ${creditsAmount}` 
+          })
+          .where(eq(users.userId, userId))
+          .returning({ credits: users.credits });
+
+        if (!updateResult || updateResult.length === 0) {
+          console.error("[stripe] ❌ Failed to update user credits - user not found:", userId);
+          throw new Error("User not found");
+        }
+
+        // Create transaction record
+        await tx.insert(transactions).values({
+          userId,
+          type: "purchase",
+          credits: creditsAmount,
+          amountUsd,
+          paymentIntentId,
+          stripeEventId,
+        });
+
+        console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${updateResult[0].credits}) for payment ${session.id}`);
+        
+        // Create success notification for user
+        await tx.insert(userNotifications).values({
+          userId,
+          type: 'payment_success',
+          title: 'Payment Successful',
+          message: `Your purchase of ${creditsAmount} credits was successful`,
+          data: {
+            credits: creditsAmount,
+            amount: amountUsd,
+            paymentIntentId,
+            packId,
+          },
+        });
+        
+        // Update webhook delivery status as success
+        await dbWrite.update(webhookDeliveries)
+          .set({ 
+            status: 'success', 
+            processedAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(webhookDeliveries.id, webhookDeliveryId!));
+      });
+    } else if (event.type === "charge.refunded") {
+      const charge = event.data.object as Stripe.Charge;
+      const paymentIntentId = charge.payment_intent as string;
+      
+      if (!paymentIntentId) {
+        console.error('[stripe] ❌ Missing payment_intent_id in charge:', charge.id);
+        return res.status(400).json({ error: 'Missing payment intent' });
+      }
+      
+      // Find the original transaction
+      const originalTransaction = await dbRead
+        .select()
+        .from(transactions)
+        .where(eq(transactions.paymentIntentId, paymentIntentId))
+        .limit(1);
+      
+      if (!originalTransaction.length) {
+        console.error('[stripe] ❌ Original transaction not found for refund:', paymentIntentId);
+        return res.status(404).json({ error: 'Original transaction not found' });
+      }
+      
+      const transaction = originalTransaction[0];
+      const refundAmount = charge.amount_refunded ? charge.amount_refunded / 100 : 0;
+      
+      // Calculate credits to deduct (proportional to refund amount)
+      const creditsToDeduct = Math.floor((refundAmount / transaction.amountUsd!) * transaction.credits);
+      
+      if (creditsToDeduct > 0) {
+        await dbWrite.transaction(async (tx) => {
+          // Deduct credits from user
+          const updateResult = await tx
+            .update(users)
+            .set({ 
+              credits: sql`${users.credits} - ${creditsToDeduct}`
+            })
+            .where(eq(users.userId, transaction.userId))
+            .returning({ credits: users.credits });
+          
+          if (!updateResult || updateResult.length === 0) {
+            throw new Error('User not found for refund');
+          }
+          
+          // Create refund transaction record
+          await tx.insert(transactions).values({
+            userId: transaction.userId,
+            type: 'refund',
+            credits: -creditsToDeduct, // Negative for refund
+            amountUsd: -refundAmount, // Negative for refund
+            paymentIntentId,
+            stripeEventId: event.id,
+          });
+          
+          // Create refund notification for user
+          await tx.insert(userNotifications).values({
+            userId: transaction.userId,
+            type: 'refund',
+            title: 'Refund Processed',
+            message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
+            data: {
+              creditsDeducted: creditsToDeduct,
+              refundAmount,
+              originalPaymentId: paymentIntentId,
+            },
+          });
+          
+          console.log(`[stripe] 🔄 Refunded ${creditsToDeduct} credits from user ${transaction.userId} (new balance: ${updateResult[0].credits})`);
+        });
+      }
+    }
+
+    res.json({ received: true });
+  } catch (error) {
+    console.error('[stripe] ❌ Webhook error:', getErrorMessage(error));
+    
+    // Update webhook delivery status as failed
+    if (webhookDeliveryId) {
+      try {
+        await dbWrite.update(webhookDeliveries)
+          .set({ 
+            status: 'failed', 
+            errorMessage: getErrorMessage(error),
+            processedAt: new Date(),
+            updatedAt: new Date()
+          })
+          .where(eq(webhookDeliveries.id, webhookDeliveryId));
+      } catch (updateError) {
+        console.error('[stripe] ❌ Failed to update webhook delivery status:', getErrorMessage(updateError));
+      }
+    }
+    
+    handleApiError(res, 'Failed to process webhook', error);
+  }
 });
 ```
 
@@ -609,8 +767,9 @@ if (success) {
 ### Webhook Security
 - **Signature verification**: Always verify Stripe webhook signature
 - **HTTPS only**: Webhooks only work with HTTPS endpoints
-- **Rate limiting**: Consider rate limiting webhook endpoints
-- **Idempotency**: Store and check `event.id` before processing
+- **Rate limiting**: IP-based rate limiting (5 requests per minute per IP, configurable)
+- **Idempotency**: Check for existing transaction with matching `stripeEventId` within transaction
+- **Transaction isolation**: Use database transactions to prevent race conditions
 
 ### API Security
 - **Authentication**: All payment endpoints require authentication
@@ -623,6 +782,17 @@ if (success) {
 - **Transaction logging**: Complete audit trail for all operations
 - **Error handling**: Graceful degradation with proper logging
 
+### Payment Security
+- **Amount validation**: Validate paid amount matches expected credit pack prices
+- **Price manipulation prevention**: Server-side price validation prevents tampering
+- **Idempotency keys**: Prevent duplicate checkout sessions from retries/double-clicks
+
+### Monitoring & Tracking
+- **Webhook delivery tracking**: Monitor webhook delivery status (success/failed/retrying)
+- **Error logging**: Capture and log webhook processing errors
+- **User notifications**: Automatic notifications for payments and refunds
+- **Transaction audit trail**: Complete audit trail for all payment operations
+
 ---
 
 ## 📊 Monitoring & Logging
@@ -632,7 +802,7 @@ if (success) {
 - **Payment processing time**: Time from webhook to credit allocation
 - **Credit consumption rate**: Credits used per user per time period
 - **Error rates**: Types and frequency of payment failures
-- **Recovery effectiveness**: Success rate of orphaned event cleanup
+- **Transaction success rate**: Percentage of successful database transactions
 
 ### Log Format
 ```typescript
@@ -678,6 +848,133 @@ premium endings → higher cost
 
 ---
 
+## 🔐 Future Enhancements & TODOs (Safety & Best Practices)
+
+### High Priority Security Enhancements
+
+#### TODO: Implement Credit Balance Limits
+```typescript
+// Add maximum credit balance to prevent abuse
+const MAX_CREDIT_BALANCE = 10000;
+
+const newBalance = currentCredits + creditsAmount;
+if (newBalance > MAX_CREDIT_BALANCE) {
+  console.warn(`[stripe] ⚠️ Credit balance exceeds limit: ${newBalance}`);
+  // Either cap the balance or require manual review
+}
+```
+
+#### TODO: Add Suspicious Activity Detection
+```typescript
+// Monitor for unusual patterns:
+// - Rapid credit purchases
+// - Multiple payment failures
+// - Unusual credit consumption rates
+// - IP-based anomaly detection
+
+interface SuspiciousActivity {
+  type: 'rapid_purchases' | 'payment_failures' | 'unusual_consumption';
+  userId: string;
+  timestamp: Date;
+  details: Record<string, any>;
+}
+```
+
+### Medium Priority Improvements
+
+#### TODO: Add Payment Method Restrictions
+```typescript
+// Restrict payment methods to reduce fraud risk
+const session = await stripe.checkout.sessions.create({
+  payment_method_types: ['card'], // Only allow cards
+  // Consider adding: 'apple_pay', 'google_pay' with additional verification
+});
+```
+
+### Low Priority Enhancements
+
+#### TODO: Implement Credit Expiration
+```typescript
+// Add expiration to purchased credits (e.g., 1 year)
+// Encourages regular usage and prevents hoarding
+interface CreditExpiration {
+  transactionId: string;
+  expiresAt: Date;
+  creditsExpired: number;
+}
+```
+
+#### TODO: Add Tax Calculation Support
+```typescript
+// Integrate Stripe Tax for automatic tax calculation
+const session = await stripe.checkout.sessions.create({
+  automatic_tax: { enabled: true },
+  // ... other config
+});
+```
+
+#### TODO: Implement Multi-Currency Support
+```typescript
+// Allow purchases in different currencies
+// Store conversion rates and handle currency-specific pricing
+interface CurrencyConfig {
+  currency: string;
+  priceId: string;
+  priceLocal: number;
+}
+```
+
+### Operational Improvements
+
+#### TODO: Add Payment Analytics Dashboard
+```typescript
+// Track metrics:
+// - Conversion rate (checkout started → completed)
+// - Average time to first purchase
+// - Credit pack popularity
+// - Revenue per user
+// - Churn rate
+```
+
+#### TODO: Implement Automated Reconciliation
+```typescript
+// Daily job to reconcile Stripe payments with database transactions
+// Identify discrepancies and alert for manual review
+export async function reconcilePayments(): Promise<ReconciliationReport> {
+  // Fetch recent charges from Stripe API
+  // Compare with transactions table
+  // Report any mismatches
+}
+```
+
+#### TODO: Add Webhook Retry Queue
+```typescript
+// Implement a queue for failed webhook processing
+// Use Bull or similar for reliable retry with exponential backoff
+interface WebhookRetryJob {
+  eventId: string;
+  eventType: string;
+  attemptCount: number;
+  nextRetryAt: Date;
+  payload: any;
+}
+```
+
+#### TODO: Implement Customer Portal
+```typescript
+// Add Stripe Customer Portal for users to:
+// - View purchase history
+// - Manage payment methods
+// - Download invoices
+// - Request refunds
+const portalSession = await stripe.billingPortal.sessions.create({
+  customer: customerId,
+  return_url: `${process.env.FRONTEND_URL}/settings/billing`,
+});
+```
+
+---
+
 ## 📝 Deployment Checklist
 
 ### Environment Setup
@@ -698,8 +995,8 @@ premium endings → higher cost
 - [ ] Enable webhook retry in Stripe
 - [ ] Set up monitoring for payment failures
 - [ ] Configure alerting for high-value transactions
-- [ ] Regular cleanup of processed_events table
 - [ ] Monitor credit consumption patterns
+- [ ] Set up database transaction monitoring
 
 ---
 
@@ -713,8 +1010,8 @@ premium endings → higher cost
 3. Check server logs for signature verification errors
 
 #### Duplicate Credits
-1. Check processed_events table for duplicates
-2. Verify idempotency logic implementation
+1. Check transactions table for duplicate stripeEventId
+2. Verify idempotency logic implementation within transaction
 3. Review webhook retry patterns
 
 #### Payment Failures
@@ -724,8 +1021,9 @@ premium endings → higher cost
 
 #### Credit Allocation Issues
 1. Check user existence before credit updates
-2. Verify transaction record creation
+2. Verify transaction atomicity and rollback behavior
 3. Review database connection and query performance
+4. Check transaction timeout settings for serverless environment
 
 ---
 
@@ -739,4 +1037,4 @@ premium endings → higher cost
 
 ---
 
-*Last updated: April 29, 2026*
+*Last updated: April 29, 2026 (Updated for neon-serverless transaction-based approach)*

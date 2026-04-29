@@ -1,20 +1,20 @@
 /**
  * Database Client Configuration (Serverless-Safe)
  *
- * This file sets up the database connection using Drizzle ORM with Neon's HTTP driver.
- * Optimized for serverless environments with connection reuse and hot-reload safety.
+ * This file sets up database connection using Drizzle ORM with Neon's WebSocket driver.
+ * Optimized for serverless environments with transaction support and connection pooling.
  * 
  * Architecture:
- * - Uses Neon HTTP driver for serverless compatibility (no pooling, no WebSocket)
+ * - Uses Neon WebSocket driver (neon-serverless) for transaction support
  * - Works on Vercel, GitHub Actions, Cloudflare Workers
- * - Stateless and concurrency-safe
+ * - Maintains persistent connections within single requests for transactions
  * - Test environment uses DATABASE_TEST_URL for real database operations
  * - Environment-aware configuration with production safeguards
  * - Type-safe schema integration with Drizzle ORM
  * 
  * Important notes:
- * - Avoid `db.transaction` everywhere (cron + API routes)
- * - Design routes to be idempotent
+ * - Supports `db.transaction` for payment processing and critical operations
+ * - Design routes to be idempotent (webhooks, retries)
  * - In test environment, uses DATABASE_TEST_URL (defaults to localhost test DB)
  * 
  * Environment Variables:
@@ -25,9 +25,9 @@
  * - DATABASE_LOGGING: Enable query logging (default: false)
  */
 
-import { drizzle } from "drizzle-orm/neon-http";
-import { neon } from "@neondatabase/serverless";
-import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
+import { drizzle } from "drizzle-orm/neon-serverless";
+import { Pool } from "@neondatabase/serverless";
+import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 import * as schema from "./schema.js";
 import { IS_DEVELOPMENT, IS_PRODUCTION, IS_TEST } from "../config/constants.js";
 import { getEnv } from "../utils/env.js";
@@ -45,24 +45,24 @@ if (IS_PRODUCTION && DATABASE_URL.includes("localhost")) {
   throw new Error("💀 Production cannot use localhost database");
 }
 
+// Create connection pools
+const writePool = new Pool({ connectionString: DATABASE_URL });
+const readPool = IS_TEST ? writePool : new Pool({ connectionString: DATABASE_READ_URL });
+
 /**
  * Primary write connection
  * @note Uses DATABASE_TEST_URL in test environment, DATABASE_URL otherwise
  */
-export const dbWrite: NeonHttpDatabase<typeof schema> = drizzle(neon(DATABASE_URL, {
-  fetchOptions: { cache: "no-store" },
-}), {
+export const dbWrite: NeonDatabase<typeof schema> = drizzle(writePool, {
   schema,
   logger: IS_DEVELOPMENT && DATABASE_LOGGING,
 });
 
 /**
  * Read replica connection
- * @note In test environment, uses the same connection as write (DATABASE_TEST_URL)
+ * @note In test environment, uses same connection as write (DATABASE_TEST_URL)
  */
-export const dbRead: NeonHttpDatabase<typeof schema> = IS_TEST ? dbWrite : drizzle(neon(DATABASE_READ_URL, {
-  fetchOptions: { cache: "force-cache" },
-}), {
+export const dbRead: NeonDatabase<typeof schema> = drizzle(readPool, {
   schema,
   logger: false,
 });

@@ -255,27 +255,24 @@ router.post('/signup', async (req, res) => {
     // Hash password
     const passwordHash = await hashPassword(password);
 
-    // Create user record
-    const newUser = await dbWrite.insert(users).values({
-      userId: generateId(),
-      email,
-      username,
-      passwordHash,
-      gender,
-    }).returning();
+    // Use database transaction for atomic user and user_auth record creation
+    const newUser = await dbWrite.transaction(async (tx) => {
+      // Create user record
+      const userRecord = await tx.insert(users).values({
+        userId: generateId(),
+        email,
+        username,
+        passwordHash,
+        gender,
+      }).returning();
 
-    // Create user_auth record (manual rollback if fails)
-    // NOTE: Using manual rollback instead of database transaction for Vercel serverless compatibility.
-    // A periodic cleanup job already exists for clean up.
-    try {
-      await dbWrite.insert(userAuth).values({
-        userId: newUser[0].userId,
+      // Create user_auth record
+      await tx.insert(userAuth).values({
+        userId: userRecord[0].userId,
       });
-    } catch (userAuthError) {
-      // Manual rollback: delete user record if user_auth creation failed
-      await dbWrite.delete(users).where(eq(users.userId, newUser[0].userId));
-      throw userAuthError;
-    }
+
+      return userRecord;
+    });
 
     // Create email verification token
     const verificationToken = await createEmailVerificationToken(newUser[0].userId);
