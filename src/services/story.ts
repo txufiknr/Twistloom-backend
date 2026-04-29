@@ -253,7 +253,7 @@ export async function insertStoryState(
         }
       });
 
-    // Cleanup old story states - keep only the latest MAX_STORY_STATES_PER_PAGE per user/book
+    // Optimize story states strategically
     await cleanupStoryStatesWithStrategy(userId, bookId);
   } catch (error) {
     console.error(`[insertStoryState] ❌ Failed to insert story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));

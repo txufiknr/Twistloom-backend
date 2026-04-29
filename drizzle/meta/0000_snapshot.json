@@ -1,5 +1,5 @@
 {
-  "id": "be92c07b-fb43-4ec9-9ef2-12619f03b55f",
+  "id": "b89b9711-24d4-4534-a529-611ac8c5707c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -272,6 +272,66 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "books_keywords_gin_idx": {
+          "name": "books_keywords_gin_idx",
+          "columns": [
+            {
+              "expression": "keywords",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "books_title_gin_idx": {
+          "name": "books_title_gin_idx",
+          "columns": [
+            {
+              "expression": "title gin_trgm_ops",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "books_hook_gin_idx": {
+          "name": "books_hook_gin_idx",
+          "columns": [
+            {
+              "expression": "hook gin_trgm_ops",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "books_summary_gin_idx": {
+          "name": "books_summary_gin_idx",
+          "columns": [
+            {
+              "expression": "summary gin_trgm_ops",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -438,23 +498,11 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "add_trauma_tag": {
-          "name": "add_trauma_tag",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "character_updates": {
-          "name": "character_updates",
+        "delta": {
+          "name": "delta",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
-        },
-        "place_updates": {
-          "name": "place_updates",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "ai_provider": {
           "name": "ai_provider",
@@ -467,6 +515,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "pending_generation_count": {
+          "name": "pending_generation_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "created_at": {
           "name": "created_at",
@@ -561,6 +616,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "pages_pending_generation_idx": {
+          "name": "pages_pending_generation_idx",
+          "columns": [
+            {
+              "expression": "pending_generation_count",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -586,380 +656,6 @@
           "columns": [
             "parent_id",
             "branch_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.story_state_deltas": {
-      "name": "story_state_deltas",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "page_id": {
-          "name": "page_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "book_id": {
-          "name": "book_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delta": {
-          "name": "delta",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "story_state_deltas_user_book_idx": {
-          "name": "story_state_deltas_user_book_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "book_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "story_state_deltas_page_idx": {
-          "name": "story_state_deltas_page_idx",
-          "columns": [
-            {
-              "expression": "page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "story_state_deltas_created_idx": {
-          "name": "story_state_deltas_created_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "story_state_deltas_user_id_users_user_id_fk": {
-          "name": "story_state_deltas_user_id_users_user_id_fk",
-          "tableFrom": "story_state_deltas",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "story_state_deltas_page_id_pages_id_fk": {
-          "name": "story_state_deltas_page_id_pages_id_fk",
-          "tableFrom": "story_state_deltas",
-          "tableTo": "pages",
-          "columnsFrom": [
-            "page_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "story_state_deltas_book_id_books_id_fk": {
-          "name": "story_state_deltas_book_id_books_id_fk",
-          "tableFrom": "story_state_deltas",
-          "tableTo": "books",
-          "columnsFrom": [
-            "book_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "story_state_deltas_user_book_page_unique": {
-          "name": "story_state_deltas_user_book_page_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "user_id",
-            "book_id",
-            "page_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.story_state_snapshots": {
-      "name": "story_state_snapshots",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "page_id": {
-          "name": "page_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "book_id": {
-          "name": "book_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "is_major_checkpoint": {
-          "name": "is_major_checkpoint",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "story_state_snapshots_user_book_idx": {
-          "name": "story_state_snapshots_user_book_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "book_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "story_state_snapshots_page_idx": {
-          "name": "story_state_snapshots_page_idx",
-          "columns": [
-            {
-              "expression": "page_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "story_state_snapshots_created_idx": {
-          "name": "story_state_snapshots_created_idx",
-          "columns": [
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "story_state_snapshots_major_idx": {
-          "name": "story_state_snapshots_major_idx",
-          "columns": [
-            {
-              "expression": "is_major_checkpoint",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "story_state_snapshots_reason_idx": {
-          "name": "story_state_snapshots_reason_idx",
-          "columns": [
-            {
-              "expression": "reason",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "story_state_snapshots_user_id_users_user_id_fk": {
-          "name": "story_state_snapshots_user_id_users_user_id_fk",
-          "tableFrom": "story_state_snapshots",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "story_state_snapshots_page_id_pages_id_fk": {
-          "name": "story_state_snapshots_page_id_pages_id_fk",
-          "tableFrom": "story_state_snapshots",
-          "tableTo": "pages",
-          "columnsFrom": [
-            "page_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "story_state_snapshots_book_id_books_id_fk": {
-          "name": "story_state_snapshots_book_id_books_id_fk",
-          "tableFrom": "story_state_snapshots",
-          "tableTo": "books",
-          "columnsFrom": [
-            "book_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "story_state_snapshots_user_book_page_unique": {
-          "name": "story_state_snapshots_user_book_page_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "user_id",
-            "book_id",
-            "page_id"
           ]
         }
       },
@@ -1016,6 +712,20 @@
         },
         "trauma_tags": {
           "name": "trauma_tags",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "plot_flags": {
+          "name": "plot_flags",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "inventory": {
+          "name": "inventory",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -1087,6 +797,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
+        },
+        "is_major_event": {
+          "name": "is_major_event",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",

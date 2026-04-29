@@ -43,39 +43,13 @@ CREATE TABLE "pages" (
 	"key_events" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"important_objects" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"actions" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"add_trauma_tag" text,
-	"character_updates" jsonb,
-	"place_updates" jsonb,
+	"delta" jsonb NOT NULL,
 	"ai_provider" text,
 	"ai_model" text,
+	"pending_generation_count" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "pages_parent_branch_unique" UNIQUE("parent_id","branch_id")
-);
---> statement-breakpoint
-CREATE TABLE "story_state_deltas" (
-	"id" uuid PRIMARY KEY NOT NULL,
-	"user_id" uuid NOT NULL,
-	"page_id" uuid NOT NULL,
-	"book_id" uuid NOT NULL,
-	"delta" jsonb NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "story_state_deltas_user_book_page_unique" UNIQUE("user_id","book_id","page_id")
-);
---> statement-breakpoint
-CREATE TABLE "story_state_snapshots" (
-	"id" uuid PRIMARY KEY NOT NULL,
-	"user_id" uuid NOT NULL,
-	"page_id" uuid NOT NULL,
-	"book_id" uuid NOT NULL,
-	"state" jsonb NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"version" integer DEFAULT 1 NOT NULL,
-	"is_major_checkpoint" boolean DEFAULT false NOT NULL,
-	"reason" text NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "story_state_snapshots_user_book_page_unique" UNIQUE("user_id","book_id","page_id")
 );
 --> statement-breakpoint
 CREATE TABLE "story_states" (
@@ -87,6 +61,8 @@ CREATE TABLE "story_states" (
 	"flags" jsonb NOT NULL,
 	"threads" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"trauma_tags" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"plot_flags" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"inventory" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"psychological_profile" jsonb NOT NULL,
 	"hidden_state" jsonb NOT NULL,
 	"memory_integrity" text DEFAULT 'stable' NOT NULL,
@@ -97,6 +73,7 @@ CREATE TABLE "story_states" (
 	"page_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"actions_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"context_history" text DEFAULT '' NOT NULL,
+	"is_major_event" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "story_states_user_id_book_id_page_id_pk" PRIMARY KEY("user_id","book_id","page_id")
@@ -215,12 +192,6 @@ CREATE TABLE "users" (
 --> statement-breakpoint
 ALTER TABLE "books" ADD CONSTRAINT "books_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pages" ADD CONSTRAINT "pages_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "story_state_deltas" ADD CONSTRAINT "story_state_deltas_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "story_state_deltas" ADD CONSTRAINT "story_state_deltas_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "story_state_deltas" ADD CONSTRAINT "story_state_deltas_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "story_state_snapshots" ADD CONSTRAINT "story_state_snapshots_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "story_state_snapshots" ADD CONSTRAINT "story_state_snapshots_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "story_state_snapshots" ADD CONSTRAINT "story_state_snapshots_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "story_states" ADD CONSTRAINT "story_states_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "story_states" ADD CONSTRAINT "story_states_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_auth" ADD CONSTRAINT "user_auth_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -240,19 +211,16 @@ CREATE INDEX "books_recent_idx" ON "books" USING btree ("updated_at");--> statem
 CREATE INDEX "books_user_idx" ON "books" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "books_status_idx" ON "books" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "books_language_idx" ON "books" USING btree ("language");--> statement-breakpoint
+CREATE INDEX "books_keywords_gin_idx" ON "books" USING gin ("keywords");--> statement-breakpoint
+CREATE INDEX "books_title_gin_idx" ON "books" USING gin (title gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX "books_hook_gin_idx" ON "books" USING gin (hook gin_trgm_ops);--> statement-breakpoint
+CREATE INDEX "books_summary_gin_idx" ON "books" USING gin (summary gin_trgm_ops);--> statement-breakpoint
 CREATE INDEX "deleted_images_created_idx" ON "deleted_images" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "pages_book_page_idx" ON "pages" USING btree ("book_id","page");--> statement-breakpoint
 CREATE INDEX "pages_book_order_idx" ON "pages" USING btree ("book_id","page" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "pages_created_at_idx" ON "pages" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "pages_book_branch_idx" ON "pages" USING btree ("book_id","branch_id");--> statement-breakpoint
-CREATE INDEX "story_state_deltas_user_book_idx" ON "story_state_deltas" USING btree ("user_id","book_id");--> statement-breakpoint
-CREATE INDEX "story_state_deltas_page_idx" ON "story_state_deltas" USING btree ("page_id");--> statement-breakpoint
-CREATE INDEX "story_state_deltas_created_idx" ON "story_state_deltas" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX "story_state_snapshots_user_book_idx" ON "story_state_snapshots" USING btree ("user_id","book_id");--> statement-breakpoint
-CREATE INDEX "story_state_snapshots_page_idx" ON "story_state_snapshots" USING btree ("page_id");--> statement-breakpoint
-CREATE INDEX "story_state_snapshots_created_idx" ON "story_state_snapshots" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX "story_state_snapshots_major_idx" ON "story_state_snapshots" USING btree ("is_major_checkpoint","created_at" DESC NULLS LAST);--> statement-breakpoint
-CREATE INDEX "story_state_snapshots_reason_idx" ON "story_state_snapshots" USING btree ("reason");--> statement-breakpoint
+CREATE INDEX "pages_pending_generation_idx" ON "pages" USING btree ("pending_generation_count");--> statement-breakpoint
 CREATE INDEX "story_states_page_idx" ON "story_states" USING btree ("page");--> statement-breakpoint
 CREATE INDEX "story_states_difficulty_idx" ON "story_states" USING btree ("difficulty");--> statement-breakpoint
 CREATE INDEX "story_states_progress_idx" ON "story_states" USING btree ("page" DESC NULLS LAST);--> statement-breakpoint

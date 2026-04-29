@@ -1165,6 +1165,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       const conditions = [eq(books.status, 'active')];
 
       // Add search conditions if provided
+      // TODO: fuzzy search using jaccard
       if (search) {
         const searchPattern = `%${search}%`;
         const searchConditions = [
@@ -1236,6 +1237,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       const totalCount = totalCountResult.length;
 
       // Apply pagination
+      // TODO: similar books via pgvector embedding
       const offset = (page - 1) * limit;
       const booksResult: EnrichedBookData[] = await query.limit(limit).offset(offset);
 

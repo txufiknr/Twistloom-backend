@@ -183,6 +183,7 @@ export const users = pgTable(
     username: text("username").unique("users_username_unique"), // Unique constraint for login
     email: text("email").unique("users_email_unique"), // Unique constraint for login
     passwordHash: text("password_hash"), // Hashed password for email/password authentication
+    credits: integer("credits").notNull().default(0),
     penName: text("pen_name"),
     bio: text("bio"), // User bio/description
     gender,
@@ -310,12 +311,12 @@ export const books = pgTable(
     index("books_language_idx").on(t.language),
     // GIN index for keywords JSONB array (enables efficient array operations)
     index("books_keywords_gin_idx").using("gin", t.keywords),
-    // GIN index for title (enables efficient ILIKE search with pg_trgm if enabled)
-    index("books_title_gin_idx").using("gin", t.title),
-    // GIN index for hook (enables efficient ILIKE search with pg_trgm if enabled)
-    index("books_hook_gin_idx").using("gin", t.hook),
-    // GIN index for summary (enables efficient ILIKE search with pg_trgm if enabled)
-    index("books_summary_gin_idx").using("gin", t.summary),
+    // GIN index for title with pg_trgm (enables efficient ILIKE search with leading wildcards)
+    index("books_title_gin_idx").using("gin", sql`title gin_trgm_ops`),
+    // GIN index for hook with pg_trgm (enables efficient ILIKE search with leading wildcards)
+    index("books_hook_gin_idx").using("gin", sql`hook gin_trgm_ops`),
+    // GIN index for summary with pg_trgm (enables efficient ILIKE search with leading wildcards)
+    index("books_summary_gin_idx").using("gin", sql`summary gin_trgm_ops`),
   ]
 );
 
@@ -737,5 +738,46 @@ export const deletedImages = pgTable(
   (t) => [
     // Index for efficient cleanup queries (oldest first)
     index("deleted_images_created_idx").on(t.createdAt),
+  ]
+);
+
+/**
+ * Create transactions table
+ * @summary Track credit purchases and usage transactions for users
+ * 
+ * Records all credit-related transactions including:
+ * - Purchases: User buys credits (amountUsd is set)
+ * - Usage: User consumes credits for AI generation (amountUsd is null)
+ * 
+ * @example
+ * {
+ *   "id": "txn123",
+ *   "user_id": "user456",
+ *   "type": "purchase",
+ *   "credits": 100,
+ *   "amount_usd": 9.99,
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const transactions = pgTable(
+  "transactions",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    type: text("type").$type<"purchase" | "usage">().notNull(),
+    credits: integer("credits").notNull(),
+    amountUsd: real("amount_usd"),
+    paymentIntentId: text("payment_intent_id").unique(), // Stripe payment intent for idempotency
+    createdAt,
+  },
+  (t) => [
+    // Index for user's transaction history
+    index("transactions_user_idx").on(t.userId),
+    // Index for transaction type filtering
+    index("transactions_type_idx").on(t.type),
+    // Index for recent transactions
+    index("transactions_created_idx").on(t.createdAt.desc()),
+    // Unique index for payment intent idempotency
+    unique("transactions_payment_intent_unique").on(t.paymentIntentId),
   ]
 );

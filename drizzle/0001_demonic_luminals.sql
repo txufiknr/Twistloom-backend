@@ -1,2 +1,0 @@
-ALTER TABLE "pages" ADD COLUMN "pending_generation_count" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-CREATE INDEX "pages_pending_generation_idx" ON "pages" USING btree ("pending_generation_count");

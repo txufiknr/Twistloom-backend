@@ -740,6 +740,8 @@ export type StoryState = {
    * in the world at the current page and their potential impact on the story.
    */
   inventory: string[];
+
+  // TODO: add injury
 };
 
 /**
@@ -951,121 +953,6 @@ export type StoryStateCleanupResult = {
 // STATE RECONSTRUCTION TYPES
 // ============================================================================
 
-// /**
-//  * State delta representing incremental changes between pages
-//  * 
-//  * This structure captures the differences between story states,
-//  * enabling efficient reconstruction without storing full snapshots
-//  * for every page.
-//  * 
-//  * @interface StateDelta
-//  */
-// export type StateDelta = {
-//   /** Page ID where this delta was created */
-//   pageId: string;
-  
-//   /** Page number for ordering */
-//   page: number;
-  
-//   /** Characters added in this delta */
-//   addedCharacters?: Record<string, CharacterMemory>;
-  
-//   /** Characters updated in this delta */
-//   updatedCharacters?: Record<string, Partial<CharacterMemory>>;
-  
-//   /** Characters removed in this delta */
-//   removedCharacters?: string[];
-  
-//   /** Places added in this delta */
-//   addedPlaces?: Record<string, PlaceMemory>;
-  
-//   /** Places updated in this delta */
-//   updatedPlaces?: Record<string, Partial<PlaceMemory>>;
-  
-//   /** Places removed in this delta */
-//   removedPlaces?: string[];
-  
-//   /** Trauma tags added in this delta */
-//   addedTraumaTags?: string[];
-  
-//   /** Trauma tags removed in this delta */
-//   removedTraumaTags?: string[];
-  
-//   /** Psychological flags changes */
-//   flagsDelta?: Partial<PsychologicalFlags>;
-  
-//   /** Psychological profile changes */
-//   profileDelta?: Partial<PsychologicalProfile>;
-  
-//   /** Hidden state changes */
-//   hiddenStateDelta?: Partial<HiddenState>;
-  
-//   /** Memory integrity change */
-//   memoryIntegrity?: MemoryIntegrity;
-  
-//   /** Difficulty change */
-//   difficulty?: Difficulty;
-  
-//   /** Viable ending change */
-//   viableEnding?: Ending;
-  
-//   /** Context history addition */
-//   contextHistoryAddition?: string;
-  
-//   /** Full context history replacement (when context is completely different) */
-//   fullContextHistory?: string;
-  
-//   /** Actions added to history */
-//   addedActions?: Action[];
-  
-//   /** Full actions history replacement (when actions are completely different) */
-//   fullActionsHistory?: Action[];
-  
-//   /** Threads added in this delta */
-//   addedThreads?: StoryThread[];
-  
-//   /** Threads updated in this delta */
-//   updatedThreads?: Array<{ id: string; updates: Partial<StoryThread> }>;
-  
-//   /** Threads removed in this delta */
-//   removedThreads?: string[];
-  
-//   /** Full threads replacement (when threads are completely different) */
-//   fullThreads?: StoryThread[];
-// };
-
-// /**
-//  * State snapshot representing a complete story state at a point in time
-//  * 
-//  * Snapshots serve as checkpoints for efficient state reconstruction.
-//  * They contain the complete state at a specific page, allowing
-//  * deltas to be applied forward from that point.
-//  * 
-//  * @interface StateSnapshot
-//  */
-// export type StateSnapshot = {
-//   /** Page ID where snapshot was taken */
-//   pageId: string;
-  
-//   /** Page number for ordering */
-//   page: number;
-  
-//   /** Complete story state at this point */
-//   state: StoryState;
-  
-//   /** Timestamp when snapshot was created */
-//   createdAt: Date;
-  
-//   /** Snapshot version for future-proofing */
-//   version: number;
-  
-//   /** Whether this is a major event checkpoint */
-//   isMajorCheckpoint: boolean;
-  
-//   /** Reason for snapshot creation */
-//   reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request';
-// };
-
 /**
  * State reconstruction result with metadata
  * 
@@ -1179,23 +1066,6 @@ export type StateReconstructionDeps = {
   getPageById: (pageId: string) => Promise<DBPage | null>;
   /** Get book by ID to retrieve totalPages */
   getBook: (bookId: string) => Promise<{ totalPages: number } | null>;
-  // /** Get state snapshot by page ID */
-  // getSnapshot: (pageId: string) => Promise<StateSnapshot | null>;
-  // /** Get state delta by page ID */
-  // getDelta: (pageId: string) => Promise<StateDelta | null>;
   /** Get story state by page ID (DB + cache fallback) */
   getStoryState?: (pageId: string) => Promise<StoryState | null>;
 };
-
-/**
- * Type definitions for snapshot and delta operations
- * 
- * Active types are defined above in the main type section.
- * The older commented definitions have been removed to eliminate confusion.
- */
-
-export interface SnapshotCreationDecision {
-  shouldCreate: boolean;
-  reason: 'periodic' | 'major_event' | 'branch_start' | 'user_request';
-  priority: number;
-}

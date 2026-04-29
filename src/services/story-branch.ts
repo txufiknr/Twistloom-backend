@@ -353,12 +353,12 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
     // Get book information to retrieve totalPages
     const bookInfo = await getBookFromDB(bookId);
     if (!bookInfo) {
-      console.log(`[cleanupOldStoryStates] ⚠️ Book not found for user ${userId}, book ${bookId}`);
+      console.log(`[cleanupStoryStatesWithStrategy] ⚠️ Book not found for id: ${bookId}`);
       return;
     }
 
     const totalPages = bookInfo.totalPages;
-    console.log(`[cleanupOldStoryStates] 📚 Using totalPages from book schema: ${totalPages}`);
+    console.log(`[cleanupStoryStatesWithStrategy] 📚 Using totalPages from book schema: ${totalPages}`);
     
     // Get all story states for this user/book combination, ordered by page number
     const allStates = await dbRead
