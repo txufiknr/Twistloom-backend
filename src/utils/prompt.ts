@@ -2660,99 +2660,95 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   // Use distributed lock to prevent concurrent processing of the same page
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
   const lockResult = await withLock(lockKey, async () => {
-    // Double protection: Use database transaction with row-level lock
-    return await dbWrite.transaction(async (tx) => {
-      // Lock the page row for this transaction to prevent concurrent modifications
-      const lockedPage = await tx
-        .select()
-        .from(pages)
-        .where(eq(pages.id, page.id))
-        .for('update') // Pessimistic lock
-        .limit(1);
+    // Read current page state (no transaction - avoids idle timeout during AI generation)
+    const currentPage = await dbWrite
+      .select()
+      .from(pages)
+      .where(eq(pages.id, page.id))
+      .limit(1);
 
-      if (!lockedPage.length) {
-        throw new Error('Page not found');
-      }
+    if (!currentPage.length) {
+      throw new Error('Page not found');
+    }
 
-      // Re-check pending actions after acquiring both locks (another instance might have processed them)
-      const recheckedPendingActions = lockedPage[0].actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
-      if (recheckedPendingActions.length === 0) {
-        console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
-        return mapToUserStoryPage(lockedPage[0]);
-      }
+    // Re-check pending actions after acquiring lock (another instance might have processed them)
+    const recheckedPendingActions = currentPage[0].actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+    if (recheckedPendingActions.length === 0) {
+      console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
+      return mapToUserStoryPage(currentPage[0]);
+    }
 
-      // Track if any actions were actually updated
-      let hasRealChanges = false;
+    // Track if any actions were actually updated
+    let hasRealChanges = false;
+    const updatedActions = [...currentPage[0].actions];
 
-      // For each pending action, create a candidate
-      for (const action of recheckedPendingActions) {
-        // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
-        const candidatePage = await retryWithBackoffOrNull(
-          () => generateCandidatePage({userId, action, currentPage: mapToUserStoryPage(lockedPage[0]), currentState, currentBook}),
-          {
-            maxRetries: 3,
-            baseDelayMs: 1000,
-            maxDelayMs: 4000,
-            onRetry: (attempt, error) => {
-              console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
-            },
-            // Stop retrying if error looks like a validation error (e.g. Theme validation)
-            shouldRetry: (error) => {
-              try {
-                // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
-                console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
-                return true;
-              } catch {
-                return true;
-              }
+    // For each pending action, create a candidate (AI generation happens outside transaction)
+    for (const action of recheckedPendingActions) {
+      // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
+      const candidatePage = await retryWithBackoffOrNull(
+        () => generateCandidatePage({userId, action, currentPage: mapToUserStoryPage(currentPage[0]), currentState, currentBook}),
+        {
+          maxRetries: 3,
+          baseDelayMs: 1000,
+          maxDelayMs: 4000,
+          onRetry: (attempt, error) => {
+            console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
+          },
+          // Stop retrying if error looks like a validation error (e.g. Theme validation)
+          shouldRetry: (error) => {
+            try {
+              // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
+              console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
+              return true;
+            } catch {
+              return true;
             }
           }
-        );
-
-        if (candidatePage) {
-          // Success: update action with destination (branchId and pageId)
-          console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for:`, action.text);
-          // Update the locked page's actions in memory
-          const actionIndex = lockedPage[0].actions.findIndex(a => deepEqualSimple(a, action));
-          if (actionIndex !== -1) {
-            lockedPage[0].actions[actionIndex] = { 
-              ...action, 
-              destination: { 
-                branchId: candidatePage.branchId, 
-                pageId: candidatePage.id 
-              } 
-            };
-            hasRealChanges = true;
-          }
-        } else {
-          // Failed after all retries: leave destination undefined (will be filtered out in API response)
-          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
         }
+      );
+
+      if (candidatePage) {
+        // Success: update action with destination (branchId and pageId)
+        console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for:`, action.text);
+        const actionIndex = updatedActions.findIndex(a => deepEqualSimple(a, action));
+        if (actionIndex !== -1) {
+          updatedActions[actionIndex] = { 
+            ...action, 
+            destination: { 
+              branchId: candidatePage.branchId, 
+              pageId: candidatePage.id 
+            } 
+          };
+          hasRealChanges = true;
+        }
+      } else {
+        // Failed after all retries: leave destination undefined (will be filtered out in API response)
+        console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
       }
+    }
 
-      // Count actions without destination after processing
-      const pendingAfter = lockedPage[0].actions.filter(action => !action.destination?.pageId).length;
-      if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
+    // Count actions without destination after processing
+    const pendingAfter = updatedActions.filter(action => !action.destination?.pageId).length;
+    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
-      // Update persisted page if actions were modified or pending count changed
-      // This ensures pendingGenerationCount is always accurate even if some actions fail
-      if (hasRealChanges || pendingAfter !== recheckedPendingActions.length) {
-        const updatedPage = await tx
-          .update(pages)
-          .set({
-            actions: lockedPage[0].actions,
-            pendingGenerationCount: pendingAfter,
-            updatedAt: new Date()
-          })
-          .where(eq(pages.id, lockedPage[0].id))
-          .returning();
-        
-        return mapToUserStoryPage(updatedPage[0]);
-      }
+    // Update persisted page in a short transaction only if actions were modified
+    // This ensures pendingGenerationCount is always accurate even if some actions fail
+    if (hasRealChanges || pendingAfter !== recheckedPendingActions.length) {
+      const updatedPage = await dbWrite
+        .update(pages)
+        .set({
+          actions: updatedActions,
+          pendingGenerationCount: pendingAfter,
+          updatedAt: new Date()
+        })
+        .where(eq(pages.id, currentPage[0].id))
+        .returning();
+      
+      return mapToUserStoryPage(updatedPage[0]);
+    }
 
-      // Return original page if no changes needed
-      return mapToUserStoryPage(lockedPage[0]);
-    });
+    // Return original page if no changes needed
+    return mapToUserStoryPage(currentPage[0]);
   }, 300); // 5-minute lock TTL
 
   // Return the result or original page if lock couldn't be acquired

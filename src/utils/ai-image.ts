@@ -35,6 +35,26 @@ import { sanitizeFilename } from "./formatter.js";
 /**
  * Base function for AI image generation with model fallback
  * 
+ * This function handles rate limiting and model fallback for AI image generation.
+ * It applies throttling before each API call and automatically tries the next model
+ * if one fails, providing maximum reliability for image generation workflows.
+ * 
+ * **Important Notes:**
+ * - Rate limiting prevents hitting RPM limits but cannot solve quota limitations
+ * - Free tier often has zero quota for image generation (limit: 0)
+ * - Image generation has different quotas than text/chat APIs
+ * - Consider upgrading to paid tier or using alternative providers for production
+ * 
+ * **Rate Limiting vs Quota:**
+ * - Rate limiting: Controls request frequency (handled automatically)
+ * - Quota limits: Total daily/monthly usage caps (may require plan upgrade)
+ * 
+ * **Recommendations for Production:**
+ * 1. Upgrade to paid tier for image generation quotas
+ * 2. Use Imagen models (may have different free tier quotas)
+ * 3. Add separate rate limiter for image APIs (different from text APIs)
+ * 4. Consider alternative providers (OpenAI DALL-E, Stability AI, etc.)
+ * 
  * @param provider - Provider name for logging and rate limiting
  * @param models - Array of models to try in order (by priority)
  * @param prompt - Image generation prompt
@@ -42,6 +62,19 @@ import { sanitizeFilename } from "./formatter.js";
  * @param apiCall - Function that makes the actual API call
  * @param extractImageData - Function that extracts image data from response
  * @returns AIImageResult with buffers and optional file paths, or null if all models fail
+ * 
+ * @example
+ * ```typescript
+ * // Basic usage with automatic rate limiting and fallback
+ * const result = await generateImageWithFallback(
+ *   'imagen',
+ *   ['imagen-3.0-generate-001', 'imagen-3.0-fast-generate-001'],
+ *   'A futuristic cityscape at night',
+ *   { numberOfImages: 1, aspectRatio: '16:9' },
+ *   imagenAPICall,
+ *   extractImagenResponse
+ * );
+ * ```
  */
 async function generateImageWithFallback<T>(
   provider: string,
@@ -80,7 +113,7 @@ async function generateImageWithFallback<T>(
       console.warn(`[${provider}] ⚠️ Model ${model} generated no images`);
     } catch (error) {
       // Error handling: Classify error and decide on retry strategy
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
       if (i < models.length - 1) {
         // Model fallback: Try next model if more are available
         console.warn(`[${provider}] 💥 Model ${model} failed, trying next model:`, errorMessage);
@@ -225,13 +258,14 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
       } = opts;
 
       // Docs: https://ai.google.dev/gemini-api/docs/imagen
+      // Note: Imagen models don't support imageSize parameter (sampleImageSize is not adjustable)
       return await getGeminiClient().models.generateImages({
         model,
         prompt,
         config: {
           numberOfImages,
           aspectRatio,
-          imageSize,
+          // imageSize - Not supported by Imagen models
           outputMimeType,
           outputCompressionQuality,
           // enhancePrompt,
