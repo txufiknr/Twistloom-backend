@@ -1,15 +1,15 @@
+[ ] character state: Injury detail
+[ ] prompt: tampilin injury
+[ ] Implement stripe
+[ ] Pages: Actions kosong
+[ ] Cron: detect pages yg action object kosong, generate
+
+[x] Story state: actionHistory tambah page number 
 [x] heuristic theme validator bug: surprise4.txt
 [x] If no action needed or viable, give only 1 action to continue
 [x] Clear orphaned user exclude system user
 [x] Benerin format user prompt next page
-
-[ ] character state: Injury detail
-[ ] prompt: tampilin inventory, injury
-[ ] Implement stripe
-[ ] Story state simpen selected actions aja (+page numbers) 
-[ ] Pages: Actions kosong
-[ ] Cron: generate cover image originals
-[ ] Cron: detect pages yg action object kosong, generate
+[x] Cron: generate cover image originals
 [x] Inventory: string[] what MC bring & where
 [x] Page generation instructions: page.text: start with "I choose to"
 [x] Page generation: running summary (+), page summary bullet points (+), inventory update (+) 
@@ -33,27 +33,7 @@
 [x] Pastiin imagen & pregenerate page console log
 [x] Github secret include semua AI api keys
 
-
-[generateCandidatePage] ❌ Failed to generate candidate page: {
-  error: 'characterUpdates.newCharacters is not iterable',
-  userId: '***',
-  pageId: '019dc93a-8603-7458-a77a-7f142cc336df',
-  actionText: 'Burn the note. Bury the locket pieces. Pretend this never happened.'
-}
-
-[generateCandidatePage] ❌ Failed to generate candidate page: {
-  error: 'characterUpdates.updatedCharacters is not iterable',
-
-[generateCandidatePage] ❌ Failed to generate candidate page: {
-  error: "Cannot read properties of undefined (reading 'text')",
-  userId: '019dbee5-6771-704d-88b0-9cd2f6f1039d',
-  pageId: '019dc3db-d0de-76f5-94b6-62f2cefdff28',
-  actionText: undefined
-}
-
 TODO:
-[ ] cron: fix empty actions
-[ ] cron: generate cover image original
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] similar books: jina embedding

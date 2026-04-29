@@ -655,6 +655,60 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
 }
 
 /**
+ * Retrieves the initial story state for a book (page 1)
+ * 
+ * This function finds the first page of a book and retrieves its story state
+ * to provide context for cover image generation when no state is provided.
+ * 
+ * @param book - Book object with metadata
+ * @returns Promise resolving to initial story state or null if not found
+ * 
+ * @example
+ * ```typescript
+ * const initialState = await getBookInitialState(book);
+ * if (initialState) {
+ *   console.log(`Found initial state for page ${initialState.page}`);
+ * }
+ * ```
+ */
+export async function getBookInitialState(book: Book): Promise<StoryState | null> {
+  try {
+    // Lazy imports for better memory usage
+    const { dbRead } = await import("../db/client.js");
+    const { pages } = await import("../db/schema.js");
+    const { eq, asc } = await import("drizzle-orm");
+    const { getStoryState } = await import("./story.js");
+    
+    // Get the first page of the book
+    const firstPage = await dbRead
+      .select()
+      .from(pages)
+      .where(eq(pages.bookId, book.id))
+      .orderBy(asc(pages.page))
+      .limit(1);
+    
+    if (!firstPage[0]) {
+      console.log(`[getBookInitialState] ❓ No pages found for book ${book.id}`);
+      return null;
+    }
+    
+    // Get the story state for the first page
+    const initialState = await getStoryState(book.userId, firstPage[0].id);
+    
+    if (initialState) {
+      console.log(`[getBookInitialState] 🎯 Found initial state for book ${book.id} at page ${initialState.page}`);
+    } else {
+      console.log(`[getBookInitialState] ❓ No story state found for first page of book ${book.id}`);
+    }
+    
+    return initialState;
+  } catch (error) {
+    console.error(`[getBookInitialState] ❌ Failed to get initial state for book ${book.id}:`, error);
+    return null;
+  }
+}
+
+/**
  * Generate book cover and upload directly to ImageKit without disk I/O
  * 
  * Optimized version that skips disk writing and uploads buffers directly to ImageKit.
@@ -669,6 +723,17 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
   if (!IS_PRODUCTION) {
     console.log(`[generateAndUpdateBookCoverImage] ⏩ Skipping cover generation in development`);
     return [];
+  }
+
+  // Get initial story state if none provided
+  if (!state) {
+    const initialState = await getBookInitialState(book);
+    if (initialState) {
+      state = initialState;
+      console.log(`[generateCoverImages] 🎯 Using initial story state for book ${book.id} (page ${state.page})`);
+    } else {
+      console.log(`[generateCoverImages] ❓ No story state available for book ${book.id}, using book metadata only`);
+    }
   }
 
   try {

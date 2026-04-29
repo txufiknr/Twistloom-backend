@@ -1,5 +1,5 @@
 import type { Book } from "./book.js";
-import type { StoryState, ActionedStoryPage, UserStoryPage } from "./story.js";
+import type { StoryState, ActionedStoryPage, UserStoryPage, Action } from "./story.js";
 
 export type GenerateBookCreationPromptParams = {
   logPrompts?: boolean,
@@ -26,8 +26,8 @@ export type BuildNextPageParams = {
 export type GenerateCandidatePageParams = {
   /** User identifier for whom candidate page is being generated */
   userId: string;
-  /** The action text for which to generate a candidate (will be matched against current page actions) */
-  actionText: string;
+  /** The action for which to generate a candidate (will be matched against current page actions) */
+  action: Action;
   /** Current page context */
   currentPage?: UserStoryPage | null;
   /** Optional current story state (avoids database lookup when provided) */

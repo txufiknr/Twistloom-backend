@@ -105,6 +105,7 @@ export const MAX_CHARACTER_PLACES = 5;
  * context relevant without overwhelming memory.
  */
 export const MAX_PAGE_HISTORY = 3;
+export const MAX_ACTION_HISTORY = 5;
 
 /**
  * Delta and snapshot cleanup configuration

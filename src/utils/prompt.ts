@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession } from "../types/story.js";
 import { retryWithBackoffOrNull } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, updateStoryState, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -13,7 +13,7 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, ManipulationAffinity, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionHistory, Archetype, ManipulationAffinity, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage, getBook } from "../services/book.js";
@@ -422,7 +422,7 @@ function buildUserPrompt(
   actionedPage: ActionedStoryPage,
   previousPages: PreviousPages
 ): string {
-  const { page, maxPage, contextHistory, plotFlags, flags, psychologicalProfile, hiddenState, threads } = state;
+  const { page, maxPage, contextHistory, plotFlags, flags, psychologicalProfile, hiddenState, threads, inventory } = state;
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
   const stateInfo = getStoryStateInfo(state);
   const { remainingPages, isFinale, phase, phaseGoal, isLastPage } = stateInfo;
@@ -451,6 +451,7 @@ CURRENT SITUATION (from previous page):
 - Time: ${timeOfDay || 'unknown'}
 - Mood: ${mood || 'unknown'}
 - Characters present: ${charactersPresent.join(', ') || 'none'}
+- Inventory: ${inventory.join(', ') || 'none'}
 
 STORY CONTEXT:
 ${contextHistory}
@@ -464,10 +465,11 @@ ${formatPreviousPagesForPrompt(previousPages)}
 CURRENT PAGE:
 ${formatPageTextForPrompt(actionedPage.text)}
 
-ACTION CHOICES:
+ACTION SELECTION:
+Available choices:
 ${formatActionChoices(actions)}
 
-CHOSEN ACTION:
+Selected:
 ${formatSelectedAction(selectedAction, actions)}
 
 ---
@@ -480,22 +482,16 @@ ${formatPsychologicalFlags(flags)}
 PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
 ${formatPsychologicalProfile(psychologicalProfile)}
 
+Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
+
 HIDDEN STATE (Influence writing, don't reveal):
 ${formatHiddenState(hiddenState)}
 
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
 
-TARGETED MANIPULATION RULES (Personalized horror):
-${getManipulationAffinitiesText(psychologicalProfile.manipulationAffinity)}
-
-ARCHETYPE-SPECIFIC TACTICS:
-${getArchetypeTacticsText(psychologicalProfile.archetype)}
-
-STABILITY IMPACT:
-${getStabilityLevelsText(psychologicalProfile.stability)}
-
-Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
+ACTION HISTORY:
+${formatActionHistory(state.actionsHistory)}
 
 ---
 ${RULES_ROUTE_MEMORY}
@@ -1174,7 +1170,7 @@ function getActionRulesText({isFinale = false, limit = MAX_ACTION_CHOICES}: {isF
 - Actions represent the reader's decision - must feel natural, immediate, narrative-driven
 - Action can be verb (what to do next) or dialogue (say/answer), keep it short
 - You can mix both types naturally depending on the situation
-- Example: A. "Y-Yes... maybe." / B. Run away, fast
+- Example: A. "Who are you?" / B. Run away, fast
 - If no action needed or viable, give only 1 action to continue
 
 ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
@@ -1192,12 +1188,12 @@ ACTION TYPES:
 ${getActionTypesText()}
 
 DIALOGUE ACTIONS:
-- Should keep the tone and style of main character
-- MC may say something inappropriate or with unintended consequences
-- Dialogue used sparingly for internal scenes or interactions
+- Use sparingly for internal scenes or interactions
 - Write as direct speech (no quotes)
+- Keep the tone and style of the MC
 - Must be short, natural, and emotionally meaningful
 - Reflect different tones (fear, denial, curiosity, anger, etc.)
+- MC may say something inappropriate or with unintended consequences
 
 ACTION HINT:
 - Each action should have a hint that provides key continuity
@@ -1266,14 +1262,18 @@ function getEndingArchetypesText(): string {
  * const formatted = formatPreviousPagesForPrompt([{ page: DBPage, action: Action }, ...]);
  * ```
  * 
- * Example case: on page 10, MAX_PAGE_HISTORY = 3
+ * Example case: on page 12, MAX_PAGE_HISTORY = 5
  * • Page 7: The hallway stretched endlessly before me, fluorescent lights flickering overhead like dying stars. Lisa stood at the end, her smile too wide, eyes too knowing. "You don't remember me, do you?" she asked, voice like honey mixed with poison. (place: hallway, timeOfDay: night)
  *   → Action: "" (type: explore)
  * • Page 8: The classroom felt wrong somehow—desks arranged in a pattern I couldn't quite place, like a memory trying to surface. Lisa sat behind me, humming a tune that made my teeth ache. It was my mother's lullaby, the one she sang before she disappeared. (place: classroom, timeOfDay: unknown)
  *   → Action: "" (type: explore)
  * • Page 9: Water dripped from the ceiling in perfect rhythm, one drop for each beat of my heart. Lisa's reflection in the blackboard showed someone else entirely—someone with hollow eyes and skin like wax. "You were at the river last night," she whispered. (place: old river, timeOfDay: unknown)
  *   → Action: "" (type: explore)
- */
+ * • Page 10: The basement door creaked open, revealing concrete stairs descending into darkness. (place: basement, timeOfDay: unknown)
+ *   → Action: "Carefully descend" (type: explore)
+ * • Page 11: Cold air rushed up from below, carrying the smell of damp earth and something metallic. (place: unknown, timeOfDay: unknown)
+ *   → Action: "Hold breath, listen" (type: ignore)
+  */
 function formatPreviousPagesForPrompt(previousPages: PreviousPages): string {
   if (previousPages.length === 0) {
     return 'No previous pages yet.';
@@ -1334,24 +1334,36 @@ export function formatOneOf(items: string[] | readonly string[]): string {
 }
 
 /**
- * Formats action choices for AI prompt
+ * Formats action choices for AI prompt with enhanced readability
+ * 
+ * Creates clean, professional presentation of available actions
+ * with consistent formatting and clear action type indicators.
+ * 
  * @param actions - Array of action objects
  * @returns Formatted string with action choices (A, B, C, etc.)
  */
 function formatActionChoices(actions: Action[]): string {
-  return actions.map((action, index) => `${String.fromCharCode(65 + index)}. [${action.type}] ${action.text}`).join('\n');
+  return actions
+    .map((action, index) => {
+      const letter = String.fromCharCode(65 + index);
+      const actionText = action.text.trim();
+      return `${letter}. ${actionText} (type: ${action.type})`;
+    })
+    .join('\n');
 }
 
 /**
- * Formats selected action for AI prompt with explicit hint processing
+ * Formats selected action for AI prompt with enhanced formatting
  * 
- * Includes processed hint guidance to ensure AI follows narrative
- * direction without robotic writing and maintains A/B/C formatting consistency.
+ * Provides clean, professional presentation of selected action with
+ * proper hint processing and guidance for AI narrative direction.
  */
 function formatSelectedAction(selectedAction?: Action, allActions?: Action[]): string {
-  if (!selectedAction) return 'No action chosen. Continue the story naturally toward viable ending plan.';
+  if (!selectedAction) {
+    return 'No action chosen. Continue story naturally toward viable ending plan.';
+  }
 
-  const isCustomAction = selectedAction.type == 'custom';
+  const isCustomAction = selectedAction.type === 'custom';
 
   // Find the index of selected action to get the letter
   let selectedLetter = '';
@@ -1362,12 +1374,12 @@ function formatSelectedAction(selectedAction?: Action, allActions?: Action[]): s
     }
   }
 
-  return `${selectedLetter ? `${selectedLetter}. ` : '• '}[${selectedAction.type}] ${selectedAction.text}
+  return `${selectedLetter ? `${selectedLetter}.` : '•'} ${selectedAction.text} (type: ${selectedAction.type})
 
 About selected action:
 · Hint: ${isCustomAction ? "-" : selectedAction.hint.text}
 · Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}
-· Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This is just a hint for guiding you to build this next page, might be a secret, not to always put in the story.`}`;
+· Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This hint guides you in narrative direction, might be a secret, not to always put in the story.`}`;
 }
 
 /**
@@ -1603,31 +1615,85 @@ function formatPsychologicalFlags(flags: PsychologicalFlags): string {
  * Formats psychological profile for prompt display
  * 
  * Creates a formatted string of psychological profile
- * with archetype, stability, traits, and manipulation affinity.
+ * with archetype, stability, traits, manipulation affinity,
+ * and specific tactics for horror personalization.
  * 
  * @param profile - Psychological profile object
  * @returns Formatted string for prompt inclusion
+ * 
+ * @example
+ * PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
+ * - Archetype: the_paranoid
+ * - Stability: cracking
+ * - Traits: suspicion, anxiety, hypervigilance
+ * 
+ * Archetype-specific tactics:
+ * Suspicious of everyone, questions motives, sees threats everywhere
+ * 
+ * Stability impact:
+ * Under stress, showing cracks in composure → More direct psychological attacks, visible stress
+ * 
+ * Personalized horror (manipulation vector):
+ * Contradictions, unclear reality, question perceptions
+ * 
+ * Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
  */
 function formatPsychologicalProfile(profile: PsychologicalProfile): string {
   return `• Archetype: ${profile.archetype}
 • Stability: ${profile.stability}
 • Traits: ${profile.dominantTraits.join(', ')}
-• Manipulation vector: ${profile.manipulationAffinity}`;
+
+Archetype-specific tactics:
+${getArchetypeTacticsText(profile.archetype)}
+
+Stability impact:
+${getStabilityLevelsText(profile.stability)}
+
+Personalized horror (manipulation vector):
+${getManipulationAffinitiesText(profile.manipulationAffinity)}`;
 }
 
 /**
  * Formats route context for prompt display
  * 
  * Creates a formatted string of route memory information
- * including past actions, trauma tags, and difficulty level.
+ * including past actions with hints, trauma tags, and difficulty level.
  * 
  * @param state - Story state containing route information
  * @returns Formatted string for prompt inclusion
  */
 function formatRouteContext(state: StoryState): string {
-  return `• Past actions: ${state.actionsHistory.map(a => `${a.text} (type: ${a.type})`).join('; ')}
-• Trauma tags: ${state.traumaTags.join(', ')}
+  return `• Trauma tags: ${state.traumaTags.join(', ')}
 • Difficulty: ${state.difficulty}`;
+}
+
+/**
+ * Formats action history for prompt display
+ * 
+ * Creates a formatted string of past actions with page numbers,
+ * action text, types, and hints for AI context.
+ * 
+ * @param actionsHistory - Array of action history items with page numbers
+ * @returns Formatted string with actions as bullet points including hints
+ * 
+ * @example
+ * ```typescript
+ * const actions = [
+ *   { page: 1, text: "Investigate noise", type: "explore", hint: { text: "Something awaits", type: "consequence" } },
+ *   { page: 2, text: "Run away", type: "flee", hint: { text: "Escape is impossible", type: "consequence" } }
+ * ];
+ * const formatted = formatActionHistory(actions);
+ * // Returns:
+ * // "• Page 1: Investigate noise (type: explore)
+ * //   → Hint: Something awaits
+ * // • Page 2: Run away (type: flee)
+ * //   → Hint: Escape is impossible"
+ * ```
+ */
+function formatActionHistory(actionsHistory: ActionHistory[]): string {
+  return actionsHistory.slice(-MAX_ACTION_HISTORY).map(a => {
+    return `• Page ${a.page}: ${a.text} (type: ${a.type})\n  → Hint: ${a.hint.text || 'none'}`;
+  }).join('\n');
 }
 
 /**
@@ -2391,10 +2457,14 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  * ```
  */
 export async function generateCandidatePage(params: GenerateCandidatePageParams): Promise<PersistedStoryPage | null> {
-  const { userId, actionText, currentState: providedState, currentBook: providedBook } = params;
+  const { userId, action: actionCandidate, currentState: providedState, currentBook: providedBook } = params;
   let { currentPage } = params;
 
   try {
+    if (!actionCandidate.text) {
+      throw new Error(`Invalid action: no text`);
+    }
+
     // 1. Get current story progress (book, page, state, session) in parallel
     // Use provided state if available, otherwise fetch from database
     let currentState = providedState;
@@ -2427,9 +2497,9 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
     const { bookId } = activeSession ?? { bookId: currentBook.id };
 
     // 3. Match actionText against current page actions to get full Action object
-    const action = currentPage.actions.find((a: Action) => a.text === actionText);
+    const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
     if (!action) {
-      throw new Error(`Action "${actionText}" not found in current page actions`);
+      throw new Error(`Action "${actionCandidate.text}" not found in current page actions`);
     }
 
     // 4. Check if next page is pre-generated (candidate) and reuse if available
@@ -2468,7 +2538,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
       error: getErrorMessage(error),
       userId,
       pageId: currentPage?.id,
-      actionText,
+      actionCandidate,
     });
     return null;
   }
@@ -2578,7 +2648,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
   // Early return if no actions need generation
   if (pendingActions.length === 0) {
-    console.log(`[ensureCandidatesForPage] ⏩ No actions need generation`);
+    console.log(`[ensureCandidatesForPage] ✨ No actions need generation`);
     return page;
   }
   
@@ -2601,7 +2671,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     for (const action of recheckedPendingActions) {
       // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
       const candidatePage = await retryWithBackoffOrNull(
-        () => generateCandidatePage({userId, actionText: action.text, currentPage: page, currentState, currentBook}),
+        () => generateCandidatePage({userId, action, currentPage: page, currentState, currentBook}),
         {
           maxRetries: 3,
           baseDelayMs: 1000,

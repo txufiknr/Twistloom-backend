@@ -215,9 +215,9 @@ export type CharacterUpdate = Pick<CharacterMemory, 'name' | 'gender' | 'status'
  */
 export type CharacterUpdates = {
   /** New characters introduced in this page */
-  newCharacters: CharacterMemory[];
+  newCharacters?: CharacterMemory[];
   /** Updates to existing characters */
-  updatedCharacters: CharacterUpdate[];
+  updatedCharacters?: CharacterUpdate[];
 };
 
 export type TagUpdates = {

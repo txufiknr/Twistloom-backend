@@ -176,13 +176,15 @@ export function processCharacterUpdates(
   // Process character updates if they exist
   if (!characterUpdates) return;
 
+  const { newCharacters = [], updatedCharacters = [] } = characterUpdates;
+
   // Add new characters
-  for (const character of characterUpdates.newCharacters) {
+  for (const character of newCharacters) {
     state.characters[character.name] = character;
   }
   
   // Update existing characters
-  for (const update of characterUpdates.updatedCharacters) {
+  for (const update of updatedCharacters) {
     const existing = state.characters[update.name];
     if (existing) {
       state.characters[update.name] = updateCharacter(existing, update);

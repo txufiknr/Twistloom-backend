@@ -576,6 +576,8 @@ export type Action = {
   };
 };
 
+export type ActionHistory = Action & { page: number }
+
 /**
  * Enriched action with navigation metadata for frontend URL building
  * 
@@ -695,7 +697,8 @@ export type StoryState = {
   // pageHistory: ActionedStoryPage[];
 
   /** History of all user actions made throughout the story */
-  actionsHistory: Action[];
+  // actionsHistory: Action[];
+  actionsHistory: ActionHistory[];
 
   /**
    * AI-summarized context of the entire story from page 1 to current
@@ -706,12 +709,36 @@ export type StoryState = {
    */
   contextHistory: string;
 
+  /**
+   * Indicates whether the current page contains a major event
+   * 
+   * Major events are plot-level facts that have significant impact
+   * on the story's narrative arc and can introduce new plot twists.
+   */
   isMajorEvent: boolean;
 
+  /**
+   * Collection of ongoing narrative threads in the story
+   * 
+   * Stores information about ongoing storylines, conflicts, and
+   * the characters involved in them.
+   */
   threads: StoryThread[];
 
+  /**
+   * Collection of narrative flags and hints for the current page
+   * 
+   * Stores information about ongoing storylines, conflicts, and
+   * the characters involved in them.
+   */
   plotFlags: string[];
 
+  /**
+   * Collection of items and resources present in the world at the current page
+   * 
+   * Stores information about items and resources that are available
+   * in the world at the current page and their potential impact on the story.
+   */
   inventory: string[];
 };
 

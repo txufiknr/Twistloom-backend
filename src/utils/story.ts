@@ -1,4 +1,4 @@
-import { MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
+import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases } from "../types/story.js";
 import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration } from "../types/story.js";
@@ -239,7 +239,7 @@ export async function advanceStoryState(state: StoryState, actionedPage: Actione
   const updatedState = updateStoryState(state, actionedPage.stateDelta);
 
   // Add chosen action to history and increment page number
-  updatedState.actionsHistory.push(actionedPage.selectedAction);
+  updatedState.actionsHistory.push({...actionedPage.selectedAction, page: updatedState.page});
   updatedState.page++;
 
   // Update psychological flags based on action type
@@ -916,7 +916,7 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
   
   // Add secondary traits based on recent actions
   if (actionsHistory.length > 0) {
-    const recentActions = actionsHistory.slice(-5); // Increased window for better analysis
+    const recentActions = actionsHistory.slice(-MAX_ACTION_HISTORY); // Increased window for better analysis
     
     // Fear-based behaviors
     if (recentActions.some(d => d.type === 'escape')) {

@@ -138,6 +138,124 @@ export async function retryPendingGenerations(): Promise<void> {
 }
 
 /**
+ * Detects and generates missing cover images for original books
+ * 
+ * This function:
+ * - Finds books where isOriginal: true and image: null
+ * - Generates AI cover images for these books
+ * - Updates books with new image URLs and IDs
+ * 
+ * Idempotency:
+ * - Safe to run multiple times: only processes books without images
+ * - Uses consistent query: WHERE is_original = true AND image IS NULL
+ * - Atomic operations: updates book record after successful image generation
+ * - No side effects: only adds missing images, doesn't modify existing data
+ * 
+ * Should be run periodically via cron job, but safe to run repeatedly
+ */
+export async function generateMissingOriginalBookCovers(): Promise<void> {
+  const startedAt = Date.now();
+  
+  try {
+    console.log("[retry-pending-generations] Starting missing cover image generation...");
+    
+    // Lazy imports for better memory usage and startup time
+    const { dbRead } = await import("../db/client.js");
+    const { books } = await import("../db/schema.js");
+    const { eq, and, isNull, desc } = await import("drizzle-orm");
+    const { generateAndUpdateBookCoverImage } = await import("../services/book.js");
+    
+    // Query original books without cover images (limit to prevent overwhelming the system)
+    // Prioritize books with highest trending scores
+    const originalBooksWithoutCovers = await dbRead
+      .select({
+        id: books.id,
+        title: books.title,
+        hook: books.hook,
+        summary: books.summary,
+        trendingScore: books.trendingScore,
+        userId: books.userId,
+        image: books.image,
+        imageId: books.imageId,
+        isOriginal: books.isOriginal,
+        keywords: books.keywords,
+        totalPages: books.totalPages,
+        language: books.language,
+        slug: books.slug,
+        status: books.status,
+        mc: books.mc,
+        likesCount: books.likesCount,
+        readCount: books.readCount,
+        branchesCount: books.branchesCount,
+        topPick: books.topPick,
+        createdAt: books.createdAt,
+        updatedAt: books.updatedAt,
+      })
+      .from(books)
+      .where(and(eq(books.isOriginal, true), isNull(books.image)))
+      .orderBy(desc(books.trendingScore))
+      .limit(25); // Process up to 25 books per run
+    
+    if (originalBooksWithoutCovers.length === 0) {
+      console.log("[retry-pending-generations] ⏩ No original books missing cover images");
+      return;
+    }
+    
+    console.log(`[retry-pending-generations] 👀 Found ${originalBooksWithoutCovers.length} original books missing cover images`);
+    
+    let totalProcessed = 0;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    
+    for (const book of originalBooksWithoutCovers) {
+      try {
+        console.log(`[retry-pending-generations] 🧠 Generating cover for book "${book.title}" (ID: ${book.id})`);
+        
+        // Convert database result to Book type (convert null to undefined where needed)
+        const bookForGeneration = {
+          ...book,
+          slug: book.slug || undefined,
+          hook: book.hook || '',
+          summary: book.summary || '',
+          language: book.language || 'en',
+          trendingScore: book.trendingScore || 0,
+          image: book.image || undefined,
+          imageId: book.imageId || undefined,
+          status: book.status || 'active',
+          topPick: book.topPick || undefined,
+        };
+        
+        // Generate and update cover image
+        await generateAndUpdateBookCoverImage(bookForGeneration);
+        
+        totalSuccess++;
+        console.log(`[retry-pending-generations] ✅ Successfully generated cover for book "${book.title}"`);
+        
+        totalProcessed++;
+        
+        // Small delay between books to prevent overwhelming AI API
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+      } catch (error) {
+        console.error(`[retry-pending-generations] ❌ Failed to generate cover for book ${book.id}:`, getErrorMessage(error));
+        totalFailed++;
+        // Continue with next book - don't fail entire batch
+      }
+    }
+    
+    const durationMs = Date.now() - startedAt;
+    console.log(`[retry-pending-generations] ✅ Missing cover generation completed in ${durationMs}ms:`, {
+      booksProcessed: totalProcessed,
+      coversGenerated: totalSuccess,
+      coversFailed: totalFailed
+    });
+  } catch (error) {
+    console.error("[retry-pending-generations] ❌ Missing cover generation job failed:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Main execution function for retry pending generations cron job
  */
 async function main(): Promise<void> {
@@ -145,6 +263,7 @@ async function main(): Promise<void> {
   
   try {
     await retryPendingGenerations();
+    await generateMissingOriginalBookCovers();
     const durationMs = Date.now() - startedAt;
     console.log(`[retry-pending-generations] ✅ Completed in ${durationMs}ms`);
     process.exit(0);

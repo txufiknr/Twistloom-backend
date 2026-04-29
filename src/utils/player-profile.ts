@@ -7,7 +7,7 @@
  * This enables personalized storytelling based on individual player behavior patterns.
  */
 
-import type { Action, StoryState, StyleInput, PsychologicalProfileMetrics } from '../types/story.js';
+import type { StoryState, StyleInput, PsychologicalProfileMetrics, ActionHistory } from '../types/story.js';
 import { getStoryStateInfo } from './story.js';
 
 /**
@@ -29,7 +29,7 @@ import { getStoryStateInfo } from './story.js';
  * // Returns: { curiosity: 0.7, fear: 0.2, aggression: 0.1, denial: 0.0 }
  * ```
  */
-export function calculatePlayerProfile(actionsHistory: Action[]): PsychologicalProfileMetrics {
+export function calculatePlayerProfile(actionsHistory: ActionHistory[]): PsychologicalProfileMetrics {
   // Initialize profile with zero values
   const profile = {
     curiosity: 0,
