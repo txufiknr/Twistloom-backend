@@ -13,7 +13,7 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { PreviousPages, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, ManipulationAffinity, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, updateStoryPage, getBook } from "../services/book.js";
@@ -27,17 +27,20 @@ import type { StoryThread } from "../types/thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
+import { deepEqualSimple } from "./parser.js";
+import { withLock, LOCK_KEYS } from "./distributed-lock.js";
 
 // ============================================================================
 // SYSTEM PROMPT
 // ============================================================================
 
 export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R. L. Stine — but darker, more deceptive, and psychologically cruel.
-You write branching horror stories in first-person.
+You write branching horror stories in first-person ("I") POV.
 Every page ends with a choice that feels meaningful but may be an illusion.
 
 WRITING STYLE:
-- First-person POV only (MC).
+- Write in first-person central (MC = narrator) POV.
+- Don't use terms like "The protagonist" or "The narrator", just use "I".
 - Short sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
 - Fragments when emotion spikes. Repeat letter when n-nervous. Capslock when AAAAAAAAAAARGH—
 - "And", "But", "So" to open sentences when it lands right.
@@ -84,6 +87,7 @@ BRANCHING STORY RULES:
 - Exploit the gap between what the MC knows and what the reader suspects.
 
 HARD RULES:
+- NEVER write sexually explicit words.
 - NEVER use overly formal or polished language
 - NEVER use long perfectly structured paragraphs
 - NEVER use consistent sentence structure across the page
@@ -421,20 +425,20 @@ function buildUserPrompt(
   const { page, maxPage, contextHistory, plotFlags, flags, psychologicalProfile, hiddenState, threads } = state;
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
   const stateInfo = getStoryStateInfo(state);
-  const { remainingPages, isFinale, phase, phaseGoal } = stateInfo;
+  const { remainingPages, isFinale, phase, phaseGoal, isLastPage } = stateInfo;
   const { mc, summary } = book;
 
-  return `TASK: Continue the story in first-person view. Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
+  return `TASK: Continue the story in first-person ("I") POV. Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
+
+MAIN CHARACTER (POV): ${getMainCharacterInfo(mc)!}
 
 HARD RULES:
 - Write in first-person central (MC = narrator) POV.
-- Don't use phrase like "The protagonist" or "The narrator", just use "I".
+- Don't use terms like "The protagonist" or "The narrator", just use "I".
 - Keep max ${MAX_WORDS_PER_PAGE} words per page.
 - Keep consistent writing style and language.
-- Continue directly from selected action. Example: "I run away."
+- Continue directly from selected action. Example: "I [verb]."
 - Continue from current situation.
-
-MAIN CHARACTER (POV): ${getMainCharacterInfo(mc)!}
 
 THEME REMINDER:
 ${summary}
@@ -476,24 +480,20 @@ ${formatPsychologicalFlags(flags)}
 PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
 ${formatPsychologicalProfile(psychologicalProfile)}
 
-PSYCHOLOGICAL PROGRESSION:
-As pages increase: MC becomes less reliable, perception more distorted, reality less stable
-
 HIDDEN STATE (Influence writing, don't reveal):
 ${formatHiddenState(hiddenState)}
 
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
 
-TARGETED MANIPULATION RULES:
-Based on MC's psychological profile, personalize horror by manipulation affinity:
-${getManipulationAffinitiesText()}
+TARGETED MANIPULATION RULES (Personalized horror):
+${getManipulationAffinitiesText(psychologicalProfile.manipulationAffinity)}
 
 ARCHETYPE-SPECIFIC TACTICS:
-${getArchetypeTacticsText()}
+${getArchetypeTacticsText(psychologicalProfile.archetype)}
 
 STABILITY IMPACT:
-${getStabilityLevelsText()}
+${getStabilityLevelsText(psychologicalProfile.stability)}
 
 Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
 
@@ -547,13 +547,13 @@ It ends badly if I go inside.`}
 
 ---
 CHARACTER RULES:
+- Respect character's bio.
 - Preserve dialect, tone, and personality consistently.
 - Reflect current status in behavior.
 - Use pastInteractions to subtly shape dialogue.
 - Reintroduce naturally after absence.
 - Characters may shift suddenly if narrativeFlags suggest it — never explain the change.
 - Use relationships to build tension triangles.
-- Respect character's bio.
 - Sometimes they also misunderstand, reinforcing illusion or false theory through dialog or action.
 
 ---
@@ -563,9 +563,9 @@ PLACE RULES:
 - Familiar places feel more textured and real.
 - Apply trauma tags to atmosphere — a betrayal place stays tense.
 
----
+${isLastPage ? '' : `---
 BRANCHING ACTIONS:
-${getActionRulesText({ isFinale })}
+${getActionRulesText({ isFinale })}`}
 
 ---
 OUTPUT FORMAT (JSON):
@@ -589,11 +589,12 @@ Do NOT mention this checklist.`;
 
 function buildNextPageFieldInstructions(state: StoryState): string {
   const { traumaTags } = state;
-  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, charactersSlot, placesSlot } = getStoryStateInfo(state);
+  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot } = getStoryStateInfo(state);
 
   return `text
   - Max ${MAX_WORDS_PER_PAGE} words. First-person central POV ("I") as MC. Unreliable narrator.
   - Don't use phrase like "The protagonist" or "The narrator", just use "I".
+  - Always begin directly from the chosen action. Example: "I decide to [...]," or "I [verb]."
   - Open mid-moment. End on tension, a hook, or unresolved unease — never resolution.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
@@ -619,8 +620,7 @@ charactersPresent
 ${isFinale ? `  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.` : ''}
 
 keyEvents
-  - 1-4 short phrases. Plot-level facts only — what objectively happened.
-  - Not perception or feeling. E.g. "Lisa left without explanation", not "MC felt abandoned."
+  - 1-4 short phrases. Plot-level facts only — what objectively happened (situation/exact hard facts).
 ${isLatePhase || isFinale ? `  - At least one event should connect to or resolve a thread opened earlier in the story.` : ''}
 
 importantObjects
@@ -630,7 +630,8 @@ ${isMidPhase ? `  - Only include objects with clear narrative weight. No new red
 ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unless absolutely necessary.` : ''}
 
 inventoryUpdates
-  - What objects MC brings, the amount, and where
+  - Items the MC brings to the scene, the amount, color, and where they are located specifically (backpack, right trouser pocket, etc).
+  - Limit it. Only include items that actually matters to the plot.
 
 traumaTagUpdates
   - Short evocative phrases for experiences that will haunt the MC later.
@@ -663,7 +664,7 @@ ${isEarlyPhase ? `  - Changes should be subtle — small shifts, not dramatic sw
 ${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt especially should be peaking.` : ''}
 
 actions
-  - text: first-person action or dialogue, keep it short.
+${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue, keep it short.
   - hint.text: what actually happens as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max 2 choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
@@ -672,7 +673,7 @@ actions
 ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are present but not yet dire.` : ''}
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
 ${isLatePhase ? `  - Every choice should carry visible weight. No option should feel consequence-free.` : ''}
-${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}
+${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}
 
 characterUpdates.newCharacters
 ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHARACTERS} reached.`
@@ -1204,13 +1205,30 @@ ACTION HINT:
 }
 
 /**
- * Formats archetype-specific tactics for inclusion in prompts
- * @returns Formatted string of archetype-specific tactics
+ * Formats manipulation affinity for inclusion in prompts
+ * @param affinity - The specific manipulation affinity to format
+ * @returns Formatted string of the specific manipulation affinity
  */
-function getArchetypeTacticsText(): string {
-  return Object.entries(archetypes)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
+function getManipulationAffinitiesText(affinity: ManipulationAffinity): string {
+  return manipulationAffinities[affinity as keyof typeof manipulationAffinities];
+}
+
+/**
+ * Formats archetype-specific tactics for inclusion in prompts
+ * @param archetype - The specific archetype to format
+ * @returns Formatted string of the specific archetype tactics
+ */
+function getArchetypeTacticsText(archetype: Archetype): string {
+  return archetypes[archetype as keyof typeof archetypes];
+}
+
+/**
+ * Formats stability levels for inclusion in prompts
+ * @param stability - The specific stability level to format
+ * @returns Formatted string of the specific stability level
+ */
+function getStabilityLevelsText(stability: StabilityLevel): string {
+  return stabilityLevels[stability as keyof typeof stabilityLevels];
 }
 
 /**
@@ -1220,26 +1238,6 @@ function getArchetypeTacticsText(): string {
 function getEndingArchetypesText(): string {
   return Object.entries(endingTypes)
     .map(([key, value]) => `- ${key}: ${value}`)
-    .join('\n');
-}
-
-/**
- * Formats stability levels for inclusion in prompts
- * @returns Formatted string of all stability levels
- */
-function getStabilityLevelsText(): string {
-  return Object.entries(stabilityLevels)
-    .map(([key, value]) => `• ${key}: ${value}`)
-    .join('\n');
-}
-
-/**
- * Formats manipulation affinities for inclusion in prompts
- * @returns Formatted string of all manipulation affinities
- */
-function getManipulationAffinitiesText(): string {
-  return Object.entries(manipulationAffinities)
-    .map(([key, value]) => `• ${key}: ${value}`)
     .join('\n');
 }
 
@@ -1889,7 +1887,7 @@ ${theme}
 """
 
 HARD RULES (apply to everything below):
-- Write in first-person POV only (MC = narrator).
+- Write in first-person ("I") POV only (MC = narrator).
 - Max ${MAX_WORDS_PER_PAGE} words per page.
 - Detect language from theme input. Default to English if uncertain.
 
@@ -2580,71 +2578,90 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
   // Early return if no actions need generation
   if (pendingActions.length === 0) {
+    console.log(`[ensureCandidatesForPage] ⏩ No actions need generation`);
     return page;
   }
+  
+  console.log(`[ensureCandidatesForPage] ⏳ ${pendingActions.length} actions need candidate page generation`);
 
-  // Track if any actions were actually updated
-  let hasRealChanges = false;
+  // Use distributed lock to prevent concurrent processing of the same page
+  const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
+  const lockResult = await withLock(lockKey, async () => {
+    // Re-check pending actions after acquiring lock (another instance might have processed them)
+    const recheckedPendingActions = page.actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+    if (recheckedPendingActions.length === 0) {
+      console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
+      return page;
+    }
 
-  // For each pending action, create a candidate
-  for (const action of pendingActions) {
-    // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
-    // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
-    const candidatePage = await retryWithBackoffOrNull(
-      () => generateCandidatePage({userId, actionText: action.text, currentPage: page, currentState, currentBook}),
-      {
-        maxRetries: 3,
-        baseDelayMs: 1000,
-        maxDelayMs: 4000,
-        onRetry: (attempt, error) => {
-          console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
-        },
-        // Stop retrying if error looks like a validation error (e.g. Theme validation)
-        shouldRetry: (error) => {
-          try {
-            console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
-            return true;
-          } catch {
-            return true;
+    // Track if any actions were actually updated
+    let hasRealChanges = false;
+
+    // For each pending action, create a candidate
+    for (const action of recheckedPendingActions) {
+      // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
+      const candidatePage = await retryWithBackoffOrNull(
+        () => generateCandidatePage({userId, actionText: action.text, currentPage: page, currentState, currentBook}),
+        {
+          maxRetries: 3,
+          baseDelayMs: 1000,
+          maxDelayMs: 4000,
+          onRetry: (attempt, error) => {
+            console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
+          },
+          // Stop retrying if error looks like a validation error (e.g. Theme validation)
+          shouldRetry: (error) => {
+            try {
+              // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
+              console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
+              return true;
+            } catch {
+              return true;
+            }
           }
         }
-      }
-    );
+      );
 
-    if (candidatePage) {
-      // Success: update action with destination (branchId and pageId)
-      const actionIndex = page.actions.findIndex(a => a === action);
-      if (actionIndex !== -1) {
-        page.actions[actionIndex] = { 
-          ...action, 
-          destination: { 
-            branchId: candidatePage.branchId, 
-            pageId: candidatePage.id 
-          } 
-        };
-        hasRealChanges = true;
+      if (candidatePage) {
+        // Success: update action with destination (branchId and pageId)
+        console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for:`, action.text);
+        const actionIndex = page.actions.findIndex(a => deepEqualSimple(a, action));
+        if (actionIndex !== -1) {
+          page.actions[actionIndex] = { 
+            ...action, 
+            destination: { 
+              branchId: candidatePage.branchId, 
+              pageId: candidatePage.id 
+            } 
+          };
+          hasRealChanges = true;
+        }
+      } else {
+        // Failed after all retries: leave destination undefined (will be filtered out in API response)
+        console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
       }
-    } else {
-      // Failed after all retries: leave destination undefined (will be filtered out in API response)
-      console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
     }
-  }
 
-  // Count actions without destination after processing
-  const pendingAfter = page.actions.filter(action => !action.destination?.pageId).length;
+    // Count actions without destination after processing
+    const pendingAfter = page.actions.filter(action => !action.destination?.pageId).length;
+    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
-  // Update persisted page if actions were modified or pending count changed
-  // This ensures pendingGenerationCount is always accurate even if some actions fail
-  if (hasRealChanges || pendingAfter !== pendingActions.length) {
-    const dbPage = await updateStoryPage(page.id, {
-      ...page,
-      pendingGenerationCount: pendingAfter
-    });
-    return mapToUserStoryPage(dbPage);
-  }
+    // Update persisted page if actions were modified or pending count changed
+    // This ensures pendingGenerationCount is always accurate even if some actions fail
+    if (hasRealChanges || pendingAfter !== recheckedPendingActions.length) {
+      const dbPage = await updateStoryPage(page.id, {
+        ...page,
+        pendingGenerationCount: pendingAfter
+      });
+      return mapToUserStoryPage(dbPage);
+    }
 
-  // Return original page if no changes needed
-  return page;
+    // Return original page if no changes needed
+    return page;
+  }, 300); // 5-minute lock TTL
+
+  // Return the result or original page if lock couldn't be acquired
+  return lockResult ?? page;
 }
 
 // /**

@@ -67,6 +67,7 @@ jobs:
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
+          # AI provider credentials
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}

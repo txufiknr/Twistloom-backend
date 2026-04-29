@@ -754,6 +754,8 @@ export type StoryStateInfo = {
   isMidPhase: boolean;
   /** Whether the story is in the finale phase (last 10%) */
   isFinale: boolean;
+  /** Whether the current page is the last page of the story */
+  isLastPage: boolean;
   /** Current story phase classification */
   phase: StoryPhase;
   /** Goal or objective for the current story phase */

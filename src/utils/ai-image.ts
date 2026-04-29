@@ -207,6 +207,7 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
 
   // Use user-provided model if specified, otherwise use fallback array
   const finalOptions = { ...options, outputDir, filename };
+  console.log(`[geminiGenerateImageImagen] 🧠 Generating image (${models.length} models):`, finalOptions);
 
   const result = await generateImageWithFallback(
     "imagen",
@@ -251,6 +252,7 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
 
   // Throw error if all models failed to trigger fallback in geminiGenerateImage
   if (!result) {
+    console.log(`[geminiGenerateImageImagen] ❌ All Imagen models failed`);
     throw new Error(`All Imagen models failed to generate images`);
   }
 
@@ -292,6 +294,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
 
   // Use user-provided model if specified, otherwise use fallback array
   const finalOptions = { ...options, outputDir, filename };
+  console.log(`[geminiGenerateImageNative] 🧠 Generating image (${models.length} models):`, finalOptions);
 
   const result = await generateImageWithFallback(
     "gemini",
@@ -304,7 +307,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
         // personGeneration = AI_IMAGE_CONFIG.personGeneration,
         aspectRatio = AI_IMAGE_CONFIG.aspectRatio,
         // outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
-        outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
+        // outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
       } = opts;
 
       // Gemini native image models - different API!
@@ -318,7 +321,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
             imageSize,
             // personGeneration,
             // outputMimeType,
-            outputCompressionQuality,
+            // outputCompressionQuality,
           },
         },
       });
@@ -345,6 +348,7 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
 
   // Throw error if all models failed to trigger fallback in geminiGenerateImage
   if (!result) {
+    console.log(`[geminiGenerateImageNative] ❌ All Gemini native models failed`);
     throw new Error(`All Gemini native models failed to generate images`);
   }
 

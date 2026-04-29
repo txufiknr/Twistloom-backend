@@ -4,7 +4,7 @@
  *
  * Hybrid Approach:
  * - Incremental updates: Engagement events (likes, reads, favorites) update trendingScore immediately
- * - Hourly recalc: This job normalizes scores to prevent drift and applies time decay
+ * - Daily recalc: This job normalizes scores to prevent drift and applies time decay
  *
  * Formula:
  * trendingScore = (readCount * 0.5 + likesCount * 0.3 + favoritedCount * 0.2) * timeDecayFactor
@@ -16,14 +16,14 @@
  * - Books created 90+ days ago: 0.2
  *
  * Note: Time decay is based on book age (creation date), not update frequency.
- * Hourly normalization prevents drift from incremental updates, but decay factors
+ * Daily normalization prevents drift from incremental updates, but decay factors
  * remain independent of update frequency for consistent aging behavior.
  *
  * Idempotency:
  * - Safe to run multiple times: recalculates scores based on current data
  * - Uses atomic updates for consistency
  *
- * Should be run hourly via cron job
+ * Should be run daily via cron job (2 AM UTC)
  */
 import { dbWrite } from "../db/client.js";
 import { books, userFavorites } from "../db/schema.js";

@@ -115,7 +115,7 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
       book: currentBook,
     } satisfies StoryProgress;
   } catch (error) {
-    console.error(`Failed to get story progress for user ${userId}:`, getErrorMessage(error));
+    console.error(`[getStoryProgress] ❌ Failed to get story progress for user ${userId}:`, getErrorMessage(error));
     throw new Error(`Unable to retrieve story progress: ${getErrorMessage(error)}`, { cause: error });
   }
 }
@@ -173,7 +173,7 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
     
-    console.log(`Session activated for user ${userId}, book ${bookId}`);
+    console.log(`[setActiveSession] ✅ Session activated for user ${userId}, book ${bookId}`);
     return result[0];
   } catch (error) {
     console.error(`[setActiveSession] ❌ Failed to set active session for:`, {userId, bookId, error: getErrorMessage(error)});
@@ -227,7 +227,7 @@ export async function insertStoryState(
         characters: state.characters,
         places: state.places,
         // pageHistory: state.pageHistory,
-        // actionsHistory: state.actionsHistory,
+        actionsHistory: state.actionsHistory,
         contextHistory: state.contextHistory,
       })
       .onConflictDoUpdate({
@@ -247,7 +247,7 @@ export async function insertStoryState(
           characters: state.characters,
           places: state.places,
           // pageHistory: state.pageHistory,
-          // actionsHistory: state.actionsHistory,
+          actionsHistory: state.actionsHistory,
           contextHistory: state.contextHistory,
           updatedAt: new Date(),
         }
@@ -256,8 +256,8 @@ export async function insertStoryState(
     // Cleanup old story states - keep only the latest MAX_STORY_STATES_PER_PAGE per user/book
     await cleanupStoryStatesWithStrategy(userId, bookId);
   } catch (error) {
-    console.error(`Failed to update story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));
-    throw new Error(`Unable to update story state: ${getErrorMessage(error)}`, { cause: error });
+    console.error(`[insertStoryState] ❌ Failed to insert story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));
+    throw new Error(`Unable to insert story state: ${getErrorMessage(error)}`, { cause: error });
   }
 }
 
@@ -345,12 +345,12 @@ export async function deactivateSession(userId: string, bookId: string) {
       );
     
     if (result.rowCount === 0) {
-      console.warn(`No active session found for user ${userId}, book ${bookId}`);
+      console.warn(`[deactivateSession] ⏩ No active session found for user ${userId}, book ${bookId}`);
     } else {
-      console.log(`Session deactivated for user ${userId}, book ${bookId}`);
+      console.log(`[deactivateSession] ✅ Session deactivated for user ${userId}, book ${bookId}`);
     }
   } catch (error) {
-    console.error(`Failed to deactivate session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
+    console.error(`[deactivateSession] ❌ Failed to deactivate session for user ${userId}, book ${bookId}:`, getErrorMessage(error));
     throw new Error(`Unable to deactivate session: ${getErrorMessage(error)}`, { cause: error });
   }
 }
@@ -420,7 +420,7 @@ export async function getStoryState(
     // Fall back to deleted state cache
     const cachedState = getDeletedState(userId, pageId);
     if (cachedState) {
-      console.log(`[getStoryState] Retrieved from deleted cache for user ${userId}, page ${pageId}`);
+      console.log(`[getStoryState] 🍪 Retrieved from deleted cache for user ${userId}, page ${pageId}`);
       return cachedState;
     }
 

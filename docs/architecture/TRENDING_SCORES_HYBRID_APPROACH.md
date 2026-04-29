@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the hybrid approach for calculating and maintaining trending scores for books. The system combines incremental updates on engagement events with hourly batch normalization to provide near real-time trending while maintaining accuracy.
+This document describes the hybrid approach for calculating and maintaining trending scores for books. The system combines incremental updates on engagement events with daily batch normalization to provide near real-time trending while maintaining accuracy.
 
 ## Architecture
 
@@ -15,7 +15,7 @@ The trending score system uses a two-tier approach:
    - Lightweight, fast operations
    - Provides near real-time feedback
 
-2. **Hourly Batch Recalculation (Normalization)**
+2. **Daily Batch Recalculation (Normalization)**
    - Recalculates scores based on current engagement metrics
    - Applies time decay to older content
    - Prevents score drift from incremental updates
@@ -93,7 +93,7 @@ await dbWrite
   .where(eq(books.id, id));
 ```
 
-## Hourly Batch Recalculation
+## Daily Batch Recalculation
 
 ### Purpose
 
@@ -120,7 +120,7 @@ trendingScore = (readCount * 0.5 + likesCount * 0.3 + favoritedCount * 0.2) * ti
 ### Implementation
 
 **Location:** `src/cron/update-trending-scores.ts`
-**Schedule:** Every hour via GitHub Actions
+**Schedule:** Daily at 2 AM UTC via GitHub Actions
 **Process:**
 1. Query all active books with engagement metrics
 2. Calculate scores using formula with time decay
@@ -162,19 +162,19 @@ export async function invalidateExploreCache(): Promise<boolean> {
 ### Performance
 - Incremental updates are O(1) operations
 - No expensive COUNT queries on engagement events
-- Hourly batch processes all books efficiently
+- Daily batch processes all books efficiently
 - Caching reduces database load
 
 ### Freshness
 - Near real-time trending (immediate incremental updates)
 - Users see impact of their engagement immediately
-- Hourly normalization ensures accuracy
+- Daily normalization ensures accuracy
 
 ### Cost Efficiency
 - Reduced database queries (no COUNT on every engagement)
 - Efficient batch processing
 - Lower API costs with caching
-- Reduced GitHub Actions runs (hourly vs daily)
+- Reduced GitHub Actions runs (daily vs hourly)
 
 ### Industry Alignment
 - Follows industry standards (YouTube, Reddit, Twitter)
@@ -196,7 +196,7 @@ pnpm db:migrate   # Apply migration
 ### Deployment
 1. Deploy code changes
 2. Run database migration
-3. GitHub Actions workflow will automatically switch to hourly schedule
+3. GitHub Actions workflow will automatically switch to daily schedule (2 AM UTC)
 
 ## Monitoring
 
@@ -438,7 +438,7 @@ export async function POST(request: NextRequest) {
 ## Future Enhancements
 
 Potential improvements:
-1. **Real-time normalization**: Event-driven normalization instead of hourly
+1. **Real-time normalization**: Event-driven normalization instead of daily
 2. **Personalized trending**: User-specific trending based on preferences
 3. **Category-specific trending**: Trending within tags/genres
 4. **Velocity-based scoring**: Rate of change in engagement

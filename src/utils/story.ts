@@ -320,66 +320,182 @@ export function updateStoryState(
 }
 
 /**
- * Updates psychological flags based on action type and current state
+ * Updates psychological flags using multi-factor analysis
  * 
- * Uses ActionType enum instead of string matching for more reliable
- * flag updates. Considers current flag levels to prevent unnecessary changes.
+ * Uses sophisticated scoring system considering action type, story progress,
+ * current psychological state, trauma accumulation, and hidden state.
+ * Implements hysteresis to prevent flag oscillation and ensures gradual
+ * progression that reflects the MC's deteriorating mental state.
+ * 
+ * PSYCHOLOGICAL PROGRESSION:
+ * As pages increase: MC becomes less reliable, flags become more volatile,
+ * trust erodes, fear intensifies, guilt accumulates, curiosity warps.
  * 
  * @param state - Current story state
  * @param action - User action with type classification
  */
 function updateFlags(state: StoryState, action?: Action): void {
   if (!action) return;
+
+  const pageProgress = state.page / state.maxPage;
+  const traumaCount = state.traumaTags.length;
+  const isLatePhase = pageProgress > 0.7;
+  const isEarlyPhase = pageProgress < 0.3;
+  const difficultyModifier = state.difficulty === 'nightmare' ? 0.2 : 0;
+
+  // ========================
+  // TRUST FLAG CALCULATION
+  // ========================
+  let trustScore = getFlagScore(state.flags.trust);
   
+  // Base action influence
   switch (action.type) {
-    case "explore":
-      // Exploration increases curiosity and potentially fear
-      if (state.flags.curiosity !== "high") {
-        state.flags.curiosity = state.flags.curiosity === "low" ? "medium" : "high";
-      }
-      // Exploration in high fear increases fear further
-      if (state.flags.fear === "high") {
-        state.flags.trust = "low";
-      }
-      break;
+    case "social": trustScore += 0.3; break;      // Social builds trust
+    case "explore": trustScore += 0.1; break;    // Exploration builds some trust
+    case "risk": trustScore -= 0.4; break;       // Risky actions damage trust
+    case "escape": trustScore -= 0.3; break;     // Escape shows distrust
+    case "ignore": trustScore -= 0.2; break;     // Ignoring erodes trust
+  }
 
-    case "escape":
-      // Escape actions increase fear and decrease trust
-      state.flags.fear = "high";
-      state.flags.trust = "low";
-      // High fear may fragment memory
-      if (state.memoryIntegrity === "stable") {
-        state.memoryIntegrity = "fragmented";
-      }
-      break;
+  // Context modifiers
+  if (state.hiddenState.truthLevel === 'mostly_false') trustScore -= 0.3;
+  if (state.flags.fear === 'high') trustScore -= 0.2;
+  if (traumaCount > 5) trustScore -= 0.1;
+  if (isLatePhase) trustScore -= 0.15; // Trust erodes faster in late phase
+  trustScore -= difficultyModifier;
 
-    case "social":
-      // Social actions can affect trust based on current levels
-      if (state.flags.trust === "low") {
-        // Low trust + social = potential betrayal setup
-        state.flags.guilt = "medium";
-      } else {
-        // High trust + social = temporary relief
-        state.flags.fear = state.flags.fear === "high" ? "medium" : "low";
-      }
-      break;
+  // Apply hysteresis and update
+  state.flags.trust = updateFlagWithHysteresis(state.flags.trust, trustScore, 0.15);
 
-    case "risk":
-      // Risky actions increase all negative states
-      state.flags.fear = "high";
-      state.flags.guilt = state.flags.guilt === "low" ? "medium" : "high";
-      state.flags.trust = "low";
-      // Risk actions accelerate curiosity
-      state.flags.curiosity = "high";
-      break;
+  // ========================
+  // FEAR FLAG CALCULATION
+  // ========================
+  let fearScore = getFlagScore(state.flags.fear);
+  
+  // Base action influence
+  switch (action.type) {
+    case "escape": fearScore += 0.4; break;       // Escape increases fear
+    case "risk": fearScore += 0.3; break;         // Risk increases fear
+    case "explore": fearScore += 0.2; break;      // Exploration can be scary
+    case "ignore": fearScore += 0.1; break;      // Ignoring creates fear
+    case "social": fearScore -= 0.1; break;      // Social reduces fear slightly
+  }
 
-    case "ignore":
-      // Ignoring can increase guilt and curiosity
-      if (state.flags.guilt !== "high") {
-        state.flags.guilt = state.flags.guilt === "low" ? "medium" : "high";
-      }
-      state.flags.curiosity = "high";
-      break;
+  // Context modifiers
+  if (state.hiddenState.threatProximity === 'immediate') fearScore += 0.4;
+  if (state.hiddenState.threatProximity === 'near') fearScore += 0.2;
+  if (state.hiddenState.realityStability === 'broken') fearScore += 0.3;
+  if (state.memoryIntegrity === 'corrupted') fearScore += 0.2;
+  if (isLatePhase) fearScore += 0.2; // Fear intensifies in late phase
+  fearScore += difficultyModifier;
+
+  // Apply hysteresis and update
+  state.flags.fear = updateFlagWithHysteresis(state.flags.fear, fearScore, 0.1);
+
+  // ========================
+  // GUILT FLAG CALCULATION
+  // ========================
+  let guiltScore = getFlagScore(state.flags.guilt);
+  
+  // Base action influence
+  switch (action.type) {
+    case "social": guiltScore += 0.2; break;      // Social interactions create guilt
+    case "risk": guiltScore += 0.3; break;       // Risky actions create guilt
+    case "ignore": guiltScore += 0.3; break;      // Ignoring creates guilt
+    case "escape": guiltScore += 0.1; break;      // Escape can create guilt
+    case "explore": guiltScore -= 0.1; break;     // Exploration reduces guilt
+  }
+
+  // Context modifiers
+  if (state.flags.trust === 'low') guiltScore += 0.2;
+  if (state.flags.fear === 'high') guiltScore += 0.1;
+  if (traumaCount > 3) guiltScore += 0.1;
+  if (!isEarlyPhase) guiltScore += 0.1; // Guilt accumulates after early phase
+  guiltScore += difficultyModifier * 0.5;
+
+  // Apply hysteresis and update
+  state.flags.guilt = updateFlagWithHysteresis(state.flags.guilt, guiltScore, 0.12);
+
+  // ========================
+  // CURIOSITY FLAG CALCULATION
+  // ========================
+  let curiosityScore = getFlagScore(state.flags.curiosity);
+  
+  // Base action influence
+  switch (action.type) {
+    case "explore": curiosityScore += 0.4; break;  // Exploration drives curiosity
+    case "risk": curiosityScore += 0.3; break;    // Risk requires curiosity
+    case "social": curiosityScore += 0.1; break;   // Social creates curiosity
+    case "ignore": curiosityScore += 0.2; break;   // Ignoring increases curiosity
+    case "escape": curiosityScore -= 0.2; break;   // Escape reduces curiosity
+  }
+
+  // Context modifiers
+  if (state.flags.trust === 'high') curiosityScore += 0.1;
+  if (state.flags.fear === 'high') curiosityScore += 0.2; // Fear drives curiosity
+  if (state.threads.length > 2) curiosityScore += 0.1; // Active threads boost curiosity
+  if (isLatePhase) curiosityScore -= 0.15; // Curiosity diminishes in late phase
+  if (isEarlyPhase) curiosityScore += 0.2; // Curiosity high in early phase
+
+  // Apply hysteresis and update
+  state.flags.curiosity = updateFlagWithHysteresis(state.flags.curiosity, curiosityScore, 0.1);
+}
+
+/**
+ * Converts flag level to numeric score for calculations
+ * 
+ * @param flag - Flag level (low/medium/high)
+ * @returns Numeric score (0.0-1.0)
+ */
+function getFlagScore(flag: 'low' | 'medium' | 'high'): number {
+  switch (flag) {
+    case 'low': return 0.0;
+    case 'medium': return 0.5;
+    case 'high': return 1.0;
+  }
+}
+
+/**
+ * Updates flag level with hysteresis to prevent oscillation
+ * 
+ * Uses different thresholds for increasing vs decreasing to create
+ * stability and prevent rapid flag changes between pages.
+ * 
+ * @param currentLevel - Current flag level
+ * @param newScore - Calculated new score (0.0-1.0)
+ * @param hysteresis - Hysteresis factor (0.0-0.3, higher = more stability)
+ * @returns Updated flag level
+ */
+function updateFlagWithHysteresis(
+  currentLevel: 'low' | 'medium' | 'high',
+  newScore: number,
+  hysteresis: number
+): 'low' | 'medium' | 'high' {
+  // Apply hysteresis thresholds
+  const thresholds = {
+    // Increasing thresholds (higher score needed to level up)
+    toMedium: 0.5 + hysteresis,
+    toHigh: 0.85 + hysteresis,
+    // Decreasing thresholds (lower score needed to level down)
+    toLow: 0.25 - hysteresis,
+    toMediumDown: 0.6 - hysteresis,
+  };
+
+  switch (currentLevel) {
+    case 'low':
+      if (newScore >= thresholds.toHigh) return 'high';
+      if (newScore >= thresholds.toMedium) return 'medium';
+      return 'low';
+    
+    case 'medium':
+      if (newScore >= thresholds.toHigh) return 'high';
+      if (newScore <= thresholds.toLow) return 'low';
+      return 'medium';
+    
+    case 'high':
+      if (newScore <= thresholds.toLow) return 'low';
+      if (newScore <= thresholds.toMediumDown) return 'medium';
+      return 'high';
   }
 }
 
@@ -577,6 +693,9 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
  * Escalates threat proximity, reality stability, memory integrity,
  * and difficulty based on page progression and current state.
  * Uses multi-factor analysis to determine all state properties dynamically.
+ * 
+ * PSYCHOLOGICAL PROGRESSION:
+ * As pages increase: MC becomes less reliable, perception more distorted, reality less stable
  * 
  * @param state - Current story state to update
  */
@@ -1324,6 +1443,7 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
   const isLatePhase = pageProgress >= 0.70;
   const isMidPhase = !isEarlyPhase && !isLatePhase;
   const isFinale = pageProgress >= 0.90;
+  const isLastPage = currentPage === totalPages;
   const phase: StoryPhase = isFinale ? 'FINALE' : isLatePhase ? 'LATE' : isMidPhase ? 'MID' : 'EARLY';
   const phaseGoal = storyPhases[phase];
 
@@ -1346,6 +1466,7 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
     isLatePhase,
     isMidPhase,
     isFinale,
+    isLastPage,
     phase,
     phaseGoal,
     finalePhase,

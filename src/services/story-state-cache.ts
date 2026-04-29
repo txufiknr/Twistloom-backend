@@ -106,7 +106,7 @@ export function getDeletedState(userId: string, pageId: string): StoryState | nu
   }
   
   cacheHits++;
-  console.log(`[DeletedStateCache] \ud83c\udfaf Cache hit for ${key} (age: ${Date.now() - entry.deletedAt}ms)`);
+  console.log(`[DeletedStateCache] 🍪 Cache hit for ${key} (age: ${Date.now() - entry.deletedAt}ms)`);
   return entry.state;
 }
 
@@ -122,7 +122,7 @@ export function setDeletedState(userId: string, pageId: string, state: StoryStat
   };
   
   deletedStateCache.set(key, entry);
-  console.log(`[DeletedStateCache] \ud83d\udcbe Cached deleted state for ${key} (TTL: ${DELETED_STATE_CACHE_TTL}ms)`);
+  console.log(`[DeletedStateCache] 🍪 Cached deleted state for ${key} (TTL: ${DELETED_STATE_CACHE_TTL}ms)`);
 }
 
 /**
@@ -156,7 +156,7 @@ export function getDeletedStateCacheStats(): {
  */
 export function clearDeletedStateCache(): void {
   deletedStateCache.clear();
-  console.log(`[DeletedStateCache] \ud83e\uddf9 Cache cleared`);
+  console.log(`[DeletedStateCache] ✨ Cache cleared`);
 }
 
 /**
@@ -165,5 +165,5 @@ export function clearDeletedStateCache(): void {
 export function resetDeletedStateCacheStats(): void {
   cacheHits = 0;
   cacheMisses = 0;
-  console.log(`[DeletedStateCache] \ud83d\udcca Statistics reset`);
+  console.log(`[DeletedStateCache] 📊 Statistics reset`);
 }
