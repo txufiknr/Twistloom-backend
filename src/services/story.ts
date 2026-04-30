@@ -461,6 +461,7 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     contextHistory: dbStoryState.contextHistory || "",
     viableEnding: dbStoryState.viableEnding || undefined,
     isMajorEvent: dbStoryState.isMajorEvent || false,
+    injuries: dbStoryState.injuries || [],
   };
 }
 

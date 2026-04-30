@@ -27,10 +27,11 @@ import * as fs from "fs";
 import * as path from "path";
 import { getGeminiClient } from "./ai-clients.js";
 import { getGeminiLimiter } from "./ai-limiters.js";
-import { AI_IMAGE_CONFIG, AI_IMAGE_MODEL_GEMINI, AI_IMAGE_MODEL_IMAGEN, AI_IMAGE_OUTPUT_DIR } from "../config/ai-images.js";
+import { AI_IMAGE_CONFIG, AI_IMAGE_MODEL_GEMINI, AI_IMAGE_MODEL_IMAGEN } from "../config/ai-images.js";
 import type { AIImageGenerationOptions, AIImageData, AIImageResult } from "../types/ai-images.js";
 import { getErrorMessage } from "./error.js";
 import { sanitizeFilename } from "./formatter.js";
+import { cleanupObject } from "./parser.js";
 
 /**
  * Base function for AI image generation with model fallback
@@ -232,14 +233,10 @@ function processAndSaveImages(
  * @see https://ai.google.dev/gemini-api/docs/models/imagen
  */
 export async function geminiGenerateImageImagen(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<AIImageResult> {
-  const {
-    models = AI_IMAGE_MODEL_IMAGEN,
-    outputDir = AI_IMAGE_OUTPUT_DIR,
-    filename,
-  } = options;
+  const { models = AI_IMAGE_MODEL_IMAGEN } = options;
 
   // Use user-provided model if specified, otherwise use fallback array
-  const finalOptions = { ...options, outputDir, filename };
+  const finalOptions: AIImageGenerationOptions = cleanupObject({ ...options, models });
   console.log(`[geminiGenerateImageImagen] 🧠 Generating image (${models.length} models):`, finalOptions);
 
   const result = await generateImageWithFallback(
@@ -251,9 +248,9 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
       const {
         numberOfImages = AI_IMAGE_CONFIG.numberOfImages,
         aspectRatio = AI_IMAGE_CONFIG.aspectRatio,
-        imageSize = AI_IMAGE_CONFIG.imageSize,
         outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
         outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
+        // imageSize = AI_IMAGE_CONFIG.imageSize,
         // enhancePrompt = AI_IMAGE_CONFIG.enhancePrompt,
       } = opts;
 
@@ -265,9 +262,9 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
         config: {
           numberOfImages,
           aspectRatio,
-          // imageSize - Not supported by Imagen models
           outputMimeType,
           outputCompressionQuality,
+          // imageSize - Not supported by Imagen models
           // enhancePrompt,
         },
       });
@@ -320,14 +317,10 @@ export async function geminiGenerateImageImagen(prompt: string, options: AIImage
  * @see https://ai.google.dev/gemini-api/docs/models/gemini
  */
 export async function geminiGenerateImageNative(prompt: string, options: AIImageGenerationOptions = AI_IMAGE_CONFIG): Promise<AIImageResult> {
-  const {
-    models = AI_IMAGE_MODEL_GEMINI,
-    outputDir = AI_IMAGE_OUTPUT_DIR,
-    filename,
-  } = options;
+  const { models = AI_IMAGE_MODEL_GEMINI } = options;
 
   // Use user-provided model if specified, otherwise use fallback array
-  const finalOptions = { ...options, outputDir, filename };
+  const finalOptions: AIImageGenerationOptions = cleanupObject({ ...options, models });
   console.log(`[geminiGenerateImageNative] 🧠 Generating image (${models.length} models):`, finalOptions);
 
   const result = await generateImageWithFallback(
@@ -337,9 +330,9 @@ export async function geminiGenerateImageNative(prompt: string, options: AIImage
     finalOptions,
     async (model, prompt, opts) => {
       const {
+        aspectRatio = AI_IMAGE_CONFIG.aspectRatio,
         imageSize = AI_IMAGE_CONFIG.imageSize,
         // personGeneration = AI_IMAGE_CONFIG.personGeneration,
-        aspectRatio = AI_IMAGE_CONFIG.aspectRatio,
         // outputMimeType = AI_IMAGE_CONFIG.outputMimeType,
         // outputCompressionQuality = AI_IMAGE_CONFIG.outputCompressionQuality,
       } = opts;

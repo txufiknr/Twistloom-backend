@@ -129,7 +129,8 @@ export type PlaceMemory = {
  * When AI modifies existing places, it provides updates in this format
  * to maintain place development and narrative consistency.
  */
-export type PlaceUpdate = Omit<PlaceMemory, 'type' | 'locationHint'>;
+// export type PlaceUpdate = Omit<PlaceMemory, 'type' | 'locationHint'>;
+export type PlaceUpdate = Partial<PlaceMemory>;
 
 /**
  * Place creation structure for AI output
@@ -142,7 +143,8 @@ export type PlaceUpdate = Omit<PlaceMemory, 'type' | 'locationHint'>;
  * - Initial lastVisitedAtPage (always current page)
  * - Initial moodHistory (starts with current mood)
  */
-export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'moodHistory'>;
+// export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'moodHistory'>;
+export type NewPlace = PlaceMemory;
 
 /**
  * Complete place updates structure for AI JSON output
@@ -152,7 +154,7 @@ export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'm
  */
 export type PlaceUpdates = {
   /** New places introduced in this page */
-  newPlaces: NewPlace[];
+  newPlaces?: NewPlace[];
   /** Updates to existing places */
-  updatedPlaces: PlaceUpdate[];
+  updatedPlaces?: PlaceUpdate[];
 };

@@ -375,26 +375,26 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
       .orderBy(storyStates.page);
 
     if (allStates.length === 0) {
-      console.log(`[cleanupOldStoryStates] ℹ️ No states to cleanup for user ${userId}, book ${bookId}`);
+      console.log(`[cleanupStoryStatesWithStrategy] ℹ️ No states to cleanup for user ${userId}, book ${bookId}`);
       return;
     }
     const pagesToKeep = new Set<string>();
     
     // 1. Always keep first page
     pagesToKeep.add(allStates[0].pageId);
-    console.log(`[cleanupOldStoryStates] 📍 Keeping first page: ${allStates[0].pageId} (page ${allStates[0].page})`);
+    console.log(`[cleanupStoryStatesWithStrategy] 📍 Keeping first page: ${allStates[0].pageId} (page ${allStates[0].page})`);
     
     // 2. Always keep last page (current)
     const lastState = allStates[allStates.length - 1];
     pagesToKeep.add(lastState.pageId);
-    console.log(`[cleanupOldStoryStates] 📍 Keeping last page: ${lastState.pageId} (page ${lastState.page})`);
+    console.log(`[cleanupStoryStatesWithStrategy] 📍 Keeping last page: ${lastState.pageId} (page ${lastState.page})`);
     
     // 3. Keep middle page for substantial books
     if (totalPages >= MIN_PAGES_FOR_MIDDLE) {
       const middleIndex = Math.floor(allStates.length / 2);
       const middleState = allStates[middleIndex];
       pagesToKeep.add(middleState.pageId);
-      console.log(`[cleanupOldStoryStates] 📍 Keeping middle page: ${middleState.pageId} (page ${middleState.page})`);
+      console.log(`[cleanupStoryStatesWithStrategy] 📍 Keeping middle page: ${middleState.pageId} (page ${middleState.page})`);
     }
     
     // 4. Keep interval snapshots
@@ -402,20 +402,20 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
     for (const state of intervalStates) {
       pagesToKeep.add(state.pageId);
     }
-    console.log(`[cleanupOldStoryStates] 📍 Keeping ${intervalStates.length} interval snapshots (every ${SNAPSHOT_INTERVAL} pages)`);
+    console.log(`[cleanupStoryStatesWithStrategy] 📍 Keeping ${intervalStates.length} interval snapshots (every ${SNAPSHOT_INTERVAL} pages)`);
     
     // 5. Identify states to delete
     const statesToDelete = allStates.filter(state => !pagesToKeep.has(state.pageId));
     
     if (statesToDelete.length > 0) {
-      console.log(`[cleanupOldStoryStates] 🗑️ Preparing to delete ${statesToDelete.length} states, keeping ${pagesToKeep.size} states`);
+      console.log(`[cleanupStoryStatesWithStrategy] 🗑️ Preparing to delete ${statesToDelete.length} states, keeping ${pagesToKeep.size} states`);
       
       for (const stateToDelete of statesToDelete) {
         // Cache the state before deletion for safety net
         const fullState = await getStoryState(userId, stateToDelete.pageId);
         if (fullState) {
           setDeletedState(userId, stateToDelete.pageId, fullState);
-          console.log(`[cleanupOldStoryStates] 💾 Cached state before deletion for user ${userId}, page ${stateToDelete.pageId} (page ${stateToDelete.page})`);
+          console.log(`[cleanupStoryStatesWithStrategy] 💾 Cached state before deletion for user ${userId}, page ${stateToDelete.pageId} (page ${stateToDelete.page})`);
         }
         
         await dbWrite
@@ -427,14 +427,14 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
           ));
       }
       
-      console.log(`[cleanupOldStoryStates] ✨ Strategic cleanup complete: ${statesToDelete.length} deleted, ${pagesToKeep.size} kept for user ${userId}, book ${bookId}`);
+      console.log(`[cleanupStoryStatesWithStrategy] ✨ Strategic cleanup complete: ${statesToDelete.length} deleted, ${pagesToKeep.size} kept for user ${userId}, book ${bookId}`);
     } else {
-      console.log(`[cleanupOldStoryStates] ✅ No cleanup needed: all ${pagesToKeep.size} states are strategic checkpoints`);
+      console.log(`[cleanupStoryStatesWithStrategy] ✅ No cleanup needed: all ${pagesToKeep.size} states are strategic checkpoints`);
     }
     
     // Log performance metrics
     const keepRatio = (pagesToKeep.size / allStates.length * 100).toFixed(1);
-    console.log(`[cleanupOldStoryStates] 📊 Storage efficiency: ${keepRatio}% of states retained (${pagesToKeep.size}/${allStates.length})`);
+    console.log(`[cleanupStoryStatesWithStrategy] 📊 Storage efficiency: ${keepRatio}% of states retained (${pagesToKeep.size}/${allStates.length})`);
     
   } catch (error) {
     console.error(`Failed to cleanup story states for user ${userId}, book ${bookId}:`, getErrorMessage(error));

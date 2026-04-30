@@ -70,6 +70,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
     updatedAt: books.updatedAt,
     mc: books.mc,
     // Author info
+    // TODO: if isOriginal, then use APP_NAME (Twistloom) as name
     author: {
       id: users.userId,
       email: users.email,

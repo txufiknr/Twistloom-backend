@@ -13,12 +13,11 @@ import type {
   MemoryIntegrity,
   Difficulty,
   Action,
-  ActionedStoryPage,
   StateDelta,
   Ending,
   ActionHistory,
 } from "../types/story.js";
-import type { CharacterMemory } from "../types/character.js";
+import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
 import { BOOK_AVERAGE_PAGES } from "../config/story.js";
@@ -110,16 +109,22 @@ export const pages = pgTable(
  *   "book_id": "book456",
  *   "page": 5,
  *   "max_page": 20,
- *   "actions_history": ["investigate noise", "run away", "call for help"],
  *   "flags": {...},
  *   "trauma_tags": [...],
+ *   "plot_flags": [...],
+ *   "inventory": [...],
  *   "psychological_profile": {...},
  *   "hidden_state": {...},
  *   "memory_integrity": "fragmented",
  *   "difficulty": "medium",
- *   "cached_ending_archetype": "false_reality",
- *   "page_history": [...],
+ *   "viable_ending": {...},
+ *   "characters": {...},
+ *   "places": {...},
+ *   "actions_history": [...],
  *   "context_history": "...",
+ *   "is_major_event": false,
+ *   "threads": [...],
+ *   "injuries": [...],
  *   "created_at": "2023-01-01T00:00:00.000Z"
  * }
  */
@@ -132,10 +137,9 @@ export const storyStates = pgTable(
     page: integer("page").notNull(),
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
-    threads: jsonb("threads").$type<StoryThread[]>().notNull().default(sql`'[]'::jsonb`), // Known threads
     traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
-    plotFlags: jsonb("plot_flags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
-    inventory: jsonb("inventory").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    plotFlags: jsonb("plot_flags").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Narrative flags and hints
+    inventory: jsonb("inventory").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Items and resources
     psychologicalProfile: jsonb("psychological_profile").$type<PsychologicalProfile>().notNull(), // PsychologicalProfile structure
     hiddenState: jsonb("hidden_state").$type<HiddenState>().notNull(), // Hidden narrative state structure
     memoryIntegrity: text("memory_integrity").$type<MemoryIntegrity>().notNull().default("stable"), // "stable" | "fragmented" | "corrupted"
@@ -143,8 +147,9 @@ export const storyStates = pgTable(
     viableEnding: jsonb("viable_ending").$type<Ending>(),
     characters: jsonb("characters").$type<Record<string, CharacterMemory>>().notNull().default(sql`'{}'::jsonb`), // Character records
     places: jsonb("places").$type<Record<string, PlaceMemory>>().notNull().default(sql`'{}'::jsonb`), // Place records
-    pageHistory: jsonb("page_history").$type<ActionedStoryPage[]>().notNull().default(sql`'[]'::jsonb`), // Page history with sliding window
+    threads: jsonb("threads").$type<StoryThread[]>().notNull().default(sql`'[]'::jsonb`), // Ongoing narrative threads
     actionsHistory: jsonb("actions_history").$type<ActionHistory[]>().notNull().default(sql`'[]'::jsonb`), // History of user actions
+    injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     isMajorEvent: boolean("is_major_event").notNull().default(false),
     createdAt,

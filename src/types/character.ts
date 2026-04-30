@@ -1,14 +1,14 @@
 import type { Gender, KnownGender } from "./user.js";
 
-export const injurySeverities = [
-  "mild",
-  "moderate", 
-  "severe",
-  "critical",
-  "none"
-] as const;
+// export const injurySeverities = [
+//   "mild",
+//   "moderate", 
+//   "severe",
+//   "critical",
+//   "none"
+// ] as const;
 
-export type InjurySeverity = typeof injurySeverities[number];
+// export type InjurySeverity = typeof injurySeverities[number];
 
 /**
  * Main character profile for psychological thriller stories
@@ -117,7 +117,7 @@ export type RelationshipUpdate = {
 export const characterStatuses = [
   ...relationshipStatuses,
   "missing",     // Disappeared, absent from story
-  "injured",
+  "injured",     // 
   "dead"         // Deceased, may appear in memories/ghosts
 ] as const;
 
@@ -133,11 +133,11 @@ export type CharacterStatus = typeof characterStatuses[number];
  * occur involving this character, enabling narrative planning.
  */
 export const potentialTwistTypes = [
-  "betrayal",     // Character betrays MC or others
+  "betrayal",      // Character betrays MC or others
   "identity",      // Character is not who they appear to be
   "disappearance", // Character vanishes mysteriously
-  "possession",   // Character is possessed or controlled
-  "none"          // No planned twist
+  "possession",    // Character is possessed or controlled
+  "none"           // No planned twist
 ] as const;
 
 /**
@@ -158,8 +158,6 @@ export type NarrativeFlags = {
   isMissing: boolean;
   /** Whether character is deceased */
   isDead: boolean;
-  /** Whether character has injury */
-  hasInjury: InjurySeverity;
   /** Whether character holds a secret that could be revealed */
   hasSecret: boolean;
   /** Potential twist type for this character */
@@ -189,12 +187,15 @@ export type CharacterMemory = {
   relationshipToMC: string;
   /** Directional relationships to other characters (max 3) */
   relationships: CharacterRelationship[];
+  // TODO: combine pastInteractions and lastInteractionAtPage
   /** Recent important interactions (max 5, sliding window) */
   pastInteractions: string[];
   /** Last page where character appeared */
   lastInteractionAtPage: number;
   /** Narrative control flags for plot development */
   narrativeFlags: NarrativeFlags;
+  /** Whether character has injury */
+  injuries: Injury[];
 };
 
 /**
@@ -205,7 +206,8 @@ export type CharacterMemory = {
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Pick<CharacterMemory, 'name' | 'gender' | 'status' | 'pastInteractions' | 'lastInteractionAtPage' | 'narrativeFlags'>;
+// export type CharacterUpdate = Pick<CharacterMemory, 'name' | 'gender' | 'status' | 'pastInteractions' | 'lastInteractionAtPage' | 'narrativeFlags'>;
+export type CharacterUpdate = Partial<CharacterMemory>;
 
 /**
  * Complete character updates structure for AI JSON output
@@ -220,7 +222,16 @@ export type CharacterUpdates = {
   updatedCharacters?: CharacterUpdate[];
 };
 
-export type TagUpdates = {
-  add: string[];
-  remove: string[];
-}
+/** Represents an injury sustained by a character */
+export type Injury = {
+  /** The body part that was injured */
+  bodyPart?: string;
+  /** Description of the injury */
+  description?: string;
+  /** The page number where the injury was acquired */
+  pageAcquired?: number;
+  /** Severity level of the injury (0.0-1.0), decays overtime */
+  severity?: number;
+  /** Severity decay rate per page (0.0-1.0) */
+  decayPerPage?: number;
+};

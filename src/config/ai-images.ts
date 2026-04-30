@@ -5,9 +5,6 @@
 // import { PersonGeneration } from "@google/genai";
 import type { AIImageGenerationOptions } from "../types/ai-images.js";
 
-/** Default output directory for generated images */
-export const AI_IMAGE_OUTPUT_DIR: string = "./generated-images";
-
 /** Default image generation model (by priority)
  * @see https://ai.google.dev/gemini-api/docs/models/imagen
  */

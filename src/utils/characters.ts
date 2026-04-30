@@ -1,5 +1,6 @@
+import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, NarrativeFlags, RelationshipUpdate, StoryMC, StoryMCCandidate } from "../types/character.js";
+import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, NarrativeFlags, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { Gender, KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -53,6 +54,7 @@ export function createCharacter(
       hasSecret: narrativeFlags.hasSecret || status === "suspicious" || status === "hostile",
       potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
     },
+    injuries: [],
   };
 }
 
@@ -79,9 +81,17 @@ export function createCharacter(
 export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate): CharacterMemory {
   const updated = { ...existing };
   
-  // Update status if provided
-  if (update.status) {
-    updated.status = update.status;
+  // Update basic properties if provided
+  if (update.name) updated.name = update.name;
+  if (update.gender) updated.gender = update.gender;
+  if (update.role) updated.role = update.role;
+  if (update.bio) updated.bio = update.bio;
+  if (update.status) updated.status = update.status;
+  if (update.relationshipToMC) updated.relationshipToMC = update.relationshipToMC;
+  
+  // Merge relationships (replace entire array if provided)
+  if (update.relationships) {
+    updated.relationships = update.relationships;
   }
   
   // Merge past interactions with sliding window
@@ -103,6 +113,11 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
       ...existing.narrativeFlags,
       ...update.narrativeFlags
     };
+  }
+  
+  // Merge injuries (replace entire array if provided)
+  if (update.injuries) {
+    updated.injuries = update.injuries;
   }
   
   return updated;
@@ -185,6 +200,7 @@ export function processCharacterUpdates(
   
   // Update existing characters
   for (const update of updatedCharacters) {
+    if (!update.name) continue;
     const existing = state.characters[update.name];
     if (existing) {
       state.characters[update.name] = updateCharacter(existing, update);
@@ -233,48 +249,60 @@ export function formatCharactersForPrompt(characters: Record<string, CharacterMe
 
   return allCharacters
     .map(character => {
-      const details = [];
-      
       // Basic character information
       const statusFlags = [];
       if (character.narrativeFlags.isSuspicious) statusFlags.push('suspicious');
       if (character.narrativeFlags.isMissing) statusFlags.push('missing');
       if (character.narrativeFlags.isDead) statusFlags.push('dead');
       if (character.narrativeFlags.hasSecret) statusFlags.push('secret');
-      if (character.narrativeFlags.hasInjury && character.narrativeFlags.hasInjury !== 'none') {
-        statusFlags.push(`injured: ${character.narrativeFlags.hasInjury}`);
-      }
       
       const flagString = statusFlags.length > 0 ? ` [${statusFlags.join(', ')}]` : '';
       const mainInfo = `· ${character.name} (${character.role}) - ${character.gender}, ${character.status} - last seen: page ${character.lastInteractionAtPage}${flagString}`;
       
-      // Bio and relationship
+      const details = [];
+      
+      // Basic information
       details.push(`  Bio: ${character.bio}`);
       details.push(`  Relationship to MC: ${character.relationshipToMC}`);
       
-      // Recent interactions with context
+      // Recent interactions with nested bullets
       if (character.pastInteractions.length > 0) {
         const recentInteractions = character.pastInteractions.slice(-MAX_PAST_INTERACTIONS);
-        details.push(`  Recent interactions: ${recentInteractions.join(', ')}`);
+        details.push(`  Recent interactions:`);
+        recentInteractions.forEach((interaction) => {
+          details.push(`    - ${interaction}`);
+        });
       }
       
-      // Character relationships to other characters
+      // Character relationships with nested bullets
       if (character.relationships.length > 0) {
-        const relationships = character.relationships
-          .map(r => `${r.target} (${r.type} - ${r.status})`)
-          .join(', ');
-        details.push(`  Relationships: ${relationships}`);
+        details.push(`  Relationships:`);
+        character.relationships.forEach(r => {
+          details.push(`    - ${r.target} (${r.type} - ${r.status})`);
+        });
       }
       
-      // Narrative flags and twist information
+      // Detailed injuries section
+      if (character.injuries && character.injuries.length > 0) {
+        details.push(`  Injuries:`);
+        character.injuries.forEach((injury: Injury, index: number) => {
+          const injuryParts = [];
+          if (injury.description) injuryParts.push(injury.description);
+          if (injury.bodyPart) injuryParts.push(`Location: ${injury.bodyPart}`);
+          if (injury.severity) injuryParts.push(`Severity: ${injury.severity}`);
+          if (injury.pageAcquired) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
+          
+          const injuryInfo = injuryParts.length > 0 ? ` (${injuryParts.join(', ')})` : '';
+          details.push(`    - Injury ${index + 1}${injuryInfo}`);
+        });
+      }
+      
+      // Narrative flags (excluding injuries which are now separate)
       const narrativeInfo = [];
       if (character.narrativeFlags.isSuspicious) narrativeInfo.push('suspicious');
       if (character.narrativeFlags.isMissing) narrativeInfo.push('missing');
       if (character.narrativeFlags.isDead) narrativeInfo.push('dead');
       if (character.narrativeFlags.hasSecret) narrativeInfo.push('has secret');
-      if (character.narrativeFlags.hasInjury && character.narrativeFlags.hasInjury !== 'none') {
-        narrativeInfo.push(`injured: ${character.narrativeFlags.hasInjury}`);
-      }
       
       if (character.narrativeFlags.potentialTwist && character.narrativeFlags.potentialTwist !== 'none') {
         narrativeInfo.push(`potential twist: ${character.narrativeFlags.potentialTwist}`);
@@ -324,89 +352,7 @@ export function formatCharactersForPrompt(characters: Record<string, CharacterMe
  * ```
  */
 export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
-  // Random name pools by gender with Gen-Z appropriate names
-  const maleNames = [
-    'Liam', 'Noah', 'Oliver', 'Elijah', 'Lucas', 'Mason', 'Logan', 'Ethan', 'Aiden',
-    'James', 'Benjamin', 'William', 'Jacob', 'Michael', 'Caleb', 'Daniel', 'Jackson',
-    'Sebastian', 'Jack', 'Owen', 'Grayson', 'Julian', 'Levi', 'Mateo', 'Josiah',
-    'Henry', 'Theodore', 'Wyatt', 'Gabriel', 'Samuel', 'Carter', 'Jayden', 'John',
-    'Dylan', 'Luke', 'Asher', 'Oscar', 'Isaac', 'Parker', 'Nolan', 'Ryan', 'Peter',
-    'Miles', 'Ezra', 'Hudson', 'Nathaniel', 'Connor', 'Jeremiah', 'Cameron', 'Santiago',
-    'Evan', 'Angel', 'Adrian', 'Xavier', 'Kai', 'Jaxson', 'Easton', 'Everett', 'Glenn',
-    'Maverick', 'Silas', 'Carson', 'Luka', 'Rowan', 'Axel', 'Bodhi', 'River',
-    'Kai', 'Zen', 'Phoenix', 'Orion', 'Atlas', 'Arlo', 'Sage', 'Wilder', 'Finn',
-    'Jasper', 'Cyrus', 'Ronan', 'Zion', 'Apollo', 'Stellan', 'Caspian',
-    'Storm', 'Blaze', 'Ace', 'Rex', 'Wolf', 'Fox', 'Hawk', 'Jett', 'Dash', 'Knox'
-  ];
-
-  // Male-preferring last names (stronger masculine associations)
-  const maleLastNames = [
-    'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez',
-    'Wilson', 'Anderson', 'Thomas', 'Taylor', 'Moore', 'Jackson', 'Martin', 'Lee', 'Vey',
-    'Thompson', 'White', 'Harris', 'Clark', 'Ramirez', 'Lewis', 'Robinson', 'Walker',
-    'Young', 'Allen', 'King', 'Wright', 'Scott', 'Torres', 'Nguyen', 'Hill', 'Flores',
-    'Green', 'Adams', 'Baker', 'Gonzalez', 'Nelson', 'Carter', 'Mitchell', 'Perez',
-    'Roberts', 'Turner', 'Phillips', 'Campbell', 'Parker', 'Evans', 'Edwards', 'Collins',
-    'Stewart', 'Sanchez', 'Morris', 'Rogers', 'Reed', 'Cook', 'Morgan', 'Bell', 'Murphy',
-    'Bailey', 'Cooper', 'Richardson', 'Cox', 'Howard', 'Ward', 'Torres', 'Peterson', 'Gray',
-    'Ramirez', 'James', 'Watson', 'Brooks', 'Kelly', 'Sanders', 'Price', 'Bennett', 'Wood',
-    'Barnes', 'Ross', 'Henderson', 'Coleman', 'Jenkins', 'Perry', 'Powell', 'Long', 'Patterson',
-    'Hughes', 'Flores', 'Washington', 'Butler', 'Simmons', 'Foster', 'Gonzalez', 'Bryant', 'Alexander',
-    'Russell', 'Griffin', 'Diaz', 'Hayes', 'Myers', 'Ford', 'Hamilton', 'Graham', 'Sullivan', 'Wallace'
-  ];
-
-  const femaleNames = [
-    'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Mira', 'Charlotte', 'Amelia',
-    'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella', 'Anya',
-    'Madison', 'Scarlett', 'Victoria', 'Aria', 'Grace', 'Chloe', 'Camila', 'Penelope',
-    'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Luna', 'Aubrey', 'Ellie', 'Ellen', 'Eleanor',
-    'Stella', 'Natalie', 'Zoe', 'Leah', 'Hazel', 'Violet', 'Aurora', 'Savannah',
-    'Audrey', 'Brooklyn', 'Bella', 'Claire', 'Skylar', 'Lucy', 'Paisley', 'Everly',
-    'Anna', 'Caroline', 'Nova', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya',
-    'Kinsley', 'Naomi', 'Aaliyah', 'Elena', 'Sarah', 'Ariana', 'Allison', 'Kara',
-    'Gabriella', 'Alice', 'Madelyn', 'Cora', 'Ruby', 'Eva', 'Seraphina', 'Lyra', 'Elara',
-    'Rose', 'Iris', 'Luna', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Wren', 'Clara', 'Carla',
-    'Poppy', 'Briar', 'Fern', 'Olive', 'Jade', 'Pearl', 'Celeste', 'Orla', 'Elara',
-    'Kehlani', 'Billie', 'Zendaya', 'Remi', 'Nyla', 'Kai', 'Indigo', 'Aurelia', 'Sienna',
-    'Calliope', 'Juniper', 'Marlowe', 'Thea', 'Elodie', 'Wrenley', 'Arden', 'Loxley',
-    'Sloane', 'Blair', 'Quinn', 'Reese', 'Kensington', 'Presley', 'Rachel', 'Lena',
-    'Monroe', 'Harlow', 'Kinslee', 'Ensley', 'Finley', 'Tinsley', 'Brinley', 'Rylie',
-    'Oakley', 'Ember', 'Nova', 'Lyra', 'Athena', 'Freya', 'Lilith', 'Persephone',
-    'Ophelia', 'Cassia', 'Elara', 'Seraphine', 'Evangeline', 'Genevieve', 'Maxine',
-    'Juno', 'Celestia', 'Nebula', 'Solstice', 'Equinox', 'Roche', 'Velvet',
-    'Zenith', 'Vesper', 'Liora', 'Zara', 'Amara', 'Idris', 'Clementine', 'Marigold',
-    'Primrose', 'Bluebell', 'Snowdrop', 'Lisa', 'Lavender', 'Amanda', 'Yuna'
-  ];
-
-  const femaleLastNames = [
-    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance', 'Blackwood',
-    'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
-    'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow', 'Voss',
-    'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',
-    'Iris', 'Lily', 'Daisy', 'Tulip', 'Violet', 'Poppy', 'Marigold', 'Azalea', 'Camellia', 'Jasmine',
-    'Rosewood', 'Moonlight', 'Starlight', 'Sunshine', 'Rainbow', 'Butterfly', 'Phoenix', 'Serenity',
-    'Harmony', 'Melody', 'Rhythm', 'Cadence', 'Lyric', 'Sonnet', 'Poem', 'Verse', 'Story', 'Tale',
-    'Whisper', 'Echo', 'Silence', 'Calm', 'Peace', 'Zen', 'Bliss', 'Joy', 'Glee', 'Cheer', 'Vera',
-    'Sparkle', 'Glitter', 'Shimmer', 'Glimmer', 'Glow', 'Shine', 'Bright', 'Radiant', 'Luminous',
-    'Celeste', 'Stella', 'Nova', 'Luna', 'Aurora', 'Orion', 'Vega', 'Lyra', 'Cassiopeia', 'Carinae',
-    'Meteora', 'Lynn', 'Nyx', 'Patel', 'Shah', 'Verma', 'Malhotra', 'Agarwal', 'Jain', 'Gabriela',
-    'Rosa', 'Maria', 'Sofia', 'Isabella', 'Catalina', 'Valentina', 'Emilia', 'Camila', 'Lucia',
-    'Yoon', 'Lim', 'Han', 'Shin', 'Chen', 'Apolonia', 'Cassiopeia', 'Lunaria', 'Stellaria',
-    'Garcia', 'Rivera', 'Oliveira', 'Ferreira', 'Costa', 'Almeida', 'Rocha'
-  ];
-
-  // Gender-neutral last names (modern and Gen-Z appropriate)
-  const neutralLastNames = [
-    'Stone', 'Wolf', 'Fox', 'Hawk', 'Raven', 'Crow', 'Phoenix', 'Falcon', 'Eagle', 'Hawk',
-    'River', 'Brook', 'Stone', 'Rock', 'Cliff', 'Ridge', 'Peak', 'Summit', 'Valley', 'Meadow',
-    'Wolf', 'Bear', 'Lion', 'Tiger', 'Eagle', 'Hawk', 'Falcon', 'Raven', 'Crow', 'Phoenix',
-    'Storm', 'Blaze', 'Frost', 'Ice', 'Snow', 'Rain', 'Thunder', 'Lightning', 'Shadow', 'Night',
-    'Star', 'Moon', 'Sun', 'Sky', 'Cloud', 'Wind', 'Earth', 'Fire', 'Water', 'Spirit',
-    'Silver', 'Gold', 'Bronze', 'Copper', 'Steel', 'Iron', 'Crystal', 'Diamond', 'Ruby', 'Jade',
-    'Rowan', 'Sage', 'Wren', 'Linden', 'Indigo', 'Marlowe', 'August', 'Sawyer', 'Robin', 'Taylor',
-    'Morgan', 'Casey', 'Drew', 'Jamie', 'Jordan', 'Taylor', 'Logan', 'Casey', 'Dakota', 'River',
-    'August', 'Sage', 'Wren', 'Linden', 'Indigo', 'Marlowe', 'Rowan', 'Robin', 'Taylor', 'Morgan'
-  ];
+  const { maleNames, femaleNames, maleLastNames, femaleLastNames, neutralLastNames } = CHARACTER_NAMES;
 
   // Generate or use provided values
   const gender = candidate?.gender ?? (Math.random() > 0.5 ? 'male' : 'female');

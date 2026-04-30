@@ -1,6 +1,6 @@
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, RelationshipUpdate, TagUpdates } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
 import type { DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
@@ -192,10 +192,12 @@ export type ActionHint = {
   type: ActionHintType;
 }
 
-export type TrustLevel = "low" | "medium" | "high";
-export type FearLevel = "low" | "medium" | "high";
-export type GuiltLevel = "low" | "medium" | "high";
-export type CuriosityLevel = "low" | "medium" | "high";
+export type FlagLevel = 'low' | 'medium' | 'high';
+
+export type TrustLevel = FlagLevel;
+export type FearLevel = FlagLevel;
+export type GuiltLevel = FlagLevel;
+export type CuriosityLevel = FlagLevel;
 
 /**
  * Psychological flags that influence narrative direction
@@ -479,6 +481,18 @@ export type PsychologicalProfileMetrics = {
   aggression: number;
   /** Denial level from actions */
   denial: number;
+  /** Trust level affecting social interactions and paranoia (0.0-1.0) */
+  trust: number;
+  /** Guilt level influencing self-perception and decisions (0.0-1.0) */
+  guilt: number;
+  /** Trauma weight based on accumulated psychological impact (0.0-1.0) */
+  traumaWeight: number;
+  /** Physical state: injury severity affecting vulnerability (0.0-1.0) */
+  physicalState: number;
+  /** Social context: isolation vs connection (0.0-1.0) */
+  socialContext: number;
+  /** Cognitive state: memory clarity and perception (0.0-1.0) */
+  cognitiveState: number;
 };
 
 /**
@@ -546,6 +560,8 @@ export type StateDelta = {
   isMajorEvent?: boolean;
   /** Updated AI-summarized context of the entire story */
   contextHistory?: string;
+  /** Represents injuries sustained by the MC */
+  injuries?: Injury[];
 
   psychologicalProfileUpdates?: Partial<PsychologicalProfile>;
   hiddenStateUpdates?: Partial<HiddenState>;
@@ -590,6 +606,11 @@ export type EnrichedAction = Action & {
   /** Whether this action was chosen by the current user (for navigation validation) */
   isUserChosen?: boolean;
 };
+
+export type TagUpdates = {
+  add: string[];
+  remove: string[];
+}
 
 /**
  * Complete story state tracking all narrative and psychological elements
@@ -697,7 +718,6 @@ export type StoryState = {
   // pageHistory: ActionedStoryPage[];
 
   /** History of all user actions made throughout the story */
-  // actionsHistory: Action[];
   actionsHistory: ActionHistory[];
 
   /**
@@ -741,7 +761,8 @@ export type StoryState = {
    */
   inventory: string[];
 
-  // TODO: add injury
+  /** Represents injuries sustained by the MC */
+  injuries: Injury[];
 };
 
 /**

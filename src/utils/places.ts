@@ -26,9 +26,9 @@ import type { StoryState } from "../types/story.js";
 export function createPlace(params: NewPlace, currentPage: number): PlaceMemory {
   return {
     ...params,
-    visitCount: 1,
-    lastVisitedAtPage: currentPage,
-    moodHistory: params.currentMood ? [params.currentMood] : [],
+    visitCount: params.visitCount ?? 1,
+    lastVisitedAtPage: params.lastVisitedAtPage ?? currentPage,
+    moodHistory: params.moodHistory ?? (params.currentMood ? [params.currentMood] : []),
   } satisfies PlaceMemory;
 }
 
@@ -56,11 +56,14 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMe
   
   // Update basic properties if provided
   if (update.name) updated.name = update.name;
+  if (update.type) updated.type = update.type;
   if (update.context) updated.context = update.context;
+  if (update.locationHint) updated.locationHint = update.locationHint;
   if (update.visitCount !== undefined) updated.visitCount = update.visitCount;
   if (update.lastVisitedAtPage !== undefined) updated.lastVisitedAtPage = update.lastVisitedAtPage;
   if (update.familiarity !== undefined) updated.familiarity = update.familiarity;
   if (update.currentMood !== undefined) updated.currentMood = update.currentMood;
+  if (update.weather) updated.weather = update.weather;
 
   const {
     moodHistory = [],
@@ -124,6 +127,7 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
   
   // Update existing places
   for (const update of updatedPlaces) {
+    if (!update.name) continue;
     const existing = state.places[update.name];
     if (existing) {
       state.places[update.name] = updatePlace(existing, update);

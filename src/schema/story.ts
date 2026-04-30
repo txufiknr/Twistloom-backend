@@ -29,7 +29,8 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
   isMajorEvent: { type: 'boolean' },
-  contextHistory: { type: 'string' }
+  contextHistory: { type: 'string' },
+  injuries: { type: 'array', items: { type: 'object' } }
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
@@ -78,5 +79,6 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   // pageHistory: [],
   actionsHistory: [],
   contextHistory: '',
-  isMajorEvent: false
+  isMajorEvent: false,
+  injuries: [],
 };

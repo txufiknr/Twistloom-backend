@@ -70,6 +70,15 @@ export function clamp(value: number, min: number, max: number = Infinity): numbe
 }
 
 /**
+ * Normalizes a value to 0-1 range
+ * @param value - The value to normalize
+ * @returns Normalized value between 0 and 1
+ */
+export function normalize(value: number): number {
+  return clamp(value, 0, 1);
+}
+
+/**
  * Filter array with configurable options
  * @param array - Array to filter
  * @param options - Filtering options
@@ -381,7 +390,7 @@ export function parseAISafely<T extends Record<string, unknown>>(
   const { output, provider } = response;
   const {
     logContext = provider,
-    maxLength = 10_000,
+    maxLength = 15_000,
     allowPartialObjects = true,
   } = options;
 

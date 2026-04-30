@@ -1,8 +1,30 @@
-[ ] character state: Injury detail
-[ ] prompt: tampilin injury
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
+[ ] Cron: cleanup add cleanupStoryStatesWithStrategy
+[ ] charactermemory: add visualDescription // "tall, pale, messy black hair, hollow eyes"
+[ ] prompt: ensure thread update instruction/format exist
+[ ] combine pastInteractions and lastInteractionAtPage
+[ ] Characters Lastinteraction tambah page number
+Twistloom original authornya by twistloom
+Retry pending generation kalo udah stable bikin paralel
+Give example for traumaTags & plotFlags
+Original: kalau "en", Mc name predefine aja, jangan AI
+Implement ai image fallback gemini > puter
+Sse can we make generating event ends when evaluating starts
+Update docs pre generation
+Update docs branch traversal, snapshot, delta
 
+[x] Pertegas next page action hint prompt
+[x] imagen outputdir harusnya ngga usah
+[x] FIELD INSTRUCTIONS: REVIEW & FIX (IMPORTANT): belum rapihin newlines
+[x] Sync Story state schema
+[x] Gausah log 📔 newBookData:
+[x] Field instructions threadUpdates.closeThreads ngga ada isi
+[x] deprecate/remove InjurySeverity
+[x] hasInjury ganti Injury juga
+[x] injury decay each page progress
+[x] prompt character state: Injury detail
+[x] advance story state: auto-decay injury severity - decayPerPage
 [x] Implement stripe
 [x] Story state: actionHistory tambah page number 
 [x] heuristic theme validator bug: surprise4.txt
@@ -41,25 +63,34 @@ TODO:
 [ ] user settings schema (font size)
 [ ] summary at the end of story (N% readers ended up here)
 
+by book creator:
+[ ] soundtrack based on mood
+[ ] add page image
+[ ] add voice or use noiz tts api
+
 paid:
 [ ] custom action prompt (max 50 chars, prevent sql inject, etc)
 [ ] re-select other action in previous page
 [ ] generate cover image with AI
 [ ] see hint for an action
+[ ] use noiz tts api
 
+Story meta
+visualStyle = "dark cinematic, moody lighting, realistic horror, muted tones"
+corruptionCurve: number[]
+Hints/secret dark facts (don't reveal, it may or never known by MC)
 
-Place knownCharacters: Make page multiple
-Implement belief & thread
+[ ] Place knownCharacters: Make page multiple
+[ ] Implement belief
+[ ] Implement corruption curve
+[ ] Sound effect format italic with asterisks
 
 Starting a sentence with a coordinating conjunction (such as or, and, or but) is a stylistic choice rather than a grammatical error. 
 
-Sound effect format italic with asterisks
 
 implement Heuristic first book/story page validator
 
 Book meta prompt cache LRU aja
-
-check & implement corruption curve
 
 Cek userpageprogress.previouspageid udah diset ketika backtoprevouspage & chooseaction
 

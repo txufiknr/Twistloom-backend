@@ -207,8 +207,8 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
     updatedAt: new Date()
   };
 
-  console.log(`[insertBook] 📔 newBookData:`, newBookData);
   const result = await dbWrite.insert(books).values(newBookData).returning();
+  console.log(`[insertBook] 📔 Inserted book:`, result[0]);
   return result[0];
 }
 

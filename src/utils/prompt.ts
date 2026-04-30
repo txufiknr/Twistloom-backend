@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import { type CharacterMemory, characterStatuses, injurySeverities, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
+import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession } from "../types/story.js";
 import { retryWithBackoffOrNull } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY } from "../config/story.js";
@@ -81,7 +81,7 @@ PAGE FORMAT:
 - Ensure each continuation page maintains a consistent narrative style that flows smoothly from the previous page based on chosen action.
 - End at a moment of tension or revelation — never resolution.
 - Multiple very short paragraphs (1-3 sentences each).
-- Each sentence/short paragraph on a separate line, separated by double newlines — Goosebumps style spacing for tension.
+- Each sentence/short paragraph on a separate line — Goosebumps style spacing for tension.
 - No markdown except italic if needed.
 
 BRANCHING STORY RULES:
@@ -290,9 +290,7 @@ const firstBookReviewChecklist: string = `
   □ familiarity is a decimal between 0.0 and 1.0? → Fix if needed.
   □ totalPages within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds? → Fix if out of range.`;
 
-const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields are optional — omit entirely if not applicable to this page.
-
-{
+const nextPageOutputFormat: string = `{
   "text": "...",
   "mood": "One of: ${formatOneOf(moods)}",
   "place": "...",
@@ -300,6 +298,10 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
   "charactersPresent": [],
   "keyEvents": [],
   "importantObjects": [],
+  "inventoryUpdates": {
+    "add": [],
+    "remove": []
+  },
   "traumaTagUpdates": {
     "add": [],
     "remove": []
@@ -308,6 +310,15 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
     "add": [],
     "remove": []
   },
+  "injuries": [
+    {
+      "bodyPart": "...",
+      "description": "...",
+      "pageAcquired": <number>,
+      "severity": <number between 0.0 and 1.0>,
+      "decayPerPage": <number between 0.0 and 1.0>
+    }
+  ],
   "isMajorEvent": false,
   "contextHistory": "...",
   "flagUpdates": {
@@ -348,19 +359,31 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
           "isSuspicious": false,
           "isMissing": false,
           "isDead": false,
-          "hasInjury": "One of: ${formatOneOf(injurySeverities)}",
           "hasSecret": false,
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
-        }
+        },
+        "injuries": []
       }
     ],
     "updatedCharacters": [
       {
         "name": "...",
-        "status": "...",
-        "narrativeFlags": {},
+        "gender": "One of: ${formatOneOf(genders)}",
+        "role": "...",
+        "bio": "...",
+        "status": "One of: ${formatOneOf(characterStatuses)}",
+        "relationshipToMC": "...",
+        "relationships": [
+          {
+            "target": "...",
+            "type": "One of: ${formatOneOf(relationshipTypes)}",
+            "status": "One of: ${formatOneOf(relationshipStatuses)}"
+          }
+        ],
         "pastInteractions": [],
-        "lastInteractionAtPage": <number>
+        "lastInteractionAtPage": <number>,
+        "narrativeFlags": {},
+        "injuries": []
       }
     ]
   },
@@ -403,15 +426,31 @@ const nextPageOutputFormat: string = `MANDATORY: text, actions. All other fields
     "updatedPlaces": [
       {
         "name": "...",
-        "currentMood": "...",
+        "type": "One of: ${formatOneOf(placeTypes)}",
+        "context": "...",
+        "locationHint": "...",
+        "currentMood": "One of: ${formatOneOf(placeMoods)}",
         "events": [],
         "visitCount": <number>,
         "lastVisitedAtPage": <number>,
         "familiarity": <number between 0.0 and 1.0>,
+        "moodHistory": [],
+        "knownCharacters": {
+          "<name>": {
+            "page": <number>,
+            "context": "..."
+          }
+        },
         "sensoryDetails": {},
-        "weather": "..."
+        "weather": "One of: ${formatOneOf(placeWeathers)}"
       }
     ]
+  },
+  "threadUpdates": {
+    "newThreads": [],
+    "updatedThreads": [],
+    "addClues": [],
+    "closedThreads": []
   },
   "viableEnding": {
     "text": "...",
@@ -425,7 +464,7 @@ function buildUserPrompt(
   actionedPage: ActionedStoryPage,
   previousPages: PreviousPages
 ): string {
-  const { page, maxPage, contextHistory, plotFlags, flags, psychologicalProfile, hiddenState, threads, inventory } = state;
+  const { page, maxPage, contextHistory, plotFlags, flags, psychologicalProfile, hiddenState, threads } = state;
   const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
   const stateInfo = getStoryStateInfo(state);
   const { remainingPages, isFinale, phase, phaseGoal, isLastPage } = stateInfo;
@@ -433,7 +472,7 @@ function buildUserPrompt(
 
   return `TASK: Continue the story in first-person ("I") POV. Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
 
-MAIN CHARACTER (POV): ${getMainCharacterInfo(mc)!}
+MAIN CHARACTER (POV): ${getMainCharacterInfo(mc, state)!}
 
 HARD RULES:
 - Write in first-person central (MC = narrator) POV.
@@ -454,7 +493,6 @@ CURRENT SITUATION (from previous page):
 - Time: ${timeOfDay || 'unknown'}
 - Mood: ${mood || 'unknown'}
 - Characters present: ${charactersPresent.join(', ') || 'none'}
-- Inventory: ${inventory.join(', ') || 'none'}
 
 STORY CONTEXT:
 ${contextHistory}
@@ -595,6 +633,7 @@ function buildNextPageFieldInstructions(state: StoryState): string {
   - Don't use phrase like "The protagonist" or "The narrator", just use "I".
   - Always begin directly from the chosen action. Example: "I decide to [...]," or "I [verb]."
   - Open mid-moment. End on tension, a hook, or unresolved unease — never resolution.
+  - This is a fast-paced story, don't over explain small details (e.g. clothing, etc) unless they're plot important.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
 ${isLatePhase ? `  - Tone: fracturing. Reality and relationships should feel increasingly unstable.` : ''}
@@ -632,6 +671,13 @@ inventoryUpdates
   - Items the MC brings to the scene, the amount, color, and where they are located specifically (backpack, right trouser pocket, etc).
   - Limit it. Only include items that actually matters to the plot.
 
+injuries
+  - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
+  - If an action is taken to heal, or anything made injury worse, update the injury severity and description accordingly.
+  - If healed, set severity to 0 - system will auto-remove fully healed injuries.
+  - If healed but leaves permanent scar/story relevance, move to character's bio.
+  - If no meaningful injury-related action occurs, omit this field entirely.
+
 traumaTagUpdates
   - Short evocative phrases for experiences that will haunt the MC later.
 ${traumaTags.length >= MAX_TRAUMA_TAGS ? `  - Maximum trauma tags reached. Can't add more.` : `  - Only add if something genuinely traumatic or psychologically significant occurs.`}
@@ -645,7 +691,7 @@ ${isEarlyPhase ? `  - Should be false for most early pages. Reserve major events
 ${isFinale ? `  - Expected to be true. The finale is a major event by definition.` : ''}
 
 plotFlagUpdates
-  - Like keyEvents, but for overall story (plot important).
+  - Plot important facts. Like keyEvents, but for overall story.
   - Only add if a crucial discovery is made or a critical item/clue is found, or it's importantly related to ending.
   - If isMajorEvent is true, then this also adds.
 
@@ -693,7 +739,7 @@ ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now.
 : `  - Only update when status, interactions, or relevance changes.`}
   - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})
   - Update lastInteractionAtPage
-  - Adjust narrativeFlags to reflect plot developments.
+  - Adjust narrativeFlags to reflect plot developments
 
 relationshipUpdates
   - Changes in relationship between any two named characters (excluding MC).
@@ -748,7 +794,7 @@ ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mys
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
 ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
 
-threadUpdates.closeThreads
+${isLatePhase || isFinale ? 'threadUpdates.closeThreads' : ''}
 ${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
   - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
 ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
@@ -1295,12 +1341,31 @@ function formatPreviousPagesForPrompt(previousPages: PreviousPages): string {
  * @returns Formatted string with character details
  * 
  * @example Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
- * 
- * @todo inventory
  */
-function getMainCharacterInfo(mc?: StoryMCCandidate): string | null {
+function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string | null {
   if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
-  return `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
+  const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
+  
+  if (state) {
+    const inventory = state.inventory.join(', ') || 'none';
+    
+    // Format detailed injury information
+    let injuryDetails = 'none';
+    if (state.injuries.length > 0) {
+      const injuryList = state.injuries.map(injury => {
+        const parts = [];
+        if (injury.description) parts.push(injury.description);
+        if (injury.bodyPart) parts.push(`(${injury.bodyPart})`);
+        if (injury.severity) parts.push(`[severity: ${injury.severity}]`);
+        if (injury.pageAcquired) parts.push(`acquired page ${injury.pageAcquired}`);
+        return parts.join(' ');
+      });
+      injuryDetails = injuryList.join('; ');
+    }
+    
+    return `${bio}\n- Inventory: ${inventory}\n- Injuries: ${injuryDetails}`;
+  }
+  return bio;
 }
 
 /**
@@ -1379,7 +1444,7 @@ function formatSelectedAction(selectedAction?: Action, allActions?: Action[]): s
 
   return `${selectedLetter ? `${selectedLetter}.` : '•'} ${selectedAction.text} (type: ${selectedAction.type})
 
-About selected action:
+CONTINUATION GUIDANCE (for selected action):
 · Hint: ${isCustomAction ? "-" : selectedAction.hint.text}
 · Guidance: ${getHintGuidanceForAI(isCustomAction ? "custom" : selectedAction.hint.type)}
 · Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This hint guides you in narrative direction, might be a secret, not to always put in the story.`}`;
@@ -1958,10 +2023,11 @@ ${theme}
 HARD RULES (apply to everything below):
 - Write in first-person ("I") POV only (MC = narrator).
 - Max ${MAX_WORDS_PER_PAGE} words per page.
-- Detect language from theme input. Default to English if uncertain.
+- Detect language from theme input. Default to English ("en") if uncertain.
 
 MAIN CHARACTER:
-${getMainCharacterInfo(mcCandidate) ?? 'Infer a character whose personality makes the theme more psychologically dangerous for them specifically.'}
+${getMainCharacterInfo(mcCandidate) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
+- Generate unique (rare) character name idea based on age and story language.`}
 
 STORY SETUP:
 - Establish unease immediately — not fear yet, but something subtly wrong.
@@ -1990,7 +2056,7 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string
 
 Main Character (MC):
 - Derive from candidate if provided. Otherwise infer from theme.
-${mcCandidate?.name ? '' : '- Generate unique name but appropriate and memorable name based on age and language context.'}
+${mcCandidate?.name ? '' : '- Generate unique (rare) name but appropriate and memorable name based on age and language context.'}
 - Bio must include at least one psychological trait that will be used against them.
 
 First Page:
@@ -2126,11 +2192,8 @@ export async function initializeBook(
       mc,
       isOriginal,
     };
-    console.log(`[initializeBook] 📔 newBookData:`, newBookData);
     const dbBook = await insertBook(newBookData);
-    
     const book = mapBookFromDb(dbBook);
-    console.log(`[initializeBook] 📔 Inserted book:`, book);
     const bookId = book.id;
 
     // 5. Persist first page as root page of the book
@@ -2163,10 +2226,10 @@ export async function initializeBook(
                 isSuspicious: false,
                 isMissing: false,
                 isDead: false,
-                hasInjury: 'none',
                 hasSecret: false,
                 potentialTwist: 'none'
-              }
+              },
+              injuries: []
             } satisfies CharacterMemory
           ])
         ) : {},
@@ -2463,7 +2526,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   const { userId, action: actionCandidate, currentState: providedState, currentBook: providedBook } = params;
   let { currentPage } = params;
 
-  try {
+  // try {
     if (!actionCandidate.text) {
       throw new Error(`Invalid action: no text`);
     }
@@ -2536,15 +2599,15 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 
     // 7. Return the generated page with all database metadata
     return newPage;
-  } catch (error) {
-    console.error(`[generateCandidatePage] ❌ Failed to generate candidate page:`, {
-      error: getErrorMessage(error),
-      userId,
-      pageId: currentPage?.id,
-      actionCandidate,
-    });
-    return null;
-  }
+  // } catch (error) {
+  //   console.error(`[generateCandidatePage] ❌ Failed to generate candidate page:`, {
+  //     error: getErrorMessage(error),
+  //     userId,
+  //     pageId: currentPage?.id,
+  //     actionCandidate,
+  //   });
+  //   return null;
+  // }
 }
 
 /**
@@ -2822,22 +2885,22 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
-  const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${fieldInstructions.trim()}` : '';
+  const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${postProcessPromptSection(fieldInstructions)}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 
 You MUST silently evaluate your generated output using the checklist below.
 If any item fails, revise internally before producing final output.
 
-${thinkThenOutput.trim()}
+${postProcessPromptSection(thinkThenOutput)}
 
 Only output the final corrected JSON.
 Do NOT mention this checklist.` : '';
 
   const finalPrompt = [
     prompt.trim(),
-    postProcessPromptSection(outputFormatPart),
-    postProcessPromptSection(fieldInstructionsPart),
-    postProcessPromptSection(thinkThenOutputPart)
+    outputFormatPart,
+    fieldInstructionsPart,
+    thinkThenOutputPart
   ].join('\n\n---\n');
 
   // Emit evaluation start event if evaluatorPrompt is provided

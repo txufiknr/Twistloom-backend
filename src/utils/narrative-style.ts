@@ -10,6 +10,56 @@
 
 import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput, StoryState } from '../types/story.js';
 import { createStyleInput } from './player-profile.js';
+import { getStoryStateInfo } from './story.js';
+import { normalize } from './parser.js';
+
+/**
+ * Calculates base style metrics from core story inputs
+ */
+function calculateBaseMetrics(input: StyleInput) {
+  const { sanity, tension, entropy, traumaTags, profile } = input;
+  
+  return {
+    /** Longer sentences when sane, shorter when fracturing */
+    sentenceLength: 0.3 + sanity * 0.5,
+    /** Increases as sanity decreases and entropy rises */
+    fragmentation: (1 - sanity) * 0.8 + entropy * 0.3,
+    /** Driven by tension and accumulated trauma */
+    repetition: tension * 0.6 + traumaTags.length * 0.1,
+    /** Self-doubt increases as sanity drops */
+    contradiction: (1 - sanity) * 0.7,
+    /** Decreases with entropy and psychological distress */
+    clarity: sanity * 0.8 - entropy * 0.3,
+    /** Faster with high tension, slower when stable */
+    pacing: tension * 0.7,
+    /** Detail-oriented when curious, abstract when distressed */
+    sensoryFocus: tension * 0.5 + profile.curiosity * 0.3
+  };
+}
+
+/**
+ * Applies psychological adjustments to base metrics
+ */
+function applyPsychologicalAdjustments(base: ReturnType<typeof calculateBaseMetrics>, profile: StyleInput['profile']) {
+  /** Cognitive state affects clarity and fragmentation */
+  const cognitiveAdjustment = profile.cognitiveState * 0.2;
+  /** Trust affects contradiction (low trust = more self-doubt) */
+  const trustAdjustment = (1 - profile.trust) * 0.15;
+  /** Trauma affects repetition and sensory focus */
+  const traumaAdjustment = profile.traumaWeight * 0.2;
+  /** Physical state affects pacing */
+  const physicalAdjustment = profile.physicalState * 0.15;
+  
+  return {
+    sentenceLength: base.sentenceLength,
+    fragmentation: base.fragmentation + cognitiveAdjustment,
+    repetition: base.repetition + traumaAdjustment,
+    contradiction: base.contradiction + trustAdjustment,
+    clarity: base.clarity - cognitiveAdjustment,
+    pacing: base.pacing + physicalAdjustment,
+    sensoryFocus: base.sensoryFocus + traumaAdjustment
+  };
+}
 
 /**
  * Calculates narrative style vector from story inputs
@@ -35,38 +85,17 @@ import { createStyleInput } from './player-profile.js';
  * ```
  */
 export function calculateStyleVector(input: StyleInput): StyleVector {
-  // Base calculations influenced by sanity (primary driver)
-  const { sanity, tension, entropy, traumaTags, profile } = input;
-  
-  // Sentence length: longer when sane, shorter when fracturing
-  const sentenceLength = 0.3 + sanity * 0.5;
-  
-  // Fragmentation: increases as sanity decreases and entropy rises
-  const fragmentation = (1 - sanity) * 0.8 + entropy * 0.3;
-  
-  // Repetition: driven by tension and accumulated trauma
-  const repetition = tension * 0.6 + traumaTags.length * 0.1;
-  
-  // Contradiction: self-doubt increases as sanity drops
-  const contradiction = (1 - sanity) * 0.7;
-  
-  // Clarity: decreases with entropy and psychological distress
-  const clarity = sanity * 0.8 - entropy * 0.3;
-  
-  // Pacing: faster with high tension, slower when stable
-  const pacing = tension * 0.7;
-  
-  // Sensory focus: detail-oriented when curious, abstract when distressed
-  const sensoryFocus = tension * 0.5 + profile.curiosity * 0.3;
+  const base = calculateBaseMetrics(input);
+  const adjusted = applyPsychologicalAdjustments(base, input.profile);
   
   return {
-    sentenceLength,
-    fragmentation,
-    repetition,
-    contradiction,
-    clarity,
-    pacing,
-    sensoryFocus
+    sentenceLength: normalize(adjusted.sentenceLength),
+    fragmentation: normalize(adjusted.fragmentation),
+    repetition: normalize(adjusted.repetition),
+    contradiction: normalize(adjusted.contradiction),
+    clarity: normalize(adjusted.clarity),
+    pacing: normalize(adjusted.pacing),
+    sensoryFocus: normalize(adjusted.sensoryFocus)
   };
 }
 
@@ -168,6 +197,8 @@ export function determineNarrativeMode(vector: StyleVector, sanity: number, isEn
  * style vectors into specific writing behaviors and techniques.
  * 
  * @param style - Complete narrative style configuration
+ * @param enhancedInput - Optional enhanced input for multi-factor guidance
+ * @param state - Optional story state to get phase information
  * @returns Human-readable instructions for AI
  * 
  * @example
@@ -179,10 +210,12 @@ export function determineNarrativeMode(vector: StyleVector, sanity: number, isEn
  * // Returns detailed instructions for fragmented writing style
  * ```
  */
-export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | 'vector'>): string {
+export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | 'vector'>, styleInput: StyleInput, state: StoryState): string {
   const { mode, vector } = style;
-  
-  // Mode-specific base instructions
+  const { profile } = styleInput;
+  const { phase } = getStoryStateInfo(state);
+
+  // 1. Mode-specific base instructions
   let instructions: string;
   
   switch (mode) {
@@ -218,7 +251,7 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
       instructions = `Develop naturally with appropriate tone for current context.`;
   }
   
-  // Add vector-specific refinements
+  // 2. Add vector-specific refinements
   const vectorInstructions = `
 Current style metrics:
 - Sentence length: ${vector.sentenceLength.toFixed(2)} (short ↔ mixed ↔ longer)
@@ -239,7 +272,30 @@ Apply these behaviors:
 - Focus on ${vector.sensoryFocus > 0.6 ? 'detailed sensory descriptions' : 'more abstract narrative'}
 - CRITICAL: Never suddenly jump between styles - gradual evolution only`;
   
-  return `${instructions}\n${vectorInstructions}`;
+  // 3. Add psychological guidance
+  const multiFactorInstructions = `
+Psychological context for creative guidance:
+- Trust level: ${profile.trust.toFixed(2)} (${profile.trust > 0.7 ? 'trusting' : profile.trust > 0.4 ? 'cautious' : 'distrustful'})
+- Guilt level: ${profile.guilt.toFixed(2)} (${profile.guilt > 0.7 ? 'burdened by guilt' : profile.guilt > 0.4 ? 'some regrets' : 'clear conscience'})
+- Trauma weight: ${profile.traumaWeight.toFixed(2)} (${profile.traumaWeight > 0.6 ? 'heavily traumatized' : profile.traumaWeight > 0.3 ? 'some trauma' : 'minimal trauma'})
+- Physical state: ${profile.physicalState.toFixed(2)} (${profile.physicalState > 0.6 ? 'vulnerable/injured' : profile.physicalState > 0.3 ? 'some strain' : 'physically capable'})
+- Social context: ${profile.socialContext.toFixed(2)} (${profile.socialContext > 0.6 ? 'well-connected' : profile.socialContext > 0.3 ? 'some connections' : 'isolated'})
+- Cognitive state: ${profile.cognitiveState.toFixed(2)} (${profile.cognitiveState > 0.6 ? 'clear thinking' : profile.cognitiveState > 0.3 ? 'some confusion' : 'fragmented perception'})
+- Story phase: ${phase}
+
+Creative suggestions:
+${profile.trust < 0.4 ? '- Consider themes of betrayal, deception, or unreliable narrators\n' : ''}
+${profile.guilt > 0.6 ? '- Explore past mistakes haunting the present\n' : ''}
+${profile.traumaWeight > 0.6 ? '- Trauma may manifest as hallucinations, flashbacks, or distorted reality\n' : ''}
+${profile.physicalState > 0.6 ? '- Physical vulnerability can heighten psychological tension\n' : ''}
+${profile.socialContext < 0.4 ? '- Isolation can amplify paranoia and internal conflict\n' : ''}
+${profile.cognitiveState < 0.4 ? '- Question the reliability of memories and perceptions\n' : ''}
+${phase === 'EARLY' ? '- Establish mystery and plant seeds of doubt\n' : ''}
+${phase === 'MID' ? '- Escalate psychological pressure and complications\n' : ''}
+${phase === 'LATE' ? '- Bring tensions to a head, confront truths\n' : ''}
+${phase === 'FINALE' ? '- Deliver emotional and psychological payoff\n' : ''}`;
+  
+  return `${instructions}\n${vectorInstructions}\n${multiFactorInstructions}`.trim();
 }
 
 /**
@@ -252,10 +308,10 @@ Apply these behaviors:
  * @returns Complete narrative style for AI guidance
  */
 export function createNarrativeStyle(state: StoryState): NarrativeStyle {
-  const input = createStyleInput(state);
-  const vector = calculateStyleVector(input);
-  const mode = determineNarrativeMode(vector, input.sanity, input.isEnding);
-  const instructions = generateStyleInstructions({ mode, vector });
+  const styleInput = createStyleInput(state);
+  const vector = calculateStyleVector(styleInput);
+  const mode = determineNarrativeMode(vector, styleInput.sanity, styleInput.isEnding);
+  const instructions = generateStyleInstructions({ mode, vector }, styleInput, state);
   
   return {
     mode,

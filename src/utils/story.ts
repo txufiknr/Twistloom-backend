@@ -1,7 +1,8 @@
 import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel } from "../types/story.js";
+import type { Injury } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
@@ -211,6 +212,34 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   return newState;
 }
 
+// ============================================================================
+// INJURY DECAY SYSTEM
+// ============================================================================
+
+/**
+ * Applies decay to injuries based on their decay rate
+ * 
+ * @param injuries - Array of injuries to decay
+ * @returns Array of injuries with updated severity, filtered out if healed
+ */
+function decayInjuries(injuries: Injury[]): Injury[] {
+  return injuries
+    .map(injury => {
+      if (!injury.severity || !injury.decayPerPage || injury.decayPerPage === 0) {
+        return injury;
+      }
+      
+      const newSeverity = Math.max(0, injury.severity - injury.decayPerPage);
+      
+      // Return updated injury, or mark as healed if severity reaches 0
+      return {
+        ...injury,
+        severity: newSeverity
+      };
+    })
+    .filter(injury => !injury.severity || injury.severity > 0); // Remove fully healed injuries
+}
+
 /**
  * Advances story state based on user action and previous AI turn updates
  *
@@ -238,9 +267,24 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
 export async function advanceStoryState(state: StoryState, actionedPage: ActionedStoryPage): Promise<StoryState> {
   const updatedState = updateStoryState(state, actionedPage.stateDelta);
 
+  // Remove any existing entries with the same page number to avoid duplicates
+  updatedState.actionsHistory = updatedState.actionsHistory.filter(action => action.page !== updatedState.page);
+
   // Add chosen action to history and increment page number
   updatedState.actionsHistory.push({...actionedPage.selectedAction, page: updatedState.page});
   updatedState.page++;
+
+  // Apply injury decay to MC injuries
+  if (updatedState.injuries && updatedState.injuries.length > 0) {
+    updatedState.injuries = decayInjuries(updatedState.injuries);
+  }
+
+  // Apply injury decay to all characters
+  Object.values(updatedState.characters).forEach(character => {
+    if (character.injuries && character.injuries.length > 0) {
+      character.injuries = decayInjuries(character.injuries);
+    }
+  });
 
   // Update psychological flags based on action type
   updateFlags(updatedState, actionedPage.selectedAction);
@@ -343,18 +387,26 @@ function updateFlags(state: StoryState, action?: Action): void {
   const isEarlyPhase = pageProgress < 0.3;
   const difficultyModifier = state.difficulty === 'nightmare' ? 0.2 : 0;
 
-  // ========================
+// ========================
   // TRUST FLAG CALCULATION
   // ========================
   let trustScore = getFlagScore(state.flags.trust);
   
   // Base action influence
   switch (action.type) {
-    case "social": trustScore += 0.3; break;      // Social builds trust
+    case "social": trustScore += 0.3; break;     // Social builds trust
     case "explore": trustScore += 0.1; break;    // Exploration builds some trust
+    case "protect": trustScore += 0.4; break;    // Protecting others strongly builds trust
+    case "heal": trustScore += 0.3; break;       // Healing builds trust
+    case "create": trustScore += 0.1; break;     // Creation builds some trust
+    case "dialogue": trustScore += 0.2; break;   // Dialogue builds trust
     case "risk": trustScore -= 0.4; break;       // Risky actions damage trust
     case "escape": trustScore -= 0.3; break;     // Escape shows distrust
     case "ignore": trustScore -= 0.2; break;     // Ignoring erodes trust
+    case "attack": trustScore -= 0.3; break;     // Attack damages trust
+    case "deceive": trustScore -= 0.5; break;    // Deception severely damages trust
+    case "custom": trustScore += 0.05; break;    // Custom actions have minimal trust impact
+    case "other": trustScore += 0.05; break;     // Other actions have minimal trust impact
   }
 
   // Context modifiers
@@ -374,11 +426,19 @@ function updateFlags(state: StoryState, action?: Action): void {
   
   // Base action influence
   switch (action.type) {
-    case "escape": fearScore += 0.4; break;       // Escape increases fear
-    case "risk": fearScore += 0.3; break;         // Risk increases fear
-    case "explore": fearScore += 0.2; break;      // Exploration can be scary
+    case "escape": fearScore += 0.4; break;      // Escape increases fear
+    case "risk": fearScore += 0.3; break;        // Risk increases fear
+    case "attack": fearScore += 0.2; break;      // Attack can create fear
+    case "explore": fearScore += 0.2; break;     // Exploration can be scary
     case "ignore": fearScore += 0.1; break;      // Ignoring creates fear
+    case "deceive": fearScore += 0.2; break;     // Deception creates fear
     case "social": fearScore -= 0.1; break;      // Social reduces fear slightly
+    case "protect": fearScore -= 0.1; break;     // Protecting reduces fear
+    case "heal": fearScore -= 0.2; break;        // Healing reduces fear
+    case "create": fearScore -= 0.1; break;      // Creation reduces fear
+    case "dialogue": fearScore -= 0.05; break;   // Dialogue reduces fear
+    case "custom": fearScore += 0.05; break;     // Custom actions have minimal fear impact
+    case "other": fearScore += 0.05; break;      // Other actions have minimal fear impact
   }
 
   // Context modifiers
@@ -399,11 +459,19 @@ function updateFlags(state: StoryState, action?: Action): void {
   
   // Base action influence
   switch (action.type) {
-    case "social": guiltScore += 0.2; break;      // Social interactions create guilt
-    case "risk": guiltScore += 0.3; break;       // Risky actions create guilt
+    case "deceive": guiltScore += 0.4; break;     // Deception creates strong guilt
+    case "attack": guiltScore += 0.3; break;      // Attack creates guilt
+    case "risk": guiltScore += 0.3; break;        // Risky actions create guilt
     case "ignore": guiltScore += 0.3; break;      // Ignoring creates guilt
     case "escape": guiltScore += 0.1; break;      // Escape can create guilt
+    case "social": guiltScore += 0.2; break;      // Social interactions create guilt
+    case "protect": guiltScore -= 0.1; break;     // Protecting reduces guilt
+    case "heal": guiltScore -= 0.2; break;        // Healing reduces guilt
+    case "create": guiltScore -= 0.1; break;      // Creation reduces guilt
+    case "dialogue": guiltScore += 0.05; break;   // Dialogue can create guilt
     case "explore": guiltScore -= 0.1; break;     // Exploration reduces guilt
+    case "custom": guiltScore += 0.05; break;     // Custom actions have minimal guilt impact
+    case "other": guiltScore += 0.05; break;      // Other actions have minimal guilt impact
   }
 
   // Context modifiers
@@ -423,11 +491,19 @@ function updateFlags(state: StoryState, action?: Action): void {
   
   // Base action influence
   switch (action.type) {
-    case "explore": curiosityScore += 0.4; break;  // Exploration drives curiosity
-    case "risk": curiosityScore += 0.3; break;    // Risk requires curiosity
-    case "social": curiosityScore += 0.1; break;   // Social creates curiosity
-    case "ignore": curiosityScore += 0.2; break;   // Ignoring increases curiosity
-    case "escape": curiosityScore -= 0.2; break;   // Escape reduces curiosity
+    case "explore": curiosityScore += 0.4; break;   // Exploration drives curiosity
+    case "risk": curiosityScore += 0.3; break;      // Risk requires curiosity
+    case "create": curiosityScore += 0.3; break;    // Creation drives curiosity
+    case "dialogue": curiosityScore += 0.2; break;  // Dialogue creates curiosity
+    case "social": curiosityScore += 0.1; break;    // Social creates curiosity
+    case "ignore": curiosityScore += 0.2; break;    // Ignoring increases curiosity
+    case "deceive": curiosityScore += 0.1; break;   // Deception requires curiosity
+    case "protect": curiosityScore += 0.05; break;  // Protecting creates some curiosity
+    case "heal": curiosityScore += 0.1; break;      // Healing creates curiosity
+    case "attack": curiosityScore += 0.05; break;   // Attack creates minimal curiosity
+    case "escape": curiosityScore -= 0.2; break;    // Escape reduces curiosity
+    case "custom": curiosityScore += 0.1; break;    // Custom actions create curiosity
+    case "other": curiosityScore += 0.05; break;    // Other actions create minimal curiosity
   }
 
   // Context modifiers
@@ -447,7 +523,7 @@ function updateFlags(state: StoryState, action?: Action): void {
  * @param flag - Flag level (low/medium/high)
  * @returns Numeric score (0.0-1.0)
  */
-function getFlagScore(flag: 'low' | 'medium' | 'high'): number {
+function getFlagScore(flag: FlagLevel): number {
   switch (flag) {
     case 'low': return 0.0;
     case 'medium': return 0.5;
@@ -467,10 +543,10 @@ function getFlagScore(flag: 'low' | 'medium' | 'high'): number {
  * @returns Updated flag level
  */
 function updateFlagWithHysteresis(
-  currentLevel: 'low' | 'medium' | 'high',
+  currentLevel: FlagLevel,
   newScore: number,
   hysteresis: number
-): 'low' | 'medium' | 'high' {
+): FlagLevel {
   // Apply hysteresis thresholds
   const thresholds = {
     // Increasing thresholds (higher score needed to level up)
