@@ -6,18 +6,7 @@ import type { StoryMC } from "../types/character.js";
 import type { BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { 
-  PsychologicalProfile, 
-  PsychologicalFlags,
-  HiddenState,
-  MemoryIntegrity,
-  Difficulty,
-  Action,
-  StateDelta,
-  Ending,
-  ActionHistory,
-  PlotFlag,
-} from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";

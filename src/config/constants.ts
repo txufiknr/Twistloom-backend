@@ -4,7 +4,9 @@ import { join } from "path";
 /** Application constants and configuration */
 export const APP_NAME: string = 'Twistloom';
 export const APP_NAME_SLUG: string = 'twistloom';
-export const WEBSITE: string = 'https://github.com/txufiknr/Twistloom';
+export const APP_DESCRIPTION = 'Where your choices shape the story. Step into psychological thrillers that adapt to every decision you make.';
+export const APP_TAGLINE = 'AI-powered platform for creating and reading interactive branching thriller stories.';
+export const APP_TAGLINE_SHORT = 'AI Thriller Story Generator';
 
 /**
  * Safely get application version from package.json

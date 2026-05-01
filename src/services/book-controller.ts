@@ -207,3 +207,27 @@ export function handleThemeValidationError(
 
   return res.status(400).json(errorResponse);
 }
+
+/**
+ * Builds an enriched similar books select object with similarity score
+ * 
+ * Extends getEnrichedBookSelect to include Jaccard similarity score for ranking.
+ * 
+ * @param targetKeywords - Keywords array from the target book for similarity calculation
+ * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
+ * @returns Select object with enriched book fields and similarity score
+ */
+export function getSimilarBookSelect(targetKeywords: string[], currentUserId: string | null = null) {
+  const baseSelect = getEnrichedBookSelect(currentUserId);
+  
+  return {
+    ...baseSelect,
+    // Calculate Jaccard similarity using SQL array operations
+    similarityScore: sql<number>`
+      (
+        cardinality(${books.keywords}::text[] & ${targetKeywords}::text[])::float
+        / NULLIF(cardinality(${books.keywords}::text[] | ${targetKeywords}::text[]), 0)
+      )
+    `,
+  };
+}

@@ -857,6 +857,99 @@ export async function getPublicBookStats(): Promise<{
 }
 
 /**
+ * Fetches similar books based on keyword Jaccard similarity
+ * 
+ * Uses PostgreSQL's native array operations to calculate Jaccard similarity
+ * between the target book's keywords and all other books' keywords.
+ * 
+ * Jaccard Similarity Formula: J(A, B) = |A ∩ B| / |A ∪ B|
+ * 
+ * Calculated entirely in SQL for optimal performance:
+ * - Uses `&` operator for array intersection
+ * - Uses `|` operator for array union
+ * - Uses `cardinality()` to count elements
+ * - Sorts by highest similarity score
+ * 
+ * @param bookId - The book ID to find similar books for
+ * @param limit - Maximum number of similar books to return (default: 10)
+ * @returns Promise resolving to array of similar books with similarity scores
+ * 
+ * @example
+ * ```typescript
+ * const similarBooks = await getSimilarBooks("book123", 5);
+ * // Returns books with highest keyword overlap, sorted by similarity score
+ * ```
+ */
+export async function getSimilarBooks(bookId: string, limit: number = 10): Promise<Array<DBBook & { similarityScore: number }>> {
+  try {
+    // Get the target book's keywords first
+    const targetBook = await dbRead
+      .select({ keywords: books.keywords })
+      .from(books)
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    if (!targetBook[0]) {
+      return [];
+    }
+
+    const targetKeywords = targetBook[0].keywords;
+
+    // Query similar books using PostgreSQL Jaccard similarity calculation
+    // Jaccard = |A ∩ B| / |A ∪ B|
+    const similarBooks = await dbRead
+      .select({
+        id: books.id,
+        userId: books.userId,
+        slug: books.slug,
+        title: books.title,
+        totalPages: books.totalPages,
+        language: books.language,
+        hook: books.hook,
+        summary: books.summary,
+        image: books.image,
+        imageId: books.imageId,
+        trendingScore: books.trendingScore,
+        isOriginal: books.isOriginal,
+        keywords: books.keywords,
+        status: books.status,
+        mc: books.mc,
+        likesCount: books.likesCount,
+        readCount: books.readCount,
+        branchesCount: books.branchesCount,
+        topPick: books.topPick,
+        createdAt: books.createdAt,
+        updatedAt: books.updatedAt,
+        // Calculate Jaccard similarity using SQL array operations
+        similarityScore: sql<number>`
+          (
+            cardinality(${books.keywords}::text[] & ${targetKeywords}::text[])::float
+            / NULLIF(cardinality(${books.keywords}::text[] | ${targetKeywords}::text[]), 0)
+          )
+        `,
+      })
+      .from(books)
+      .where(
+        and(
+          // Exclude the target book itself
+          sql`${books.id} != ${bookId}`,
+          // Only include books with keywords
+          sql`cardinality(${books.keywords}::text[]) > 0`,
+          // Only include active books
+          eq(books.status, 'active')
+        )
+      )
+      .orderBy(desc(sql`similarityScore`))
+      .limit(limit);
+
+    return similarBooks as Array<DBBook & { similarityScore: number }>;
+  } catch (error) {
+    console.error(`Failed to get similar books for ${bookId}:`, getErrorMessage(error));
+    throw new Error(`Unable to retrieve similar books: ${getErrorMessage(error)}`, { cause: error });
+  }
+}
+
+/**
  * Applies book-specific sorting to a query based on sort option
  * 
  * @param query - Drizzle query builder

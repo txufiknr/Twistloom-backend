@@ -39,9 +39,9 @@ import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, buildSearchConditions, createRelevanceExpression, validateLanguageCode, type SearchParams } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry, getSimilarBooks } from "../services/book.js";
 import { isValidBookSortOption } from "../utils/books.js";
-import { getEnrichedBookSelect } from "../services/book-controller.js";
+import { getEnrichedBookSelect, getSimilarBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import type { BookSortOption, EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
@@ -807,6 +807,89 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     });
   } catch (error) {
     handleApiError(res, "Failed to update book", error);
+  }
+});
+
+/**
+ * GET /api/books/:id/similar
+ * 
+ * Retrieves similar books based on keyword Jaccard similarity.
+ * Uses PostgreSQL's native array operations to calculate similarity scores.
+ * 
+ * Jaccard Similarity Formula: J(A, B) = |A ∩ B| / |A ∪ B|
+ * 
+ * Returns books with highest keyword overlap, sorted by similarity score.
+ * Includes author information and user-specific engagement flags.
+ * 
+ * @param id - Book ID to find similar books for (accepts both slug and UUID)
+ * @param limit - Maximum number of similar books to return (default: 10, max: 50)
+ * @returns Array of similar books with similarity scores and enriched metadata
+ * 
+ * @example
+ * GET /api/books/book123/similar?limit=5
+ * 
+ * Response:
+ * {
+ *   "similarBooks": [
+ *     {
+ *       "id": "book456",
+ *       "title": "Another Thriller",
+ *       "similarityScore": 0.75,
+ *       "author": {...},
+ *       "stats": {...},
+ *       "isLiked": false,
+ *       "isRead": true,
+ *       ...
+ *     },
+ *     ...
+ *   ]
+ * }
+ */
+router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+    const currentUserId = req.userId || null;
+
+    // Handle array case for id (Express can return string[])
+    const bookId = Array.isArray(id) ? id[0] : id;
+
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(bookId);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Get similar books with enriched data
+    const similarBooks = await dbRead
+      .select({
+        ...getSimilarBookSelect(book.keywords, currentUserId),
+      })
+      .from(books)
+      .leftJoin(users, eq(books.userId, users.userId))
+      .where(
+        and(
+          // Exclude the target book itself
+          sql`${books.id} != ${book.id}`,
+          // Only include books with keywords
+          sql`cardinality(${books.keywords}::text[]) > 0`,
+          // Only include active books
+          eq(books.status, 'active')
+        )
+      )
+      .orderBy(desc(sql`similarityScore`))
+      .limit(limit);
+
+    res.json({
+      similarBooks,
+      targetBook: {
+        id: book.id,
+        title: book.title,
+        keywords: book.keywords,
+      },
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve similar books", error);
   }
 });
 

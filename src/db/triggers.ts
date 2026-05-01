@@ -17,6 +17,8 @@ import { dbWrite } from "./client.js";
 import { getErrorMessage } from "../utils/error.js";
 import { users } from "./schema.js";
 import { generateId } from "../utils/uuid.js";
+import { APP_NAME, APP_NAME_SLUG, APP_TAGLINE } from "../config/constants.js";
+import { DBUser } from "../types/schema.js";
 const __filename = fileURLToPath(import.meta.url);
 
 /**
@@ -248,7 +250,7 @@ async function ensureBookReadCountTrigger(): Promise<void> {
  * - Inserts user with name "Admin" only if table is empty
  * - Returns the complete user object from database or null
  */
-async function createInitialAdminUser(): Promise<any> {
+async function createInitialAdminUser(): Promise<DBUser | null> {
   // Check if users table is empty
   const [existingUsers] = await dbWrite
     .select({ count: sql<number>`count(*)` })
@@ -259,13 +261,14 @@ async function createInitialAdminUser(): Promise<any> {
     return null;
   }
   
-  const adminUserId = generateId();
-  
   const [createdUser] = await dbWrite
     .insert(users)
     .values({
-      userId: adminUserId,
-      name: "Admin",
+      userId: generateId(),
+      username: APP_NAME_SLUG,
+      name: APP_NAME,
+      penName: APP_NAME,
+      bio: APP_TAGLINE,
     })
     .returning();
   
