@@ -216,6 +216,45 @@ export type PsychologicalFlags = {
   curiosity: CuriosityLevel;
 };
 
+/**
+ * Available plot flag types for story progression tracking
+ * 
+ * These types categorize different kinds of plot developments
+ * and narrative events that drive the story forward.
+ */
+export const plotFlagTypes = [
+  "clue_found",        // Discovery of important information or evidence
+  "secret_revealed",   // Hidden truth comes to light
+  "betrayal_witnessed", // Character betrayal observed or experienced
+  "mystery_started",   // New storyline or puzzle begins
+  "threat_identified", // Danger or antagonist becomes clear
+  "alliance_formed",   // Partnership or cooperation established
+  "conflict_escalated", // Tension or confrontation increases
+  "sacrifice_made",    // Character gives up something important
+  "truth_hidden",      // Information deliberately concealed
+  "deception_detected", // Lie or manipulation uncovered
+  "escape_attempted",  // Character tries to flee or avoid situation
+  "confrontation",     // Direct face-off between characters
+  "revelation",        // Major truth or discovery revealed
+  "loss_experienced",   // Significant setback or damage occurs
+  "hope_found",        // Positive development or opportunity emerges
+  "other"              // Catch-all for unique plot developments
+] as const;
+
+/**
+ * Union type of all possible plot flag type values
+ * 
+ * Generated from the plotFlagTypes array to ensure type safety
+ * and autocomplete support for plot flag categorization.
+ */
+export type PlotFlagType = typeof plotFlagTypes[number];
+
+export interface PlotFlag {
+  page: number;
+  fact: string;
+  type: PlotFlagType;
+}
+
 export type Ending = {
   text?: string;
   type?: EndingType;
@@ -542,8 +581,8 @@ export type StateDelta = {
   flagUpdates?: Partial<PsychologicalFlags>;
   /** Updates to trauma tags (add/remove) based on page events */
   traumaTagUpdates?: TagUpdates;
-  /** Updates to plot flags (add/remove) for story progression */
-  plotFlagUpdates?: TagUpdates;
+  /** Updates to plot flags (add) for story progression */
+  addPlotFlag?: PlotFlag;
   /** Updates to inventory items (add/remove) for character */
   inventoryUpdates?: TagUpdates;
   /** Updates to characters (new and existing) with changes */
@@ -751,7 +790,7 @@ export type StoryState = {
    * Stores information about ongoing storylines, conflicts, and
    * the characters involved in them.
    */
-  plotFlags: string[];
+  plotFlags: PlotFlag[];
 
   /**
    * Collection of items and resources present in the world at the current page

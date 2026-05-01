@@ -1,3 +1,5 @@
+import type { PastInteraction } from "./character.js";
+
 /**
  * Available place types for categorizing locations
  * 
@@ -113,7 +115,7 @@ export type PlaceMemory = {
   events?: string[]; // ["MC discovered the place", "first meeting with Character A"]
   
   /** Characters encountered here with meaningful historical context */
-  knownCharacters?: Record<string, { page: number, context: string }>;
+  knownCharacters?: Record<string, PastInteraction[]>;
   
   /** Optional sensory details for consistent atmosphere */
   sensoryDetails?: SensoryDetails;

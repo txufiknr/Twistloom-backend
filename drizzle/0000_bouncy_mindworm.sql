@@ -59,7 +59,6 @@ CREATE TABLE "story_states" (
 	"page" integer NOT NULL,
 	"max_page" integer NOT NULL,
 	"flags" jsonb NOT NULL,
-	"threads" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"trauma_tags" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"plot_flags" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"inventory" jsonb DEFAULT '[]'::jsonb NOT NULL,
@@ -70,13 +69,29 @@ CREATE TABLE "story_states" (
 	"viable_ending" jsonb,
 	"characters" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"places" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"page_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"threads" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"actions_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"injuries" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"context_history" text DEFAULT '' NOT NULL,
 	"is_major_event" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "story_states_user_id_book_id_page_id_pk" PRIMARY KEY("user_id","book_id","page_id")
+);
+--> statement-breakpoint
+CREATE TABLE "transactions" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"user_id" uuid NOT NULL,
+	"type" text NOT NULL,
+	"credits" integer NOT NULL,
+	"amount_usd" real,
+	"payment_intent_id" text,
+	"stripe_event_id" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "transactions_payment_intent_id_unique" UNIQUE("payment_intent_id"),
+	CONSTRAINT "transactions_stripe_event_id_unique" UNIQUE("stripe_event_id"),
+	CONSTRAINT "transactions_payment_intent_unique" UNIQUE("payment_intent_id"),
+	CONSTRAINT "transactions_stripe_event_unique" UNIQUE("stripe_event_id")
 );
 --> statement-breakpoint
 CREATE TABLE "usage" (
@@ -148,6 +163,18 @@ CREATE TABLE "user_likes" (
 	CONSTRAINT "user_likes_user_id_target_type_target_id_pk" PRIMARY KEY("user_id","target_type","target_id")
 );
 --> statement-breakpoint
+CREATE TABLE "user_notifications" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"user_id" uuid NOT NULL,
+	"type" text NOT NULL,
+	"title" text NOT NULL,
+	"message" text NOT NULL,
+	"data" jsonb,
+	"read" boolean DEFAULT false NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "user_page_progress" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -178,6 +205,7 @@ CREATE TABLE "users" (
 	"username" text,
 	"email" text,
 	"password_hash" text,
+	"credits" integer DEFAULT 0 NOT NULL,
 	"pen_name" text,
 	"bio" text,
 	"gender" text,
@@ -190,15 +218,30 @@ CREATE TABLE "users" (
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
+CREATE TABLE "webhook_deliveries" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"event_id" text NOT NULL,
+	"event_type" text NOT NULL,
+	"delivered_at" timestamp DEFAULT now() NOT NULL,
+	"processed_at" timestamp,
+	"status" text DEFAULT 'retrying' NOT NULL,
+	"error_message" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "webhook_deliveries_event_unique" UNIQUE("event_id")
+);
+--> statement-breakpoint
 ALTER TABLE "books" ADD CONSTRAINT "books_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pages" ADD CONSTRAINT "pages_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "story_states" ADD CONSTRAINT "story_states_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "story_states" ADD CONSTRAINT "story_states_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "transactions" ADD CONSTRAINT "transactions_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_auth" ADD CONSTRAINT "user_auth_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_comments" ADD CONSTRAINT "user_comments_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_favorites" ADD CONSTRAINT "user_favorites_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_follows" ADD CONSTRAINT "user_follows_follower_id_users_user_id_fk" FOREIGN KEY ("follower_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_follows" ADD CONSTRAINT "user_follows_following_id_users_user_id_fk" FOREIGN KEY ("following_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_notifications" ADD CONSTRAINT "user_notifications_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_page_progress" ADD CONSTRAINT "user_page_progress_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_page_progress" ADD CONSTRAINT "user_page_progress_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_sessions" ADD CONSTRAINT "user_sessions_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -224,6 +267,9 @@ CREATE INDEX "pages_pending_generation_idx" ON "pages" USING btree ("pending_gen
 CREATE INDEX "story_states_page_idx" ON "story_states" USING btree ("page");--> statement-breakpoint
 CREATE INDEX "story_states_difficulty_idx" ON "story_states" USING btree ("difficulty");--> statement-breakpoint
 CREATE INDEX "story_states_progress_idx" ON "story_states" USING btree ("page" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "transactions_user_idx" ON "transactions" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "transactions_type_idx" ON "transactions" USING btree ("type");--> statement-breakpoint
+CREATE INDEX "transactions_created_idx" ON "transactions" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "user_auth_lock_until_idx" ON "user_auth" USING btree ("lock_until") WHERE "user_auth"."lock_until" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "user_auth_password_reset_token_idx" ON "user_auth" USING btree ("password_reset_token") WHERE "user_auth"."password_reset_token" IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "user_auth_email_verification_token_idx" ON "user_auth" USING btree ("email_verification_token") WHERE "user_auth"."email_verification_token" IS NOT NULL;--> statement-breakpoint
@@ -247,9 +293,16 @@ CREATE INDEX "user_follows_created_idx" ON "user_follows" USING btree ("created_
 CREATE INDEX "user_likes_user_idx" ON "user_likes" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "user_likes_target_idx" ON "user_likes" USING btree ("target_type","target_id");--> statement-breakpoint
 CREATE INDEX "user_likes_created_idx" ON "user_likes" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "user_notifications_user_idx" ON "user_notifications" USING btree ("user_id","created_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE INDEX "user_notifications_unread_idx" ON "user_notifications" USING btree ("user_id","read");--> statement-breakpoint
+CREATE INDEX "user_notifications_type_idx" ON "user_notifications" USING btree ("type");--> statement-breakpoint
+CREATE INDEX "user_notifications_created_idx" ON "user_notifications" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "user_page_progress_user_book_idx" ON "user_page_progress" USING btree ("user_id","book_id");--> statement-breakpoint
 CREATE INDEX "user_page_progress_page_idx" ON "user_page_progress" USING btree ("page_id");--> statement-breakpoint
 CREATE INDEX "user_sessions_status_idx" ON "user_sessions" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "user_sessions_user_active_idx" ON "user_sessions" USING btree ("user_id") WHERE status = 'active';--> statement-breakpoint
 CREATE INDEX "users_gender_idx" ON "users" USING btree ("gender");--> statement-breakpoint
-CREATE INDEX "users_created_at_idx" ON "users" USING btree ("created_at");
+CREATE INDEX "users_created_at_idx" ON "users" USING btree ("created_at");--> statement-breakpoint
+CREATE INDEX "webhook_deliveries_event_idx" ON "webhook_deliveries" USING btree ("event_id");--> statement-breakpoint
+CREATE INDEX "webhook_deliveries_status_idx" ON "webhook_deliveries" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "webhook_deliveries_created_idx" ON "webhook_deliveries" USING btree ("created_at" DESC NULLS LAST);

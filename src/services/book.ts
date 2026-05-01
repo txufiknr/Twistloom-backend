@@ -87,10 +87,6 @@ export async function insertStoryPage(
       importantObjects: [], // Empty array for root page
       actions: page.actions,
       stateDelta: extractStateDelta(page),
-      // addTraumaTag: page.addTraumaTag || null,
-      // addPlotFlag: page.addPlotFlag || null,
-      // characterUpdates: page.characterUpdates || null,
-      // placeUpdates: page.placeUpdates || null,
       aiProvider: page.aiProvider || null,
       aiModel: page.aiModel || null,
       pendingGenerationCount,
@@ -104,41 +100,6 @@ export async function insertStoryPage(
       .returning();
 
     const insertedPage = mapToPersistedStoryPage(result[0]);
-
-    // // Insert story state delta if delta fields are present
-    // const delta: StateDelta = {
-    //   flagUpdates: page.flagUpdates,
-    //   traumaTagUpdates: page.traumaTagUpdates,
-    //   plotFlagUpdates: page.plotFlagUpdates,
-    //   inventoryUpdates: page.inventoryUpdates,
-    //   characterUpdates: page.characterUpdates,
-    //   relationshipUpdates: page.relationshipUpdates,
-    //   placeUpdates: page.placeUpdates,
-    //   threadUpdates: page.threadUpdates,
-    //   viableEnding: page.viableEnding,
-    //   isMajorEvent: page.isMajorEvent,
-    //   contextHistory: page.contextHistory,
-    // };
-
-    // // Only insert delta if at least one delta field is present
-    // const hasDeltaFields = Object.values(delta).some(value => 
-    //   value !== undefined && value !== null && 
-    //   (Array.isArray(value) ? value.length > 0 : true)
-    // );
-
-    // if (hasDeltaFields) {
-    //   await dbWrite
-    //     .insert(storyStateDeltas)
-    //     .values({
-    //       userId,
-    //       pageId: insertedPage.id,
-    //       bookId,
-    //       delta,
-    //       createdAt: new Date(),
-    //       updatedAt: new Date(),
-    //     });
-    // }
-
     return insertedPage;
   } catch (error) {
     console.error(`Failed to insert story page for page ${pageNumber}:`, getErrorMessage(error));
@@ -517,10 +478,6 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
     stateDelta: dbPage.stateDelta || {},
-    // addTraumaTag: dbPage.addTraumaTag || undefined,
-    // addPlotFlag: dbPage.addPlotFlag || undefined,
-    // characterUpdates: dbPage.characterUpdates || undefined,
-    // placeUpdates: dbPage.placeUpdates || undefined,
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
   } satisfies PersistedStoryPage;
@@ -594,10 +551,6 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
     stateDelta: dbPage.stateDelta || {},
-    // addTraumaTag: dbPage.addTraumaTag || undefined,
-    // addPlotFlag: dbPage.addPlotFlag || undefined,
-    // characterUpdates: dbPage.characterUpdates || undefined,
-    // placeUpdates: dbPage.placeUpdates || undefined,
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
   } satisfies StoryPage;

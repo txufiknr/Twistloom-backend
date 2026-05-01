@@ -1,7 +1,7 @@
 import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
-import { storyPhases } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel } from "../types/story.js";
+import { storyPhases, plotFlagTypes } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates } from "../types/story.js";
 import type { Injury } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
@@ -21,14 +21,13 @@ import { deepEqualSimple } from "../utils/parser.js";
  * @example
  * ```typescript
  * const delta = extractStateDelta(generatedPage);
- * // Returns: { flagUpdates, traumaTagUpdates, plotFlagUpdates, ... }
  * ```
  */
 export function extractStateDelta(generation: StoryGeneration): StateDelta {
   return {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
-    plotFlagUpdates: generation.plotFlagUpdates,
+    addPlotFlag: generation.addPlotFlag,
     inventoryUpdates: generation.inventoryUpdates,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
@@ -122,11 +121,11 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
 }
 
 /**
- * Applies state delta to base story state
+ * Applies state delta to story state
  * 
- * This function applies incremental changes from a StateDelta to a base StoryState,
- * producing a new state with all updates applied. This is useful for reconstructing
- * story states from stored deltas without requiring full snapshots.
+ * This function applies incremental changes from a StateDelta to a StoryState,
+ * producing a new state with all updates applied. This is used for both
+ * reconstructing story states from stored deltas and applying AI-generated updates.
  * 
  * @param baseState - Base story state to apply delta to
  * @param stateDelta - State delta containing incremental changes
@@ -137,7 +136,6 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
  * const newState = applyStateDelta(currentState, {
  *   flagUpdates: { trust: "low" },
  *   traumaTagUpdates: { add: ["heard a voice"], remove: [] },
- *   plotFlagUpdates: { add: ["found key"], remove: [] }
  * });
  * ```
  */
@@ -145,7 +143,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   const {
     flagUpdates,
     traumaTagUpdates,
-    plotFlagUpdates,
+    addPlotFlag,
     inventoryUpdates,
     characterUpdates,
     relationshipUpdates,
@@ -164,10 +162,13 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   const newState: StoryState = {
     ...baseState,
     // Apply optional delta fields
-    flags: flagUpdates ? { ...baseState.flags, ...flagUpdates } : baseState.flags,
+    flags: { ...baseState.flags, ...(flagUpdates ?? {}) },
     isMajorEvent: isMajorEvent ?? baseState.isMajorEvent,
     contextHistory: contextHistory ?? baseState.contextHistory,
-    viableEnding: viableEnding ? { ...baseState.viableEnding, ...viableEnding } : baseState.viableEnding,
+    viableEnding: viableEnding ? {
+      text: viableEnding.text ?? baseState.viableEnding?.text,
+      type: viableEnding.type ?? baseState.viableEnding?.type,
+    } : baseState.viableEnding,
     // Apply new delta fields
     psychologicalProfile: psychologicalProfileUpdates 
       ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates } 
@@ -180,34 +181,22 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   };
 
   // Apply trauma tag updates
-  if (traumaTagUpdates) {
-    processTraumaTagUpdates(newState, traumaTagUpdates);
-  }
+  processTraumaTagUpdates(newState, traumaTagUpdates);
 
   // Apply plot flag updates
-  if (plotFlagUpdates) {
-    processPlotFlagUpdates(newState, plotFlagUpdates);
-  }
+  processPlotFlagUpdates(newState, addPlotFlag);
 
   // Apply inventory updates
-  if (inventoryUpdates) {
-    processInventoryUpdates(newState, inventoryUpdates);
-  }
+  processInventoryUpdates(newState, inventoryUpdates);
 
   // Apply character and relationship updates
-  if (characterUpdates || relationshipUpdates) {
-    processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
-  }
+  processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
 
   // Apply place updates
-  if (placeUpdates) {
-    processPlaceUpdates(newState, placeUpdates);
-  }
+  processPlaceUpdates(newState, placeUpdates);
 
   // Apply thread updates
-  if (threadUpdates) {
-    processThreadUpdates(newState, threadUpdates);
-  }
+  processThreadUpdates(newState, threadUpdates);
 
   return newState;
 }
@@ -265,7 +254,7 @@ function decayInjuries(injuries: Injury[]): Injury[] {
  * ```
  */
 export async function advanceStoryState(state: StoryState, actionedPage: ActionedStoryPage): Promise<StoryState> {
-  const updatedState = updateStoryState(state, actionedPage.stateDelta);
+  const updatedState = applyStateDelta(state, actionedPage.stateDelta);
 
   // Remove any existing entries with the same page number to avoid duplicates
   updatedState.actionsHistory = updatedState.actionsHistory.filter(action => action.page !== updatedState.page);
@@ -299,68 +288,6 @@ export async function advanceStoryState(state: StoryState, actionedPage: Actione
   updateAdvancedEndingSystems(updatedState);
 
   return updatedState;
-}
-
-/**
- * Applies current AI turn's updates to story state
- *
- * This function processes updates (viable ending, trauma, characters, places, threads)
- * generated by the AI in the current turn and applies them to the story state.
- * This is called after AI generation succeeds.
- *
- * @param storyState - Current story state to update
- * @param generatedPage - AI-generated page content with current turn's updates
- * @returns Updated story state with current AI modifications applied
- */
-export function updateStoryState(
-  storyState: StoryState,
-  stateDelta: StateDelta
-): StoryState {
-  const {
-    flagUpdates,
-    traumaTagUpdates,
-    plotFlagUpdates,
-    inventoryUpdates,
-    characterUpdates,
-    relationshipUpdates,
-    placeUpdates,
-    threadUpdates,
-    viableEnding,
-    isMajorEvent,
-    contextHistory,
-  } = stateDelta;
-
-  // Create new state with viable ending updates
-  const newState: StoryState = { 
-    ...storyState,
-    isMajorEvent: isMajorEvent ?? storyState.isMajorEvent,
-    contextHistory: contextHistory ?? storyState.contextHistory,
-    flags: {...storyState.flags, ...(flagUpdates ?? {})},
-    viableEnding: {
-      text: viableEnding?.text ?? storyState.viableEnding?.text,
-      type: viableEnding?.type ?? storyState.viableEnding?.type,
-    } 
-  };
-
-  // Add or remove new trauma tag if provided
-  processTraumaTagUpdates(newState, traumaTagUpdates);
-
-  // Add or remove plot flag if provided
-  processPlotFlagUpdates(newState, plotFlagUpdates);
-
-  // Add or remove inventory if provided
-  processInventoryUpdates(newState, inventoryUpdates);
-
-  // Process character updates from AI output
-  processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
-
-  // Process place updates from AI output
-  processPlaceUpdates(newState, placeUpdates);
-
-  // Process thread updates from AI output
-  processThreadUpdates(newState, threadUpdates);
-
-  return newState;
 }
 
 /**
@@ -592,7 +519,7 @@ function updateFlagWithHysteresis(
  * });
  * ```
  */
-export function processTraumaTagUpdates(state: StoryState, updates?: { add: string[]; remove: string[] }): void {
+export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates): void {
   if (!updates) return;
   
   // Remove specified tags
@@ -618,35 +545,33 @@ export function processTraumaTagUpdates(state: StoryState, updates?: { add: stri
 /**
  * Processes plot flag updates from AI-generated content
  * 
- * Handles both adding and removing plot flags based on the TagUpdates structure.
- * Plot flags track important story developments and discoveries.
+ * Adds a single plot flag to track important story developments and discoveries.
+ * Plot flags are appended to maintain chronological order of plot progression.
+ * Validates that the plot flag type is one of the allowed types.
  * 
  * @param state - Current story state to update
- * @param updates - TagUpdates object with add and remove arrays
+ * @param addPlotFlag - Optional PlotFlag object with page, fact, and type
  * 
  * @example
  * ```typescript
  * processPlotFlagUpdates(state, {
- *   add: ["found mysterious key", "discovered secret passage"],
- *   remove: ["old irrelevant flag"]
+ *   page: 15,
+ *   fact: "Discovered the hidden basement key",
+ *   type: "clue_found"
  * });
  * ```
  */
-export function processPlotFlagUpdates(state: StoryState, updates?: { add: string[]; remove: string[] }): void {
-  if (!updates) return;
-  
-  // Remove specified flags
-  if (updates.remove.length > 0) {
-    state.plotFlags = state.plotFlags.filter(flag => !updates.remove.includes(flag));
-  }
-  
-  // Add new flags (avoid duplicates)
-  if (updates.add.length > 0) {
-    for (const flag of updates.add) {
-      if (!state.plotFlags.includes(flag)) {
-        state.plotFlags.push(flag);
-      }
-    }
+export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag): void {
+  if (addPlotFlag) {
+    // Validate plot flag type - default to "other" if invalid
+    const validType = plotFlagTypes.includes(addPlotFlag.type as any) 
+      ? addPlotFlag.type 
+      : "other";
+    
+    state.plotFlags.push({
+      ...addPlotFlag,
+      type: validType
+    });
   }
 }
 

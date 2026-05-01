@@ -21,7 +21,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   // State Delta
   flagUpdates: { type: 'object' },
   traumaTagUpdates: { type: 'object' },
-  plotFlagUpdates: { type: 'object' },
+  addPlotFlag: { type: 'object' },
   inventoryUpdates: { type: 'object' },
   characterUpdates: { type: 'object' },
   relationshipUpdates: { type: 'array', items: { type: 'object' } },
@@ -76,7 +76,6 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   viableEnding: undefined,
   characters: {},
   places: {},
-  // pageHistory: [],
   actionsHistory: [],
   contextHistory: '',
   isMajorEvent: false,

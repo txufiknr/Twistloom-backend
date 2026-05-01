@@ -226,7 +226,6 @@ export async function insertStoryState(
         viableEnding: state.viableEnding,
         characters: state.characters,
         places: state.places,
-        // pageHistory: state.pageHistory,
         actionsHistory: state.actionsHistory,
         contextHistory: state.contextHistory,
       })
@@ -246,7 +245,6 @@ export async function insertStoryState(
           viableEnding: state.viableEnding,
           characters: state.characters,
           places: state.places,
-          // pageHistory: state.pageHistory,
           actionsHistory: state.actionsHistory,
           contextHistory: state.contextHistory,
           updatedAt: new Date(),
@@ -456,7 +454,6 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     difficulty: dbStoryState.difficulty,
     characters: dbStoryState.characters || {},
     places: dbStoryState.places || {},
-    // pageHistory: dbStoryState.pageHistory || [],
     actionsHistory: dbStoryState.actionsHistory || [],
     contextHistory: dbStoryState.contextHistory || "",
     viableEnding: dbStoryState.viableEnding || undefined,

@@ -1,6 +1,7 @@
 import { 
   MAX_PLACE_MOOD_HISTORY, 
   MAX_PLACE_EVENTS, 
+  MAX_PAST_INTERACTIONS,
   FAMILIARITY_RECENCY_DECAY,
   FAMILIARITY_RECENCY_WEIGHT,
   FAMILIARITY_EVENT_BONUS,
@@ -200,13 +201,24 @@ export function formatPlacesForPrompt(state: StoryState): string {
         details.push(`  Events: ${place.events.join(', ')}`);
       }
       
-      // Known characters with contextual history
+      // Known characters with detailed interaction history
       const characterEntries = Object.entries(place.knownCharacters || {});
       if (characterEntries.length > 0) {
-        const characters = characterEntries
-          .map(([name, info]) => `${name} (page ${info.page}${info.context ? ': ' + info.context : ''})`)
-          .join(', ');
-        details.push(`  Characters: ${characters}`);
+        details.push(`  Characters encountered:`);
+        characterEntries.forEach(([name, interactions]) => {
+          if (interactions && interactions.length > 0) {
+            // Sort interactions by page number for chronological display
+            const sortedInteractions = interactions
+              .slice(-MAX_PAST_INTERACTIONS)
+              .sort((a, b) => a.page - b.page);
+            details.push(`    - ${name} (encountered ${interactions.length} time${interactions.length > 1 ? 's' : ''}):`);
+            sortedInteractions.forEach(interaction => {
+              details.push(`      Page ${interaction.page}: ${interaction.interaction}`);
+            });
+          } else {
+            details.push(`    - ${name} (no recorded interactions)`);
+          }
+        });
       }
       
       // Build the main line with comprehensive info

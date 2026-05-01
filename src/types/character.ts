@@ -181,22 +181,23 @@ export type CharacterMemory = {
   role: string;
   /** Brief 1-sentence character description with hints */
   bio: string;
+  /** Character visual description, e.g. "tall, pale, messy black hair, hollow eyes" */
+  visualDescription: string;
   /** Current relationship status affecting behavior */
   status: CharacterStatus;
   /** Relationship to main character */
   relationshipToMC: string;
   /** Directional relationships to other characters (max 3) */
   relationships: CharacterRelationship[];
-  // TODO: combine pastInteractions and lastInteractionAtPage
-  /** Recent important interactions (max 5, sliding window) */
-  pastInteractions: string[];
-  /** Last page where character appeared */
-  lastInteractionAtPage: number;
+  /** Recent important interactions (max MAX_PAST_INTERACTIONS, sliding window) */
+  pastInteractions: PastInteraction[];
   /** Narrative control flags for plot development */
   narrativeFlags: NarrativeFlags;
   /** Whether character has injury */
   injuries: Injury[];
 };
+
+export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
 
 /**
  * Character update structure for AI output
@@ -206,7 +207,6 @@ export type CharacterMemory = {
  * 
  * @interface CharacterUpdate
  */
-// export type CharacterUpdate = Pick<CharacterMemory, 'name' | 'gender' | 'status' | 'pastInteractions' | 'lastInteractionAtPage' | 'narrativeFlags'>;
 export type CharacterUpdate = Partial<CharacterMemory>;
 
 /**
@@ -235,3 +235,8 @@ export type Injury = {
   /** Severity decay rate per page (0.0-1.0) */
   decayPerPage?: number;
 };
+
+export type PastInteraction = {
+  page: number;
+  interaction: string;
+}

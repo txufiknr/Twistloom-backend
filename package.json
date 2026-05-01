@@ -30,7 +30,11 @@
     "db:reset": "pnpm db:clear && pnpm db:extensions && pnpm db:migrate && pnpm db:triggers",
     "db:reset:prod": "pnpm db:clear:prod && pnpm db:extensions:prod && pnpm db:migrate:prod && pnpm db:triggers:prod",
     "dev:cron:trending": "tsx --env-file=.env.local src/cron/update-trending-scores.ts",
-    "start:cron:trending": "node dist/cron/update-trending-scores.js"
+    "dev:cron:generate": "tsx --env-file=.env.local src/cron/generate-originals.ts",
+    "dev:cron:retry": "tsx --env-file=.env.local src/cron/retry-pending-generations.ts",
+    "start:cron:trending": "node dist/cron/update-trending-scores.js",
+    "start:cron:generate": "node dist/cron/generate-originals.js",
+    "start:cron:retry": "node dist/cron/retry-pending-generations.js"
   },
   "author": {
     "name": "Taufik Nur Rahmanda",

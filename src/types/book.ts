@@ -129,7 +129,7 @@ export type BookCreationResponse = {
     familiarity: number; // 0-1, important for reuse priority
   };
   /** Initial character memories setup (excluding MC) */
-  initialCharacters: Array<Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio'>>;
+  initialCharacters: Array<Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio' | 'visualDescription'>>;
 };
 
 /**

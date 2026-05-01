@@ -2,18 +2,18 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession, plotFlagTypes } from "../types/story.js";
 import { retryWithBackoffOrNull } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
-import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, updateStoryState, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
+import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionHistory, Archetype, ManipulationAffinity, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionHistory, Archetype, ManipulationAffinity, PlotFlag, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook } from "../services/book.js";
@@ -26,7 +26,7 @@ import { generateBranchId } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
-import type { StoryThread } from "../types/thread.js";
+import { threadPriorities, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
@@ -229,7 +229,13 @@ const firstBookOutputFormat: string = `{
       "type": "One of: ${formatOneOf(Object.keys(endingTypes))}"
     },
     "traumaTags": [],
-    "plotFlags": [],
+    "plotFlags": [
+      {
+        "page": 1,
+        "fact": "...",
+        "type": "One of: ${formatOneOf(plotFlagTypes)}"
+      }
+    ],
     "isMajorEvent": <true or false>,
   },
   "initialPlace": {
@@ -246,7 +252,8 @@ const firstBookOutputFormat: string = `{
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
       "relationshipToMC": "Specific dynamic, not generic, 1-2 sentences (e.g. 'Close childhood friend who knows too much.')",
-      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal."
+      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
+      "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc)."
     }
   ]
 }`;
@@ -306,9 +313,10 @@ const nextPageOutputFormat: string = `{
     "add": [],
     "remove": []
   },
-  "plotFlagUpdates": {
-    "add": [],
-    "remove": []
+  "addPlotFlag": {
+    "page": <number>,
+    "fact": "...",
+    "type": "One of: ${formatOneOf(plotFlagTypes)}"
   },
   "injuries": [
     {
@@ -344,6 +352,7 @@ const nextPageOutputFormat: string = `{
         "gender": "One of: ${formatOneOf(genders)}",
         "role": "...",
         "bio": "...",
+        "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "relationshipToMC": "...",
         "relationships": [
@@ -353,8 +362,12 @@ const nextPageOutputFormat: string = `{
             "status": "One of: ${formatOneOf(relationshipStatuses)}"
           }
         ],
-        "pastInteractions": [],
-        "lastInteractionAtPage": <number>,
+        "pastInteractions": [
+          {
+            "page": <number>,
+            "interaction": "..."
+          }
+        ],
         "narrativeFlags": {
           "isSuspicious": false,
           "isMissing": false,
@@ -371,6 +384,7 @@ const nextPageOutputFormat: string = `{
         "gender": "One of: ${formatOneOf(genders)}",
         "role": "...",
         "bio": "...",
+        "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "relationshipToMC": "...",
         "relationships": [
@@ -380,8 +394,12 @@ const nextPageOutputFormat: string = `{
             "status": "One of: ${formatOneOf(relationshipStatuses)}"
           }
         ],
-        "pastInteractions": [],
-        "lastInteractionAtPage": <number>,
+        "pastInteractions": [
+          {
+            "page": <number>,
+            "interaction": "..."
+          }
+        ],
         "narrativeFlags": {},
         "injuries": []
       }
@@ -412,10 +430,12 @@ const nextPageOutputFormat: string = `{
         "weather": "One of: ${formatOneOf(placeWeathers)}",
         "events": [],
         "knownCharacters": {
-          "<name>": {
-            "page": <number>,
-            "context": "..."
-          }
+          "<name>": [
+            {
+              "page": <number>,
+              "interaction": "..."
+            }
+          ]
         },
         "visitCount": 1,
         "lastVisitedAtPage": <number>,
@@ -436,10 +456,12 @@ const nextPageOutputFormat: string = `{
         "familiarity": <number between 0.0 and 1.0>,
         "moodHistory": [],
         "knownCharacters": {
-          "<name>": {
-            "page": <number>,
-            "context": "..."
-          }
+          "<name>": [
+            {
+              "page": <number>,
+              "interaction": "..."
+            }
+          ]
         },
         "sensoryDetails": {},
         "weather": "One of: ${formatOneOf(placeWeathers)}"
@@ -447,9 +469,33 @@ const nextPageOutputFormat: string = `{
     ]
   },
   "threadUpdates": {
-    "newThreads": [],
-    "updatedThreads": [],
-    "addClues": [],
+    "newThreads": [
+      {
+        "title": "...",
+        "question": "...",
+        "priority": "One of: ${formatOneOf(threadPriorities)}",
+        "truth": "One of: ${formatOneOf(threadTruths)}",
+        "importance": <number between 0.0 and 1.0>
+      }
+    ],
+    "updatedThreads": [
+      {
+        "id": "...",
+        "status": "One of: ${formatOneOf(threadStatuses)}",
+        "priority": "One of: ${formatOneOf(threadPriorities)}",
+        "truth": "One of: ${formatOneOf(threadTruths)}",
+        "importance": <number between 0.0 and 1.0>,
+        "urgency": <number between 0.0 and 1.0>,
+        "resolution": "..."
+      }
+    ],
+    "addClues": [
+      {
+        "threadId": "...",
+        "clue": "...",
+        "isFalse": <boolean>
+      }
+    ],
     "closedThreads": []
   },
   "viableEnding": {
@@ -675,7 +721,7 @@ injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
   - If an action is taken to heal, or anything made injury worse, update the injury severity and description accordingly.
   - If healed, set severity to 0 - system will auto-remove fully healed injuries.
-  - If healed but leaves permanent scar/story relevance, move to character's bio.
+  - If healed but leaves permanent scar/story relevance, move to character's visualDescription.
   - If no meaningful injury-related action occurs, omit this field entirely.
 
 traumaTagUpdates
@@ -690,10 +736,11 @@ isMajorEvent
 ${isEarlyPhase ? `  - Should be false for most early pages. Reserve major events — they lose weight if overused.` : ''}
 ${isFinale ? `  - Expected to be true. The finale is a major event by definition.` : ''}
 
-plotFlagUpdates
-  - Plot important facts. Like keyEvents, but for overall story.
-  - Only add if a crucial discovery is made or a critical item/clue is found, or it's importantly related to ending.
-  - If isMajorEvent is true, then this also adds.
+addPlotFlag
+  - Crucial plot development that affect the overall story trajectory.
+  - Add ONLY when: a) Major secret is revealed, b) Critical evidence is discovered, c) Key relationship changes occur, d) Story direction pivots significantly.
+  - Must include: page number, specific fact discovered, and appropriate type.
+  - If isMajorEvent is true, a plot flag is almost always required.
 
 contextHistory
   - Running sumary from page 1 until now — key plot developments, hard facts, major events.
@@ -728,17 +775,17 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive.
+  - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
   - narrativeFlags: set to match behavior and twist setup.
-  - pastInteractions: events from before the story begins, if any. Leave empty if new to MC's life entirely.
+  - pastInteractions: dialogue or event towards MC in current page.
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
 
 characterUpdates.updatedCharacters
   - Only include characters whose state actually changed this page.
-  - Include only changed fields: status, narrativeFlags, pastInteractions (append), lastInteractionAtPage.
+  - Include only changed fields: status, narrativeFlags, pastInteractions (append).
 ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
 : `  - Only update when status, interactions, or relevance changes.`}
   - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})
-  - Update lastInteractionAtPage
   - Adjust narrativeFlags to reflect plot developments
 
 relationshipUpdates
@@ -794,7 +841,7 @@ ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mys
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
 ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
 
-${isLatePhase || isFinale ? 'threadUpdates.closeThreads' : ''}
+${isLatePhase ? 'threadUpdates.closeThreads' : ''}
 ${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
   - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
 ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
@@ -1773,12 +1820,12 @@ function formatActionHistory(actionsHistory: ActionHistory[]): string {
  * @param state - Story state containing plot flags
  * @returns Formatted string with plot flags as bullet points
  */
-function formatPlotFlags(plotFlags: string[]): string {
-  if (plotFlags.length === 0) {
-    return 'No plot flags yet';
-  }
+function formatPlotFlags(plotFlags: PlotFlag[]): string {
+  if (plotFlags.length === 0) return 'No plot flags yet';
   
-  return plotFlags.map(flag => `• ${flag}`).join('\n');
+  // Sort by page number for chronological display
+  const sortedFlags = plotFlags.sort((a, b) => a.page - b.page);
+  return sortedFlags.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}`).join('\n');
 }
 
 /**
@@ -2217,11 +2264,11 @@ export async function initializeBook(
               gender: char.gender,
               role: char.role,
               bio: char.bio,
+              visualDescription: char.visualDescription,
               status: char.status,
               relationshipToMC: char.relationshipToMC,
               relationships: [],
               pastInteractions: [],
-              lastInteractionAtPage: 1,
               narrativeFlags: {
                 isSuspicious: false,
                 isMissing: false,
@@ -2392,7 +2439,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
   // 7. Apply current AI turn's updates to story state
   const stateDelta = extractStateDelta(generatedStoryPage);
-  const newState = updateStoryState(storyState, stateDelta);
+  const newState = applyStateDelta(storyState, stateDelta);
   
   // 7.1. Calculate psychological deltas from state changes
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);

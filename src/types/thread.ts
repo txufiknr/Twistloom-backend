@@ -1,10 +1,67 @@
-export type ThreadStatus = 'open' | 'developing' | 'revealed' | 'closed' | 'twisted';
+/**
+ * Available thread statuses for story progression tracking
+ * 
+ * These statuses track the lifecycle of narrative threads
+ * from introduction through development to resolution.
+ */
+export const threadStatuses = [
+  "open",        // Thread is active and unresolved
+  "developing",  // Thread is evolving and gaining complexity
+  "revealed",    // Thread's truth has been partially disclosed
+  "closed",      // Thread has been resolved
+  "twisted"      // Thread has undergone a plot twist
+] as const;
 
-export type ThreadPriority = 'main' | 'secondary' | 'minor';
+/**
+ * Available thread priorities for narrative focus
+ * 
+ * These priorities determine how much narrative attention
+ * and screen time each thread receives.
+ */
+export const threadPriorities = [
+  "main",        // Primary story driver
+  "secondary",  // Important supporting thread
+  "minor"        // Background detail thread
+] as const;
 
-export type ThreadTruth = 'true' | 'false' | 'unknown';
+/**
+ * Available thread truth values for reality tracking
+ * 
+ * These track the fundamental nature of thread content
+ * and whether it reflects actual reality.
+ */
+export const threadTruths = [
+  "true",        // Thread reflects actual reality
+  "false",       // Thread is deception/misdirection
+  "unknown"      // Thread's reality status is unclear
+] as const;
+
+/**
+ * Union type of all possible thread status values
+ * 
+ * Generated from the threadStatuses array to ensure type safety
+ * and autocomplete support for status selection.
+ */
+export type ThreadStatus = typeof threadStatuses[number];
+
+/**
+ * Union type of all possible thread priority values
+ * 
+ * Generated from the threadPriorities array to ensure type safety
+ * when specifying thread importance.
+ */
+export type ThreadPriority = typeof threadPriorities[number];
+
+/**
+ * Union type of all possible thread truth values
+ * 
+ * Generated from the threadTruths array to ensure type safety
+ * when tracking thread reality status.
+ */
+export type ThreadTruth = typeof threadTruths[number];
 
 export interface StoryThread {
+
   id: string;
 
   // What the mystery is

@@ -1,8 +1,8 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import type { CharacterMemory, CharacterStatus, CharacterUpdate, CharacterUpdates, NarrativeFlags, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, CharacterCreationParam } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
-import type { Gender, KnownGender } from "../types/user.js";
+import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
 
 // ============================================================================
@@ -12,40 +12,31 @@ import { ucfirst } from "./formatter.js";
 /**
  * Creates a new character with default values
  * 
- * @param name - Character's unique name identifier
- * @param gender - Character's gender (male/female/unknown)
- * @param role - Character's role in the story
- * @param bio - Brief 1-sentence character description
- * @param status - Initial relationship status
- * @param relationshipToMC - Relationship to main character
- * @param currentPage - Current page number for tracking
+ * @param newCharacter - Character creation parameters including name, gender, role, bio, visualDescription, status, narrativeFlags, and relationshipToMC
  * @returns New character memory structure
  * 
  * @example
  * ```typescript
- * const character = createCharacter("Lina", "best friend", "Cheerful but secretive", "trusting", "close friend", 3);
+ * const character = createCharacter({
+ *   name: "Lina",
+ *   gender: "female",
+ *   role: "best friend",
+ *   bio: "Cheerful but secretive",
+ *   visualDescription: "tall, pale, messy black hair, hollow eyes",
+ *   status: "trusting",
+ *   narrativeFlags: { isSuspicious: false, isMissing: false, isDead: false, hasSecret: false, potentialTwist: "none" },
+ *   relationshipToMC: "close friend"
+ * });
  * ```
  */
 export function createCharacter(
-  name: string,
-  gender: Gender,
-  role: string,
-  bio: string,
-  status: CharacterStatus,
-  narrativeFlags: NarrativeFlags,
-  relationshipToMC: string,
-  currentPage: number
+  newCharacter: CharacterCreationParam
 ): CharacterMemory {
+  const { status, narrativeFlags } = newCharacter;
   return {
-    name,
-    gender,
-    role,
-    bio,
-    status,
-    relationshipToMC,
+    ...newCharacter,
     relationships: [],
     pastInteractions: [],
-    lastInteractionAtPage: currentPage,
     narrativeFlags: {
       ...narrativeFlags,
       isSuspicious: narrativeFlags.isSuspicious || status === "suspicious",
@@ -72,8 +63,7 @@ export function createCharacter(
  * ```typescript
  * const updated = updateCharacter(existing, {
  *   status: "suspicious",
- *   pastInteractions: ["Refused to explain what she saw"],
- *   lastInteractionAtPage: 6,
+ *   pastInteractions: [{"page": 6, "interaction": "Refused to explain what she saw"}],
  *   narrativeFlags: { isSuspicious: true }
  * });
  * ```
@@ -86,6 +76,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.gender) updated.gender = update.gender;
   if (update.role) updated.role = update.role;
   if (update.bio) updated.bio = update.bio;
+  if (update.visualDescription) updated.visualDescription = update.visualDescription;
   if (update.status) updated.status = update.status;
   if (update.relationshipToMC) updated.relationshipToMC = update.relationshipToMC;
   
@@ -101,12 +92,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
       ...update.pastInteractions
     ].slice(-MAX_PAST_INTERACTIONS);
   }
-  
-  // Update last interaction page if provided
-  if (update.lastInteractionAtPage !== undefined) {
-    updated.lastInteractionAtPage = update.lastInteractionAtPage;
-  }
-  
+    
   // Merge narrative flags if provided
   if (update.narrativeFlags) {
     updated.narrativeFlags = {
@@ -188,22 +174,24 @@ export function processCharacterUpdates(
   characterUpdates?: CharacterUpdates,
   relationshipUpdates?: RelationshipUpdate[],
 ): void {
-  // Process character updates if they exist
-  if (!characterUpdates) return;
-
-  const { newCharacters = [], updatedCharacters = [] } = characterUpdates;
-
-  // Add new characters
-  for (const character of newCharacters) {
-    state.characters[character.name] = character;
-  }
+  if (!characterUpdates && !relationshipUpdates) return;
   
-  // Update existing characters
-  for (const update of updatedCharacters) {
-    if (!update.name) continue;
-    const existing = state.characters[update.name];
-    if (existing) {
-      state.characters[update.name] = updateCharacter(existing, update);
+  // Process character updates if they exist
+  if (characterUpdates) {
+    const { newCharacters = [], updatedCharacters = [] } = characterUpdates;
+  
+    // Add new characters
+    for (const character of newCharacters) {
+      state.characters[character.name] = character;
+    }
+    
+    // Update existing characters
+    for (const update of updatedCharacters) {
+      if (!update.name) continue;
+      const existing = state.characters[update.name];
+      if (existing) {
+        state.characters[update.name] = updateCharacter(existing, update);
+      }
     }
   }
 
@@ -231,7 +219,7 @@ export function processCharacterUpdates(
  * ```typescript
  * const characterText = formatCharactersForPrompt(state.characters);
  * // Output example:
- * // · Lina (best friend) - female, trusting - last seen: page 15 [suspicious: true, secret: true]
+ * // · Lina (best friend) - female, trusting [suspicious: true, secret: true]
  * //   Bio: Quiet girl who knows more than she lets on
  * //   Relationship to MC: childhood friend with hidden agenda
  * //   Recent interactions: shared secret about basement, avoided questions about parents
@@ -257,20 +245,22 @@ export function formatCharactersForPrompt(characters: Record<string, CharacterMe
       if (character.narrativeFlags.hasSecret) statusFlags.push('secret');
       
       const flagString = statusFlags.length > 0 ? ` [${statusFlags.join(', ')}]` : '';
-      const mainInfo = `· ${character.name} (${character.role}) - ${character.gender}, ${character.status} - last seen: page ${character.lastInteractionAtPage}${flagString}`;
-      
+      const mainInfo = `· ${character.name} (${character.role}) - ${character.gender}, ${character.status}${flagString}`;
       const details = [];
       
       // Basic information
       details.push(`  Bio: ${character.bio}`);
+      details.push(`  Visual description: ${character.visualDescription}`);
       details.push(`  Relationship to MC: ${character.relationshipToMC}`);
       
       // Recent interactions with nested bullets
       if (character.pastInteractions.length > 0) {
-        const recentInteractions = character.pastInteractions.slice(-MAX_PAST_INTERACTIONS);
+        const recentInteractions = character.pastInteractions
+          .sort((a, b) => a.page - b.page)
+          .slice(-MAX_PAST_INTERACTIONS);
         details.push(`  Recent interactions:`);
-        recentInteractions.forEach((interaction) => {
-          details.push(`    - ${interaction}`);
+        recentInteractions.forEach((i) => {
+          details.push(`    - Page ${i.page}: ${i.interaction}`);
         });
       }
       
