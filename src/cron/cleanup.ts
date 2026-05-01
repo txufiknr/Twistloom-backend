@@ -34,53 +34,11 @@ export async function runDailyCleanup(): Promise<void> {
     } else {
       console.log("[cleanup] ✨ No queued ImageKit deletions to process");
     }
-    
-    // Optimize snapshots for all users with books (batch operation)
-    // console.log("[cleanup] 📸 Optimizing snapshot storage...");
-    // let totalSnapshotsOptimized = 0;
-    // let totalSnapshotsDeleted = 0;
-    
-    // try {
-      // Get all users who have recent activity (simpler approach)
-      // const { getStoryProgress } = await import("../services/story.js");
-      // const { getActiveUsers } = await import("../services/user.js");
-      
-      // const activeUsers = await getActiveUsers(30); // Last 30 days
-      
-      // for (const userId of activeUsers) {
-      //   try {
-      //     const progress = await getStoryProgress(userId);
-      //     if (progress && progress.book && progress.book.id) {
-      //       const { optimizeSnapshots } = await import("../services/snapshots.bak.js");
-      //       const result = await optimizeSnapshots(userId, progress.book.id, 20); // Default limit
-      //       totalSnapshotsOptimized += result.kept;
-      //       totalSnapshotsDeleted += result.deleted;
-            
-      //       if (result.deleted > 0) {
-      //         console.log(`[cleanup] 📚 Snapshots optimized:`, {
-      //           user: userId,
-      //           book: progress.book.id,
-      //           deleted: result.deleted,
-      //           kept: result.kept
-      //         });
-      //       }
-      //     }
-      //   } catch (error) {
-      //     console.error(`[cleanup] ❌ Failed to optimize snapshots:`, {userId, error: getErrorMessage(error)});
-      //     // Continue with next user - don't fail entire cleanup
-      //   }
-      // }
-      
-      const durationMs = Date.now() - startedAt;
-      console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {
-        images: imageCleanupStats.processed,
-        // snapshotsDeleted: totalSnapshotsDeleted,
-        // snapshotsKept: totalSnapshotsOptimized
-      });
-    // } catch (error) {
-    //   console.error("[cleanup] ❌ Snapshot optimization failed:", getErrorMessage(error));
-    //   // Don't throw error - continue with image cleanup completed
-    // }
+
+    const durationMs = Date.now() - startedAt;
+    console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {
+      images: imageCleanupStats.processed
+    });
   } catch (error) {
     console.error("[cleanup] ❌ Daily cleanup failed:", getErrorMessage(error));
     throw error;

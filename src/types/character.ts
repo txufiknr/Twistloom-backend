@@ -236,7 +236,10 @@ export type Injury = {
   decayPerPage?: number;
 };
 
+/** Represents a past interaction between characters */
 export type PastInteraction = {
+  /** The page number of the interaction */
   page: number;
+  /** The interaction between characters */
   interaction: string;
-}
+};

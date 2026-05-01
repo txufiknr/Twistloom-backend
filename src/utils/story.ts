@@ -6,7 +6,6 @@ import type { Injury } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
-import { generateId } from "./uuid.js";
 import { deepEqualSimple } from "../utils/parser.js";
 
 /**

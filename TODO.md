@@ -2,13 +2,11 @@
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Cron: cleanup add cleanupStoryStatesWithStrategy
 [ ] prompt: ensure thread update instruction/format exist
-Twistloom original authornya by twistloom
-Retry pending generation kalo udah stable bikin paralel
-Give example for traumaTags & plotFlags
-Original: kalau "en", Mc name predefine aja, jangan AI
-Sse can we make generating event ends when evaluating starts
-Update docs pre generation
-Update docs branch traversal, snapshot, delta
+[ ] Retry pending generation kalo udah stable bikin paralel
+[ ] Original: kalau "en", Mc name predefine aja, jangan AI
+[ ] Sse can we make generating event ends when evaluating starts
+[ ] Update docs pre generation
+[ ] Update docs branch traversal, snapshot, delta
 
 TODO:
 [ ] type validation using https://typia.io/

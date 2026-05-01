@@ -390,7 +390,7 @@ export function parseAISafely<T extends Record<string, unknown>>(
   const { output, provider } = response;
   const {
     logContext = provider,
-    maxLength = 15_000,
+    maxLength = 20_000,
     allowPartialObjects = true,
   } = options;
 

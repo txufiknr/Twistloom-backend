@@ -39,7 +39,7 @@ import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, buildSearchConditions, createRelevanceExpression, validateLanguageCode, type SearchParams } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry, getSimilarBooks } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry } from "../services/book.js";
 import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";

@@ -76,4 +76,4 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NODE_ENV: production
-        timeout-minutes: 30  # Conservative timeout for AI generation
+        timeout-minutes: 45  # Conservative timeout for AI generation

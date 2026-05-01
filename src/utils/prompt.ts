@@ -21,7 +21,7 @@ import { dbWrite } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { getStoryProgress, insertStoryState, setActiveSession, getActiveSession } from "../services/story.js";
-import type { BuildNextPageParams, GenerateCandidatePageParams, GenerateBookCreationPromptParams } from "../types/prompt.js";
+import type { BuildNextPageParams, GenerateCandidatePageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
@@ -37,7 +37,7 @@ import { withLock, LOCK_KEYS } from "./distributed-lock.js";
 // SYSTEM PROMPT
 // ============================================================================
 
-export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R. L. Stine — but darker, more deceptive, and psychologically cruel.
+export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R.L. Stine — but darker, more deceptive, and psychologically cruel.
 You write branching horror stories in first-person ("I") POV.
 Every page ends with a choice that feels meaningful but may be an illusion.
 
@@ -504,104 +504,16 @@ const nextPageOutputFormat: string = `{
   }
 }`;
 
-function buildUserPrompt(
-  book: Book,
-  state: StoryState,
-  actionedPage: ActionedStoryPage,
-  previousPages: PreviousPages
-): string {
-  const { page, maxPage, contextHistory, plotFlags, flags, psychologicalProfile, hiddenState, threads } = state;
-  const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = actionedPage;
-  const stateInfo = getStoryStateInfo(state);
-  const { remainingPages, isFinale, phase, phaseGoal, isLastPage } = stateInfo;
-  const { mc, summary } = book;
+function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
+  const { advancedState: state } = params;
+  const { isFinale, isLastPage } = getStoryStateInfo(state);
 
-  return `TASK: Continue the story in first-person ("I") POV. Now you write page ${page} of ${maxPage} — ${remainingPages} pages remaining.
+  return `TASK: ${formatNextPageTaskPrompt(state)}
 
-MAIN CHARACTER (POV): ${getMainCharacterInfo(mc, state)!}
-
-HARD RULES:
-- Write in first-person central (MC = narrator) POV.
-- Don't use terms like "The protagonist" or "The narrator", just use "I".
-- Keep max ${MAX_WORDS_PER_PAGE} words per page.
-- Keep consistent writing style and language.
-- Continue directly from selected action. Example: "I [verb]."
-- Continue from current situation.
-
-THEME REMINDER:
-${summary}
-
-CURRENT PHASE:
-${phase} — ${phaseGoal}
-
-CURRENT SITUATION (from previous page):
-- Place: ${place || 'unknown'}
-- Time: ${timeOfDay || 'unknown'}
-- Mood: ${mood || 'unknown'}
-- Characters present: ${charactersPresent.join(', ') || 'none'}
-
-STORY CONTEXT:
-${contextHistory}
-
-PLOT FLAGS:
-${formatPlotFlags(plotFlags)}
-
-PREVIOUS PAGES:
-${formatPreviousPagesForPrompt(previousPages)}
-
-CURRENT PAGE:
-${formatPageTextForPrompt(actionedPage.text)}
-
-ACTION SELECTION:
-Available choices:
-${formatActionChoices(actions)}
-
-Selected:
-${formatSelectedAction(selectedAction, actions)}
+${formatNextPageStoryContextPrompt(params)}
 
 ---
-NARRATIVE STYLE:
-${createNarrativeStyle(state).instructions}
-
-PSYCHOLOGICAL FLAGS (Accumulated):
-${formatPsychologicalFlags(flags)}
-
-PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
-${formatPsychologicalProfile(psychologicalProfile)}
-
-Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
-
-HIDDEN STATE (Influence writing, don't reveal):
-${formatHiddenState(hiddenState)}
-
-ROUTE MEMORY (Influence writing, don't reveal):
-${formatRouteContext(state)}
-
-ACTION HISTORY:
-${formatActionHistory(state.actionsHistory)}
-
----
-${RULES_ROUTE_MEMORY}
-
----
-${RULES_STORY_CONSISTENCY}
-
----
-${RULES_DIFFICULTY_SCALING}
-
----
-ACTIVE THREADS:
-${formatActiveThreads(threads)}
-
-THREAD RULES:
-${formatThreadRules(threads, stateInfo)}
-
----
-CURRENT ENDING PLAN:
-${formatEndingPlan(state)}
-
-ENDING RULES:
-${buildEndingRules(state)}
+${formatNextPageNarrativePrompt(params)}
 
 ---
 ${isFinale ? `` : `FALSE PREVIEW SYSTEM:
@@ -630,7 +542,7 @@ It ends badly if I go inside.`}
 
 ---
 CHARACTER RULES:
-- Respect character's bio.
+- Respect character's bio (and visualDescription).
 - Preserve dialect, tone, and personality consistently.
 - Reflect current status in behavior.
 - Use pastInteractions to subtly shape dialogue.
@@ -720,7 +632,7 @@ ${isFinale ? `  - Expected to be true. The finale is a major event by definition
 addPlotFlag
   - Crucial plot development that affect the overall story trajectory.
   - Add ONLY when: a) Major secret is revealed, b) Critical evidence is discovered, c) Key relationship changes occur, d) Story direction pivots significantly.
-  - Must include: page number, specific fact discovered, and appropriate type.
+  - Must include: page number, specific fact discovered (verbose), and appropriate type.
   - If isMajorEvent is true, a plot flag is almost always required.
 
 contextHistory
@@ -779,7 +691,7 @@ placeUpdates.newPlaces
 ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
-  - locationHint: spatial relationship to known places, e.g. "500 meters behind the school (south)." — must be consistent to build a "world map"
+  - locationHint: spatial relationship to known places, e.g. "500 meters behind school (south)." — must be consistent to build a "world map"
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
   - currentMood & weather: set to match atmosphere.
   - sensoryDetails: include only senses present and relevant to the scene.
@@ -909,33 +821,25 @@ function buildNextPageReviewChecklist(state: StoryState): string {
   ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}`;
 }
 
-function buildNextPageEvaluatorContext(state: StoryState, previousPagesText: string): string {
-  return `STORY CONTEXT:
-${state.contextHistory}
+function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
+  const { advancedState: state } = params;
+  const { isEarlyPhase, isMidPhase, isLatePhase, isFinale } = getStoryStateInfo(state);
 
-PREVIOUS PAGES:
-${previousPagesText}
+  const prompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
-PREVIOUS ENDING PLAN:
-${formatEndingPlan(state)}
+Original task (on previous AI): ${formatNextPageTaskPrompt(state)}
 
+${formatNextPageStoryContextPrompt(params)}
+
+---
+${formatNextPageNarrativePrompt(params)}
+
+---
 EXPECTED JSON SCHEMA:
 ${nextPageOutputFormat}
 
 FIELD INSTRUCTIONS:
-${buildNextPageFieldInstructions(state)}`;
-}
-
-function buildNextPageEvaluatorPrompt(state: StoryState, previousPages: PreviousPages): string {
-  const { currentPage, totalPages, remainingPages, isEarlyPhase, isMidPhase, isLatePhase, isFinale, phase, phaseGoal } = getStoryStateInfo(state);
-
-  const prompt = `TASK: Evaluate quality, refine output, and re-evaluate — in that order.
-
-Page ${currentPage} of ${totalPages} — ${remainingPages} remaining.
-Phase: ${phase} — ${phaseGoal}
-
----
-${buildNextPageEvaluatorContext(state, formatPreviousPagesForPrompt(previousPages))}
+${buildNextPageFieldInstructions(state)}
 
 ---
 INSTRUCTIONS — FOLLOW IN ORDER:
@@ -1633,6 +1537,122 @@ function formatEndingPlan(state: StoryState): string {
 Hint: ${state.viableEnding?.text ?? '-'}`;
 }
 
+function formatThreadsPrompt(threads: StoryThread[], stateInfo: StoryStateInfo): string {
+  return `ACTIVE THREADS:
+${formatActiveThreads(threads)}
+
+THREAD RULES:
+${formatThreadRules(threads, stateInfo)}`;
+}
+
+function formatEndingPrompt(state: StoryState): string {
+  return `CURRENT ENDING PLAN:
+${formatEndingPlan(state)}
+
+ENDING RULES:
+${buildEndingRules(state)}`;
+}
+
+function formatNextPageTaskPrompt(state: StoryState): string {
+  const { page, maxPage } = state;
+  const remainingPages = maxPage - page;
+  const pageLabel = remainingPages > 0
+    ? `page ${page} of ${maxPage} — ${remainingPages} pages remaining.`
+    : `the very last page (the end).`;
+  return `Continue the story in first-person ("I") POV. Now you write ${pageLabel}`;
+}
+
+function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
+  const { book, advancedState: state, actionedPage: page, previousPages } = params;
+  const { mc, summary } = book;
+  const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = page;
+  const { contextHistory, plotFlags } = state;
+  const stateInfo = getStoryStateInfo(state);
+  const { phase, phaseGoal } = stateInfo;
+
+  return `MAIN CHARACTER (POV): ${getMainCharacterInfo(mc, state)!}
+
+HARD RULES:
+- Write in first-person central (MC = narrator) POV.
+- Don't use terms like "The protagonist" or "The narrator", just use "I".
+- Keep max ${MAX_WORDS_PER_PAGE} words per page.
+- Keep consistent writing style and language.
+- Continue directly from selected action. Example: "I [verb]."
+- Continue from current situation.
+
+THEME REMINDER:
+${summary}
+
+CURRENT PHASE:
+${phase} — ${phaseGoal}
+
+CURRENT SITUATION (from previous page):
+- Place: ${place || 'unknown'}
+- Time: ${timeOfDay || 'unknown'}
+- Mood: ${mood || 'unknown'}
+- Characters present: ${charactersPresent.join(', ') || 'none'}
+
+STORY CONTEXT:
+${contextHistory || 'No story context yet.'}
+
+PLOT FLAGS:
+${formatPlotFlags(plotFlags)}
+
+PREVIOUS PAGES:
+${formatPreviousPagesForPrompt(previousPages)}
+
+CURRENT PAGE:
+${formatPageTextForPrompt(page.text)}
+
+ACTION SELECTION:
+Available choices:
+${formatActionChoices(actions)}
+
+Selected:
+${formatSelectedAction(selectedAction, actions)}
+
+ACTION HISTORY:
+${formatActionHistory(state.actionsHistory)}`;
+}
+
+function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
+  const { advancedState: state } = params;
+  const { flags, psychologicalProfile, hiddenState, threads } = state;
+  const stateInfo = getStoryStateInfo(state);
+
+  return `NARRATIVE STYLE:
+${createNarrativeStyle(state).instructions}
+
+PSYCHOLOGICAL FLAGS (Accumulated):
+${formatPsychologicalFlags(flags)}
+
+PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
+${formatPsychologicalProfile(psychologicalProfile)}
+
+Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
+
+HIDDEN STATE (Influence writing, don't reveal):
+${formatHiddenState(hiddenState)}
+
+ROUTE MEMORY (Influence writing, don't reveal):
+${formatRouteContext(state)}
+
+---
+${RULES_ROUTE_MEMORY}
+
+---
+${RULES_STORY_CONSISTENCY}
+
+---
+${RULES_DIFFICULTY_SCALING}
+
+---
+${formatThreadsPrompt(threads, stateInfo)}
+
+---
+${formatEndingPrompt(state)}`;
+}
+
 /**
  * Builds a complete prompt with all placeholders replaced by actual values
  * 
@@ -2099,7 +2119,7 @@ Initial State:
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme.
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
 - traumaTags: Short evocative phrases for experiences that will haunt the MC later.
-- plotFlags: Plot important facts, add if isMajorEvent is true.
+- plotFlags: Plot important facts, add if isMajorEvent is true (max 1 per page).
 - inventory: What objects MC brings, the amount, and where.
 
 Ending Archetypes:
@@ -2372,15 +2392,16 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const { userId, book, currentState, actionedPage } = params;
   
   // 0. Advance story state based on user action and previous AI turn updates
-  const storyState = await advanceStoryState(currentState, actionedPage);
+  const advancedState = await advanceStoryState(currentState, actionedPage);
 
   // 1. Create personalized prompt with character, story context, and previous action
   const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
-  const prompt = buildUserPrompt(book, storyState, actionedPage, previousPages);
-  const { systemPrompt, documents } = buildSystemPrompt(book, storyState);
+  const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages };
+  const prompt = buildNextPagePrompt(promptParams);
+  const { systemPrompt, documents } = buildSystemPrompt(book, advancedState);
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
-  const config = determineAIConfig(storyState, actionedPage.selectedAction);
+  const config = determineAIConfig(advancedState, actionedPage.selectedAction);
   
   // 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
   const response = await executePromptForJSON<StoryGeneration>({
@@ -2399,9 +2420,9 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       }
     } satisfies AIPromptForJson<StoryGeneration>,
     jsonStructure: nextPageOutputFormat,
-    fieldInstructions: buildNextPageFieldInstructions(storyState),
-    thinkThenOutput: buildNextPageReviewChecklist(storyState),
-    evaluatorPrompt: buildNextPageEvaluatorPrompt(storyState, previousPages),
+    fieldInstructions: buildNextPageFieldInstructions(advancedState),
+    thinkThenOutput: buildNextPageReviewChecklist(advancedState),
+    evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
   });
   
   // 4. Handle AI response validation
@@ -2418,9 +2439,9 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   let newPage: PersistedStoryPage | undefined;
   let retryCount = 0;
 
-  // 7. Apply current AI turn's updates to story state
+  // 7. Apply current AI turn's updates to advanced story state
   const stateDelta = extractStateDelta(generatedStoryPage);
-  const newState = applyStateDelta(storyState, stateDelta);
+  const newState = applyStateDelta(advancedState, stateDelta);
   
   // 7.1. Calculate psychological deltas from state changes
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
@@ -2916,7 +2937,7 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 
-You MUST silently evaluate your generated output using the checklist below.
+Silently evaluate your generated output using the checklist below.
 If any item fails, revise internally before producing final output.
 
 ${stripEmptyLines(thinkThenOutput)}

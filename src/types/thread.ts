@@ -98,13 +98,7 @@ export interface StoryThread {
  */
 export interface ThreadUpdates {
   /** New threads to create (max 1-2 per page) */
-  newThreads?: Array<{
-    title: string;
-    question: string;
-    priority: ThreadPriority;
-    truth: ThreadTruth;
-    importance?: number;
-  }>;
+  newThreads?: Array<Pick<StoryThread, 'title' | 'question' | 'priority' | 'truth' | 'importance'>>;
   
   /** Updates to existing threads by title */
   updateThreads?: Array<{
