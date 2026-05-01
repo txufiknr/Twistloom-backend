@@ -61,9 +61,6 @@ export type ThreadPriority = typeof threadPriorities[number];
 export type ThreadTruth = typeof threadTruths[number];
 
 export interface StoryThread {
-
-  id: string;
-
   // What the mystery is
   title: string;
   question: string;
@@ -109,9 +106,9 @@ export interface ThreadUpdates {
     importance?: number;
   }>;
   
-  /** Updates to existing threads by ID */
+  /** Updates to existing threads by title */
   updateThreads?: Array<{
-    id: string;
+    title: string;
     status?: ThreadStatus;
     priority?: ThreadPriority;
     truth?: ThreadTruth;
@@ -120,13 +117,13 @@ export interface ThreadUpdates {
     resolution?: string;
   }>;
   
-  /** Clues to add to existing threads by ID */
+  /** Clues to add to existing threads by title */
   addClues?: Array<{
-    threadId: string;
+    thread: string;
     clue: string;
     isFalse?: boolean;
   }>;
   
-  /** Threads to close/resolve by ID */
+  /** Threads to close/resolve by title */
   closeThreads?: string[];
 }

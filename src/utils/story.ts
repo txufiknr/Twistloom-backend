@@ -626,7 +626,6 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   if (threadUpdates.newThreads && threadUpdates.newThreads.length > 0) {
     for (const newThread of threadUpdates.newThreads) {
       const thread: StoryThread = {
-        id: generateId(),
         title: newThread.title,
         question: newThread.question,
         priority: newThread.priority,
@@ -646,7 +645,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   // Update existing threads
   if (threadUpdates.updateThreads && threadUpdates.updateThreads.length > 0) {
     for (const update of threadUpdates.updateThreads) {
-      const existingThread = state.threads.find(t => t.id === update.id);
+      const existingThread = state.threads.find(t => t.title === update.title);
       if (existingThread) {
         if (update.status) existingThread.status = update.status;
         if (update.priority) existingThread.priority = update.priority;
@@ -662,7 +661,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   // Add clues to existing threads
   if (threadUpdates.addClues && threadUpdates.addClues.length > 0) {
     for (const clueUpdate of threadUpdates.addClues) {
-      const existingThread = state.threads.find(t => t.id === clueUpdate.threadId);
+      const existingThread = state.threads.find(t => t.title === clueUpdate.thread);
       if (existingThread) {
         if (clueUpdate.isFalse) {
           existingThread.falseClues.push(clueUpdate.clue);
@@ -678,8 +677,8 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
 
   // Close/resolve threads
   if (threadUpdates.closeThreads && threadUpdates.closeThreads.length > 0) {
-    for (const threadId of threadUpdates.closeThreads) {
-      const existingThread = state.threads.find(t => t.id === threadId);
+    for (const thread of threadUpdates.closeThreads) {
+      const existingThread = state.threads.find(t => t.title === thread);
       if (existingThread) {
         existingThread.status = 'closed';
         existingThread.lastUpdatedAt = state.page;

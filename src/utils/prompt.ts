@@ -491,7 +491,7 @@ const nextPageOutputFormat: string = `{
     ],
     "addClues": [
       {
-        "threadId": "...",
+        "thread": "...",
         "clue": "...",
         "isFalse": <boolean>
       }
@@ -807,7 +807,7 @@ ${isEarlyPhase || isMidPhase ? `  - title: Short, evocative name for the mystery
 
 threadUpdates.updateThreads
 ${isEarlyPhase || isMidPhase ? `  - Update existing threads when their status, priority, or urgency meaningfully changes.
-  - id: Must match an existing thread ID from the story state
+  - title: Must match an existing thread title from the story state
   - status: "open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved)
   - urgency: 0.0-1.0 (increase as thread approaches resolution)
   - resolution: Only include when thread is being closed or resolved (brief summary of the answer)` : ''}
@@ -816,7 +816,7 @@ ${isFinale ? `  - Every main thread must be resolved (status: "closed" with reso
 
 threadUpdates.addClues
 ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mysteries.
-  - threadId: Must match an existing thread ID
+  - thread: Must match an existing thread title
   - clue: Short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water")
   - isFalse: Set to true if this is a deliberate misdirection (false clue)` : ''}
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
@@ -824,7 +824,7 @@ ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
 
 ${isLatePhase ? 'threadUpdates.closeThreads' : ''}
 ${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
-  - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
+  - Include thread titles that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
 ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 
 viableEnding
