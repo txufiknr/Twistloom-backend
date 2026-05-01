@@ -2841,6 +2841,8 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
     // Count actions without destination after processing
     const pendingAfter = updatedActions.filter(action => !action.destination?.pageId).length;
+    const succeededCount = updatedActions.length - pendingAfter;
+    console.log(`[ensureCandidatesForPage] ✅ Pregenerated pages: ${succeededCount}/${updatedActions.length} actions`);
     if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
     // Update persisted page in a short transaction only if actions were modified
