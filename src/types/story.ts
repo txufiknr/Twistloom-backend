@@ -647,8 +647,8 @@ export type EnrichedAction = Action & {
 };
 
 export type TagUpdates = {
-  add: string[];
-  remove: string[];
+  add?: string[];
+  remove?: string[];
 }
 
 /**

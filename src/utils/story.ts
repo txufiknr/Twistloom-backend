@@ -502,6 +502,44 @@ function updateFlagWithHysteresis(
 }
 
 /**
+ * Generic helper to process array updates from AI-generated content
+ * 
+ * Handles both adding and removing items from an array based on the TagUpdates structure.
+ * 
+ * @param targetArray - The array to update (passed by reference)
+ * @param updates - TagUpdates object with add and remove arrays
+ * @param maxItems - Optional maximum number of items to keep (keeps last N items)
+ * 
+ * @example
+ * ```typescript
+ * processTagUpdates(state.traumaTags, updates, MAX_TRAUMA_TAGS);
+ * processTagUpdates(state.inventory, updates);
+ * ```
+ */
+function processTagUpdates(targetArray: string[], updates?: TagUpdates, maxItems?: number): void {
+  if (!updates) return;
+  
+  // Remove specified items
+  if (updates.remove && updates.remove.length > 0) {
+    targetArray.splice(0, targetArray.length, ...targetArray.filter(item => !updates.remove!.includes(item)));
+  }
+  
+  // Add new items (avoid duplicates)
+  if (updates.add && updates.add.length > 0) {
+    for (const item of updates.add) {
+      if (!targetArray.includes(item)) {
+        targetArray.push(item);
+      }
+    }
+    
+    // Keep only the last maxItems if specified
+    if (maxItems && targetArray.length > maxItems) {
+      targetArray.splice(0, targetArray.length, ...targetArray.slice(-maxItems));
+    }
+  }
+}
+
+/**
  * Processes trauma tag updates from AI-generated content
  * 
  * Handles both adding and removing trauma tags based on the TagUpdates structure.
@@ -519,26 +557,7 @@ function updateFlagWithHysteresis(
  * ```
  */
 export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates): void {
-  if (!updates) return;
-  
-  // Remove specified tags
-  if (updates.remove.length > 0) {
-    state.traumaTags = state.traumaTags.filter(tag => !updates.remove.includes(tag));
-  }
-  
-  // Add new tags (avoid duplicates)
-  if (updates.add.length > 0) {
-    for (const tag of updates.add) {
-      if (!state.traumaTags.includes(tag)) {
-        state.traumaTags.push(tag);
-      }
-    }
-    
-    // Keep only the last MAX_TRAUMA_TAGS trauma tags for relevance
-    if (state.traumaTags.length > MAX_TRAUMA_TAGS) {
-      state.traumaTags = state.traumaTags.slice(-MAX_TRAUMA_TAGS);
-    }
-  }
+  processTagUpdates(state.traumaTags, updates, MAX_TRAUMA_TAGS);
 }
 
 /**
@@ -591,22 +610,8 @@ export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag
  * });
  * ```
  */
-export function processInventoryUpdates(state: StoryState, updates?: { add: string[]; remove: string[] }): void {
-  if (!updates) return;
-  
-  // Remove specified items
-  if (updates.remove.length > 0) {
-    state.inventory = state.inventory.filter(item => !updates.remove.includes(item));
-  }
-  
-  // Add new items (avoid duplicates)
-  if (updates.add.length > 0) {
-    for (const item of updates.add) {
-      if (!state.inventory.includes(item)) {
-        state.inventory.push(item);
-      }
-    }
-  }
+export function processInventoryUpdates(state: StoryState, updates?: TagUpdates): void {
+  processTagUpdates(state.inventory, updates);
 }
 
 /**
