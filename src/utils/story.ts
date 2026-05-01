@@ -9,13 +9,13 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 
 /**
- * Extracts state delta fields from a StoryGeneration object
+ * Extract state delta from generated page for database storage
  * 
- * This function separates the page content from state change information,
- * returning only the delta fields that affect story state progression.
+ * Takes the AI-generated page content and extracts the state changes
+ * to be stored in the database for state reconstruction.
  * 
- * @param generation - StoryGeneration object containing both page content and state deltas
- * @returns Clean StateDelta object with only state change fields
+ * @param generation - AI-generated page with state updates
+ * @returns StateDelta object for database storage
  * 
  * @example
  * ```typescript
@@ -35,6 +35,7 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
     viableEnding: generation.viableEnding,
     isMajorEvent: generation.isMajorEvent,
     contextHistory: generation.contextHistory,
+    injuries: generation.injuries,
   };
 }
 
