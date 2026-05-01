@@ -569,6 +569,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
   return {
     id: dbBook.id,
     userId: dbBook.userId,
+    slug: dbBook.slug || undefined,
     title: dbBook.title,
     totalPages: dbBook.totalPages,
     language: dbBook.language || '',
@@ -599,9 +600,7 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
   if (!book) return [];
   
   const bookMeta = { title: `BOOK META`, snippet: formatBookMetaForPrompt(book) };
-  if (!state) return [bookMeta];
-  
-  const charactersMeta = { title: `CHARACTERS`, snippet: formatCharactersForPrompt(state.characters) };
+  const charactersMeta = { title: `CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state) };
   const placesMeta = { title: `PLACES`, snippet: formatPlacesForPrompt(state) };
 
   return [bookMeta, charactersMeta, placesMeta];

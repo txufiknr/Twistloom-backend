@@ -159,8 +159,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * //   Characters: Lisa (page 15: first meeting here), Tom (page 8: saved from drowning)
  * ```
  */
-export function formatPlacesForPrompt(state: StoryState): string {
-  const allPlaces = Object.values(state.places);
+export function formatPlacesForPrompt(state?: StoryState): string {
+  const allPlaces = state ? Object.values(state.places) : [];
   
   if (allPlaces.length === 0) {
     return "No specific places established yet.";
@@ -222,7 +222,7 @@ export function formatPlacesForPrompt(state: StoryState): string {
       }
       
       // Build the main line with comprehensive info
-      const currentPage = state.page;
+      const currentPage = state?.page;
       const visitStatus = place.lastVisitedAtPage === currentPage ? ' (CURRENT)' : ` (last visited page ${place.lastVisitedAtPage})`;
       const familiarityInfo = place.familiarity ? ` [familiarity: ${place.familiarity.toFixed(1)}]` : '';
       

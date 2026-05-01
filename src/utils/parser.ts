@@ -561,3 +561,10 @@ export function extractPartialJSON<T extends Record<string, any>>(
 
   return result as Partial<T>;
 }
+
+export function stripEmptyLines(prompt: string): string {
+  return !prompt.trim() ? '' : prompt.trim()
+    .split('\n')
+    .filter(line => line.trim())
+    .join('\n');
+}

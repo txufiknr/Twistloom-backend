@@ -3,15 +3,21 @@ import type { Book, BookSortOption } from "../types/book.js";
 /**
  * Formats book metadata for prompt
  *
+ * Formats book information in a clear, structured way for AI prompts.
+ * Includes all relevant metadata to help AI understand the book's context,
+ * premise, and structure.
+ *
  * @param {Book} book - Book object to format
  * @returns {string} Formatted book metadata string
  */
 export function formatBookMetaForPrompt(book: Book): string {
   return `- Title: ${book.title}
-  - Summary: ${book.summary}
-  - Keywords: ${book.keywords.join(', ')}
-  - Target pages: ${book.totalPages} total
-  - Language: ${book.language}`;
+- Hook: ${book.hook}
+- Summary: ${book.summary}
+- Language: ${book.language || 'Not specified'}
+- Total Pages: ${book.totalPages}
+- Status: ${book.status}
+- Keywords: ${book.keywords.join(', ')}`;
 }
 
 /**

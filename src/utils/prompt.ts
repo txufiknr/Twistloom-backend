@@ -30,7 +30,7 @@ import { threadPriorities, threadStatuses, threadTruths, type StoryThread } from
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
-import { deepEqualSimple } from "./parser.js";
+import { deepEqualSimple, stripEmptyLines } from "./parser.js";
 import { withLock, LOCK_KEYS } from "./distributed-lock.js";
 
 // ============================================================================
@@ -648,26 +648,7 @@ PLACE RULES:
 
 ${isLastPage ? '' : `---
 BRANCHING ACTIONS:
-${getActionRulesText({ isFinale })}`}
-
----
-OUTPUT FORMAT (JSON):
-${nextPageOutputFormat}
-
----
-FIELD INSTRUCTIONS:
-${buildNextPageFieldInstructions(state)}
-
----
-REVIEW & FIX (IMPORTANT):
-
-You MUST silently evaluate your generated story using the checklist below.
-If any item fails, revise internally before producing final output.
-
-${buildNextPageReviewChecklist(state)}
-
-Only output the final corrected story page.
-Do NOT mention this checklist.`;
+${getActionRulesText({ isFinale })}`}`;
 }
 
 function buildNextPageFieldInstructions(state: StoryState): string {
@@ -1085,7 +1066,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
   "choiceFlags": [{ "actionIndex": <number>, "issue": "..." }]
 }`;
 
-  return prompt.split('---').map(postProcessPromptSection).join('\n\n---\n');
+  return prompt.split('---').map(stripEmptyLines).join('\n\n---\n');
 }
 
 function buildFirstBookEvaluatorPrompt(
@@ -2932,13 +2913,13 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
-  const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${postProcessPromptSection(fieldInstructions)}` : '';
+  const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 
 You MUST silently evaluate your generated output using the checklist below.
 If any item fails, revise internally before producing final output.
 
-${postProcessPromptSection(thinkThenOutput)}
+${stripEmptyLines(thinkThenOutput)}
 
 Only output the final corrected JSON.
 Do NOT mention this checklist.` : '';
@@ -3091,11 +3072,4 @@ export async function generateBookCreationPromptText(params: GenerateBookCreatio
 export async function generateBookCreationPrompt(params: GenerateBookCreationPromptParams = {}): Promise<string> {
   const stream = await generateBookCreationPromptStream(params);
   return parseSSEStreamContent(stream);
-}
-
-function postProcessPromptSection(prompt: string): string {
-  return !prompt.trim() ? '' : prompt.trim()
-    .split('\n')
-    .filter(line => line.trim())
-    .join('\n');
 }

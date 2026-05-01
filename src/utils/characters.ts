@@ -217,25 +217,71 @@ export function processCharacterUpdates(
  * 
  * @example
  * ```typescript
- * const characterText = formatCharactersForPrompt(state.characters);
- * // Output example:
- * // · Lina (best friend) - female, trusting [suspicious: true, secret: true]
- * //   Bio: Quiet girl who knows more than she lets on
- * //   Relationship to MC: childhood friend with hidden agenda
- * //   Recent interactions: shared secret about basement, avoided questions about parents
- * //   Relationships: Tom (rival - hostile), Sarah (mentor - protective)
- * //   Narrative flags: suspicious, has secret, potential twist: betrayal
- * //   Status: healthy, active
+ * const characterText = formatCharactersForPrompt(book.mc, state);
  * ```
+ * 
+ * Output example:
+ * · Sarah Chen (MC) - 28 years old, female
+ *   Bio: Shy librarian with hidden past and mysterious family connections
+ * 
+ * · Tom Martinez (friend) - male, healthy, active
+ *   Bio: Former military medic, now works as security guard
+ *   Visual description: Tall, muscular build with military haircut and tired eyes
+ *   Relationship to MC: protective friend with secret knowledge
+ *   Recent interactions:
+ *     - Page 12: Helped treat Sarah's arm injury
+ *     - Page 8: Warned about basement dangers
+ *     - Page 5: Shared military medical training
+ *   Relationships:
+ *     - Lisa (rival - hostile)
+ *     - Sarah (friend - protective)
+ *   Narrative flags: has secret, potential twist: knows about Sarah's past
+ *   Status: healthy, active
+ * 
+ * · Lisa Park (mentor) - female, suspicious [suspicious, secret]
+ *   Bio: Quiet girl who knows more than she lets on
+ *   Visual description: Small frame, dark hair always in ponytail, avoids eye contact
+ *   Relationship to MC: childhood friend with hidden agenda
+ *   Recent interactions:
+ *     - Page 15: First meeting here, seemed nervous
+ *     - Page 10: Avoided questions about parents
+ *     - Page 3: Shared secret about basement
+ *   Relationships:
+ *     - Tom (rival - hostile)
+ *     - Sarah (mentor - protective)
+ *   Narrative flags: suspicious, has secret, potential twist: betrayal
+ *   Status: healthy, active
+ * 
+ * · Mr. Henderson (stranger) - male, missing [missing]
+ *   Bio: Elderly caretaker of the abandoned mansion
+ *   Visual description: Frail old man with trembling hands and cloudy eyes
+ *   Relationship to MC: mysterious figure with knowledge of mansion history
+ *   Recent interactions:
+ *     - Page 18: Last seen near basement entrance
+ *     - Page 14: Gave cryptic warning about "them"
+ *     - Page 7: Told story about previous disappearances
+ *   Relationships:
+ *     - Sarah (stranger - neutral)
+ *   Narrative flags: missing, potential twist: not actually dead
+ *   Status: disappeared
  */
-export function formatCharactersForPrompt(characters: Record<string, CharacterMemory>): string {
-  const allCharacters = Object.values(characters);
+export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): string {
+  const { characters = {} } = state || {};
+  const sideCharacters = characters ? Object.values(characters) : [];
   
-  if (allCharacters.length === 0) {
-    return "No characters encountered yet.";
+  const mcDetails = [];
+  if (mc.bio) {
+    mcDetails.push(`  Bio: ${mc.bio}`);
   }
 
-  return allCharacters
+  const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
+  const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
+  
+  if (sideCharacters.length === 0) {
+    return mcInfo;
+  }
+
+  const sideCharactersFormatted = sideCharacters
     .map(character => {
       // Basic character information
       const statusFlags = [];
@@ -319,6 +365,8 @@ export function formatCharactersForPrompt(characters: Record<string, CharacterMe
       return `${mainInfo}\n${details.join('\n')}`;
     })
     .join('\n\n');
+
+  return `${mcInfo}\n\n${sideCharactersFormatted}`;
 }
 
 /**

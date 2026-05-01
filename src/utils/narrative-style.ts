@@ -11,7 +11,7 @@
 import type { StyleVector, NarrativeMode, NarrativeStyle, StyleInput, StoryState } from '../types/story.js';
 import { createStyleInput } from './player-profile.js';
 import { getStoryStateInfo } from './story.js';
-import { normalize } from './parser.js';
+import { normalize, stripEmptyLines } from './parser.js';
 
 /**
  * Calculates base style metrics from core story inputs
@@ -295,7 +295,7 @@ ${phase === 'MID' ? '- Escalate psychological pressure and complications\n' : ''
 ${phase === 'LATE' ? '- Bring tensions to a head, confront truths\n' : ''}
 ${phase === 'FINALE' ? '- Deliver emotional and psychological payoff\n' : ''}`;
   
-  return `${instructions}\n${vectorInstructions}\n${multiFactorInstructions}`.trim();
+  return [instructions, vectorInstructions, multiFactorInstructions].map(stripEmptyLines).join('\n');
 }
 
 /**
