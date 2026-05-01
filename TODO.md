@@ -1,6 +1,5 @@
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
-[ ] Cron: cleanup add cleanupStoryStatesWithStrategy
 [ ] prompt: ensure thread update instruction/format exist
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI

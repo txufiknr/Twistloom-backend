@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession, plotFlagTypes } from "../types/story.js";
-import { retryWithBackoffOrNull } from "../utils/retry.js";
+import { retryWithBackoffOrNull, retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
@@ -13,10 +13,10 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionHistory, Archetype, ManipulationAffinity, PlotFlag, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionHistory, Archetype, ManipulationAffinity, PlotFlag, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
@@ -2433,109 +2433,76 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // 5. Generated content from AI response
   const generatedStoryPage = response.result;
 
-  // 6. Lazy branching: Atomic branch creation with retry on conflict
-  const shouldCreateNewBranch = actionedPage.actions.some(a => !!a.destination?.pageId);
-  let branchId: string;
-  let newPage: PersistedStoryPage | undefined;
-  let retryCount = 0;
-
-  // 7. Apply current AI turn's updates to advanced story state
+  // 6. Apply current AI turn's updates to advanced story state
   const stateDelta = extractStateDelta(generatedStoryPage);
   const newState = applyStateDelta(advancedState, stateDelta);
   
-  // 7.1. Calculate psychological deltas from state changes
+  // 6.1. Calculate psychological deltas from state changes
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
   
-  // 7.2. Merge psychological deltas into the state delta for storage
+  // 6.2. Merge psychological deltas into the state delta for storage
   const fullStateDelta: StateDelta = {
     ...stateDelta,
     ...psychologicalDeltas,
   };
 
-  // 8. Persist generated page to database with parent-child relationship and retry logic
-  while (retryCount < MAX_BRANCHING_RETRIES) {
-    branchId = shouldCreateNewBranch ? generateBranchId() : actionedPage.branchId;
-
-    try {
-      newPage = await insertStoryPage(userId, newState.page, {
+  // 7. Persist generated page to database with automatic retry on branch conflicts
+  // Branching decision is made inside the retry function to eliminate race conditions
+  const newPage = await retryWithBranchConflict<PersistedStoryPage, StoryPageMeta>(
+    async (data) => {
+      // Read fresh page data inside the retry operation to eliminate race conditions
+      const freshActionedPage = await getPageFromDB(actionedPage.id);
+      if (!freshActionedPage) {
+        // Create a specific error for deleted pages that won't be retried
+        throw createNonRetryableError(
+          `Actioned page ${actionedPage.id} was deleted during retry operation`,
+          'PAGE_DELETED'
+        );
+      }
+      
+      // Make branching decision with fresh data
+      const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
+      
+      // Create updated data with immutable pattern
+      const updatedData = { 
+        ...data, 
+        branchId: shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId 
+      };
+      
+      return insertStoryPage(userId, newState.page, {
         ...generatedStoryPage,
         stateDelta: fullStateDelta,
         aiProvider: response.provider || 'none',
         aiModel: response.model || 'none',
-      }, {
-        bookId: actionedPage.bookId,
-        parentId: actionedPage.id,
-        branchId,
-      });
-      break; // Success, exit retry loop
-    } catch (error) {
-      // Check if it's a unique constraint violation
-      if (getErrorMessage(error).includes('pages_parent_branch_unique') && !shouldCreateNewBranch) {
-        // Another process created the main branch first, create our own branch
-        console.log(`[buildNextPage] 💥 Race condition detected for parent ${actionedPage.id}, creating new branch`);
-        retryCount++;
-        if (retryCount >= MAX_BRANCHING_RETRIES) {
-          throw new Error(`Failed to create page after ${MAX_BRANCHING_RETRIES} retries due to concurrent branch creation`, { cause: error });
-        }
-        continue;
+      }, updatedData);
+    },
+    {
+      bookId: actionedPage.bookId,
+      parentId: actionedPage.id,
+      // branchId will be set inside the operation function based on fresh data
+    },
+    generateBranchId,
+    {
+      maxRetries: MAX_BRANCHING_RETRIES,
+      baseDelayMs: 1000,
+      onRetry: (attempt: number) => {
+        console.log(`[buildNextPage] 🔄 Branch conflict retry ${attempt}/${MAX_BRANCHING_RETRIES} for parent ${actionedPage.id}`);
       }
-      throw error; // Re-throw non-conflict errors
     }
-  }
+  );
 
   // Ensure newPage was successfully created
   if (!newPage) {
-    throw new Error('Failed to create page: newPage is undefined after retry loop');
+    throw new Error(`Failed to create page: newPage is undefined after retry loop for parent ${actionedPage.id}`);
   }
 
   // 9. Pre-generate candidate pages for each action in the new page
-  // Pass newState and book to avoid database lookup during candidate generation
-  // const userPage = await ensureCandidatesForPage(userId, newPage, newState, book);
-  // const { bookId, id: pageId } = userPage;
   const { bookId, id: pageId } = newPage;
 
-  // 10. Create delta from previous state to new state for efficient reconstruction
-  // try {
-  //   if (previousState) {
-  //     await createStateDeltaRecord(userId, bookId, pageId, previousState, newState);
-  //     console.log(`[buildNextPage] 🔄 Created delta for page ${pageId} from previous state ${actionedPage.id}`);
-  //   } else {
-  //     console.log(`[buildNextPage] ℹ️ No previous state found for page ${actionedPage.id}, skipping delta creation`);
-  //   }
-  // } catch (deltaError) {
-  //   console.error(`[buildNextPage] ⚠️ Failed to create delta for page ${pageId}:`, deltaError);
-  //   // Continue with state insertion even if delta creation fails
-  // }
-  
-  // 11. Persist story state for the generated page (page-based state management)
+  // 10. Persist story state for the generated page (page-based state management)
   await insertStoryState(userId, bookId, pageId, newState);
 
-  // // 12. Create snapshot if conditions are met
-  // try {
-  //   // Get previous page for branch detection
-  //   const previousPage = await getStoryPageById(userId, bookId, actionedPage.id);
-    
-  //   // Get last snapshot page for this user/book
-  //   const lastSnapshotPage = await getLastSnapshotPage(userId, bookId);
-    
-  //   // Determine if this is a major event (based on AI analysis result)
-  //   const { isMajorEvent = false } = generatedStoryPage;
-    
-  //   // Check if snapshot should be created
-  //   const snapshotDecision = shouldCreateSnapshot(newPage, previousPage, lastSnapshotPage, isMajorEvent);
-    
-  //   if (snapshotDecision.shouldCreate) {
-  //     await createStateSnapshot(userId, bookId, pageId, newState, snapshotDecision.reason);
-  //     console.log(`[buildNextPage] 📸 Created snapshot for page ${pageId}, reason: ${snapshotDecision.reason}`);
-  //   }
-  // } catch (snapshotError) {
-  //   console.error(`[buildNextPage] ❌ Failed to create snapshot for page ${pageId}:`, snapshotError);
-  //   // Continue even if snapshot creation fails
-  // } finally {
-  //   // Ensure the function completes properly
-  // }
-
-  // 13. Return the persisted story page with all database metadata
+  // 11. Return the persisted story page with all database metadata
   return newPage;
 }
 

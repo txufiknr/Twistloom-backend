@@ -19,7 +19,7 @@ import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookSortOption, BookStatus } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction, StoryPageMeta } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -63,9 +63,8 @@ import { extractStateDelta } from "../utils/story.js";
 export async function insertStoryPage(
   userId: string,
   pageNumber: number,
-  // page: StoryGeneration & Pick<StoryPage, 'aiProvider' | 'aiModel'>,
   page: StoryPage,
-  pageMeta: Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'>,
+  pageMeta: StoryPageMeta,
 ): Promise<PersistedStoryPage> {
   const { bookId, branchId, parentId } = pageMeta;
   try {

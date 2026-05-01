@@ -2,7 +2,7 @@ import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
-import type { DBPage, DBUserSession } from "./schema.js";
+import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
 
 /**
@@ -566,6 +566,8 @@ export type StoryPage = {
   /** AI model used for generating the page content */
   aiModel?: string;
 };
+
+export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'>;
 
 /**
  * State delta representing incremental changes between pages

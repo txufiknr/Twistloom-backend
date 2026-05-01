@@ -3,6 +3,7 @@
  */
 
 import { LRUCache } from "lru-cache";
+import { getErrorMessage } from "./error.js";
 
 /**
  * Retry configuration options
@@ -215,4 +216,185 @@ export async function retryWithBackoffOrNull<T>(
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// UNIQUE CONSTRAINT RETRY UTILITIES
+// ============================================================================
+
+/**
+ * Common unique constraint error patterns
+ */
+const UNIQUE_CONSTRAINT_PATTERNS = [
+  'unique constraint',
+  'duplicate key',
+  'violates unique constraint',
+  'already exists',
+  'duplicate entry',
+];
+
+/**
+ * Type guard for errors with custom properties
+ */
+interface ErrorWithCustomProperties extends Error {
+  code?: string;
+  shouldRetry?: boolean;
+  cause?: unknown;
+  retryAttempt?: number;
+  maxRetries?: number;
+}
+
+/**
+ * Checks if an error is a unique constraint violation
+ */
+export function isUniqueConstraintError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return UNIQUE_CONSTRAINT_PATTERNS.some(pattern => message.includes(pattern));
+}
+
+/**
+ * Checks if an error is marked as non-retryable
+ * 
+ * This provides type-safe checking for errors that have custom properties
+ * like `shouldRetry: false` or specific error codes.
+ * 
+ * @param error - The error to check
+ * @returns true if the error should not be retried
+ */
+export function isNonRetryableError(error: unknown): boolean {
+  const err = error as ErrorWithCustomProperties;
+  return err.shouldRetry === false || err.code === 'PAGE_DELETED';
+}
+
+/**
+ * Creates a non-retryable error with custom properties
+ * 
+ * This helper function creates errors that will not be retried by the
+ * retryWithUniqueConstraint function, providing a type-safe way to
+ * mark errors as non-retryable.
+ * 
+ * @param message - Error message
+ * @param code - Optional error code for identification
+ * @returns Error object with non-retryable properties
+ */
+export function createNonRetryableError(message: string, code?: string): ErrorWithCustomProperties {
+  const error = new Error(message) as ErrorWithCustomProperties;
+  error.shouldRetry = false;
+  if (code) {
+    error.code = code;
+  }
+  return error;
+}
+
+/**
+ * Retry options for database operations with unique constraints
+ */
+export interface DatabaseRetryOptions<TData = any> extends RetryOptions {
+  /** Function to modify data before retry (for generating unique values) */
+  modifyData?: (attempt: number, data: TData) => TData;
+}
+
+/**
+ * Executes a database operation with automatic retry on unique constraint conflicts
+ * 
+ * @param operation - The database operation function to execute
+ * @param initialData - Initial data for operation
+ * @param options - Retry configuration options
+ * @returns Promise resolving to operation result
+ */
+export async function retryWithUniqueConstraint<T, D = any>(
+  operation: (data: D) => Promise<T>,
+  initialData: D,
+  options: DatabaseRetryOptions<D> = {}
+): Promise<T> {
+  const { modifyData, ...retryOptions } = options;
+  let currentData = initialData;
+  let lastError: unknown;
+
+  const maxRetries = retryOptions.maxRetries ?? 3;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation(currentData);
+    } catch (error) {
+      lastError = error;
+
+      // Only retry on unique constraint violations
+      // Check for specific error codes that should not be retried
+      if (isNonRetryableError(error)) {
+        throw error;
+      }
+      if (!isUniqueConstraintError(error)) {
+        // Add retry context to non-unique constraint errors
+        const contextError = new Error(`Non-retryable error in retryWithUniqueConstraint (attempt ${attempt + 1}/${maxRetries + 1}): ${getErrorMessage(error)}`);
+        (contextError as ErrorWithCustomProperties).cause = error;
+        (contextError as ErrorWithCustomProperties).retryAttempt = attempt + 1;
+        (contextError as ErrorWithCustomProperties).maxRetries = maxRetries + 1;
+        throw contextError;
+      }
+
+      // Don't retry on last attempt
+      if (attempt === maxRetries) {
+        break;
+      }
+
+      // Modify data for next attempt
+      if (modifyData) {
+        try {
+          currentData = modifyData(attempt + 1, currentData);
+        } catch (modifyError) {
+          console.error(`[retryWithUniqueConstraint] Error modifying data on attempt ${attempt + 1}:`, modifyError);
+          throw modifyError; // Re-throw to fail the retry
+        }
+      }
+
+      // Calculate delay and wait
+      const baseDelayMs = retryOptions.baseDelayMs ?? 1000;
+      const maxDelayMs = retryOptions.maxDelayMs ?? 30000;
+      const exponentialBackoff = retryOptions.exponentialBackoff ?? true;
+      
+      const delay = exponentialBackoff
+        ? Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs)
+        : baseDelayMs;
+
+      // Call retry callback if provided
+      retryOptions.onRetry?.(attempt + 1, error);
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  // All retries failed, throw last error
+  throw lastError;
+}
+
+/**
+ * Specialized retry wrapper for branch ID conflicts
+ * 
+ * @param operation - Database operation that uses branchId
+ * @param data - Data containing branchId
+ * @param generateNewBranchId - Function to generate new branch ID
+ * @param options - Additional retry options
+ */
+export async function retryWithBranchConflict<T, TData extends { branchId?: string }>(
+  operation: (data: TData) => Promise<T>,
+  data: TData,
+  generateNewBranchId: () => string,
+  options: DatabaseRetryOptions<TData> = {}
+): Promise<T> {
+  return retryWithUniqueConstraint(
+    operation,
+    data,
+    {
+      ...options,
+      modifyData: (attempt, currentData) => ({
+        ...currentData,
+        branchId: generateNewBranchId()
+      }),
+      onRetry: (attempt, error) => {
+        console.log(`[retryWithBranchConflict] 🔄 Branch conflict detected, generating new branch ID (attempt ${attempt})`);
+        options.onRetry?.(attempt, error);
+      }
+    }
+  );
 }
