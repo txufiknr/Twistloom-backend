@@ -18,6 +18,8 @@ export type BuildNextPageParams = {
   currentState: StoryState;
   /** Current page with selected action for context */
   actionedPage: ActionedStoryPage;
+  /** Whether next page should have new branchId */
+  generateNewBranchId?: boolean;
 };
 
 export type BuildNextPagePromptParams = {
@@ -41,4 +43,6 @@ export type GenerateCandidatePageParams = {
   currentState?: StoryState | null;
   /** Optional book context (avoids session lookup when provided, e.g., for system-generated originals) */
   currentBook?: Book | null;
+  /** Whether candidate page should have new branchId */
+  generateNewBranchId?: boolean;
 };

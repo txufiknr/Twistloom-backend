@@ -2451,7 +2451,7 @@ export async function initializeBook(
  * ```
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
-  const { userId, book, currentState, actionedPage } = params;
+  const { userId, book, currentState, actionedPage, generateNewBranchId = false } = params;
   
   // 0. Advance story state based on user action and previous AI turn updates
   const advancedState = await advanceStoryState(currentState, actionedPage);
@@ -2513,26 +2513,32 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // Branching decision is made inside the retry function to eliminate race conditions
   const newPage = await retryWithBranchConflict<PersistedStoryPage, StoryPageMeta>(
     async (data) => {
-      // Read fresh page data from write DB to ensure read-after-write consistency
-      // This is critical because ensureCandidatesForPage updates actions with destinations,
-      // and we need to see those updates to determine if branching is needed
-      const freshActionedPage = await getPageFromDB(actionedPage.id, dbWrite);
-      if (!freshActionedPage) {
-        // Create a specific error for deleted pages that won't be retried
-        throw createNonRetryableError(
-          `Actioned page ${actionedPage.id} was deleted during retry operation`,
-          'PAGE_DELETED'
-        );
+      let branchId = data.branchId ?? "main"; // Default: same branchId as parent page
+
+      if (!generateNewBranchId) {
+        // Read fresh page data from write DB to ensure read-after-write consistency
+        // This is critical because ensureCandidatesForPage updates actions with destinations,
+        // and we need to see those updates to determine if branching is needed
+        const freshActionedPage = await getPageFromDB(actionedPage.id, dbWrite);
+        if (!freshActionedPage) {
+          // Create a specific error for deleted pages that won't be retried
+          throw createNonRetryableError(
+            `Actioned page ${actionedPage.id} was deleted during retry operation`,
+            'PAGE_DELETED'
+          );
+        }
+  
+        console.log(`[generateNextPage] 👀 freshActionedPage.actions for page ${actionedPage.id}:`, freshActionedPage.actions);
+
+        // Make branching decision with fresh data
+        const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
+        console.log(`[generateNextPage] 🌳 shouldCreateNewBranch:`, shouldCreateNewBranch);
+
+        // Use branchId from data if already set (from retry), otherwise decide based on fresh data
+        // This ensures retry logic's modifyData function is respected
+        branchId = data.branchId || (shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId);
+        console.log(`[generateNextPage] 🌳 branchId:`, branchId);
       }
-      
-      // Make branching decision with fresh data
-      const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
-      console.log(`[generateNextPage] 🌳 shouldCreateNewBranch:`, shouldCreateNewBranch);
-      
-      // Use branchId from data if already set (from retry), otherwise decide based on fresh data
-      // This ensures retry logic's modifyData function is respected
-      const branchId = data.branchId || (shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId);
-      console.log(`[generateNextPage] 🌳 branchId:`, branchId);
       
       // Create updated data with immutable pattern
       const updatedData = { ...data, branchId };
@@ -2607,7 +2613,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  * ```
  */
 export async function generateCandidatePage(params: GenerateCandidatePageParams): Promise<PersistedStoryPage | null> {
-  const { userId, action: actionCandidate, currentState: providedState, currentBook: providedBook } = params;
+  const { userId, action: actionCandidate, currentState: providedState, currentBook: providedBook, generateNewBranchId } = params;
   let { currentPage } = params;
 
   // try {
@@ -2675,7 +2681,8 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
         userId,
         book: currentBook,
         currentState,
-        actionedPage
+        actionedPage,
+        generateNewBranchId
       });
 
       console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id}:`, { action, branchId: newPage.branchId });
@@ -2808,34 +2815,39 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
   const lockResult = await withLock(lockKey, async () => {
     // Read current page state (no transaction - avoids idle timeout during AI generation)
-    const currentPage = await dbWrite
-      .select()
-      .from(pages)
-      .where(eq(pages.id, page.id))
-      .limit(1);
+    const currentDBPage = await getPageFromDB(page.id, dbWrite);
+    if (!currentDBPage) throw new Error('Page not found');
 
-    if (!currentPage.length) {
-      throw new Error('Page not found');
-    }
+    const currentPage = mapToUserStoryPage(currentDBPage);
+    const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
-    const recheckedPendingActions = currentPage[0].actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
-    if (recheckedPendingActions.length === 0) {
+    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+    if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
-      return mapToUserStoryPage(currentPage[0]);
+      return currentPage;
     }
 
     // Track if any actions were actually updated
+    const updatedDBActions = [...initialDBActions];
+    let generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
-    const updatedActions = [...currentPage[0].actions];
-
+    
     // For each pending action, create a candidate (AI generation happens outside transaction)
-    for (const action of recheckedPendingActions) {
-      const letter = String.fromCharCode(65 + currentPage[0].actions.indexOf(action));
+    for (const action of recheckedPendingDBActions) {
+      const letter = String.fromCharCode(65 + initialDBActions.indexOf(action));
       console.log(`[ensureCandidatesForPage] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
+      
       // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
       const candidatePage = await retryWithBackoffOrNull(
-        () => generateCandidatePage({userId, action, currentPage: mapToUserStoryPage(currentPage[0]), currentState, currentBook}),
+        () => generateCandidatePage({
+          userId,
+          action,
+          currentPage,
+          currentState,
+          currentBook,
+          generateNewBranchId
+        }),
         {
           maxRetries: 3,
           baseDelayMs: 1000,
@@ -2858,10 +2870,10 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
       if (candidatePage) {
         // Success: update action with destination (branchId and pageId)
-        console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for:`, action.text);
-        const actionIndex = updatedActions.findIndex(a => deepEqualSimple(a, action));
+        console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for: ${letter}.`, action.text);
+        const actionIndex = updatedDBActions.findIndex(a => deepEqualSimple(a, action));
         if (actionIndex !== -1) {
-          updatedActions[actionIndex] = { 
+          updatedDBActions[actionIndex] = { 
             ...action, 
             destination: { 
               branchId: candidatePage.branchId, 
@@ -2870,6 +2882,8 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           };
           hasRealChanges = true;
         }
+        // Subsequent pending actions: Should always create new branches
+        generateNewBranchId = true;
       } else {
         // Failed after all retries: leave destination undefined (will be filtered out in API response)
         console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
@@ -2877,29 +2891,29 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     }
 
     // Count actions without destination after processing
-    const pendingAfter = updatedActions.filter(action => !action.destination?.pageId).length;
-    const succeededCount = updatedActions.length - pendingAfter;
-    console.log(`[ensureCandidatesForPage] ✅ Pregenerated pages: ${succeededCount}/${updatedActions.length} actions`);
+    const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
+    const succeededCount = updatedDBActions.length - pendingAfter;
+    console.log(`[ensureCandidatesForPage] ✅ Pregenerated pages: ${succeededCount}/${updatedDBActions.length} actions`);
     if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
     // Update persisted page in a short transaction only if actions were modified
     // This ensures pendingGenerationCount is always accurate even if some actions fail
-    if (hasRealChanges || pendingAfter !== recheckedPendingActions.length) {
+    if (hasRealChanges || pendingAfter !== recheckedPendingDBActions.length) {
       const updatedPage = await dbWrite
         .update(pages)
         .set({
-          actions: updatedActions,
+          actions: updatedDBActions,
           pendingGenerationCount: pendingAfter,
           updatedAt: new Date()
         })
-        .where(eq(pages.id, currentPage[0].id))
+        .where(eq(pages.id, page.id))
         .returning();
       
       return mapToUserStoryPage(updatedPage[0]);
     }
 
     // Return original page if no changes needed
-    return mapToUserStoryPage(currentPage[0]);
+    return currentPage;
   }, 300); // 5-minute lock TTL
 
   // Return the result or original page if lock couldn't be acquired
