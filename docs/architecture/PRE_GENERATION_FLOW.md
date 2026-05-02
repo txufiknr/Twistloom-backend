@@ -6,20 +6,23 @@ This document describes the automatic pre-generation system for story pages in T
 
 ## Architecture
 
-The pre-generation system uses a **fire-and-forget** pattern with **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
+The pre-generation system uses a **fire-and-forget** pattern with **distributed locking** and **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
 
 - **Instant user experience**: Users can navigate to pre-generated pages immediately
 - **Graceful failure handling**: Failed generations don't block user navigation
 - **Resource efficiency**: Only generates pages for actions users might take
 - **Cascade effect**: Each generated page triggers pre-generation of its own candidates
+- **Concurrent safety**: Distributed locks prevent duplicate generation in serverless environments
 
 ## Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         BOOK CREATION (initializeBook)                   │
-│  Location: src/utils/prompt.ts:1911                                      │
+│                    BOOK CREATION (createBookCore)                      │
+│  Location: src/services/book-creation.ts:66                           │
 │  Purpose: Create new book with first page and trigger pre-generation     │
+│                                                                          │
+│  Flow: validateTheme → initializeBook → enrichActions → invalidate caches│
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -47,33 +50,70 @@ The pre-generation system uses a **fire-and-forget** pattern with **exponential 
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                  ENSURE CANDIDATES FOR PAGE (ensureCandidatesForPage)  │
-│  Location: src/utils/prompt.ts:2511                                      │
+│  Location: src/utils/prompt.ts:2804                                      │
 │  Purpose: Iterate through actions and pre-generate candidate pages        │
 │                                                                          │
 │  This function is the core of the pre-generation system. It scans all    │
 │  actions on a page and generates candidate pages for those without a     │
-│  destination.pageId (indicating no pre-generated candidate exists).      │
+│  complete destination (both branchId and pageId).                        │
+│                                                                          │
+│  Key features:                                                           │
+│  - Distributed lock prevents concurrent processing of same page           │
+│  - Re-checks pending actions after acquiring lock (idempotent)            │
+│  - Removes invalid actions with non-retryable errors                      │
+│  - Adds fallback "Continue." action if all actions are invalid            │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  For each action on page:  │
-                    │  Check destination.pageId   │
+                    │  Skip if last page         │
+                    │  (page >= totalPages)      │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Filter actions without    │
+                    │  complete destination      │
+                    │  (!pageId || !branchId)    │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Acquire distributed lock  │
+                    │  withLock()                │
+                    │  Key: lock:candidate:{id}  │
+                    │  TTL: 300 seconds (5 min)  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Re-check after lock       │
+                    │  (another instance may     │
+                    │   have processed)          │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  For each pending action:  │
+                    │  Generate candidate        │
                     └───────────────────────────┘
                                     │
                     ┌───────────────┴───────────────┐
                     ▼                               ▼
           ┌─────────────────┐              ┌─────────────────┐
-          │ Has destination │              │ No destination   │
-          │ (pre-generated) │              │ (needs gen)      │
-          │ Skip this action│              │ Generate candidate│
+          │ Has complete    │              │ No complete      │
+          │ destination      │              │ destination      │
+          │ (pre-generated)  │              │ (needs gen)       │
+          │ Skip this action │              │ Generate candidate│
           └─────────────────┘              └─────────────────┘
                     │                               │
                     │                               ▼
                     │               ┌───────────────────────────┐
                     │               │  retryWithBackoffOrNull() │
+                    │               │  (MAX_BRANCHING_RETRIES) │
                     │               │  (3 retries, 1s/2s/4s)    │
-                    │               │  Handles AI failures     │
+                    │               │  - shouldRetry callback  │
+                    │               │  - Non-retryable check    │
                     │               └───────────────────────────┘
                     │                               │
                     │                               ▼
@@ -82,40 +122,64 @@ The pre-generation system uses a **fire-and-forget** pattern with **exponential 
                     │               │  Generate single page     │
                     │               └───────────────────────────┘
                     │                               │
-                    └───────────────┬───────────────┘
+                    │               ┌───────────────┴───────────────┐
+                    │               ▼                               ▼
+                    │     ┌─────────────────┐              ┌─────────────────┐
+                    │     │ Success         │              │ Invalid action  │
+                    │     │ Update action   │              │ (non-retryable)│
+                    │     │ with dest       │              │ Remove action   │
+                    │     └─────────────────┘              └─────────────────┘
+                    │               │                               │
+                    │               ▼                               ▼
+                    │     ┌─────────────────┐              ┌─────────────────┐
+                    │     │ Set generateNew  │              │ Leave for retry │
+                    │     │ BranchId = true │              │ (valid action)  │
+                    │     └─────────────────┘              └─────────────────┘
+                    │                               │
+                    └───────┬───────────────┘
                                     ▼
                     ┌───────────────────────────┐
-                    │  If success: update action │
-                    │  with destination          │
-                    │  { branchId, pageId }      │
-                    │  Persist to DB             │
+                    │  Update page in DB:       │
+                    │  - actions[]              │
+                    │  - pendingGenerationCount  │
+                    │  - updatedAt              │
                     └───────────────────────────┘
                                     │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
-          ┌─────────────────┐              ┌─────────────────┐
-          │ Generation      │              │ Generation      │
-          │ succeeded       │              │ failed (3x)     │
-          │ Action updated │              │ Leave undefined  │
-          │ Persist page    │              │ Filtered in API  │
-          └─────────────────┘              └─────────────────┘
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Release distributed lock │
+                    └───────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                  GENERATE CANDIDATE PAGE (generateCandidatePage)         │
-│  Location: src/utils/prompt.ts:2330                                      │
+│  Location: src/utils/prompt.ts:2624                                      │
 │  Purpose: Generate a single candidate page for an action                 │
 │                                                                          │
 │  This function generates a candidate page for a specific action. It     │
-│  first checks if a pre-generated page already exists (reuse scenario),   │
-│  and if not, generates a new page using AI.                             │
+│  validates the action, checks if a pre-generated page already exists,   │
+│  and generates a new page using AI if needed.                            │
+│                                                                          │
+│  Validation: Throws non-retryable error if action.text is empty         │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Match actionText to page  │
-                    │  actions to find Action    │
-                    │  (finds which action)     │
+                    │  Validate action.text      │
+                    │  (throw if empty)          │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Get story progress       │
+                    │  (book, state, session)    │
+                    │  Use provided if available │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Match action to page     │
+                    │  actions (text + type)    │
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -250,19 +314,53 @@ export type Action = {
 - **Incomplete destination**: Either field is missing → Action filtered out in API response
 - **No destination**: Both fields are undefined → Candidate not yet generated
 
-### 2. Retry Logic with Exponential Backoff
+### 2. Distributed Locking
+
+Pre-generation uses distributed locking to prevent concurrent processing of the same page in serverless environments:
+
+```typescript
+const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
+const lockResult = await withLock(lockKey, async () => {
+  // Read current page state
+  const currentDBPage = await getPageFromDB(page.id, dbWrite);
+  
+  // Re-check pending actions after acquiring lock (idempotent)
+  const recheckedPendingDBActions = initialDBActions.filter(
+    action => !action.destination?.pageId || !action.destination?.branchId
+  );
+  
+  // Process actions...
+}, DEFAULT_LOCK_TTL); // 300 seconds (5 minutes)
+```
+
+**Lock details:**
+- **Key pattern**: `lock:candidate:{pageId}`
+- **TTL**: 300 seconds (5 minutes) from `DEFAULT_LOCK_TTL`
+- **Purpose**: Prevents multiple serverless instances from processing the same page simultaneously
+- **Idempotent**: Re-checks pending actions after acquiring lock to skip if already processed
+
+### 3. Retry Logic with Exponential Backoff
 
 Pre-generation uses `retryWithBackoffOrNull` to handle AI failures gracefully:
 
 ```typescript
 const candidatePage = await retryWithBackoffOrNull(
-  () => generateCandidatePage({userId, actionText: action.text, currentPage: page, currentState}),
+  () => generateCandidatePage({userId, action, currentPage, currentState, currentBook, generateNewBranchId}),
   { 
-    maxRetries: 3,
+    maxRetries: MAX_BRANCHING_RETRIES, // 3 from config/story.ts
     baseDelayMs: 1000,    // 1 second
     maxDelayMs: 4000,     // 4 seconds
     onRetry: (attempt, error) => {
-      console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
+      lastError = error;
+      console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
+    },
+    shouldRetry: (error) => {
+      const err = error as ErrorWithCustomProperties;
+      if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
+        console.warn(`[ensureCandidatesForPage] ⛔ Non-retryable error detected:`, getErrorMessage(error));
+        return false;
+      }
+      return true;
     }
   }
 );
@@ -274,8 +372,41 @@ const candidatePage = await retryWithBackoffOrNull(
 - Attempt 3: Wait 2 seconds
 - Attempt 4: Wait 4 seconds
 - After 3 failures: Return `null`, leave destination undefined
+- **Non-retryable errors**: Actions with `INVALID_ACTION` code or `shouldRetry: false` are removed
 
-### 3. EnrichedAction for Frontend
+### 4. Invalid Action Handling
+
+When an action is marked as non-retryable (e.g., validation error):
+
+```typescript
+if (isInvalidAction) {
+  console.error(`[ensureCandidatesForPage] ❌ Invalid action "${action.text}" detected, removing from actions`);
+  const actionIndex = updatedDBActions.findIndex(a => deepEqualSimple(a, action));
+  if (actionIndex !== -1) {
+    updatedDBActions.splice(actionIndex, 1);
+    hasRealChanges = true;
+  }
+}
+```
+
+**Fallback action:** If all actions are invalid, a fallback "Continue." action is added:
+
+```typescript
+if (updatedDBActions.length === 0) {
+  console.warn(`[ensureCandidatesForPage] ⚠️ All actions are invalid, replaced with 1 continue action.`);
+  updatedDBActions.push({
+    text: "Continue.",
+    type: "other",
+    hint: { text: "See what happens next.", type: "none" },
+    destination: {} // Will be pre-generated on next run
+  });
+  hasRealChanges = true;
+}
+```
+
+This ensures the page always has at least one navigable action.
+
+### 5. EnrichedAction for Frontend
 
 The frontend receives `EnrichedAction` with navigation metadata:
 
@@ -336,12 +467,16 @@ When candidate generation fails after all retries:
 3. **Filtered in API response**: GET page endpoint filters actions without complete destination
 4. **User experience**: Action simply doesn't appear (as if it never existed)
 5. **Automatic retry**: Failed generations are tracked and retried via cron job
+6. **Invalid actions removed**: Non-retryable errors cause action removal
+7. **Fallback action**: "Continue." added if all actions are invalid
 
 This design choice prioritizes user experience over transparency:
 - Users never see failed generation errors
 - Navigation continues smoothly
 - Frontend only shows viable actions
 - Background retry system eventually completes failed generations
+- Invalid actions are cleaned up automatically
+- Fallback ensures page is never completely dead-ended
 
 ## No User Validation in Pre-Generation
 
@@ -356,6 +491,11 @@ Important: `generateCandidatePage` does NOT validate user's previous choices.
 - Checks if action exists on previous page
 - Checks if user already chose a different action (branching restriction)
 - Prevents users from selecting alternate branches on revisited pages
+
+**Action validation in generateCandidatePage:**
+- Throws non-retryable error if `action.text` is empty
+- Uses `createNonRetryableError` with `INVALID_ACTION` code
+- This causes the action to be removed from the page
 
 ## Database Operations
 
@@ -390,6 +530,7 @@ await insertUserPageProgress(userId, bookId, pageId, action);
 - Pre-generation runs asynchronously
 - Doesn't block user responses
 - Uses `void` to discard promises
+- Distributed lock ensures safe concurrent execution
 
 ### Sequential Generation
 - Candidates generated one at a time (not parallel)
@@ -405,9 +546,11 @@ await insertUserPageProgress(userId, bookId, pageId, action);
 
 ### Generation Failures
 - Logged to console with context
-- Action left with undefined destination
+- Non-retryable errors: Action removed from page
+- Retryable errors: Action left with undefined destination
 - Filtered out in API response
 - No user-facing error messages
+- Fallback action added if all actions invalid
 
 ### Database Failures
 - Wrapped in try-catch
@@ -484,14 +627,16 @@ Failed candidate generations are automatically retried via a cron job system:
 
 **How it works:**
 1. Queries pages with `pendingGenerationCount > 0`
-2. Processes up to 50 pages per run (ordered by highest pending count)
-3. For each page, calls `ensureCandidatesForPage` to retry generation
-4. Updates `pendingGenerationCount` after each attempt
-5. Logs success/failure statistics for monitoring
+2. Excludes last pages (`page.number < totalPages`) since they don't need candidates
+3. Processes up to 50 pages per run (ordered by `desc(books.trendingScore), desc(pages.pendingGenerationCount)`)
+4. For each page, calls `ensureCandidatesForPage` to retry generation
+5. Updates `pendingGenerationCount` after each attempt
+6. Logs success/failure statistics for monitoring
+7. Also generates missing cover images for original books (see below)
 
 **Database tracking:**
 - `pages.pendingGenerationCount`: Integer column tracking actions without destinations
-- Indexed for efficient cron job queries
+- Indexed via `pages_pending_generation_idx` for efficient cron job queries
 - Set during page insertion based on actions without destinations
 - Updated by `ensureCandidatesForPage` after generation attempts
 
@@ -499,7 +644,42 @@ Failed candidate generations are automatically retried via a cron job system:
 - Automatic recovery from transient AI failures
 - No manual intervention required
 - Efficient processing with batch limits
-- Prioritizes pages with most pending actions
+- Prioritizes trending books and pages with most pending actions
+
+### Missing Cover Image Generation
+
+The same cron job also generates missing cover images for original books:
+
+**Function**: `generateMissingOriginalBookCovers()`
+**Purpose**: Generate AI cover images for original books without covers
+
+**How it works:**
+1. Queries books where `isOriginal: true` and `image: null`
+2. Prioritizes by lowest `branchesCount`, then by highest `trendingScore`
+3. Processes up to 25 books per run
+4. Calls `generateAndUpdateBookCoverImage` for each book
+5. Updates book with new image URL and ID
+
+**Benefits:**
+- Ensures original books have attractive covers
+- Prioritizes books that need more exposure (low branches)
+- Leverages trending score for quality assurance
+
+### Cron Job: generate-originals
+**Location**: `src/cron/generate-originals.ts`
+**Schedule**: Daily via GitHub Actions
+**Purpose**: Generate one Twistloom Original book per day
+
+**How it works:**
+1. Generates creative theme using AI (non-streaming)
+2. Calls `createBookCore` with `isOriginal: true` and `generateCoverImage: true`
+3. Retries up to 3 times with new themes on failure
+4. Invalidates explore cache so new original appears
+
+**Benefits:**
+- Daily fresh content for users
+- Automatic cover image generation
+- Theme retry ensures quality
 
 ## Future Enhancements
 
@@ -514,12 +694,16 @@ Potential improvements to consider:
 
 ## Summary
 
-The automatic pre-generation system provides instant navigation by proactively generating candidate pages for user actions. It uses a fire-and-forget pattern with retry logic to handle AI failures gracefully, ensuring a smooth user experience while maintaining story integrity through validation during actual navigation.
+The automatic pre-generation system provides instant navigation by proactively generating candidate pages for user actions. It uses a fire-and-forget pattern with distributed locking and retry logic to handle AI failures gracefully, ensuring a smooth user experience while maintaining story integrity through validation during actual navigation.
 
 **Key takeaways:**
 - Pre-generation is asynchronous and non-blocking
+- Distributed locks prevent concurrent processing in serverless environments
 - Failed generations are tracked via `pendingGenerationCount` and retried by cron job
+- Non-retryable errors cause action removal with fallback "Continue." action
 - Validation only happens during user navigation
 - Cascade effect creates tree of pre-generated pages
 - Destination object stores branchId and pageId for navigation
 - Automatic retry system ensures eventual completion of failed generations
+- Separate cron jobs for retrying generations and creating original books
+- Cover image generation integrated into retry cron job

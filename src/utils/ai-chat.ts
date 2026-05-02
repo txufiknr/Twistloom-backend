@@ -16,6 +16,7 @@ import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@ce
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { group } from '@actions/core';
+import { ProgressCallback } from "../types/sse.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -764,6 +765,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   prompt: string, 
   options: AIPromptOptions = {},
   evaluatorPrompt?: string,
+  onProgress?: ProgressCallback
 ): Promise<AIResponse<T>> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
@@ -781,6 +783,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   
   // If no modelSelection provided, return empty response
   if (providers.length === 0) return { provider: 'none', output: '' };
+
+  await onProgress?.({ type: 'ai_generation_start' });
 
   // Try each provider in order
   for (const provider of providers) {
@@ -819,11 +823,15 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       result = null;
     }
 
+    await onProgress?.({ type: 'ai_generation_complete' });
+
     if (result?.output) {
       try {
         // Run evaluation phase if provided
         if (evaluatorPrompt) {
           // STEP 3: EVALUATING
+          await onProgress?.({ type: 'ai_evaluation_start' });
+
           // Call second AI prompt to score, evaluate, and outputs corrected result
           const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
             ...options,
@@ -854,6 +862,9 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
           }, undefined);
 
           const { result: evaluationResult } = response;
+
+          // Emit evaluation complete event if evaluatorPrompt was provided
+          await onProgress?.({ type: 'ai_evaluation_complete' });
 
           if (evaluationResult) {
             const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
@@ -905,6 +916,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     }
   }
 
+  await onProgress?.({ type: 'ai_generation_complete' });
   return { provider: 'none', output: '' };
 }
 

@@ -258,13 +258,13 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
  * event: ai_generation_start
  * data: {}
  *
+ * event: ai_generation_complete
+ * data: {}
+ *
  * event: ai_evaluation_start
  * data: {}
  *
  * event: ai_evaluation_complete
- * data: {}
- *
- * event: ai_generation_complete
  * data: {}
  *
  * event: finalizing_start

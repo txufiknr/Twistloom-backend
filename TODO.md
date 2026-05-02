@@ -1,15 +1,15 @@
-[x] last page gaperlu ensurecandidate
-[x] kalau invalid action removed sampai ga bersisa, kasih 1 action continue
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
-[ ] Sse can we make generating event ends when evaluating starts
-[ ] Update docs pre generation
-[ ] Plotflag & pastinteraction tambah place?: string
 [ ] Don't output viableEnding if unchanged
 [ ] Cek page 2 apakah ada branchId main
 
+[x] Plotflag & pastinteraction tambah place?: string
+[x] Sse can we make generating event ends when evaluating starts
+[x] last page gaperlu ensurecandidate
+[x] kalau invalid action removed sampai ga bersisa, kasih 1 action continue
+[x] Update docs pre generation
 [x] prompt: ensure thread update instruction/format exist
 [x] Update docs branch traversal, snapshot, delta
 [x] Think-then-output: Ensure \n\n

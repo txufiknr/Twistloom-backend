@@ -2250,7 +2250,6 @@ export async function initializeBook(
     const prompt = createBookCreationPrompt(theme, mcCandidate);
 
     // 2. Generate complete book setup using AI
-    await onProgress?.({ type: 'ai_generation_start' });
     const response = await executePromptForJSON<BookCreationResponse>({
       prompt,
       configs: {
@@ -2275,8 +2274,6 @@ export async function initializeBook(
     if (!response.result) {
       throw new Error('Failed to generate book creation: AI response result is undefined');
     }
-
-    await onProgress?.({ type: 'ai_generation_complete' });
 
     // STEP 4: FINALIZING
     await onProgress?.({ type: 'finalizing_start' });
@@ -3001,22 +2998,12 @@ Do NOT mention this checklist.` : '';
     thinkThenOutputPart
   ].join('\n\n---\n');
 
-  // Emit evaluation start event if evaluatorPrompt is provided
-  if (evaluatorPrompt) {
-    await onProgress?.({ type: 'ai_evaluation_start' });
-  }
-
   const response = await aiPrompt<T>(
     finalPrompt,
     createAIOptionsWithSchema<T>(configs),
-    // STEP 3: EVALUATING (inside `aiPrompt`)
     evaluatorPrompt,
+    onProgress,
   );
-
-  // Emit evaluation complete event if evaluatorPrompt was provided
-  if (evaluatorPrompt) {
-    await onProgress?.({ type: 'ai_evaluation_complete' });
-  }
 
   return response;
 }
