@@ -274,6 +274,7 @@ const firstBookReviewChecklist: string = `
   □ Is the title generic (e.g. "The Dark Secret", "Shadow House")? → If YES: rework. It should feel specific to this story.
   □ Does the hook create intrigue without revealing the ending type? → If NO: obscure the trajectory.
   □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: replace generic tags with specific ones.
+  □ Is the MC's name consistent in the title, summary, and hook? → If NO: revise to be consistent.
 
 4. Action Diversity
   □ Are the actions meaningfully distinct in risk and emotional register? → If NO: revise until they vary (reckless / cautious / emotional / avoidant).
@@ -595,7 +596,8 @@ timeOfDay
   - Must be consistent with previous page unless a transition is written into the text.
 
 charactersPresent
-  - Names of characters in the scene besides MC.
+  - Names of side characters in the scene besides MC.
+  - Only side characters, exclude MC, MC is central POV and always on the scene.
   - Must match names in story state or newCharacters on this page. No invented names.
 ${isFinale ? `  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.` : ''}
 
@@ -669,6 +671,7 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
 : isMidPhase ? `  - You can optionally introduce up to ${charactersSlot} new characters only if genuinely necessary to support the story. Prefer deepening existing ones.`
 : `  - No new characters. The cast is fixed. Late arrivals dilute stakes.`}
   - It's meant for characters beside MC (the POV). Don't include MC here.
+  - When introducing new characters, ensure to describe their visual appearance, incorporate naturally in the storytelling.
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
   - No two characters has the same name.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
@@ -707,6 +710,7 @@ ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} rea
 
 placeUpdates.updatedPlaces
   - Only update on revisit or significant event.
+  - Don't increment visitCount if it's the same place as in previous page.
   - Include only changed fields: currentMood, weather, add events (1 contextual sentence: betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (with meaningful context update).
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted — update mood, weather, and sensoryDetails to reflect it.` : ''}
 
@@ -2163,9 +2167,9 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string
 - TOTAL PAGES: Target ~${BOOK_AVERAGE_PAGES}. Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Let theme complexity and MC arc influence the count.
 
 Main Character (MC):
-- Derive from candidate if provided. Otherwise infer from theme.
-${mcCandidate?.name ? '' : '- Generate unique (rare) name but appropriate and memorable name based on age and language context.'}
-- Bio must include at least one psychological trait that will be used against them.
+${mcCandidate?.name ? `- MC's name is ${mcCandidate.name}.` : `- If MC's name provided in theme, strictly use it.
+- If not provided, generate unique (rare) name but appropriate and memorable name based on age and language context.`}
+- bio: infer from theme if provided, must include at least one psychological trait that will be used against them.
 
 Initial Place:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
@@ -2180,7 +2184,7 @@ Initial Characters:
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" creatively (max ${MAX_WORDS_PER_PAGE} words).
-- charactersPresent: must match names used in initialCharacters.
+- charactersPresent: names of side characters in the scene besides MC. Must match names used in initialCharacters.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - importantObjects: objects introduced or used this page that may have future narrative significance.
 
@@ -2452,6 +2456,7 @@ export async function initializeBook(
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
   const { userId, book, currentState, actionedPage, generateNewBranchId = false } = params;
+  const parentBranchId = actionedPage.branchId ?? "main";
   
   // 0. Advance story state based on user action and previous AI turn updates
   const advancedState = await advanceStoryState(currentState, actionedPage);
@@ -2513,9 +2518,12 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // Branching decision is made inside the retry function to eliminate race conditions
   const newPage = await retryWithBranchConflict<PersistedStoryPage, StoryPageMeta>(
     async (data) => {
-      let branchId = data.branchId ?? "main"; // Default: same branchId as parent page
+      // let branchId = parentBranchId; // Default: same branchId as parent page
+      let branchId: string;
 
-      if (!generateNewBranchId) {
+      if (generateNewBranchId) {
+        branchId = generateBranchId();
+      } else {
         // Read fresh page data from write DB to ensure read-after-write consistency
         // This is critical because ensureCandidatesForPage updates actions with destinations,
         // and we need to see those updates to determine if branching is needed
@@ -2536,8 +2544,14 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
         // Use branchId from data if already set (from retry), otherwise decide based on fresh data
         // This ensures retry logic's modifyData function is respected
-        branchId = data.branchId || (shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId);
-        console.log(`[generateNextPage] 🌳 branchId:`, branchId);
+        // branchId = data.branchId || (shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId);
+        branchId = shouldCreateNewBranch ? generateBranchId() : parentBranchId;
+      }
+
+      if (branchId === parentBranchId) {
+        console.log(`[generateNextPage] 🌳 Using parent branchId:`, branchId);
+      } else {
+        console.log(`[generateNextPage] 🌳 Using new branchId:`, branchId);
       }
       
       // Create updated data with immutable pattern
@@ -2553,7 +2567,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     {
       bookId: actionedPage.bookId,
       parentId: actionedPage.id,
-      // branchId will be set inside the operation function based on fresh data or retry data
+      branchId: parentBranchId,
     },
     generateBranchId,
     {
@@ -2616,92 +2630,83 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   const { userId, action: actionCandidate, currentState: providedState, currentBook: providedBook, generateNewBranchId } = params;
   let { currentPage } = params;
 
-  // try {
-    if (!actionCandidate.text) {
-      throw createNonRetryableError(
-        `Invalid action: no text`,
-        'INVALID_ACTION'
-      );
+  // Check for invalid actions (will be removed)
+  if (!actionCandidate.text) {
+    throw createNonRetryableError(
+      `Invalid action: no text`,
+      'INVALID_ACTION'
+    );
+  }
+
+  // 1. Get current story progress (book, page, state, session) in parallel
+  // Use provided state if available, otherwise fetch from database
+  let currentState = providedState;
+  let currentBook: Book | null = providedBook ?? null;
+  let activeSession: UserActiveSession | null = null;
+
+  if (!currentState) {
+    const progress = await getStoryProgress(userId);
+    currentBook ??= progress.book ?? null;
+    currentState = progress.state;
+    activeSession = progress.session ?? null;
+    currentPage ??= progress.page;
+  } else if (!currentBook) {
+    // If state is provided but book is not, try to get it from session
+    const session = await getActiveSession(userId);
+    activeSession = session ?? null;
+    if (session) {
+      currentBook = await getBook(session.bookId) ?? null;
     }
+  }
 
-    // 1. Get current story progress (book, page, state, session) in parallel
-    // Use provided state if available, otherwise fetch from database
-    let currentState = providedState;
-    let currentBook: Book | null = providedBook ?? null;
-    let activeSession: UserActiveSession | null = null;
+  // 2. Validate all required components exist for story progression
+  // Book is required (provided directly for system-generated originals, or fetched from session for user navigation)
+  // Session is optional (not available during book initialization for originals)
+  if (!currentBook) throw new Error(`No active book found for user ${userId}`);
+  if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${currentBook.id})`);
+  if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${currentPage.id})`);
 
-    if (!currentState) {
-      const progress = await getStoryProgress(userId);
-      currentBook ??= progress.book ?? null;
-      currentState = progress.state;
-      activeSession = progress.session ?? null;
-      currentPage ??= progress.page;
-    } else if (!currentBook) {
-      // If state is provided but book is not, try to get it from session
-      const session = await getActiveSession(userId);
-      activeSession = session ?? null;
-      if (session) {
-        currentBook = await getBook(session.bookId) ?? null;
-      }
-    }
+  // Use session bookId if available, otherwise use provided book
+  const { bookId } = activeSession ?? { bookId: currentBook.id };
 
-    // 2. Validate all required components exist for story progression
-    // Book is required (provided directly for system-generated originals, or fetched from session for user navigation)
-    // Session is optional (not available during book initialization for originals)
-    if (!currentBook) throw new Error(`No active book found for user ${userId}`);
-    if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${currentBook.id})`);
-    if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${currentPage.id})`);
+  // 3. Match actionText against current page actions to get full Action object
+  const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
+  if (!action) {
+    throw new Error(`Action "${actionCandidate.text}" not found in current page actions`);
+  }
 
-    // Use session bookId if available, otherwise use provided book
-    const { bookId } = activeSession ?? { bookId: currentBook.id };
+  // 4. Check if next page is pre-generated (candidate) and reuse if available
+  const nextPageId = action.destination?.pageId;
+  let newPage: PersistedStoryPage | null = null;
+  if (nextPageId) {
+    newPage = await getStoryPageById(userId, bookId, nextPageId);
+  }
 
-    // 3. Match actionText against current page actions to get full Action object
-    const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
-    if (!action) {
-      throw new Error(`Action "${actionCandidate.text}" not found in current page actions`);
-    }
+  // 5. If no pre-generated page exists, generate new page with state progression
+  if (newPage) {
+    // Candidate: wait until user visit the page and ensure next candidates
+    console.log(`[generateCandidatePage] ✅ Using pre-generated page ${newPage.id}, delta already exists from pre-generation`);
+  } else {
+    // 6a. Create actioned page with selected action for state processing
+    const actionedPage: ActionedStoryPage = {
+      ...currentPage,
+      selectedAction: action 
+    };
+    
+    // 6b. Generate next page using AI with dynamic configuration
+    newPage = await generateNextPage({
+      userId,
+      book: currentBook,
+      currentState,
+      actionedPage,
+      generateNewBranchId
+    });
 
-    // 4. Check if next page is pre-generated (candidate) and reuse if available
-    const nextPageId = action.destination?.pageId;
-    let newPage: PersistedStoryPage | null = null;
-    if (nextPageId) {
-      newPage = await getStoryPageById(userId, bookId, nextPageId);
-    }
+    console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id}:`, { action, branchId: newPage.branchId });
+  }
 
-    // 5. If no pre-generated page exists, generate new page with state progression
-    if (newPage) {
-      // Candidate: wait until user visit the page and ensure next candidates
-      console.log(`[generateCandidatePage] ✅ Using pre-generated page ${newPage.id}, delta already exists from pre-generation`);
-    } else {
-      // 6a. Create actioned page with selected action for state processing
-      const actionedPage: ActionedStoryPage = {
-        ...currentPage,
-        selectedAction: action 
-      };
-      
-      // 6b. Generate next page using AI with dynamic configuration
-      newPage = await generateNextPage({
-        userId,
-        book: currentBook,
-        currentState,
-        actionedPage,
-        generateNewBranchId
-      });
-
-      console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id}:`, { action, branchId: newPage.branchId });
-    }
-
-    // 7. Return the generated page with all database metadata
-    return newPage;
-  // } catch (error) {
-  //   console.error(`[generateCandidatePage] ❌ Failed to generate candidate page:`, {
-  //     error: getErrorMessage(error),
-  //     userId,
-  //     pageId: currentPage?.id,
-  //     actionCandidate,
-  //   });
-  //   return null;
-  // }
+  // 7. Return the generated page with all database metadata
+  return newPage;
 }
 
 /**
@@ -2802,6 +2807,12 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
  * @see generateNextPage - Calls this function for main story pages
  */
 export async function ensureCandidatesForPage(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
+  // Early check: skip if this is the last page (no candidates needed)
+  if (currentBook && page.page >= currentBook.totalPages) {
+    console.log(`[ensureCandidatesForPage] ⏩ Skipping last page ${page.page} (no candidates needed)`);
+    return page;
+  }
+
   // Filter actions without destination (need pre-generation)
   // Note: Check both branchId and pageId to match route handler filtering logic
   const pendingActions = page.actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
@@ -2906,6 +2917,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
         if (isInvalidAction) {
           console.error(`[ensureCandidatesForPage] ❌ Invalid action "${action.text}" detected, removing from actions`);
           const actionIndex = updatedDBActions.findIndex(a => deepEqualSimple(a, action));
+          // Remove invalid actions
           if (actionIndex !== -1) {
             updatedDBActions.splice(actionIndex, 1);
             hasRealChanges = true;
@@ -2925,22 +2937,36 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
     // Update persisted page in a short transaction only if actions were modified
     // This ensures pendingGenerationCount is always accurate even if some actions fail
-    if (hasRealChanges || pendingAfter !== recheckedPendingDBActions.length) {
-      const updatedPage = await dbWrite
-        .update(pages)
-        .set({
-          actions: updatedDBActions,
-          pendingGenerationCount: pendingAfter,
-          updatedAt: new Date()
-        })
-        .where(eq(pages.id, page.id))
-        .returning();
-      
-      return mapToUserStoryPage(updatedPage[0]);
+    // Ensure page always has at least one action (for navigation)
+    if (updatedDBActions.length === 0) {
+      updatedDBActions.push({
+        text: "Continue.",
+        type: "other",
+        hint: {
+          text: "See what happens next.",
+          type: "none"
+        },
+        // TODO: langsung pre-generate
+        destination: {}
+      });
+      hasRealChanges = true;
     }
-
+    
     // Return original page if no changes needed
-    return currentPage;
+    const shouldUpdate = hasRealChanges || pendingAfter !== recheckedPendingDBActions.length;
+    if (!shouldUpdate) return currentPage;
+
+    const updatedPage = await dbWrite
+      .update(pages)
+      .set({
+        actions: updatedDBActions,
+        pendingGenerationCount: pendingAfter,
+        updatedAt: new Date()
+      })
+      .where(eq(pages.id, page.id))
+      .returning();
+    
+    return mapToUserStoryPage(updatedPage[0]);
   }, 300); // 5-minute lock TTL
 
   // Return the result or original page if lock couldn't be acquired

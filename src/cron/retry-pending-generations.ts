@@ -22,23 +22,29 @@ export async function retryPendingGenerations(): Promise<void> {
     // Lazy imports for better memory usage and startup time
     const { dbRead, dbWrite } = await import("../db/client.js");
     const { pages, books } = await import("../db/schema.js");
-    const { eq, gt, desc } = await import("drizzle-orm");
+    const { eq, gt, lt, desc, and } = await import("drizzle-orm");
     const { ensureCandidatesForPage } = await import("../utils/prompt.js");
     const { getPageFromDB } = await import("../services/book.js");
     
-    // Query pages with pending generations (limit to prevent overwhelming the system)
+    // Query pages with pending generations (limit to prevent overwhelming system)
     // Note: Fetch userId and pendingGenerationCount (minimal fields needed)
     // Prioritize books with highest trending scores
+    // Exclude last page (page.number < totalPages) since it doesn't need candidates
     const pagesWithPending = await dbRead
       .select({
         id: pages.id,
         userId: pages.userId,
         pendingGenerationCount: pages.pendingGenerationCount,
         trendingScore: books.trendingScore,
+        page: pages.page,
+        totalPages: books.totalPages,
       })
       .from(pages)
       .innerJoin(books, eq(pages.bookId, books.id))
-      .where(gt(pages.pendingGenerationCount, 0))
+      .where(and(
+        gt(pages.pendingGenerationCount, 0),
+        lt(pages.page, books.totalPages) // Exclude last page
+      ))
       .orderBy(desc(books.trendingScore), desc(pages.pendingGenerationCount))
       .limit(50); // Process up to 50 pages per run
     

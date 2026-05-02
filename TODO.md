@@ -1,3 +1,5 @@
+[x] last page gaperlu ensurecandidate
+[x] kalau invalid action removed sampai ga bersisa, kasih 1 action continue
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Retry pending generation kalo udah stable bikin paralel
@@ -6,6 +8,14 @@
 [ ] Update docs pre generation
 [ ] Plotflag & pastinteraction tambah place?: string
 [ ] Don't output viableEnding if unchanged
+[ ] Cek page 2 apakah ada branchId main
+
+[mistral] 📊 Token usage: { promptTokens: 9090, completionTokens: 1400, totalTokens: 10490 }
+[mistral-story-page-candidate-evaluation] 🕵️‍♂️ Parsed JSON from mistral successfully
+Failed to insert story page for page 2: 
+
+cause: error: duplicate key value violates unique constraint "pages_parent_branch_unique"
+
 [x] prompt: ensure thread update instruction/format exist
 [x] Update docs branch traversal, snapshot, delta
 [x] Think-then-output: Ensure \n\n
