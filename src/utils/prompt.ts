@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession, plotFlagTypes } from "../types/story.js";
-import { retryWithBackoffOrNull, retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
+import { retryWithBackoffOrNull, retryWithBranchConflict, createNonRetryableError, type ErrorWithCustomProperties } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
@@ -2618,7 +2618,10 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 
   // try {
     if (!actionCandidate.text) {
-      throw new Error(`Invalid action: no text`);
+      throw createNonRetryableError(
+        `Invalid action: no text`,
+        'INVALID_ACTION'
+      );
     }
 
     // 1. Get current story progress (book, page, state, session) in parallel
@@ -2839,6 +2842,8 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       console.log(`[ensureCandidatesForPage] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
       
       // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
+      // Track the last error to determine if action should be removed
+      let lastError: unknown = null;
       const candidatePage = await retryWithBackoffOrNull(
         () => generateCandidatePage({
           userId,
@@ -2853,12 +2858,19 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           baseDelayMs: 1000,
           maxDelayMs: 4000,
           onRetry: (attempt, error) => {
+            lastError = error; // Capture the error for later analysis
             console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
           },
-          // Stop retrying if error looks like a validation error (e.g. Theme validation)
+          // Stop retrying if error is non-retryable (e.g. validation errors)
           shouldRetry: (error) => {
             try {
-              // TODO: don't retry/stop if error is a validation error (thrown from `generateCandidatePage`)
+              lastError = error; // Capture the error
+              // Check if error is marked as non-retryable
+              const err = error as ErrorWithCustomProperties;
+              if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
+                console.warn(`[ensureCandidatesForPage] ⛔ Non-retryable error detected:`, getErrorMessage(error));
+                return false;
+              }
               console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
               return true;
             } catch {
@@ -2885,8 +2897,23 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
         // Subsequent pending actions: Should always create new branches
         generateNewBranchId = true;
       } else {
-        // Failed after all retries: leave destination undefined (will be filtered out in API response)
-        console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for action "${action.text}" after 3 retries`);
+        // Failed after all retries: check if it was a validation error before removing
+        const isInvalidAction = lastError && (
+          (lastError as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
+          (lastError as ErrorWithCustomProperties).shouldRetry === false
+        );
+        
+        if (isInvalidAction) {
+          console.error(`[ensureCandidatesForPage] ❌ Invalid action "${action.text}" detected, removing from actions`);
+          const actionIndex = updatedDBActions.findIndex(a => deepEqualSimple(a, action));
+          if (actionIndex !== -1) {
+            updatedDBActions.splice(actionIndex, 1);
+            hasRealChanges = true;
+          }
+        } else {
+          // Valid action but generation failed - leave it for future retry
+          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "${action.text}" after 3 retries`);
+        }
       }
     }
 

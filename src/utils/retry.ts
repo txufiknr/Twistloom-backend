@@ -243,7 +243,7 @@ const UNIQUE_CONSTRAINT_PATTERNS = [
 /**
  * Type guard for errors with custom properties
  */
-interface ErrorWithCustomProperties extends Error {
+export interface ErrorWithCustomProperties extends Error {
   code?: string;
   shouldRetry?: boolean;
   cause?: unknown;
