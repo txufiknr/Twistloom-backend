@@ -249,14 +249,24 @@ export const plotFlagTypes = [
  */
 export type PlotFlagType = typeof plotFlagTypes[number];
 
+
+/** A plot flag representing a significant narrative event. */
 export interface PlotFlag {
+  /** Page number where the flag was added. */
   page: number;
+  /** Description of the flagged event. */
   fact: string;
+  /** Type of the flag indicating its category. */
   type: PlotFlagType;
+  /** Place where the flagged event occurred (optional). */
+  place?: string;
 }
 
+/** An ending of a story with optional text and type. */
 export type Ending = {
+  /** Text describing the ending (optional). */
   text?: string;
+  /** Type of the ending (optional). */
   type?: EndingType;
 }
 
@@ -267,7 +277,7 @@ export type Ending = {
  * each creating unique psychological experiences and narrative patterns.
  */
 export type EndingPlanType = 
-  | "fake_relief_twist"   // False sense of security followed by horror
+  | "fake_relief_twist"  // False sense of security followed by horror
   | "loop_trap"          // Time loop or repeating nightmare
   | "identity_reveal"    // Shocking truth about MC's identity
   | "unreliable_reality" // Reality distortion and unreliability
@@ -616,8 +626,6 @@ export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & Omit<Sta
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page'>;
 export type UserStoryPage = Omit<PersistedStoryPage, 'actions'> & { actions: EnrichedAction[], selectedAction?: Action };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
-
-export type PreviousPages = Array<{ page: DBPage; action: Action | null }>;
 
 export type Action = {
   /** Action text */

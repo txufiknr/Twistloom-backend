@@ -12,7 +12,7 @@ import { type GenerateContentConfig, Type, type GenerateContentParameters, type 
 import type { V2ChatRequest, V2ChatRequestDocumentsItem } from "cohere-ai/api";
 import type { ChatCompletion, ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingCerebras } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionStreamRequest } from "@mistralai/mistralai/models/components";
-import { formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
+import { convertToGeminiSchema, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingOpenAI } from "openai/resources/index.mjs";
 import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingGroq } from "groq-sdk/resources/chat/completions.mjs";
 
@@ -282,40 +282,9 @@ async function* geminiStreamGenerator(
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   
-  // Helper function to convert JSON schema to Gemini schema recursively
-  const convertToGeminiSchema = (jsonSchema: any): Schema => {
-    if (jsonSchema.type === 'array' && jsonSchema.items) {
-      return {
-        type: Type.ARRAY,
-        items: convertToGeminiSchema(jsonSchema.items),
-      };
-    } else if (jsonSchema.type === 'object' && jsonSchema.properties) {
-      return {
-        type: Type.OBJECT,
-        properties: Object.entries(jsonSchema.properties).reduce((acc, [k, v]) => {
-          acc[k] = convertToGeminiSchema(v);
-          return acc;
-        }, {} as Record<string, Schema>),
-      };
-    } else {
-      return {
-        type: jsonSchema.type as Type,
-      };
-    }
-  };
-  
   const responseSchema = outputAsJson ? {
     type: Type.OBJECT,
     properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
-      // const schemaProperty: Schema = {
-      //   type: value.type === 'array' ? Type.ARRAY : value.type as Type,
-      // };
-      
-      // if (value.type === 'array' && value.items) {
-      //   schemaProperty.items = { type: value.items.type as Type };
-      // }
-      
-      // acc[key] = schemaProperty;
       acc[key] = convertToGeminiSchema(value);
       return acc;
     }, {} as Record<string, Schema>) : undefined,
@@ -392,7 +361,7 @@ async function* cohereStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
-  const { signal, documents, config = AI_CHAT_CONFIG_DEFAULT } = options;
+  const { signal, documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   const stream = await getCohereClient().chatStream({
     model: options.models?.[0] || 'command-r-plus',
     messages: [
@@ -407,6 +376,19 @@ async function* cohereStreamGenerator(
     p: config.topP,
     k: config.topK,
     stopSequences: config.stopSequences,
+    responseFormat: outputAsJson ? (outputJsonStructure ? {
+      type: "json_object",
+      jsonSchema: {
+        name: context ?? "output-format",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: outputJsonStructure,
+          required: outputJsonRequired,
+          additionalProperties: false
+        }
+      }
+    } : { type: 'json_object' }) : undefined,
   } satisfies V2ChatRequest);
   
   for await (const chunk of stream) {

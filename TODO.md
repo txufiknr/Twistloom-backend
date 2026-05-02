@@ -1,21 +1,24 @@
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
-[ ] prompt: ensure thread update instruction/format exist
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] Sse can we make generating event ends when evaluating starts
 [ ] Update docs pre generation
-[ ] Update docs branch traversal, snapshot, delta
+[ ] Plotflag & pastinteraction tambah place?: string
+[ ] Don't output viableEnding if unchanged
+[x] prompt: ensure thread update instruction/format exist
+[x] Update docs branch traversal, snapshot, delta
+[x] Think-then-output: Ensure \n\n
+[x] I [verb] or "[dialogue]"
+[x] cek apakah importantObjects dipake di prompt
 
 TODO:
 [ ] type validation using https://typia.io/
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
-[ ] similar books: jina embedding
 [ ] user preferences schema (interests)
 [ ] user settings schema (font size)
-[ ] summary at the end of story (N% readers ended up here)
-[ ] Place knownCharacters: Make page multiple
+[ ] display running summary at the end of story (N% readers ended up here)
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] Sound effect format italic with asterisks

@@ -242,4 +242,6 @@ export type PastInteraction = {
   page: number;
   /** The interaction between characters */
   interaction: string;
+  /** The place where the interaction occurred. */
+  place?: string;
 };

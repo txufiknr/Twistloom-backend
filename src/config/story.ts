@@ -19,6 +19,7 @@ export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
 export const MAX_BRANCHING_RETRIES = 3;
 
+export const KEY_EVENT_LENGTH = '1-4 short phrases';
 export const VIABLE_ENDING_LENGTH = '1-3 sentences';
 export const PLACE_CONTEXT_LENGTH = '1 sentence max';
 export const BOOK_TITLE_LENGTH = '2-5 words';

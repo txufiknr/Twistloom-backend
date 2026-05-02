@@ -152,6 +152,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     viableEnding,
     isMajorEvent,
     contextHistory,
+    injuries,
     psychologicalProfileUpdates,
     hiddenStateUpdates,
     memoryIntegrity,
@@ -164,10 +165,10 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     // Apply optional delta fields
     flags: { ...baseState.flags, ...(flagUpdates ?? {}) },
     isMajorEvent: isMajorEvent ?? baseState.isMajorEvent,
-    contextHistory: contextHistory ?? baseState.contextHistory,
+    contextHistory: contextHistory || baseState.contextHistory,
     viableEnding: viableEnding ? {
-      text: viableEnding.text ?? baseState.viableEnding?.text,
-      type: viableEnding.type ?? baseState.viableEnding?.type,
+      text: viableEnding.text || baseState.viableEnding?.text,
+      type: viableEnding.type || baseState.viableEnding?.type,
     } : baseState.viableEnding,
     // Apply new delta fields
     psychologicalProfile: psychologicalProfileUpdates 
@@ -197,6 +198,11 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
 
   // Apply thread updates
   processThreadUpdates(newState, threadUpdates);
+
+  // Apply injury updates
+  if (injuries && injuries.length > 0) {
+    newState.injuries = [...injuries];
+  }
 
   return newState;
 }

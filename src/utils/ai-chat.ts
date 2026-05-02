@@ -178,6 +178,64 @@ export async function githubPrompt(
   );
 }
 
+// Helper function to convert JSON schema to Gemini schema recursively
+export const convertToGeminiSchema = (jsonSchema: any): Schema => {
+  if (jsonSchema.type === 'array' && jsonSchema.items) {
+    return {
+      type: Type.ARRAY,
+      items: convertToGeminiSchema(jsonSchema.items),
+    };
+  } else if (jsonSchema.type === 'object' && jsonSchema.properties) {
+    return {
+      type: Type.OBJECT,
+      properties: Object.entries(jsonSchema.properties).reduce((acc, [k, v]) => {
+        acc[k] = convertToGeminiSchema(v);
+        return acc;
+      }, {} as Record<string, Schema>),
+      required: jsonSchema.required || [],
+    };
+  } else {
+    // Map JSON schema types to Gemini enum types
+    const typeMapping: Record<string, Type> = {
+      'string': Type.STRING,
+      'number': Type.NUMBER,
+      'integer': Type.INTEGER,
+      'boolean': Type.BOOLEAN,
+      'array': Type.ARRAY,
+      'object': Type.OBJECT,
+      'null': Type.NULL,
+    };
+    
+    const geminiType = typeMapping[jsonSchema.type] || Type.TYPE_UNSPECIFIED;
+    
+    const schema: Schema = {
+      type: geminiType,
+    };
+    
+    // Add enum values if specified
+    if (jsonSchema.enum && Array.isArray(jsonSchema.enum)) {
+      (schema as any).enum = jsonSchema.enum;
+    }
+    
+    // Add format for string types (e.g., date-time, email, etc.)
+    if (jsonSchema.type === 'string' && jsonSchema.format) {
+      (schema as any).format = jsonSchema.format;
+    }
+    
+    // Add minimum/maximum for number types
+    if (jsonSchema.type === 'number' || jsonSchema.type === 'integer') {
+      if (typeof jsonSchema.minimum === 'number') {
+        (schema as any).minimum = jsonSchema.minimum;
+      }
+      if (typeof jsonSchema.maximum === 'number') {
+        (schema as any).maximum = jsonSchema.maximum;
+      }
+    }
+    
+    return schema;
+  }
+};
+
 /**
  * Sends a prompt to Google Gemini and returns structured output.
  *
@@ -201,15 +259,7 @@ export async function geminiPrompt(
       const responseSchema = outputAsJson ? {
         type: Type.OBJECT,
         properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
-          const schemaProperty: Schema = {
-            type: value.type === 'array' ? Type.ARRAY : value.type as Type,
-          };
-          
-          if (value.type === 'array' && value.items) {
-            schemaProperty.items = { type: value.items.type as Type };
-          }
-          
-          acc[key] = schemaProperty;
+          acc[key] = convertToGeminiSchema(value);
           return acc;
         }, {} as Record<string, Schema>) : undefined,
         required: outputJsonRequired || []
@@ -403,7 +453,7 @@ export async function coherePrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson } = opts;
+      const { documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       return await getCohereClient().chat({
         model,
         messages: [
@@ -418,7 +468,19 @@ export async function coherePrompt(
         p: config.topP,
         k: config.topK,
         stopSequences: config.stopSequences,
-        responseFormat: outputAsJson ? { type: 'json_object' } : undefined,
+        responseFormat: outputAsJson ? (outputJsonStructure ? {
+          type: "json_object",
+          jsonSchema: {
+            name: context ?? "output-format",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: outputJsonStructure,
+              required: outputJsonRequired,
+              additionalProperties: false
+            }
+          }
+        } : { type: 'json_object' }) : undefined,
       } satisfies V2ChatRequest);
     },
     (response) => {

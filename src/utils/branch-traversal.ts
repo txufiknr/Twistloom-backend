@@ -552,8 +552,6 @@ async function findOptimalSnapshot(
  * ```typescript
  * const result = await reconstructStoryState('page123', {
  *   getPageById: (id) => dbPageService.getPage(id),
- *   getSnapshot: (id) => snapshotService.getSnapshot(id),
- *   getDelta: (id) => deltaService.getDelta(id),
  *   getStoryState: (id) => stateService.getState(id)
  * });
  * 
@@ -698,13 +696,6 @@ export async function reconstructStoryState(
         
         try {
           const delta = page.stateDelta;
-          // const delta = await withCircuitBreaker(
-          //   () => deps.getDelta!(page.id),
-          //   `${GET_DELTA_KEY_PREFIX}:${userId}`,
-          //   GET_DELTA_CIRCUIT_THRESHOLD,
-          //   GET_DELTA_CIRCUIT_TIMEOUT
-          // );
-          
           if (delta) {
             currentState = await retryOperation(
               async () => applyStateDelta(currentState, delta),
@@ -734,58 +725,25 @@ export async function reconstructStoryState(
       // Set maxPage from book schema (obtained during reconstruction)
       currentState.maxPage = totalPages;
       
-      // Reconstruct pageHistory from branch path (pages from root to current)
-      // pageHistory maintains a sliding window of recent pages for context
-      // selectedAction is reconstructed by matching pageId with parent's actions
-      // const fallbackAction: Action = {
-      //   text: 'Continue',
-      //   type: 'explore' satisfies ActionType,
-      //   hint: {
-      //     text: 'Continue to the next page',
-      //     type: 'none' satisfies ActionHintType
-      //   },
-      //   destination: {}
-      // } satisfies Action;
-      
-      // currentState.pageHistory = branchPath.pages.map((page, index) => {
-      //   // Root page has no parent, so no selectedAction
-      //   if (index === 0) {
-      //     return {
-      //       ...page,
-      //       selectedAction: {
-      //         ...fallbackAction,
-      //         destination: {
-      //           pageId: page.id,
-      //           branchId: page.branchId
-      //         }
-      //       }
-      //     };
-      //   }
-
-      //   // Find the action in parent page that led to this page
-      //   const parentPage = branchPath.pages[index - 1];
-      //   const selectedAction = parentPage.actions?.find(action => action.destination?.pageId === page.id);
-
-      //   if (selectedAction) {
-      //     return {
-      //       ...page,
-      //       selectedAction
-      //     };
-      //   }
-
-      //   // Fallback if no matching action found (shouldn't happen in valid branch)
-      //   console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
-      //   return {
-      //     ...page,
-      //     selectedAction: {
-      //       ...fallbackAction,
-      //       destination: {
-      //         pageId: page.id,
-      //         branchId: page.branchId
-      //       }
-      //     }
-      //   };
-      // });
+      // Reconstruct actionsHistory from branch path
+      // actionsHistory tracks which actions the user took to reach the current page
+      currentState.actionsHistory = [];
+      for (let i = 1; i <= currentPageIndex; i++) {
+        const page = branchPath.pages[i];
+        const parentPage = branchPath.pages[i - 1];
+        
+        // Find the action in parent page that led to this page
+        const selectedAction = parentPage.actions?.find(action => action.destination?.pageId === page.id);
+        
+        if (selectedAction) {
+          currentState.actionsHistory.push({
+            ...selectedAction,
+            page: page.page
+          });
+        } else {
+          console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
+        }
+      }
       
       // Ensure threads are present (should be handled by deltas, but verify)
       if (!currentState.threads || currentState.threads.length === 0) {

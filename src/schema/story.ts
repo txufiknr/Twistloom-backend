@@ -28,6 +28,15 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
+  // viableEnding: {
+  //   type: 'object',
+  //   properties: {
+  //     text: { type: 'string' },
+  //     type: { type: 'string' }
+  //   },
+  //   required: ['text', 'type'],
+  //   additionalProperties: false
+  // },
   isMajorEvent: { type: 'boolean' },
   contextHistory: { type: 'string' },
   injuries: { type: 'array', items: { type: 'object' } }

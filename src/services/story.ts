@@ -1,10 +1,10 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { eq, and, desc } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryState, StoryProgress, UserActiveSession, Action, SetActiveSessionParams, ActionedStoryPage, PreviousPages } from "../types/story.js";
+import type { StoryState, StoryProgress, UserActiveSession, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage } from "../types/story.js";
 import type { DBNewUserPageProgress, DBStoryState, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
-import { getBook, getStoryPageById } from "./book.js";
+import { getBook, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { updateUserLastActivity } from "./user.js";
@@ -502,25 +502,26 @@ export async function insertUserPageProgress(params: {
  * 1. Starting from the current page (from actionedPage)
  * 2. Traversing backwards using parentId to get previous pages
  * 3. Using userPageProgress to track which action the user selected to reach each page
+ * 4. Mapping each page to UserStoryPage with the selected action included
  * 
  * @param actionedPage - Current actioned page containing page info
  * @param userId - User ID for tracking page progress
  * @param bookId - Book ID for filtering pages
- * @returns Promise resolving to array of previous pages with actions
+ * @returns Promise resolving to array of UserStoryPage with selected actions
  * 
  * @example
  * ```typescript
  * const previousPages = await getPreviousPages(actionedPage, "user123", "book456");
- * // Returns: [{ page: DBPage, action: Action | null }, ...]
+ * // Returns: [UserStoryPage, ...] with selectedAction populated
  * ```
  */
 export async function getPreviousPages(
   actionedPage: ActionedStoryPage,
   userId: string,
   bookId: string
-): Promise<PreviousPages> {
+): Promise<UserStoryPage[]> {
   try {
-    const previousPages: PreviousPages = [];
+    const previousPages: UserStoryPage[] = [];
     let currentPageId = actionedPage.parentId;
     
     // Traverse backwards through the parent chain
@@ -532,8 +533,8 @@ export async function getPreviousPages(
         .where(eq(pages.id, currentPageId))
         .limit(1);
       
-      const page = pageResult[0];
-      if (!page) break;
+      const dbPage = pageResult[0];
+      if (!dbPage) break;
       
       // Get the action that led to this page from userPageProgress
       const progressResult = await dbRead
@@ -549,10 +550,13 @@ export async function getPreviousPages(
         .orderBy(desc(userPageProgress.createdAt))
         .limit(1);
       
-      const action = progressResult[0]?.action || null;
+      const selectedAction = progressResult[0]?.action || undefined;
       
-      previousPages.push({ page, action });
-      currentPageId = page.parentId;
+      // Map to UserStoryPage with selected action included
+      const userPage = mapToUserStoryPage(dbPage, selectedAction);
+      previousPages.push(userPage);
+      
+      currentPageId = dbPage.parentId;
     }
     
     // Reverse to get chronological order (oldest first)

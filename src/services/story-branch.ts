@@ -82,8 +82,6 @@ export async function getStoryStateWithBranch(
     const reconstructionDeps: StateReconstructionDeps = {
       getPageById: async (id: string) => await getPageFromDB(id),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
-      // getSnapshot: async (id: string) => await getStateSnapshot(userId, id),
-      // getDelta: async (id: string) => await getStateDelta(userId, id),
       getStoryState: async (id: string) => await getStoryState(userId, id)
     };
     

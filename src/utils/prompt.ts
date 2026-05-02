@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession, plotFlagTypes } from "../types/story.js";
 import { retryWithBackoffOrNull, retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY, KEY_EVENT_LENGTH } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -13,7 +13,7 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionHistory, Archetype, ManipulationAffinity, PlotFlag, PreviousPages, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionHistory, Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB } from "../services/book.js";
@@ -225,7 +225,7 @@ const firstBookOutputFormat: string = `{
     },
     "difficulty": "One of: low | medium | high | nightmare",
     "viableEnding": {
-      "text": "Specific ending plan for this MC and theme (1-2 sentences)",
+      "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
       "type": "One of: ${formatOneOf(Object.keys(endingTypes))}"
     },
     "traumaTags": [],
@@ -563,15 +563,17 @@ BRANCHING ACTIONS:
 ${getActionRulesText({ isFinale })}`}`;
 }
 
-function buildNextPageFieldInstructions(state: StoryState): string {
+function buildNextPageFieldInstructions(state: StoryState, selectedAction: Action): string {
   const { traumaTags } = state;
   const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot } = getStoryStateInfo(state);
+  const isDialogueAction = selectedAction.type === 'dialogue';
 
   return `text
   - Max ${MAX_WORDS_PER_PAGE} words. First-person central POV ("I") as MC. Unreliable narrator.
   - Don't use phrase like "The protagonist" or "The narrator", just use "I".
-  - Always begin directly from the chosen action. Example: "I decide to [...]," or "I [verb]."
+  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Always begin directly from the chosen action. Example: "I decide to [...]," or "I [verb]."`}
   - Open mid-moment. End on tension, a hook, or unresolved unease — never resolution.
+  - Each sentence/short paragraph on a separate line — Goosebumps style spacing for tension.
   - This is a fast-paced story, don't over explain small details (e.g. clothing, etc) unless they're plot important.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
@@ -597,7 +599,7 @@ charactersPresent
 ${isFinale ? `  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.` : ''}
 
 keyEvents
-  - 1-4 short phrases. Plot-level facts only — what objectively happened (situation/exact hard facts).
+  - ${KEY_EVENT_LENGTH}. Plot-level facts only — what objectively happened (situation/exact hard facts).
 ${isLatePhase || isFinale ? `  - At least one event should connect to or resolve a thread opened earlier in the story.` : ''}
 
 importantObjects
@@ -740,6 +742,7 @@ ${isLatePhase ? `  - Close threads that have been fully resolved or are no longe
 ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 
 viableEnding
+  - Don't output viableEnding if unchanged
   - Only include if the story trajectory has meaningfully shifted and the previously planned ending no longer fits.
   - text: ${VIABLE_ENDING_LENGTH}. Specific to this MC and theme — not a genre template.
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
@@ -810,6 +813,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
   □ Over-explaining instead of implying? → Cut it. If the action implies the feeling, naming the feeling is redundant.
   □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
   □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
+  □ Each sentence/short paragraph on a separate line? → If NO: break up longer paragraphs to create rhythm and suspense.
 
 8. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
@@ -822,8 +826,9 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 }
 
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state } = params;
+  const { advancedState: state, actionedPage } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale } = getStoryStateInfo(state);
+  const { selectedAction } = actionedPage;
 
   const prompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
@@ -839,7 +844,7 @@ EXPECTED JSON SCHEMA:
 ${nextPageOutputFormat}
 
 FIELD INSTRUCTIONS:
-${buildNextPageFieldInstructions(state)}
+${buildNextPageFieldInstructions(state, selectedAction)}
 
 ---
 INSTRUCTIONS — FOLLOW IN ORDER:
@@ -1243,27 +1248,52 @@ function getEndingArchetypesText(): string {
  * const formatted = formatPreviousPagesForPrompt([{ page: DBPage, action: Action }, ...]);
  * ```
  * 
- * Example case: on page 12, MAX_PAGE_HISTORY = 5
- * • Page 7: The hallway stretched endlessly before me, fluorescent lights flickering overhead like dying stars. Lisa stood at the end, her smile too wide, eyes too knowing. "You don't remember me, do you?" she asked, voice like honey mixed with poison. (place: hallway, timeOfDay: night)
- *   → Action: "" (type: explore)
- * • Page 8: The classroom felt wrong somehow—desks arranged in a pattern I couldn't quite place, like a memory trying to surface. Lisa sat behind me, humming a tune that made my teeth ache. It was my mother's lullaby, the one she sang before she disappeared. (place: classroom, timeOfDay: unknown)
- *   → Action: "" (type: explore)
- * • Page 9: Water dripped from the ceiling in perfect rhythm, one drop for each beat of my heart. Lisa's reflection in the blackboard showed someone else entirely—someone with hollow eyes and skin like wax. "You were at the river last night," she whispered. (place: old river, timeOfDay: unknown)
- *   → Action: "" (type: explore)
- * • Page 10: The basement door creaked open, revealing concrete stairs descending into darkness. (place: basement, timeOfDay: unknown)
- *   → Action: "Carefully descend" (type: explore)
- * • Page 11: Cold air rushed up from below, carrying the smell of damp earth and something metallic. (place: unknown, timeOfDay: unknown)
- *   → Action: "Hold breath, listen" (type: ignore)
+ * Example output:
+ * ```
+ * • Page 3: I walked into the empty classroom, the chalkboards still covered in yesterday's equations. Sarah was already there, sitting by the window with that mysterious book I'd seen her reading. (place: classroom, timeOfDay: morning)
+ *   → Selected action: "Ask about the book" (type: dialogue)
+ *   → Hint for page 4: "Sarah will reveal the book contains ancient symbols" (type: mystery)
+ * • Page 4: The symbols glowed faintly as Sarah traced them with her finger. "These aren't just drawings," she whispered, "they're a map." (place: classroom, timeOfDay: morning)
+ *   → Selected action: "Examine the map closely" (type: investigate)
+ *   → Hint for page 5: "The map shows a hidden passage beneath the school" (type: discovery)
+ * ```
   */
-function formatPreviousPagesForPrompt(previousPages: PreviousPages): string {
-  if (previousPages.length === 0) {
-    return 'No previous pages yet.';
+/**
+ * Formats a single previous page entry with proper indentation and structure
+ * 
+ * @param page - The page data
+ * @param action - The action taken on this page (if any)
+ * @returns Formatted string for this page entry
+ */
+function formatPreviousPageEntry(page: UserStoryPage): string {
+  const pageText = formatPageTextForPrompt(page.text);
+  const place = page.place || 'unknown';
+  const timeOfDay = page.timeOfDay || 'unknown';
+  
+  // Base page information
+  let entry = `• Page ${page.page}: ${pageText} (place: ${place}, timeOfDay: ${timeOfDay})`;
+  
+  // Add action information if present
+  const action = page.selectedAction;
+  if (action) {
+    if (action.text) {
+      const actionText = `"${action.text}"`;
+      entry += `\n  → Selected action: ${actionText} (type: ${action.type})`;
+    }
+    if (action.hint.text) {
+      const hintText = `"${action.hint.text}"`;
+      entry += `\n  → Hint for page ${page.page + 1}: ${hintText} (type: ${action.hint.type})`;
+    }
   }
+  
+  return entry;
+}
+
+function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
+  if (previousPages.length === 0) return 'No previous pages yet.';
 
   return previousPages
-    .map(({ page, action }) => {
-      return `• Page ${page.page}: ${formatPageTextForPrompt(page.text)} (place: ${page.place || 'unknown'}, timeOfDay: ${page.timeOfDay || 'unknown'})\n  → Action: ${action ? `"${action.text}" (type: ${action.type})` : '-'}`;
-    })
+    .map(formatPreviousPageEntry)
     .join('\n');
 }
 
@@ -1562,10 +1592,43 @@ function formatNextPageTaskPrompt(state: StoryState): string {
   return `Continue the story in first-person ("I") POV. Now you write ${pageLabel}`;
 }
 
+/**
+ * Formats the current situation information for a story page in a readable format
+ * 
+ * @param page - The current page
+ * @returns Formatted string with current situation details
+ */
+function formatCurrentSituationForPrompt(page: ActionedStoryPage): string {
+  const { mood, place, timeOfDay, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
+  const situation: string[] = [];
+  
+  // Basic situation elements
+  situation.push(`Place: ${place || 'unknown'}`);
+  situation.push(`Time: ${timeOfDay || 'unknown'}`);
+  situation.push(`Mood: ${mood || 'unknown'}`);
+  
+  // Add characters if present
+  if (charactersPresent.length > 0) {
+    situation.push(`Characters present: ${charactersPresent.join(', ')}`);
+  }
+  
+  // Add important objects if any
+  if (importantObjects.length > 0) {
+    situation.push(`Important objects: ${importantObjects.join(', ')}`);
+  }
+  
+  // Add key events if any
+  if (keyEvents.length > 0) {
+    situation.push(`Key events:\n${keyEvents.map(event => `  · ${event}`).join('\n')}`);
+  }
+  
+  return situation.map(item => `- ${item}`).join('\n');
+}
+
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
   const { book, advancedState: state, actionedPage: page, previousPages } = params;
   const { mc, summary } = book;
-  const { mood, place, timeOfDay, actions, selectedAction, charactersPresent = [] } = page;
+  const { actions, selectedAction } = page;
   const { contextHistory, plotFlags } = state;
   const stateInfo = getStoryStateInfo(state);
   const { phase, phaseGoal } = stateInfo;
@@ -1586,12 +1649,6 @@ ${summary}
 CURRENT PHASE:
 ${phase} — ${phaseGoal}
 
-CURRENT SITUATION (from previous page):
-- Place: ${place || 'unknown'}
-- Time: ${timeOfDay || 'unknown'}
-- Mood: ${mood || 'unknown'}
-- Characters present: ${charactersPresent.join(', ') || 'none'}
-
 STORY CONTEXT:
 ${contextHistory || 'No story context yet.'}
 
@@ -1603,6 +1660,9 @@ ${formatPreviousPagesForPrompt(previousPages)}
 
 CURRENT PAGE:
 ${formatPageTextForPrompt(page.text)}
+
+CURRENT SITUATION:
+${formatCurrentSituationForPrompt(page)}
 
 ACTION SELECTION:
 Available choices:
@@ -2110,7 +2170,7 @@ ${mcCandidate?.name ? '' : '- Generate unique (rare) name but appropriate and me
 First Page:
 - Max ${MAX_WORDS_PER_PAGE} words.
 - charactersPresent must match names used in initialCharacters.
-- keyEvents: 1-4 short phrases. Plot-level facts happened in this page.
+- keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - importantObjects: Objects introduced or used this page that may have future narrative significance.
 
 Initial State:
@@ -2399,9 +2459,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages };
   const prompt = buildNextPagePrompt(promptParams);
   const { systemPrompt, documents } = buildSystemPrompt(book, advancedState);
+  const { selectedAction } = actionedPage;
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
-  const config = determineAIConfig(advancedState, actionedPage.selectedAction);
+  const config = determineAIConfig(advancedState, selectedAction);
   
   // 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
   const response = await executePromptForJSON<StoryGeneration>({
@@ -2420,7 +2481,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       }
     } satisfies AIPromptForJson<StoryGeneration>,
     jsonStructure: nextPageOutputFormat,
-    fieldInstructions: buildNextPageFieldInstructions(advancedState),
+    fieldInstructions: buildNextPageFieldInstructions(advancedState, selectedAction),
     thinkThenOutput: buildNextPageReviewChecklist(advancedState),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
   });
@@ -2835,58 +2896,6 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   // Return the result or original page if lock couldn't be acquired
   return lockResult ?? page;
 }
-
-// /**
-//  * Summarizes story context using specialized summarization models
-//  * 
-//  * This function uses AI models optimized for summarization tasks to create
-//  * a comprehensive narrative summary from page 1 to the current page.
-//  * It maintains story coherence and continuity across the entire narrative.
-//  * 
-//  * @param currentContext - Existing context history (empty string for first page)
-//  * @param newPageContent - Content of the newly generated page
-//  * @param pageNumber - Current page number for context
-//  * @returns AI-generated summary of the story context
-//  * 
-//  * @example
-//  * ```typescript
-//  * const updatedContext = await summarizeStoryContext(
-//  *   existingContext,
-//  *   "The hallway stretched endlessly before me...",
-//  *   5
-//  * );
-//  * ```
-//  */
-// export async function summarizeStoryContext(
-//   currentContext: string,
-//   newPageContent: string,
-//   pageNumber: number
-// ): Promise<string> {
-//   const prompt = `You are summarizing a psychological thriller story to maintain narrative coherence.
-
-// ${currentContext ? `PREVIOUS CONTEXT:
-// ${currentContext}
-
-// ` : ''}NEW PAGE (Page ${pageNumber}):
-// ${newPageContent}
-
-// Please provide a concise but comprehensive summary that incorporates the new page into the overall story context. Focus on:
-// 1. Key plot developments and revelations
-// 2. Character interactions and relationships
-// 3. Important locations and their significance
-// 4. Psychological elements and mood progression
-// 5. Any mysteries or unresolved tensions
-
-// Keep the summary under ${MAX_WORDS_SUMMARIZED_CONTEXT} words while preserving all essential narrative elements. Write in a neutral, informative tone that will help maintain story continuity.`;
-
-//   const response = await aiPrompt(prompt, {
-//     modelSelection: AI_CHAT_MODELS_SUMMARIZING,
-//     context: 'story-context-summarization',
-//     config: AI_CHAT_CONFIG_SUMMARIZE
-//   });
-
-//   return response.output || currentContext; // Fallback to existing context if summarization fails
-// }
 
 /**
  * Executes a prompt and returns structured JSON response

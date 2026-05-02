@@ -104,7 +104,10 @@ export type AIPromptForJsonParams<T> = {
 
 export type AIJsonProperty = {
   type: string;
-  items?: { type: string };
+  items?: AIJsonProperty;
+  properties?: Record<string, AIJsonProperty>;
+  required?: string[];
+  additionalProperties?: boolean;
 };
 
 /**

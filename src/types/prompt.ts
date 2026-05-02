@@ -1,5 +1,5 @@
 import type { Book } from "./book.js";
-import type { StoryState, ActionedStoryPage, UserStoryPage, Action, PreviousPages } from "./story.js";
+import type { StoryState, ActionedStoryPage, UserStoryPage, Action } from "./story.js";
 
 export type GenerateBookCreationPromptParams = {
   logPrompts?: boolean,
@@ -24,7 +24,7 @@ export type BuildNextPagePromptParams = {
   book: Book,
   actionedPage: ActionedStoryPage,
   advancedState: StoryState,
-  previousPages: PreviousPages
+  previousPages: UserStoryPage[]
 }
 
 /**

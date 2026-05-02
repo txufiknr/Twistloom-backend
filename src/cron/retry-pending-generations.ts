@@ -53,6 +53,7 @@ export async function retryPendingGenerations(): Promise<void> {
     let totalSuccess = 0;
     let totalFailed = 0;
     
+    // TODO: make it parallel
     for (const pageData of pagesWithPending) {
       try {
         console.log(`[retry-pending-generations] 🔄 Processing page ${pageData.id} (pending: ${pageData.pendingGenerationCount})`);
