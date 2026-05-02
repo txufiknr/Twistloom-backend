@@ -318,9 +318,9 @@ export async function getUserBooks(
  * }
  * ```
  */
-export async function getPageFromDB(pageId: string): Promise<DBPage | null> {
+export async function getPageFromDB(pageId: string, client: typeof dbRead | typeof dbWrite = dbRead): Promise<DBPage | null> {
   try {
-    const result = await dbRead
+    const result = await client
       .select()
       .from(pages)
       .where(eq(pages.id, pageId))

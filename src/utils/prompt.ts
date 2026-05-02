@@ -816,7 +816,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
   □ Over-explaining instead of implying? → Cut it. If the action implies the feeling, naming the feeling is redundant.
   □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
   □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
-  □ Each sentence/short paragraph on a separate line? → If NO: break up longer paragraphs to create rhythm and suspense.
+  □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
 
 8. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
@@ -2179,19 +2179,19 @@ Initial Characters:
 - Bio must include one trait that could become a source of threat or betrayal.
 
 First Page:
-- Max ${MAX_WORDS_PER_PAGE} words.
-- charactersPresent must match names used in initialCharacters.
+- text: follow the rules in "WRITING STYLE:" creatively (max ${MAX_WORDS_PER_PAGE} words).
+- charactersPresent: must match names used in initialCharacters.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
-- importantObjects: Objects introduced or used this page that may have future narrative significance.
+- importantObjects: objects introduced or used this page that may have future narrative significance.
 
 Initial State:
 - Set flags based on opening scene — not defaults.
 - difficulty should reflect how hostile the world is to this MC at the start.
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme.
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
-- traumaTags: Short evocative phrases for experiences that will haunt the MC later.
-- plotFlags: Plot important facts, add if isMajorEvent is true (max 1 per page).
-- inventory: What objects MC brings, the amount, and where.
+- traumaTags: short evocative phrases for experiences that will haunt the MC later.
+- plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
+- inventory: what objects MC brings, the amount, and where.
 
 Ending Archetypes:
 ${getEndingArchetypesText()}`;
@@ -2513,8 +2513,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // Branching decision is made inside the retry function to eliminate race conditions
   const newPage = await retryWithBranchConflict<PersistedStoryPage, StoryPageMeta>(
     async (data) => {
-      // Read fresh page data inside the retry operation to eliminate race conditions
-      const freshActionedPage = await getPageFromDB(actionedPage.id);
+      // Read fresh page data from write DB to ensure read-after-write consistency
+      // This is critical because ensureCandidatesForPage updates actions with destinations,
+      // and we need to see those updates to determine if branching is needed
+      const freshActionedPage = await getPageFromDB(actionedPage.id, dbWrite);
       if (!freshActionedPage) {
         // Create a specific error for deleted pages that won't be retried
         throw createNonRetryableError(
@@ -2533,10 +2535,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       console.log(`[generateNextPage] 🌳 branchId:`, branchId);
       
       // Create updated data with immutable pattern
-      const updatedData = { 
-        ...data, 
-        branchId 
-      };
+      const updatedData = { ...data, branchId };
       
       return insertStoryPage(userId, newState.page, {
         ...generatedStoryPage,
@@ -2832,6 +2831,8 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
     // For each pending action, create a candidate (AI generation happens outside transaction)
     for (const action of recheckedPendingActions) {
+      const letter = String.fromCharCode(65 + currentPage[0].actions.indexOf(action));
+      console.log(`[ensureCandidatesForPage] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
       // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
       const candidatePage = await retryWithBackoffOrNull(
         () => generateCandidatePage({userId, action, currentPage: mapToUserStoryPage(currentPage[0]), currentState, currentBook}),
