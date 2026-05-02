@@ -13,9 +13,11 @@
 [x] cek apakah importantObjects dipake di prompt
 
 TODO:
+[ ] stripe api keys (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET)
 [ ] type validation using https://typia.io/
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
+[ ] user: you might like (based on liked books)
 [ ] user preferences schema (interests)
 [ ] user settings schema (font size)
 [ ] display running summary at the end of story (N% readers ended up here)

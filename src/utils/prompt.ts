@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession, plotFlagTypes } from "../types/story.js";
 import { retryWithBackoffOrNull, retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, MAX_ACTION_HISTORY, KEY_EVENT_LENGTH } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -13,7 +13,7 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionHistory, Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB } from "../services/book.js";
@@ -50,6 +50,7 @@ WRITING STYLE:
 - Em dashes for thoughts the MC isn't sure they want to finish —
 - Sensory over abstract: sounds, silence, shadows, breathing, the weight of a room.
 - Actions imply feeling. Never name the emotion directly.
+- Don't begin sentences with "The" too often. Direct object heavily preferred.
 
 YOUR DNA:
 - You constantly create twists on top of twists
@@ -651,7 +652,7 @@ ${isEarlyPhase ? `  - Changes should be subtle — small shifts, not dramatic sw
 ${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt especially should be peaking.` : ''}
 
 actions
-${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue, keep it short.
+${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No subject ("I"). Directly begin with verb (e.g. Pretend not to hear) or saying (e.g. "Yes, of course.").
   - hint.text: what actually happens as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max 2 choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
@@ -667,7 +668,9 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
 : isEarlyPhase ? `  - New characters are welcome up to ${charactersSlot} more — establish the cast now.`
 : isMidPhase ? `  - You can optionally introduce up to ${charactersSlot} new characters only if genuinely necessary to support the story. Prefer deepening existing ones.`
 : `  - No new characters. The cast is fixed. Late arrivals dilute stakes.`}
+  - It's meant for characters beside MC (the POV). Don't include MC here.
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
+  - No two characters has the same name.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
@@ -1153,8 +1156,8 @@ function getActionTypesText(): string {
 
 function getActionRulesText({isFinale = false, limit = MAX_ACTION_CHOICES}: {isFinale?: boolean, limit?: number}): string {
   return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
-- Actions represent the reader's decision - must feel natural, immediate, narrative-driven
-- Action can be verb (what to do next) or dialogue (say/answer), keep it short
+- Can be verb (what to do next) or dialogue (say/answer), ${ACTION_TEXT_LENGTH}
+- Represent the reader's decision - must feel natural, immediate, narrative-driven
 - You can mix both types naturally depending on the situation
 - Example: A. "Who are you?" / B. Run away, fast
 - If no action needed or viable, give only 1 action to continue
@@ -1669,10 +1672,7 @@ Available choices:
 ${formatActionChoices(actions)}
 
 Selected:
-${formatSelectedAction(selectedAction, actions)}
-
-ACTION HISTORY:
-${formatActionHistory(state.actionsHistory)}`;
+${formatSelectedAction(selectedAction, actions)}`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
@@ -1843,34 +1843,34 @@ function formatRouteContext(state: StoryState): string {
 • Difficulty: ${state.difficulty}`;
 }
 
-/**
- * Formats action history for prompt display
- * 
- * Creates a formatted string of past actions with page numbers,
- * action text, types, and hints for AI context.
- * 
- * @param actionsHistory - Array of action history items with page numbers
- * @returns Formatted string with actions as bullet points including hints
- * 
- * @example
- * ```typescript
- * const actions = [
- *   { page: 1, text: "Investigate noise", type: "explore", hint: { text: "Something awaits", type: "consequence" } },
- *   { page: 2, text: "Run away", type: "flee", hint: { text: "Escape is impossible", type: "consequence" } }
- * ];
- * const formatted = formatActionHistory(actions);
- * // Returns:
- * // "• Page 1: Investigate noise (type: explore)
- * //   → Hint: Something awaits
- * // • Page 2: Run away (type: flee)
- * //   → Hint: Escape is impossible"
- * ```
- */
-function formatActionHistory(actionsHistory: ActionHistory[]): string {
-  return actionsHistory.slice(-MAX_ACTION_HISTORY).map(a => {
-    return `• Page ${a.page}: ${a.text} (type: ${a.type})\n  → Hint: ${a.hint.text || 'none'}`;
-  }).join('\n');
-}
+// /**
+//  * Formats action history for prompt display
+//  * 
+//  * Creates a formatted string of past actions with page numbers,
+//  * action text, types, and hints for AI context.
+//  * 
+//  * @param actionsHistory - Array of action history items with page numbers
+//  * @returns Formatted string with actions as bullet points including hints
+//  * 
+//  * @example
+//  * ```typescript
+//  * const actions = [
+//  *   { page: 1, text: "Investigate noise", type: "explore", hint: { text: "Something awaits", type: "consequence" } },
+//  *   { page: 2, text: "Run away", type: "flee", hint: { text: "Escape is impossible", type: "consequence" } }
+//  * ];
+//  * const formatted = formatActionHistory(actions);
+//  * // Returns:
+//  * // "• Page 1: Investigate noise (type: explore)
+//  * //   → Hint: Something awaits
+//  * // • Page 2: Run away (type: flee)
+//  * //   → Hint: Escape is impossible"
+//  * ```
+//  */
+// function formatActionHistory(actionsHistory: ActionHistory[]): string {
+//   return actionsHistory.slice(-MAX_ACTION_HISTORY).map(a => {
+//     return `• Page ${a.page}: ${a.text} (type: ${a.type})\n  → Hint: ${a.hint.text || 'none'}`;
+//   }).join('\n');
+// }
 
 /**
  * Formats plot flags for prompt display
@@ -2167,6 +2167,17 @@ Main Character (MC):
 ${mcCandidate?.name ? '' : '- Generate unique (rare) name but appropriate and memorable name based on age and language context.'}
 - Bio must include at least one psychological trait that will be used against them.
 
+Initial Place:
+- familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
+- context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
+
+Initial Characters:
+- It's meant for characters beside MC (the POV). Don't include MC here.
+- If MC is alone in this first page, then it should be an empty array.
+- Include only side characters who meaningfully exist at story start.
+- At least one should have a relationship that can be corrupted.
+- Bio must include one trait that could become a source of threat or betrayal.
+
 First Page:
 - Max ${MAX_WORDS_PER_PAGE} words.
 - charactersPresent must match names used in initialCharacters.
@@ -2183,16 +2194,7 @@ Initial State:
 - inventory: What objects MC brings, the amount, and where.
 
 Ending Archetypes:
-${getEndingArchetypesText()}
-
-Initial Place:
-- familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
-- context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
-
-Initial Characters:
-- Include only characters who meaningfully exist at story start.
-- At least one should have a relationship that can be corrupted.
-- Bio must include one trait that could become a source of threat or betrayal.`;
+${getEndingArchetypesText()}`;
 }
 
 /**
@@ -2523,11 +2525,17 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       
       // Make branching decision with fresh data
       const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
+      console.log(`[generateNextPage] 🌳 shouldCreateNewBranch:`, shouldCreateNewBranch);
+      
+      // Use branchId from data if already set (from retry), otherwise decide based on fresh data
+      // This ensures retry logic's modifyData function is respected
+      const branchId = data.branchId || (shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId);
+      console.log(`[generateNextPage] 🌳 branchId:`, branchId);
       
       // Create updated data with immutable pattern
       const updatedData = { 
         ...data, 
-        branchId: shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId 
+        branchId 
       };
       
       return insertStoryPage(userId, newState.page, {
@@ -2540,14 +2548,14 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     {
       bookId: actionedPage.bookId,
       parentId: actionedPage.id,
-      // branchId will be set inside the operation function based on fresh data
+      // branchId will be set inside the operation function based on fresh data or retry data
     },
     generateBranchId,
     {
       maxRetries: MAX_BRANCHING_RETRIES,
       baseDelayMs: 1000,
       onRetry: (attempt: number) => {
-        console.log(`[buildNextPage] 🔄 Branch conflict retry ${attempt}/${MAX_BRANCHING_RETRIES} for parent ${actionedPage.id}`);
+        console.log(`[generateNextPage] 🔄 Branch conflict retry ${attempt}/${MAX_BRANCHING_RETRIES} for parent ${actionedPage.id}`);
       }
     }
   );
@@ -2782,7 +2790,7 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
  *       if the updated actions need to be stored.
  * 
  * @see generateCandidatePage - Used to generate individual candidate pages
- * @see buildNextPage - Calls this function for main story pages
+ * @see generateNextPage - Calls this function for main story pages
  */
 export async function ensureCandidatesForPage(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
   // Filter actions without destination (need pre-generation)

@@ -266,16 +266,17 @@ export function processCharacterUpdates(
  *   Status: disappeared
  */
 export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): string {
-  const { characters = {} } = state || {};
-  const sideCharacters = characters ? Object.values(characters) : [];
-  
   const mcDetails = [];
-  if (mc.bio) {
-    mcDetails.push(`  Bio: ${mc.bio}`);
-  }
+  if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
 
   const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
   const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
+
+  const { characters = {} } = state || {};
+  const sideCharacters = characters 
+    // Exclude character with same name as MC's, it's him/herself
+    ? Object.values(characters).filter(character => character.name !== mc.name)
+    : [];
   
   if (sideCharacters.length === 0) {
     return mcInfo;

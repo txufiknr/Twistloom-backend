@@ -224,6 +224,10 @@ export async function retryWithBackoffOrNull<T>(
 
 /**
  * Common unique constraint error patterns
+ * 
+ * Includes PostgreSQL error codes and message patterns:
+ * - 23505: unique_violation
+ * - 23000: integrity_constraint_violation
  */
 const UNIQUE_CONSTRAINT_PATTERNS = [
   'unique constraint',
@@ -231,6 +235,9 @@ const UNIQUE_CONSTRAINT_PATTERNS = [
   'violates unique constraint',
   'already exists',
   'duplicate entry',
+  '23505', // PostgreSQL unique_violation error code
+  '23000', // PostgreSQL integrity_constraint_violation error code
+  'pages_parent_branch_unique', // Specific constraint name from pages table
 ];
 
 /**
@@ -246,10 +253,25 @@ interface ErrorWithCustomProperties extends Error {
 
 /**
  * Checks if an error is a unique constraint violation
+ * 
+ * Checks both the error message and the error code (if available)
+ * to support PostgreSQL error codes from Neon/Drizzle
  */
 export function isUniqueConstraintError(error: unknown): boolean {
   const message = getErrorMessage(error).toLowerCase();
-  return UNIQUE_CONSTRAINT_PATTERNS.some(pattern => message.includes(pattern));
+  
+  // Check message patterns
+  if (UNIQUE_CONSTRAINT_PATTERNS.some(pattern => message.includes(pattern))) {
+    return true;
+  }
+  
+  // Check error code (PostgreSQL errors from Neon have a 'code' property)
+  const err = error as ErrorWithCustomProperties & { code?: string };
+  if (err.code === '23505' || err.code === '23000') {
+    return true;
+  }
+  
+  return false;
 }
 
 /**
@@ -326,7 +348,10 @@ export async function retryWithUniqueConstraint<T, D = any>(
       }
       if (!isUniqueConstraintError(error)) {
         // Add retry context to non-unique constraint errors
-        const contextError = new Error(`Non-retryable error in retryWithUniqueConstraint (attempt ${attempt + 1}/${maxRetries + 1}): ${getErrorMessage(error)}`);
+        const errorMessage = getErrorMessage(error);
+        console.error(`[retryWithUniqueConstraint] ❌ Non-retryable error (attempt ${attempt + 1}/${maxRetries + 1}):`, errorMessage);
+        console.error(`[retryWithUniqueConstraint] Full error object:`, error);
+        const contextError = new Error(`Non-retryable error in retryWithUniqueConstraint (attempt ${attempt + 1}/${maxRetries + 1}): ${errorMessage}`);
         (contextError as ErrorWithCustomProperties).cause = error;
         (contextError as ErrorWithCustomProperties).retryAttempt = attempt + 1;
         (contextError as ErrorWithCustomProperties).maxRetries = maxRetries + 1;

@@ -758,14 +758,6 @@ export type StoryState = {
    */
   places: Record<string, PlaceMemory>;
 
-  // /**
-  //  * History of recent MAX_PAGE_HISTORY generated page content
-  //  * 
-  //  * Maintains a sliding window of recent pages for context
-  //  * and narrative continuity in AI prompts.
-  //  */
-  // pageHistory: ActionedStoryPage[];
-
   /** History of all user actions made throughout the story */
   actionsHistory: ActionHistory[];
 

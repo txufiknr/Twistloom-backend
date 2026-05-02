@@ -101,8 +101,10 @@ export async function insertStoryPage(
     const insertedPage = mapToPersistedStoryPage(result[0]);
     return insertedPage;
   } catch (error) {
-    console.error(`Failed to insert story page for page ${pageNumber}:`, getErrorMessage(error));
-    throw new Error(`Unable to insert story page: ${getErrorMessage(error)}`, { cause: error });
+    const errorMessage = getErrorMessage(error);
+    console.error(`Failed to insert story page for page ${pageNumber}:`, errorMessage);
+    console.error(`Full error details:`, error);
+    throw new Error(`Unable to insert story page: ${errorMessage}`, { cause: error });
   }
 }
 
