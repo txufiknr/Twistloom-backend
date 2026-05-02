@@ -2160,7 +2160,7 @@ Actions must be meaningfully distinct — vary between: reckless, cautious, emot
 
 function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string {
   return `Book Metadata:
-- TITLE: ${BOOK_TITLE_LENGTH}. Mysterious, visceral (you feel it), memorable, not generic.
+- TITLE: ${BOOK_TITLE_LENGTH}. Don't always start with "The". Be creative, mysterious, visceral (you feel it), memorable, not generic.
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
@@ -2540,11 +2540,6 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
         // Make branching decision with fresh data
         const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
-        console.log(`[generateNextPage] 🌳 shouldCreateNewBranch:`, shouldCreateNewBranch);
-
-        // Use branchId from data if already set (from retry), otherwise decide based on fresh data
-        // This ensures retry logic's modifyData function is respected
-        // branchId = data.branchId || (shouldCreateNewBranch ? generateBranchId() : freshActionedPage.branchId);
         branchId = shouldCreateNewBranch ? generateBranchId() : parentBranchId;
       }
 
@@ -2865,12 +2860,12 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           generateNewBranchId
         }),
         {
-          maxRetries: 3,
+          maxRetries: MAX_BRANCHING_RETRIES,
           baseDelayMs: 1000,
           maxDelayMs: 4000,
           onRetry: (attempt, error) => {
             lastError = error; // Capture the error for later analysis
-            console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/3 for action "${action.text}":`, error);
+            console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
           },
           // Stop retrying if error is non-retryable (e.g. validation errors)
           shouldRetry: (error) => {
@@ -2939,6 +2934,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     // This ensures pendingGenerationCount is always accurate even if some actions fail
     // Ensure page always has at least one action (for navigation)
     if (updatedDBActions.length === 0) {
+      console.warn(`[ensureCandidatesForPage] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
         text: "Continue.",
         type: "other",
@@ -2946,8 +2942,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           text: "See what happens next.",
           type: "none"
         },
-        // TODO: langsung pre-generate
-        destination: {}
+        destination: {} // Will be pre-generated on next run
       });
       hasRealChanges = true;
     }

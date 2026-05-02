@@ -15,9 +15,13 @@ import { getRedisClient } from '../config/redis.js';
 import { getErrorMessage } from './error.js';
 
 /**
- * Default lock TTL in seconds (5 minutes)
+ * Default distributed lock TTL in seconds
+ * 
+ * Controls how long a lock is held when processing operation
+ * to prevent concurrent modifications.
+ * Default: 5 minutes (300s).
  */
-const DEFAULT_LOCK_TTL = 300;
+export const DEFAULT_LOCK_TTL = 300;
 
 /**
  * Lock key patterns

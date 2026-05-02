@@ -169,11 +169,11 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
     // Lazy imports for better memory usage and startup time
     const { dbRead } = await import("../db/client.js");
     const { books } = await import("../db/schema.js");
-    const { eq, and, isNull, desc } = await import("drizzle-orm");
+    const { eq, and, isNull, desc, asc } = await import("drizzle-orm");
     const { generateAndUpdateBookCoverImage } = await import("../services/book.js");
     
     // Query original books without cover images (limit to prevent overwhelming the system)
-    // Prioritize books with highest trending scores
+    // Prioritize books with lowest branchesCount, then by highest trendingScore
     const originalBooksWithoutCovers = await dbRead
       .select({
         id: books.id,
@@ -200,7 +200,7 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
       })
       .from(books)
       .where(and(eq(books.isOriginal, true), isNull(books.image)))
-      .orderBy(desc(books.trendingScore))
+      .orderBy(asc(books.branchesCount), desc(books.trendingScore))
       .limit(25); // Process up to 25 books per run
     
     if (originalBooksWithoutCovers.length === 0) {
