@@ -154,6 +154,302 @@ User spends credits via API
 
 ---
 
+## 💳 End-to-End Payment Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    USER INITIATES PURCHASE                             │
+│  Location: Frontend (Next.js)                                           │
+│  Action: User clicks "Buy Credits" button                              │
+│                                                                          │
+│  User sees credit packs fetched from:                                   │
+│  GET /api/payments/credit-packs                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Frontend calls API       │
+                    │  POST /api/payments/      │
+                    │  create-checkout-session   │
+                    │  Body: { packId,          │
+                    │         successPath?,     │
+                    │         cancelPath? }     │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  CREATE CHECKOUT SESSION                                │
+│  Location: src/routes/payments.ts:139                                  │
+│  Purpose: Create Stripe checkout session with security validation        │
+│                                                                          │
+│  Security checks performed:                                              │
+│  - Authentication required (requireAuth)                                │
+│  - Rate limiting (1 session/10sec per user)                            │
+│  - Credit pack validation                                                │
+│  - URL validation (prevent open redirects)                              │
+│  - Idempotency key generation                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Validate credit pack     │
+                    │  Find pack by ID in       │
+                    │  CREDIT_PACKS config      │
+                    │  Return 404 if not found  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Apply rate limiting      │
+                    │  Redis key:               │
+                    │  checkout-session-{userId} │
+                    │  TTL: 10 seconds          │
+                    │  Return 429 if exceeded   │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Validate URLs            │
+                    │  constructSafeUrl()       │
+                    │  - Only relative paths     │
+                    │  - No protocols allowed    │
+                    │  - Fallback to defaults   │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Create Stripe session     │
+                    │  stripe.checkout.sessions. │
+                    │  create()                 │
+                    │  - Pre-created priceId    │
+                    │  - Metadata: userId       │
+                    │  - client_reference_id    │
+                    │  - Custom success/cancel  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Return checkout URL      │
+                    │  Response: { url: string }│
+                    │  Frontend redirects user  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    STRIPE CHECKOUT PROCESS                              │
+│  Location: Stripe Hosted Page                                           │
+│  Purpose: User completes payment on Stripe's secure page                │
+│                                                                          │
+│  User interactions:                                                      │
+│  - Enters payment details                                                │
+│  - Completes 3DS/SCA if required                                        │
+│  - Confirms payment                                                     │
+│                                                                          │
+│  Stripe processes payment and sends webhook                              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Stripe sends webhook     │
+                    │  POST /api/payments/      │
+                    │  stripe/webhook           │
+                    │  Headers: stripe-signature│
+                    │  Body: Raw JSON event     │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    WEBHOOK PROCESSING                                    │
+│  Location: src/routes/payments.ts:400                                   │
+│  Purpose: Process Stripe events and update user credits                 │
+│                                                                          │
+│  Security checks performed:                                              │
+│  - IP-based rate limiting (100 req/15min)                              │
+│  - Stripe signature verification                                         │
+│  - Raw body preservation for signature                                   │
+│  - Webhook delivery tracking                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Verify signature         │
+                    │  stripe.webhooks.         │
+                    │  constructEvent()         │
+                    │  Uses STRIPE_WEBHOOK_     │
+                    │  SECRET env var           │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Track webhook delivery   │
+                    │  Insert webhookDeliveries │
+                    │  table entry             │
+                    │  Status: 'retrying'       │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Process event types      │
+                    │  - checkout.session.      │
+                    │    completed              │
+                    │  - payment_intent.        │
+                    │    succeeded              │
+                    │  - payment_intent.        │
+                    │    payment_failed         │
+                    │  - charge.refunded        │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    CREDIT ALLOCATION                                     │
+│  Location: src/routes/payments.ts:298                                  │
+│  Purpose: Add credits to user account and record transaction            │
+│                                                                          │
+│  Database operations (in transaction):                                   │
+│  1. Check for existing transaction (idempotency)                       │
+│  2. Update user credits                                                 │
+│  3. Create transaction record                                           │
+│  4. Create user notification                                             │
+│  5. Update webhook delivery status                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Begin DB transaction     │
+                    │  dbWrite.transaction()    │
+                    │  Atomic operations only    │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Idempotency check         │
+                    │  Find existing transaction  │
+                    │  with stripeEventId        │
+                    │  Skip if already processed │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Validate payment amount   │
+                    │  Compare session amount    │
+                    │  with expected pack price  │
+                    │  Log security violation     │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Update user credits       │
+                    │  users.credits += credits  │
+                    │  From pack.credits config  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Create transaction       │
+                    │  transactions table       │
+                    │  Type: 'purchase'          │
+                    │  Amount: pack.priceUSD    │
+                    │  Credits: pack.credits    │
+                    │  stripeEventId recorded   │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Create notification       │
+                    │  userNotifications table   │
+                    │  Title: "Payment Successful"│
+                    │  Includes transaction data │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Commit transaction       │
+                    │  All or nothing rollback  │
+                    │  Update webhook status    │
+                    │  to 'success'             │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Respond to Stripe        │
+                    │  res.json({ received: true }) │
+                    │  Fast response (Vercel)   │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    USER RETURNS TO APP                                   │
+│  Location: Frontend (Next.js)                                           │
+│  Purpose: User sees success page and updated credit balance             │
+│                                                                          │
+│  User flow:                                                             │
+│  1. Stripe redirects to success_url                                     │
+│  2. Frontend shows success page                                         │
+│  3. Frontend fetches updated user profile                               │
+│  4. User sees new credit balance                                       │
+│                                                                          │
+│  Recommended frontend actions:                                           │
+│  - GET /api/me to refresh user data                                     │
+│  - Show success notification                                            │
+│  - Update UI with new credit balance                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📊 Flow Summary
+
+### **Key Decision Points**
+
+1. **Pre-created Prices (Now Active)**
+   - ✅ Uses `pack.priceId` for Stripe prices
+   - ✅ Full Stripe dashboard visibility
+   - ✅ Revenue analytics and reporting
+   - ✅ Price history tracking
+
+2. **Security Layers**
+   - **Authentication**: `requireAuth` middleware
+   - **Rate Limiting**: Redis-based (IP + user)
+   - **URL Validation**: Prevents open redirects
+   - **Signature Verification**: Stripe webhook security
+   - **Idempotency**: Database transaction safety
+
+3. **Error Handling**
+   - **429**: Rate limit exceeded
+   - **400**: Invalid input
+   - **404**: Credit pack not found
+   - **500**: Server/Stripe errors
+
+### **Performance Optimizations**
+
+1. **Vercel Serverless**
+   - Fast webhook response (`res.json({ received: true })`)
+   - Processing happens after response
+
+2. **Database Transactions**
+   - Atomic operations prevent partial updates
+   - Rollback on errors
+
+3. **Caching Strategy**
+   - Redis for rate limiting
+   - Future: Cache credit packs config
+
+### **Monitoring & Debugging**
+
+1. **Webhook Tracking**
+   - `webhookDeliveries` table logs all events
+   - Status tracking (success/failed/retrying)
+
+2. **Transaction Logging**
+   - Complete audit trail in `transactions` table
+   - Links to Stripe events via `stripeEventId`
+
+3. **Security Logging**
+   - Price validation violations logged
+   - Rate limit violations tracked
+
+---
+
 ## 🔧 Environment Configuration
 
 ### Backend Environment Variables

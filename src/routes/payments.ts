@@ -243,14 +243,15 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
       customer_email: user.email,
       line_items: [
         {
-          price_data: {
-            currency: "usd",
-            product_data: {
-              name: `${pack.title} (${pack.credits} Credits)`,
-              description: pack.description,
-            },
-            unit_amount: Math.round(pack.priceUSD * 100), // Convert to cents
-          },
+          price: pack.priceId,
+          // price_data: {
+          //   currency: "usd",
+          //   product_data: {
+          //     name: pack.title,
+          //     description: pack.description,
+          //   },
+          //   unit_amount: Math.round(pack.priceUSD * 100), // Convert to cents
+          // },
           quantity: 1,
         },
       ],
