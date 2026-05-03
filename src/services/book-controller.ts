@@ -88,6 +88,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         FROM user_comments 
         WHERE book_id = books.id AND parent_comment_id IS NULL
       ), 0)`,
+      // TODO: branchesCount already in books table, no need to query
       // Branches count (distinct branchId from pages, indexed by bookId)
       branchesCount: sql<number>`COALESCE((
         SELECT COUNT(DISTINCT branch_id) 

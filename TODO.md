@@ -4,6 +4,8 @@
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] Don't output viableEnding if unchanged
+[ ] book stats: already in table
+[ ] trigger: ensureBookIncrementTrigger (complete, read, like, favorite)
 
 [x] auto generate book slug on insert
 [x] Plotflag & pastinteraction tambah place?: string

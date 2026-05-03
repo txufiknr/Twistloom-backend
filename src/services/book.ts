@@ -29,7 +29,7 @@ import { IS_PRODUCTION } from "../config/constants.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
 import { sanitizeText, generateSlug } from "../utils/text-processing.js";
-import { generateId } from "../utils/uuid.js";
+import { generateId, isValidUuid } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { shouldProceedWithRetry } from "../utils/retry.js";
@@ -297,15 +297,18 @@ export async function getBook(bookId: string): Promise<Book | null> {
  * ```
  */
 export async function resolveBook(identifier: string): Promise<Book | null> {
+  // Build query conditions dynamically based on identifier format
+  const conditions = [eq(books.slug, identifier)];
+  
+  // Only add UUID condition if identifier is a valid UUID
+  if (isValidUuid(identifier)) {
+    conditions.push(eq(books.id, identifier));
+  }
+
   const book = await dbRead
     .select()
     .from(books)
-    .where(
-      or(
-        eq(books.slug, identifier),
-        eq(books.id, identifier)
-      )
-    )
+    .where(or(...conditions))
     .limit(1);
 
   if (book.length > 0) {

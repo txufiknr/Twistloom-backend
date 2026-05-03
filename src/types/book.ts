@@ -12,6 +12,7 @@ export type BookStatus = 'active' | 'archived' | 'draft';
 export interface BookStats {
   likesCount: number;
   readCount: number;
+  // completeCount: number; // TODO
   commentsCount: number;
   branchesCount: number;
 }
