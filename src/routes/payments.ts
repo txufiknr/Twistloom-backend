@@ -26,8 +26,74 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications } from "../db/schema.js";
 import { CREDIT_PACKS } from "../config/credits.js";
 import { getErrorMessage, handleApiError } from "../utils/error.js";
+import { getRedisClient } from "../config/redis.js";
 
 const router = Router();
+
+/**
+ * GET /payments/credit-packs
+ * 
+ * Returns the list of available credit packs for purchase.
+ * This endpoint allows the frontend to fetch the current credit pack configuration
+ * without hardcoding it in the frontend.
+ * 
+ * Response (Success - 200):
+ * [
+ *   {
+ *     id: string;
+ *     title: string;
+ *     tagline: string;
+ *     description: string;
+ *     credits: number;
+ *     priceUSD: number;
+ *     priceId: string;
+ *     productId: string;
+ *     highlight: boolean;
+ *     badge: string | null;
+ *     valueTag: string;
+ *     color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
+ *   }
+ * ]
+ * 
+ * Security:
+ * - No authentication required (public pricing information)
+ * - Returns safe data only (no sensitive configuration)
+ * 
+ * @example
+ * ```typescript
+ * const res = await fetch('/api/payments/credit-packs');
+ * const creditPacks = await res.json();
+ * 
+ * // Display credit packs to users
+ * creditPacks.forEach(pack => {
+ *   console.log(`${pack.title}: $${pack.priceUSD} (${pack.credits} credits)`);
+ * });
+ * ```
+ */
+router.get("/credit-packs", async (req: Request, res: Response) => {
+  try {
+    // Return credit packs configuration
+    // Note: This is public information (pricing) so no auth required
+    const safeCreditPacks = CREDIT_PACKS.map(pack => ({
+      id: pack.id,
+      title: pack.title,
+      tagline: pack.tagline,
+      description: pack.description,
+      credits: pack.credits,
+      priceUSD: pack.priceUSD,
+      priceId: pack.priceId,
+      productId: pack.productId,
+      highlight: pack.highlight,
+      badge: pack.badge,
+      valueTag: pack.valueTag,
+      color: pack.color,
+    }));
+
+    res.json(safeCreditPacks);
+  } catch (error) {
+    handleApiError(res, "Failed to fetch credit packs", error);
+  }
+});
 
 /**
  * POST /payments/create-checkout-session
@@ -37,7 +103,23 @@ const router = Router();
  * Request Body:
  * {
  *   packId: string; // Credit pack ID (e.g., "observer", "investigator", "mastermind")
+ *   successPath?: string; // Optional custom success path (relative, starts with /)
+ *   cancelPath?: string; // Optional custom cancel path (relative, starts with /)
  * }
+ * 
+ * Example Request:
+ * ```json
+ * {
+ *   "packId": "investigator",
+ *   "successPath": "/payment/success?from=pricing",
+ *   "cancelPath": "/payment/cancel?from=pricing"
+ * }
+ * ```
+ * 
+ * Security Notes:
+ * - Only relative paths are allowed (must start with /)
+ * - Absolute URLs and protocols are rejected to prevent open redirects
+ * - Invalid paths fall back to defaults: /dashboard?success=true and /pricing
  * 
  * Response (Success - 200):
  * {
@@ -46,7 +128,7 @@ const router = Router();
  * 
  * Response (Error - 400):
  * {
- *   error: string; // Error message
+ *   error: string; // Error message for invalid input
  * }
  * 
  * Response (Error - 404):
@@ -54,13 +136,21 @@ const router = Router();
  *   error: string; // Credit pack not found
  * }
  * 
+ * Response (Error - 429):
+ * {
+ *   error: string; // Rate limit exceeded
+ * }
+ * 
  * Security:
  * - Requires authentication
  * - Uses Stripe for secure payment processing
+ * - Validates URLs to prevent open redirects
+ * - Rate limiting: 1 session per 10 seconds per user
  * - Metadata includes userId and credits for webhook processing
  * 
  * @example
  * ```typescript
+ * // Basic usage
  * const res = await fetch('/api/payments/create-checkout-session', {
  *   method: 'POST',
  *   headers: { 'Content-Type': 'application/json' },
@@ -68,16 +158,72 @@ const router = Router();
  * });
  * const { url } = await res.json();
  * window.location.href = url;
+ * 
+ * // With custom URLs
+ * const res = await fetch('/api/payments/create-checkout-session', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ 
+ *     packId: 'investigator',
+ *     successPath: '/payment/success?from=pricing',
+ *     cancelPath: '/payment/cancel?from=pricing'
+ *   }),
+ * });
  * ```
  */
 router.post("/create-checkout-session", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { packId } = req.body;
+    const { packId, successPath, cancelPath } = req.body;
 
     // Validate input
     if (!packId) {
       return res.status(400).json({ error: "Credit pack ID is required" });
     }
+
+    // Get user from middleware
+    const user = req.user!;
+    const userId = user.id;
+
+    // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
+    const redis = getRedisClient();
+    if (redis) {
+      const rateLimitKey = `checkout-session-${userId}`;
+      const lastSessionTime = await redis.get(rateLimitKey);
+      if (lastSessionTime) {
+        const timeSinceLastSession = Date.now() - parseInt(lastSessionTime as string, 10);
+        if (timeSinceLastSession < 10000) { // 10 seconds
+          return res.status(429).json({
+            error: "Too many checkout session attempts. Please wait a few seconds before trying again."
+          });
+        }
+      }
+      await redis.set(rateLimitKey, Date.now().toString(), { ex: 10 }); // 10 second TTL
+    }
+
+    // Validate and construct URLs (security: prevent open redirects)
+    const baseUrl = process.env.FRONTEND_URL;
+    if (!baseUrl) {
+      return res.status(500).json({ error: "Frontend URL not configured" });
+    }
+
+    // Helper function to validate and construct safe URLs
+    const constructSafeUrl = (path: string | undefined, defaultPath: string): string => {
+      if (!path) {
+        return `${baseUrl}${defaultPath}`;
+      }
+      
+      // Security validation: prevent open redirects
+      // Only allow relative paths starting with / and no protocol
+      if (path.startsWith('/') && !path.includes('//') && !path.includes('http')) {
+        return `${baseUrl}${path}`;
+      }
+      
+      // If invalid, use default
+      return `${baseUrl}${defaultPath}`;
+    };
+
+    const successUrl = constructSafeUrl(successPath, '/dashboard?success=true');
+    const cancelUrl = constructSafeUrl(cancelPath, '/pricing');
 
     // Find the credit pack
     const pack = CREDIT_PACKS.find((p) => p.id === packId);
@@ -87,10 +233,6 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
 
     // Initialize Stripe
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-    // Get user from middleware
-    const user = req.user!;
-    const userId = user.id;
 
     // Create Stripe checkout session with idempotency key
     // Prevents duplicate sessions from network retries or double-clicks
@@ -117,8 +259,9 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
         packId: pack.id,
         credits: pack.credits.toString(),
       },
-      success_url: `${process.env.FRONTEND_URL}/dashboard?success=true`,
-      cancel_url: `${process.env.FRONTEND_URL}/pricing`,
+      client_reference_id: userId, // Backup to metadata for user binding
+      success_url: successUrl,
+      cancel_url: cancelUrl,
     }, {
       idempotencyKey, // Prevents duplicate session creation
     });
@@ -134,6 +277,13 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
  * 
  * Handles Stripe webhook events for payment processing.
  * Processes checkout.session.completed events to add credits and create transactions.
+ * 
+ * Endpoint: https://twistloom-backend.vercel.app/api/payments/stripe/webhook
+ * Events:
+ * - checkout.session.completed
+ * - payment_intent.succeeded
+ * - payment_intent.payment_failed
+ * - charge.refunded
  * 
  * Headers:
  * - stripe-signature: Stripe signature for webhook verification
@@ -319,6 +469,24 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           })
           .where(eq(webhookDeliveries.id, webhookDeliveryId!));
       });
+    } else if (event.type === "payment_intent.succeeded") {
+      // Log payment intent success for monitoring
+      const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      console.log(`[stripe] ✅ Payment intent succeeded: ${paymentIntent.id} (amount: ${paymentIntent.amount / 100} USD)`);
+      
+      // Note: Credits are added via checkout.session.completed event
+      // This event is logged for monitoring and analytics purposes
+    } else if (event.type === "payment_intent.payment_failed") {
+      // Log payment intent failure for monitoring
+      const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      const lastPaymentError = paymentIntent.last_payment_error;
+      
+      console.error(`[stripe] ❌ Payment intent failed: ${paymentIntent.id}`);
+      console.error(`[stripe] ❌ Error: ${lastPaymentError?.message || 'Unknown error'}`);
+      console.error(`[stripe] ❌ Type: ${lastPaymentError?.type || 'Unknown type'}`);
+      
+      // Note: No action needed - user will see error in Stripe checkout
+      // This event is logged for monitoring and debugging
     } else if (event.type === "charge.refunded") {
       const charge = event.data.object as Stripe.Charge;
       const paymentIntentId = charge.payment_intent as string;

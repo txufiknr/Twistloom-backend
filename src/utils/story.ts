@@ -318,7 +318,7 @@ function updateFlags(state: StoryState, action?: Action): void {
   const isEarlyPhase = pageProgress < 0.3;
   const difficultyModifier = state.difficulty === 'nightmare' ? 0.2 : 0;
 
-// ========================
+  // ========================
   // TRUST FLAG CALCULATION
   // ========================
   let trustScore = getFlagScore(state.flags.trust);

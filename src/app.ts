@@ -12,6 +12,10 @@ import { APP_NAME, VERSION } from "./config/constants.js";
 // Initialize Express app
 const app = express();
 
+// CRITICAL: Raw body middleware for Stripe webhook MUST come before express.json()
+// Stripe requires raw body for webhook signature verification
+app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
+
 // Configure middleware
 app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
 app.use(cookieParser()); // Parse cookies for NextAuth authentication

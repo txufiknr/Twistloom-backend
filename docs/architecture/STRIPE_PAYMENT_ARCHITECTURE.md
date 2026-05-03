@@ -6,6 +6,129 @@ This document outlines the complete Stripe payment system architecture, includin
 
 ---
 
+## ✅ Implementation Status
+
+This section tracks which architecture recommendations have been implemented in the codebase.
+
+### ✅ Implemented Features
+
+#### 1. Stripe Checkout (Prebuilt Form)
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` - `POST /payments/create-checkout-session`
+- **Details**: Uses Stripe Checkout Sessions with prebuilt payment UI
+- **Benefits**: Fast implementation, handles payment UI/validation, mobile optimized, high conversion rate
+
+#### 2. Secure Metadata for User Binding
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` lines 115-119
+- **Details**: 
+  - Binds purchase to user via `metadata.userId` from authenticated session
+  - Never trusts frontend userId directly
+  - Uses `req.user!.id` from NextAuth middleware
+- **Backup**: Added `client_reference_id: userId` as additional backup (line 120)
+
+#### 3. Credit Pack Configuration
+- **Status**: ✅ Implemented
+- **Location**: `src/config/credits.ts`
+- **Details**: 
+  - Three credit packs: Observer (50), Investigator (150), Mastermind (500)
+  - Server-side price validation prevents manipulation
+  - Dynamic price_data creation (not using pre-created Stripe products)
+
+#### 4. Webhook as Source of Truth
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` - `POST /payments/stripe/webhook`
+- **Details**:
+  - Handles `checkout.session.completed` for credit allocation
+  - Handles `payment_intent.succeeded` for monitoring
+  - Handles `payment_intent.payment_failed` for debugging
+  - Handles `charge.refunded` for credit deduction
+  - Idempotency via `stripeEventId` within database transactions
+
+#### 5. Database Transaction System
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` lines 258-327
+- **Details**:
+  - Atomic credit updates and transaction record creation
+  - Prevents orphaned data via transaction rollback
+  - Idempotency check within transaction
+
+#### 6. Raw Body Middleware for Webhook
+- **Status**: ✅ Implemented
+- **Location**: `src/app.ts` lines 15-17
+- **Details**:
+  - `express.raw({ type: "application/json" })` applied to webhook route only
+  - Applied BEFORE `express.json()` to preserve signature integrity
+  - Critical for Stripe webhook signature verification
+
+#### 7. Rate Limiting
+- **Status**: ✅ Implemented
+- **Location**: 
+  - Webhook: `src/routes/payments.ts` lines 177-181 (IP-based, 100 req/15min)
+  - Checkout: `src/routes/payments.ts` lines 87-101 (User-based, 1 session/10sec)
+- **Details**:
+  - Prevents webhook abuse via IP rate limiting
+  - Prevents duplicate session spam via user rate limiting
+  - Uses Redis for distributed rate limiting
+
+#### 8. Price Validation
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` lines 241-255
+- **Details**:
+  - Server-side validation of payment amount against expected pack price
+  - Prevents price manipulation attacks
+  - Logs security incidents for monitoring
+
+#### 9. Webhook Delivery Tracking
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` lines 207-213, 319-326, 402-416
+- **Details**:
+  - Tracks webhook delivery status (success/failed/retrying)
+  - Logs error messages for debugging
+  - Enables monitoring and reconciliation
+
+#### 10. User Notifications
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` lines 305-317, 380-391
+- **Details**:
+  - Automatic notifications for successful payments
+  - Automatic notifications for refunds
+  - Includes transaction details in notification data
+
+### 🔄 Alternative Approaches Considered
+
+#### Option A: Pre-created Stripe Products (Dashboard)
+- **Status**: ❌ Not Implemented
+- **Reason**: Using dynamic `price_data` for flexibility
+- **Note**: Could migrate to pre-created products for better Stripe dashboard management
+
+#### Option B: Auto-create via Script
+- **Status**: ❌ Not Implemented
+- **Reason**: Dynamic creation sufficient for current needs
+- **Note**: Could implement seed script for product management
+
+### 📋 Pro Tips Implementation Status
+
+#### ✅ client_reference_id Added
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` line 120
+- **Details**: Added as backup to metadata for user binding
+
+#### ✅ Rate Limiting for Duplicate Sessions
+- **Status**: ✅ Implemented
+- **Location**: `src/routes/payments.ts` lines 87-101
+- **Details**: 1 session per 10 seconds per user via Redis
+
+#### ⏳ Loading State (Frontend)
+- **Status**: ⏳ Frontend Implementation Required
+- **Note**: Backend ready, frontend should add "Redirecting to secure checkout..." state
+
+#### ⏳ Success Page Credit Refresh (Frontend)
+- **Status**: ⏳ Frontend Implementation Required
+- **Note**: Backend ready, frontend should call `/api/me` on success page to refresh credits
+
+---
+
 ## 🏗️ System Architecture
 
 ### Frontend (Next.js)
@@ -39,9 +162,6 @@ User spends credits via API
 # Stripe Configuration
 STRIPE_SECRET_KEY=sk_live_...
 STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_ID_CREDITS_SMALL=price_observer
-STRIPE_PRICE_ID_CREDITS_MEDIUM=price_investigator  
-STRIPE_PRICE_ID_CREDITS_LARGE=price_mastermind
 
 # Database
 DATABASE_URL=postgresql://primary...
@@ -112,20 +232,35 @@ export const CREDIT_PACKS = [
 
 ## 🔐 Vercel + Stripe Best Practices
 
-### 1. Raw Body Required (Next.js API Routes)
+### 1. Raw Body Required (Express)
 
 **Problem**: Stripe webhook WILL FAIL if body is parsed.
 
-**Solution**: Configure Next.js API routes to disable body parsing.
+**Solution**: Configure Express to use raw body middleware for webhook route ONLY.
 
 ```javascript
-// next.config.js
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
+// app.ts
+// CRITICAL: Raw body middleware for Stripe webhook MUST come before express.json()
+// Stripe requires raw body for webhook signature verification
+app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
+
+// Configure middleware
+app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
 ```
+
+### Common Mistakes (Avoid These)
+
+❌ Using express.json() globally before webhook route
+app.use(express.json()) // ❌ breaks webhook if applied before webhook route
+
+👉 Stripe signature will fail because body is already parsed
+
+✅ Fix
+
+Apply raw middleware BEFORE express.json() for webhook route only:
+
+app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
+app.use(express.json({ limit: "1mb" })); // Apply after webhook route
 
 ### 2. Idempotency (Avoid Double Credits)
 
@@ -295,34 +430,171 @@ await dbWrite.transaction(async (tx) => {
 
 ## 🛣️ API Endpoints
 
+### GET /api/payments/credit-packs
+
+Returns the list of available credit packs for purchase. This endpoint allows the frontend to fetch the current credit pack configuration without hardcoding it in the frontend.
+
+**Authentication**: None (public pricing information)
+
+**Response (Success - 200)**:
+```typescript
+[
+  {
+    id: string;
+    title: string;
+    tagline: string;
+    description: string;
+    credits: number;
+    priceUSD: number;
+    priceId: string;
+    productId: string;
+    highlight: boolean;
+    badge: string | null;
+    valueTag: string;
+    color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
+  }
+]
+```
+
+**Implementation**:
+```typescript
+router.get("/credit-packs", async (req: Request, res: Response) => {
+  try {
+    // Return credit packs configuration
+    // Note: This is public information (pricing) so no auth required
+    const safeCreditPacks = CREDIT_PACKS.map(pack => ({
+      id: pack.id,
+      title: pack.title,
+      tagline: pack.tagline,
+      description: pack.description,
+      credits: pack.credits,
+      priceUSD: pack.priceUSD,
+      priceId: pack.priceId,
+      productId: pack.productId,
+      highlight: pack.highlight,
+      badge: pack.badge,
+      valueTag: pack.valueTag,
+      color: pack.color,
+    }));
+
+    res.json(safeCreditPacks);
+  } catch (error) {
+    handleApiError(res, "Failed to fetch credit packs", error);
+  }
+});
+```
+
+**Frontend Usage Example**:
+```typescript
+const res = await fetch('/api/payments/credit-packs');
+const creditPacks = await res.json();
+
+// Display credit packs to users
+creditPacks.forEach(pack => {
+  console.log(`${pack.title}: $${pack.priceUSD} (${pack.credits} credits)`);
+});
+```
+
+---
+
 ### POST /api/payments/create-checkout-session
 
-Creates Stripe checkout session for purchasing credit packs.
+Creates Stripe checkout session for purchasing credit packs with customizable success/cancel URLs.
+
+**Authentication**: Required (via `requireAuth`)
 
 **Request Body**:
 ```typescript
 {
   packId: string; // Credit pack ID ("observer", "investigator", "mastermind")
+  successPath?: string; // Optional custom success path (relative, starts with /)
+  cancelPath?: string; // Optional custom cancel path (relative, starts with /)
 }
 ```
 
-**Response**:
+**Example Request**:
+```json
+{
+  "packId": "investigator",
+  "successPath": "/payment/success?from=pricing",
+  "cancelPath": "/payment/cancel?from=pricing"
+}
+```
+
+**Response (Success - 200)**:
 ```typescript
 {
   url: string; // Stripe checkout URL
 }
 ```
 
+**Response (Error - 400)**:
+```typescript
+{
+  error: string; // Error message for invalid input
+}
+```
+
+**Response (Error - 404)**:
+```typescript
+{
+  error: string; // Credit pack not found
+}
+```
+
+**Response (Error - 429)**:
+```typescript
+{
+  error: string; // Rate limit exceeded
+}
+```
+
+**Security Features**:
+- **URL Validation**: Only relative paths allowed (must start with /)
+- **Open Redirect Prevention**: Absolute URLs and protocols rejected
+- **Fallback URLs**: Invalid paths use defaults (/dashboard?success=true and /pricing)
+- **Rate Limiting**: 1 session per 10 seconds per user via Redis
+
 **Implementation**:
 ```typescript
 router.post("/create-checkout-session", requireAuth, async (req: Request, res: Response) => {
-  const { packId } = req.body;
+  const { packId, successPath, cancelPath } = req.body;
   
+  // Validate input
+  if (!packId) {
+    return res.status(400).json({ error: "Credit pack ID is required" });
+  }
+
   // Find the credit pack by ID (server-side validation)
   const pack = CREDIT_PACKS.find((p) => p.id === packId);
   if (!pack) {
     return res.status(404).json({ error: "Credit pack not found" });
   }
+
+  // Validate and construct URLs (security: prevent open redirects)
+  const baseUrl = process.env.FRONTEND_URL;
+  if (!baseUrl) {
+    return res.status(500).json({ error: "Frontend URL not configured" });
+  }
+
+  // Helper function to validate and construct safe URLs
+  const constructSafeUrl = (path: string | undefined, defaultPath: string): string => {
+    if (!path) {
+      return `${baseUrl}${defaultPath}`;
+    }
+    
+    // Security validation: prevent open redirects
+    // Only allow relative paths starting with / and no protocol
+    if (path.startsWith('/') && !path.includes('//') && !path.includes('http')) {
+      return `${baseUrl}${path}`;
+    }
+    
+    // If invalid, use default
+    return `${baseUrl}${defaultPath}`;
+  };
+
+  const successUrl = constructSafeUrl(successPath, '/dashboard?success=true');
+  const cancelUrl = constructSafeUrl(cancelPath, '/pricing');
 
   // Generate idempotency key
   const idempotencyKey = `checkout-${req.user!.id}-${packId}-${Date.now()}`;
@@ -350,13 +622,38 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
       packId: pack.id,
       credits: pack.credits.toString(),
     },
-    success_url: `${process.env.FRONTEND_URL}/dashboard?success=true`,
-    cancel_url: `${process.env.FRONTEND_URL}/pricing`,
+    client_reference_id: req.user!.id, // Backup to metadata for user binding
+    success_url: successUrl,
+    cancel_url: cancelUrl,
   }, {
-    idempotencyKey, // Prevents duplicate session creation
+    idempotencyKey,
   });
 
   res.json({ url: session.url });
+});
+```
+
+**Frontend Usage Examples**:
+
+```typescript
+// Basic usage (default URLs)
+const res = await fetch('/api/payments/create-checkout-session', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ packId: 'investigator' }),
+});
+const { url } = await res.json();
+window.location.href = url;
+
+// With custom URLs
+const res = await fetch('/api/payments/create-checkout-session', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ 
+    packId: 'investigator',
+    successPath: '/payment/success?from=pricing',
+    cancelPath: '/payment/cancel?from=pricing'
+  }),
 });
 ```
 
@@ -368,8 +665,10 @@ Handles Stripe webhook events for payment processing.
 - `stripe-signature`: Stripe signature for webhook verification
 
 **Events Handled**:
-- `checkout.session.completed`: Payment successful
-- `charge.refunded`: Payment refunded
+- `checkout.session.completed`: Payment successful (adds credits)
+- `payment_intent.succeeded`: Payment intent succeeded (logging only)
+- `payment_intent.payment_failed`: Payment intent failed (logging only)
+- `charge.refunded`: Payment refunded (deducts credits)
 
 **Implementation**:
 ```typescript
@@ -525,6 +824,24 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           })
           .where(eq(webhookDeliveries.id, webhookDeliveryId!));
       });
+    } else if (event.type === "payment_intent.succeeded") {
+      // Log payment intent success for monitoring
+      const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      console.log(`[stripe] ✅ Payment intent succeeded: ${paymentIntent.id} (amount: ${paymentIntent.amount / 100} USD)`);
+      
+      // Note: Credits are added via checkout.session.completed event
+      // This event is logged for monitoring and analytics purposes
+    } else if (event.type === "payment_intent.payment_failed") {
+      // Log payment intent failure for monitoring
+      const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      const lastPaymentError = paymentIntent.last_payment_error;
+      
+      console.error(`[stripe] ❌ Payment intent failed: ${paymentIntent.id}`);
+      console.error(`[stripe] ❌ Error: ${lastPaymentError?.message || 'Unknown error'}`);
+      console.error(`[stripe] ❌ Type: ${lastPaymentError?.type || 'Unknown type'}`);
+      
+      // Note: No action needed - user will see error in Stripe checkout
+      // This event is logged for monitoring and debugging
     } else if (event.type === "charge.refunded") {
       const charge = event.data.object as Stripe.Charge;
       const paymentIntentId = charge.payment_intent as string;
@@ -766,8 +1083,9 @@ if (success) {
 
 ### Webhook Security
 - **Signature verification**: Always verify Stripe webhook signature
+- **Raw body middleware**: Use `express.raw()` for webhook route to preserve signature integrity
 - **HTTPS only**: Webhooks only work with HTTPS endpoints
-- **Rate limiting**: IP-based rate limiting (5 requests per minute per IP, configurable)
+- **Rate limiting**: IP-based rate limiting (100 requests per 15 minutes per IP)
 - **Idempotency**: Check for existing transaction with matching `stripeEventId` within transaction
 - **Transaction isolation**: Use database transactions to prevent race conditions
 

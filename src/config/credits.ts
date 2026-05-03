@@ -1,13 +1,99 @@
-export const CREDIT_PACKS = [
+/**
+ * Credit Packs Configuration
+ * @overview Configuration for Stripe credit pack products and pricing
+ * 
+ * Defines the available credit pack options for purchase in the Twistloom application.
+ * Each credit pack represents a different tier of story interaction capabilities.
+ * 
+ * ## Stripe Integration
+ * 
+ * ### Products & Prices Setup
+ * 1. Go to: https://dashboard.stripe.com/acct_1TSpFoFmDKrMqBDf/test/products
+ * 2. Create products with the following structure:
+ *    - Name: Use the `title` field from each pack
+ *    - Description: Use the `description` field
+ *    - Price: Use the `priceUSD` field (in USD)
+ * 3. Copy the generated `priceId` and `productId` to the configuration below
+ * 
+ * ## Credit Pack Tiers
+ * 
+ * ### Observer (50 credits - $2.99)
+ * Perfect for first-time readers who want to explore branching paths
+ * - ~10-12 story choices
+ * - Basic story interaction
+ * - Introduction to the Twistloom experience
+ * 
+ * ### Investigator (150 credits - $7.99) 🔥 Most Popular
+ * For readers who want to dig deeper into the mystery
+ * - ~30-40 story choices
+ * - Influence key decisions
+ * - Unlock hidden paths
+ * - Recommended for most users
+ * 
+ * ### Mastermind (500 credits - $19.99) 💎 Best Value
+ * For power users who want complete control
+ * - ~120+ story choices
+ * - Craft custom actions
+ * - Explore alternate endings
+ * - Full narrative control
+ * 
+ * ## Usage Guidelines
+ * 
+ * ### Adding New Credit Packs
+ * 1. Create corresponding Stripe product and price
+ * 2. Add new pack to the `CREDIT_PACKS` array
+ * 3. Update environment variables if needed
+ * 4. Test checkout flow end-to-end
+ * 
+ * ### Modifying Existing Packs
+ * - Update Stripe product first, then update configuration
+ * - Price changes require new Stripe price creation
+ * - Credit amounts can be adjusted without Stripe changes
+ * 
+ * ### API Integration
+ * - Frontend fetches packs via `GET /api/payments/credit-packs`
+ * - Backend validates pack existence in checkout session
+ * - Webhook maps priceId to credits for allocation
+ */
+
+export interface CreditPack {
+  /** Unique identifier for the credit pack */
+  id: string;
+  /** Display title shown to users */
+  title: string;
+  /** Short tagline for marketing */
+  tagline: string;
+  /** Detailed description of what the pack offers */
+  description: string;
+  /** Number of credits included in this pack */
+  credits: number;
+  /** Price in USD */
+  priceUSD: number;
+  /** Stripe Price ID for checkout */
+  priceId: string;
+  /** Stripe Product ID for reference */
+  productId: string;
+  /** Whether to highlight this pack as recommended */
+  highlight: boolean;
+  /** Optional badge text (e.g., "Most Popular") */
+  badge: string | null;
+  /** Approximate number of choices/uses */
+  valueTag: string;
+  /** Color theme for UI display */
+  color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
+}
+
+export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",
-    title: "🕵️ The Observer",
+    title: "Observer Package (50 credits)",
     tagline: "You watch… but rarely interfere.",
     description:
       "Perfect for first-time readers. Explore branching paths and test how your decisions shape the story.",
     credits: 50,
     priceUSD: 2.99,
-    priceId: "price_observer", // Stripe Price ID
+    priceId: "price_1TSq8CFmDKrMqBDfv8hHK8hi", // Stripe Price ID
+    productId: "prod_URjbG0HYUqTKjj",
     highlight: false,
     badge: null,
     valueTag: "~10-12 choices",
@@ -15,13 +101,14 @@ export const CREDIT_PACKS = [
   },
   {
     id: "investigator",
-    title: "🔍 The Investigator",
+    title: "Investigator Package (150 credits)",
     tagline: "You follow the clues. Carefully.",
     description:
       "Dig deeper into the mystery. Enough credits to influence key decisions and unlock hidden paths.",
     credits: 150,
     priceUSD: 7.99,
-    priceId: "price_investigator",
+    priceId: "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
+    productId: "prod_URjhcMuRg9MAl7",
     highlight: true,
     badge: "🔥 Most Popular",
     valueTag: "~30-40 choices",
@@ -29,13 +116,14 @@ export const CREDIT_PACKS = [
   },
   {
     id: "mastermind",
-    title: "🧠 The Mastermind",
+    title: "Mastermind Package (500 credits)",
     tagline: "You don't follow the story. You control it.",
     description:
       "Take full control of the narrative. Craft custom actions, explore alternate endings, and bend the story to your will.",
     credits: 500,
     priceUSD: 19.99,
-    priceId: "price_mastermind",
+    priceId: "price_1TSqEpFmDKrMqBDfhrwd9wOn",
+    productId: "prod_URjiSAzuitp1le",
     highlight: false,
     badge: "💎 Best Value",
     valueTag: "~120+ choices",

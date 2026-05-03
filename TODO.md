@@ -1,4 +1,3 @@
-[ ] auto generate book slug on insert
 [ ] story state: is it really need `maxPage`?
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
@@ -6,6 +5,7 @@
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] Don't output viableEnding if unchanged
 
+[x] auto generate book slug on insert
 [x] Plotflag & pastinteraction tambah place?: string
 [x] Sse can we make generating event ends when evaluating starts
 [x] last page gaperlu ensurecandidate
@@ -18,7 +18,8 @@
 [x] cek apakah importantObjects dipake di prompt
 
 TODO:
-[ ] stripe api keys (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET)
+[x] stripe api keys (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET)
+[ ] Stripe switch to live
 [ ] type validation using https://typia.io/
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
