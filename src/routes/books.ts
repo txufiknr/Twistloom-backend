@@ -467,7 +467,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
     // Send SSE error event before closing
     if (!res.headersSent) {
       const encoder = new TextEncoder();
-      const errorMessage = error instanceof Error ? error.message : 'Failed to generate prompt';
+      const errorMessage = getErrorMessage(error, 'Failed to generate prompt');
       res.write(encoder.encode(`event: error\ndata: ${errorMessage}\n\n`));
     }
     
@@ -663,7 +663,6 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
       // Apply pagination
       const offset = (page - 1) * limit;
       const userBooks: EnrichedBookData[] = await query.limit(limit).offset(offset);
-
       const pagination = calculatePaginationMeta(page, limit, totalCount);
 
       return createPaginatedResponse(userBooks, pagination, 'books');

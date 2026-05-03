@@ -234,7 +234,11 @@ export type Injury = {
   severity?: number;
   /** Severity decay rate per page (0.0-1.0) */
   decayPerPage?: number;
+  /** Consequences of the injury, e.g. "Cannot run fast" */
+  consequences?: string;
 };
+
+export type InjurySeverity = 'high' | 'medium' | 'low' | 'permanent';
 
 /** Represents a past interaction between characters */
 export type PastInteraction = {

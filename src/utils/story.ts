@@ -220,13 +220,11 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
 function decayInjuries(injuries: Injury[]): Injury[] {
   return injuries
     .map(injury => {
-      if (!injury.severity || !injury.decayPerPage || injury.decayPerPage === 0) {
-        return injury;
-      }
-      
-      const newSeverity = Math.max(0, injury.severity - injury.decayPerPage);
+      // Permanent injury (no change)
+      if (!injury.severity || !injury.decayPerPage || injury.decayPerPage === 0) return injury;
       
       // Return updated injury, or mark as healed if severity reaches 0
+      const newSeverity = Math.max(0, injury.severity - injury.decayPerPage);
       return {
         ...injury,
         severity: newSeverity

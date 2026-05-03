@@ -3,7 +3,6 @@
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] Don't output viableEnding if unchanged
-[ ] Cek page 2 apakah ada branchId main
 
 [x] Plotflag & pastinteraction tambah place?: string
 [x] Sse can we make generating event ends when evaluating starts

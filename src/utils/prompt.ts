@@ -8,6 +8,7 @@ import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
+import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { genders } from "../types/user.js";
@@ -324,6 +325,7 @@ const nextPageOutputFormat: string = `{
     {
       "bodyPart": "...",
       "description": "...",
+      "consequences": "...",
       "pageAcquired": <number>,
       "severity": <number between 0.0 and 1.0>,
       "decayPerPage": <number between 0.0 and 1.0>
@@ -621,6 +623,7 @@ injuries
   - If healed, set severity to 0 - system will auto-remove fully healed injuries.
   - If healed but leaves permanent scar/story relevance, move to character's visualDescription.
   - If no meaningful injury-related action occurs, omit this field entirely.
+  - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").
 
 traumaTagUpdates
   - Short evocative phrases for experiences that will haunt the MC later.
@@ -864,8 +867,9 @@ Score the original content honestly before any corrections. Do not adjust scores
 
 STEP 3 — CORRECT
 Only rewrite if total scoreBefore < 75, or if any single dimension scores below its threshold.
+Follow writing style in "WRITING STYLE:" rules creatively.
 Preserve the original narrative voice and story trajectory. Fix the minimum necessary — do not over-correct.
-Do not introduce plot elements not implied by prior context.
+Do not introduce plot elements not implied by prior context. Do not change characters' names.
 
 STEP 4 — RE-SCORE (scoreAfter)
 Score the corrected content. If no corrections were made, scoreAfter = scoreBefore.
@@ -1307,9 +1311,22 @@ function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
 /**
  * Gets formatted main character information for prompt
  * @param mc - Main character profile
- * @returns Formatted string with character details
+ * @param state - Current story state with inventory and injuries
+ * @returns Formatted string with character details, or null if no character data
  * 
- * @example Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
+ * @example
+ * // Basic character without state
+ * "Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)"
+ * 
+ * @example
+ * // Character with inventory and injuries
+ * "Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
+ * - Inventory: flashlight, rope
+ * - Injuries:
+ *   - Deep cut (left arm, severity: 0.7) - acquired: page 5
+ *     → Consequence (high): Cannot lift heavy objects
+ *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18
+ *     → Consequence (medium): Cannot run fast"
  */
 function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string | null {
   if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
@@ -1318,21 +1335,27 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
   if (state) {
     const inventory = state.inventory.join(', ') || 'none';
     
-    // Format detailed injury information
+    // Format detailed injury information with nested bullet points
     let injuryDetails = 'none';
     if (state.injuries.length > 0) {
       const injuryList = state.injuries.map(injury => {
         const parts = [];
+        const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
         if (injury.description) parts.push(injury.description);
-        if (injury.bodyPart) parts.push(`(${injury.bodyPart})`);
-        if (injury.severity) parts.push(`[severity: ${injury.severity}]`);
-        if (injury.pageAcquired) parts.push(`acquired page ${injury.pageAcquired}`);
-        return parts.join(' ');
+        if (injuryLocation) parts.push(`(${injuryLocation})`);
+        if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}`);
+
+        let injuryLine = `  - ${parts.join(' ')}`;
+        if (injury.consequences) {
+          const injurySeverity = getInjurySeverityLabel(injury);
+          injuryLine += `\n    → Consequence (${injurySeverity}): ${injury.consequences}`;
+        }
+        return injuryLine;
       });
-      injuryDetails = injuryList.join('; ');
+      injuryDetails = injuryList.join('\n');
     }
     
-    return `${bio}\n- Inventory: ${inventory}\n- Injuries: ${injuryDetails}`;
+    return `${bio}\n- Inventory: ${inventory}\n- Injuries:\n${injuryDetails}`;
   }
   return bio;
 }

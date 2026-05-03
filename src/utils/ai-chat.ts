@@ -16,7 +16,7 @@ import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@ce
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { group } from '@actions/core';
-import { ProgressCallback } from "../types/sse.js";
+import type { ProgressCallback } from "../types/sse.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -773,6 +773,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     outputAsJson = false,
     outputJsonFallbackField,
     systemPrompt = PROMPT_SYSTEM,
+    documents,
     context,
     logPrompts = false,
     logEvaluationResult = false,
@@ -840,12 +841,13 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             modelSelection: Object.fromEntries(
               Object.entries(AI_CHAT_MODELS_WRITING).filter(([provider]) => !TIER_S_PROVIDERS.includes(provider as AIChatProvider))
             ) satisfies AIModelSelection,
-            config: AI_CHAT_CONFIG_DEFAULT,
-            systemPrompt: PROMPT_SYSTEM,
+            config,
+            systemPrompt,
             context: [options.context, 'evaluation'].filter(Boolean).join('-'),
-
+            
             // Pass generated raw output as document
             documents: [
+              ...(documents || []),
               {
                 title: 'GENERATED JSON (from previous AI)',
                 snippet: result.output,

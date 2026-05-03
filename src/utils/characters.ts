@@ -1,6 +1,6 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, CharacterCreationParam } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, CharacterCreationParam, InjurySeverity } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -8,6 +8,26 @@ import { ucfirst } from "./formatter.js";
 // ============================================================================
 // CHARACTER MEMORY MANAGEMENT SYSTEM
 // ============================================================================
+
+/**
+ * Calculates the injury severity label based on severity and decay rate
+ * @param injury - Injury object with severity and decayPerPage
+ * @returns Severity label: 'permanent', 'high', 'medium', or 'low'
+ * 
+ * @example
+ * ```typescript
+ * getInjurySeverityLabel({ severity: 0.8, decayPerPage: 0.1 }); // 'high'
+ * getInjurySeverityLabel({ severity: 0.5, decayPerPage: 0 }); // 'permanent'
+ * getInjurySeverityLabel({ severity: 0.3, decayPerPage: 0.05 }); // 'low'
+ * ```
+ */
+export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
+  const { severity = 0.5, decayPerPage = 0 } = injury;
+  if (decayPerPage === 0) return 'permanent';
+  if (severity >= 0.7) return 'high';
+  if (severity >= 0.4) return 'medium';
+  return 'low';
+}
 
 /**
  * Creates a new character with default values
@@ -324,9 +344,11 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
         details.push(`  Injuries:`);
         character.injuries.forEach((injury: Injury, index: number) => {
           const injuryParts = [];
+          const severityLabel = getInjurySeverityLabel(injury);
           if (injury.description) injuryParts.push(injury.description);
           if (injury.bodyPart) injuryParts.push(`Location: ${injury.bodyPart}`);
           if (injury.severity) injuryParts.push(`Severity: ${injury.severity}`);
+          if (injury.consequences) injuryParts.push(`Consequences (${severityLabel}): ${injury.consequences}`);
           if (injury.pageAcquired) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
           
           const injuryInfo = injuryParts.length > 0 ? ` (${injuryParts.join(', ')})` : '';
