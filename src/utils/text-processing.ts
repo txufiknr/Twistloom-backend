@@ -301,6 +301,68 @@ export function sanitizeTextForDB(text: string): string {
   return cleaned;
 }
 
+/**
+ * Generates a clean, URL-friendly slug from text
+ * 
+ * Creates SEO-friendly slugs by:
+ * - Converting to lowercase
+ * - Removing special characters and punctuation
+ * - Replacing spaces and separators with hyphens
+ * - Removing minimal stop words for cleaner URLs
+ * - Ensuring valid slug format
+ * 
+ * @param text - The text to convert to slug (typically book title)
+ * @returns Clean, URL-friendly slug string
+ * 
+ * @example
+ * ```typescript
+ * generateSlug("The Amazing Adventure of Tom Sawyer") // "amazing-adventure-tom-sawyer"
+ * generateSlug("Mystery & Crime: A Detective's Story") // "mystery-crime-detectives-story"
+ * generateSlug("  Hello, World!  ") // "hello-world"
+ * ```
+ */
+export function generateSlug(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  
+  // Step 1: Sanitize and normalize the text
+  const cleaned = sanitizeText(text);
+  
+  // Step 2: Remove only the most common stop words that don't add meaning
+  const stopWords = new Set([
+    'a', 'an', 'the' // Only remove articles, keep meaningful words
+  ]);
+  
+  // Step 3: Convert to lowercase and split into words
+  const words = cleaned
+    .toLowerCase()
+    .split(/\s+/) // Split on whitespace
+    .filter(word => word.length > 0) // Remove empty strings
+    .filter(word => !stopWords.has(word)) // Remove minimal stop words
+    .filter(word => word.length > 0); // Keep all words including single letters
+  
+  // Step 4: Join with hyphens and clean up
+  let slug = words.join('-');
+  
+  // Step 5: Handle special characters and numbers better
+  slug = slug
+    .replace(/[^a-z0-9-]/g, '') // Keep only lowercase letters, numbers, and hyphens
+    .replace(/-+/g, '-') // Replace multiple hyphens with single hyphen
+    .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
+  
+  // Step 6: Ensure minimum length and maximum length
+  if (slug.length < 1 && words.length > 0) {
+    // If slug is empty after cleaning, use first word
+    slug = words[0].substring(0, 20);
+  }
+  
+  // Limit slug length to reasonable size (50 characters max)
+  if (slug.length > 50) {
+    slug = slug.substring(0, 50).replace(/-[^-]*$/, ''); // Don't cut off in middle of word
+  }
+  
+  return slug;
+}
+
 export function sanitizeText(text: string): string {
   return correctDoubleQuotes(sanitizeTextForDB(text.trim()));
 }

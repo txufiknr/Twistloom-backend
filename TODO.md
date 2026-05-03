@@ -1,3 +1,5 @@
+[ ] auto generate book slug on insert
+[ ] story state: is it really need `maxPage`?
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Retry pending generation kalo udah stable bikin paralel

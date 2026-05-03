@@ -28,7 +28,7 @@ import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/constants.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
-import { sanitizeText } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug } from "../utils/text-processing.js";
 import { generateId } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
@@ -81,9 +81,9 @@ export async function insertStoryPage(
       mood: page.mood,
       place: page.place || "Unknown", // Default place if not provided
       timeOfDay: page.timeOfDay || "unknown",
-      charactersPresent: [], // Empty array for root page
-      keyEvents: [], // Empty array for root page
-      importantObjects: [], // Empty array for root page
+      charactersPresent: page.charactersPresent || [],
+      keyEvents: page.keyEvents || [],
+      importantObjects: page.importantObjects || [],
       actions: page.actions,
       stateDelta: extractStateDelta(page),
       aiProvider: page.aiProvider || null,
@@ -145,6 +145,65 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
 }
 
 /**
+ * Generates a unique slug for a book by checking existing slugs
+ * 
+ * Creates a slug from the title and ensures uniqueness by appending
+ * a numeric suffix if the base slug already exists.
+ * 
+ * @param title - The book title to generate slug from
+ * @returns Promise resolving to a unique slug string
+ * 
+ * @example
+ * ```typescript
+ * const slug = await generateUniqueSlug("The Amazing Adventure");
+ * // Returns "amazing-adventure" or "amazing-adventure-2" if already taken
+ * ```
+ */
+async function generateUniqueSlug(title: string): Promise<string> {
+  const baseSlug = generateSlug(title);
+  
+  // If base slug is empty, generate a random one
+  if (!baseSlug) {
+    return generateId().substring(0, 8);
+  }
+  
+  // Check if base slug already exists
+  const existing = await dbRead
+    .select({ slug: books.slug })
+    .from(books)
+    .where(eq(books.slug, baseSlug))
+    .limit(1);
+  
+  // If base slug is available, use it
+  if (existing.length === 0) {
+    return baseSlug;
+  }
+  
+  // Base slug exists, try with numeric suffixes
+  let suffix = 2;
+  let uniqueSlug = `${baseSlug}-${suffix}`;
+  
+  while (suffix <= 100) { // Prevent infinite loops
+    const existingWithSuffix = await dbRead
+      .select({ slug: books.slug })
+      .from(books)
+      .where(eq(books.slug, uniqueSlug))
+      .limit(1);
+    
+    if (existingWithSuffix.length === 0) {
+      return uniqueSlug;
+    }
+    
+    suffix++;
+    uniqueSlug = `${baseSlug}-${suffix}`;
+  }
+  
+  // Fallback: use random ID if we can't find a unique slug
+  console.warn(`[generateUniqueSlug] ⚠️ Could not generate unique slug for "${title}", using random ID`);
+  return generateId().substring(0, 8);
+}
+
+/**
  * Inserts a new book into the database
  * 
  * @param userId - User identifier who owns the book
@@ -157,9 +216,13 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
  * @returns Promise resolving to the inserted book record
  */
 export async function insertBook(book: DBNewBook): Promise<DBBook> {
+  // Generate unique slug from title
+  const uniqueSlug = await generateUniqueSlug(book.title);
+  
   const newBookData: DBNewBook = {
     ...book,
     id: book.id ?? generateId(),
+    slug: uniqueSlug,
     title: sanitizeText(book.title),
     hook: book.hook ? sanitizeText(book.hook) : null,
     summary: book.summary ? sanitizeText(book.summary) : null,
@@ -170,7 +233,7 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
   };
 
   const result = await dbWrite.insert(books).values(newBookData).returning();
-  console.log(`[insertBook] 📔 Inserted book:`, result[0]);
+  console.log(`[insertBook] 📔 Inserted book with slug "${uniqueSlug}":`, result[0]);
   return result[0];
 }
 

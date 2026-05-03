@@ -37,9 +37,9 @@ Complete book data as stored in database.
 
 ```typescript
 interface Book {
-  id: string;                  // Book's unique identifier (UUID)
+  id: string;                  // Book's unique identifier (UUID v7)
   userId: string;              // Author's user ID
-  slug?: string;               // SEO-friendly URL identifier
+  slug?: string;               // SEO-friendly URL identifier (auto-generated from title)
   title: string;               // Book title
   totalPages: number;         // Total number of pages in the book
   language: string;           // Book language
@@ -47,7 +47,7 @@ interface Book {
   summary: string;            // Summary (50-100 words, sets up psychological tension)
   image?: string;              // Cover image ImageKit URL
   imageId?: string;           // ImageKit file ID for deletion
-  trendingScore: number;      // Trending score for book discovery (cron-based with time decay)
+  trendingScore: number;      // Trending score for book discovery (hybrid: cron-based + incremental updates)
   keywords: string[];         // Keywords for book discovery
   status: 'active' | 'archived' | 'draft';
   mc: StoryMC;                // Main character profile with name, age, gender
@@ -227,9 +227,9 @@ Book sorting options for explore endpoint.
 
 ```typescript
 type BookSortingOptions = 
-  | 'popular'     // Sorts by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by database triggers)
+  | 'popular'     // Sorts by branchesCount (pre-calculated branchesCount maintained by database triggers)
   | 'newest'       // Sorts by createdAt timestamp (latest books)
-  | 'trending'     // Sorts by pre-calculated trendingScore (updated daily via cron job with time decay)
+  | 'trending'     // Sorts by pre-calculated trendingScore (hybrid: cron-based with time decay + incremental updates on likes/favorites)
   | 'top-picks'    // Sorts by latest topPick timestamp (only books marked as editor's picks)
   | 'originals';   // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
 ```
@@ -245,6 +245,7 @@ type BookSortingOptions =
    - [Create Book with SSE](#post-apibooksstream)
    - [Get User's Books](#get-apibooks)
    - [Get Book by ID](#get-apibooksidentifier)
+   - [Get Similar Books](#get-apibooksidsimilar)
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
 4. [Book Reading](#book-reading)
@@ -259,7 +260,7 @@ type BookSortingOptions =
 6. [Comments](#comments)
    - [Get Book Comments](#get-apibooksidcomments)
    - [Create Comment](#post-apibooksidcomments)
-   - [Delete Comment](#delete-apicommentsid)
+   - [Delete Comment](#delete-apibookscommentsid)
 7. [Exploration](#exploration)
    - [Explore Books](#get-apibooksexplore)
    - [Get Popular Tags](#get-apibookstagspopular)
@@ -313,7 +314,7 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
   "book": {
     "id": "book123",
     "userId": "user456",
-    "slug": "the-whispering-halls",
+    "slug": "whispering-halls",
     "title": "The Whispering Halls",
     "totalPages": 120,
     "language": "en",
@@ -441,6 +442,12 @@ event: ai_generation_start
 data: {}
 
 event: ai_generation_complete
+data: {}
+
+event: ai_evaluation_start
+data: {}
+
+event: ai_evaluation_complete
 data: {}
 
 event: finalizing_start
@@ -631,7 +638,7 @@ Deletes a book and all its associated data (pages, sessions, story states). If t
 
 ### GET /api/books/:identifier/:branchId/:page
 
-Retrieves a specific page within a branch of a book. Accepts both slug and UUID v7 as identifier.
+Retrieves a specific page within a branch of a book. Accepts both slug and UUID v7 as identifier. Returns only actions with complete destinations (both branchId and pageId required). Automatically retries failed candidate generations for incomplete actions.
 
 **Authentication:** Optional (via `optionalAuth`)
 
@@ -646,10 +653,16 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
   "page": {
     "id": "page456",
     "page": 1,
+    "bookId": "book123",
+    "branchId": "main",
+    "parentId": null,
     "text": "The library was silent except for the rain...",
     "mood": "eerie",
     "place": "library",
     "timeOfDay": "night",
+    "charactersPresent": [],
+    "keyEvents": [],
+    "importantObjects": [],
     "actions": [
       {
         "text": "Investigate the noise",
@@ -658,23 +671,32 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
           "text": "Something waits in the shadows",
           "type": "dark_discovery"
         },
-        "navigation": {
-          "bookId": "book123",
+        "destination": {
           "branchId": "main",
-          "page": 2
-        }
+          "pageId": "page789"
+        },
+        "nextPageNumber": 2,
+        "isUserChosen": false
       }
     ],
-    "createdAt": "2023-01-01T00:00:00.000Z"
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-01T00:00:00.000Z"
   },
   "book": {
     "id": "book123",
     "title": "The Whispering Halls",
-    "slug": "the-whispering-halls",
+    "slug": "whispering-halls",
     "totalPages": 120
   }
 }
 ```
+
+**Behavior:**
+- Filters out actions without complete destinations (both branchId and pageId required)
+- Enriches actions with nextPageNumber for frontend URL building
+- Marks user's previously chosen action with isUserChosen: true
+- Automatically retries failed candidate generations for incomplete actions (fire-and-forget)
+- Excludes backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount, stateDelta
 
 **Error Responses:**
 - `404 Not Found`: Book or page not found
@@ -722,6 +744,12 @@ Marks a page as visited by updating user session and page progress. This is call
   "page": 5
 }
 ```
+
+**Behavior:**
+- Validates that the action exists on the previous page
+- Prevents users from selecting alternate branches on revisited pages (except for premium users)
+- Validates user's action choice to prevent multiple selections on the same page
+- Updates user session and page progress tracking
 
 **Error Responses:**
 - `400 Bad Request`: Missing action or previousPageId
@@ -776,6 +804,84 @@ Creates or updates a reading session for a book. Tracks reading progress and man
 **Error Responses:**
 - `400 Bad Request`: Invalid pageId format
 - `404 Not Found`: Book not found, or book has no pages
+
+---
+
+### GET /api/books/:id/similar
+
+Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's native array operations to calculate similarity scores between the target book's keywords and all other books' keywords.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID or slug to find similar books for
+
+**Query Parameters:**
+- `limit` (number, optional): Maximum number of similar books to return (default: 10, max: 50)
+
+**Response (200 OK):**
+```json
+{
+  "similarBooks": [
+    {
+      "id": "book456",
+      "userId": "user789",
+      "slug": "another-thriller",
+      "title": "Another Thriller",
+      "hook": "A dark secret lies beneath...",
+      "summary": "A psychological thriller about...",
+      "image": "https://example.com/cover2.jpg",
+      "keywords": ["thriller", "mystery"],
+      "status": "active",
+      "trendingScore": 0.75,
+      "totalPages": 100,
+      "language": "en",
+      "topPick": null,
+      "isOriginal": false,
+      "branchesCount": 8,
+      "createdAt": "2023-01-02T00:00:00.000Z",
+      "updatedAt": "2023-01-02T00:00:00.000Z",
+      "mc": {
+        "name": "John",
+        "age": 30,
+        "gender": "male"
+      },
+      "author": {
+        "id": "user789",
+        "name": "Jane Doe",
+        "username": "janedoe",
+        "image": "https://example.com/avatar2.jpg"
+      },
+      "stats": {
+        "likesCount": 25,
+        "readCount": 100,
+        "commentsCount": 10,
+        "branchesCount": 8
+      },
+      "isLiked": false,
+      "isRead": true,
+      "similarityScore": 0.75
+    }
+  ],
+  "targetBook": {
+    "id": "book123",
+    "title": "The Whispering Halls",
+    "keywords": ["mystery", "thriller", "haunted"]
+  }
+}
+```
+
+**Jaccard Similarity Formula:** J(A, B) = |A ∩ B| / |A ∪ B|
+
+**Behavior:**
+- Calculates similarity using PostgreSQL's native array operations
+- Returns books with highest keyword overlap, sorted by similarity score
+- Excludes the target book itself from results
+- Only includes books with keywords and active status
+- Includes author information and user-specific engagement flags (isLiked, isRead)
+
+**Error Responses:**
+- `404 Not Found`: Book not found
 
 ---
 
@@ -939,7 +1045,7 @@ Retrieves all comments for a specific book. Supports pagination for large commen
   "pagination": {
     "page": 1,
     "limit": 20,
-    "totalCount": 42,
+    "total": 42,
     "totalPages": 3,
     "hasNext": true,
     "hasPrevious": false
@@ -994,7 +1100,7 @@ Creates a new comment on a book. Supports threaded comments via parentCommentId 
 
 ---
 
-### DELETE /api/comments/:id
+### DELETE /api/books/comments/:id
 
 Deletes a comment. Only the comment author can delete their own comments.
 
@@ -1276,8 +1382,9 @@ The API implements multi-level caching for performance:
 
 **Cache TTLs:**
 - User books: 5 minutes (PER_USER_BOOKS)
-- Explore page 1: 1 minute (EXPLORE_PAGE_1)
-- Popular tags: 10 minutes
+- Explore page 1 (newest): 30 minutes (EXPLORE_PAGE_1)
+- Explore page 1 (trending): 5 minutes (EXPLORE_PAGE_1_TRENDING)
+- Popular tags: 10 minutes (POPULAR_TAGS)
 - User profiles: 5 minutes
 
 ---
@@ -1419,6 +1526,27 @@ curl https://api.twistloom.com/api/books \
 
 ## Changelog
 
+### v2.2.0 (2026-05-03)
+- Added slug generation for books - auto-generates clean, URL-friendly slugs from titles
+- Added `generateUniqueSlug()` function to ensure slug uniqueness with numeric suffixes
+- Added `slug` field to database schema with unique constraint
+- Updated `insertBook()` to automatically generate and include unique slugs
+- Added `resolveBook()` function to accept both slug and UUID v7 for book lookup
+- Updated `GET /api/books/:identifier/:branchId/:page` to accept slug or UUID
+- Added `GET /api/books/:id/similar` endpoint for finding similar books via keyword Jaccard similarity
+- Added `getSimilarBooks()` function using PostgreSQL native array operations
+- Updated trending score to hybrid approach: cron-based with time decay + incremental updates on likes/favorites
+- Likes increment trending score by +0.3, favorites by +0.2
+- Updated page retrieval to filter actions without complete destinations (both branchId and pageId required)
+- Added automatic retry of failed candidate generations when users visit pages with incomplete actions
+- Added user choice validation to prevent selecting alternate branches on revisited pages
+- Updated pagination field name from `totalCount` to `total` in comments endpoint
+- Added `ai_evaluation_start` and `ai_evaluation_complete` SSE events to book creation stream
+- Updated BookSortOption "popular" to sort by branchesCount (not ratio)
+- Added slug generation utility function in text-processing.ts
+- Updated cache TTLs: trending (5 min), newest (30 min)
+- Added HTTP cache headers for explore endpoint with stale-while-revalidate
+
 ### v2.1.0 (2024-04-24)
 - Added Twistloom Originals feature for weekly auto-generated books
 - Added `isOriginal` boolean field to Book type (marks auto-generated books via cron job)
@@ -1440,7 +1568,7 @@ curl https://api.twistloom.com/api/books \
 - Added database indexes to support all sorting options (newest, top-picks, originals)
 - Added `branchesCount` column to books schema (maintained by database triggers)
 - Created database triggers to automatically maintain `branchesCount` on pages INSERT/DELETE
-- Refactored "popular" sorting to use pre-calculated `branchesCount/totalPages` ratio (improved performance)
+- Refactored "popular" sorting to use pre-calculated `branchesCount` (improved performance)
 - Optimized `getPublicBookStats` to use SUM of pre-calculated `branchesCount` instead of COUNT(DISTINCT branch_id)
 
 ### v2.0.0 (2024-04-24)
