@@ -389,7 +389,7 @@ User spends credits via API
 │  4. User sees new credit balance                                       │
 │                                                                          │
 │  Recommended frontend actions:                                           │
-│  - GET /api/me to refresh user data                                     │
+│  - GET /user to refresh user data (includes credits)                    │
 │  - Show success notification                                            │
 │  - Update UI with new credit balance                                    │
 └─────────────────────────────────────────────────────────────────────────┘

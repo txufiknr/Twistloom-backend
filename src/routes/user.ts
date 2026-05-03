@@ -71,6 +71,7 @@ const router = Router();
  * @returns {string|null} data.name - User's display name
  * @returns {string|null} data.gender - User's gender
  * @returns {string|null} data.image - User's profile image URL
+ * @returns {number} data.credits - User's available credits
  * @returns {number} data.totalLiked - Number of liked articles
  * @returns {number} data.totalSaved - Number of saved articles
  * @returns {number} data.totalReads - Number of read articles
@@ -126,6 +127,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         email: userData.email,
         bio: userData.bio,
         image: userData.image,
+        credits: userData.credits,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {
