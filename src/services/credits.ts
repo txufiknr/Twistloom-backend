@@ -163,3 +163,72 @@ export async function hasSufficientCredits(
 export function getCreditCost(costKey: CreditCostKey): number {
   return CREDIT_COSTS[costKey];
 }
+
+/**
+ * Adds credits to a user's account
+ * 
+ * @param userId - User ID to add credits to
+ * @param amount - Number of credits to add (must be positive)
+ * @param options - Additional options for the transaction
+ * @returns Updated user credit balance
+ * 
+ * @throws Error if amount is not positive
+ * 
+ * @example
+ * ```typescript
+ * const newBalance = await addCredits("user123", 30, {
+ *   context: "daily_checkin",
+ *   metadata: { checkInDate: "2026-05-04" }
+ * });
+ * ```
+ */
+export async function addCredits(
+  userId: string,
+  amount: number,
+  options: ConsumeCreditsOptions = {}
+): Promise<number> {
+  if (amount <= 0) {
+    throw new Error(`Invalid credit amount: ${amount} must be greater than 0`);
+  }
+
+  // Start transaction to ensure atomicity
+  const result = await dbWrite.transaction(async (tx) => {
+    // Get current user credits with row lock
+    const userResult = await tx
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .for('update')
+      .limit(1);
+
+    if (!userResult.length) {
+      throw new Error(`User not found: ${userId}`);
+    }
+
+    const currentCredits = userResult[0].credits;
+
+    // Update user credits
+    await tx
+      .update(users)
+      .set({ 
+        credits: sql`${users.credits} + ${amount}`,
+        updatedAt: new Date()
+      })
+      .where(eq(users.userId, userId));
+
+    // Record transaction
+    await tx.insert(transactions).values({
+      userId,
+      type: 'reward',
+      credits: amount, // Positive for addition
+      amountUsd: null, // Credit additions don't have USD amount
+      context: options.context,
+      metadata: options.metadata ? JSON.stringify(options.metadata) : null,
+      createdAt: new Date()
+    });
+
+    return currentCredits + amount;
+  });
+
+  return result;
+}

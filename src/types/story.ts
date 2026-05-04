@@ -40,7 +40,7 @@ export const moods = [
  * that the story will build toward throughout its progression.
  */
 export const endingTypes = {
-  /** MC thinks they escaped → final twist reveals they didn’t */
+  /** MC thinks they escaped → final twist reveals they didn't */
   "fake_escape": "MC thinks they escaped → final twist reveals they didn't; temporary escapes, recurring situations",
   /** Story ends where it began (or implied repetition) */
   "loop": "Story ends where it began → déjà vu, familiar patterns, repeated phrases, cyclical events",
@@ -53,7 +53,27 @@ export const endingTypes = {
   /** The world itself is not real (or partially fabricated) */
   "false_reality": "The world itself is not real → reality inconsistencies, strange objects, 'wrong' world moments",
   /** Key relationships/events are products of MC's mental state */
-  "mental_fabrication": "Key relationships/events are products of MC's mental state → questionable relationships, inconsistent memories, unreliable perceptions"
+  "mental_fabrication": "Key relationships/events are products of MC's mental state → questionable relationships, inconsistent memories, unreliable perceptions",
+  /** All choices lead to the same predetermined outcome */
+  "predetermined": "All choices lead to the same predetermined outcome → illusion of agency, convergent paths, inevitable fate",
+  /** MC becomes the antagonist/monster they were fighting */
+  "become_threat": "MC becomes the antagonist/monster they were fighting → moral corruption, gradual transformation, role reversal",
+  /** Multiple endings exist simultaneously based on different choices */
+  "multiverse": "Multiple endings exist simultaneously based on different choices → parallel realities, choice echoes, quantum states",
+  /** The story was a test/simulation all along */
+  "simulation": "The story was a test/simulation all along → artificial constraints, observed behavior, breaking the fourth wall",
+  /** MC's actions created a worse threat than the original */
+  "escalation": "MC's actions created a worse threat than the original → unintended consequences, solution becomes problem",
+  /** The true villain was someone the MC trusted completely */
+  "betrayal": "The true villain was someone the MC trusted completely → hidden agendas, manipulated relationships, trust collapse",
+  /** MC achieves their goal but at an unacceptable moral cost */
+  "pyrrhic_victory": "MC achieves their goal but at an unacceptable moral cost → moral compromise, hollow success, ethical erosion",
+  /** The threat was never real - it was all in MC's head */
+  "collective_delusion": "The threat was never real - it was all in MC's head → shared hallucination, mass hysteria, social contagion",
+  /** MC is trapped in someone else's story/memory */
+  "nested_narrative": "MC is trapped in someone else's story/memory → borrowed identity, inherited trauma, story within story",
+  /** The cycle continues regardless of MC's choices */
+  "cosmic_cycle": "The cycle continues regardless of MC's choices → ancient patterns, cosmic indifference, eternal recurrence"
 };
 
 /**

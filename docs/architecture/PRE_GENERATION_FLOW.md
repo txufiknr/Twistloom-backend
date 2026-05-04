@@ -161,6 +161,8 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
 │  and generates a new page using AI if needed.                            │
 │                                                                          │
 │  Validation: Throws non-retryable error if action.text is empty         │
+│  Duplicate Prevention: Checks for existing destinations to avoid         │
+│  duplicate database insertions during retry operations                    │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -207,6 +209,8 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                     │               │  - advanceStoryState()   │
                     │               │  - buildSystemPrompt()   │
                     │               │  - AI generation         │
+                    │               │  - Duplicate Prevention  │
+                    │               │    Check action dest     │
                     │               │  - insertStoryPage()     │
                     │               │  Returns PersistedStoryPage│
                     │               └───────────────────────────┘
@@ -356,7 +360,7 @@ const candidatePage = await retryWithBackoffOrNull(
     },
     shouldRetry: (error) => {
       const err = error as ErrorWithCustomProperties;
-      if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
+      if (err.shouldRetry === false || err.code === 'INVALID_ACTION' || err.code === 'ACTION_ALREADY_HAS_DESTINATION') {
         console.warn(`[ensureCandidatesForPage] ⛔ Non-retryable error detected:`, getErrorMessage(error));
         return false;
       }
@@ -372,7 +376,8 @@ const candidatePage = await retryWithBackoffOrNull(
 - Attempt 3: Wait 2 seconds
 - Attempt 4: Wait 4 seconds
 - After 3 failures: Return `null`, leave destination undefined
-- **Non-retryable errors**: Actions with `INVALID_ACTION` code or `shouldRetry: false` are removed
+- **Non-retryable errors**: Actions with `INVALID_ACTION`, `ACTION_ALREADY_HAS_DESTINATION` code or `shouldRetry: false` are removed
+- **Duplicate prevention**: `ACTION_ALREADY_HAS_DESTINATION` prevents duplicate database insertions during retries
 
 ### 4. Invalid Action Handling
 
@@ -406,7 +411,50 @@ if (updatedDBActions.length === 0) {
 
 This ensures the page always has at least one navigable action.
 
-### 5. EnrichedAction for Frontend
+### 5. Duplicate Prevention in Retry Operations
+
+To prevent duplicate database insertions during retry operations, the system implements a dual-check mechanism:
+
+#### In `generateNextPage` (Retry Handler)
+```typescript
+// Check if this specific action already has a destination pageId
+const currentAction = freshActionedPage.actions.find(a => 
+  a.text === selectedAction.text && a.type === selectedAction.type
+);
+
+if (currentAction?.destination?.pageId) {
+  throw createNonRetryableError(
+    `Action "${selectedAction.text}" already has destination pageId ${currentAction.destination.pageId}`,
+    'ACTION_ALREADY_HAS_DESTINATION'
+  );
+}
+```
+
+#### In `generateCandidatePage` (Caller)
+```typescript
+try {
+  newPage = await generateNextPage({...});
+} catch (error) {
+  if ((error as ErrorWithCustomProperties).code === 'ACTION_ALREADY_HAS_DESTINATION') {
+    // Retrieve existing page instead of generating duplicate
+    const existingPageId = action.destination?.pageId;
+    if (existingPageId) {
+      newPage = await getStoryPageById(userId, bookId, existingPageId);
+    }
+  } else {
+    throw error; // Re-throw other errors
+  }
+}
+```
+
+**How it works:**
+1. **Race Condition Detection**: During retry operations, fresh page data is read from database
+2. **Action Matching**: Compares action text and type to find the exact action
+3. **Early Exit**: If destination exists, throws non-retryable error to prevent insertion
+4. **Graceful Fallback**: Caller catches error and retrieves existing page
+5. **No Duplication**: Prevents creating duplicate pages when multiple instances process same action
+
+### 6. EnrichedAction for Frontend
 
 The frontend receives `EnrichedAction` with navigation metadata:
 
@@ -615,6 +663,8 @@ export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'bra
 4. **Silent failure**: Failed generations should not surface to users
 5. **Validate on navigation**: Only validate user choices during POST /visit
 6. **Log context**: Include userId, pageId, actionText in error logs
+7. **Prevent duplicates**: Always check for existing destinations during retry operations
+8. **Use non-retryable errors**: For duplicate prevention to stop unnecessary retries
 
 ## Retry Mechanism for Failed Generations
 

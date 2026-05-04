@@ -56,32 +56,7 @@
  * - Webhook maps priceId to credits for allocation
  */
 
-export interface CreditPack {
-  /** Unique identifier for the credit pack */
-  id: string;
-  /** Display title shown to users */
-  title: string;
-  /** Short tagline for marketing */
-  tagline: string;
-  /** Detailed description of what the pack offers */
-  description: string;
-  /** Number of credits included in this pack */
-  credits: number;
-  /** Price in USD */
-  priceUSD: number;
-  /** Stripe Price ID for checkout */
-  priceId: string;
-  /** Stripe Product ID for reference */
-  productId: string;
-  /** Whether to highlight this pack as recommended */
-  highlight: boolean;
-  /** Optional badge text (e.g., "Most Popular") */
-  badge: string | null;
-  /** Approximate number of choices/uses */
-  valueTag: string;
-  /** Color theme for UI display */
-  color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
-}
+import type { CreditPack } from "../types/credits.js";
 
 /**
  * Credit costs for various actions
@@ -103,6 +78,12 @@ export const CREDIT_COSTS = {
   /** Cost to unlock alternate endings (future feature) */
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 } as const;
+
+/**
+ * Daily check-in rewards
+ * @overview Defines free credits awarded for daily user check-ins
+ */
+export const DAILY_CHECKIN_CREDITS = 30;
 
 export type CreditCostKey = keyof typeof CREDIT_COSTS;
 

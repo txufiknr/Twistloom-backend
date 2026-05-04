@@ -235,3 +235,16 @@ export function iso8601DurationToSeconds(iso: string | undefined): number | unde
 
   return total > 0 ? Math.round(total) : undefined;
 }
+
+/**
+ * Gets the current UTC date in YYYY-MM-DD format
+ * 
+ * @returns Current UTC date string
+ */
+export function getCurrentUTCDay(): string {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}

@@ -1,3 +1,4 @@
+[x] book type add firstPageId (mandatory)
 [x] book api route :slug/:pageId
 [x] visit page: update selectedAction
 [x] get page: include selectedAction
@@ -6,16 +7,15 @@
 [x] get page: accept lang header > translate if different with book langauge
 [x] initialize book: consume 5 credits
 [x] get page ensure include selectedAction?: Action;
+[x] book stats: already in table (via trigger)
+[x] book stats: completedCount
+[x] book read count: only count unique user
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
-[ ] book stats: already in table (via trigger)
-[ ] book stats: completedCount
-[ ] book read count: only count unique user
-[ ] trigger: ensureBookIncrementTrigger (complete, read, like, favorite)
 [ ] books: GET route support filter lastUpdated (apa aja?)
 [ ] payment: buy credits pack
 

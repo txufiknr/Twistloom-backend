@@ -48,7 +48,7 @@ import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationE
 import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql, or } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
-import { enrichActions } from "../services/book.js";
+import { enrichActions, getEnrichedBook } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -874,6 +874,79 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
 });
 
 /**
+ * GET /api/books/:identifier
+ * 
+ * Retrieves a book by slug or UUID v7 identifier.
+ * Returns complete book information including metadata and author details.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @returns Complete book with enriched metadata
+ * 
+ * @example
+ * GET /api/books/whispering-halls
+ * 
+ * Response:
+ * {
+ *   "book": {
+ *     "id": "book123",
+ *     "userId": "user456",
+ *     "slug": "whispering-halls",
+ *     "title": "The Whispering Halls",
+ *     "totalPages": 120,
+ *     "language": "en",
+ *     "hook": "Sarah never believed in ghosts until she found the diary",
+ *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
+ *     "image": "https://example.com/cover.jpg",
+ *     "keywords": ["mystery", "thriller", "haunted"],
+ *     "status": "active",
+ *     "mc": {
+ *       "name": "Sarah",
+ *       "age": 28,
+ *       "gender": "female",
+ *       "bio": "Shy librarian with hidden past"
+ *     },
+ *     "author": {
+ *       "id": "user456",
+ *       "name": "John Doe",
+ *       "username": "johndoe",
+ *       "image": "https://example.com/avatar.jpg"
+ *     },
+ *     "stats": {
+ *       "likesCount": 42,
+ *       "readCount": 156,
+ *       "commentsCount": 25,
+ *       "branchesCount": 12
+ *     },
+ *     "isLiked": false,
+ *     "isRead": false,
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-15T10:30:00.000Z"
+ *   }
+ * }
+ */
+router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+
+    // Handle array case for identifier (Express can return string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(identifierStr);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Get enriched book data with author info and stats
+    const enrichedBook = await getEnrichedBook(book.id, req.userId);
+
+    res.json({ book: enrichedBook });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve book", error);
+  }
+});
+
+/**
  * GET /api/books/:id/similar
  * 
  * Retrieves similar books based on keyword Jaccard similarity.
@@ -1076,7 +1149,7 @@ router.get("/:identifier/:pageId", requireAuth, async (req: Request, res: Respon
 
     // Return enriched page with only frontend-relevant fields
     // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
-    const enrichedPage: Partial<Omit<DBPage, 'actions'>> & { actions: EnrichedAction[], selectedAction?: Action, translatedText?: string } = {
+    const enrichedPage: Partial<Omit<DBPage, 'actions'>> & { actions: EnrichedAction[], originalActionsCount: number, selectedAction?: Action, translatedText?: string } = {
       id: page.id,
       page: page.page,
       bookId: page.bookId,
@@ -1092,6 +1165,7 @@ router.get("/:identifier/:pageId", requireAuth, async (req: Request, res: Respon
       actions: visibleActions, // Only actions that has destination page
       selectedAction: userChosenAction,
       translatedText: translatedText,
+      originalActionsCount: allEnrichedActions.length,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
     };

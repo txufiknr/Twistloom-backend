@@ -186,14 +186,14 @@ async function ensureBookLikesDecrementTrigger(): Promise<void> {
 }
 
 /**
- * Creates trigger to increment book read count when a user starts a session
+ * Creates trigger to update book read count based on unique users in userPageProgress
  * 
- * This trigger fires AFTER INSERT on user_sessions table:
- * 1. When a user creates a reading session for a book
- * 2. Increments the read_count column in books table
+ * This trigger fires AFTER INSERT OR UPDATE on user_page_progress table:
+ * 1. When a user progresses in a book (any page visit)
+ * 2. Updates read_count to match unique users who have read this book
  * 3. Ensures denormalized count stays synchronized
  * 
- * Note: This counts unique reads (sessions), not page views
+ * Note: This counts unique users (distinct user_id), not total page visits
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
@@ -203,11 +203,15 @@ async function ensureBookReadCountTrigger(): Promise<void> {
   try {
     // Create the trigger function
     await dbWrite.execute(`
-      CREATE OR REPLACE FUNCTION increment_book_read_count()
+      CREATE OR REPLACE FUNCTION update_book_read_count()
       RETURNS TRIGGER AS $$
       BEGIN
         UPDATE books
-        SET read_count = read_count + 1,
+        SET read_count = (
+          SELECT COUNT(DISTINCT user_id)
+          FROM user_page_progress
+          WHERE book_id = NEW.book_id
+        ),
             trending_score = trending_score + 0.5, -- Incremental update for hybrid approach
             updated_at = NOW()
         WHERE id = NEW.book_id;
@@ -216,17 +220,30 @@ async function ensureBookReadCountTrigger(): Promise<void> {
       $$ LANGUAGE plpgsql;
     `);
     
-    // Drop existing trigger if it exists
+    // Drop existing triggers if they exist
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_page_progress_insert_trigger ON user_page_progress;
+    `);
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_page_progress_update_trigger ON user_page_progress;
+    `);
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_sessions_insert_trigger ON user_sessions;
     `);
     
-    // Create the trigger
+    // Create the trigger for user_page_progress
     await dbWrite.execute(`
-      CREATE TRIGGER user_sessions_insert_trigger
-        AFTER INSERT ON user_sessions
+      CREATE TRIGGER user_page_progress_insert_trigger
+        AFTER INSERT ON user_page_progress
         FOR EACH ROW
-        EXECUTE FUNCTION increment_book_read_count();
+        EXECUTE FUNCTION update_book_read_count();
+    `);
+    
+    await dbWrite.execute(`
+      CREATE TRIGGER user_page_progress_update_trigger
+        AFTER UPDATE ON user_page_progress
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_read_count();
     `);
     
     console.log("✅ Book read count trigger created successfully!");

@@ -30,6 +30,12 @@
  * - GET /user/comments - Get user comments
  * - POST /users/:id/follow - Follow a user
  * - DELETE /users/:id/follow - Unfollow a user
+ * - GET /users/:id/followers - Get user followers
+ * - GET /users/:id/following - Get user following
+ * - GET /user/followers - Get authenticated user's followers
+ * - GET /user/following - Get authenticated user's following
+ * - GET /user/checkin/status - Get daily check-in status
+ * - POST /user/checkin - Perform daily check-in and claim free credits
  */
 
 import type { Request, Response } from "express";
@@ -42,7 +48,7 @@ import type { LikeTargetType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity } from "../services/user.js";
+import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUserSelect } from "../services/user-controller.js";
@@ -1982,6 +1988,137 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve following", error);
+  }
+});
+
+// ===== DAILY CHECK-IN ROUTES =====
+
+/**
+ * GET /user/checkin/status
+ * 
+ * Checks if the authenticated user can perform daily check-in today.
+ * Returns check-in status, last check-in date, and total check-in history.
+ * 
+ * @route GET /user/checkin/status
+ * @description Get daily check-in status
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @returns {Object} Check-in status response
+ * @returns {boolean} canCheckIn - Whether user can check-in today
+ * @returns {string|null} lastCheckInDate - Last check-in date (YYYY-MM-DD) or null
+ * @returns {number} totalCheckIns - Total number of check-ins
+ * @returns {number} totalCreditsClaimed - Total credits claimed from check-ins
+ * @returns {Array} recentCheckIns - Recent check-in history (last 30 days)
+ * 
+ * @example
+ * // Request
+ * GET /user/checkin/status
+ * 
+ * // Response (can check-in)
+ * {
+ *   "canCheckIn": true,
+ *   "lastCheckInDate": "2026-05-03",
+ *   "totalCheckIns": 5,
+ *   "totalCreditsClaimed": 150,
+ *   "recentCheckIns": [
+ *     {
+ *       "checkInDate": "2026-05-03",
+ *       "creditsClaimed": 30,
+ *       "createdAt": "2026-05-03T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ * 
+ * // Response (already checked in)
+ * {
+ *   "canCheckIn": false,
+ *   "lastCheckInDate": "2026-05-04",
+ *   "totalCheckIns": 6,
+ *   "totalCreditsClaimed": 180,
+ *   "recentCheckIns": [
+ *     {
+ *       "checkInDate": "2026-05-04",
+ *       "creditsClaimed": 30,
+ *       "createdAt": "2026-05-04T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get("/checkin/status", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    
+    const status = await getCheckInStatus(userId);
+    
+    res.json(status);
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to get check-in status", error);
+  }
+});
+
+/**
+ * POST /user/checkin
+ * 
+ * Performs daily check-in and awards free credits to the authenticated user.
+ * Each check-in awards 30 free credits (configurable via DAILY_CHECKIN_CREDITS).
+ * Users can only check-in once per UTC day.
+ * 
+ * @route POST /user/checkin
+ * @description Perform daily check-in and claim free credits
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @returns {Object} Check-in response
+ * @returns {boolean} success - Whether check-in was successful
+ * @returns {number} creditsAwarded - Number of credits awarded (30 or 0 if already checked in)
+ * @returns {string} checkInDate - Check-in date in YYYY-MM-DD format
+ * @returns {string} message - Status message
+ * 
+ * @example
+ * // Request
+ * POST /user/checkin
+ * 
+ * // Response (successful check-in)
+ * {
+ *   "success": true,
+ *   "creditsAwarded": 30,
+ *   "checkInDate": "2026-05-04",
+ *   "message": "Successfully claimed 30 daily credits"
+ * }
+ * 
+ * // Response (already checked in)
+ * {
+ *   "success": false,
+ *   "creditsAwarded": 0,
+ *   "checkInDate": "2026-05-04",
+ *   "message": "Already checked in today"
+ * }
+ */
+router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    
+    const result = await performDailyCheckIn(userId);
+    
+    if (result.success) {
+      res.status(201).json(result);
+    } else {
+      res.status(400).json(result);
+    }
+
+    // Invalidate user profile cache (credits changed)
+    await invalidateUserProfileCache(userId);
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to perform daily check-in", error);
   }
 });
 

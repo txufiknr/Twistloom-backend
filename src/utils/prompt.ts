@@ -2557,6 +2557,20 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         }
   
         console.log(`[generateNextPage] 👀 freshActionedPage.actions for page ${actionedPage.id}:`, freshActionedPage.actions);
+        
+        // Check if this specific action already has a destination pageId
+        // If it does, skip insertion to prevent duplicate database entries
+        const currentAction = freshActionedPage.actions.find(a => 
+          a.text === selectedAction.text && a.type === selectedAction.type
+        );
+        
+        if (currentAction?.destination?.pageId) {
+          console.log(`[generateNextPage] ⏭️ Action "${selectedAction.text}" already has destination pageId ${currentAction.destination.pageId}, skipping insertion`);
+          throw createNonRetryableError(
+            `Action "${selectedAction.text}" already has destination pageId ${currentAction.destination.pageId}`,
+            'ACTION_ALREADY_HAS_DESTINATION'
+          );
+        }
 
         // Make branching decision with fresh data
         const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
@@ -2709,15 +2723,33 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
     };
     
     // 6b. Generate next page using AI with dynamic configuration
-    newPage = await generateNextPage({
-      userId,
-      book: currentBook,
-      currentState,
-      actionedPage,
-      generateNewBranchId
-    });
+    try {
+      newPage = await generateNextPage({
+        userId,
+        book: currentBook,
+        currentState,
+        actionedPage,
+        generateNewBranchId
+      });
 
-    console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id}:`, { action, branchId: newPage.branchId });
+      console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id}:`, { action, branchId: newPage.branchId });
+    } catch (error) {
+      // Check if this is a duplicate destination error (action already has pageId)
+      if ((error as ErrorWithCustomProperties).code === 'ACTION_ALREADY_HAS_DESTINATION') {
+        console.log(`[generateCandidatePage] ⏭️ Action "${action.text}" already has destination, retrieving existing page`);
+        // The action already has a destination, so get the existing page
+        const existingPageId = action.destination?.pageId;
+        if (existingPageId) {
+          newPage = await getStoryPageById(userId, bookId, existingPageId);
+          if (newPage) {
+            console.log(`[generateCandidatePage] ✅ Retrieved existing page ${newPage.id} for action "${action.text}"`);
+          }
+        }
+      } else {
+        // Re-throw other errors
+        throw error;
+      }
+    }
   }
 
   // 7. Return the generated page with all database metadata
@@ -2948,7 +2980,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     // Count actions without destination after processing
     const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
     const succeededCount = updatedDBActions.length - pendingAfter;
-    console.log(`[ensureCandidatesForPage] ✅ Pregenerated pages: ${succeededCount}/${updatedDBActions.length} actions`);
+    console.log(`[ensureCandidatesForPage] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
     if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
     // Update persisted page in a short transaction only if actions were modified

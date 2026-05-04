@@ -45,14 +45,17 @@ The Users API provides endpoints for managing user profiles, social interactions
    - [Get User Following](#get-usersidfollowing)
    - [Get Authenticated User's Followers](#get-userfollowers)
    - [Get Authenticated User's Following](#get-userfollowing)
-7. [Error Handling](#error-handling)
-8. [HTTP Headers](#http-headers)
-9. [Caching Strategy](#caching-strategy)
-10. [Rate Limiting](#rate-limiting)
-11. [Authentication](#authentication)
-12. [Database Schema](#database-schema)
-13. [Testing](#testing)
-14. [Changelog](#changelog)
+7. [Daily Check-in](#daily-check-in)
+   - [Get Check-in Status](#get-usercheckinstatus)
+   - [Perform Daily Check-in](#post-usercheckin)
+8. [Error Handling](#error-handling)
+9. [HTTP Headers](#http-headers)
+10. [Caching Strategy](#caching-strategy)
+11. [Rate Limiting](#rate-limiting)
+12. [Authentication](#authentication)
+13. [Database Schema](#database-schema)
+14. [Testing](#testing)
+15. [Changelog](#changelog)
 
 ---
 
@@ -142,6 +145,45 @@ interface Follow {
   followerId: string;        // User who is following
   followingId: string;       // User being followed
   createdAt: string;         // Follow creation timestamp (ISO 8601)
+}
+```
+
+### CheckInStatus
+
+Daily check-in status and history.
+
+```typescript
+interface CheckInStatus {
+  canCheckIn: boolean;       // Whether user can check-in today
+  lastCheckInDate: string | null;  // Last check-in date (YYYY-MM-DD) or null
+  totalCheckIns: number;     // Total number of check-ins
+  totalCreditsClaimed: number;     // Total credits claimed from check-ins
+  recentCheckIns: CheckInRecord[];  // Recent check-in history (last 30 days)
+}
+```
+
+### CheckInRecord
+
+Individual check-in record.
+
+```typescript
+interface CheckInRecord {
+  checkInDate: string;       // Check-in date (YYYY-MM-DD)
+  creditsClaimed: number;    // Credits claimed for this check-in
+  createdAt: string;         // Check-in creation timestamp (ISO 8601)
+}
+```
+
+### CheckInResult
+
+Result of performing daily check-in.
+
+```typescript
+interface CheckInResult {
+  success: boolean;          // Whether check-in was successful
+  creditsAwarded: number;   // Number of credits awarded (30 or 0 if already checked in)
+  checkInDate: string;       // Check-in date in YYYY-MM-DD format
+  message: string;           // Status message
 }
 ```
 
@@ -945,6 +987,100 @@ Get all users that the authenticated user is following.
 
 ---
 
+## Daily Check-in
+
+### GET /user/checkin/status
+
+Checks if the authenticated user can perform daily check-in today. Returns check-in status, last check-in date, and total check-in history.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (200 OK):**
+```json
+{
+  "canCheckIn": true,
+  "lastCheckInDate": "2026-05-03",
+  "totalCheckIns": 5,
+  "totalCreditsClaimed": 150,
+  "recentCheckIns": [
+    {
+      "checkInDate": "2026-05-03",
+      "creditsClaimed": 30,
+      "createdAt": "2026-05-03T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+**Response (already checked in):**
+```json
+{
+  "canCheckIn": false,
+  "lastCheckInDate": "2026-05-04",
+  "totalCheckIns": 6,
+  "totalCreditsClaimed": 180,
+  "recentCheckIns": [
+    {
+      "checkInDate": "2026-05-04",
+      "creditsClaimed": 30,
+      "createdAt": "2026-05-04T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+**Behavior:**
+- Uses UTC date for daily reset (midnight UTC)
+- Returns last 30 days of check-in history
+- Includes total statistics for user engagement
+- Checks if user can check-in today based on UTC date
+
+---
+
+### POST /user/checkin
+
+Performs daily check-in and awards free credits to the authenticated user. Each check-in awards 30 free credits (configurable via `DAILY_CHECKIN_CREDITS`). Users can only check-in once per UTC day.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (201 Created - successful check-in):**
+```json
+{
+  "success": true,
+  "creditsAwarded": 30,
+  "checkInDate": "2026-05-04",
+  "message": "Successfully claimed 30 daily credits"
+}
+```
+
+**Response (400 Bad Request - already checked in):**
+```json
+{
+  "success": false,
+  "creditsAwarded": 0,
+  "checkInDate": "2026-05-04",
+  "message": "Already checked in today"
+}
+```
+
+**Behavior:**
+- Creates check-in record with UTC date
+- Awards 30 credits to user account (configurable)
+- Uses database transaction for atomicity
+- Prevents duplicate check-ins with unique constraint
+- Records credit transaction with context "daily_checkin"
+- Invalidates user profile cache (credits changed)
+
+---
+
 ## Error Handling
 
 All endpoints follow consistent error response formats:
@@ -1098,6 +1234,19 @@ CREATE TABLE "user_follows" (
 );
 ```
 
+### User Check-ins Table
+```sql
+CREATE TABLE "user_checkins" (
+  "id" uuid PRIMARY KEY,
+  "user_id" uuid REFERENCES users(id) ON DELETE cascade NOT NULL,
+  "check_in_date" text NOT NULL, -- YYYY-MM-DD format (UTC)
+  "credits_claimed" integer NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  UNIQUE ("user_id", "check_in_date")
+);
+```
+
 ---
 
 ## Testing
@@ -1147,15 +1296,40 @@ curl -X POST https://api.twistloom.com/users/user456/follow \
 curl https://api.twistloom.com/users/user456/followers?limit=10
 ```
 
-**Get authenticated user's following:**
+**Get user following:**
 ```bash
 curl https://api.twistloom.com/user/following?limit=10 \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Get check-in status:**
+```bash
+curl https://api.twistloom.com/user/checkin/status \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Perform daily check-in:**
+```bash
+curl -X POST https://api.twistloom.com/user/checkin \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
 ---
 
 ## Changelog
+
+### v2.1.0 (2026-05-04)
+- Added daily check-in system with 30 free credits per day
+- Added GET /user/checkin/status endpoint to check check-in eligibility
+- Added POST /user/checkin endpoint to perform daily check-in and claim credits
+- Added CheckInStatus, CheckInRecord, and CheckInResult type definitions
+- Added user_checkins table schema for tracking daily check-ins
+- Added addCredits function to credits service for credit additions
+- UTC-based daily reset system (midnight UTC)
+- Configurable daily credits via DAILY_CHECKIN_CREDITS constant
+- Transaction-safe credit addition with row locking
+- Unique constraint to prevent duplicate check-ins per day
+- Full audit trail of all check-ins with timestamps
 
 ### v2.0.0 (2024-04-24)
 - Consolidated API documentation from BACKEND_USER_API_SPECIFICATION.md

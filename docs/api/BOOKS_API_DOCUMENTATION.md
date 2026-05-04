@@ -20,14 +20,15 @@ The Books API provides endpoints for managing psychological thriller books, incl
 
 ### BookStats
 
-Book statistics for display.
+Book engagement statistics.
 
 ```typescript
 interface BookStats {
-  likesCount: number;          // Total likes for this book
-  readCount: number;           // Total reads/sessions for this book
-  commentsCount: number;       // Total comments for this book
-  branchesCount: number;       // Total branches in this book
+  likesCount: number;         // Total likes
+  readCount: number;          // Unique users who have started reading the book (from userPageProgress)
+  completeCount: number;      // Unique users who have completed the book (reached the last page)
+  commentsCount: number;      // Total comments
+  branchesCount: number;      // Total branches in this book (denormalized column)
 }
 ```
 
@@ -81,6 +82,7 @@ interface EnrichedBookData {
   topPick: Date | null;
   isOriginal: boolean;
   branchesCount?: number;
+  firstPageId: string;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
@@ -249,6 +251,7 @@ type BookSortingOptions =
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
 4. [Book Reading](#book-reading)
+   - [Get Book by Identifier](#get-apibooksidentifier)
    - [Get Specific Page](#get-apibooksidentifierpageid)
    - [Mark Page Visited](#post-apibooksidentifierpageidvisit)
    - [Generate Candidates](#post-apibooksidentifierpageidcandidates)
@@ -523,6 +526,7 @@ Retrieves all books for the authenticated user. Returns paginated list with meta
         "age": 28,
         "gender": "female"
       },
+      "firstPageId": "page456",
       "author": {
         "id": "user456",
         "name": "John Doe",
@@ -532,6 +536,7 @@ Retrieves all books for the authenticated user. Returns paginated list with meta
       "stats": {
         "likesCount": 42,
         "readCount": 156,
+        "completeCount": 23,
         "commentsCount": 25,
         "branchesCount": 12
       },
@@ -707,6 +712,7 @@ Retrieves a specific page within a book. Accepts both slug and UUID v7 as identi
         "type": "dark_discovery"
       }
     },
+    "originalActionsCount": 5,
     "translatedText": "La biblioteca estaba en silencio excepto por la lluvia...",
     "createdAt": "2023-01-01T00:00:00.000Z",
     "updatedAt": "2023-01-01T00:00:00.000Z"
@@ -725,6 +731,7 @@ Retrieves a specific page within a book. Accepts both slug and UUID v7 as identi
 - Enriches actions with nextPageNumber for frontend URL building
 - Marks user's previously chosen action with isUserChosen: true
 - Includes selectedAction field showing user's chosen action for this page
+- Includes originalActionsCount showing total actions before filtering
 - Translates page text if Accept-Language header differs from book language (cached for performance)
 - Automatically retries failed candidate generations for incomplete actions (fire-and-forget)
 - Excludes backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount, stateDelta
@@ -844,6 +851,76 @@ Pre-generates candidate pages for all actions on a story page. This ensures that
 
 ---
 
+### GET /api/books/:identifier
+
+Retrieves a book by slug or UUID v7 identifier. Returns complete book information including metadata, author details, and engagement statistics.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+
+**Response (200 OK):**
+```json
+{
+  "book": {
+    "id": "book123",
+    "userId": "user456",
+    "slug": "whispering-halls",
+    "title": "The Whispering Halls",
+    "hook": "Sarah never believed in ghosts until she found the diary",
+    "summary": "A psychological thriller about a librarian who discovers dark secrets",
+    "image": "https://example.com/cover.jpg",
+    "keywords": ["mystery", "thriller", "haunted"],
+    "status": "active",
+    "trendingScore": 0.85,
+    "totalPages": 120,
+    "language": "en",
+    "topPick": null,
+    "isOriginal": false,
+    "branchesCount": 12,
+    "firstPageId": "page456",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-15T10:30:00.000Z",
+    "mc": {
+      "name": "Sarah",
+      "age": 28,
+      "gender": "female",
+      "bio": "Shy librarian with hidden past"
+    },
+    "author": {
+      "id": "user456",
+      "email": "user@example.com",
+      "username": "johndoe",
+      "name": "John Doe",
+      "image": "https://example.com/avatar.jpg"
+    },
+    "stats": {
+      "likesCount": 42,
+      "readCount": 156,
+      "completeCount": 23,
+      "commentsCount": 25,
+      "branchesCount": 12
+    },
+    "isLiked": false,
+    "isRead": true
+  }
+}
+```
+
+**Behavior:**
+- Resolves book by slug first, then UUID v7
+- Returns enriched data with author information and engagement metrics
+- Includes user-specific flags (isLiked, isRead) if authenticated
+- Uses denormalized fields for O(1) performance on aggregate metrics
+- readCount counts unique users who have started reading the book
+- completeCount counts unique users who have completed the book (reached the last page)
+
+**Error Responses:**
+- `404 Not Found`: Book not found
+
+---
+
 ### POST /api/books/:id/sessions
 
 Creates or updates a reading session for a book. Tracks reading progress and manages active sessions.
@@ -928,6 +1005,7 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
         "age": 30,
         "gender": "male"
       },
+      "firstPageId": "page789",
       "author": {
         "id": "user789",
         "name": "Jane Doe",
@@ -937,6 +1015,7 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
       "stats": {
         "likesCount": 25,
         "readCount": 100,
+        "completeCount": 12,
         "commentsCount": 10,
         "branchesCount": 8
       },
@@ -1607,6 +1686,18 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.4.0 (2026-05-04)
+- Added new GET /api/books/:identifier endpoint to retrieve book by slug or UUID v7
+- Added firstPageId field to book responses (ID of page 1 for direct navigation)
+- Added originalActionsCount field to page responses (total actions before filtering)
+- Added completeCount field to BookStats (unique users who completed the book)
+- Updated readCount logic to count unique users from userPageProgress table (previously user_sessions)
+- Updated branchesCount to use denormalized column from books table (previously subquery)
+- Updated database trigger to maintain readCount based on user_page_progress INSERT/UPDATE
+- Added completeCount query to count unique users who reached the last page of the book
+- Updated EnrichedBookData type definition to include firstPageId
+- Updated BookStats type definition to include completeCount and updated readCount documentation
 
 ### v2.3.0 (2026-05-04)
 - Updated POST /api/books and POST /api/books/stream to require authentication (requireAuth instead of guestOrAuthMiddleware)

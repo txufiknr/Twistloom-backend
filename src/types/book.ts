@@ -12,7 +12,7 @@ export type BookStatus = 'active' | 'archived' | 'draft';
 export interface BookStats {
   likesCount: number;
   readCount: number;
-  // completeCount: number; // TODO
+  completeCount: number;
   commentsCount: number;
   branchesCount: number;
 }
@@ -84,7 +84,7 @@ export interface EnrichedBookData {
   language: string | null;
   topPick: Date | null;
   isOriginal: boolean;
-  branchesCount?: number;
+  // branchesCount?: number;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
@@ -94,6 +94,7 @@ export interface EnrichedBookData {
   isRead: boolean;
   lastReadAt?: Date | null;
   lastPage?: string | null;
+  firstPageId: string;
 }
 
 /**

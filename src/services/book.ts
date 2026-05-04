@@ -12,13 +12,14 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { pages, books, userPageProgress } from "../db/schema.js";
+import { pages, books, users, userPageProgress } from "../db/schema.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
+import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
-import type { Book, BookSortOption, BookStatus } from "../types/book.js";
+import type { Book, BookSortOption, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction, StoryPageMeta } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -313,6 +314,31 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
 
   if (book.length > 0) {
     return mapBookFromDb(book[0]);
+  }
+
+  return null;
+}
+
+/**
+ * Retrieves an enriched book with author info, stats, and user-specific flags
+ * 
+ * @param bookId - Book ID to retrieve
+ * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
+ * @returns Promise resolving to enriched book data or null if not found
+ */
+export async function getEnrichedBook(
+  bookId: string,
+  currentUserId?: string | null
+): Promise<EnrichedBookData | null> {
+  const result = await dbRead
+    .select(getEnrichedBookSelect(currentUserId || null))
+    .from(books)
+    .leftJoin(users, eq(books.userId, users.userId))
+    .where(eq(books.id, bookId))
+    .limit(1);
+
+  if (result.length > 0) {
+    return result[0] as EnrichedBookData;
   }
 
   return null;

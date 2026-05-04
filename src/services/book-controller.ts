@@ -65,12 +65,11 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
     language: books.language,
     topPick: books.topPick,
     isOriginal: books.isOriginal,
-    branchesCount: books.branchesCount,
+    // branchesCount: books.branchesCount,
     createdAt: books.createdAt,
     updatedAt: books.updatedAt,
     mc: books.mc,
     // Author info
-    // TODO: if isOriginal, then use APP_NAME (Twistloom) as name
     author: {
       id: users.userId,
       email: users.email,
@@ -88,12 +87,18 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         FROM user_comments 
         WHERE book_id = books.id AND parent_comment_id IS NULL
       ), 0)`,
-      // TODO: branchesCount already in books table, no need to query
-      // Branches count (distinct branchId from pages, indexed by bookId)
-      branchesCount: sql<number>`COALESCE((
-        SELECT COUNT(DISTINCT branch_id) 
-        FROM pages 
+      // Branches count (from denormalized column)
+      branchesCount: books.branchesCount,
+      // Complete count (unique users who reached the last page)
+      completeCount: sql<number>`COALESCE((
+        SELECT COUNT(DISTINCT user_id)
+        FROM user_page_progress
         WHERE book_id = books.id
+        AND page_id IN (
+          SELECT id 
+          FROM pages 
+          WHERE book_id = books.id AND page = books.total_pages
+        )
       ), 0)`,
     },
     // User-specific flags (indexed by userId and targetId/bookId)
@@ -111,6 +116,13 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
+    // First page ID (page 1 of the book)
+    firstPageId: sql<string>`(
+      SELECT id 
+      FROM pages 
+      WHERE book_id = books.id AND page = 1 
+      LIMIT 1
+    )`,
   };
 }
 

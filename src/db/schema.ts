@@ -12,6 +12,7 @@ import type { PlaceMemory } from "../types/places.js";
 import { generateId } from "../utils/uuid.js";
 import { BOOK_AVERAGE_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
+import type { TransactionType } from "../types/credits.js";
 
 /** Pre-defined columns */
 const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -646,7 +647,7 @@ export const transactions = pgTable(
   {
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    type: text("type").$type<"purchase" | "usage" | "refund">().notNull(),
+    type: text("type").$type<TransactionType>().notNull(),
     credits: integer("credits").notNull(),
     amountUsd: real("amount_usd"),
     context: text("context"), // Additional context for usage transactions (e.g., "book_creation")
@@ -782,5 +783,40 @@ export const pageTranslations = pgTable(
     index("page_translations_language_idx").on(t.language),
     // Index for cleanup (old translations)
     index("page_translations_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * User check-ins table
+ * @summary Tracks daily user check-ins and credit claims for daily rewards
+ * @example
+ * {
+ *   "id": "checkin123",
+ *   "user_id": "user456",
+ *   "check_in_date": "2026-05-04",
+ *   "credits_claimed": 30,
+ *   "created_at": "2026-05-04T00:00:00.000Z",
+ *   "updated_at": "2026-05-04T00:00:00.000Z"
+ * }
+ */
+export const userCheckins = pgTable(
+  "user_checkins",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    checkInDate: date, // UTC date in YYYY-MM-DD format
+    creditsClaimed: integer("credits_claimed").notNull(), // Number of credits claimed for this check-in
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Unique constraint on (userId, checkInDate) to prevent multiple check-ins per day
+    unique("user_checkins_user_date_unique").on(t.userId, t.checkInDate),
+    // Index for user's check-in history
+    index("user_checkins_user_idx").on(t.userId, t.checkInDate.desc()),
+    // Index for daily statistics
+    index("user_checkins_date_idx").on(t.checkInDate),
+    // Index for cleanup (old check-ins)
+    index("user_checkins_created_idx").on(t.createdAt.desc()),
   ]
 );

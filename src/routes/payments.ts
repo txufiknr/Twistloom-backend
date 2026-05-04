@@ -1,30 +1,35 @@
 /**
  * Payments Routes Module
  * 
- * Provides endpoints for Stripe checkout sessions and credit purchases.
- * Integrates with Stripe for payment processing and tracks transactions.
+ * Provides endpoints for Stripe checkout sessions, credit purchases, and transaction history.
+ * Integrates with Stripe for payment processing and tracks all credit-related transactions.
  * 
  * Architecture Features:
  * - Stripe checkout session creation
  * - Credit pack configuration management
- * - Transaction tracking
+ * - Transaction tracking and history
  * - Webhook handling for payment confirmation
+ * - Daily reward bonus tracking
+ * - Usage and purchase transaction management
  * 
  * Endpoints:
+ * - GET /payments/credit-packs - Get available credit packs
  * - POST /payments/create-checkout-session - Create Stripe checkout session
  * - POST /payments/stripe/webhook - Handle Stripe webhook events
  * - POST /payments/consume-credits - Consume credits for usage
+ * - GET /payments/transactions - Get user transaction history
  */
 
 import type { Request, Response } from "express";
 import { Router } from "express";
 import Stripe from "stripe";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and, desc } from "drizzle-orm";
 import { requireAuth } from "../middleware/nextauth.js";
 import { checkRateLimitByIP } from "../middleware/rate-limit.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications } from "../db/schema.js";
 import { CREDIT_PACKS } from "../config/credits.js";
+import { type TransactionType } from "../types/credits.js";
 import { getErrorMessage, handleApiError } from "../utils/error.js";
 import { getRedisClient } from "../config/redis.js";
 
@@ -698,6 +703,183 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
     res.json(result);
   } catch (error) {
     handleApiError(res, "Failed to consume credits", error);
+  }
+});
+
+/**
+ * GET /payments/transactions
+ * 
+ * Retrieves the authenticated user's complete transaction history including:
+ * - Credit purchases (from Stripe payments)
+ * - Credit usage (story generation, actions)
+ * - Daily check-in rewards
+ * - Refunds
+ * 
+ * @route GET /payments/transactions
+ * @description Get user's complete transaction history
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {number} [limit] - Maximum number of transactions (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * @query {string} [type] - Filter by transaction type (purchase|usage|refund|reward)
+ * @query {string} [startDate] - Filter transactions from date (YYYY-MM-DD)
+ * @query {string} [endDate] - Filter transactions to date (YYYY-MM-DD)
+ * 
+ * @returns {Object} Transaction history response
+ * @returns {Array} transactions - Array of transaction records
+ * @returns {Object} pagination - Pagination metadata
+ * @returns {Object} summary - Transaction summary statistics
+ * 
+ * @example
+ * // Request
+ * GET /payments/transactions?limit=20&type=reward
+ * 
+ * // Response
+ * {
+ *   "transactions": [
+ *     {
+ *       "id": "txn123",
+ *       "type": "reward",
+ *       "credits": 30,
+ *       "amountUsd": null,
+ *       "context": "daily_checkin",
+ *       "metadata": {"checkInDate": "2026-05-04"},
+ *       "createdAt": "2026-05-04T00:00:00.000Z"
+ *     },
+ *     {
+ *       "id": "txn456",
+ *       "type": "purchase",
+ *       "credits": 150,
+ *       "amountUsd": 7.99,
+ *       "context": "credit_pack_purchase",
+ *       "metadata": {"packId": "investigator"},
+ *       "createdAt": "2026-05-03T14:30:00.000Z"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 20,
+ *     "total": 45,
+ *     "totalPages": 3,
+ *     "hasNext": true,
+ *     "hasPrevious": false
+ *   },
+ *   "summary": {
+ *     "totalCreditsPurchased": 500,
+ *     "totalCreditsUsed": 350,
+ *     "totalCreditsRewarded": 180,
+ *     "totalAmountSpent": 29.97,
+ *     "currentBalance": 330
+ *   }
+ * }
+ */
+router.get("/transactions", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { 
+      limit = "50", 
+      offset = "0", 
+      type, 
+      startDate, 
+      endDate 
+    } = req.query;
+
+    // Build base query conditions
+    const conditions = [eq(transactions.userId, userId)];
+    
+    // Add type filter if provided
+    if (type && ["purchase", "usage", "refund", "reward"].includes(type as string)) {
+      conditions.push(eq(transactions.type, type as TransactionType));
+    }
+    
+    // Add date filters if provided
+    if (startDate) {
+      conditions.push(sql`${transactions.createdAt} >= ${startDate}`);
+    }
+    if (endDate) {
+      conditions.push(sql`${transactions.createdAt} <= ${endDate}`);
+    }
+
+    // Get total count for pagination
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(transactions)
+      .where(and(...conditions));
+    const totalCount = countResult[0].count;
+
+    // Get transactions with pagination
+    const limitNum = parseInt(limit as string);
+    const offsetNum = parseInt(offset as string);
+    const page = Math.floor(offsetNum / limitNum) + 1;
+
+    const userTransactions = await dbRead
+      .select({
+        id: transactions.id,
+        type: transactions.type,
+        credits: transactions.credits,
+        amountUsd: transactions.amountUsd,
+        context: transactions.context,
+        metadata: transactions.metadata,
+        createdAt: transactions.createdAt,
+      })
+      .from(transactions)
+      .where(and(...conditions))
+      .orderBy(desc(transactions.createdAt))
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    // Parse metadata JSON for frontend
+    const formattedTransactions = userTransactions.map(tx => ({
+      ...tx,
+      metadata: tx.metadata ? JSON.parse(tx.metadata as string) : null,
+    }));
+
+    // Calculate summary statistics
+    const summary = await dbRead
+      .select({
+        totalCreditsPurchased: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.credits} ELSE 0 END)`,
+        totalCreditsUsed: sql<number>`SUM(CASE WHEN ${transactions.type} = 'usage' THEN ABS(${transactions.credits}) ELSE 0 END)`,
+        totalCreditsRewarded: sql<number>`SUM(CASE WHEN ${transactions.type} = 'reward' THEN ${transactions.credits} ELSE 0 END)`,
+        totalAmountSpent: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.amountUsd} ELSE 0 END)`,
+      })
+      .from(transactions)
+      .where(eq(transactions.userId, userId))
+      .limit(1);
+
+    // Get current user balance
+    const userBalance = await dbRead
+      .select({ credits: users.credits })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    // TODO: should we reuse `createPaginatedResponse`?
+    const pagination = {
+      page,
+      limit: limitNum,
+      total: totalCount,
+      totalPages: Math.ceil(totalCount / limitNum),
+      hasNext: offsetNum + limitNum < totalCount,
+      hasPrevious: offsetNum > 0,
+    };
+
+    const transactionSummary = {
+      totalCreditsPurchased: summary[0]?.totalCreditsPurchased || 0,
+      totalCreditsUsed: summary[0]?.totalCreditsUsed || 0,
+      totalCreditsRewarded: summary[0]?.totalCreditsRewarded || 0,
+      totalAmountSpent: summary[0]?.totalAmountSpent || 0,
+      currentBalance: userBalance[0]?.credits || 0,
+    };
+
+    res.json({
+      transactions: formattedTransactions,
+      pagination,
+      summary: transactionSummary,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to fetch transaction history", error);
   }
 });
 
