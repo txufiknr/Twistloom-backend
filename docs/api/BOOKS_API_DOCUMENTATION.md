@@ -249,8 +249,9 @@ type BookSortingOptions =
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
 4. [Book Reading](#book-reading)
-   - [Get Specific Page](#get-apibooksidentifierbranchidpage)
-   - [Mark Page Visited](#post-apibooksidentifierbranchidpagevisit)
+   - [Get Specific Page](#get-apibooksidentifierpageid)
+   - [Mark Page Visited](#post-apibooksidentifierpageidvisit)
+   - [Generate Candidates](#post-apibooksidentifierpageidcandidates)
    - [Start Reading Session](#post-apibooksidsessions)
 5. [Social Interactions](#social-interactions)
    - [Like Book](#post-apibooksidlike)
@@ -283,7 +284,7 @@ type BookSortingOptions =
 
 Creates a new psychological thriller book with AI-generated content. Accepts a story theme and optional main character details. The AI generates the book's title, hook, summary, first page, and initial story state. Candidate pages for each action in the first page are pre-generated automatically in the background for immediate navigation.
 
-**Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
+**Authentication:** Required (via `requireAuth`) - Book creation now requires authentication and consumes credits
 
 **Request Body:**
 ```json
@@ -298,6 +299,11 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
   "generateCoverImage": false
 }
 ```
+
+**Credit Consumption:**
+- Requires 5 credits to create a story (configurable via `CREDIT_COSTS.STORY_GENERATION`)
+- Credits are deducted transactionally before book creation
+- Returns 402 Payment Required if insufficient credits
 
 **Parameters:**
 - `theme` (string, required): Story theme description (max 1000 chars)
@@ -396,7 +402,8 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
 
 **Error Responses:**
 - `400 Bad Request`: Invalid theme, missing required fields, theme validation failed
-- `401 Unauthorized`: Authentication required (if auth enforced)
+- `401 Unauthorized`: Authentication required
+- `402 Payment Required`: Insufficient credits
 - `500 Internal Server Error`: AI generation failed
 
 **Theme Validation Errors:**
@@ -423,9 +430,14 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
 
 Creates a new psychological thriller book with AI-generated content using Server-Sent Events (SSE). Provides real-time progress updates for each step in the book creation process.
 
-**Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
+**Authentication:** Required (via `requireAuth`) - Book creation now requires authentication and consumes credits
 
 **Request Body:** Same as `POST /api/books`
+
+**Credit Consumption:**
+- Requires 5 credits to create a story (configurable via `CREDIT_COSTS.STORY_GENERATION`)
+- Credits are deducted transactionally before book creation
+- Returns 402 Payment Required if insufficient credits
 
 **SSE Events:**
 ```
@@ -461,6 +473,12 @@ data: {"error":"Theme validation failed"}
 ```
 
 **Response:** SSE stream (text/event-stream)
+
+**Error Responses:**
+- `400 Bad Request`: Invalid theme, missing required fields, theme validation failed
+- `401 Unauthorized`: Authentication required
+- `402 Payment Required`: Insufficient credits
+- `500 Internal Server Error`: AI generation failed
 
 ---
 
@@ -636,16 +654,18 @@ Deletes a book and all its associated data (pages, sessions, story states). If t
 
 ## Book Reading
 
-### GET /api/books/:identifier/:branchId/:page
+### GET /api/books/:identifier/:pageId
 
-Retrieves a specific page within a branch of a book. Accepts both slug and UUID v7 as identifier. Returns only actions with complete destinations (both branchId and pageId required). Automatically retries failed candidate generations for incomplete actions.
+Retrieves a specific page within a book. Accepts both slug and UUID v7 as identifier. Returns only actions with complete destinations (both branchId and pageId required). Automatically retries failed candidate generations for incomplete actions. Supports translation via Accept-Language header.
 
-**Authentication:** Optional (via `optionalAuth`)
+**Authentication:** Required (via `requireAuth`)
 
 **Path Parameters:**
 - `identifier` (string, required): Book slug or UUID v7
-- `branchId` (string, required): Branch identifier (e.g., "main", "abc123")
-- `page` (number, required): Page number within the branch
+- `pageId` (string, required): Page ID
+
+**Request Headers:**
+- `Accept-Language` (string, optional): Desired language code (e.g., "en", "es", "fr")
 
 **Response (200 OK):**
 ```json
@@ -679,6 +699,15 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
         "isUserChosen": false
       }
     ],
+    "selectedAction": {
+      "text": "Investigate the noise",
+      "type": "explore",
+      "hint": {
+        "text": "Something waits in the shadows",
+        "type": "dark_discovery"
+      }
+    },
+    "translatedText": "La biblioteca estaba en silencio excepto por la lluvia...",
     "createdAt": "2023-01-01T00:00:00.000Z",
     "updatedAt": "2023-01-01T00:00:00.000Z"
   },
@@ -695,6 +724,8 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
 - Filters out actions without complete destinations (both branchId and pageId required)
 - Enriches actions with nextPageNumber for frontend URL building
 - Marks user's previously chosen action with isUserChosen: true
+- Includes selectedAction field showing user's chosen action for this page
+- Translates page text if Accept-Language header differs from book language (cached for performance)
 - Automatically retries failed candidate generations for incomplete actions (fire-and-forget)
 - Excludes backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount, stateDelta
 
@@ -703,7 +734,7 @@ Retrieves a specific page within a branch of a book. Accepts both slug and UUID 
 
 ---
 
-### POST /api/books/:identifier/:branchId/:page/visit
+### POST /api/books/:identifier/:pageId/visit
 
 Marks a page as visited by updating user session and page progress. This is called when a user navigates to a page (not during pre-generation). The frontend should call this endpoint after the user lands on a page to track reading progress.
 
@@ -711,8 +742,7 @@ Marks a page as visited by updating user session and page progress. This is call
 
 **Path Parameters:**
 - `identifier` (string, required): Book slug or UUID v7
-- `branchId` (string, required): Branch identifier (e.g., "main", "abc123")
-- `page` (number, required): Page number within the branch
+- `pageId` (string, required): Page ID
 
 **Request Body:**
 ```json
@@ -755,10 +785,62 @@ Marks a page as visited by updating user session and page progress. This is call
 - `400 Bad Request`: Missing action or previousPageId
 - `404 Not Found`: Book or page not found
 
-**Note:** 
+**Note:**
 - Page generation happens automatically via pre-generation when books are created or pages are generated
 - This endpoint only tracks user navigation and progress, not page generation
 - Candidate pages are pre-generated in the background for immediate navigation
+
+---
+
+### POST /api/books/:identifier/:pageId/candidates
+
+Pre-generates candidate pages for all actions on a story page. This ensures that when users select actions, the corresponding destination pages are immediately available without waiting for AI generation.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Page ID for which to generate candidates
+
+**Response (200 OK):**
+```json
+{
+  "id": "page456",
+  "page": 5,
+  "text": "The hallway stretched endlessly before me...",
+  "mood": "eerie",
+  "place": "hallway",
+  "timeOfDay": "night",
+  "actions": [
+    {
+      "text": "Open the door",
+      "type": "explore",
+      "hint": {
+        "text": "Something waits behind",
+        "type": "dark_discovery"
+      },
+      "destination": {
+        "branchId": "branch789",
+        "pageId": "page790"
+      }
+    }
+  ],
+  "createdAt": "2023-01-01T00:00:00.000Z"
+}
+```
+
+**Behavior:**
+- Validates that page belongs to the specified book
+- Skips last page (no candidates needed for final page)
+- Uses distributed lock to prevent concurrent processing
+- Retries failed generations up to 3 times with exponential backoff
+- Removes invalid actions (e.g., validation errors) from the page
+- Returns updated page with pre-generated candidate destinations
+
+**Error Responses:**
+- `400 Bad Request`: Invalid UUID format
+- `404 Not Found`: Book or page not found
+- `500 Internal Server Error`: Candidate generation failed
 
 ---
 
@@ -1525,6 +1607,26 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.3.0 (2026-05-04)
+- Updated POST /api/books and POST /api/books/stream to require authentication (requireAuth instead of guestOrAuthMiddleware)
+- Added credit consumption to book creation endpoints (requires 5 credits per story)
+- Added 402 Payment Required error response for insufficient credits
+- Updated GET /api/books/:identifier/:pageId to require authentication (requireAuth instead of optionalAuth)
+- Changed GET /api/books/:identifier/:pageId path from :identifier/:branchId/:page to :identifier/:pageId
+- Added selectedAction field to GET /api/books/:identifier/:pageId response (shows user's chosen action)
+- Added translatedText field to GET /api/books/:identifier/:pageId response (supports Accept-Language header)
+- Added Accept-Language header support for page translation (cached for performance)
+- Updated POST /api/books/:identifier/:pageId/visit path from :identifier/:branchId/:page/visit to :identifier/:pageId/visit
+- Added new POST /api/books/:identifier/:pageId/candidates endpoint for pre-generating candidate pages
+- Added transaction metadata (context, metadata) to credits schema for better audit trail
+- Fixed race condition in credit system by removing redundant hasSufficientCredits check
+- Improved translation error handling with metadata and type-safe error responses
+- Added language code validation (ISO 639-1) for translation service
+- Fixed cache key separator in translation cache to prevent collisions
+- Added updatedAt update logic for pageTranslations on translation insert/update
+- Standardized credit error messages using constants (CREDIT_ERRORS)
+- Added handleValidationError utility for consistent validation error responses
 
 ### v2.2.0 (2026-05-03)
 - Added slug generation for books - auto-generates clean, URL-friendly slugs from titles

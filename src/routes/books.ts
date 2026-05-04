@@ -5,22 +5,37 @@
  * Implements CRUD operations for book creation, page generation, and session management.
  * 
  * Architecture Features:
- * - Book creation with AI-powered story initialization
- * - Dynamic page generation with branching narratives
+ * - Book creation with AI-powered story initialization and credit consumption
+ * - Dynamic page generation with branching narratives and candidate pre-generation
  * - Session management for reading progress
  * - Character and place tracking
  * - Psychological state management
+ * - Translation support with caching
+ * - Social interactions (likes, favorites, comments)
  * 
  * Endpoints:
- * - POST /api/books - Create new psychological thriller books
- * - POST /api/books/stream - Create new psychological thriller books with streaming
- * - GET /api/books - Retrieve user's book library
- * - GET /api/books/explore - Explore published books with search and pagination
- * - PUT /api/books/:id - Update book information and cover image
- * - POST /api/books/:id/generate - Generate new story pages
- * - GET /api/books/:id/:pageId - Retrieve specific pages
- * - POST /api/books/:id/sessions - Manage reading sessions
- * - DELETE /api/books/:id - Delete a book and queue image for deletion
+ * - POST /api/books - Create new psychological thriller books (requires auth + credits)
+ * - POST /api/books/stream - Create new psychological thriller books with streaming (requires auth + credits)
+ * - GET /api/books - Retrieve user's book library (requires auth)
+ * - GET /api/books/explore - Explore published books with search and pagination (optional auth)
+ * - PUT /api/books/:id - Update book information and cover image (requires auth)
+ * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
+ * - POST /api/books/:identifier/:pageId/visit - Mark page as visited and track progress (requires auth)
+ * - POST /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
+ * - POST /api/books/:id/sessions - Manage reading sessions (optional auth)
+ * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
+ * - POST /api/books/:id/like - Like a book (requires auth)
+ * - DELETE /api/books/:id/like - Unlike a book (requires auth)
+ * - POST /api/books/:id/favorite - Add book to favorites (requires auth)
+ * - DELETE /api/books/:id/favorite - Remove book from favorites (requires auth)
+ * - GET /api/books/:id/comments - Get book comments with pagination (optional auth)
+ * - POST /api/books/:id/comments - Create comment on book (requires auth)
+ * - DELETE /api/books/comments/:id - Delete comment (requires auth)
+ * - GET /api/books/tags/popular - Get popular tags for filtering (no auth required)
+ * - GET /api/books/stats - Get public book statistics (optional auth)
+ * - GET /api/books/prompt - Generate book creation prompt via SSE (optional auth)
+ * - POST /api/books/insert - Test route for direct book insertion (requires auth)
+ * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
  */
 
 import type { Request, Response } from "express";
@@ -32,7 +47,7 @@ import { books, pages, userSessions, deletedImages, users, userLikes, userFavori
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql, or } from "drizzle-orm";
-import { formatOneOf, generateBookCreationPromptStream } from "../utils/prompt.js";
+import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
 import { enrichActions } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
@@ -40,7 +55,7 @@ import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, buildSearchConditions, createRelevanceExpression, validateLanguageCode, type SearchParams } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
@@ -1252,6 +1267,89 @@ router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Re
     });
   } catch (error) {
     handleApiError(res, "Failed to manage session", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/candidates
+ * 
+ * Pre-generates candidate pages for all actions on a story page.
+ * This ensures that when users select actions, the corresponding destination pages
+ * are immediately available without waiting for AI generation.
+ * 
+ * **Authentication:** Required (via `requireAuth`)
+ * 
+ * @param id - Book ID
+ * @param pageId - Page ID for which to generate candidates
+ * @returns Updated page with pre-generated candidates
+ * 
+ * @example
+ * POST /api/books/book123/page456/candidates
+ * 
+ * Response (200):
+ * {
+ *   "id": "page456",
+ *   "page": 5,
+ *   "text": "...",
+ *   "actions": [
+ *     {
+ *       "text": "Open the door",
+ *       "destination": { "branchId": "branch789", "pageId": "page790" }
+ *     }
+ *   ]
+ * }
+ */
+router.post("/:identifier/:pageId/candidates", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId } = req.params;
+    const userId = req.userId!;
+
+    // Handle array case for identifier (Express can return string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(identifierStr);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Validate
+    if (!isValidUuid(pageId)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
+
+    // Get the page from database
+    const pageResult = await dbRead
+      .select()
+      .from(pages)
+      .where(eq(pages.id, pageId))
+      .limit(1);
+
+    if (!pageResult.length) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    const dbPage = pageResult[0];
+
+    // Verify page belongs to the specified book
+    if (dbPage.bookId !== book.id) {
+      return handleValidationError(res, "Page does not belong to the specified book");
+    }
+
+    // Convert to UserStoryPage
+    const userPage = mapToUserStoryPage(dbPage);
+
+    // Pre-generate candidates
+    const updatedPage = await ensureCandidatesForPage(
+      userId,
+      userPage,
+      null, // currentState - can be inferred if needed
+      book // currentBook - used for totalPages check
+    );
+
+    res.json(updatedPage);
+  } catch (error) {
+    handleApiError(res, "Failed to generate candidates", error);
   }
 });
 

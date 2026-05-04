@@ -17,14 +17,7 @@
 [ ] book read count: only count unique user
 [ ] trigger: ensureBookIncrementTrigger (complete, read, like, favorite)
 [ ] books: GET route support filter lastUpdated (apa aja?)
-
-update docs:
-dual auth (guest flow)
-book api specs
-changes:
-- requireAuth: GET /api/books/:identifier/:pageId
-- requireAuth: POST /api/books/:identifier/:pageId/visit
-- initialize book (POST /api/books and POST /api/books/stream): only for authenticated user & consumes credits
+[ ] payment: buy credits pack
 
 story state:
 [ ] story state: is it really need `maxPage`?

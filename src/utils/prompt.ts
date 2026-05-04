@@ -2863,6 +2863,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     let hasRealChanges = false;
     
     // For each pending action, create a candidate (AI generation happens outside transaction)
+    // TODO: make it parallel
     for (const action of recheckedPendingDBActions) {
       const letter = String.fromCharCode(65 + initialDBActions.indexOf(action));
       console.log(`[ensureCandidatesForPage] ⏳ Pre-generating destination page for: ${letter}.`, action.text);

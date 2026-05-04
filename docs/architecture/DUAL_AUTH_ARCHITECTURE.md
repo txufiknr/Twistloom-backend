@@ -157,6 +157,7 @@ Currently this is a placeholder since NextAuth handles all session management cl
 3. **Security**: NextAuth handles CSRF, session management, and security best practices
 4. **Flexibility**: Users can choose their preferred login method
 5. **Guest Support**: Seamless guest user flow with data migration on login
+6. **Credit System**: Book creation requires authentication and consumes credits (prevents abuse)
 
 ## Backend Implementation
 
