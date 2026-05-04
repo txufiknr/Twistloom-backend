@@ -11,9 +11,10 @@
  * following industry-standard public API patterns.
  */
 export type ResourceName = 
-  | 'books'      // Collection of books
-  | 'likes'      // Collection of likes
-  | 'favorites'  // Collection of favorites
-  | 'comments'   // Collection of comments
-  | 'items'      // Generic collection (fallback)
-  | 'users';     // Collection of users
+  | 'books'          // Collection of books
+  | 'likes'          // Collection of likes
+  | 'favorites'      // Collection of favorites
+  | 'comments'       // Collection of comments
+  | 'items'          // Generic collection (fallback)
+  | 'users'          // Collection of users
+  | 'transactions';  // Collection of transactions

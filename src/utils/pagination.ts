@@ -32,6 +32,12 @@ export interface PaginationParams {
   sortBy?: string;
   /** Sort direction (asc|desc) */
   sortOrder?: 'asc' | 'desc';
+  /** Last updated filter */
+  lastUpdated?: string;
+  /** Language filter */
+  language?: string;
+  /** Tags filter (comma-separated) */
+  tags?: string;
 }
 
 /**
@@ -83,6 +89,9 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
   const search = (req.query.search as string || '').trim();
   const sortBy = req.query.sortBy as string;
   const sortOrder = (req.query.sortOrder as 'asc' | 'desc') || 'desc';
+  const lastUpdated = req.query.lastUpdated as string | undefined;
+  const language = req.query.language as string | undefined;
+  const tags = req.query.tags as string | undefined;
 
   return {
     page,
@@ -90,7 +99,10 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
     cursor,
     search,
     sortBy,
-    sortOrder
+    sortOrder,
+    lastUpdated,
+    language,
+    tags
   };
 }
 

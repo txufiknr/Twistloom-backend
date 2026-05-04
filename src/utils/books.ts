@@ -1,4 +1,5 @@
-import type { Book, BookSortOption } from "../types/book.js";
+import type { BookSortOption, LastUpdatedFilter, Book } from "../types/book.js";
+import { bookSortOptions, lastUpdatedFilterOptions } from "../types/book.js";
 
 /**
  * Formats book metadata for prompt
@@ -38,5 +39,15 @@ export function formatPageTextForPrompt(text: string): string {
  * @returns True if valid sort option
  */
 export function isValidBookSortOption(sortBy: string): sortBy is BookSortOption {
-  return ['popular', 'newest', 'trending', 'top-picks', 'originals'].includes(sortBy);
+  return bookSortOptions.includes(sortBy as BookSortOption);
+}
+
+/**
+ * Validates lastUpdated filter parameter
+ * 
+ * @param lastUpdated - Last updated filter value to validate
+ * @returns True if valid lastUpdated value
+ */
+export function isValidLastUpdatedFilter(lastUpdated: string): lastUpdated is LastUpdatedFilter {
+  return lastUpdatedFilterOptions.includes(lastUpdated as LastUpdatedFilter);
 }

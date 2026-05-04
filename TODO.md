@@ -16,8 +16,14 @@
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
-[ ] books: GET route support filter lastUpdated (apa aja?)
 [ ] payment: buy credits pack
+
+[ ] books: GET route support filter lastUpdated
+- anytime
+- today
+- this-week
+- this-month
+- this-year
 
 story state:
 [ ] story state: is it really need `maxPage`?

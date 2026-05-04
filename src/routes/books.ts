@@ -19,6 +19,7 @@
  * - GET /api/books - Retrieve user's book library (requires auth)
  * - GET /api/books/explore - Explore published books with search and pagination (optional auth)
  * - PUT /api/books/:id - Update book information and cover image (requires auth)
+ * - GET /api/books/:identifier - Retrieve specific book by slug or id
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
  * - POST /api/books/:identifier/:pageId/visit - Mark page as visited and track progress (requires auth)
  * - POST /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
@@ -46,20 +47,20 @@ import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments, userPageProgress } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { deepEqualSimple } from "../utils/parser.js";
-import { eq, and, desc, sql, or } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
 import { enrichActions, getEnrichedBook } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
-import { extractPaginationParams, createPaginatedResponse, applySorting, calculatePaginationMeta } from "../utils/pagination.js";
+import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, buildSearchConditions, createRelevanceExpression, validateLanguageCode, type SearchParams } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, applyBookSorting, getPopularTags, triggerCandidateGenerationRetry, mapToUserStoryPage } from "../services/book.js";
-import { isValidBookSortOption } from "../utils/books.js";
-import { getEnrichedBookSelect, getSimilarBookSelect } from "../services/book-controller.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, triggerCandidateGenerationRetry, mapToUserStoryPage } from "../services/book.js";
+import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
+import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
-import type { BookSortOption, EnrichedBookData } from "../types/book.js";
+import { lastUpdatedFilterOptions, type BookSortOption, type EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
 import type { Action, EnrichedAction } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
@@ -602,46 +603,58 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * 
  * Retrieves all books for the authenticated user.
  * Returns paginated list with metadata and reading progress.
- * Supports search, language filtering, and sorting.
+ * Supports search, language filtering, sorting, and time-based filtering.
  * 
- * Enhanced search features:
- * - Searches across title, hook, summary, and keywords
- * - Language filter (ISO 639-1 codes: en, es, fr, etc.)
- * - Fuzzy matching for typo tolerance (enabled by default)
- * - Relevance scoring for search results
+ * **Enhanced Search Features:**
+* Searches across title, hook, summary, and keywords
+* Language filter (ISO 639-1 codes: en, es, fr, etc.)
+* Tags filter (comma-separated, OR logic)
+* Relevance scoring for search results (title: 40%, hook: 25%, summary: 20%, keywords: 15%)
+* Time-based filtering by last update date
+* **Two-level sorting hierarchy:**
+  * **Primary:** Book-specific sorting (popular, trending, top-picks, originals, newest)
+  * **Secondary:** Relevance scoring (when searching) or generic column sorting
  * 
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of books per page (default: 10)
  * @query search - Search query for title, hook, summary, keywords
  * @query language - Filter by language code (e.g., "en", "es")
- * @query fuzzy - Enable fuzzy matching for typo tolerance (default: true)
+ * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
  * @query sortBy - Field to sort by (default: updatedAt)
  * @query sortOrder - Sort direction (default: desc)
+ * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @returns Paginated list of user's books with progress
  * 
  * @todo
  * - do we need to migrate offset pagination into cursor pagination to support post-query sorting?
- * - enable fuzzy search with jaccard
  * - activate pg_trgm extension
  * - modify books indexes to use pg_trgm
  * - follow `BOOK_SEARCH_ENHANCEMENT_ROADMAP.md` roadmap docs
  * 
  * @example
  * // Search for thriller books
- * GET /api/books?search=thriller&fuzzy=true
+ * GET /api/books?search=thriller
  * 
  * // Filter by English language
  * GET /api/books?language=en
  * 
- * // Combined search with language filter
- * GET /api/books?search=mystery&language=en&fuzzy=true
+ * // Filter by books updated this week
+ * GET /api/books?lastUpdated=this-week
+ * 
+ * // Filter by tags
+ * GET /api/books?tags=thriller,mystery
+ * 
+ * // Combined search with all filters
+ * GET /api/books?search=mystery&language=en&lastUpdated=this-month&tags=thriller
  */
 router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder } = extractPaginationParams(req);
-    const language = req.query.language as string | undefined;
-    const fuzzy = req.query.fuzzy === 'false' ? false : true;
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags } = extractPaginationParams(req);
     const userId = req.userId!;
+    
+    // Extract tags from query parameter (comma-separated)
+    const tagsParam = tags as string;
+    const tagsArray = tagsParam ? tagsParam.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0) : [];
     
     // Validate search query if provided
     let sanitizedSearch: string | undefined;
@@ -664,30 +677,29 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         });
       }
     }
+
+    // Validate lastUpdated filter if provided
+    if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
+      return res.status(400).json({
+        error: `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`
+      });
+    }
+    
+    // Validate and normalize sortBy parameter
+    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
+      ? (sortBy as BookSortOption) 
+      : 'newest';
     
     // Skip caching for search queries (dynamic)
-    const shouldCache = !search && !language;
-    const cacheKey = CACHE_KEYS.USER_BOOKS(userId, page);
+    const shouldCache = !search && !language && !lastUpdated && tagsArray.length === 0;
+    const cacheKey = lastUpdated 
+      ? `books:user:${userId}:page:${page}:lastUpdated:${lastUpdated}`
+      : CACHE_KEYS.USER_BOOKS(userId, page);
     
     // Fetch function for cache
     const fetchBooks = async () => {
-      // Build search conditions using utility function
-      const searchParams: SearchParams = {
-        search: sanitizedSearch,
-        language,
-        fuzzy
-      };
-      
-      const searchCondition = buildSearchConditions(searchParams, books);
-      
-      // Build complete condition upfront
-      const baseCondition = eq(books.userId, userId);
-      const finalCondition = searchCondition 
-        ? and(baseCondition, searchCondition) 
-        : baseCondition;
-
       // Build base query with enriched fields
-      let query = dbRead
+      const baseQuery = dbRead
         .select({
           ...getEnrichedBookSelect(userId),
           lastReadAt: userSessions.updatedAt,
@@ -701,27 +713,22 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
             eq(userSessions.bookId, books.id),
             eq(userSessions.userId, userId),
           )
-        )
-        .where(finalCondition);
+        );
 
-      // Apply relevance scoring and sorting if search is enabled
-      if (sanitizedSearch) {
-        // Add relevance score to query for database-level sorting
-        const relevanceExpression = createRelevanceExpression(sanitizedSearch, books);
-        query = (query as any).addSelect({
-          relevanceScore: relevanceExpression
-        }).orderBy(desc(relevanceExpression));
-      } else {
-        // Apply regular sorting when no search
-        query = applySorting(query, sortBy, sortOrder);
-      }
+      // Build comprehensive query using shared helper
+      const { query, countQuery } = buildBookQuery<typeof baseQuery>({
+        baseQuery,
+        baseCondition: eq(books.userId, userId),
+        search: sanitizedSearch,
+        bookSortBy, // Primary: book-specific sorting
+        genericSortBy: sortBy, // Secondary: generic fallback (when no search)
+        sortOrder,
+        tags: tagsArray,
+        language,
+        lastUpdated
+      });
 
-      // Get total count for pagination
-      const countResult = await dbRead
-        .select({ count: sql`COUNT(*)::int` })
-        .from(books)
-        .where(finalCondition);
-
+      const countResult = await countQuery;
       const totalCount = typeof countResult[0]?.count === 'number' ? countResult[0]?.count : 0;
 
       // Apply pagination
@@ -870,79 +877,6 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     });
   } catch (error) {
     handleApiError(res, "Failed to update book", error);
-  }
-});
-
-/**
- * GET /api/books/:identifier
- * 
- * Retrieves a book by slug or UUID v7 identifier.
- * Returns complete book information including metadata and author details.
- * 
- * @param identifier - Book slug or UUID v7
- * @returns Complete book with enriched metadata
- * 
- * @example
- * GET /api/books/whispering-halls
- * 
- * Response:
- * {
- *   "book": {
- *     "id": "book123",
- *     "userId": "user456",
- *     "slug": "whispering-halls",
- *     "title": "The Whispering Halls",
- *     "totalPages": 120,
- *     "language": "en",
- *     "hook": "Sarah never believed in ghosts until she found the diary",
- *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
- *     "image": "https://example.com/cover.jpg",
- *     "keywords": ["mystery", "thriller", "haunted"],
- *     "status": "active",
- *     "mc": {
- *       "name": "Sarah",
- *       "age": 28,
- *       "gender": "female",
- *       "bio": "Shy librarian with hidden past"
- *     },
- *     "author": {
- *       "id": "user456",
- *       "name": "John Doe",
- *       "username": "johndoe",
- *       "image": "https://example.com/avatar.jpg"
- *     },
- *     "stats": {
- *       "likesCount": 42,
- *       "readCount": 156,
- *       "commentsCount": 25,
- *       "branchesCount": 12
- *     },
- *     "isLiked": false,
- *     "isRead": false,
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-15T10:30:00.000Z"
- *   }
- * }
- */
-router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => {
-  try {
-    const { identifier } = req.params;
-
-    // Handle array case for identifier (Express can return string[])
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
-
-    // Resolve book by identifier (slug first, then UUID)
-    const book = await resolveBook(identifierStr);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
-
-    // Get enriched book data with author info and stats
-    const enrichedBook = await getEnrichedBook(book.id, req.userId);
-
-    res.json({ book: enrichedBook });
-  } catch (error) {
-    handleApiError(res, "Failed to retrieve book", error);
   }
 });
 
@@ -1436,110 +1370,83 @@ router.post("/:identifier/:pageId/candidates", requireAuth, async (req: Request,
  * 
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of books per page (default: 20)
- * @query search - Search query for title, summary, keywords
+ * @query search - Search query for title, hook, summary, keywords
+ * @query language - Filter by language code (e.g., "en", "es")
  * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
- * @query sortBy - Sort option: popular, newest, trending, top-picks, originals (default: newest)
+ * @query sortBy - Field to sort by (default: updatedAt)
+ * @query sortOrder - Sort direction (default: desc)
+ * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @returns Paginated list of published books
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy } = extractPaginationParams(req);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags } = extractPaginationParams(req);
     const userId = req.userId || null;
     
     // Extract tags from query parameter (comma-separated)
-    const tagsParam = req.query.tags as string;
-    const tags = tagsParam ? tagsParam.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0) : [];
+    const tagsParam = tags as string;
+    const tagsArray = tagsParam ? tagsParam.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0) : [];
+    
+    // Validate search query if provided
+    let sanitizedSearch: string | undefined;
+    if (search) {
+      const validation = validateSearchQuery(search);
+      if (!validation.isValid) {
+        return res.status(400).json({
+          error: validation.error
+        });
+      }
+      sanitizedSearch = validation.sanitized;
+    }
+
+    // Validate language code if provided
+    if (language) {
+      const langValidation = validateLanguageCode(language);
+      if (!langValidation.isValid) {
+        return res.status(400).json({
+          error: langValidation.error
+        });
+      }
+    }
+
+    // Validate lastUpdated filter if provided
+    if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
+      return res.status(400).json({
+        error: `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`
+      });
+    }
     
     // Validate and normalize sortBy parameter
-    const normalizedSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
+    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
       ? (sortBy as BookSortOption) 
       : 'newest';
     
-    // Cache page 1 without search and tags
+    // Cache page 1 without search, tags, language, and time filters
     // Trending uses shorter TTL (5 min) due to incremental updates, newest uses longer TTL (30 min)
-    const shouldCache = page === 1 && !search && tags.length === 0;
-    const cacheKey = normalizedSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
-    const cacheTTL = normalizedSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
+    const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated;
+    const cacheKey = bookSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
+    const cacheTTL = bookSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
     
     // Fetch function for cache
     const fetchBooks = async () => {
       // Build base query with enriched fields
-      let query = dbRead
+      const baseQuery = dbRead
         .select(getEnrichedBookSelect(userId))
         .from(books)
         .leftJoin(users, eq(books.userId, users.userId));
 
-      // Build conditions array starting with status
-      const conditions = [eq(books.status, 'active')];
-
-      // Add search conditions if provided
-      // TODO: fuzzy search using jaccard
-      if (search) {
-        const searchPattern = `%${search}%`;
-        const searchConditions = [
-          sql`${books.title} ILIKE ${searchPattern}`,
-          sql`${books.hook} ILIKE ${searchPattern}`,
-          sql`${books.summary} ILIKE ${searchPattern}`,
-          sql`${books.keywords} ILIKE ${searchPattern}`
-        ];
-        conditions.push(or(...searchConditions) as any);
-      }
-
-      // Add tags filter if provided (OR logic - books matching ANY tag)
-      if (tags.length > 0) {
-        const tagConditions = tags.map(tag => 
-          sql`${books.keywords} @> ${JSON.stringify([tag])}::jsonb`
-        );
-        conditions.push(or(...tagConditions) as any);
-      }
-
-      // Apply all conditions in a single where clause to avoid overwriting
-      // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries involving joins
-      if (search || tags.length > 0) {
-        query = (query as any).where(and(...conditions));
-      } else {
-        // Only apply status condition if no search and no tags
-        query = (query as any).where(eq(books.status, 'active'));
-      }
-
-      // Apply book-specific sorting
-      query = applyBookSorting(query, normalizedSortBy);
-
-      // Get total count for pagination
-      let countQuery = dbRead
-        .select({ count: books.id })
-        .from(books);
-
-      // Build count conditions array
-      const countConditions = [eq(books.status, 'active')];
-
-      // Add search conditions to count query
-      if (search) {
-        const searchPattern = `%${search}%`;
-        const searchConditions = [
-          sql`${books.title} ILIKE ${searchPattern}`,
-          sql`${books.hook} ILIKE ${searchPattern}`,
-          sql`${books.summary} ILIKE ${searchPattern}`,
-          sql`${books.keywords} ILIKE ${searchPattern}`
-        ];
-        countConditions.push(or(...searchConditions) as any);
-      }
-
-      // Add tags filter to count query
-      if (tags.length > 0) {
-        const tagConditions = tags.map(tag => 
-          sql`${books.keywords} @> ${JSON.stringify([tag])}::jsonb`
-        );
-        countConditions.push(or(...tagConditions) as any);
-      }
-
-      // Apply all count conditions in a single where clause
-      // Type assertion necessary due to Drizzle ORM's type system limitations with complex queries
-      if (search || tags.length > 0) {
-        countQuery = (countQuery as any).where(and(...countConditions));
-      } else {
-        countQuery = (countQuery as any).where(eq(books.status, 'active'));
-      }
+      // Build comprehensive query using shared helper
+      const { query, countQuery } = buildBookQuery<typeof baseQuery>({
+        baseQuery,
+        baseCondition: eq(books.status, 'active'),
+        search: sanitizedSearch,
+        bookSortBy, // Primary: book-specific sorting
+        genericSortBy: sortBy, // Secondary: generic fallback (when no search)
+        sortOrder,
+        tags: tagsArray,
+        language,
+        lastUpdated
+      });
 
       const totalCountResult = await countQuery;
       const totalCount = totalCountResult.length;
@@ -1561,7 +1468,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
 
     // Add HTTP cache headers for CDN/edge caching (works alongside Redis)
     if (shouldCache) {
-      const httpCacheMaxAge = normalizedSortBy === 'trending' ? 300 : 1800; // 5 min for trending, 30 min for newest
+      const httpCacheMaxAge = bookSortBy === 'trending' ? 300 : 1800; // 5 min for trending, 30 min for newest
       res.set('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
     }
     
@@ -2333,6 +2240,79 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
     });
   } catch (error) {
     handleApiError(res, "Failed to delete comment", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier
+ * 
+ * Retrieves a book by slug or UUID v7 identifier.
+ * Returns complete book information including metadata and author details.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @returns Complete book with enriched metadata
+ * 
+ * @example
+ * GET /api/books/whispering-halls
+ * 
+ * Response:
+ * {
+ *   "book": {
+ *     "id": "book123",
+ *     "userId": "user456",
+ *     "slug": "whispering-halls",
+ *     "title": "The Whispering Halls",
+ *     "totalPages": 120,
+ *     "language": "en",
+ *     "hook": "Sarah never believed in ghosts until she found the diary",
+ *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
+ *     "image": "https://example.com/cover.jpg",
+ *     "keywords": ["mystery", "thriller", "haunted"],
+ *     "status": "active",
+ *     "mc": {
+ *       "name": "Sarah",
+ *       "age": 28,
+ *       "gender": "female",
+ *       "bio": "Shy librarian with hidden past"
+ *     },
+ *     "author": {
+ *       "id": "user456",
+ *       "name": "John Doe",
+ *       "username": "johndoe",
+ *       "image": "https://example.com/avatar.jpg"
+ *     },
+ *     "stats": {
+ *       "likesCount": 42,
+ *       "readCount": 156,
+ *       "commentsCount": 25,
+ *       "branchesCount": 12
+ *     },
+ *     "isLiked": false,
+ *     "isRead": false,
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-15T10:30:00.000Z"
+ *   }
+ * }
+ */
+router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+
+    // Handle array case for identifier (Express can return string[])
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    // Resolve book by identifier (slug first, then UUID)
+    const book = await resolveBook(identifierStr);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Get enriched book data with author info and stats
+    const enrichedBook = await getEnrichedBook(book.id, req.userId);
+
+    res.json({ book: enrichedBook });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve book", error);
   }
 });
 

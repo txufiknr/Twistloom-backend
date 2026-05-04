@@ -24,6 +24,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import Stripe from "stripe";
 import { eq, sql, and, desc } from "drizzle-orm";
+import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { checkRateLimitByIP } from "../middleware/rate-limit.js";
 import { dbRead, dbWrite } from "../db/client.js";
@@ -855,15 +856,7 @@ router.get("/transactions", requireAuth, async (req: Request, res: Response) => 
       .where(eq(users.userId, userId))
       .limit(1);
 
-    // TODO: should we reuse `createPaginatedResponse`?
-    const pagination = {
-      page,
-      limit: limitNum,
-      total: totalCount,
-      totalPages: Math.ceil(totalCount / limitNum),
-      hasNext: offsetNum + limitNum < totalCount,
-      hasPrevious: offsetNum > 0,
-    };
+    const pagination = calculatePaginationMeta(page, limitNum, totalCount);
 
     const transactionSummary = {
       totalCreditsPurchased: summary[0]?.totalCreditsPurchased || 0,
@@ -873,9 +866,10 @@ router.get("/transactions", requireAuth, async (req: Request, res: Response) => 
       currentBalance: userBalance[0]?.credits || 0,
     };
 
+    const paginatedResponse = createPaginatedResponse(formattedTransactions, pagination, 'transactions');
+    
     res.json({
-      transactions: formattedTransactions,
-      pagination,
+      ...paginatedResponse,
       summary: transactionSummary,
     });
   } catch (error) {

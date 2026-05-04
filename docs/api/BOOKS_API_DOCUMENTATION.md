@@ -487,25 +487,31 @@ data: {"error":"Theme validation failed"}
 
 ### GET /api/books
 
-Retrieves all books for the authenticated user. Returns paginated list with metadata and reading progress. Supports enhanced search, language filtering, and sorting.
+Retrieves all books for the authenticated user. Returns paginated list with metadata and reading progress. Supports enhanced search, language filtering, time-based filtering, and sorting.
 
 **Authentication:** Required (via `requireAuth`)
 
 **Query Parameters:**
-- `page` (number, optional): Page number (default: 1)
-- `limit` (number, optional): Items per page (default: 10, max: 100)
-- `search` (string, optional): Search query for title, hook, summary, and keywords (min 2 chars, max 200 chars)
-- `language` (string, optional): Filter by language code (ISO 639-1: en, es, fr, etc.)
+- `page` (number, optional): Page number for pagination (default: 1)
+- `limit` (number, optional): Number of books per page (default: 10)
+- `search` (string, optional): Search query for title, hook, summary, keywords
+- `language` (string, optional): Filter by language code (e.g., "en", "es")
+- `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
 - `fuzzy` (boolean, optional): Enable fuzzy matching for typo tolerance (default: true)
-- `sortBy` (string, optional): Field to sort by (default: updatedAt)
-- `sortOrder` (string, optional): Sort direction (asc/desc, default: desc)
+- `sortBy` (string, optional): **Book-specific sort option** - popular|newest|trending|top-picks|originals (default: newest)
+- `sortOrder` (string, optional): Sort direction for generic fallback sorting (asc|desc, default: desc)
+- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year (default: anytime)
 
 **Enhanced Search Features:**
 - Searches across title, hook, summary, and keywords (JSONB array)
 - Language filter for internationalization
+- Tags filter with OR logic for multiple tags
+- Time-based filtering by last update date
 - Fuzzy matching toggle for typo tolerance
-- Relevance scoring for search results (title: 40%, hook: 25%, summary: 20%, keywords: 15%)
-- Results sorted by relevance when search is enabled
+- **Two-level sorting hierarchy:**
+  * **Primary:** Book-specific sorting (popular, trending, top-picks, originals, newest)
+  * **Secondary:** Relevance scoring for search results (title: 40%, hook: 25%, summary: 20%, keywords: 15%)
+- Results sorted by relevance when search is enabled, otherwise by book-specific sort
 
 **Response (200 OK):**
 ```json
@@ -562,6 +568,7 @@ Retrieves all books for the authenticated user. Returns paginated list with meta
 
 **Error Responses:**
 - `400 Bad Request`: Invalid search query (too short, too long, or contains invalid characters)
+- `400 Bad Request`: Invalid lastUpdated value (must be: anytime, today, this-week, this-month, or this-year)
 
 **Examples:**
 ```
@@ -571,8 +578,14 @@ GET /api/books?search=thriller
 # Filter by English language
 GET /api/books?language=en
 
-# Combined search with language filter
-GET /api/books?search=mystery&language=en&fuzzy=true
+# Filter by books updated this week
+GET /api/books?lastUpdated=this-week
+
+# Filter by tags
+GET /api/books?tags=thriller,mystery
+
+# Combined search with all filters
+GET /api/books?search=mystery&language=en&lastUpdated=this-month&tags=thriller&fuzzy=true
 
 # Disable fuzzy matching (exact matches only)
 GET /api/books?search=thriller&fuzzy=false
@@ -1287,16 +1300,26 @@ Deletes a comment. Only the comment author can delete their own comments.
 
 ### GET /api/books/explore
 
-Retrieves all published books for exploration. Supports both guest and authenticated users. Includes search, tags filtering, sorting, and pagination capabilities.
+Retrieves all published books for exploration. Supports both guest and authenticated users. Includes search, tags filtering, sorting, and pagination capabilities. Uses shared filter and query building logic with GET /api/books for consistency.
 
 **Authentication:** Optional (via `optionalAuth`)
 
 **Query Parameters:**
-- `page` (number, optional): Page number (default: 1)
-- `limit` (number, optional): Books per page (default: 20)
-- `search` (string, optional): Search query for title, summary, keywords
+- `page` (number, optional): Page number for pagination (default: 1)
+- `limit` (number, optional): Number of books per page (default: 20)
+- `search` (string, optional): Search query for title, hook, summary, keywords
+- `language` (string, optional): Filter by language code (e.g., "en", "es")
 - `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
-- `sortBy` (string, optional): Sort option: popular, newest, trending, top-picks, originals (default: newest)
+- `fuzzy` (boolean, optional): Enable fuzzy matching for typo tolerance (default: true)
+- `sortBy` (string, optional): **Book-specific sort option** - popular|newest|trending|top-picks|originals (default: newest)
+- `sortOrder` (string, optional): Sort direction for generic fallback sorting (asc|desc, default: desc)
+- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year (default: anytime)
+
+**Shared Implementation:**
+- Uses same filter building helpers as GET /api/books (buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
+- Consistent query structure and pagination pattern
+- Same enriched book data format with author info and engagement metrics
+- Unified caching strategy with TTL based on sort option
 
 **Response (200 OK):**
 ```json
@@ -1687,6 +1710,34 @@ curl https://api.twistloom.com/api/books \
 
 ## Changelog
 
+### v2.6.0 (2026-05-05)
+- Implemented robust two-level sorting hierarchy for book endpoints
+- **Primary sorting:** Book-specific sorting (applyBookSorting) with specialized logic:
+  * popular: branchesCount/totalPages ratio
+  * trending: weighted formula (readCount*0.5 + likesCount*0.3 + favoritedCount*0.2)
+  * top-picks: latest topPick timestamp
+  * originals: isOriginal=true + createdAt
+  * newest: createdAt (default)
+- **Secondary sorting:** Contextual sorting - relevance scoring for search, generic column fallback
+- Refactored buildBookQuery to handle proper sorting hierarchy and eliminate sorting conflicts
+- Updated both GET /api/books and GET /api/books/explore to use unified sorting approach
+- Removed generic applySorting replacement that was breaking book-specific sorting logic
+- Enhanced documentation to clarify two-level sorting behavior and book-specific sort options
+- Maintained all existing filtering capabilities (search, tags, language, lastUpdated)
+- Ensured backward compatibility with existing sortBy parameter values
+
+### v2.5.0 (2026-05-05)
+- Added comprehensive filtering consistency across book endpoints
+- Unified filtering options between GET /api/books and GET /api/books/explore
+- Added tags filtering to GET /api/books endpoint (comma-separated, OR logic)
+- Added language and lastUpdated filtering to GET /api/books/explore endpoint
+- Added relevance scoring with createRelevanceExpression to GET /api/books/explore
+- Implemented consistent sorting with applySorting across both endpoints
+- Added shared buildBookQuery helper function in book-controller.ts for DRY code
+- Updated pagination utils to support tags parameter
+- Enhanced search validation and sanitization across both routes
+- Updated API documentation to reflect consistent filtering capabilities
+
 ### v2.4.0 (2026-05-04)
 - Added new GET /api/books/:identifier endpoint to retrieve book by slug or UUID v7
 - Added firstPageId field to book responses (ID of page 1 for direct navigation)
@@ -1820,6 +1871,15 @@ Rate limits are enforced on a per-user basis to prevent abuse:
 ---
 
 ## Version History
+
+### v1.4.0 (2026-05-05)
+- Added lastUpdated query parameter to GET /api/books for time-based filtering (anytime|today|this-week|this-month|this-year)
+- Created shared filter building helpers in book-controller.ts (buildTimeFilterCondition, buildLanguageFilterCondition, buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
+- Refactored GET /api/books to use shared filter helpers for DRY code
+- Refactored GET /api/books/explore to use shared filter helpers for consistency
+- Updated pagination utils to support lastUpdated and language parameters
+- Added 'transactions' to ResourceName type for payments API consistency
+- Unified query building logic across book list endpoints for maintainability
 
 ### v1.3.0 (2026-04-24)
 - Updated Action type to use nested destination object with branchId and pageId

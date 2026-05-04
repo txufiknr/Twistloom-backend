@@ -9,6 +9,7 @@
  * - Aggregate counts (likes, reads) from related tables
  * - User-specific flags (isLiked, isRead) based on authenticated user
  * - DRY query builders for consistent book data across endpoints
+ * - Shared search, filter, and pagination logic
  * 
  * Performance:
  * - Uses SQL subqueries within SELECT for single-query execution
@@ -18,10 +19,14 @@
  * - Avoids N+1 query problem
  */
 
-import { sql } from "drizzle-orm";
+import { sql, and, or, eq, desc } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
 import type { Response } from "express";
 import type { ThemeValidationCategory, ThemeValidationResult } from "../types/theme-validation.js";
+import type { BookSortOption } from "../types/book.js";
+import { applySorting } from '../utils/pagination.js';
+import { dbRead } from "../db/client.js";
+import { createRelevanceExpression } from "../utils/search.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -243,4 +248,276 @@ export function getSimilarBookSelect(targetKeywords: string[], currentUserId: st
       )
     `,
   };
+}
+
+/**
+ * Builds time-based filter condition for lastUpdated parameter
+ * 
+ * @param lastUpdated - Time filter value: anytime|today|this-week|this-month|this-year
+ * @returns SQL condition or null if anytime/invalid
+ */
+export function buildTimeFilterCondition(lastUpdated?: string) {
+  if (!lastUpdated || lastUpdated === 'anytime') {
+    return null;
+  }
+
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  switch (lastUpdated) {
+    case 'today': {
+      return sql`${books.updatedAt} >= ${startOfDay}`;
+    }
+    case 'this-week': {
+      const startOfWeek = new Date(startOfDay);
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+      return sql`${books.updatedAt} >= ${startOfWeek}`;
+    }
+    case 'this-month': {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return sql`${books.updatedAt} >= ${startOfMonth}`;
+    }
+    case 'this-year': {
+      const startOfYear = new Date(now.getFullYear(), 0, 1);
+      return sql`${books.updatedAt} >= ${startOfYear}`;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Builds tags filter condition with OR logic (books matching ANY tag)
+ * 
+ * @param tags - Array of tag strings to filter by
+ * @returns SQL condition or null if no tags
+ */
+export function buildTagsFilterCondition(tags: string[]) {
+  if (!tags || tags.length === 0) {
+    return null;
+  }
+
+  const tagConditions = tags.map(tag => 
+    sql`${books.keywords} @> ${JSON.stringify([tag])}::jsonb`
+  );
+
+  return or(...tagConditions);
+}
+
+/**
+ * Builds language filter condition
+ * 
+ * @param language - ISO 639-1 language code (e.g., "en", "es")
+ * @returns SQL condition or null if no language
+ */
+export function buildLanguageFilterCondition(language?: string) {
+  if (!language) {
+    return null;
+  }
+
+  return eq(books.language, language);
+}
+
+/**
+ * Builds search condition with ILIKE patterns for multiple fields
+ * 
+ * @param search - Search query string
+ * @returns SQL condition or null if no search
+ */
+export function buildSearchCondition(search?: string) {
+  if (!search) {
+    return null;
+  }
+
+  const searchPattern = `%${search}%`;
+  const searchConditions = [
+    sql`${books.title} ILIKE ${searchPattern}`,
+    sql`${books.hook} ILIKE ${searchPattern}`,
+    sql`${books.summary} ILIKE ${searchPattern}`,
+    sql`${books.keywords} ILIKE ${searchPattern}`
+  ];
+
+  return or(...searchConditions);
+}
+
+/**
+ * Builds comprehensive book query with filtering, sorting, and search
+ * 
+ * Provides a unified interface for building book queries across endpoints.
+ * Handles all filtering options, search relevance scoring, and specialized book sorting.
+ * 
+ * Sorting Hierarchy:
+ * 1. Primary: Book-specific sorting (applyBookSorting) - handles popular, trending, top-picks, originals, newest
+ * 2. Secondary: Contextual sorting - relevance for search, generic column sorting otherwise
+ * 
+ * @param params - Query parameters object
+ * @param booksTable - Drizzle books table reference
+ * @param currentUserId - Optional current user ID for user-specific fields
+ * @returns Object with query, countQuery, and finalCondition
+ * 
+ * @example
+ * ```typescript
+ * const { query, countQuery, finalCondition } = buildBookQuery({
+ *   baseQuery: dbRead.select(getEnrichedBookSelect(userId)).from(books),
+ *   baseCondition: eq(books.userId, userId),
+ *   search: sanitizedSearch,
+ *   bookSortBy: 'trending',
+ *   genericSortBy: 'updatedAt',
+ *   sortOrder: 'desc',
+ *   tags: ['thriller', 'mystery'],
+ *   language: 'en',
+ *   lastUpdated: 'this-week'
+ * }, books, userId);
+ * ```
+ */
+export function buildBookQuery<T>(
+  params: {
+    /** Base query builder with selects and joins already applied */
+    baseQuery: T;
+    /** Base condition for the query (e.g., user filter, status filter) */
+    baseCondition: ReturnType<typeof sql>;
+    /** Search query string (sanitized) */
+    search?: string;
+    /** Book-specific sort option (primary sort) */
+    bookSortBy?: BookSortOption;
+    /** Generic field to sort by (secondary sort, used when no search) */
+    genericSortBy?: string;
+    /** Sort direction for secondary sort */
+    sortOrder?: 'asc' | 'desc';
+    /** Tags array for filtering */
+    tags?: string[];
+    /** Language filter */
+    language?: string;
+    /** Time filter */
+    lastUpdated?: string;
+  }
+) {
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated } = params;
+  
+  // Build filter conditions using shared helpers
+  const timeCondition = buildTimeFilterCondition(lastUpdated);
+  const languageCondition = buildLanguageFilterCondition(language);
+  const searchCondition = buildSearchCondition(search);
+  const tagsCondition = buildTagsFilterCondition(tags || []);
+  
+  // Combine all conditions with base condition
+  const finalCondition = combineFilterConditions(
+    baseCondition,
+    timeCondition,
+    languageCondition,
+    searchCondition,
+    tagsCondition
+  );
+  
+  // Apply where condition to main query
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let query = (baseQuery as any).where(finalCondition);
+  
+  // Apply primary sorting: book-specific sorting (acts as category filter)
+  if (bookSortBy) {
+    query = applyBookSorting(query, bookSortBy);
+  }
+  
+  // Apply secondary sorting: contextual sorting
+  if (search) {
+    // Search relevance scoring takes precedence over generic sorting
+    const relevanceExpression = createRelevanceExpression(search, books);
+    query = query.addSelect({
+      relevanceScore: relevanceExpression
+    }).orderBy(desc(relevanceExpression));
+  } else if (genericSortBy) {
+    // Apply generic column sorting only when no search
+    query = applySorting(query, genericSortBy, sortOrder);
+  }
+  
+  // Build count query for pagination
+  const countQuery = dbRead
+    .select({ count: sql`COUNT(*)::int` })
+    .from(books)
+    .where(finalCondition);
+  
+  return {
+    query,
+    countQuery,
+    finalCondition
+  };
+}
+
+/**
+ * Combines multiple filter conditions into a single AND condition
+ * 
+ * @param conditions - Array of SQL conditions (can include nulls/undefined)
+ * @returns Combined AND condition, single condition, or always-true condition
+ */
+export function combineFilterConditions(...conditions: (ReturnType<typeof sql> | null | undefined)[]) {
+  const validConditions = conditions.filter((c): c is ReturnType<typeof sql> => c !== null && c !== undefined);
+  
+  if (validConditions.length === 0) {
+    return sql`1=1`; // Always true condition when no filters
+  }
+  
+  if (validConditions.length === 1) {
+    return validConditions[0];
+  }
+  
+  return and(...validConditions);
+}
+
+/**
+ * Applies book-specific sorting to a query based on sort option
+ * 
+ * @param query - Drizzle query builder
+ * @param sortBy - Sort option (popular, newest, trending, top-picks, originals)
+ * @returns Modified query builder with sorting applied
+ * 
+ * Behavior:
+ * - popular: Sorts by branchesCount/totalPages ratio (highest first)
+ * - newest: Sorts by createdAt (latest first)
+ * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
+ * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
+ * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+ * 
+ * @remarks
+ * Uses `any` type for query parameter because Drizzle ORM query builder types
+ * are extremely complex generic types that don't fit well into simple type constraints.
+ * Type safety is maintained through the actual database operations and SQL generation.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
+  switch (sortBy) {
+    case 'popular': {
+      // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
+      return query.orderBy(
+        sql`(COALESCE(${books.branchesCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`
+      );
+    }
+
+    case 'trending': {
+      // Sort by pre-calculated trendingScore (updated daily via cron job with time decay)
+      return query.orderBy(desc(books.trendingScore));
+    }
+
+    case 'top-picks': {
+      // Sort by latest topPick timestamp (only books marked as top picks)
+      return query
+        .where(sql`${books.topPick} IS NOT NULL`)
+        .orderBy(desc(books.topPick));
+    }
+
+    case 'originals': {
+      // Filter by isOriginal: true (auto-generated books via cron job) and has cover image
+      // Sort by creation date (newest first)
+      // Note: Intentionally filtering to only show originals with covers for quality control
+      // Auto-generated books without covers are excluded from the originals list
+      return query
+        .where(eq(books.isOriginal, true))
+        .where(sql`${books.image} IS NOT NULL`)
+        .orderBy(desc(books.createdAt));
+    }
+
+    case 'newest':
+    default: {
+      return query.orderBy(desc(books.createdAt));
+    }
+  }
 }

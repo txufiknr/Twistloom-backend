@@ -19,7 +19,7 @@ import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
-import type { Book, BookSortOption, BookStatus, EnrichedBookData } from "../types/book.js";
+import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction, StoryPageMeta } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -1038,65 +1038,6 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
   } catch (error) {
     console.error(`Failed to get similar books for ${bookId}:`, getErrorMessage(error));
     throw new Error(`Unable to retrieve similar books: ${getErrorMessage(error)}`, { cause: error });
-  }
-}
-
-/**
- * Applies book-specific sorting to a query based on sort option
- * 
- * @param query - Drizzle query builder
- * @param sortBy - Sort option (popular, newest, trending, top-picks, originals)
- * @returns Modified query builder with sorting applied
- * 
- * Behavior:
- * - popular: Sorts by branchesCount/totalPages ratio (highest first)
- * - newest: Sorts by createdAt (latest first)
- * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
- * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
- * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
- * 
- * @remarks
- * Uses `any` type for query parameter because Drizzle ORM query builder types
- * are extremely complex generic types that don't fit well into simple type constraints.
- * Type safety is maintained through the actual database operations and SQL generation.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
-  switch (sortBy) {
-    case 'popular': {
-      // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
-      return query.orderBy(
-        sql`(COALESCE(${books.branchesCount}, 0)::float / NULLIF(${books.totalPages}, 0)) DESC`
-      );
-    }
-
-    case 'trending': {
-      // Sort by pre-calculated trendingScore (updated daily via cron job with time decay)
-      return query.orderBy(desc(books.trendingScore));
-    }
-
-    case 'top-picks': {
-      // Sort by latest topPick timestamp (only books marked as top picks)
-      return query
-        .where(sql`${books.topPick} IS NOT NULL`)
-        .orderBy(desc(books.topPick));
-    }
-
-    case 'originals': {
-      // Filter by isOriginal: true (auto-generated books via cron job) and has cover image
-      // Sort by creation date (newest first)
-      // Note: Intentionally filtering to only show originals with covers for quality control
-      // Auto-generated books without covers are excluded from the originals list
-      return query
-        .where(eq(books.isOriginal, true))
-        .where(sql`${books.image} IS NOT NULL`)
-        .orderBy(desc(books.createdAt));
-    }
-
-    case 'newest':
-    default: {
-      return query.orderBy(desc(books.createdAt));
-    }
   }
 }
 

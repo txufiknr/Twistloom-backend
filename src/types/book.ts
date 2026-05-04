@@ -178,12 +178,31 @@ export interface CreateBookResponse {
 }
 
 /**
- * Book sorting options
+ * Available book sorting options
  * 
- * Available options:
- * - popular: Sorts by branchesCount/totalPages ratio (most branched stories)
- * - newest: Sorts by createdAt timestamp (latest books)
- * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
- * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
+ * These define the primary sorting behavior for book lists
  */
-export type BookSortOption = 'popular' | 'newest' | 'trending' | 'top-picks' | 'originals';
+export const bookSortOptions = [
+  'popular',
+  'newest', 
+  'trending',
+  'top-picks',
+  'originals'
+] as const;
+
+export type BookSortOption = typeof bookSortOptions[number];
+
+/**
+ * Available lastUpdated filter values
+ * 
+ * These define time-based filtering options for book lists
+ */
+export const lastUpdatedFilterOptions = [
+  'anytime',
+  'today',
+  'this-week',
+  'this-month',
+  'this-year'
+] as const;
+
+export type LastUpdatedFilter = typeof lastUpdatedFilterOptions[number];
