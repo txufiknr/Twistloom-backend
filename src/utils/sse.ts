@@ -25,6 +25,7 @@
 
 import type { Response } from 'express';
 import type { BookCreationProgressEvent } from '../types/sse.js';
+import { getErrorMessage } from './error.js';
 
 /**
  * SSE event interface representing a single Server-Sent Event
@@ -327,7 +328,7 @@ export function transformToSSEStream(
         
         controller.close();
       } catch (error) {
-        const errorEvent = createErrorEvent(error instanceof Error ? error.message : 'Unknown error');
+        const errorEvent = createErrorEvent(getErrorMessage(error));
         controller.enqueue(encoder.encode(errorEvent));
         controller.close();
       } finally {

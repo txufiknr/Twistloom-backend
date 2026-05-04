@@ -8,6 +8,13 @@
       "when": 1777609656506,
       "tag": "0000_bouncy_mindworm",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777881003957,
+      "tag": "0001_bumpy_starbolt",
+      "breakpoints": true
     }
   ]
 }

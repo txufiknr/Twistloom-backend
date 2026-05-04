@@ -15,7 +15,7 @@ import { handleThemeValidationError } from './book-controller.js';
 import type { Response } from 'express';
 import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache } from './cache.js';
 import { enrichActions } from './book.js';
-import { getErrorMessage } from '../utils/error.js';
+import { getErrorMessage, handleApiError } from '../utils/error.js';
 
 /**
  * Book creation parameters
@@ -123,7 +123,7 @@ export async function createBookCore(
       ...result,
       firstPage: {
         ...result.firstPage,
-        actions: enrichActions(result.firstPage.actions, { page: 1, branchId: 'main' }, undefined)
+        actions: enrichActions(result.firstPage.actions, 1, undefined)
       }
     } satisfies CreateBookResponse;
 
@@ -152,10 +152,6 @@ export function handleBookCreationError(res: Response, error: unknown): void {
   if (error instanceof BookCreationError && error.validationResult) {
     handleThemeValidationError(res, error.validationResult);
   } else {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    res.status(500).json({
-      error: 'Failed to create book',
-      details: errorMessage
-    });
+    handleApiError(res, 'Failed to create book', error);
   }
 }

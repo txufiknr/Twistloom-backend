@@ -676,7 +676,7 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
           console.log(`[imagekit] 🗑️ File ${deletion.fileId} deleted successfully (fallback)`);
         } catch (error) {
           stats.failed++;
-          const errorMsg = `Failed to delete file ${deletion.fileId}: ${error instanceof Error ? error.message : String(error)}`;
+          const errorMsg = `Failed to delete file ${deletion.fileId}: ${getErrorMessage(error)}`;
           stats.errors.push(errorMsg);
           console.error(`[imagekit] ❌ ${errorMsg}`);
         }
@@ -694,7 +694,7 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
     
     return stats;
   } catch (error) {
-    const errorMsg = `ImageKit cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
+    const errorMsg = `ImageKit cleanup failed: ${getErrorMessage(error)}`;
     console.error(`[imagekit] ❌ ${errorMsg}`);
     stats.errors.push(errorMsg);
     return stats;

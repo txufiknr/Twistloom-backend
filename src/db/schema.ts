@@ -649,6 +649,8 @@ export const transactions = pgTable(
     type: text("type").$type<"purchase" | "usage" | "refund">().notNull(),
     credits: integer("credits").notNull(),
     amountUsd: real("amount_usd"),
+    context: text("context"), // Additional context for usage transactions (e.g., "book_creation")
+    metadata: jsonb("metadata"), // Additional metadata for the transaction
     paymentIntentId: text("payment_intent_id").unique(), // Stripe payment intent for idempotency
     stripeEventId: text("stripe_event_id").unique(), // Stripe event ID for webhook idempotency
     createdAt,
@@ -660,6 +662,8 @@ export const transactions = pgTable(
     index("transactions_type_idx").on(t.type),
     // Index for recent transactions
     index("transactions_created_idx").on(t.createdAt.desc()),
+    // Index for context filtering
+    index("transactions_context_idx").on(t.context),
     // Unique index for payment intent idempotency
     unique("transactions_payment_intent_unique").on(t.paymentIntentId),
     // Unique index for Stripe event idempotency
@@ -743,5 +747,40 @@ export const userNotifications = pgTable(
     index("user_notifications_type_idx").on(t.type),
     // Index for cleanup (old read notifications)
     index("user_notifications_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Page translations table
+ * @summary Stores translated versions of page text for multi-language support
+ * @example
+ * {
+ *   "id": "trans123",
+ *   "page_id": "page456",
+ *   "language": "es",
+ *   "translated_text": "El pasillo se extendía infinitamente ante mí...",
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const pageTranslations = pgTable(
+  "page_translations",
+  {
+    id: id(),
+    pageId: pageId("cascade"), // Delete if page is deleted
+    language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
+    translatedText: text("translated_text").notNull(), // Translated page text
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Unique constraint on (pageId, language) to ensure one translation per page per language
+    unique("page_translations_page_language_unique").on(t.pageId, t.language),
+    // Index for page translations lookup
+    index("page_translations_page_idx").on(t.pageId),
+    // Index for language filtering
+    index("page_translations_language_idx").on(t.language),
+    // Index for cleanup (old translations)
+    index("page_translations_created_idx").on(t.createdAt.desc()),
   ]
 );

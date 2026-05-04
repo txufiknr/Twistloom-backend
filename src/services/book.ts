@@ -507,7 +507,7 @@ export function mapToUserStoryPage(dbPage: DBPage, selectedAction?: Action): Use
   const persistedPage = mapToPersistedStoryPage(dbPage);
   return {
     ...persistedPage,
-    actions: enrichActions(dbPage.actions || [], persistedPage),
+    actions: enrichActions(dbPage.actions || [], persistedPage.page),
     selectedAction: selectedAction || undefined,
   } satisfies UserStoryPage;
 }
@@ -579,12 +579,12 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
  */
 export function enrichActions(
   actions: Action[],
-  currentPage: Pick<PersistedStoryPage, 'page' | 'branchId'>,
+  currentPageNumber: number,
   chosenAction?: Action
 ): EnrichedAction[] {
   return actions.map(action => ({
     ...action,
-    nextPageNumber: action.destination?.pageId ? currentPage.page + 1 : undefined,
+    nextPageNumber: action.destination?.pageId ? currentPageNumber + 1 : undefined,
     isUserChosen: chosenAction ? deepEqualSimple(chosenAction, action) : undefined,
   }));
 }
@@ -1167,7 +1167,7 @@ export async function triggerCandidateGenerationRetry(
 ): Promise<void> {
   // Check for incomplete actions if not provided
   if (hasIncompleteActions === undefined) {
-    const enrichedActions = enrichActions(page.actions || [], { page: page.page, branchId: page.branchId }, userChosenAction);
+    const enrichedActions = enrichActions(page.actions || [], page.page, userChosenAction);
     const visibleActions = enrichedActions.filter((action: EnrichedAction) => 
       action.destination?.branchId && action.destination?.pageId
     );
@@ -1175,9 +1175,7 @@ export async function triggerCandidateGenerationRetry(
   }
 
   // Skip if all actions have destinations
-  if (!hasIncompleteActions) {
-    return;
-  }
+  if (!hasIncompleteActions) return;
 
   // Generate deduplication key based on page ID and time window (default 1 minute)
   const timeWindow = Math.floor(Date.now() / 60000);

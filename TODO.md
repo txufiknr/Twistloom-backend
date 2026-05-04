@@ -1,26 +1,36 @@
-[ ] story state: is it really need `maxPage`?
+[x] book api route :slug/:pageId
+[x] visit page: update selectedAction
+[x] get page: include selectedAction
+[x] implement libretranslate: pageId, lang (bcp)
+[x] api: receive Accept-Language
+[x] get page: accept lang header > translate if different with book langauge
+[x] initialize book: consume 5 credits
+[x] get page ensure include selectedAction?: Action;
+[ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
+[ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
-[ ] Don't output viableEnding if unchanged
-[ ] book stats: already in table
+[ ] book stats: already in table (via trigger)
+[ ] book stats: completedCount
+[ ] book read count: only count unique user
 [ ] trigger: ensureBookIncrementTrigger (complete, read, like, favorite)
+[ ] books: GET route support filter lastUpdated (apa aja?)
 
-[x] auto generate book slug on insert
-[x] Plotflag & pastinteraction tambah place?: string
-[x] Sse can we make generating event ends when evaluating starts
-[x] last page gaperlu ensurecandidate
-[x] kalau invalid action removed sampai ga bersisa, kasih 1 action continue
-[x] Update docs pre generation
-[x] prompt: ensure thread update instruction/format exist
-[x] Update docs branch traversal, snapshot, delta
-[x] Think-then-output: Ensure \n\n
-[x] I [verb] or "[dialogue]"
-[x] cek apakah importantObjects dipake di prompt
+update docs:
+dual auth (guest flow)
+book api specs
+changes:
+- requireAuth: GET /api/books/:identifier/:pageId
+- requireAuth: POST /api/books/:identifier/:pageId/visit
+- initialize book (POST /api/books and POST /api/books/stream): only for authenticated user & consumes credits
+
+story state:
+[ ] story state: is it really need `maxPage`?
+[ ] Don't output viableEnding if unchanged
 
 TODO:
-[x] stripe api keys (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET)
 [ ] Stripe switch to live
 [ ] type validation using https://typia.io/
 [ ] search jaccard, need change to cursor pagination?

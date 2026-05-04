@@ -13,6 +13,7 @@
  * 
  * Endpoints:
  * - POST /api/books - Create new psychological thriller books
+ * - POST /api/books/stream - Create new psychological thriller books with streaming
  * - GET /api/books - Retrieve user's book library
  * - GET /api/books/explore - Explore published books with search and pagination
  * - PUT /api/books/:id - Update book information and cover image
@@ -28,7 +29,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments, userPageProgress } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql, or } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -47,10 +48,16 @@ import type { BookSortOption, EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
 import type { Action, EnrichedAction } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
+import { consumeCredits } from "../services/credits.js";
+import { getTranslatedText, shouldTranslate } from "../services/translation.js";
+import { CREDIT_COSTS } from "../config/credits.js";
+import { isCreditError } from "../config/errors.js";
 import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
+import type { DBPage } from "../types/schema.js";
+import { isValidUuid } from "../utils/uuid.js";
 
 const router = Router();
 
@@ -173,9 +180,10 @@ const router = Router();
  *   }
  * }
  */
-router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
+    const userId = req.userId!;
     
     if (!theme) {
       return res.status(400).json({ 
@@ -189,10 +197,29 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
       });
     }
 
+    // Consume credits for story generation (transactional check included)
+    try {
+      await consumeCredits(userId, "STORY_GENERATION", {
+        context: "book_creation",
+        metadata: { theme: theme.trim() }
+      });
+    } catch (error) {
+      if (isCreditError(error)) {
+        return res.status(402).json({
+          error: {
+            type: "INSUFFICIENT_CREDITS",
+            message: `Insufficient credits to create a story. Requires ${CREDIT_COSTS.STORY_GENERATION} credits.`,
+            required: CREDIT_COSTS.STORY_GENERATION
+          }
+        });
+      }
+      throw error; // Re-throw other errors
+    }
+
     // Use shared core logic (without progress callback for synchronous response)
     const result = await createBookCore(
       {
-        userId: req.userId!,
+        userId,
         theme,
         mcCandidate,
         generateCoverImage
@@ -276,9 +303,10 @@ router.post("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
  * event: error
  * data: {"error":"Theme validation failed"}
  */
-router.post("/stream", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.post("/stream", requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
+    const userId = req.userId!;
 
     // STEP 1: VALIDATING THEME
     // Validate theme (required)
@@ -293,6 +321,25 @@ router.post("/stream", guestOrAuthMiddleware, async (req: Request, res: Response
       return res.status(400).json({
         error: `Theme exceeds maximum length of ${MAX_THEME_LENGTH} characters`
       });
+    }
+
+    // Consume credits for story generation (transactional check included)
+    try {
+      await consumeCredits(userId, "STORY_GENERATION", {
+        context: "book_creation_stream",
+        metadata: { theme: theme.trim() }
+      });
+    } catch (error) {
+      if (isCreditError(error)) {
+        return res.status(402).json({
+          error: {
+            type: "INSUFFICIENT_CREDITS",
+            message: `Insufficient credits to create a story. Requires ${CREDIT_COSTS.STORY_GENERATION} credits.`,
+            required: CREDIT_COSTS.STORY_GENERATION
+          }
+        });
+      }
+      throw error; // Re-throw other errors
     }
 
     // STEP 2: VALIDATING MC CANDIDATE
@@ -376,10 +423,12 @@ router.post("/stream", guestOrAuthMiddleware, async (req: Request, res: Response
       sendSSEEvent(res, event);
     };
 
+    // Credits already consumed above in transactional check
+
     // Create book with progress events
     const result = await createBookCore(
       {
-        userId: req.userId!,
+        userId,
         theme: theme.trim(),
         mcCandidate: parsedMcCandidate,
         generateCoverImage: parsedGenerateCoverImage
@@ -893,20 +942,22 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
 });
 
 /**
- * GET /api/books/:identifier/:branchId/:page
+ * GET /api/books/:identifier/:pageId
  * 
  * Retrieves a specific page within a branch of a book.
  * Accepts both slug and UUID v7 as identifier.
  * 
+ * Supports translation via Accept-Language header. If the requested language
+ * differs from the book's language, the page text will be translated and cached.
+ * 
  * @param identifier - Book slug or UUID v7
- * @param branchId - Branch identifier (e.g., "main", "abc123")
- * @param page - Page number within the branch
+ * @param pageId - Page identifier (e.g., "main", "abc123")
+ * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
  * @returns Page with actions and book metadata
  */
-router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { identifier, branchId, page: pageNumberStr } = req.params;
-    const pageNumber = parseInt(pageNumberStr as string);
+    const { identifier, pageId } = req.params;
 
     // Handle array case for identifier (Express can return string[])
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -945,8 +996,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
       .where(
         and(
           eq(pages.bookId, book.id),
-          eq(pages.branchId, branchId as string),
-          eq(pages.page, pageNumber)
+          eq(pages.branchId, pageId as string)
         )
       )
       .limit(1);
@@ -955,7 +1005,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
       return handleNotFoundError(res, "Page not found");
     }
 
-    const page = pageData[0];
+    const page: DBPage = pageData[0];
 
     // Query user's chosen action for this page (if authenticated)
     let userChosenAction: Action | undefined;
@@ -972,25 +1022,46 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
         .limit(1);
       
       if (userProgress.length > 0) {
-        userChosenAction = userProgress[0].action as Action;
+        userChosenAction = userProgress[0].action;
       }
     }
 
     // Enrich actions with navigation metadata and filter out incomplete actions
-    const allEnrichedActions = enrichActions(page.actions, { page: page.page, branchId: page.branchId }, userChosenAction);
+    const allEnrichedActions = enrichActions(page.actions, page.page, userChosenAction);
     const visibleActions = allEnrichedActions.filter((action: EnrichedAction) => action.destination?.branchId && action.destination?.pageId);
 
     // Fire-and-forget retry of failed candidate generations if any actions are missing destinations
     // This provides immediate recovery when users visit pages with incomplete actions
-    // Supports polling/SSE for real-time action availability updates
+    // TODO: Supports polling/SSE for real-time action availability updates
     // Pass pre-checked hasIncompleteActions to avoid double-enrichment
     if (req.userId && visibleActions.length < allEnrichedActions.length) {
       void triggerCandidateGenerationRetry(req.userId, page, userChosenAction, true);
     }
 
+    // Handle translation if Accept-Language header is provided and differs from book language
+    let translatedText: string | undefined;
+    const acceptLanguage = req.headers['accept-language'] as string | undefined;
+    const bookLanguage = book.language || 'en';
+    
+    const targetLanguage = shouldTranslate(bookLanguage, acceptLanguage);
+    if (targetLanguage) {
+      const translationResult = await getTranslatedText({
+        pageId: page.id,
+        text: page.text,
+        bookLanguage,
+        targetLanguage
+      });
+      
+      if (translationResult.text) {
+        translatedText = translationResult.text;
+      }
+      // If translation failed, translationResult.error contains error info
+      // but we continue with original text (fallback behavior)
+    }
+
     // Return enriched page with only frontend-relevant fields
     // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
-    const enrichedPage = {
+    const enrichedPage: Partial<Omit<DBPage, 'actions'>> & { actions: EnrichedAction[], selectedAction?: Action, translatedText?: string } = {
       id: page.id,
       page: page.page,
       bookId: page.bookId,
@@ -1003,9 +1074,11 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
       charactersPresent: page.charactersPresent,
       keyEvents: page.keyEvents,
       importantObjects: page.importantObjects,
-      actions: visibleActions,
+      actions: visibleActions, // Only actions that has destination page
+      selectedAction: userChosenAction,
+      translatedText: translatedText,
       createdAt: page.createdAt,
-      updatedAt: page.updatedAt
+      updatedAt: page.updatedAt,
     };
 
     res.json({
@@ -1018,7 +1091,7 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
 });
 
 /**
- * POST /api/books/:identifier/:branchId/:page/visit
+ * POST /api/books/:identifier/:pageId/visit
  * 
  * Marks a page as visited by updating user session and page progress.
  * This is called when a user navigates to a page (not during pre-generation).
@@ -1030,23 +1103,15 @@ router.get("/:identifier/:branchId/:page", optionalAuth, async (req: Request, re
  * @param previousPageId - The previous page ID
  * @returns Success confirmation
  */
-router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Request, res: Response) => {
+router.post("/:identifier/:pageId/visit", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { identifier, branchId, page } = req.params;
+    const { identifier, pageId } = req.params;
     const { action, previousPageId } = req.body;
     const userId = req.userId!;
 
-    if (!action) {
-      return res.status(400).json({ 
-        error: "Missing required field: action is required" 
-      });
-    }
-
-    if (!previousPageId) {
-      return res.status(400).json({ 
-        error: "Missing required field: previousPageId is required" 
-      });
-    }
+    if (!action) return handleValidationError(res, "Missing required field: action is required");
+    if (!previousPageId) return handleValidationError(res, "Missing required field: previousPageId is required");
+    if (!isValidUuid(previousPageId)) return handleValidationError(res, "Invalid previousPageId: must be valid uuid");
 
     // Handle array case for identifier (Express can return string[])
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -1064,8 +1129,7 @@ router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Reque
       .where(
         and(
           eq(pages.bookId, book.id),
-          eq(pages.branchId, branchId as string),
-          eq(pages.page, parseInt(page as string))
+          eq(pages.branchId, pageId as string)
         )
       )
       .limit(1);
@@ -1074,7 +1138,6 @@ router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Reque
       return handleNotFoundError(res, "Page not found");
     }
 
-    const pageId = pageData[0].id;
     const pageBranchId = pageData[0].branchId;
     const pageNumber = pageData[0].page;
 
@@ -1089,15 +1152,10 @@ router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Reque
       return handleNotFoundError(res, "Previous page not found");
     }
 
-    const isValidAction = previousPageData[0].actions.some((a: Action) => 
-      deepEqualSimple(a, action)
-    );
-
+    // TODO: except for premium user via custom action
+    const isValidAction = previousPageData[0].actions.some((a: Action) => deepEqualSimple(a, action));
     if (!isValidAction) {
-      return res.status(400).json({
-        error: "Invalid action",
-        message: "The provided action does not exist on the previous page"
-      });
+      return handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
     }
 
     // Validate user's action choice: check if user already chose a different action on previous page
@@ -1115,7 +1173,7 @@ router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Reque
     if (previousPageProgress.length > 0) {
       const previouslyChosenAction = previousPageProgress[0].action as Action;
       if (!deepEqualSimple(previouslyChosenAction, action)) {
-        // TODO: except for premium user
+        // TODO: except for premium user via chooose other action
         return res.status(400).json({
           error: "Choice made, can't make another choice",
           message: "You already chose a different action on this page"
@@ -1123,8 +1181,8 @@ router.post("/:identifier/:branchId/:page/visit", requireAuth, async (req: Reque
       }
     }
 
-    // Mark page as visited
-    await markPageVisited(userId, book.id, pageId, previousPageId, action);
+    // Mark page as visited and persists chosen action
+    await markPageVisited(userId, book.id, pageId as string, previousPageId, action);
 
     // TODO: stats
     // - you're 2,000th visitor

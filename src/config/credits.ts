@@ -83,6 +83,29 @@ export interface CreditPack {
   color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
 }
 
+/**
+ * Credit costs for various actions
+ * @overview Defines credit costs for different features and operations
+ * 
+ * These costs are configurable and can be adjusted based on business requirements.
+ * All costs should be positive integers.
+ */
+export const CREDIT_COSTS = {
+  /** Cost to generate a new story/book */
+  STORY_GENERATION: 5,
+  
+  /** Cost to generate additional pages in an existing story */
+  CHOOSE_OTHER_ACTION: 2, // TODO: use
+  
+  /** Cost to generate custom actions (future feature) */
+  CUSTOM_ACTION: 5, // TODO: use
+  
+  /** Cost to unlock alternate endings (future feature) */
+  UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
+} as const;
+
+export type CreditCostKey = keyof typeof CREDIT_COSTS;
+
 export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",

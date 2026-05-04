@@ -18,6 +18,7 @@ export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
 export const MAX_BRANCHING_RETRIES = 3;
+export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // TODO: use
 
 export const ACTION_TEXT_LENGTH = '1 short sentence';
 export const KEY_EVENT_LENGTH = '1-4 short phrases';

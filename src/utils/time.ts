@@ -2,6 +2,8 @@
  * Time-related utility functions
  */
 
+import { getErrorMessage } from "./error.js";
+
 /**
  * @summary Validates and parses a date string with comprehensive error handling
  * @description Safely parses date strings with validation and detailed error reporting
@@ -45,17 +47,14 @@ export function validateAndParseDate(
     return {
       date: null,
       isValid: false,
-      error: context 
-        ? `Invalid date format for ${context}: ${dateString}`
-        : `Invalid date format: ${dateString}`
+      error: `Invalid date format${context ? ` for ${context}` : ''}: ${dateString}`
     };
   } catch (error) {
+    const errorMessage = getErrorMessage(error);
     return {
       date: null,
       isValid: false,
-      error: context 
-        ? `Error parsing date for ${context}: ${error instanceof Error ? error.message : String(error)}`
-        : `Error parsing date: ${error instanceof Error ? error.message : String(error)}`
+      error: `Error parsing date${context ? ` for ${context}` : ''}: ${errorMessage}`
     };
   }
 }
