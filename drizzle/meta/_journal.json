@@ -15,6 +15,13 @@
       "when": 1777881003957,
       "tag": "0001_bumpy_starbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777944651079,
+      "tag": "0002_sad_trauma",
+      "breakpoints": true
     }
   ]
 }

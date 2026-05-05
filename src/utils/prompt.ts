@@ -2676,9 +2676,9 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   if (!currentState) {
     const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
     currentBook ??= progress.book ?? null;
+    currentPage ??= progress.page;
     currentState = progress.state;
     currentSession = progress.session ?? null;
-    currentPage ??= progress.page;
   } else if (!currentBook) {
     // If state is provided but book is not, try to get it from session
     const session = await getUserSession(userId);

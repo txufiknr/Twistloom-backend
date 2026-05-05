@@ -482,6 +482,7 @@ export const userComments = pgTable(
     id: id(),
     userId: userId(),
     bookId: bookId("cascade"), // Delete if book is deleted
+    pageId: uuid("page_id").references(() => pages.id, { onDelete: "cascade" }), // Delete if page is deleted
     parentCommentId: uuid("parent_comment_id"), // For threaded comments
     content: text("content").notNull(),
     createdAt,
@@ -557,7 +558,7 @@ export const userSessions = pgTable(
     userId: userId(),
     bookId: bookId("cascade"), // Delete if book is deleted
     pageId: pageId("set null"),
-    previousPageId: uuid("previous_page_id"),
+    previousPageId: uuid("previous_page_id"), // For navigation history
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,
     updatedAt,

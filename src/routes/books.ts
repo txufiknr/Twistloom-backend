@@ -977,7 +977,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
  * @returns Page with actions and book metadata
  */
-router.get("/:identifier/:pageId", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { identifier, pageId } = req.params;
 
@@ -1347,7 +1347,7 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
     const updatedPage = await ensureCandidatesForPage(
       userId,
       userPage,
-      null, // currentState - can be inferred if needed
+      null, // currentState - will be inferred in generateCandidatePage via getStoryProgress
       book // currentBook - used for totalPages check
     );
 

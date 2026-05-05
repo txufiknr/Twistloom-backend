@@ -812,7 +812,7 @@ Marks a page as visited by updating user session and page progress. This is call
 
 ---
 
-### POST /api/books/:identifier/:pageId/candidates
+### GET /api/books/:identifier/:pageId/candidates
 
 Pre-generates candidate pages for all actions on a story page. This ensures that when users select actions, the corresponding destination pages are immediately available without waiting for AI generation.
 
@@ -1760,7 +1760,7 @@ curl https://api.twistloom.com/api/books \
 - Added translatedText field to GET /api/books/:identifier/:pageId response (supports Accept-Language header)
 - Added Accept-Language header support for page translation (cached for performance)
 - Updated POST /api/books/:identifier/:pageId/visit path from :identifier/:branchId/:page/visit to :identifier/:pageId/visit
-- Added new POST /api/books/:identifier/:pageId/candidates endpoint for pre-generating candidate pages
+- Added new GET /api/books/:identifier/:pageId/candidates endpoint for pre-generating candidate pages
 - Added transaction metadata (context, metadata) to credits schema for better audit trail
 - Fixed race condition in credit system by removing redundant hasSufficientCredits check
 - Improved translation error handling with metadata and type-safe error responses

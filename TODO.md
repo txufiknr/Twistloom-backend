@@ -63,11 +63,7 @@ Book meta prompt cache LRU aja
 
 Cek userpageprogress.previouspageid udah diset ketika backtoprevouspage & chooseaction
 
-Route Validate:
-- bookId is current active session
-- universeId is in current bookId
-- pageId is in current universeId
-- Selected action match with pageId (if not custom)
+
 
 Conditional prompt
 Boost image importance score when new place is discovered.
