@@ -10,6 +10,7 @@
 [x] book stats: already in table (via trigger)
 [x] book stats: completedCount
 [x] book read count: only count unique user
+[ ] ensure book slug not same as preserved endpoints: stats, explore
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong

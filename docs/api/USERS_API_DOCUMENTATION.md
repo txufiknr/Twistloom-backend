@@ -48,14 +48,16 @@ The Users API provides endpoints for managing user profiles, social interactions
 7. [Daily Check-in](#daily-check-in)
    - [Get Check-in Status](#get-usercheckinstatus)
    - [Perform Daily Check-in](#post-usercheckin)
-8. [Error Handling](#error-handling)
-9. [HTTP Headers](#http-headers)
-10. [Caching Strategy](#caching-strategy)
-11. [Rate Limiting](#rate-limiting)
-12. [Authentication](#authentication)
-13. [Database Schema](#database-schema)
-14. [Testing](#testing)
-15. [Changelog](#changelog)
+8. [Activity Logs](#activity-logs)
+   - [Get User Activity Logs](#get-useractivity-logs)
+9. [Error Handling](#error-handling)
+10. [HTTP Headers](#http-headers)
+11. [Caching Strategy](#caching-strategy)
+12. [Rate Limiting](#rate-limiting)
+13. [Authentication](#authentication)
+14. [Database Schema](#database-schema)
+15. [Testing](#testing)
+16. [Changelog](#changelog)
 
 ---
 
@@ -390,7 +392,6 @@ Deletes the authenticated user's profile and all associated data from the system
     "userFavorites": 8,
     "userLikes": 15,
     "userSessions": 42,
-    "userDevices": 2,
     "userComments": 5
   },
   "imageQueuedForDeletion": true
@@ -1081,6 +1082,64 @@ Performs daily check-in and awards free credits to the authenticated user. Each 
 
 ---
 
+## Activity Logs
+
+### GET /user/activity-logs
+
+Get activity logs for the authenticated user with optional filtering.
+
+**Authentication:** Required
+
+**Query Parameters:**
+- `activityType` (string, optional): Filter by activity type (e.g., "book_created", "liked", "commented", "followed", "favorited", "session_updated")
+- `targetType` (string, optional): Filter by target type (e.g., "book", "comment", "user")
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Request Example:**
+```bash
+curl -X GET "https://api.example.com/user/activity-logs?activityType=liked&limit=10" \
+  -H "Cookie: next-auth.session-token=..."
+```
+
+**Success Response (200 OK):**
+```json
+{
+  "logs": [
+    {
+      "id": "log123",
+      "userId": "user123",
+      "activityType": "liked",
+      "targetType": "book",
+      "targetId": "book456",
+      "metadata": null,
+      "ipAddress": "192.168.1.1",
+      "userAgent": "Mozilla/5.0...",
+      "platform": "android",
+      "appVersion": "1.0.0",
+      "createdAt": "2023-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+**Activity Types:**
+- `book_created`: User created a new book
+- `liked`: User liked a book, comment, or user
+- `commented`: User commented on a book
+- `followed`: User followed another user
+- `favorited`: User favorited a book
+- `session_updated`: User updated their reading session
+
+**Implementation Notes:**
+- Activity logs are automatically created when users perform actions
+- Logs capture request metadata (IP, user agent, platform, app version) for analytics
+- Supports filtering by activity type and target type
+- Ordered by creation date (newest first)
+- Paginated for efficient retrieval
+
+---
+
 ## Error Handling
 
 All endpoints follow consistent error response formats:
@@ -1184,11 +1243,14 @@ CREATE TABLE "users" (
   "gender" text,
   "image" text,
   "image_id" text,
+  "credits" integer DEFAULT 50 NOT NULL, -- First-time user bonus
   "last_active" timestamp with time zone DEFAULT now() NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 ```
+
+**Note:** The `credits` field has a default value of 50 for new users (first-time user bonus). This provides new users with initial credits to create stories and engage with the platform.
 
 ### User Likes Table
 ```sql
@@ -1246,6 +1308,37 @@ CREATE TABLE "user_checkins" (
   UNIQUE ("user_id", "check_in_date")
 );
 ```
+
+### User Activity Logs Table
+```sql
+CREATE TABLE "user_activity_logs" (
+  "id" uuid PRIMARY KEY,
+  "user_id" uuid REFERENCES users(id) ON DELETE cascade NOT NULL,
+  "activity_type" text NOT NULL, -- "book_created" | "liked" | "commented" | "followed" | "favorited" | "session_updated"
+  "target_type" text, -- "book" | "comment" | "user"
+  "target_id" uuid,
+  "metadata" jsonb,
+  "ip_address" text,
+  "user_agent" text,
+  "platform" text, -- "android" | "ios" | "web"
+  "app_version" text,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+**Indexes:**
+- `user_activity_logs_user_idx`: (user_id, created_at DESC) - For user's activity history
+- `user_activity_logs_type_idx`: (activity_type) - For activity type filtering
+- `user_activity_logs_target_idx`: (target_type, target_id) - For target-based queries
+- `user_activity_logs_created_idx`: (created_at DESC) - For cleanup (old logs)
+
+**Activity Types:**
+- `book_created`: User created a new book
+- `liked`: User liked a book, comment, or user
+- `commented`: User commented on a book
+- `followed`: User followed another user
+- `favorited`: User favorited a book
+- `session_updated`: User updated their reading session
 
 ---
 

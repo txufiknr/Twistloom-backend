@@ -42,13 +42,13 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
-import { users, userDevices, userSessions, userLikes, userFavorites, userComments, userFollows, deletedImages } from "../db/schema.js";
+import { users, userSessions, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus } from "../services/user.js";
+import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUserSelect } from "../services/user-controller.js";
@@ -581,7 +581,6 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
  *       "userFavorites": 8,
  *       "userLikes": 15,
  *       "userSessions": 42,
- *       "userDevices": 2,
  *       "userComments": 5
  *     },
  *     "imageQueuedForDeletion": true
@@ -624,14 +623,12 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
       deletedFavorites,
       deletedLikes,
       deletedSessions,
-      deletedDevices,
       deletedComments
     ] = await Promise.all([
       dbWrite.delete(users).where(eq(users.userId, userId)).returning(),
       dbWrite.delete(userFavorites).where(eq(userFavorites.userId, userId)).returning(),
       dbWrite.delete(userLikes).where(eq(userLikes.userId, userId)).returning(),
       dbWrite.delete(userSessions).where(eq(userSessions.userId, userId)).returning(),
-      dbWrite.delete(userDevices).where(eq(userDevices.userId, userId)).returning(),
       dbWrite.delete(userComments).where(eq(userComments.userId, userId)).returning(),
     ]);
 
@@ -647,7 +644,6 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
         userFavorites: deletedFavorites.length,
         userLikes: deletedLikes.length,
         userSessions: deletedSessions.length,
-        userDevices: deletedDevices.length,
         userComments: deletedComments.length,
       },
       imageQueuedForDeletion: !!userToDelete.imageId,
@@ -751,15 +747,24 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       like: result[0] || null,
     });
 
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'liked',
+      targetType,
+      targetId,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
     // Invalidate caches when liking a book
     if (targetType === 'book') {
       await invalidateExploreCache(); // likesCount changed
       await invalidateUserBooksCache(userId); // isLiked flag changed
       await invalidateUserProfileCache(userId); // likedBooksCount changed
     }
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to create like", error);
   }
@@ -990,11 +995,20 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       favorite: result[0],
     });
 
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'favorited',
+      targetType: 'book',
+      targetId: bookId,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
     // Invalidate user profile cache (savedBooksCount changed)
     await invalidateUserProfileCache(userId);
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to add book to favorites", error);
   }
@@ -1205,13 +1219,23 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
       comment: row,
     });
 
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'commented',
+      targetType: 'comment',
+      targetId: row.id,
+      metadata: { bookId, parentCommentId },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
     // Invalidate explore cache if parent comment (commentsCount changes)
     if (!parentCommentId) {
       await invalidateExploreCache();
     }
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to create comment", error);
   }
@@ -1539,11 +1563,20 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       follow: result[0] || null,
     });
 
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'followed',
+      targetType: 'user',
+      targetId: followingIdStr,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
     // Invalidate user profile cache (followersCount changed)
     await invalidateUserProfileCache(followingIdStr);
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to follow user", error);
   }
@@ -2119,6 +2152,85 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to perform daily check-in", error);
+  }
+});
+
+/**
+ * GET /user/activity-logs
+ * 
+ * Get activity logs for the authenticated user with optional filtering.
+ * 
+ * @route GET /user/activity-logs
+ * @description Get user activity logs
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {string} [activityType] - Filter by activity type (e.g., "book_created", "liked", "commented")
+ * @query {string} [targetType] - Filter by target type (e.g., "book", "comment", "user")
+ * @query {number} [limit] - Maximum number of results (default: 50)
+ * @query {number} [offset] - Pagination offset (default: 0)
+ * 
+ * @returns {Object} Activity logs response
+ * @returns {Array} logs - Array of activity log records
+ * 
+ * @example
+ * // Request
+ * GET /user/activity-logs?activityType=liked&limit=10
+ * 
+ * // Response
+ * {
+ *   "logs": [
+ *     {
+ *       "id": "log123",
+ *       "userId": "user123",
+ *       "activityType": "liked",
+ *       "targetType": "book",
+ *       "targetId": "book456",
+ *       "metadata": null,
+ *       "ipAddress": "192.168.1.1",
+ *       "userAgent": "Mozilla/5.0...",
+ *       "platform": "android",
+ *       "appVersion": "1.0.0",
+ *       "createdAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get("/activity-logs", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { activityType, targetType, limit = "50", offset = "0" } = req.query;
+
+    // Build base query conditions
+    const baseConditions = [eq(userActivityLogs.userId, userId)];
+    
+    // Add activity type filter if provided
+    if (activityType) {
+      baseConditions.push(eq(userActivityLogs.activityType, activityType as string));
+    }
+    
+    // Add target type filter if provided
+    if (targetType) {
+      baseConditions.push(eq(userActivityLogs.targetType, targetType as string));
+    }
+
+    const logs = await dbRead
+      .select()
+      .from(userActivityLogs)
+      .where(and(...baseConditions))
+      .orderBy(desc(userActivityLogs.createdAt))
+      .limit(parseInt(limit as string))
+      .offset(parseInt(offset as string));
+
+    res.json({
+      logs,
+    });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve activity logs", error);
   }
 });
 

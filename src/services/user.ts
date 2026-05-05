@@ -12,13 +12,14 @@
  */
 
 import { dbRead, dbWrite } from "../db/client.js";
-import { users, userAuth, userCheckins } from "../db/schema.js";
+import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
 import { requireEnv } from "../utils/env.js";
 import { DAILY_CHECKIN_CREDITS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
+import type { DBNewUserActivityLog } from "../types/schema.js";
 
 const SYSTEM_USER_ID = requireEnv('SYSTEM_USER_ID');
 
@@ -148,6 +149,66 @@ export async function updateUserLastActivity(userId: string): Promise<void> {
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
     console.error(`[user] ❌ Failed to update last activity for user ${userId}:`, getErrorMessage(error));
+  }
+}
+
+/**
+ * Logs user activity for analytics and engagement monitoring
+ * 
+ * This function records user activities such as book creation, likes, comments,
+ * follows, favorites, and session updates. It captures rich context including
+ * request metadata (IP, user agent, platform, app version) for security analytics.
+ * 
+ * @param params - Activity log parameters
+ * @param params.userId - The user ID performing the activity
+ * @param params.activityType - Type of activity (e.g., "book_created", "liked", "commented", "followed", "favorited", "session_updated")
+ * @param params.targetType - Type of target (e.g., "book", "comment", "user")
+ * @param params.targetId - ID of the target entity
+ * @param params.metadata - Additional context-specific data
+ * @param params.ipAddress - User's IP address (optional)
+ * @param params.userAgent - Browser/app user agent (optional)
+ * @param params.platform - Platform (e.g., "android", "ios", "web") (optional)
+ * @param params.appVersion - App version (optional)
+ * @returns Promise resolving when log is inserted
+ * 
+ * @example
+ * ```typescript
+ * // Log book creation
+ * await logUserActivity({
+ *   userId: 'user123',
+ *   activityType: 'book_created',
+ *   targetType: 'book',
+ *   targetId: 'book456',
+ *   metadata: { title: 'The Haunting' },
+ *   platform: 'android',
+ *   appVersion: '1.0.0'
+ * });
+ * 
+ * // Log like action
+ * await logUserActivity({
+ *   userId: 'user123',
+ *   activityType: 'liked',
+ *   targetType: 'book',
+ *   targetId: 'book456',
+ *   ipAddress: '192.168.1.1',
+ *   userAgent: 'Mozilla/5.0...',
+ *   platform: 'web'
+ * });
+ * ```
+ * 
+ * Behavior:
+ * - Inserts activity log record with provided context
+ * - Does not throw errors to avoid breaking main flow
+ * - Logs errors for debugging
+ * - Can be called from any route handler
+ */
+export async function logUserActivity(params: DBNewUserActivityLog): Promise<void> {
+  try {
+    await dbWrite.insert(userActivityLogs).values(params);
+    await updateUserLastActivity(params.userId);
+  } catch (error) {
+    // Log error but don't throw to avoid breaking main flow
+    console.error(`[user] ❌ Failed to log activity for user ${params.userId}:`, getErrorMessage(error));
   }
 }
 

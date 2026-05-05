@@ -174,7 +174,8 @@ export const users = pgTable(
     username: text("username").unique("users_username_unique"), // Unique constraint for login
     email: text("email").unique("users_email_unique"), // Unique constraint for login
     passwordHash: text("password_hash"), // Hashed password for email/password authentication
-    credits: integer("credits").notNull().default(0),
+    stripeCustomerID: text("stripe_customer_id").unique("users_stripe_customer_id_unique"),
+    credits: integer("credits").notNull().default(50),
     penName: text("pen_name"),
     bio: text("bio"), // User bio/description
     gender,
@@ -358,45 +359,6 @@ export const usage = pgTable(
 );
 
 /**
- * User devices tracking table
- * @summary Track first-seen metadata for user devices (platform, app version)
- * @example
- * {
- *   "user_id": "user123",
- *   "platform": "android",
- *   "app_version": "1.2.3",
- *   "first_seen_at": "2023-01-01T00:00:00.000Z"
- * }
- */
-export const userDevices = pgTable(
-  "user_devices",
-  {
-    userId: userId(),
-    platform: text("platform"), // e.g. "android", "ios"
-    appVersion: text("app_version"), // e.g. "1.2.3"
-    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (t) => [
-    // Composite primary key: one record per user+platform+version combination
-    primaryKey({ columns: [t.userId, t.platform, t.appVersion] }),
-    
-    // Index for analytics queries (find all devices for a user)
-    index("user_devices_user_idx").on(t.userId),
-    
-    // Index for platform analytics
-    index("user_devices_platform_idx").on(t.platform),
-    
-    // Index for version analytics
-    index("user_devices_version_idx").on(t.appVersion),
-    
-    // Index for first-seen date queries
-    index("user_devices_first_seen_idx").on(t.firstSeenAt),
-  ]
-);
-
-/**
  * Create user likes table
  * @summary Store user likes for books, comments, and other users
  * @example
@@ -431,7 +393,7 @@ export const userLikes = pgTable(
 );
 
 /**
- * Create user favorites table
+ * Create user favorited books table
  * @summary Store user favorites for books to read later
  * @example
  * {
@@ -445,6 +407,7 @@ export const userFavorites = pgTable(
   {
     userId: userId(),
     bookId: bookId("cascade"), // Delete if book is deleted
+    collection: text("collection"),
     createdAt,
   },
   (t) => [
@@ -570,6 +533,51 @@ export const userSessions = pgTable(
     index("user_sessions_status_idx").on(t.status),
     // Index for user's active sessions
     index("user_sessions_user_active_idx").on(t.userId).where(sql`status = 'active'`),
+  ]
+);
+
+/**
+ * Create user activity logs table
+ * @summary Track user activities for analytics and engagement monitoring
+ * @example
+ * {
+ *   "id": "log123",
+ *   "user_id": "user123",
+ *   "activity_type": "book_created",
+ *   "target_type": "book",
+ *   "target_id": "book456",
+ *   "metadata": {"title": "The Haunting"},
+ *   "ip_address": "192.168.1.1",
+ *   "user_agent": "Mozilla/5.0...",
+ *   "platform": "android",
+ *   "app_version": "1.0.0",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userActivityLogs = pgTable(
+  "user_activity_logs",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    activityType: text("activity_type").notNull(), // e.g., "book_created", "liked", "commented", "followed", "favorited", "session_updated"
+    targetType: text("target_type"), // e.g., "book", "comment", "user"
+    targetId: uuid("target_id"), // ID of the target entity
+    metadata: jsonb("metadata"), // Additional context-specific data
+    ipAddress: text("ip_address"), // User's IP address for security analytics
+    userAgent: text("user_agent"), // Browser/app user agent
+    platform: text("platform"), // e.g., "android", "ios", "web"
+    appVersion: text("app_version"), // App version for analytics
+    createdAt,
+  },
+  (t) => [
+    // Index for user's activity history
+    index("user_activity_logs_user_idx").on(t.userId, t.createdAt.desc()),
+    // Index for activity type filtering
+    index("user_activity_logs_type_idx").on(t.activityType),
+    // Index for target-based queries
+    index("user_activity_logs_target_idx").on(t.targetType, t.targetId),
+    // Index for cleanup (old logs)
+    index("user_activity_logs_created_idx").on(t.createdAt.desc()),
   ]
 );
 

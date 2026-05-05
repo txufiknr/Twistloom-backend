@@ -65,6 +65,7 @@ import type { StoryMCCandidate } from "../types/character.js";
 import type { Action, EnrichedAction, EnrichedStoryPage } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { consumeCredits } from "../services/credits.js";
+import { logUserActivity } from "../services/user.js";
 import { getTranslatedText, shouldTranslate } from "../services/translation.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { isCreditError } from "../config/errors.js";
@@ -246,6 +247,19 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 
     // Invalidate popular tags cache since new book may have new keywords
     await invalidatePopularTagsCache();
+
+    // Log user activity (book creation)
+    await logUserActivity({
+      userId,
+      activityType: 'book_created',
+      targetType: 'book',
+      targetId: result.book.id,
+      metadata: { theme: theme.trim() },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
 
     res.status(201).json(result);
   } catch (error) {

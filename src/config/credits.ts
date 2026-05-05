@@ -74,6 +74,9 @@ export const CREDIT_COSTS = {
   
   /** Cost to generate custom actions (future feature) */
   CUSTOM_ACTION: 5, // TODO: use
+
+  /** Cost per page when using time travel (reset chosen actions) */
+  TIME_TRAVEL_PER_PAGE: 5, // TODO: use
   
   /** Cost to unlock alternate endings (future feature) */
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use

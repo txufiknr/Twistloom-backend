@@ -7,7 +7,7 @@ import { getDeletedState } from "./story-state-cache.js";
 import { getBook, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
-import { updateUserLastActivity } from "./user.js";
+import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY } from "../config/story.js";
 
@@ -178,8 +178,14 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
         }
       }).returning();
 
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
+    // Log user activity (session update)
+    await logUserActivity({
+      userId,
+      activityType: 'session_updated',
+      targetType: 'book',
+      targetId: bookId,
+      metadata: { pageId, previousPageId },
+    });
     
     console.log(`[setActiveSession] ✅ Session activated for user ${userId}, book ${bookId}`);
     return result[0];
