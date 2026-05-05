@@ -452,13 +452,8 @@ export function buildBookQuery<T>(
 export function combineFilterConditions(...conditions: (ReturnType<typeof sql> | null | undefined)[]) {
   const validConditions = conditions.filter((c): c is ReturnType<typeof sql> => c !== null && c !== undefined);
   
-  if (validConditions.length === 0) {
-    return sql`1=1`; // Always true condition when no filters
-  }
-  
-  if (validConditions.length === 1) {
-    return validConditions[0];
-  }
+  if (validConditions.length === 0) return sql`1=1`; // Always true condition when no filters
+  if (validConditions.length === 1) return validConditions[0];
   
   return and(...validConditions);
 }

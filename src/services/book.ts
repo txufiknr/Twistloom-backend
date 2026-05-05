@@ -573,6 +573,8 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     stateDelta: dbPage.stateDelta || {},
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
+    createdAt: dbPage.createdAt,
+    updatedAt: dbPage.updatedAt,
   } satisfies PersistedStoryPage;
 }
 

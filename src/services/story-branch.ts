@@ -12,7 +12,7 @@ import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchVal
 import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
 import { getStoryPageById } from "./book.js";
-import { getStoryState, getStoryProgress, setActiveSession, getActiveSession } from "./story.js";
+import { getStoryState, getStoryProgress, setActiveSession, getUserSession } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
 // import { getStateSnapshot } from "./snapshots.bak.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -317,7 +317,7 @@ export async function preWarmBranchCacheForUsers(userIds: string[]): Promise<voi
   // Pre-warm cache for each user individually
   for (const userId of userIds) {
     try {
-      const session = await getActiveSession(userId);
+      const session = await getUserSession(userId);
       if (session?.pageId) {
         // Pre-warm cache for this specific user
         await preWarmBranchCache([session.pageId], userId);

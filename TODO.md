@@ -17,13 +17,7 @@
 [ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] payment: buy credits pack
-
-[ ] books: GET route support filter lastUpdated
-- anytime
-- today
-- this-week
-- this-month
-- this-year
+[ ] User settings api: text size
 
 story state:
 [ ] story state: is it really need `maxPage`?

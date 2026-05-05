@@ -643,9 +643,10 @@ export type StateDelta = {
 export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'>;
 export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 
-export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page'>;
+export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
 export type UserStoryPage = Omit<PersistedStoryPage, 'actions'> & { actions: EnrichedAction[], selectedAction?: Action };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
+export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'actions'>> & { actions: EnrichedAction[], originalActionsCount: number, translatedText?: string };
 
 export type Action = {
   /** Action text */
@@ -921,7 +922,7 @@ export type UserPageProgress = {
   createdAt: number;
 }
 
-export type UserActiveSession = Pick<DBUserSession, 'bookId' | 'pageId' | 'previousPageId'> & {
+export type UserSession = Pick<DBUserSession, 'bookId' | 'pageId' | 'previousPageId' | 'status'> & {
   branchId: string;
 };
 
@@ -941,8 +942,8 @@ export type StoryProgress = {
   page?: UserStoryPage | null;
   /** Current story state with psychological profile and progression */
   state?: StoryState | null;
-  /** Active user session linking user to current book and page */
-  session?: UserActiveSession | null;
+  /** User session linking user to current book and page */
+  session?: UserSession | null;
 };
 
 /**

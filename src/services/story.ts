@@ -1,7 +1,7 @@
 import { dbRead, dbWrite } from "../db/client.js";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryState, StoryProgress, UserActiveSession, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage } from "../types/story.js";
+import type { StoryState, StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession } from "../types/story.js";
 import type { DBNewUserPageProgress, DBStoryState, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
 import { getBook, getStoryPageById, mapToUserStoryPage } from "./book.js";
@@ -12,29 +12,32 @@ import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY } from "../config/story.js";
 
 /**
- * Retrieves the active session for a user including both bookId, current pageId, and branchId
+ * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
  * 
  * @param userId - The user's unique identifier
- * @returns Promise that resolves to active session or null if no active session
+ * @param bookId - Optional book ID to filter sessions for a specific book
+ * @param pageId - Optional page ID to filter sessions for a specific page
+ * @returns Promise that resolves to user session or null if no session found
  * 
  * Behavior:
- * - Queries user_sessions table for active status
- * - Joins with pages table to get branchId of the active page
- * - Returns bookId, pageId, previousPageId, and branchId from active session
- * - Handles cases where user has no active sessions
+ * - Queries user_sessions table ordered by status (prioritizing "active")
+ * - Joins with pages table to get branchId of the current page
+ * - Returns bookId, pageId, previousPageId, branchId, and status from the session
+ * - Handles cases where user has no sessions
  * - Uses composite primary key for efficient lookup
+ * - Prioritizes active sessions but can return sessions with any status
  * 
  * Example:
  * ```typescript
- * const activeSession = await getActiveSession("user123");
- * if (activeSession) {
- *   console.log(`User is reading book ${activeSession.bookId} on page ${activeSession.pageId} in branch ${activeSession.branchId}`);
+ * const userSession = await getUserSession("user123");
+ * if (userSession) {
+ *   console.log(`User is reading book ${userSession.bookId} on page ${userSession.pageId} in branch ${userSession.branchId} with status ${userSession.status}`);
  * } else {
- *   console.log("User has no active reading session");
+ *   console.log("User has no reading session");
  * }
  * ```
  */
-export async function getActiveSession(userId: string): Promise<UserActiveSession | null> {
+export async function getUserSession(userId: string, bookId?: string, pageId?: string): Promise<UserSession | null> {
   try {
     const result = await dbRead
       .select({
@@ -42,15 +45,18 @@ export async function getActiveSession(userId: string): Promise<UserActiveSessio
         pageId: userSessions.pageId,
         previousPageId: userSessions.previousPageId,
         branchId: pages.branchId,
+        status: userSessions.status,
       })
       .from(userSessions)
       .leftJoin(pages, eq(userSessions.pageId, pages.id))
       .where(
         and(
           eq(userSessions.userId, userId),
-          eq(userSessions.status, 'active')
+          bookId ? eq(userSessions.bookId, bookId) : undefined,
+          pageId ? eq(userSessions.pageId, pageId) : undefined,
         )
       )
+      .orderBy(sql`CASE WHEN ${userSessions.status} = 'active' THEN 0 ELSE 1 END`)
       .limit(1);
     
     const session = result[0];
@@ -63,9 +69,10 @@ export async function getActiveSession(userId: string): Promise<UserActiveSessio
       pageId: session.pageId,
       previousPageId: session.previousPageId,
       branchId: session.branchId,
+      status: session.status,
     };
   } catch (error) {
-    console.error(`[getActiveSession] ❌ Failed to get active session:`, {userId, error: getErrorMessage(error)});
+    console.error(`[getUserSession] ❌ Failed to get user session:`, {userId, error: getErrorMessage(error)});
     return null;
   }
 }
@@ -90,15 +97,16 @@ export async function getActiveSession(userId: string): Promise<UserActiveSessio
  * }
  * ```
  */
-export async function getStoryProgress(userId: string): Promise<StoryProgress> {
+export async function getStoryProgress(userId: string, bookId?: string, pageId?: string): Promise<StoryProgress> {
   try {
     // Step 1: Get active session
-    const activeSession = await getActiveSession(userId);
-    if (!activeSession) {
+    const userSession = await getUserSession(userId, bookId, pageId);
+    bookId ??= userSession?.bookId;
+    pageId ??= userSession?.pageId;
+
+    if (!bookId || !pageId) {
       return { book: null, page: null, state: null, session: null };
     }
-
-    const { bookId, pageId } = activeSession;
 
     // Step 2: Get current page, story state, and book info in parallel
     const [currentPage, currentState, currentBook] = await Promise.all([
@@ -111,7 +119,7 @@ export async function getStoryProgress(userId: string): Promise<StoryProgress> {
     return {
       page: currentPage,
       state: currentState,
-      session: activeSession,
+      session: userSession,
       book: currentBook,
     } satisfies StoryProgress;
   } catch (error) {

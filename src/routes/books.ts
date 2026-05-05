@@ -22,7 +22,7 @@
  * - GET /api/books/:identifier - Retrieve specific book by slug or id
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
  * - POST /api/books/:identifier/:pageId/visit - Mark page as visited and track progress (requires auth)
- * - POST /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
+ * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
  * - POST /api/books/:id/sessions - Manage reading sessions (optional auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
  * - POST /api/books/:id/like - Like a book (requires auth)
@@ -62,7 +62,7 @@ import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery } from "../
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import { lastUpdatedFilterOptions, type BookSortOption, type EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
-import type { Action, EnrichedAction } from "../types/story.js";
+import type { Action, EnrichedAction, EnrichedStoryPage } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { consumeCredits } from "../services/credits.js";
 import { getTranslatedText, shouldTranslate } from "../services/translation.js";
@@ -1083,23 +1083,23 @@ router.get("/:identifier/:pageId", requireAuth, async (req: Request, res: Respon
 
     // Return enriched page with only frontend-relevant fields
     // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
-    const enrichedPage: Partial<Omit<DBPage, 'actions'>> & { actions: EnrichedAction[], originalActionsCount: number, selectedAction?: Action, translatedText?: string } = {
+    const enrichedPage: EnrichedStoryPage = {
       id: page.id,
       page: page.page,
       bookId: page.bookId,
       branchId: page.branchId,
       parentId: page.parentId,
       text: page.text,
-      mood: page.mood,
-      place: page.place,
-      timeOfDay: page.timeOfDay,
+      mood: page.mood || undefined,
+      place: page.place || undefined,
+      timeOfDay: page.timeOfDay || undefined,
       charactersPresent: page.charactersPresent,
       keyEvents: page.keyEvents,
       importantObjects: page.importantObjects,
       actions: visibleActions, // Only actions that has destination page
+      originalActionsCount: allEnrichedActions.length,
       selectedAction: userChosenAction,
       translatedText: translatedText,
-      originalActionsCount: allEnrichedActions.length,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
     };
@@ -1279,7 +1279,7 @@ router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Re
 });
 
 /**
- * POST /api/books/:identifier/:pageId/candidates
+ * GET /api/books/:identifier/:pageId/candidates
  * 
  * Pre-generates candidate pages for all actions on a story page.
  * This ensures that when users select actions, the corresponding destination pages
@@ -1292,7 +1292,7 @@ router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Re
  * @returns Updated page with pre-generated candidates
  * 
  * @example
- * POST /api/books/book123/page456/candidates
+ * GET /api/books/book123/page456/candidates
  * 
  * Response (200):
  * {
@@ -1307,23 +1307,21 @@ router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Re
  *   ]
  * }
  */
-router.post("/:identifier/:pageId/candidates", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, res: Response) => {
   try {
     const { identifier, pageId } = req.params;
     const userId = req.userId!;
 
-    // Handle array case for identifier (Express can return string[])
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+    // Early validation
+    if (!isValidUuid(pageId)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
 
     // Resolve book by identifier (slug first, then UUID)
+    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
     const book = await resolveBook(identifierStr);
     if (!book) {
       return handleNotFoundError(res, "Book not found");
-    }
-
-    // Validate
-    if (!isValidUuid(pageId)) {
-      return handleValidationError(res, "Invalid pageId: must be valid uuid");
     }
 
     // Get the page from database
@@ -1344,10 +1342,8 @@ router.post("/:identifier/:pageId/candidates", requireAuth, async (req: Request,
       return handleValidationError(res, "Page does not belong to the specified book");
     }
 
-    // Convert to UserStoryPage
+    // Pre-generate candidates for page
     const userPage = mapToUserStoryPage(dbPage);
-
-    // Pre-generate candidates
     const updatedPage = await ensureCandidatesForPage(
       userId,
       userPage,

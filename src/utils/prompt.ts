@@ -2,26 +2,26 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai
 import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, type UserActiveSession, plotFlagTypes } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
 import { retryWithBackoffOrNull, retryWithBranchConflict, createNonRetryableError, type ErrorWithCustomProperties } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
 import { getInjurySeverityLabel } from "./characters.js";
-import { getPreviousPages } from "../services/story.js";
+import { getPreviousPages, getUserSession } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserSession, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { getStoryProgress, insertStoryState, setActiveSession, getActiveSession } from "../services/story.js";
+import { getStoryProgress, insertStoryState, setActiveSession } from "../services/story.js";
 import type { BuildNextPageParams, GenerateCandidatePageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
@@ -2671,18 +2671,18 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   // Use provided state if available, otherwise fetch from database
   let currentState = providedState;
   let currentBook: Book | null = providedBook ?? null;
-  let activeSession: UserActiveSession | null = null;
+  let currentSession: UserSession | null = null;
 
   if (!currentState) {
-    const progress = await getStoryProgress(userId);
+    const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
     currentBook ??= progress.book ?? null;
     currentState = progress.state;
-    activeSession = progress.session ?? null;
+    currentSession = progress.session ?? null;
     currentPage ??= progress.page;
   } else if (!currentBook) {
     // If state is provided but book is not, try to get it from session
-    const session = await getActiveSession(userId);
-    activeSession = session ?? null;
+    const session = await getUserSession(userId);
+    currentSession = session ?? null;
     if (session) {
       currentBook = await getBook(session.bookId) ?? null;
     }
@@ -2696,7 +2696,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${currentPage.id})`);
 
   // Use session bookId if available, otherwise use provided book
-  const { bookId } = activeSession ?? { bookId: currentBook.id };
+  const { bookId } = currentSession ?? { bookId: currentBook.id };
 
   // 3. Match actionText against current page actions to get full Action object
   const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
