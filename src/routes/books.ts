@@ -990,7 +990,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       return handleNotFoundError(res, "Book not found");
     }
 
-    // Get page within branch by page number
+    // Get page within bookId
     const pageData = await dbRead
       .select({
         id: pages.id,
@@ -1018,7 +1018,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       .where(
         and(
           eq(pages.bookId, book.id),
-          eq(pages.branchId, pageId as string)
+          eq(pages.id, pageId as string)
         )
       )
       .limit(1);
@@ -1055,18 +1055,24 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
     // Fire-and-forget retry of failed candidate generations if any actions are missing destinations
     // This provides immediate recovery when users visit pages with incomplete actions
     // TODO: Supports polling/SSE for real-time action availability updates
-    // Pass pre-checked hasIncompleteActions to avoid double-enrichment
-    if (req.userId && visibleActions.length < allEnrichedActions.length) {
-      void triggerCandidateGenerationRetry(req.userId, page, userChosenAction, true);
+    const hasIncompleteActions = visibleActions.length < allEnrichedActions.length;
+    if (req.userId && hasIncompleteActions) {
+      void triggerCandidateGenerationRetry(
+        req.userId,
+        page,
+        userChosenAction,
+        // Pass pre-checked hasIncompleteActions to avoid double-enrichment
+        hasIncompleteActions
+      );
     }
 
     // Handle translation if Accept-Language header is provided and differs from book language
     let translatedText: string | undefined;
     const acceptLanguage = req.headers['accept-language'] as string | undefined;
     const bookLanguage = book.language || 'en';
-    
     const targetLanguage = shouldTranslate(bookLanguage, acceptLanguage);
-    if (targetLanguage) {
+
+    if (targetLanguage && targetLanguage !== bookLanguage) {
       const translationResult = await getTranslatedText({
         pageId: page.id,
         text: page.text,
@@ -1077,7 +1083,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       if (translationResult.text) {
         translatedText = translationResult.text;
       }
-      // If translation failed, translationResult.error contains error info
+      // Note: If translation failed, translationResult.error contains error info
       // but we continue with original text (fallback behavior)
     }
 
@@ -1145,14 +1151,14 @@ router.post("/:identifier/:pageId/visit", requireAuth, async (req: Request, res:
       return handleNotFoundError(res, "Book not found");
     }
 
-    // Get the page by branch and page number to get the pageId and branchId
+    // Get the page by id to get the branchId and page number
     const pageData = await dbRead
       .select({ id: pages.id, branchId: pages.branchId, page: pages.page })
       .from(pages)
       .where(
         and(
           eq(pages.bookId, book.id),
-          eq(pages.branchId, pageId as string)
+          eq(pages.id, pageId as string)
         )
       )
       .limit(1);
