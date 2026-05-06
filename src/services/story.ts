@@ -1,10 +1,10 @@
 import { dbRead, dbWrite } from "../db/client.js";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
 import type { StoryState, StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession } from "../types/story.js";
 import type { DBNewUserPageProgress, DBStoryState, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
-import { getBook, getStoryPageById, mapToUserStoryPage } from "./book.js";
+import { getBook, getPageActionsFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
@@ -551,23 +551,10 @@ export async function getPreviousPages(
       if (!dbPage) break;
       
       // Get the action that led to this page from userPageProgress
-      const progressResult = await dbRead
-        .select({ action: userPageProgress.action })
-        .from(userPageProgress)
-        .where(
-          and(
-            eq(userPageProgress.userId, userId),
-            eq(userPageProgress.bookId, bookId),
-            eq(userPageProgress.nextPageId, currentPageId)
-          )
-        )
-        .orderBy(desc(userPageProgress.createdAt))
-        .limit(1);
-      
-      const selectedAction = progressResult[0]?.action || undefined;
+      const selectedActions = await getPageActionsFromDB(userId, bookId, currentPageId);
       
       // Map to UserStoryPage with selected action included
-      const userPage = mapToUserStoryPage(dbPage, selectedAction);
+      const userPage = await mapToUserStoryPage(dbPage, userId, selectedActions);
       previousPages.push(userPage);
       
       currentPageId = dbPage.parentId;

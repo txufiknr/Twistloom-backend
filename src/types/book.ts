@@ -1,6 +1,6 @@
 import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
-import type { EnrichedAction, StoryPage, StoryState } from "./story.js";
+import type { StoryPage, StoryState } from "./story.js";
 import type { DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 
@@ -172,7 +172,7 @@ export type InitializeBookResult = {
 
 export interface CreateBookResponse {
   book: Book;
-  firstPage: Omit<StoryPage, 'actions'> & {actions: EnrichedAction[]};
+  firstPage: StoryPage;
   initialState: StoryState;
   session: DBUserSession | null;
 }

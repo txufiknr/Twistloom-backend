@@ -49,20 +49,20 @@ import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationE
 import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
-import { enrichActions, getEnrichedBook } from "../services/book.js";
+import { getPageActionsFromDB, getEnrichedBook } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { setActiveSession, markPageVisited } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, triggerCandidateGenerationRetry, mapToUserStoryPage } from "../services/book.js";
+import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import { lastUpdatedFilterOptions, type BookSortOption, type EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
-import type { Action, EnrichedAction, EnrichedStoryPage } from "../types/story.js";
+import type { Action, EnrichedStoryPage } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { consumeCredits } from "../services/credits.js";
 import { logUserActivity } from "../services/user.js";
@@ -999,7 +999,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
 
     // Resolve book by identifier (slug first, then UUID)
-    const book = await resolveBook(identifierStr);
+    const book = await getEnrichedBook(identifierStr, req.userId);
     if (!book) {
       return handleNotFoundError(res, "Book not found");
     }
@@ -1044,41 +1044,25 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
     const page: DBPage = pageData[0];
 
     // Query user's chosen action for this page (if authenticated)
-    let userChosenAction: Action | undefined;
-    if (req.user) {
-      const userProgress = await dbRead
-        .select()
-        .from(userPageProgress)
-        .where(
-          and(
-            eq(userPageProgress.userId, req.user.id),
-            eq(userPageProgress.pageId, page.id)
-          )
-        )
-        .limit(1);
-      
-      if (userProgress.length > 0) {
-        userChosenAction = userProgress[0].action;
-      }
-    }
+    const selectedActions: Action[] = req.user ? await getPageActionsFromDB(req.user.id, book.id, page.id) : [];
 
     // Enrich actions with navigation metadata and filter out incomplete actions
-    const allEnrichedActions = enrichActions(page.actions, page.page, userChosenAction);
-    const visibleActions = allEnrichedActions.filter((action: EnrichedAction) => action.destination?.branchId && action.destination?.pageId);
+    const allActions = page.actions;
+    const visibleActions = allActions.filter((action: Action) => action.destination?.branchId && action.destination?.pageId);
 
     // Fire-and-forget retry of failed candidate generations if any actions are missing destinations
     // This provides immediate recovery when users visit pages with incomplete actions
     // TODO: Supports polling/SSE for real-time action availability updates
-    const hasIncompleteActions = visibleActions.length < allEnrichedActions.length;
-    if (req.userId && hasIncompleteActions) {
-      void triggerCandidateGenerationRetry(
-        req.userId,
-        page,
-        userChosenAction,
-        // Pass pre-checked hasIncompleteActions to avoid double-enrichment
-        hasIncompleteActions
-      );
-    }
+    // const hasIncompleteActions = visibleActions.length < allActions.length;
+    // if (req.userId && hasIncompleteActions) {
+    //   void triggerCandidateGenerationRetry(
+    //     req.userId,
+    //     page,
+    //     selectedActions,
+    //     // Pass pre-checked hasIncompleteActions to avoid double-enrichment
+    //     hasIncompleteActions
+    //   );
+    // }
 
     // Handle translation if Accept-Language header is provided and differs from book language
     let translatedText: string | undefined;
@@ -1117,8 +1101,8 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       keyEvents: page.keyEvents,
       importantObjects: page.importantObjects,
       actions: visibleActions, // Only actions that has destination page
-      originalActionsCount: allEnrichedActions.length,
-      selectedAction: userChosenAction,
+      originalActionsCount: allActions.length,
+      selectedActions,
       translatedText: translatedText,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
@@ -1362,7 +1346,7 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
     }
 
     // Pre-generate candidates for page
-    const userPage = mapToUserStoryPage(dbPage);
+    const userPage = await mapToUserStoryPage(dbPage, userId);
     const updatedPage = await ensureCandidatesForPage(
       userId,
       userPage,
@@ -2316,14 +2300,10 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     // Handle array case for identifier (Express can return string[])
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    // Resolve book by identifier (slug first, then UUID)
-    const book = await resolveBook(identifierStr);
-    if (!book) {
+    const enrichedBook = await getEnrichedBook(identifierStr, req.userId);
+    if (!enrichedBook) {
       return handleNotFoundError(res, "Book not found");
     }
-
-    // Get enriched book data with author info and stats
-    const enrichedBook = await getEnrichedBook(book.id, req.userId);
 
     res.json({ book: enrichedBook });
   } catch (error) {

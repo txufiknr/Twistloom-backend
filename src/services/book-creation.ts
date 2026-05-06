@@ -14,7 +14,6 @@ import { initializeBook } from '../utils/prompt.js';
 import { handleThemeValidationError } from './book-controller.js';
 import type { Response } from 'express';
 import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache } from './cache.js';
-import { enrichActions } from './book.js';
 import { getErrorMessage, handleApiError } from '../utils/error.js';
 
 /**
@@ -118,15 +117,6 @@ export async function createBookCore(
     // STEP 2: INITIALIZING BOOK
     const result = await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal }, onProgress);
 
-    // Enrich actions with navigation metadata
-    const enrichedResult = {
-      ...result,
-      firstPage: {
-        ...result.firstPage,
-        actions: enrichActions(result.firstPage.actions, 1, undefined)
-      }
-    } satisfies CreateBookResponse;
-
     // Invalidate caches
     await invalidateUserBooksCache(userId);
     await invalidateUserProfileCache(userId);
@@ -135,7 +125,7 @@ export async function createBookCore(
       await invalidateExploreCache();
     }
 
-    return enrichedResult;
+    return result;
   } catch (error) {
     await onProgress?.({ type: 'error', error: getErrorMessage(error) });
     throw error;

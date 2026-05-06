@@ -1286,7 +1286,7 @@ function formatPreviousPageEntry(page: UserStoryPage): string {
   let entry = `• Page ${page.page}: ${pageText} (place: ${place}, timeOfDay: ${timeOfDay})`;
   
   // Add action information if present
-  const action = page.selectedAction;
+  const action = page.selectedActions?.at(-1);
   if (action) {
     if (action.text) {
       const actionText = `"${action.text}"`;
@@ -2338,6 +2338,8 @@ export async function initializeBook(
       aiModel: response.model || 'none',
     }, { bookId });
 
+    const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
+
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
@@ -2399,9 +2401,9 @@ export async function initializeBook(
     // 9. Pre-generate candidate pages for each action in the first page (fire-and-forget)
     // Pass book context to avoid session lookup for system-generated originals
     if (isOriginal) {
-      await ensureCandidatesForPage(userId, firstPage, initialState, book);
+      await ensureCandidatesForPage(userId, firstUserPage, initialState, book);
     } else {
-      void ensureCandidatesForPage(userId, firstPage, initialState, book);
+      void ensureCandidatesForPage(userId, firstUserPage, initialState, book);
     }
 
     // 10. Set user's active session to the new book and page
@@ -2880,7 +2882,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     const currentDBPage = await getPageFromDB(page.id, dbWrite);
     if (!currentDBPage) throw new Error('Page not found');
 
-    const currentPage = mapToUserStoryPage(currentDBPage);
+    const currentPage = await mapToUserStoryPage(currentDBPage, userId);
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
@@ -3015,7 +3017,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       .where(eq(pages.id, page.id))
       .returning();
     
-    return mapToUserStoryPage(updatedPage[0]);
+    return await mapToUserStoryPage(updatedPage[0], userId);
   }, 300); // 5-minute lock TTL
 
   // Return the result or original page if lock couldn't be acquired

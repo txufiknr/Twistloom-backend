@@ -644,9 +644,9 @@ export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'>;
 export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
-export type UserStoryPage = Omit<PersistedStoryPage, 'actions'> & { actions: EnrichedAction[], selectedAction?: Action };
+export type UserStoryPage = PersistedStoryPage & { selectedActions: Action[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
-export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'actions'>> & { actions: EnrichedAction[], originalActionsCount: number, translatedText?: string };
+export type EnrichedStoryPage = Partial<UserStoryPage> & { originalActionsCount: number, translatedText?: string };
 
 export type Action = {
   /** Action text */
@@ -663,19 +663,6 @@ export type Action = {
 };
 
 export type ActionHistory = Action & { page: number }
-
-/**
- * Enriched action with navigation metadata for frontend URL building
- * 
- * This type extends Action with computed fields that help the frontend
- * build navigation URLs without additional API calls.
- */
-export type EnrichedAction = Action & {
-  /** Next page number this action leads to (current page + 1 if pageId exists) */
-  nextPageNumber?: number;
-  /** Whether this action was chosen by the current user (for navigation validation) */
-  isUserChosen?: boolean;
-};
 
 export type TagUpdates = {
   add?: string[];

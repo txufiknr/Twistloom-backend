@@ -14,8 +14,7 @@ import { generateBookCreationPromptText } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
 import type { CreateBookResponse } from "../types/book.js";
-
-const SYSTEM_USER_ID = process.env.SYSTEM_USER_ID || "system-user-id";
+import { SYSTEM_USER_ID } from "../utils/env.js";
 
 export async function generateOriginalBook(): Promise<void> {
   const startedAt = Date.now();

@@ -13,14 +13,13 @@
 
 import { dbRead, dbWrite } from "../db/client.js";
 import { pages, books, users, userPageProgress } from "../db/schema.js";
-import { deepEqualSimple } from "../utils/parser.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, EnrichedAction, StoryPageMeta } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -324,21 +323,29 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
 /**
  * Retrieves an enriched book with author info, stats, and user-specific flags
  * 
- * @param bookId - Book ID to retrieve
+ * @param identifier - Book slug or ID to retrieve
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
  * @returns Promise resolving to enriched book data or null if not found
  * 
  * @todo should we implement LRU cache for fast result?
  */
 export async function getEnrichedBook(
-  bookId: string,
+  identifier: string,
   currentUserId?: string | null
 ): Promise<EnrichedBookData | null> {
+  // Build query conditions dynamically based on identifier format
+  const conditions = [eq(books.slug, identifier)];
+  
+  // Only add UUID condition if identifier is a valid UUID
+  if (isValidUuid(identifier)) {
+    conditions.push(eq(books.id, identifier));
+  }
+
   const result = await dbRead
     .select(getEnrichedBookSelect(currentUserId || null))
     .from(books)
     .leftJoin(users, eq(books.userId, users.userId))
-    .where(eq(books.id, bookId))
+    .where(or(...conditions))
     .limit(1);
 
   if (result.length > 0) {
@@ -437,7 +444,7 @@ export async function getPageFromDB(pageId: string, client: typeof dbRead | type
  * @param pageId - The page's unique identifier
  * @returns Promise resolving to user's selected action or null if not found
  */
-export async function getPageActionFromDB(userId: string, bookId: string, pageId: string): Promise<Action | null> {
+export async function getPageActionsFromDB(userId: string, bookId: string, pageId: string): Promise<Action[]> {
   const userProgress = await dbRead
     .select()
     .from(userPageProgress)
@@ -446,9 +453,9 @@ export async function getPageActionFromDB(userId: string, bookId: string, pageId
       eq(userPageProgress.bookId, bookId),
       eq(userPageProgress.pageId, pageId),
     ))
-    .limit(1);
+    .orderBy(asc(userPageProgress.updatedAt));
   
-  return userProgress[0]?.action || null;
+  return userProgress.map(progress => progress.action);
 }
 
 /**
@@ -505,8 +512,8 @@ export async function getStoryPageById(userId: string, bookId: string, pageId: s
 
 async function completePageWithSelectedAction(dbPage: DBPage, userId: string): Promise<UserStoryPage> {
   // Get user page progress to include selected action
-  const selectedAction = await getPageActionFromDB(userId, dbPage.bookId, dbPage.id);
-  return mapToUserStoryPage(dbPage, selectedAction || undefined);
+  const selectedActions = await getPageActionsFromDB(userId, dbPage.bookId, dbPage.id);
+  return await mapToUserStoryPage(dbPage, userId, selectedActions);
 }
 
 /**
@@ -533,12 +540,13 @@ async function completePageWithSelectedAction(dbPage: DBPage, userId: string): P
  * console.log(`Next page: ${userPage.actions[0].nextPageNumber}`);
  * ```
  */
-export function mapToUserStoryPage(dbPage: DBPage, selectedAction?: Action): UserStoryPage {
+export async function mapToUserStoryPage(dbPage: DBPage, userId: string, selectedActions?: Action[]): Promise<UserStoryPage> {
   const persistedPage = mapToPersistedStoryPage(dbPage);
+  selectedActions ??= await getPageActionsFromDB(userId, persistedPage.bookId, persistedPage.id);
+
   return {
     ...persistedPage,
-    actions: enrichActions(dbPage.actions || [], persistedPage.page),
-    selectedAction: selectedAction || undefined,
+    selectedActions,
   } satisfies UserStoryPage;
 }
 
@@ -570,55 +578,16 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     mood: dbPage.mood || undefined,
     place: dbPage.place || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
-    charactersPresent: dbPage.charactersPresent || [],
-    keyEvents: dbPage.keyEvents || [],
-    importantObjects: dbPage.importantObjects || [],
-    actions: dbPage.actions || [],
+    charactersPresent: dbPage.charactersPresent,
+    keyEvents: dbPage.keyEvents,
+    importantObjects: dbPage.importantObjects,
+    actions: dbPage.actions,
     stateDelta: dbPage.stateDelta || {},
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
     createdAt: dbPage.createdAt,
     updatedAt: dbPage.updatedAt,
   } satisfies PersistedStoryPage;
-}
-
-/**
- * Enriches actions with navigation metadata for frontend URL building
- * 
- * This function adds computed fields to actions that help the frontend
- * build navigation URLs without additional API calls. It calculates
- * the next page number and branch ID for each action based on whether
- * the action has a pre-generated destination. It also marks actions
- * that the user has previously chosen.
- * 
- * @param actions - Array of actions from a story page
- * @param currentPage - Current page metadata (page number and branch ID)
- * @param chosenAction - The action the user previously chose for this page (optional)
- * @returns Array of enriched actions with navigation metadata
- * 
- * Behavior:
- * - Actions with pageId get nextPageNumber computed
- * - Actions without pageId remain unchanged
- * - The user's chosen action is marked with isUserChosen: true
- * - Preserves all original action properties
- * 
- * Example:
- * ```typescript
- * const enriched = enrichActions(page.actions, page, userChosenAction);
- * // enriched[0].nextPageNumber === page.page + 1
- * // enriched[0].isUserChosen === true (if user chose this action)
- * ```
- */
-export function enrichActions(
-  actions: Action[],
-  currentPageNumber: number,
-  chosenAction?: Action
-): EnrichedAction[] {
-  return actions.map(action => ({
-    ...action,
-    nextPageNumber: action.destination?.pageId ? currentPageNumber + 1 : undefined,
-    isUserChosen: chosenAction ? deepEqualSimple(chosenAction, action) : undefined,
-  }));
 }
 
 /**
@@ -1135,16 +1104,16 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
 export async function triggerCandidateGenerationRetry(
   userId: string,
   page: DBPage,
-  userChosenAction?: Action,
+  selectedActions?: Action[],
   hasIncompleteActions?: boolean
 ): Promise<void> {
   // Check for incomplete actions if not provided
   if (hasIncompleteActions === undefined) {
-    const enrichedActions = enrichActions(page.actions || [], page.page, userChosenAction);
-    const visibleActions = enrichedActions.filter((action: EnrichedAction) => 
+    const allActions = page.actions || [];
+    const visibleActions = allActions.filter((action: Action) => 
       action.destination?.branchId && action.destination?.pageId
     );
-    hasIncompleteActions = visibleActions.length < enrichedActions.length;
+    hasIncompleteActions = visibleActions.length < allActions.length;
   }
 
   // Skip if all actions have destinations
@@ -1163,7 +1132,7 @@ export async function triggerCandidateGenerationRetry(
   void (async () => {
     try {
       const { ensureCandidatesForPage } = await import("../utils/prompt.js");
-      const userPage = mapToUserStoryPage(page, userChosenAction);
+      const userPage = await mapToUserStoryPage(page, userId, selectedActions);
       await ensureCandidatesForPage(userId, userPage);
     } catch (error) {
       console.error(`[triggerCandidateGenerationRetry] ❌ Failed for page ${page.id}:`, getErrorMessage(error));

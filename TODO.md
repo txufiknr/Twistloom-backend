@@ -1,15 +1,5 @@
-[x] book type add firstPageId (mandatory)
-[x] book api route :slug/:pageId
-[x] visit page: update selectedAction
-[x] get page: include selectedAction
-[x] implement libretranslate: pageId, lang (bcp)
-[x] api: receive Accept-Language
-[x] get page: accept lang header > translate if different with book langauge
-[x] initialize book: consume 5 credits
-[x] get page ensure include selectedAction?: Action;
-[x] book stats: already in table (via trigger)
-[x] book stats: completedCount
-[x] book read count: only count unique user
+[x] ensure get /:pageId booknya include author & firstPageId
+[x] enriched book lastPage (from latest userPageProgress)
 [ ] ensure book slug not same as preserved endpoints: stats, explore
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)

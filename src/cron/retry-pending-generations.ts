@@ -11,6 +11,7 @@
  * Should be run periodically via cron job (e.g., every 15 minutes), but safe to run repeatedly
  */
 import { mapToUserStoryPage } from "../services/book.js";
+import { SYSTEM_USER_ID } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
 
 export async function retryPendingGenerations(): Promise<void> {
@@ -72,7 +73,7 @@ export async function retryPendingGenerations(): Promise<void> {
         }
         
         // Convert null fields to undefined for type compatibility
-        const pageForGeneration = mapToUserStoryPage(fullPage);
+        const pageForGeneration = await mapToUserStoryPage(fullPage, SYSTEM_USER_ID, []);
         
         // Count actions without complete destination before regeneration
         const actionsBefore = fullPage.actions || [];
