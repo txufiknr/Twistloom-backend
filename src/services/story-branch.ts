@@ -14,9 +14,8 @@ import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, 
 import { getStoryPageById } from "./book.js";
 import { getStoryState, getStoryProgress, setActiveSession, getUserSession } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
-// import { getStateSnapshot } from "./snapshots.bak.js";
 import { getErrorMessage } from "../utils/error.js";
-import { BOOK_AVERAGE_PAGES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
+import { MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { createEmptyStoryState } from "../utils/story.js";
 
@@ -92,10 +91,14 @@ export async function getStoryStateWithBranch(
     const branchPathData = await getBranchPath(pageId, userId, options);
 
     const book = await getBookFromDB(bookId);
-    const totalPages = book?.totalPages ?? BOOK_AVERAGE_PAGES;
-    
+    if (!book) throw new Error("Book not found");
+
     // Create minimal valid state
-    const minimalState: StoryState = createEmptyStoryState(pageId, branchPathData.pages[branchPathData.pages.length - 1].page, totalPages);
+    const minimalState: StoryState = createEmptyStoryState(
+      pageId,
+      branchPathData.pages[branchPathData.pages.length - 1].page,
+      book.totalPages
+    );
 
     return { ...minimalState, ...reconstructedState };
   } catch (error) {

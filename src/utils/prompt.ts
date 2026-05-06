@@ -270,6 +270,7 @@ const firstBookReviewChecklist: string = `
   □ Is something subtly wrong by the end of the first paragraph? → If NO: inject it.
   □ Does the page end on tension or uncertainty — not resolution? → If YES to resolution: cut or reframe the ending beat.
   □ Is the mood field reflecting the disturbance specifically — not just the genre? → If NO: reassign.
+  □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
 
 3. Metadata Quality
   □ Is the title generic (e.g. "The Dark Secret", "Shadow House")? → If YES: rework. It should feel specific to this story.
@@ -1081,7 +1082,7 @@ SCORING RUBRIC:
    Deduct points for:
    - Flags set to default values (trust: medium, fear: low, curiosity: high) without scene justification
    - viableEnding that could apply to any psychological thriller
-   - totalPages at exactly BOOK_AVERAGE_PAGES regardless of theme scope
+   - totalPages at exactly ${BOOK_AVERAGE_PAGES} regardless of theme scope
 
 6. METADATA QUALITY (0-10) — Threshold: 7
    Award points for:

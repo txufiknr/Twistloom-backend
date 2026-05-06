@@ -1140,10 +1140,9 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
  * This is called when a user navigates to a page (not during pre-generation).
  * 
  * @param identifier - Book slug or UUID v7
- * @param branchId - Branch identifier
- * @param page - Page number
+ * @param pageId - Page UUID v7
  * @param action - The action chosen to reach this page
- * @param previousPageId - The previous page ID
+ * @param previousPageId - The previous page ID (where action reside)
  * @returns Success confirmation
  */
 router.post("/:identifier/:pageId/visit", requireAuth, async (req: Request, res: Response) => {

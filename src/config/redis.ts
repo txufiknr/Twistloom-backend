@@ -11,59 +11,6 @@
  * - Environment-based configuration
  */
 
-import { Redis } from '@upstash/redis';
-
-/**
- * Redis client singleton instance
- * Lazily initialized on first access
- */
-let redisClient: Redis | null = null;
-
-/**
- * Gets or creates the Redis client instance
- * 
- * @returns Redis client instance or null if not configured
- */
-export function getRedisClient(): Redis | null {
-  if (redisClient) {
-    return redisClient;
-  }
-
-  const redisUrl = process.env['REDIS_URL'];
-  const redisRestUrl = process.env['UPSTASH_REDIS_REST_URL'];
-  const redisRestToken = process.env['UPSTASH_REDIS_REST_TOKEN'];
-
-  // Check if Redis is configured
-  if (!redisUrl && (!redisRestUrl || !redisRestToken)) {
-    console.warn('⚠️  Redis not configured. Caching will be disabled.');
-    return null;
-  }
-
-  try {
-    // Use Upstash Redis REST API (serverless-friendly)
-    if (redisRestUrl && redisRestToken) {
-      redisClient = new Redis({
-        url: redisRestUrl,
-        token: redisRestToken,
-      });
-      console.log('✅ Upstash Redis client initialized (REST API)');
-    } 
-    // Fallback to direct Redis URL with token
-    else if (redisUrl) {
-      redisClient = new Redis({
-        url: redisUrl,
-        token: process.env['REDIS_TOKEN'] || '',
-      });
-      console.log('✅ Redis client initialized (direct connection)');
-    }
-
-    return redisClient;
-  } catch (error) {
-    console.error('❌ Failed to initialize Redis client:', error);
-    return null;
-  }
-}
-
 /**
  * Cache TTL configuration (in seconds)
  */
@@ -104,12 +51,3 @@ export const CACHE_KEYS = {
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,
 } as const;
-
-/**
- * Checks if Redis is available and configured
- * 
- * @returns true if Redis is available, false otherwise
- */
-export function isRedisAvailable(): boolean {
-  return getRedisClient() !== null;
-}

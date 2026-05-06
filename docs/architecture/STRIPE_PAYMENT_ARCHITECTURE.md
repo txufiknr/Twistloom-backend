@@ -724,6 +724,461 @@ await dbWrite.transaction(async (tx) => {
 
 ---
 
+## 💸 Credit Consumption Architecture
+
+### Overview
+
+Credit consumption is the process of deducting credits from a user's account when they perform actions like story generation, custom actions, or time travel. This is a critical operation that must be implemented with strict security measures to prevent abuse and ensure accuracy.
+
+### Core Principles
+
+1. **Atomic Transactions**: All credit operations must be atomic to prevent race conditions
+2. **Server-Side Validation**: Never trust client-side credit calculations
+3. **Idempotency**: Prevent double charging on network retries
+4. **Rate Limiting**: Protect against abuse with Redis-based rate limiting
+5. **Activity Logging**: Complete audit trail for security and analytics
+6. **Error Handling**: Graceful handling of insufficient credits and edge cases
+
+### Implementation Status
+
+#### ✅ Implemented Features
+
+1. **Atomic Credit Deduction with Row Locks**
+   - **Status**: ✅ Implemented
+   - **Location**: `src/services/credits.ts` - `consumeCredits()` function
+   - **Details**:
+     - Uses PostgreSQL `FOR UPDATE` row locking
+     - Atomic transaction with credit check and deduction
+     - Transaction record creation in same transaction
+     - Prevents race conditions and double spending
+
+2. **User Activity Logging**
+   - **Status**: ✅ Implemented
+   - **Location**: `src/services/credits.ts` - integrated with `logUserActivity()`
+   - **Details**:
+     - Logs all credit consumption events
+     - Captures context, metadata, and user details
+     - Enables security analytics and fraud detection
+     - Non-blocking (errors don't affect credit consumption)
+
+3. **Idempotency Key Support**
+   - **Status**: ✅ Implemented
+   - **Location**: `src/routes/payments.ts` - `POST /payments/consume-credits`
+   - **Details**:
+     - Optional idempotency key in request body
+     - Redis-based duplicate detection (5-minute TTL)
+     - Returns cached result for duplicate requests
+     - Prevents double charging on retries
+
+4. **Rate Limiting**
+   - **Status**: ✅ Implemented
+   - **Location**: `src/routes/payments.ts` - `POST /payments/consume-credits`
+   - **Details**:
+     - 60 requests per minute per user
+     - Redis-based rate limiting
+     - Automatic expiration (60-second window)
+     - Protects against abuse and API spam
+
+5. **Server-Side Cost Validation**
+   - **Status**: ✅ Implemented
+   - **Location**: `src/config/credits.ts` - `CREDIT_COSTS` configuration
+   - **Details**:
+     - All costs defined server-side
+     - Type-safe cost key validation
+     - Prevents client-side cost manipulation
+     - Centralized cost management
+
+6. **Centralized Service Function**
+   - **Status**: ✅ Implemented
+   - **Location**: `src/services/credits.ts` - `consumeCredits()`, `hasSufficientCredits()`, `addCredits()`
+   - **Details**:
+     - Single source of truth for credit operations
+     - Reusable across all endpoints
+     - Consistent error handling
+     - Easy to test and maintain
+
+### Credit Consumption Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    USER INITIATES ACTION                                 │
+│  Location: Frontend (Next.js)                                           │
+│  Action: User clicks "Generate Story" button                            │
+│                                                                          │
+│  Frontend generates idempotency key: "story-{timestamp}-{theme}"       │
+│  Frontend calls API: POST /api/payments/consume-credits                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Rate Limiting Check      │
+                    │  Redis key:               │
+                    │  credit-consume-{userId}  │
+                    │  Limit: 60 req/min       │
+                    │  Return 429 if exceeded   │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Idempotency Check        │
+                    │  Redis key:               │
+                    │  credit-consume-{key}    │
+                    │  Return 409 if duplicate │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Validate costKey         │
+                    │  Check against CREDIT_COSTS│
+                    │  Return 400 if invalid    │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    CREDIT CONSUMPTION SERVICE                           │
+│  Location: src/services/credits.ts - consumeCredits()                  │
+│                                                                          │
+│  Database Operations (in transaction):                                   │
+│  1. Lock user row with FOR UPDATE                                       │
+│  2. Check if user has sufficient credits                                │
+│  3. Deduct credits atomically                                            │
+│  4. Create transaction record                                            │
+│  5. Log user activity (outside transaction)                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Begin DB transaction     │
+                    │  dbWrite.transaction()    │
+                    │  Atomic operations only    │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Lock user row            │
+                    │  SELECT ... FOR UPDATE    │
+                    │  Prevents concurrent      │
+                    │  modifications            │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Check credit balance     │
+                    │  currentCredits >= cost ?  │
+                    │  Throw error if insufficient│
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Deduct credits           │
+                    │  credits = credits - cost  │
+                    │  Atomic SQL operation      │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Create transaction       │
+                    │  transactions table       │
+                    │  Type: 'usage'            │
+                    │  Credits: -cost           │
+                    │  Context & metadata       │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Commit transaction       │
+                    │  All or nothing rollback  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Log user activity        │
+                    │  userActivityLogs table   │
+                    │  Non-blocking operation   │
+                    │  For analytics & security │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Store idempotency result │
+                    │  Redis key with 5min TTL  │
+                    │  For duplicate detection  │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    RETURN RESPONSE TO FRONTEND                           │
+│                                                                          │
+│  Response (Success - 200):                                               │
+│  {                                                                       │
+│    success: true,                                                        │
+│    creditsConsumed: 5,                                                   │
+│    remainingCredits: 145                                                 │
+│  }                                                                       │
+│                                                                          │
+│  Response (Error - 402):                                                 │
+│  {                                                                       │
+│    error: "Not enough credits",                                          │
+│    required: 5,                                                          │
+│    available: 3                                                           │
+│  }                                                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Anti-Abuse Measures
+
+#### 1. Server-Side Cost Validation
+
+**❌ Wrong Approach** (Client-side cost):
+```typescript
+// Frontend sends cost directly
+const res = await fetch('/api/consume', {
+  body: JSON.stringify({ cost: 5 }) // ❌ Easily manipulated
+});
+```
+
+**✅ Correct Approach** (Server-side cost):
+```typescript
+// Frontend sends cost key only
+const res = await fetch('/api/payments/consume-credits', {
+  body: JSON.stringify({ costKey: 'STORY_GENERATION' }) // ✅ Server validates
+});
+
+// Backend validates
+const cost = CREDIT_COSTS[costKey]; // Server-side lookup
+if (cost <= 0) throw new Error('Invalid cost');
+```
+
+#### 2. Idempotency Keys
+
+**Purpose**: Prevent double charging on network retries or double-clicks
+
+**Implementation**:
+```typescript
+// Frontend generates unique key
+const idempotencyKey = `story-${Date.now()}-${bookId}`;
+
+// Backend checks Redis
+const existing = await redis.get(`credit-consume-${idempotencyKey}`);
+if (existing) {
+  return res.status(409).json({ ...JSON.parse(existing) });
+}
+
+// Store result after success
+await redis.set(`credit-consume-${idempotencyKey}`, JSON.stringify(result), { ex: 300 });
+```
+
+**Best Practices**:
+- Use format: `{action}-{timestamp}-{entityId}`
+- Include enough context to make keys unique
+- Set appropriate TTL (5 minutes recommended)
+- Return cached result for duplicates
+
+#### 3. Rate Limiting
+
+**Purpose**: Prevent API abuse and spam
+
+**Implementation**:
+```typescript
+// Redis-based rate limiting
+const rateLimitKey = `credit-consume-${userId}`;
+const requestCount = await redis.incr(rateLimitKey);
+
+if (requestCount === 1) {
+  await redis.expire(rateLimitKey, 60); // 60-second window
+}
+
+if (requestCount > 60) {
+  return res.status(429).json({ error: 'Too many requests' });
+}
+```
+
+**Rate Limits**:
+- Credit consumption: 60 requests/minute per user
+- Checkout sessions: 1 request/10 seconds per user
+- Webhooks: 100 requests/15 minutes per IP
+
+#### 4. Activity Logging
+
+**Purpose**: Complete audit trail for security and analytics
+
+**Implementation**:
+```typescript
+await logUserActivity({
+  userId,
+  activityType: 'credits_consumed',
+  targetType: 'credit_action',
+  targetId: null,
+  metadata: {
+    costKey,
+    creditsConsumed: cost,
+    context: options.context,
+    ...options.metadata
+  }
+});
+```
+
+**Logged Data**:
+- User ID
+- Activity type (credits_consumed)
+- Cost key and amount
+- Context (e.g., book_creation)
+- Metadata (e.g., bookId, theme)
+- Timestamp
+- IP address (if available)
+- User agent (if available)
+
+### Common Mistakes to Avoid
+
+#### ❌ Naive Credit Deduction (Race Condition)
+```typescript
+// WRONG: No transaction, no lock
+const user = await getUser(userId);
+user.credits -= 5;
+await updateUser(user);
+// 👉 Race condition: Two requests can read same balance
+```
+
+#### ✅ Atomic Transaction with Row Lock
+```typescript
+// CORRECT: Transaction with row lock
+await dbWrite.transaction(async (tx) => {
+  const user = await tx
+    .select({ credits: users.credits })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .for('update') // 🔒 Row lock
+    .limit(1);
+  
+  if (user[0].credits < cost) {
+    throw new Error('Insufficient credits');
+  }
+  
+  await tx.update(users)
+    .set({ credits: sql`${users.credits} - ${cost}` })
+    .where(eq(users.userId, userId));
+  
+  await tx.insert(transactions).values({
+    userId,
+    type: 'usage',
+    credits: -cost,
+    // ...
+  });
+});
+```
+
+#### ❌ Client-Side Cost Calculation
+```typescript
+// WRONG: Trust frontend cost
+const cost = req.body.cost; // ❌ User can send any value
+await deductCredits(userId, cost);
+```
+
+#### ✅ Server-Side Cost Validation
+```typescript
+// CORRECT: Server-side cost lookup
+const costKey = req.body.costKey;
+const cost = CREDIT_COSTS[costKey]; // ✅ Server validates
+await deductCredits(userId, cost);
+```
+
+#### ❌ No Transaction Record
+```typescript
+// WRONG: No audit trail
+await updateCredits(userId, -5);
+// 👉 Can't debug issues, can't handle refunds
+```
+
+#### ✅ Complete Transaction Logging
+```typescript
+// CORRECT: Full audit trail
+await dbWrite.transaction(async (tx) => {
+  await tx.update(users).set({ credits: newBalance });
+  await tx.insert(transactions).values({
+    userId,
+    type: 'usage',
+    credits: -5,
+    context: 'book_creation',
+    metadata: { bookId: 'abc123' },
+    createdAt: new Date()
+  });
+});
+```
+
+### Error Handling
+
+#### Insufficient Credits (402)
+```typescript
+if (currentCredits < cost) {
+  return res.status(402).json({
+    error: "Not enough credits",
+    required: cost,
+    available: currentCredits,
+  });
+}
+```
+
+#### Duplicate Request (409)
+```typescript
+if (existingResult) {
+  return res.status(409).json({
+    error: "Duplicate request",
+    message: "This request has already been processed",
+    ...JSON.parse(existingResult)
+  });
+}
+```
+
+#### Rate Limited (429)
+```typescript
+if (requestCount > 60) {
+  return res.status(429).json({
+    error: "Too many credit consumption attempts. Please wait before trying again."
+  });
+}
+```
+
+#### Invalid Input (400)
+```typescript
+if (!validCostKeys.includes(costKey)) {
+  return res.status(400).json({
+    error: `Invalid costKey: ${costKey}`
+  });
+}
+```
+
+### Testing Checklist
+
+- [ ] Atomic transaction prevents race conditions
+- [ ] Row lock prevents concurrent modifications
+- [ ] Insufficient credits error displays correctly
+- [ ] Idempotency key prevents double charging
+- [ ] Rate limiting prevents abuse
+- [ ] Activity logging captures all events
+- [ ] Transaction record created for all operations
+- [ ] Error handling covers all edge cases
+- [ ] Server-side cost validation works
+- [ ] Redis operations handle failures gracefully
+
+### Monitoring & Alerting
+
+#### Key Metrics to Monitor
+- Credit consumption rate per user
+- Failed credit consumption attempts
+- Rate limit violations
+- Duplicate request rate
+- Transaction record creation rate
+- Activity logging success rate
+
+#### Alert Thresholds
+- >100 failed credit consumptions per hour
+- >50 rate limit violations per hour
+- >20 duplicate requests per hour
+- Transaction record creation failures
+- Activity logging failures
+
+---
+
 ## 🛣️ API Endpoints
 
 ### GET /api/payments/credit-packs

@@ -20,9 +20,11 @@
 import { dbWrite } from "../db/client.js";
 import { users, transactions } from "../db/schema.js";
 import { CREDIT_COSTS, type CreditCostKey } from "../config/credits.js";
+import { getErrorMessage } from "../utils/error.js";
 import { generateId } from "../utils/uuid.js";
 import { eq, sql } from "drizzle-orm";
 import { CREDIT_ERRORS } from "../config/errors.js";
+import { logUserActivity } from "./user.js";
 
 /**
  * Credit consumption options
@@ -40,13 +42,13 @@ interface ConsumeCreditsOptions {
  * @param userId - User ID to consume credits from
  * @param costKey - Credit cost key from CREDIT_COSTS
  * @param options - Additional options for the transaction
- * @returns Updated user credit balance
+ * @returns Updated user credit balance and transaction ID
  * 
  * @throws Error if user has insufficient credits
  * 
  * @example
  * ```typescript
- * const newBalance = await consumeCredits("user123", "STORY_GENERATION", {
+ * const { remainingCredits, transactionId } = await consumeCredits("user123", "STORY_GENERATION", {
  *   context: "book_creation",
  *   metadata: { bookId: "book456" }
  * });
@@ -56,7 +58,7 @@ export async function consumeCredits(
   userId: string,
   costKey: CreditCostKey,
   options: ConsumeCreditsOptions = {}
-): Promise<number> {
+): Promise<{ remainingCredits: number; transactionId: string }> {
   const cost = CREDIT_COSTS[costKey];
   
   if (cost <= 0) {
@@ -94,8 +96,9 @@ export async function consumeCredits(
       .where(eq(users.userId, userId));
 
     // Record transaction
+    const transactionId = generateId();
     await tx.insert(transactions).values({
-      id: generateId(),
+      id: transactionId,
       userId,
       type: 'usage',
       credits: -cost, // Negative for consumption
@@ -105,8 +108,37 @@ export async function consumeCredits(
       createdAt: new Date()
     });
 
-    return currentCredits - cost;
+    return { remainingCredits: currentCredits - cost, transactionId };
   });
+  
+  // Log user activity for analytics and security monitoring
+  // Note: This happens outside of transaction to avoid breaking credit consumption if logging fails
+  // Explicit error handling ensures activity logging failures don't affect main flow
+  try {
+    await logUserActivity({
+      userId,
+      activityType: 'credits_consumed',
+      targetType: options.context ? 'credit_action' : null,
+      targetId: result.transactionId, // Include transaction ID for correlation
+      metadata: {
+        costKey,
+        creditsConsumed: cost,
+        context: options.context,
+        transactionId: result.transactionId, // Also include in metadata
+        userMetadata: options.metadata || {} // Separate user metadata to prevent overwrites
+      }
+    });
+  } catch (activityError) {
+    // Log activity errors but don't fail the main operation
+    console.error('[credits] ⚠️ Failed to log user activity:', {
+      userId,
+      activityType: 'credits_consumed',
+      costKey,
+      transactionId: result.transactionId,
+      error: getErrorMessage(activityError)
+    });
+    // Continue without failing - credit consumption was successful
+  }
 
   return result;
 }
@@ -165,14 +197,14 @@ export function getCreditCost(costKey: CreditCostKey): number {
 }
 
 /**
- * Adds credits to a user's account
+ * Adds credits to a user's account (daily check-in bonus, etc)
  * 
  * @param userId - User ID to add credits to
  * @param amount - Number of credits to add (must be positive)
  * @param options - Additional options for the transaction
  * @returns Updated user credit balance
  * 
- * @throws Error if amount is not positive
+ * @throws Error if amount is not positive or user not found
  * 
  * @example
  * ```typescript
@@ -228,6 +260,21 @@ export async function addCredits(
     });
 
     return currentCredits + amount;
+  });
+  
+  // Log user activity for analytics and security monitoring
+  // Note: This happens outside the transaction to avoid breaking credit consumption if logging fails
+  // The logUserActivity function handles errors internally to avoid breaking the main flow
+  await logUserActivity({
+    userId,
+    activityType: 'credits_added',
+    targetType: options.context ? 'credit_action' : null,
+    targetId: null,
+    metadata: {
+      amount,
+      context: options.context,
+      userMetadata: options.metadata || {} // Separate user metadata to prevent overwrites
+    }
   });
 
   return result;

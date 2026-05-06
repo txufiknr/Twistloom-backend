@@ -245,6 +245,50 @@ export async function getActiveUsers(daysAgo: number = 30): Promise<string[]> {
 }
 
 /**
+ * Gets today's check-in record for a user if it exists
+ * 
+ * @param userId - The user ID to check
+ * @returns Promise resolving to today's check-in record or null
+ */
+async function getTodayCheckIn(userId: string): Promise<{
+  checkInDate: string;
+  creditsClaimed: number;
+} | null> {
+  const todayUTC = getCurrentUTCDay();
+  
+  const existingCheckIn = await dbRead
+    .select({
+      checkInDate: userCheckins.checkInDate,
+      creditsClaimed: userCheckins.creditsClaimed,
+    })
+    .from(userCheckins)
+    .where(and(
+      eq(userCheckins.userId, userId),
+      eq(userCheckins.checkInDate, todayUTC)
+    ))
+    .limit(1);
+  
+  return existingCheckIn.length > 0 ? existingCheckIn[0] : null;
+}
+
+/**
+ * Gets the last check-in date for a user
+ * 
+ * @param userId - The user ID to check
+ * @returns Promise resolving to last check-in date or null
+ */
+async function getLastCheckInDate(userId: string): Promise<string | null> {
+  const lastCheckIn = await dbRead
+    .select({ checkInDate: userCheckins.checkInDate })
+    .from(userCheckins)
+    .where(eq(userCheckins.userId, userId))
+    .orderBy(desc(userCheckins.checkInDate))
+    .limit(1);
+  
+  return lastCheckIn.length > 0 ? lastCheckIn[0].checkInDate : null;
+}
+
+/**
  * Checks if user can perform daily check-in today
  * 
  * @param userId - The user ID to check
@@ -266,40 +310,21 @@ export async function checkCanCheckIn(userId: string): Promise<{
   creditsClaimed: number | null;
 }> {
   try {
-    const todayUTC = getCurrentUTCDay();
+    const todayCheckIn = await getTodayCheckIn(userId);
     
-    // Check if user has already checked in today
-    const existingCheckIn = await dbRead
-      .select({
-        checkInDate: userCheckins.checkInDate,
-        creditsClaimed: userCheckins.creditsClaimed,
-      })
-      .from(userCheckins)
-      .where(and(
-        eq(userCheckins.userId, userId),
-        eq(userCheckins.checkInDate, todayUTC)
-      ))
-      .limit(1);
-    
-    if (existingCheckIn.length > 0) {
+    if (todayCheckIn) {
       return {
         canCheckIn: false,
-        lastCheckInDate: existingCheckIn[0].checkInDate,
-        creditsClaimed: existingCheckIn[0].creditsClaimed,
+        lastCheckInDate: todayCheckIn.checkInDate,
+        creditsClaimed: todayCheckIn.creditsClaimed,
       };
     }
     
-    // Get last check-in date for context
-    const lastCheckIn = await dbRead
-      .select({ checkInDate: userCheckins.checkInDate })
-      .from(userCheckins)
-      .where(eq(userCheckins.userId, userId))
-      .orderBy(desc(userCheckins.checkInDate))
-      .limit(1);
+    const lastCheckInDate = await getLastCheckInDate(userId);
     
     return {
       canCheckIn: true,
-      lastCheckInDate: lastCheckIn.length > 0 ? lastCheckIn[0].checkInDate : null,
+      lastCheckInDate,
       creditsClaimed: null,
     };
   } catch (error) {
@@ -310,6 +335,9 @@ export async function checkCanCheckIn(userId: string): Promise<{
 
 /**
  * Performs daily check-in and awards credits to user
+ * 
+ * Uses a database transaction to prevent race conditions where multiple
+ * concurrent requests could both pass the check and award credits twice.
  * 
  * @param userId - The user ID performing check-in
  * @returns Promise resolving to check-in result with credits awarded
@@ -326,52 +354,54 @@ export async function performDailyCheckIn(userId: string): Promise<{
   checkInDate: string;
   message: string;
 }> {
+  const todayUTC = getCurrentUTCDay();
+  
   try {
-    const todayUTC = getCurrentUTCDay();
-    
-    // Check if user has already checked in today
-    const existingCheckIn = await dbRead
-      .select({ id: userCheckins.id })
-      .from(userCheckins)
-      .where(and(
-        eq(userCheckins.userId, userId),
-        eq(userCheckins.checkInDate, todayUTC)
-      ))
-      .limit(1);
-    
-    if (existingCheckIn.length > 0) {
-      return {
-        success: false,
-        creditsAwarded: 0,
+    return await dbWrite.transaction(async (tx) => {
+      // Check if user has already checked in today within the transaction
+      const existingCheckIn = await tx
+        .select({ id: userCheckins.id })
+        .from(userCheckins)
+        .where(and(
+          eq(userCheckins.userId, userId),
+          eq(userCheckins.checkInDate, todayUTC)
+        ))
+        .limit(1);
+      
+      if (existingCheckIn.length > 0) {
+        return {
+          success: false,
+          creditsAwarded: 0,
+          checkInDate: todayUTC,
+          message: "Already checked in today",
+        };
+      }
+      
+      // Create check-in record
+      await tx.insert(userCheckins).values({
+        userId,
         checkInDate: todayUTC,
-        message: "Already checked in today",
+        creditsClaimed: DAILY_CHECKIN_CREDITS,
+      });
+      
+      // Import credits service to add credits (prevent circular deps)
+      const { addCredits } = await import("./credits.js");
+      
+      // Add credits to user
+      await addCredits(userId, DAILY_CHECKIN_CREDITS, {
+        context: "daily_checkin",
+        metadata: { checkInDate: todayUTC },
+      });
+      
+      console.log(`[user] ✅ User ${userId} checked in and claimed ${DAILY_CHECKIN_CREDITS} credits`);
+      
+      return {
+        success: true,
+        creditsAwarded: DAILY_CHECKIN_CREDITS,
+        checkInDate: todayUTC,
+        message: `Successfully claimed ${DAILY_CHECKIN_CREDITS} daily credits`,
       };
-    }
-    
-    // Create check-in record
-    await dbWrite.insert(userCheckins).values({
-      userId,
-      checkInDate: todayUTC,
-      creditsClaimed: DAILY_CHECKIN_CREDITS,
     });
-    
-    // Import credits service to add credits
-    const { addCredits } = await import("./credits.js");
-    
-    // Add credits to user
-    await addCredits(userId, DAILY_CHECKIN_CREDITS, {
-      context: "daily_checkin",
-      metadata: { checkInDate: todayUTC },
-    });
-    
-    console.log(`[user] ✅ User ${userId} checked in and claimed ${DAILY_CHECKIN_CREDITS} credits`);
-    
-    return {
-      success: true,
-      creditsAwarded: DAILY_CHECKIN_CREDITS,
-      checkInDate: todayUTC,
-      message: `Successfully claimed ${DAILY_CHECKIN_CREDITS} daily credits`,
-    };
   } catch (error) {
     console.error("[user] ❌ Failed to perform daily check-in:", getErrorMessage(error));
     throw error;

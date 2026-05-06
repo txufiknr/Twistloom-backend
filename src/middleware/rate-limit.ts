@@ -25,21 +25,10 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { Ratelimit } from '@upstash/ratelimit';
-import { Redis } from '@upstash/redis';
 import { LRUCache } from 'lru-cache';
 import { getErrorMessage, handleTooManyRequestsError } from '../utils/error.js';
-
-/**
- * Rate limit configuration
- */
-export interface RateLimitConfig {
-  /** Maximum number of requests allowed */
-  maxRequests: number;
-  /** Time window in seconds */
-  windowSeconds: number;
-  /** Optional custom error message */
-  message?: string;
-}
+import type { RateLimitConfig } from '../types/redis.js';
+import { getRedisClient } from '../utils/redis.js';
 
 /**
  * Default rate limit: 100 requests per minute
@@ -49,33 +38,6 @@ const DEFAULT_RATE_LIMIT: RateLimitConfig = {
   windowSeconds: 60,
   message: 'Rate limit exceeded. Please try again later.',
 };
-
-/**
- * Initialize Upstash Redis client (serverless-safe)
- * Falls back to null if environment variables are not set
- */
-function createRedisClient(): Redis | null {
-  const url = process.env['UPSTASH_REDIS_REST_URL'];
-  const token = process.env['UPSTASH_REDIS_REST_TOKEN'];
-
-  if (!url || !token) {
-    console.warn('[rate-limit] ⚠️ Upstash Redis not configured. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN');
-    return null;
-  }
-
-  try {
-    return new Redis({
-      url,
-      token,
-    });
-  } catch (error) {
-    console.error('[rate-limit] Failed to initialize Redis client:', getErrorMessage(error));
-    return null;
-  }
-}
-
-// Initialize Redis client once
-const redis = createRedisClient();
 
 /**
  * Creates rate limiting middleware with configurable limits using Upstash Redis.
@@ -111,6 +73,7 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
   const { maxRequests, windowSeconds, message } = config;
 
   // Create rate limiter instance if Redis is available
+  const redis = getRedisClient();
   const ratelimit = redis
     ? new Ratelimit({
         redis,

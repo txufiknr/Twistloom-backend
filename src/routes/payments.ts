@@ -29,10 +29,38 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { checkRateLimitByIP } from "../middleware/rate-limit.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications } from "../db/schema.js";
-import { CREDIT_PACKS } from "../config/credits.js";
+import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS } from "../config/credits.js";
 import { type TransactionType } from "../types/credits.js";
 import { getErrorMessage, handleApiError } from "../utils/error.js";
-import { getRedisClient } from "../config/redis.js";
+import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
+import { consumeCredits, getCreditCost } from "../services/credits.js";
+import { CREDIT_ERRORS } from "../config/errors.js";
+
+/**
+ * Helper function to check if error is insufficient credits
+ */
+function isInsufficientCreditsError(error: unknown): boolean {
+  return getErrorMessage(error).includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS_PATTERN);
+}
+
+/**
+ * Helper function to handle insufficient credits errors consistently
+ * Optimized to reduce database load by using simple error response
+ */
+async function handleInsufficientCreditsError(
+  res: Response,
+  costKey: string
+): Promise<void> {
+  const cost = getCreditCost(costKey as CreditCostKey);
+  
+  // Return simple error without additional database query
+  // The frontend can fetch current balance if needed
+  res.status(402).json({
+    error: CREDIT_ERRORS.INSUFFICIENT_CREDITS,
+    required: cost,
+    available: null, // Frontend can fetch if needed
+  });
+}
 
 const router = Router();
 
@@ -109,54 +137,35 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
  * Request Body:
  * {
  *   packId: string; // Credit pack ID (e.g., "observer", "investigator", "mastermind")
- *   successPath?: string; // Optional custom success path (relative, starts with /)
- *   cancelPath?: string; // Optional custom cancel path (relative, starts with /)
+ *   returnUrl?: string; // Optional current page URL for refresh-less UX (e.g., "https://app.com/books/slug/pageId")
+ *   successPath?: string; // Optional custom success path (fallback if returnUrl not provided, default: "/dashboard?success=true")
+ *   cancelPath?: string; // Optional custom cancel path (fallback if returnUrl not provided, default: "/pricing")
  * }
  * 
- * Example Request:
- * ```json
+ * Response:
  * {
- *   "packId": "investigator",
- *   "successPath": "/payment/success?from=pricing",
- *   "cancelPath": "/payment/cancel?from=pricing"
- * }
- * ```
- * 
- * Security Notes:
- * - Only relative paths are allowed (must start with /)
- * - Absolute URLs and protocols are rejected to prevent open redirects
- * - Invalid paths fall back to defaults: /dashboard?success=true and /pricing
- * 
- * Response (Success - 200):
- * {
- *   url: string; // Stripe checkout URL
+ *   url: string; // Stripe checkout URL to redirect user to
  * }
  * 
- * Response (Error - 400):
+ * Error Response:
  * {
- *   error: string; // Error message for invalid input
- * }
- * 
- * Response (Error - 404):
- * {
- *   error: string; // Credit pack not found
- * }
- * 
- * Response (Error - 429):
- * {
- *   error: string; // Rate limit exceeded
+ *   error: string; // Error message
  * }
  * 
  * Security:
  * - Requires authentication
- * - Uses Stripe for secure payment processing
+ * - Rate limited: 1 session per 10 seconds per user
  * - Validates URLs to prevent open redirects
- * - Rate limiting: 1 session per 10 seconds per user
- * - Metadata includes userId and credits for webhook processing
+ * - Uses idempotency key to prevent duplicate sessions
+ * 
+ * Refresh-Less UX:
+ * - When returnUrl is provided, backend appends ?payment=success or ?payment=cancel
+ * - Frontend can detect this param and invalidate queries to update credits
+ * - User returns to the same page after payment (no navigation away)
  * 
  * @example
  * ```typescript
- * // Basic usage
+ * // Basic usage (legacy behavior - redirects to dashboard)
  * const res = await fetch('/api/payments/create-checkout-session', {
  *   method: 'POST',
  *   headers: { 'Content-Type': 'application/json' },
@@ -165,7 +174,22 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
  * const { url } = await res.json();
  * window.location.href = url;
  * 
- * // With custom URLs
+ * // Refresh-less UX (recommended - returns to same page)
+ * const currentUrl = window.location.href; // e.g., "https://app.com/books/hush-frequency/pageId"
+ * const res = await fetch('/api/payments/create-checkout-session', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ 
+ *     packId: 'investigator',
+ *     returnUrl: currentUrl,
+ *   }),
+ * });
+ * const { url } = await res.json();
+ * window.location.href = url;
+ * // User returns to: currentUrl + "?payment=success"
+ * // Frontend detects param and invalidates queries to update credits
+ * 
+ * // Legacy custom URLs (fallback)
  * const res = await fetch('/api/payments/create-checkout-session', {
  *   method: 'POST',
  *   headers: { 'Content-Type': 'application/json' },
@@ -179,7 +203,7 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
  */
 router.post("/create-checkout-session", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { packId, successPath, cancelPath } = req.body;
+    const { packId, successPath, cancelPath, returnUrl } = req.body;
 
     // Validate input
     if (!packId) {
@@ -191,19 +215,14 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     const userId = user.id;
 
     // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
-    const redis = getRedisClient();
-    if (redis) {
-      const rateLimitKey = `checkout-session-${userId}`;
-      const lastSessionTime = await redis.get(rateLimitKey);
-      if (lastSessionTime) {
-        const timeSinceLastSession = Date.now() - parseInt(lastSessionTime as string, 10);
-        if (timeSinceLastSession < 10000) { // 10 seconds
-          return res.status(429).json({
-            error: "Too many checkout session attempts. Please wait a few seconds before trying again."
-          });
-        }
-      }
-      await redis.set(rateLimitKey, Date.now().toString(), { ex: 10 }); // 10 second TTL
+    const rateLimitResult = await checkRateLimit(`checkout-session-${userId}`, {
+      maxRequests: 1,
+      windowSeconds: 10,
+    });
+    if (!rateLimitResult.allowed) {
+      return res.status(429).json({
+        error: "Too many checkout session attempts. Please wait a few seconds before trying again."
+      });
     }
 
     // Validate and construct URLs (security: prevent open redirects)
@@ -212,24 +231,26 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
       return res.status(500).json({ error: "Frontend URL not configured" });
     }
 
-    // Helper function to validate and construct safe URLs
-    const constructSafeUrl = (path: string | undefined, defaultPath: string): string => {
-      if (!path) {
-        return `${baseUrl}${defaultPath}`;
-      }
-      
-      // Security validation: prevent open redirects
-      // Only allow relative paths starting with / and no protocol
-      if (path.startsWith('/') && !path.includes('//') && !path.includes('http')) {
-        return `${baseUrl}${path}`;
-      }
-      
-      // If invalid, use default
-      return `${baseUrl}${defaultPath}`;
-    };
+    // For refresh-less UX: use returnUrl to return user to same page
+    // If returnUrl is provided, append payment status params for frontend detection
+    // If not provided, fall back to successPath/cancelPath or defaults
+    let successUrl: string;
+    let cancelUrl: string;
 
-    const successUrl = constructSafeUrl(successPath, '/dashboard?success=true');
-    const cancelUrl = constructSafeUrl(cancelPath, '/pricing');
+    if (returnUrl) {
+      // Remove any existing query params from returnUrl and append payment status
+      const baseUrlObj = new URL(returnUrl, baseUrl);
+      baseUrlObj.searchParams.set('payment', 'success');
+      successUrl = baseUrlObj.toString();
+      
+      const cancelUrlObj = new URL(returnUrl, baseUrl);
+      cancelUrlObj.searchParams.set('payment', 'cancel');
+      cancelUrl = cancelUrlObj.toString();
+    } else {
+      // Legacy behavior: use successPath/cancelPath or defaults
+      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?success=true');
+      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+    }
 
     // Find the credit pack
     const pack = CREDIT_PACKS.find((p) => p.id === packId);
@@ -519,8 +540,18 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       const refundAmount = charge.amount_refunded ? charge.amount_refunded / 100 : 0;
       
       // Calculate credits to deduct (proportional to refund amount)
-      const creditsToDeduct = Math.floor((refundAmount / transaction.amountUsd!) * transaction.credits);
+      // Use BigInt to prevent integer overflow with large numbers
+      // Formula: (refundAmount / originalAmount) * originalCredits
+      // Convert to cents and use BigInt for safe arithmetic
+      const refundCents = Math.round(refundAmount * 100);
+      const originalCents = Math.round(transaction.amountUsd! * 100);
       
+      // Use BigInt for intermediate calculation to prevent overflow
+      // (refundCents * credits) could exceed Number.MAX_SAFE_INTEGER
+      const creditsToDeduct = Number(
+        (BigInt(refundCents) * BigInt(transaction.credits)) / BigInt(originalCents)
+      );
+
       if (creditsToDeduct > 0) {
         await dbWrite.transaction(async (tx) => {
           // Deduct credits from user
@@ -592,11 +623,14 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
  * POST /payments/consume-credits
  * 
  * Consumes credits from user account for usage (AI generation, etc.).
- * Validates credit balance before consumption and creates usage transaction.
+ * Uses the centralized consumeCredits service for atomic operations with idempotency support.
  * 
  * Request Body:
  * {
- *   amount: number; // Amount of credits to consume (positive number)
+ *   costKey: string; // Credit cost key from CREDIT_COSTS (e.g., "STORY_GENERATION")
+ *   idempotencyKey?: string; // Optional idempotency key to prevent double charging
+ *   context?: string; // Additional context for the transaction (e.g., "book_creation")
+ *   metadata?: object; // Optional metadata for the transaction
  * }
  * 
  * Response (Success - 200):
@@ -618,91 +652,191 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
  *   available: number; // Credits available
  * }
  * 
+ * Response (Error - 409):
+ * {
+ *   error: "Duplicate request";
+ *   message: string; // Idempotency key already used
+ * }
+ * 
+ * Response (Error - 429):
+ * {
+ *   error: string; // Rate limit exceeded
+ * }
+ * 
  * Security:
  * - Requires authentication
- * - Uses database transaction for atomic operations
+ * - Uses database transaction with row lock for atomic operations
  * - Validates credit balance before consumption
  * - Creates usage transaction record
+ * - Logs user activity for analytics and security monitoring
+ * - Idempotency key support to prevent double charging
+ * - Rate limiting: 60 requests per minute per user
  * 
  * @example
  * ```typescript
+ * // Basic usage
  * const res = await fetch('/api/payments/consume-credits', {
  *   method: 'POST',
  *   headers: { 'Content-Type': 'application/json' },
- *   body: JSON.stringify({ amount: 5 }),
+ *   body: JSON.stringify({ costKey: 'STORY_GENERATION' }),
  * });
  * const { success, remainingCredits } = await res.json();
+ * 
+ * // With idempotency key (recommended for retry logic)
+ * const res = await fetch('/api/payments/consume-credits', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ 
+ *     costKey: 'STORY_GENERATION',
+ *     idempotencyKey: 'user123-book456-gen1',
+ *     context: 'book_creation',
+ *     metadata: { bookId: 'book456' }
+ *   }),
+ * });
  * ```
  */
 router.post("/consume-credits", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { amount } = req.body;
+    const { costKey, idempotencyKey, context, metadata } = req.body;
     
     // Validate input
-    if (!amount || typeof amount !== 'number' || amount <= 0) {
-      return res.status(400).json({ error: "Valid amount is required (positive number)" });
+    if (!costKey || typeof costKey !== 'string') {
+      return res.status(400).json({ error: "Valid costKey is required" });
+    }
+
+    // Validate metadata is object if provided
+    if (metadata && typeof metadata !== 'object' && !Array.isArray(metadata)) {
+      return res.status(400).json({ error: "Metadata must be an object" });
+    }
+
+    // Validate costKey exists in CREDIT_COSTS
+    const validCostKeys: CreditCostKey[] = Object.keys(
+      CREDIT_COSTS
+    ) as CreditCostKey[];
+    
+    if (!validCostKeys.includes(costKey as CreditCostKey)) {
+      return res.status(400).json({ error: `Invalid costKey: ${costKey}` });
     }
 
     const userId = req.user!.id;
 
-    // Get current user credits
-    const userResult = await dbWrite
-      .select({ credits: users.credits })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-
-    if (!userResult || userResult.length === 0) {
-      return res.status(400).json({ error: "User not found" });
-    }
-
-    const currentCredits = userResult[0].credits;
-
-    // Check if user has enough credits
-    if (currentCredits < amount) {
-      return res.status(402).json({
-        error: "Not enough credits",
-        required: amount,
-        available: currentCredits,
+    // Rate limiting: Prevent abuse (60 requests per minute per user)
+    const rateLimitResult = await checkRateLimit(`credit-consume-${userId}`, {
+      maxRequests: 60,
+      windowSeconds: 60,
+    });
+    if (!rateLimitResult.allowed) {
+      return res.status(429).json({ 
+        error: "Too many credit consumption attempts. Please wait before trying again." 
       });
     }
 
-    // Update user credits (decrement)
-    const updateResult = await dbWrite
-      .update(users)
-      .set({ 
-        credits: sql`${users.credits} - ${amount}` 
-      })
-      .where(eq(users.userId, userId))
-      .returning({ credits: users.credits });
+    // Idempotency check: Prevent double charging on retries
+    let processingCleanup: (() => Promise<void>) | null = null;
+    
+    if (idempotencyKey) {
+      // First, try to set processing flag to prevent race condition
+      const processing = await setIdempotencyProcessing({
+        key: idempotencyKey,
+        prefix: 'credit-consume',
+        ttl: 300,
+      });
+      
+      if (!processing.set) {
+        // Another request is already processing this idempotency key
+        console.log(`[credits] 🔄 Request already processing for idempotencyKey: ${idempotencyKey}`);
+        return res.status(409).json({
+          error: "Request already in progress",
+          message: "This request is already being processed",
+        });
+      }
+      
+      // Store cleanup function
+      processingCleanup = processing.cleanup;
 
-    if (!updateResult || updateResult.length === 0) {
-      return res.status(400).json({ error: "Failed to update credits" });
+      // Check for existing completed result
+      const idempotencyResult = await checkIdempotency<{
+        success: boolean;
+        creditsConsumed: number;
+        remainingCredits: number;
+      }>({
+        key: idempotencyKey,
+        prefix: 'credit-consume',
+        ttl: 300,
+      });
+      
+      if (idempotencyResult.isDuplicate && idempotencyResult.cachedResult) {
+        console.log(`[credits] 🔄 Duplicate request detected with idempotencyKey: ${idempotencyKey}`);
+        await processingCleanup(); // Clean up processing flag
+        return res.status(409).json({
+          error: "Duplicate request",
+          message: "This request has already been processed",
+          ...(idempotencyResult.cachedResult as Record<string, unknown>),
+        });
+      }
     }
 
-    // Create usage transaction record
     try {
-      await dbWrite.insert(transactions).values({
-        userId,
-        type: "usage",
-        credits: -amount, // Negative for usage
+      // Consume credits using the service function
+      const creditResult = await consumeCredits(userId, costKey as CreditCostKey, {
+        context,
+        metadata
       });
-    } catch (transactionError) {
-      console.error("[stripe] ❌ Failed to create usage transaction record:", getErrorMessage(transactionError));
-      // Credits were already consumed, but transaction record failed
-      // Log this for manual reconciliation but don't fail the request
-      console.warn(`Credits consumed from user ${userId} but transaction record failed`);
+
+      // Store idempotency result if key provided (TTL: 5 minutes)
+      // This ensures idempotency even if the operation fails
+      if (idempotencyKey) {
+        const result = {
+          success: true,
+          creditsConsumed: getCreditCost(costKey as CreditCostKey),
+          remainingCredits: creditResult.remainingCredits
+        };
+        await storeIdempotencyResult(
+          { key: idempotencyKey, prefix: 'credit-consume', ttl: 300 },
+          result
+        );
+      }
+
+      const response = {
+        success: true,
+        creditsConsumed: getCreditCost(costKey as CreditCostKey),
+        remainingCredits: creditResult.remainingCredits,
+      };
+
+      console.log(`[credits] 🎯 Consumed ${response.creditsConsumed} credits from user ${userId} (remaining: ${response.remainingCredits}) for action ${costKey}`);
+      
+      // Clean up processing flag on success
+      if (processingCleanup) {
+        await processingCleanup();
+      }
+      
+      res.json(response);
+    } catch (error) {
+      // Check if error is insufficient credits
+      if (isInsufficientCreditsError(error)) {
+        // Clean up processing flag on error
+        if (processingCleanup) {
+          await processingCleanup();
+        }
+        
+        await handleInsufficientCreditsError(res, costKey);
+        return;
+      }
+      
+      // Clean up processing flag on error
+      if (processingCleanup) {
+        await processingCleanup();
+      }
+      
+      handleApiError(res, "Failed to consume credits", error);
     }
-
-    const result = {
-      success: true,
-      creditsConsumed: amount,
-      remainingCredits: updateResult[0].credits,
-    };
-
-    console.log(`[stripe] 🎯 Consumed ${result.creditsConsumed} credits from user ${userId} (remaining: ${result.remainingCredits})`);
-    res.json(result);
   } catch (error) {
+    // Check if error is insufficient credits
+    if (isInsufficientCreditsError(error)) {
+      await handleInsufficientCreditsError(res, req.body.costKey);
+      return;
+    }
+    
     handleApiError(res, "Failed to consume credits", error);
   }
 });

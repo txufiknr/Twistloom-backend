@@ -35,7 +35,6 @@ TODO:
 [ ] display running summary at the end of story (N% readers ended up here)
 [ ] Implement belief
 [ ] Implement corruption curve
-[ ] Sound effect format italic with asterisks
 
 by book creator:
 [ ] soundtrack based on mood
@@ -49,22 +48,13 @@ paid:
 [ ] see hint for an action
 [ ] use noiz tts api
 
-Story meta
+Story meta:
 visualStyle = "dark cinematic, moody lighting, realistic horror, muted tones"
 corruptionCurve: number[]
 Hints/secret dark facts (don't reveal, it may or never known by MC)
 
 
 Starting a sentence with a coordinating conjunction (such as or, and, or but) is a stylistic choice rather than a grammatical error. 
-
-
-implement Heuristic first book/story page validator
-
-Book meta prompt cache LRU aja
-
-Cek userpageprogress.previouspageid udah diset ketika backtoprevouspage & chooseaction
-
-
 
 Conditional prompt
 Boost image importance score when new place is discovered.

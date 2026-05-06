@@ -154,6 +154,8 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
  * @param title - The book title to generate slug from
  * @returns Promise resolving to a unique slug string
  * 
+ * @todo ensure slug not same as preserved endpoints: stats, explore
+ * 
  * @example
  * ```typescript
  * const slug = await generateUniqueSlug("The Amazing Adventure");
@@ -325,6 +327,8 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
  * @param bookId - Book ID to retrieve
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
  * @returns Promise resolving to enriched book data or null if not found
+ * 
+ * @todo should we implement LRU cache for fast result?
  */
 export async function getEnrichedBook(
   bookId: string,

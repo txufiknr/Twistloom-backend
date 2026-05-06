@@ -11,8 +11,8 @@
  * - Graceful degradation when Redis is unavailable
  */
 
-import { getRedisClient } from '../config/redis.js';
 import { getErrorMessage } from './error.js';
+import { getRedisClient } from './redis.js';
 
 /**
  * Default distributed lock TTL in seconds
