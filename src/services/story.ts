@@ -329,19 +329,10 @@ export async function markPageVisited(
     }
 
     // Calculate visit statistics using denormalized data
-    // nthVisit: Re-read page to get updated visitCount (trigger increments it on insert)
+    // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
     // visitorPercentage: use read_count from books table (maintained by existing trigger)
     try {
-      // TODO: concerns
-      // - is it realy been updated via dbRead replica immediately after insertUserPageProgress?
-      // - is this not overkill to do db query to just obtain visitCount stat (which I not expect it to be accurate, approximation (visitCount + 1) is okay)?
-      const [updatedPage] = await dbRead
-        .select({ visitCount: pages.visitCount })
-        .from(pages)
-        .where(eq(pages.id, pageId))
-        .limit(1);
-
-      const nthVisit = updatedPage?.visitCount ?? visitCount + 1;
+      const nthVisit = visitCount + 1;
       const totalBookReaders = stats.readCount;
       const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
 
