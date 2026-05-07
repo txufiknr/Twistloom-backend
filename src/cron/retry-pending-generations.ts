@@ -13,6 +13,7 @@
 import { mapToUserStoryPage } from "../services/book.js";
 import { requireEnv } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
+import { delay } from "../utils/time.js";
 
 export async function retryPendingGenerations(): Promise<void> {
   const startedAt = Date.now();
@@ -91,11 +92,11 @@ export async function retryPendingGenerations(): Promise<void> {
           continue;
         }
         
-        // Retry candidate generation (fire-and-forget pattern)
-        await ensureCandidatesForPage(pageData.userId, pageForGeneration);
+        // Retry candidate generation
+        await ensureCandidatesForPage(systemUserId, pageForGeneration);
         
         // Fetch updated page to check if generation succeeded
-        const updatedPage = await getPageFromDB(pageData.id);
+        const updatedPage = await getPageFromDB(pageData.id, { client: dbWrite });
         if (!updatedPage) {
           console.warn(`[retry-pending-generations] ⚠️ Page ${pageData.id} not found after regeneration, skipping`);
           continue;
@@ -125,7 +126,7 @@ export async function retryPendingGenerations(): Promise<void> {
         totalProcessed++;
         
         // Small delay between pages to prevent overwhelming AI API
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await delay(500);
         
       } catch (error) {
         console.error(`[retry-pending-generations] ❌ Failed to process page ${pageData.id}:`, getErrorMessage(error));

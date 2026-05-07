@@ -17,7 +17,7 @@ import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserSession, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB, resolveBook } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
@@ -2683,6 +2683,8 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 
   if (!currentState) {
     const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
+    console.log(`[generateCandidatePage] 🧩 getStoryProgress session:`, progress.session);
+    console.log(`[generateCandidatePage] 🧩 getStoryProgress state:`, progress.state);
     currentBook ??= progress.book ?? null;
     currentPage ??= progress.page;
     currentState = progress.state;
@@ -2862,8 +2864,16 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
  * @see generateNextPage - Calls this function for main story pages
  */
 export async function ensureCandidatesForPage(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
+  currentBook ??= await resolveBook(page.bookId);
+
+  // Early check: skip if book not found
+  if (!currentBook) {
+    console.log(`[ensureCandidatesForPage] ⏩ Skipping: book not found`);
+    return page;
+  }
+
   // Early check: skip if this is the last page (no candidates needed)
-  if (currentBook && page.page >= currentBook.totalPages) {
+  if (page.page >= currentBook.totalPages) {
     console.log(`[ensureCandidatesForPage] ⏩ Skipping last page ${page.page} (no candidates needed)`);
     return page;
   }

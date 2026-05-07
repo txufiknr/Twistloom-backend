@@ -47,7 +47,7 @@ import { books, pages, userSessions, deletedImages, users, userLikes, userFavori
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
-import { getEnrichedBook, mapToEnrichedPage } from "../services/book.js";
+import { getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -1135,24 +1135,17 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     }
 
     // Resolve book by identifier (slug first, then UUID)
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
-    const book = await resolveBook(identifierStr);
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const book = await resolveBook(bookIdentifier);
     if (!book) {
       return handleNotFoundError(res, "Book not found");
     }
 
     // Get the page from database
-    const pageResult = await dbRead
-      .select()
-      .from(pages)
-      .where(eq(pages.id, pageId))
-      .limit(1);
-
-    if (!pageResult.length) {
+    const dbPage = await getPageFromDB(pageId);
+    if (!dbPage) {
       return handleNotFoundError(res, "Page not found");
     }
-
-    const dbPage = pageResult[0];
 
     // Verify page belongs to the specified book
     if (dbPage.bookId !== book.id) {

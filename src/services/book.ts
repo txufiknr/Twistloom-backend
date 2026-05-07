@@ -529,7 +529,7 @@ export async function getPageFromDB(pageId: string, options: {
     return result[0] || null;
   } catch (error) {
     const errorMessage = getErrorMessage(error);
-    console.error(`Failed to get page ${pageId}:`, errorMessage);
+    console.error(`[getPageFromDB] ❌ Failed to get page ${pageId}:`, errorMessage);
     throw new Error(`Unable to retrieve page: ${errorMessage}`, { cause: error });
   }
 }

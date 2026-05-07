@@ -323,8 +323,8 @@ export const userPageProgress = pgTable(
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     bookId: bookId("set null"),
-    actionedPageId: uuid("actioned_page_id").notNull(),
-    nextPageId: uuid("next_page_id").notNull(),
+    actionedPageId: uuid("actioned_page_id").notNull(), // page which action selected from
+    nextPageId: uuid("next_page_id").notNull(), // action's destination page ID
     action: jsonb("action").$type<Action>().notNull(),
     createdAt,
     updatedAt,
