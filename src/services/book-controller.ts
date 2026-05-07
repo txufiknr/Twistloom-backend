@@ -105,7 +105,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         SELECT COUNT(DISTINCT user_id)
         FROM user_page_progress
         WHERE book_id = books.id
-        AND page_id IN (
+        AND actioned_page_id IN (
           SELECT id 
           FROM pages 
           WHERE book_id = books.id AND page = books.total_pages
