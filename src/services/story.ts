@@ -317,14 +317,13 @@ export async function markPageVisited(
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId });
     
-    if (action && previousPageId) {
+    if (action) {
       // Insert page progress record (trigger will increment visitCount in pages table)
       await insertUserPageProgress({
         userId,
         bookId,
-        pageId: previousPageId,
+        pageId,
         action,
-        nextPageId: pageId
       });
     }
 
@@ -507,7 +506,6 @@ export async function insertUserPageProgress(params: {
   bookId: string;
   pageId: string;
   action: Action;
-  nextPageId: string;
 }): Promise<void> {
   try {
     const userPageProgressData: DBNewUserPageProgress = {
@@ -515,7 +513,6 @@ export async function insertUserPageProgress(params: {
       bookId: params.bookId,
       pageId: params.pageId,
       action: params.action,
-      nextPageId: params.nextPageId,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -527,7 +524,6 @@ export async function insertUserPageProgress(params: {
         target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.pageId],
         set: {
           action: params.action,
-          nextPageId: params.nextPageId,
         }
       });
   } catch (error) {

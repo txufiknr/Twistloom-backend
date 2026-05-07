@@ -897,18 +897,6 @@ Final line rule: Short, clear, haunting ("It was never outside.")`,
 export type StoryPhase = keyof typeof storyPhases;
 export type FinalePhase = keyof typeof finalePhases;
 
-// export type StoryStateSnapshotReason = 'periodic' | 'major_event' | 'branch_start' | 'user_request';
-
-export type UserPageProgress = {
-  id: string;
-  userId: string;
-  bookId: string;
-  pageId: string;
-  actionId: string;
-  nextPageId?: string;
-  createdAt: number;
-}
-
 export type UserSession = Pick<DBUserSession, 'bookId' | 'pageId' | 'previousPageId' | 'status'> & {
   branchId: string;
 };

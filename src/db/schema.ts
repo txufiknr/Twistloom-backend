@@ -325,7 +325,6 @@ export const userPageProgress = pgTable(
     bookId: bookId("set null"),
     pageId: uuid("page_id").notNull(),
     action: jsonb("action").$type<Action>().notNull(),
-    nextPageId: uuid("next_page_id"), // For tracking pre-generated pages
     createdAt,
     updatedAt,
   },
