@@ -1,5 +1,3 @@
-export const SYSTEM_USER_ID = process.env.SYSTEM_USER_ID || "system-user-id";
-
 export function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing environment variable: ${name}`);
@@ -13,3 +11,5 @@ export function getEnv(name: string, defaultValue?: string): string {
   }
   return v || defaultValue || '';
 }
+
+export const SYSTEM_USER_ID = getEnv('SYSTEM_USER_ID');

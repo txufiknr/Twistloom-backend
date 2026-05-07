@@ -44,12 +44,12 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments, userPageProgress } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
-import { getPageActionsFromDB, getEnrichedBook } from "../services/book.js";
+import { getPageActionsFromDB, getEnrichedBook, getPageFromDB } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -641,8 +641,6 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * 
  * @todo
  * - do we need to migrate offset pagination into cursor pagination to support post-query sorting?
- * - activate pg_trgm extension
- * - modify books indexes to use pg_trgm
  * - follow `BOOK_SEARCH_ENHANCEMENT_ROADMAP.md` roadmap docs
  * 
  * @example
@@ -1148,58 +1146,43 @@ router.post("/:identifier/:pageId/visit", requireAuth, async (req: Request, res:
       return handleNotFoundError(res, "Book not found");
     }
 
-    // Get the page by id to get the branchId and page number
-    const pageData = await dbRead
-      .select({ id: pages.id, branchId: pages.branchId, page: pages.page })
-      .from(pages)
-      .where(
-        and(
-          eq(pages.bookId, book.id),
-          eq(pages.id, pageId as string)
-        )
-      )
-      .limit(1);
+    // // Get the page by id to get the branchId and page number
+    // const pageData = await dbRead
+    //   .select({ id: pages.id, branchId: pages.branchId, page: pages.page })
+    //   .from(pages)
+    //   .where(
+    //     and(
+    //       eq(pages.bookId, book.id),
+    //       eq(pages.id, pageId as string)
+    //     )
+    //   )
+    //   .limit(1);
 
-    if (!pageData.length) {
-      return handleNotFoundError(res, "Page not found");
-    }
+    // if (!pageData.length) {
+    //   return handleNotFoundError(res, "Page not found");
+    // }
 
-    const pageBranchId = pageData[0].branchId;
-    const pageNumber = pageData[0].page;
+    // const pageBranchId = pageData[0].branchId;
+    // const pageNumber = pageData[0].page;
 
-    // Validate that the action exists on the previous page
-    const previousPageData = await dbRead
-      .select({ actions: pages.actions })
-      .from(pages)
-      .where(eq(pages.id, previousPageId))
-      .limit(1);
-
-    if (!previousPageData.length) {
+    // Get previous page
+    const previousDbPage = await getPageFromDB(previousPageId);
+    if (!previousDbPage) {
       return handleNotFoundError(res, "Previous page not found");
     }
-
+    
+    // Validate that the action exists on the previous page
     // TODO: except for premium user via custom action
-    const isValidAction = previousPageData[0].actions.some((a: Action) => deepEqualSimple(a, action));
+    const isValidAction = previousDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
     if (!isValidAction) {
       return handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
     }
 
     // Validate user's action choice: check if user already chose a different action on previous page
-    const previousPageProgress = await dbRead
-      .select()
-      .from(userPageProgress)
-      .where(
-        and(
-          eq(userPageProgress.userId, userId),
-          eq(userPageProgress.pageId, previousPageId)
-        )
-      )
-      .limit(1);
-
-    if (previousPageProgress.length > 0) {
-      const previouslyChosenAction = previousPageProgress[0].action as Action;
-      if (!deepEqualSimple(previouslyChosenAction, action)) {
-        // TODO: except for premium user via chooose other action
+    const selectedActions = await getPageActionsFromDB(userId, book.id, previousPageId);
+    if (selectedActions.length > 0) {
+      if (!selectedActions.some((a) => deepEqualSimple(a, action))) {
+        // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
         return res.status(400).json({
           error: "Choice made, can't make another choice",
           message: "You already chose a different action on this page"
@@ -1208,13 +1191,9 @@ router.post("/:identifier/:pageId/visit", requireAuth, async (req: Request, res:
     }
 
     // Mark page as visited and persists chosen action
-    await markPageVisited(userId, book.id, pageId as string, previousPageId, action);
+    const visitDetails = await markPageVisited(userId, book.id, pageId as string, previousPageId, action);
 
-    // TODO: stats
-    // - you're 2,000th visitor
-    // - you're 2% of people ever seen this page
-
-    res.json({ pageId, branchId: pageBranchId, page: pageNumber });
+    res.json({ visitDetails });
   } catch (error) {
     handleApiError(res, "Failed to mark page visited", error);
   }

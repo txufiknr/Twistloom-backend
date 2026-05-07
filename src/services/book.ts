@@ -162,47 +162,58 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
  * ```
  */
 async function generateUniqueSlug(title: string): Promise<string> {
+  const RESERVED_SLUGS = new Set(['stats', 'explore']);
   const baseSlug = generateSlug(title);
-  
-  // If base slug is empty, generate a random one
-  if (!baseSlug) {
-    return generateId().substring(0, 8);
-  }
-  
-  // Check if base slug already exists
-  const existing = await dbRead
-    .select({ slug: books.slug })
-    .from(books)
-    .where(eq(books.slug, baseSlug))
-    .limit(1);
-  
-  // If base slug is available, use it
-  if (existing.length === 0) {
-    return baseSlug;
-  }
-  
-  // Base slug exists, try with numeric suffixes
-  let suffix = 2;
-  let uniqueSlug = `${baseSlug}-${suffix}`;
-  
-  while (suffix <= 100) { // Prevent infinite loops
-    const existingWithSuffix = await dbRead
+
+  if (baseSlug) {
+    // Check if base slug already exists
+    const existing = await dbRead
       .select({ slug: books.slug })
       .from(books)
-      .where(eq(books.slug, uniqueSlug))
+      .where(eq(books.slug, baseSlug))
       .limit(1);
-    
-    if (existingWithSuffix.length === 0) {
-      return uniqueSlug;
+
+    // If base slug is available and not a reserved endpoint, use it
+    if (existing.length === 0 && !RESERVED_SLUGS.has(baseSlug)) {
+      return baseSlug;
     }
-    
-    suffix++;
-    uniqueSlug = `${baseSlug}-${suffix}`;
+
+    // Base slug exists or is reserved, try with numeric suffixes
+    let suffix = 2;
+    let uniqueSlug = `${baseSlug}-${suffix}`;
+
+    while (suffix <= 100) { // Prevent infinite loops
+      // Skip any suffix that would produce a reserved slug
+      if (RESERVED_SLUGS.has(uniqueSlug)) {
+        suffix++;
+        uniqueSlug = `${baseSlug}-${suffix}`;
+        continue;
+      }
+
+      const existingWithSuffix = await dbRead
+        .select({ slug: books.slug })
+        .from(books)
+        .where(eq(books.slug, uniqueSlug))
+        .limit(1);
+
+      if (existingWithSuffix.length === 0) {
+        return uniqueSlug;
+      }
+
+      suffix++;
+      uniqueSlug = `${baseSlug}-${suffix}`;
+    }
+
+    // Fallback: use random ID if we can't find a unique slug (avoid reserved collisions)
+    console.warn(`[generateUniqueSlug] ⚠️ Could not generate unique slug for "${title}", using random ID`);
   }
-  
-  // Fallback: use random ID if we can't find a unique slug
-  console.warn(`[generateUniqueSlug] ⚠️ Could not generate unique slug for "${title}", using random ID`);
-  return generateId().substring(0, 8);
+
+  // If base slug is empty, generate a random one (avoid reserved collisions)
+  let id = generateId().substring(0, 8);
+  while (RESERVED_SLUGS.has(id)) {
+    id = generateId().substring(0, 8);
+  }
+  return id;
 }
 
 /**

@@ -39,7 +39,7 @@ export async function generateOriginalBook(): Promise<void> {
           userId: SYSTEM_USER_ID,
           theme,
           isOriginal: true,
-          generateCoverImage: true, // Generate cover image for original books
+          generateCoverImage: false, // Generate cover image for original books
         });
         // Success -> break out of retry loop
         break;

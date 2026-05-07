@@ -12,6 +12,14 @@ import { APP_NAME, VERSION } from "./config/constants.js";
 // Initialize Express app
 const app = express();
 
+// Allow multiple origins: production frontend and local development
+const allowedOrigins = new Set([
+  process.env.FRONTEND_URL,
+  'https://twistloom-web.vercel.app',
+  'https://localhost:3002',
+  'http://localhost:3001',
+].filter(Boolean));
+
 // CRITICAL: Raw body middleware for Stripe webhook MUST come before express.json()
 // Stripe requires raw body for webhook signature verification
 app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
@@ -21,13 +29,6 @@ app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
 app.use(cookieParser()); // Parse cookies for NextAuth authentication
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow multiple origins: production frontend and local development
-    const allowedOrigins = new Set([
-      process.env.FRONTEND_URL || 'https://twistloom-web.vercel.app',
-      'http://localhost:3001',
-      'http://localhost:3000', // Also support common local ports
-    ]);
-    
     // Allow requests with no origin (like mobile apps, curl, server-to-server)
     if (!origin) return callback(null, true);
     

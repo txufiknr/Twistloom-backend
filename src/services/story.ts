@@ -10,6 +10,7 @@ import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY } from "../config/story.js";
+import type { BookPageVisit } from "../types/book.js";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -302,10 +303,10 @@ export async function markPageVisited(
   pageId: string,
   previousPageId: string,
   action: Action
-): Promise<void> {
+): Promise<BookPageVisit> {
   try {
     // Update active session to point to the new page
-    await setActiveSession({ userId, bookId, pageId, previousPageId });
+    const session = await setActiveSession({ userId, bookId, pageId, previousPageId });
     
     // Insert page progress record
     await insertUserPageProgress({
@@ -315,8 +316,45 @@ export async function markPageVisited(
       action,
       nextPageId: pageId
     });
+
+    // TODO: return stats
+    // - you're 2,000th visitor
+    // - you're 2% of people ever seen this page
+
+    // TODO: Should we add `visitCount` in pages table schema, and use trigger to increment on every update of userPageProgress table?
     
     console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId}`);
+    return { session, nthVisit: 1, visitorPercentage: 2 };
+
+    // // Calculate visit statistics based on user_page_progress
+    // // nthVisit: total number of times this page has been reached (count of nextPageId)
+    // // visitorPercentage: percent of unique users who have visited this page out of users who have visited the book
+    // try {
+    //   const nextCountRes = await dbRead.execute(sql`
+    //     SELECT COUNT(*)::int AS count
+    //     FROM ${userPageProgress}
+    //     WHERE ${userPageProgress.nextPageId} = ${pageId}
+    //   `);
+    //   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //   const nthVisit = (nextCountRes.rows[0]?.count as number) ?? 0;
+
+    //   const totalUsersRes = await dbRead.execute(sql`
+    //     SELECT COUNT(DISTINCT ${userPageProgress.userId})::int AS count
+    //     FROM ${userPageProgress}
+    //     WHERE ${userPageProgress.bookId} = ${bookId}
+    //   `);
+    //   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    //   const totalUsers = (totalUsersRes.rows[0]?.count as number) ?? 0;
+
+    //   const visitorPercentage = totalUsers === 0 ? 100 : Math.round((nthVisit / totalUsers) * 100);
+
+    //   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
+    //   return { session, nthVisit, visitorPercentage };
+    // } catch (error) {
+    //   console.error(`[markPageVisited] ⚠️ Failed to compute visit stats for page ${pageId}:`, getErrorMessage(error));
+    //   // Fallback to conservative defaults
+    //   return { session, nthVisit: 1, visitorPercentage: 0 };
+    // }
   } catch (error) {
     console.error(`[markPageVisited] ❌ Failed to mark page visited:`, getErrorMessage(error));
     throw new Error(`Unable to mark page visited: ${getErrorMessage(error)}`, { cause: error });

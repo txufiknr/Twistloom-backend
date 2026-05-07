@@ -206,3 +206,9 @@ export const lastUpdatedFilterOptions = [
 ] as const;
 
 export type LastUpdatedFilter = typeof lastUpdatedFilterOptions[number];
+
+export type BookPageVisit = {
+  session?: DBUserSession | null;
+  nthVisit: number;
+  visitorPercentage: number;
+}

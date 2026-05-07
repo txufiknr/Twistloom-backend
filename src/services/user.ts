@@ -16,12 +16,10 @@ import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js
 import { eq, and, gt, ne, sql, desc } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
-import { requireEnv } from "../utils/env.js";
+import { SYSTEM_USER_ID } from "../utils/env.js";
 import { DAILY_CHECKIN_CREDITS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import type { DBNewUserActivityLog } from "../types/schema.js";
-
-const SYSTEM_USER_ID = requireEnv('SYSTEM_USER_ID');
 
 /**
  * Cleans up orphaned user records
