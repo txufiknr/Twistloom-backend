@@ -1110,7 +1110,7 @@ router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Re
  *   ]
  * }
  */
-router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { identifier, pageId } = req.params;
     const userId = req.userId!;

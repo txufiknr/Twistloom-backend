@@ -62,9 +62,6 @@ At initialize book:
 
 I'd like to see your designs proposal for:
 
-“Action Diversity Validator”
-“Narrative Hook Detector”
-
 Branch locking system (prevents illegal jumps)
 “Golden path” vs “corrupted path” tracking
 Replay system with alternate timeline comparison

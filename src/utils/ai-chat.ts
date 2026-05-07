@@ -110,7 +110,7 @@ async function promptWithFallback<T>(
 /**
  * Sends a prompt to GitHub Models inference (`models.github.ai`, OpenAI-compatible chat completions).
  *
- * Tries each model in {@link AI_CHAT_MODELS.github} in order. Applies {@link githubLimiter}
+ * Tries each model in order. Applies {@link githubLimiter}
  * before each request. On success, returns an {@link AIResponse} with token usage and finish reason;
  * on failure, logs and tries the next model, matching the control flow of {@link geminiPrompt}.
  *

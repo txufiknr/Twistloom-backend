@@ -369,6 +369,13 @@ export function getErrorName(error: unknown, fallback: string = 'UnknownError'):
 }
 
 /**
+ * Type guard for Node.js error objects with code property
+ */
+export function hasErrorCode(err: unknown): err is { code: string } {
+  return err !== null && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string";
+}
+
+/**
  * Export the undici abort error detection function for use in other modules
  */
 export { isUndiciAbortError };

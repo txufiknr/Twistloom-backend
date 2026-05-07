@@ -17,6 +17,7 @@ import { dbRead, dbWrite } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { verifyNextAuthToken } from './nextauth.js';
 import { generateId } from '../utils/uuid.js';
+import { IS_PRODUCTION } from '../config/constants.js';
 
 const GUEST_COOKIE_NAME = 'twistloom_guest_id';
 const MAX_GUEST_CREATION_RETRIES = 3;
@@ -142,8 +143,8 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
       
       res.cookie(GUEST_COOKIE_NAME, guestId, {
         httpOnly: true, // Prevent XSS attacks
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: (process.env.NODE_ENV === 'production' && isCrossOrigin) ? 'none' : 'lax',
+        secure: IS_PRODUCTION,
+        sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
         maxAge: 60 * 60 * 24 * 30, // 30 days
         path: '/',
       });

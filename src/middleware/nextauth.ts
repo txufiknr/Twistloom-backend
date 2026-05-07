@@ -24,6 +24,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { getToken } from 'next-auth/jwt';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
+import { IS_PRODUCTION } from '../config/constants.js';
 
 /**
  * Determines the NextAuth cookie name based on environment
@@ -34,7 +35,7 @@ import type { AuthUser } from '../types/express.js';
 function getCookieName(): string {
   // Development: next-auth.session-token (no __Secure prefix, works on HTTP)
   // Production: __Secure-next-auth.session-token (requires HTTPS)
-  return process.env.NODE_ENV === 'production'
+  return IS_PRODUCTION
     ? '__Secure-next-auth.session-token'
     : 'next-auth.session-token';
 }

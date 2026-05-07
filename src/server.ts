@@ -7,15 +7,9 @@
 
 import app from "./app.js";
 import { PORT } from "./config/constants.js";
+import { hasErrorCode } from "./utils/error.js";
 import { registerGracefulShutdown } from "./utils/graceful-shutdown.js";
 import type http from "node:http";
-
-/**
- * Type guard for Node.js error objects with code property
- */
-function hasErrorCode(err: unknown): err is { code: string } {
-  return err !== null && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string";
-}
 
 /* -------------------------------------------------- */
 /* Global Process Guards                              */
