@@ -11,5 +11,3 @@ export function getEnv(name: string, defaultValue?: string): string {
   }
   return v || defaultValue || '';
 }
-
-export const SYSTEM_USER_ID = getEnv('SYSTEM_USER_ID');

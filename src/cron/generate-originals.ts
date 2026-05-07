@@ -14,7 +14,7 @@ import { generateBookCreationPromptText } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
 import type { CreateBookResponse } from "../types/book.js";
-import { SYSTEM_USER_ID } from "../utils/env.js";
+import { requireEnv } from "../utils/env.js";
 
 export async function generateOriginalBook(): Promise<void> {
   const startedAt = Date.now();
@@ -35,8 +35,9 @@ export async function generateOriginalBook(): Promise<void> {
       // Step 2: Try creating the book with the generated theme
       console.log(`[generate-originals] 📔 Creating original book... (attempt ${attempt}/${MAX_ATTEMPTS})`);
       try {
+        const systemUserId = requireEnv('SYSTEM_USER_ID');
         result = await createBookCore({
-          userId: SYSTEM_USER_ID,
+          userId: systemUserId,
           theme,
           isOriginal: true,
           generateCoverImage: false, // Generate cover image for original books

@@ -21,7 +21,6 @@
  * - PUT /api/books/:id - Update book information and cover image (requires auth)
  * - GET /api/books/:identifier - Retrieve specific book by slug or id
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
- * - POST /api/books/:identifier/:pageId/visit - Mark page as visited and track progress (requires auth)
  * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
  * - POST /api/books/:id/sessions - Manage reading sessions (optional auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
@@ -706,20 +705,35 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     
     // Fetch function for cache
     const fetchBooks = async () => {
+      // Create subquery for latest user sessions using ROW_NUMBER() window function
+      const latestUserSessions = dbRead
+        .select({
+          id: userSessions.id,
+          userId: userSessions.userId,
+          bookId: userSessions.bookId,
+          pageId: userSessions.pageId,
+          updatedAt: userSessions.updatedAt,
+          rowNumber: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${userSessions.userId}, ${userSessions.bookId} ORDER BY ${userSessions.updatedAt} DESC)`.as('row_number')
+        })
+        .from(userSessions)
+        .where(eq(userSessions.userId, userId))
+        .as('latestUserSessions');
+
       // Build base query with enriched fields
       const baseQuery = dbRead
         .select({
           ...getEnrichedBookSelect(userId),
-          lastReadAt: userSessions.updatedAt,
-          lastPage: userSessions.pageId
+          lastReadAt: latestUserSessions.updatedAt,
+          lastPage: latestUserSessions.pageId
         })
         .from(books)
         .leftJoin(users, eq(books.userId, users.userId))
         .leftJoin(
-          userSessions,
+          latestUserSessions,
           and(
-            eq(userSessions.bookId, books.id),
-            eq(userSessions.userId, userId),
+            eq(latestUserSessions.bookId, books.id),
+            eq(latestUserSessions.userId, userId),
+            eq(latestUserSessions.rowNumber, 1) // Only get the latest session per book
           )
         );
 

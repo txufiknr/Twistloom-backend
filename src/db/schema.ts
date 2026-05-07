@@ -323,18 +323,19 @@ export const userPageProgress = pgTable(
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     bookId: bookId("set null"),
-    pageId: uuid("page_id").notNull(),
+    actionedPageId: uuid("actioned_page_id").notNull(),
+    nextPageId: uuid("next_page_id").notNull(),
     action: jsonb("action").$type<Action>().notNull(),
     createdAt,
     updatedAt,
   },
   (t) => [
     // Unique constraint on (userId, bookId, pageId) to ensure unique progress per branch
-    unique("user_page_progress_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
+    unique("user_page_progress_user_book_page_unique").on(t.userId, t.bookId, t.actionedPageId),
     // Index for user's progress in a book
     index("user_page_progress_user_book_idx").on(t.userId, t.bookId),
     // Index for finding specific page progress
-    index("user_page_progress_page_idx").on(t.pageId),
+    index("user_page_progress_page_idx").on(t.actionedPageId),
     // Index for action tracking
     // index("user_page_progress_action_gin_idx").using("gin", t.action),
   ]

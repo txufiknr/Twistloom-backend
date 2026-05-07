@@ -549,7 +549,7 @@ export async function getPageActionsFromDB(userId: string, bookId: string, pageI
     .where(and(
       eq(userPageProgress.userId, userId),
       eq(userPageProgress.bookId, bookId),
-      eq(userPageProgress.pageId, pageId),
+      eq(userPageProgress.actionedPageId, pageId),
     ))
     .orderBy(asc(userPageProgress.updatedAt));
   

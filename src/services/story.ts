@@ -317,12 +317,13 @@ export async function markPageVisited(
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId });
     
-    if (action) {
+    if (action && previousPageId) {
       // Insert page progress record (trigger will increment visitCount in pages table)
       await insertUserPageProgress({
         userId,
         bookId,
-        pageId,
+        actionedPageId: previousPageId, // actioned page
+        nextPageId: pageId,
         action,
       });
     }
@@ -501,29 +502,15 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
   };
 }
 
-export async function insertUserPageProgress(params: {
-  userId: string;
-  bookId: string;
-  pageId: string;
-  action: Action;
-}): Promise<void> {
+export async function insertUserPageProgress(data: DBNewUserPageProgress): Promise<void> {
   try {
-    const userPageProgressData: DBNewUserPageProgress = {
-      userId: params.userId,
-      bookId: params.bookId,
-      pageId: params.pageId,
-      action: params.action,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
     await dbWrite
       .insert(userPageProgress)
-      .values(userPageProgressData)
+      .values(data)
       .onConflictDoUpdate({
-        target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.pageId],
+        target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.actionedPageId],
         set: {
-          action: params.action,
+          action: data.action,
         }
       });
   } catch (error) {

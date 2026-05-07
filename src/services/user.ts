@@ -16,10 +16,10 @@ import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js
 import { eq, and, gt, ne, sql, desc } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
-import { SYSTEM_USER_ID } from "../utils/env.js";
 import { DAILY_CHECKIN_CREDITS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import type { DBNewUserActivityLog } from "../types/schema.js";
+import { requireEnv } from "../utils/env.js";
 
 /**
  * Cleans up orphaned user records
@@ -56,13 +56,14 @@ export async function cleanupOrphanedUsers(): Promise<number> {
     console.log("[user] 👤 Checking for orphaned users...");
     
     // Find users without user_auth records using LEFT JOIN
+    const systemUserId = requireEnv('SYSTEM_USER_ID');
     const orphanedUsers = await dbWrite
       .select({ userId: users.userId })
       .from(users)
       .leftJoin(userAuth, eq(users.userId, userAuth.userId))
       .where(and(
         sql`${userAuth.userId} IS NULL`,
-        ne(users.userId, SYSTEM_USER_ID)
+        ne(users.userId, systemUserId)
       ));
     
     if (orphanedUsers.length === 0) {
