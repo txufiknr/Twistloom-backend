@@ -2,7 +2,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
 import type { StoryState, StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession } from "../types/story.js";
-import type { DBNewUserPageProgress, DBStoryState, DBUserSession } from "../types/schema.js";
+import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -10,7 +10,7 @@ import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY } from "../config/story.js";
-import type { BookPageVisit } from "../types/book.js";
+import type { BookPageVisit, EnrichedBookData } from "../types/book.js";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -299,16 +299,19 @@ export async function insertStoryState(
  */
 export async function markPageVisited(
   userId: string,
-  bookId: string,
-  pageId: string,
+  book: Pick<EnrichedBookData, 'id' | 'stats'>,
+  dbPage: Pick<DBPage, 'id' | 'visitCount'>,
   previousPageId: string,
   action: Action
 ): Promise<BookPageVisit> {
   try {
+    const { id: bookId, stats } = book;
+    const { id: pageId, visitCount } = dbPage;
+
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId });
     
-    // Insert page progress record
+    // Insert page progress record (trigger will increment visitCount in pages table)
     await insertUserPageProgress({
       userId,
       bookId,
@@ -317,44 +320,21 @@ export async function markPageVisited(
       nextPageId: pageId
     });
 
-    // TODO: return stats
-    // - you're 2,000th visitor
-    // - you're 2% of people ever seen this page
+    // Calculate visit statistics using denormalized data
+    // nthVisit: read visitCount from pages table (maintained by trigger)
+    // visitorPercentage: use read_count from books table (maintained by existing trigger)
+    try {
+      const nthVisit = visitCount + 1;
+      const totalBookReaders = stats.readCount;
+      const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
 
-    // TODO: Should we add `visitCount` in pages table schema, and use trigger to increment on every update of userPageProgress table?
-    
-    console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId}`);
-    return { session, nthVisit: 1, visitorPercentage: 2 };
-
-    // // Calculate visit statistics based on user_page_progress
-    // // nthVisit: total number of times this page has been reached (count of nextPageId)
-    // // visitorPercentage: percent of unique users who have visited this page out of users who have visited the book
-    // try {
-    //   const nextCountRes = await dbRead.execute(sql`
-    //     SELECT COUNT(*)::int AS count
-    //     FROM ${userPageProgress}
-    //     WHERE ${userPageProgress.nextPageId} = ${pageId}
-    //   `);
-    //   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    //   const nthVisit = (nextCountRes.rows[0]?.count as number) ?? 0;
-
-    //   const totalUsersRes = await dbRead.execute(sql`
-    //     SELECT COUNT(DISTINCT ${userPageProgress.userId})::int AS count
-    //     FROM ${userPageProgress}
-    //     WHERE ${userPageProgress.bookId} = ${bookId}
-    //   `);
-    //   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    //   const totalUsers = (totalUsersRes.rows[0]?.count as number) ?? 0;
-
-    //   const visitorPercentage = totalUsers === 0 ? 100 : Math.round((nthVisit / totalUsers) * 100);
-
-    //   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
-    //   return { session, nthVisit, visitorPercentage };
-    // } catch (error) {
-    //   console.error(`[markPageVisited] ⚠️ Failed to compute visit stats for page ${pageId}:`, getErrorMessage(error));
-    //   // Fallback to conservative defaults
-    //   return { session, nthVisit: 1, visitorPercentage: 0 };
-    // }
+      console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
+      return { session, nthVisit, visitorPercentage };
+    } catch (error) {
+      console.error(`[markPageVisited] ⚠️ Failed to compute visit stats for page ${pageId}:`, getErrorMessage(error));
+      // Fallback to conservative defaults
+      return { session, nthVisit: 1, visitorPercentage: 0 };
+    }
   } catch (error) {
     console.error(`[markPageVisited] ❌ Failed to mark page visited:`, getErrorMessage(error));
     throw new Error(`Unable to mark page visited: ${getErrorMessage(error)}`, { cause: error });

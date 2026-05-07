@@ -75,117 +75,6 @@ async function ensureUserSessionTrigger(): Promise<void> {
 }
 
 /**
- * Creates trigger to increment book likes count when a user likes a book
- * 
- * This trigger fires AFTER INSERT on user_likes table:
- * 1. When a user likes a book (target_type = 'book')
- * 2. Increments the likes_count column in books table
- * 3. Ensures denormalized count stays synchronized
- * 
- * Idempotency:
- * - Uses CREATE OR REPLACE FUNCTION
- * - Safe to run multiple times without errors
- */
-async function ensureBookLikesIncrementTrigger(): Promise<void> {
-  try {
-    // Note: This trigger is disabled to prevent double-counting
-    // The route handler now handles likesCount increment atomically
-    console.log("⏭️  Skipping book likes increment trigger (handled by route handler)");
-    return;
-    
-    // Create the trigger function
-    await dbWrite.execute(`
-      CREATE OR REPLACE FUNCTION increment_book_likes_count()
-      RETURNS TRIGGER AS $$
-      BEGIN
-        -- Only increment for book likes
-        IF NEW.target_type = 'book' THEN
-          UPDATE books 
-          SET likes_count = likes_count + 1,
-              updated_at = NOW()
-          WHERE id = NEW.target_id;
-        END IF;
-        RETURN NEW;
-      END;
-      $$ LANGUAGE plpgsql;
-    `);
-    
-    // Drop existing trigger if it exists
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_likes_insert_trigger ON user_likes;
-    `);
-    
-    // Create the trigger
-    await dbWrite.execute(`
-      CREATE TRIGGER user_likes_insert_trigger
-        AFTER INSERT ON user_likes
-        FOR EACH ROW
-        EXECUTE FUNCTION increment_book_likes_count();
-    `);
-    
-    console.log("✅ Book likes increment trigger created successfully!");
-  } catch (error) {
-    console.error("❌ Failed to create book likes increment trigger:", getErrorMessage(error));
-    throw error;
-  }
-}
-
-/**
- * Creates trigger to decrement book likes count when a user unlikes a book
- * 
- * This trigger fires AFTER DELETE on user_likes table:
- * 1. When a user unlikes a book (target_type = 'book')
- * 2. Decrements the likes_count column in books table
- * 3. Ensures denormalized count stays synchronized
- * 
- * Idempotency:
- * - Uses CREATE OR REPLACE FUNCTION
- * - Safe to run multiple times without errors
- */
-async function ensureBookLikesDecrementTrigger(): Promise<void> {
-  try {
-    // Note: This trigger is disabled to prevent double-counting
-    // The route handler now handles likesCount decrement atomically
-    console.log("⏭️  Skipping book likes decrement trigger (handled by route handler)");
-    return;
-    // Create the trigger function
-    await dbWrite.execute(`
-      CREATE OR REPLACE FUNCTION decrement_book_likes_count()
-      RETURNS TRIGGER AS $$
-      BEGIN
-        -- Only decrement for book likes
-        IF OLD.target_type = 'book' THEN
-          UPDATE books 
-          SET likes_count = GREATEST(likes_count - 1, 0),
-              updated_at = NOW()
-          WHERE id = OLD.target_id;
-        END IF;
-        RETURN OLD;
-      END;
-      $$ LANGUAGE plpgsql;
-    `);
-    
-    // Drop existing trigger if it exists
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_likes_delete_trigger ON user_likes;
-    `);
-    
-    // Create the trigger
-    await dbWrite.execute(`
-      CREATE TRIGGER user_likes_delete_trigger
-        AFTER DELETE ON user_likes
-        FOR EACH ROW
-        EXECUTE FUNCTION decrement_book_likes_count();
-    `);
-    
-    console.log("✅ Book likes decrement trigger created successfully!");
-  } catch (error) {
-    console.error("❌ Failed to create book likes decrement trigger:", getErrorMessage(error));
-    throw error;
-  }
-}
-
-/**
  * Creates trigger to update book read count based on unique users in userPageProgress
  * 
  * This trigger fires AFTER INSERT OR UPDATE on user_page_progress table:
@@ -362,6 +251,59 @@ async function ensureBookBranchesIncrementTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to increment page visit count when a user visits a page
+ * 
+ * This trigger fires AFTER INSERT on user_page_progress table:
+ * 1. When a user progresses to a new page (next_page_id is set)
+ * 2. Increments the visit_count column in pages table for that page
+ * 3. Ensures denormalized count stays synchronized for fast reads
+ * 
+ * Note: This counts total page visits (not unique visitors)
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION increment_page_visit_count()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Only increment if next_page_id is set (user actually visited the page)
+        IF NEW.next_page_id IS NOT NULL THEN
+          UPDATE pages
+          SET visit_count = visit_count + 1,
+              updated_at = NOW()
+          WHERE id = NEW.next_page_id;
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing trigger if it exists
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_page_progress_visit_trigger ON user_page_progress;
+    `);
+    
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER user_page_progress_visit_trigger
+        AFTER INSERT ON user_page_progress
+        FOR EACH ROW
+        EXECUTE FUNCTION increment_page_visit_count();
+    `);
+    
+    console.log("✅ Page visit count increment trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create page visit count increment trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates trigger to decrement book branches count when the last page of a branch is deleted
  * 
  * This trigger fires AFTER DELETE on pages table:
@@ -458,11 +400,10 @@ export async function ensureTriggers(): Promise<void> {
     await ensureUserSessionTrigger();
 
     // Create denormalization triggers for performance
-    await ensureBookLikesIncrementTrigger();
-    await ensureBookLikesDecrementTrigger();
     await ensureBookReadCountTrigger();
     await ensureBookBranchesIncrementTrigger();
     await ensureBookBranchesDecrementTrigger();
+    await ensurePageVisitCountIncrementTrigger();
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);

@@ -23,10 +23,16 @@ import { sql, and, or, eq, desc } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
 import type { Response } from "express";
 import type { ThemeValidationCategory, ThemeValidationResult } from "../types/theme-validation.js";
-import type { BookSortOption } from "../types/book.js";
+import type { BookPageVisit, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
+import type { DBPage } from "../types/schema.js";
+import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
+import { deepEqualSimple } from "../utils/parser.js";
+import type { Action } from "../types/story.js";
+import { handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { markPageVisited } from "./story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -515,4 +521,54 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
       return query.orderBy(desc(books.createdAt));
     }
   }
+}
+
+export async function visitBookPage(
+  res: Response,
+  params: { userId: string, pageId: string, bookIdentifier?: string }
+): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage }> {
+  const { userId, pageId, bookIdentifier } = params;
+
+  // Get page
+  const dbPage = await getPageFromDB(pageId as string, { bookIdentifier });
+  if (!dbPage) return {};
+
+  const { bookId, parentId: parentPageId } = dbPage;
+
+  // Get book
+  const book = await getEnrichedBook(bookId, userId);
+  if (!book) return { dbPage };
+
+  // Get previous page
+  const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
+  if (!parentDbPage) {
+    handleNotFoundError(res, "Previous page not found");
+    return { dbPage, book };
+  }
+
+  // Validate that the action exists on the parent page
+  // TODO: except for premium user via custom action
+  const action: Action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
+  const isValidAction = parentDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
+  if (!isValidAction) {
+    handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
+    return { dbPage, book };
+  }
+
+  // Validate user's action choice: check if user already chose a different action on previous page
+  const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
+  if (selectedActions.length > 0) {
+    if (!selectedActions.some((a) => deepEqualSimple(a, action))) {
+      // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
+      res.status(400).json({
+        error: "Choice made, can't make another choice",
+        message: "You already chose a different action on this page"
+      });
+      return { dbPage, book };
+    }
+  }
+
+  // Mark page as visited and persists chosen action
+  const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId!, action);
+  return { dbPage, book, visitDetails };
 }

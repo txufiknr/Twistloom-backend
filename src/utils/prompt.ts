@@ -2550,7 +2550,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         // Read fresh page data from write DB to ensure read-after-write consistency
         // This is critical because ensureCandidatesForPage updates actions with destinations,
         // and we need to see those updates to determine if branching is needed
-        const freshActionedPage = await getPageFromDB(actionedPage.id, dbWrite);
+        const freshActionedPage = await getPageFromDB(actionedPage.id, { client: dbWrite });
         if (!freshActionedPage) {
           // Create a specific error for deleted pages that won't be retried
           throw createNonRetryableError(
@@ -2879,7 +2879,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
   const lockResult = await withLock(lockKey, async () => {
     // Read current page state (no transaction - avoids idle timeout during AI generation)
-    const currentDBPage = await getPageFromDB(page.id, dbWrite);
+    const currentDBPage = await getPageFromDB(page.id, { client: dbWrite });
     if (!currentDBPage) throw new Error('Page not found');
 
     const currentPage = await mapToUserStoryPage(currentDBPage, userId);

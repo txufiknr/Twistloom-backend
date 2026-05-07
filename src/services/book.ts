@@ -19,7 +19,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -34,6 +34,7 @@ import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { shouldProceedWithRetry } from "../utils/retry.js";
 import { extractStateDelta } from "../utils/story.js";
+import { getTranslatedText, shouldTranslate } from "./translation.js";
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -432,18 +433,41 @@ export async function getUserBooks(
  * }
  * ```
  */
-export async function getPageFromDB(pageId: string, client: typeof dbRead | typeof dbWrite = dbRead): Promise<DBPage | null> {
+export async function getPageFromDB(pageId: string, options: {
+  bookIdentifier?: string,
+  client?: typeof dbRead | typeof dbWrite
+} = {}): Promise<DBPage | null> {
+  const { bookIdentifier, client = dbRead } = options;
+
   try {
+    // Validate when bookIdentifier provided (page must be in book)
+    let bookId: string | undefined;
+    if (bookIdentifier) {
+      bookId = isValidUuid(bookIdentifier) ? bookIdentifier : undefined;
+      if (!bookId) {
+        const book = await resolveBook(bookIdentifier);
+        bookId = book?.id;
+      }
+  
+      if (!bookId) throw new Error("Book not found");
+    }
+  
+    // Build where conditions - only include bookId filter if bookId is defined
+    const whereConditions = [eq(pages.id, pageId)];
+    if (bookId) {
+      whereConditions.push(eq(pages.bookId, bookId));
+    }
+
     const result = await client
       .select()
       .from(pages)
-      .where(eq(pages.id, pageId))
-      .limit(1);
-    
+      .where(and(...whereConditions))
+      .limit(1);    
     return result[0] || null;
   } catch (error) {
-    console.error(`Failed to get page ${pageId}:`, getErrorMessage(error));
-    throw new Error(`Unable to retrieve page: ${getErrorMessage(error)}`, { cause: error });
+    const errorMessage = getErrorMessage(error);
+    console.error(`Failed to get page ${pageId}:`, errorMessage);
+    throw new Error(`Unable to retrieve page: ${errorMessage}`, { cause: error });
   }
 }
 
@@ -633,6 +657,62 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
   } satisfies StoryPage;
+}
+
+export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: string, bookLanguage?: string, acceptLanguage?: string }): Promise<EnrichedStoryPage | null> {
+  const { userId, bookLanguage = 'en', acceptLanguage } = options;
+  const allActions = dbPage.actions;
+  const visibleActions = allActions.filter((action: Action) => action.destination?.branchId && action.destination?.pageId);
+  const { id: pageId, text } = dbPage;
+
+  // Query user's chosen action for this page (if authenticated)
+  const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, dbPage.bookId, pageId) : [];
+
+  // Handle translation if Accept-Language header is provided and differs from book language
+  let translatedText: string | undefined;
+  const targetLanguage = shouldTranslate(bookLanguage, acceptLanguage);
+
+  if (targetLanguage && targetLanguage !== bookLanguage) {
+    const translationResult = await getTranslatedText({
+      pageId,
+      text,
+      bookLanguage,
+      targetLanguage
+    });
+    
+    if (translationResult.text) {
+      translatedText = translationResult.text;
+    }
+    // Note: If translation failed, translationResult.error contains error info
+    // but we continue with original text (fallback behavior)
+  }
+
+  // Return enriched page with only frontend-relevant fields
+  // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
+  const enrichedPage: EnrichedStoryPage = {
+    id: dbPage.id,
+    page: dbPage.page,
+    bookId: dbPage.bookId,
+    branchId: dbPage.branchId,
+    parentId: dbPage.parentId,
+    text: dbPage.text,
+    mood: dbPage.mood || undefined,
+    place: dbPage.place || undefined,
+    timeOfDay: dbPage.timeOfDay || undefined,
+    charactersPresent: dbPage.charactersPresent,
+    keyEvents: dbPage.keyEvents,
+    importantObjects: dbPage.importantObjects,
+    createdAt: dbPage.createdAt,
+    updatedAt: dbPage.updatedAt,
+
+    // Enriched columns
+    actions: visibleActions, // Only actions that has destination page
+    originalActionsCount: allActions.length,
+    selectedActions,
+    translatedText,
+  };
+
+  return enrichedPage;
 }
 
 /**

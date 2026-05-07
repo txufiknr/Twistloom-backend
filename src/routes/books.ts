@@ -46,34 +46,30 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
-import { deepEqualSimple } from "../utils/parser.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
-import { getPageActionsFromDB, getEnrichedBook, getPageFromDB } from "../services/book.js";
+import { getEnrichedBook, mapToEnrichedPage } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { setActiveSession, markPageVisited } from "../services/story.js";
+import { setActiveSession } from "../services/story.js";
 import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
-import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery } from "../services/book-controller.js";
+import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import { lastUpdatedFilterOptions, type BookSortOption, type EnrichedBookData } from "../types/book.js";
 import type { StoryMCCandidate } from "../types/character.js";
-import type { Action, EnrichedStoryPage } from "../types/story.js";
 import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
 import { consumeCredits } from "../services/credits.js";
 import { logUserActivity } from "../services/user.js";
-import { getTranslatedText, shouldTranslate } from "../services/translation.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { isCreditError } from "../config/errors.js";
 import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import type { DBPage } from "../types/schema.js";
 import { isValidUuid } from "../utils/uuid.js";
 
 const router = Router();
@@ -992,210 +988,35 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
 router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { identifier, pageId } = req.params;
+    const userId = req.userId!; // Always defined even for guests
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    // Handle array case for identifier (Express can return string[])
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
-
-    // Resolve book by identifier (slug first, then UUID)
-    const book = await getEnrichedBook(identifierStr, req.userId);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
-
-    // Get page within bookId
-    const pageData = await dbRead
-      .select({
-        id: pages.id,
-        userId: pages.userId,
-        page: pages.page,
-        bookId: pages.bookId,
-        branchId: pages.branchId,
-        parentId: pages.parentId,
-        text: pages.text,
-        mood: pages.mood,
-        place: pages.place,
-        timeOfDay: pages.timeOfDay,
-        actions: pages.actions,
-        charactersPresent: pages.charactersPresent,
-        keyEvents: pages.keyEvents,
-        importantObjects: pages.importantObjects,
-        stateDelta: pages.stateDelta,
-        aiProvider: pages.aiProvider,
-        aiModel: pages.aiModel,
-        pendingGenerationCount: pages.pendingGenerationCount,
-        createdAt: pages.createdAt,
-        updatedAt: pages.updatedAt
-      })
-      .from(pages)
-      .where(
-        and(
-          eq(pages.bookId, book.id),
-          eq(pages.id, pageId as string)
-        )
-      )
-      .limit(1);
-
-    if (!pageData.length) {
-      return handleNotFoundError(res, "Page not found");
-    }
-
-    const page: DBPage = pageData[0];
-
-    // Query user's chosen action for this page (if authenticated)
-    const selectedActions: Action[] = req.user ? await getPageActionsFromDB(req.user.id, book.id, page.id) : [];
-
-    // Enrich actions with navigation metadata and filter out incomplete actions
-    const allActions = page.actions;
-    const visibleActions = allActions.filter((action: Action) => action.destination?.branchId && action.destination?.pageId);
-
-    // Fire-and-forget retry of failed candidate generations if any actions are missing destinations
-    // This provides immediate recovery when users visit pages with incomplete actions
-    // TODO: Supports polling/SSE for real-time action availability updates
-    // const hasIncompleteActions = visibleActions.length < allActions.length;
-    // if (req.userId && hasIncompleteActions) {
-    //   void triggerCandidateGenerationRetry(
-    //     req.userId,
-    //     page,
-    //     selectedActions,
-    //     // Pass pre-checked hasIncompleteActions to avoid double-enrichment
-    //     hasIncompleteActions
-    //   );
-    // }
+    const { visitDetails, book, dbPage } = await visitBookPage(res, { userId, pageId: pageId as string, bookIdentifier });
+    if (!dbPage) return handleNotFoundError(res, "Page not found");
+    if (!book) return handleNotFoundError(res, "Book not found");
 
     // Handle translation if Accept-Language header is provided and differs from book language
-    let translatedText: string | undefined;
     const acceptLanguage = req.headers['accept-language'] as string | undefined;
     const bookLanguage = book.language || 'en';
-    const targetLanguage = shouldTranslate(bookLanguage, acceptLanguage);
+    
+    // Return enriched page with only frontend-relevant fields
+    const page = await mapToEnrichedPage(dbPage, {
+      userId,
+      bookLanguage,
+      acceptLanguage,
+    });
 
-    if (targetLanguage && targetLanguage !== bookLanguage) {
-      const translationResult = await getTranslatedText({
-        pageId: page.id,
-        text: page.text,
-        bookLanguage,
-        targetLanguage
-      });
-      
-      if (translationResult.text) {
-        translatedText = translationResult.text;
-      }
-      // Note: If translation failed, translationResult.error contains error info
-      // but we continue with original text (fallback behavior)
+    if (!page) {
+      return handleApiError(res, "Failed to get enriched page");
     }
 
-    // Return enriched page with only frontend-relevant fields
-    // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
-    const enrichedPage: EnrichedStoryPage = {
-      id: page.id,
-      page: page.page,
-      bookId: page.bookId,
-      branchId: page.branchId,
-      parentId: page.parentId,
-      text: page.text,
-      mood: page.mood || undefined,
-      place: page.place || undefined,
-      timeOfDay: page.timeOfDay || undefined,
-      charactersPresent: page.charactersPresent,
-      keyEvents: page.keyEvents,
-      importantObjects: page.importantObjects,
-      actions: visibleActions, // Only actions that has destination page
-      originalActionsCount: allActions.length,
-      selectedActions,
-      translatedText: translatedText,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
-    };
-
     res.json({
-      page: enrichedPage,
-      book
+      page,
+      book,
+      visitDetails
     });
   } catch (error) {
     handleApiError(res, "Failed to retrieve page", error);
-  }
-});
-
-/**
- * POST /api/books/:identifier/:pageId/visit
- * 
- * Marks a page as visited by updating user session and page progress.
- * This is called when a user navigates to a page (not during pre-generation).
- * 
- * @param identifier - Book slug or UUID v7
- * @param pageId - Page UUID v7
- * @param action - The action chosen to reach this page
- * @param previousPageId - The previous page ID (where action reside)
- * @returns Success confirmation
- */
-router.post("/:identifier/:pageId/visit", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { identifier, pageId } = req.params;
-    const { action, previousPageId } = req.body;
-    const userId = req.userId!;
-
-    if (!action) return handleValidationError(res, "Missing required field: action is required");
-    if (!previousPageId) return handleValidationError(res, "Missing required field: previousPageId is required");
-    if (!isValidUuid(previousPageId)) return handleValidationError(res, "Invalid previousPageId: must be valid uuid");
-
-    // Handle array case for identifier (Express can return string[])
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
-
-    // Resolve book by identifier (slug first, then UUID)
-    const book = await resolveBook(identifierStr);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
-
-    // // Get the page by id to get the branchId and page number
-    // const pageData = await dbRead
-    //   .select({ id: pages.id, branchId: pages.branchId, page: pages.page })
-    //   .from(pages)
-    //   .where(
-    //     and(
-    //       eq(pages.bookId, book.id),
-    //       eq(pages.id, pageId as string)
-    //     )
-    //   )
-    //   .limit(1);
-
-    // if (!pageData.length) {
-    //   return handleNotFoundError(res, "Page not found");
-    // }
-
-    // const pageBranchId = pageData[0].branchId;
-    // const pageNumber = pageData[0].page;
-
-    // Get previous page
-    const previousDbPage = await getPageFromDB(previousPageId);
-    if (!previousDbPage) {
-      return handleNotFoundError(res, "Previous page not found");
-    }
-    
-    // Validate that the action exists on the previous page
-    // TODO: except for premium user via custom action
-    const isValidAction = previousDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
-    if (!isValidAction) {
-      return handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
-    }
-
-    // Validate user's action choice: check if user already chose a different action on previous page
-    const selectedActions = await getPageActionsFromDB(userId, book.id, previousPageId);
-    if (selectedActions.length > 0) {
-      if (!selectedActions.some((a) => deepEqualSimple(a, action))) {
-        // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
-        return res.status(400).json({
-          error: "Choice made, can't make another choice",
-          message: "You already chose a different action on this page"
-        });
-      }
-    }
-
-    // Mark page as visited and persists chosen action
-    const visitDetails = await markPageVisited(userId, book.id, pageId as string, previousPageId, action);
-
-    res.json({ visitDetails });
-  } catch (error) {
-    handleApiError(res, "Failed to mark page visited", error);
   }
 });
 
@@ -1621,68 +1442,85 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.userId!;
 
-    // Check if book exists
-    const book = await dbRead
-      .select({ id: books.id, likesCount: books.likesCount })
-      .from(books)
-      .where(eq(books.id, id as string))
-      .limit(1);
+    // Use transaction for atomic like operation
+    const result = await dbWrite.transaction(async (tx) => {
+      // Check if book exists and get current likes count in single query
+      const book = await tx
+        .select({ id: books.id, likesCount: books.likesCount })
+        .from(books)
+        .where(eq(books.id, id as string))
+        .limit(1)
+        .for('update'); // Lock the row for the transaction
 
-    if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
-    }
+      if (!book.length) {
+        throw new Error('BOOK_NOT_FOUND');
+      }
 
-    // Check if already liked
-    const existingLike = await dbRead
-      .select()
-      .from(userLikes)
-      .where(and(
-        eq(userLikes.userId, userId),
-        eq(userLikes.targetType, 'book'),
-        eq(userLikes.targetId, id as string)
-      ))
-      .limit(1);
+      // Check if already liked
+      const existingLike = await tx
+        .select()
+        .from(userLikes)
+        .where(and(
+          eq(userLikes.userId, userId),
+          eq(userLikes.targetType, 'book'),
+          eq(userLikes.targetId, id as string)
+        ))
+        .limit(1);
 
-    if (existingLike.length > 0) {
+      if (existingLike.length > 0) {
+        return {
+          alreadyLiked: true,
+          likesCount: book[0].likesCount
+        };
+      }
+
+      // Add like
+      await tx
+        .insert(userLikes)
+        .values({
+          userId,
+          targetType: 'book',
+          targetId: id as string,
+          createdAt: new Date(),
+        });
+
+      // Increment book likes count and trending score (atomic operation)
+      const updatedBook = await tx
+        .update(books)
+        .set({
+          likesCount: sql`${books.likesCount} + 1`,
+          trendingScore: sql`${books.trendingScore} + 0.3`,
+          updatedAt: new Date()
+        })
+        .where(eq(books.id, id as string))
+        .returning({ likesCount: books.likesCount });
+
+      return {
+        alreadyLiked: false,
+        likesCount: updatedBook[0]?.likesCount
+      };
+    });
+
+    // Invalidate explore cache after successful transaction
+    await invalidateExploreCache();
+
+    if (result.alreadyLiked) {
       return res.status(409).json({
         message: "Book already liked",
         liked: true,
-        likesCount: book[0].likesCount
+        likesCount: result.likesCount
       });
     }
-
-    // Add like
-    await dbWrite
-      .insert(userLikes)
-      .values({
-        userId,
-        targetType: 'book',
-        targetId: id as string,
-        createdAt: new Date(),
-      });
-
-    // Increment book likes count and trending score (atomic operation)
-    // Note: No GREATEST protection needed on increments - only decrements can go negative
-    const updatedBook = await dbWrite
-      .update(books)
-      .set({
-        likesCount: sql`${books.likesCount} + 1`,
-        trendingScore: sql`${books.trendingScore} + 0.3`, // Incremental update for hybrid approach
-        updatedAt: new Date()
-      })
-      .where(eq(books.id, id as string))
-      .returning({ likesCount: books.likesCount });
-
-    // Invalidate explore cache (likes changed)
-    // Note: Cache invalidation after DB update is acceptable - window of stale data is minimal (milliseconds)
-    await invalidateExploreCache();
 
     res.json({
       message: "Book liked successfully",
       liked: true,
-      likesCount: updatedBook[0]?.likesCount ?? book[0].likesCount + 1
+      likesCount: result.likesCount!
     });
   } catch (error) {
+    if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
+      return handleNotFoundError(res, "Book not found");
+    }
     handleApiError(res, "Failed to like book", error);
   }
 });
@@ -1718,66 +1556,84 @@ router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.userId!;
 
-    // Check if book exists
-    const book = await dbRead
-      .select({ id: books.id, likesCount: books.likesCount })
-      .from(books)
-      .where(eq(books.id, id as string))
-      .limit(1);
+    // Use transaction for atomic unlike operation
+    const result = await dbWrite.transaction(async (tx) => {
+      // Check if book exists and get current likes count in single query
+      const book = await tx
+        .select({ id: books.id, likesCount: books.likesCount })
+        .from(books)
+        .where(eq(books.id, id as string))
+        .limit(1)
+        .for('update'); // Lock the row for the transaction
 
-    if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
-    }
+      if (!book.length) {
+        throw new Error('BOOK_NOT_FOUND');
+      }
 
-    // Check if liked
-    const existingLike = await dbRead
-      .select()
-      .from(userLikes)
-      .where(and(
-        eq(userLikes.userId, userId),
-        eq(userLikes.targetType, 'book'),
-        eq(userLikes.targetId, id as string)
-      ))
-      .limit(1);
+      // Check if liked
+      const existingLike = await tx
+        .select()
+        .from(userLikes)
+        .where(and(
+          eq(userLikes.userId, userId),
+          eq(userLikes.targetType, 'book'),
+          eq(userLikes.targetId, id as string)
+        ))
+        .limit(1);
 
-    if (existingLike.length === 0) {
+      if (existingLike.length === 0) {
+        return {
+          notLiked: true,
+          likesCount: book[0].likesCount
+        };
+      }
+
+      // Remove like
+      await tx
+        .delete(userLikes)
+        .where(and(
+          eq(userLikes.userId, userId),
+          eq(userLikes.targetType, 'book'),
+          eq(userLikes.targetId, id as string)
+        ));
+
+      // Decrement book likes count and trending score (atomic operation)
+      const updatedBook = await tx
+        .update(books)
+        .set({
+          likesCount: sql`GREATEST(${books.likesCount} - 1, 0)`,
+          trendingScore: sql`GREATEST(${books.trendingScore} - 0.3, 0)`,
+          updatedAt: new Date()
+        })
+        .where(eq(books.id, id as string))
+        .returning({ likesCount: books.likesCount });
+
+      return {
+        notLiked: false,
+        likesCount: updatedBook[0]?.likesCount
+      };
+    });
+
+    // Invalidate explore cache after successful transaction
+    await invalidateExploreCache();
+
+    if (result.notLiked) {
       return res.status(404).json({
         message: "Book not liked",
         liked: false,
-        likesCount: book[0].likesCount
+        likesCount: result.likesCount
       });
     }
-
-    // Remove like
-    await dbWrite
-      .delete(userLikes)
-      .where(and(
-        eq(userLikes.userId, userId),
-        eq(userLikes.targetType, 'book'),
-        eq(userLikes.targetId, id as string)
-      ));
-
-    // Decrement book likes count and trending score (atomic operation)
-    const updatedBook = await dbWrite
-      .update(books)
-      .set({
-        likesCount: sql`GREATEST(${books.likesCount} - 1, 0)`,
-        trendingScore: sql`GREATEST(${books.trendingScore} - 0.3, 0)`, // Incremental update for hybrid approach
-        updatedAt: new Date()
-      })
-      .where(eq(books.id, id as string))
-      .returning({ likesCount: books.likesCount });
-
-    // Invalidate explore cache (likes changed)
-    // Note: Cache invalidation after DB update is acceptable - window of stale data is minimal (milliseconds)
-    await invalidateExploreCache();
 
     res.json({
       message: "Book unliked successfully",
       liked: false,
-      likesCount: updatedBook[0]?.likesCount ?? Math.max(0, book[0].likesCount - 1)
+      likesCount: result.likesCount!
     });
   } catch (error) {
+    if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
+      return handleNotFoundError(res, "Book not found");
+    }
     handleApiError(res, "Failed to unlike book", error);
   }
 });
