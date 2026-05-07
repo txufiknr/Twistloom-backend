@@ -281,28 +281,34 @@ export async function insertStoryState(
  * It updates the active session to point to the new page and records the action choice.
  * 
  * @param userId - The user's unique identifier
- * @param bookId - The book's unique identifier
- * @param pageId - The page identifier being visited
- * @param previousPageId - The previous page identifier (for navigation history)
- * @param action - The action chosen to reach this page
- * @returns Promise that resolves when session and progress are updated
+ * @param book - Book data containing id and stats (readCount for visitor percentage)
+ * @param dbPage - Page data containing id and visitCount (for nth visit calculation)
+ * @param previousPageId - The previous page identifier (for navigation history), undefined for page 1
+ * @param action - The action chosen to reach this page (undefined for page 1 or direct navigation)
+ * @returns Promise that resolves with session data and visit statistics
  * 
  * Behavior:
  * - Updates user session to point to the new page
- * - Inserts page progress record with action choice
- * - Updates user's last activity timestamp
+ * - Inserts page progress record with action choice (only if action is provided)
+ * - Calculates visit statistics using denormalized data (visitCount, readCount)
+ * - Trigger automatically increments visitCount in pages table on insert
+ * 
+ * Visit Statistics:
+ * - nthVisit: The visit number for this user (e.g., "you're the 100th visitor")
+ * - visitorPercentage: Percentage of book readers who have visited this page
  * 
  * Example:
  * ```typescript
- * await markPageVisited("user123", "book456", "page789", "page456", action);
+ * const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId, action);
+ * console.log(`You're visitor #${visitDetails.nthVisit}`);
  * ```
  */
 export async function markPageVisited(
   userId: string,
   book: Pick<EnrichedBookData, 'id' | 'stats'>,
   dbPage: Pick<DBPage, 'id' | 'visitCount'>,
-  previousPageId: string,
-  action: Action
+  previousPageId?: string,
+  action?: Action // omit for page 1
 ): Promise<BookPageVisit> {
   try {
     const { id: bookId, stats } = book;
@@ -311,20 +317,31 @@ export async function markPageVisited(
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId });
     
-    // Insert page progress record (trigger will increment visitCount in pages table)
-    await insertUserPageProgress({
-      userId,
-      bookId,
-      pageId: previousPageId,
-      action,
-      nextPageId: pageId
-    });
+    if (action && previousPageId) {
+      // Insert page progress record (trigger will increment visitCount in pages table)
+      await insertUserPageProgress({
+        userId,
+        bookId,
+        pageId: previousPageId,
+        action,
+        nextPageId: pageId
+      });
+    }
 
     // Calculate visit statistics using denormalized data
-    // nthVisit: read visitCount from pages table (maintained by trigger)
+    // nthVisit: Re-read page to get updated visitCount (trigger increments it on insert)
     // visitorPercentage: use read_count from books table (maintained by existing trigger)
     try {
-      const nthVisit = visitCount + 1;
+      // TODO: concerns
+      // - is it realy been updated via dbRead replica immediately after insertUserPageProgress?
+      // - is this not overkill to do db query to just obtain visitCount stat (which I not expect it to be accurate, approximation (visitCount + 1) is okay)?
+      const [updatedPage] = await dbRead
+        .select({ visitCount: pages.visitCount })
+        .from(pages)
+        .where(eq(pages.id, pageId))
+        .limit(1);
+
+      const nthVisit = updatedPage?.visitCount ?? visitCount + 1;
       const totalBookReaders = stats.readCount;
       const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
 

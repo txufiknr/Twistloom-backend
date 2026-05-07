@@ -523,6 +523,40 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
   }
 }
 
+/**
+ * Visits a book page by validating navigation, recording progress, and calculating visit statistics
+ * 
+ * This function handles the complete flow of a user visiting a page:
+ * 1. Validates the page exists and belongs to the specified book
+ * 2. For non-root pages (page > 1), validates the navigation action from parent page
+ * 3. Checks if user has already made a different choice on the parent page
+ * 4. Records the visit and calculates visit statistics (nth visitor, visitor percentage)
+ * 
+ * @param res - Express response object for error handling
+ * @param params - Parameters for the page visit
+ * @param params.userId - The user's unique identifier
+ * @param params.pageId - The page identifier to visit
+ * @param params.bookIdentifier - Optional book identifier (slug or UUID) for validation
+ * @returns Promise resolving to visit details, book data, and page data
+ * 
+ * Behavior:
+ * - For page 1: No action validation required, marks as visited without action
+ * - For page > 1: Validates action exists on parent page and user hasn't changed choice
+ * - Returns early with error response if validation fails
+ * - Calculates visit statistics using denormalized visitCount and readCount
+ * 
+ * Visit Statistics:
+ * - nthVisit: The visit number for this page (e.g., "you're the 100th visitor")
+ * - visitorPercentage: Percentage of book readers who have visited this page
+ * 
+ * Example:
+ * ```typescript
+ * const { visitDetails, book, dbPage } = await visitBookPage(res, { userId, pageId, bookIdentifier });
+ * if (visitDetails) {
+ *   console.log(`You're visitor #${visitDetails.nthVisit}`);
+ * }
+ * ```
+ */
 export async function visitBookPage(
   res: Response,
   params: { userId: string, pageId: string, bookIdentifier?: string }
@@ -533,42 +567,48 @@ export async function visitBookPage(
   const dbPage = await getPageFromDB(pageId as string, { bookIdentifier });
   if (!dbPage) return {};
 
-  const { bookId, parentId: parentPageId } = dbPage;
+  const { page: pageNumber, bookId, parentId: parentPageId } = dbPage;
 
   // Get book
   const book = await getEnrichedBook(bookId, userId);
   if (!book) return { dbPage };
 
-  // Get previous page
-  const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
-  if (!parentDbPage) {
-    handleNotFoundError(res, "Previous page not found");
-    return { dbPage, book };
-  }
-
-  // Validate that the action exists on the parent page
-  // TODO: except for premium user via custom action
-  const action: Action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
-  const isValidAction = parentDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
-  if (!isValidAction) {
-    handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
-    return { dbPage, book };
-  }
-
-  // Validate user's action choice: check if user already chose a different action on previous page
-  const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
-  if (selectedActions.length > 0) {
-    if (!selectedActions.some((a) => deepEqualSimple(a, action))) {
-      // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
-      res.status(400).json({
-        error: "Choice made, can't make another choice",
-        message: "You already chose a different action on this page"
-      });
+  // Get previous page (if it's not page 1)
+  let action: Action | undefined;
+  if (pageNumber > 1) {
+    const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
+    if (!parentDbPage) {
+      handleNotFoundError(res, "Previous page not found");
       return { dbPage, book };
+    }
+  
+    // Validate that the action exists on the parent page
+    // TODO: except for premium user via custom action
+    action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
+    const isValidAction = parentDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
+    if (!isValidAction) {
+      handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
+      return { dbPage, book };
+    }
+
+    // Users can go back and select any action they like in page 1
+    if (pageNumber > 2) {
+      // Validate user's action choice: check if user already chose a different action on previous page
+      const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
+      if (selectedActions.length > 0) {
+        if (!selectedActions.some((a) => deepEqualSimple(a, action))) {
+          // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
+          res.status(400).json({
+            error: "Choice made, can't make another choice",
+            message: "You already chose a different action on this page"
+          });
+          return { dbPage, book };
+        }
+      }
     }
   }
 
   // Mark page as visited and persists chosen action
-  const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId!, action);
+  const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
   return { dbPage, book, visitDetails };
 }
