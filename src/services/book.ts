@@ -35,6 +35,50 @@ import type { ImageUploadSource } from "../types/image.js";
 import { shouldProceedWithRetry } from "../utils/retry.js";
 import { extractStateDelta } from "../utils/story.js";
 import { getTranslatedText, shouldTranslate } from "./translation.js";
+import { LRUCache } from "lru-cache";
+
+/**
+ * LRU cache for enriched book data
+ * 
+ * Cache key format: "book:{identifier}:{userId|null}"
+ * - identifier: book slug or ID
+ * - userId: current user ID (or "null" for anonymous)
+ * 
+ * TTL: 5 minutes to balance freshness with performance
+ * Max size: 1000 entries to prevent memory bloat
+ */
+const enrichedBookCache = new LRUCache<string, EnrichedBookData>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
+
+/**
+ * Generates cache key for enriched book data
+ * 
+ * @param identifier - Book slug or ID
+ * @param currentUserId - Optional current user ID
+ * @returns Cache key string
+ */
+function getEnrichedBookCacheKey(identifier: string, currentUserId?: string | null): string {
+  return `book:${identifier}:${currentUserId || 'null'}`;
+}
+
+/**
+ * Invalidates cache entries for a specific book
+ * 
+ * Removes all cache entries for a book regardless of user context.
+ * Called when book data is mutated (create, update, delete).
+ * 
+ * @param bookIdentifier - Book slug or ID to invalidate
+ */
+export function invalidateEnrichedBookCache(bookIdentifier: string): void {
+  // Find and delete all cache keys matching the book identifier
+  for (const key of enrichedBookCache.keys()) {
+    if (key.startsWith(`book:${bookIdentifier}:`)) {
+      enrichedBookCache.delete(key);
+    }
+  }
+}
 
 /**
  * Inserts a story page into database (supports both root and child pages)
@@ -154,8 +198,6 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
  * @param title - The book title to generate slug from
  * @returns Promise resolving to a unique slug string
  * 
- * @todo ensure slug not same as preserved endpoints: stats, explore
- * 
  * @example
  * ```typescript
  * const slug = await generateUniqueSlug("The Amazing Adventure");
@@ -247,8 +289,14 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
   };
 
   const result = await dbWrite.insert(books).values(newBookData).returning();
-  console.log(`[insertBook] 📔 Inserted book with slug "${uniqueSlug}":`, result[0]);
-  return result[0];
+  const insertedBook = result[0];
+  console.log(`[insertBook] 📔 Inserted book with slug "${uniqueSlug}":`, insertedBook);
+  
+  // Invalidate cache for this book (by both ID and slug)
+  invalidateEnrichedBookCache(insertedBook.id);
+  invalidateEnrichedBookCache(insertedBook.slug!);
+  
+  return insertedBook;
 }
 
 /**
@@ -335,16 +383,25 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
 /**
  * Retrieves an enriched book with author info, stats, and user-specific flags
  * 
+ * Uses LRU cache for performance. Cache key includes both book identifier
+ * and user ID since results are user-specific (isLiked, isRead flags).
+ * 
  * @param identifier - Book slug or ID to retrieve
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
  * @returns Promise resolving to enriched book data or null if not found
- * 
- * @todo should we implement LRU cache for fast result?
  */
 export async function getEnrichedBook(
   identifier: string,
   currentUserId?: string | null
 ): Promise<EnrichedBookData | null> {
+  const cacheKey = getEnrichedBookCacheKey(identifier, currentUserId);
+  
+  // Check cache first
+  const cached = enrichedBookCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   // Build query conditions dynamically based on identifier format
   const conditions = [eq(books.slug, identifier)];
   
@@ -361,7 +418,10 @@ export async function getEnrichedBook(
     .limit(1);
 
   if (result.length > 0) {
-    return result[0] as EnrichedBookData;
+    const enrichedBook = result[0] as EnrichedBookData;
+    // Cache the result
+    enrichedBookCache.set(cacheKey, enrichedBook);
+    return enrichedBook;
   }
 
   return null;
@@ -383,6 +443,9 @@ export async function updateBook(
     .set({ ...updates, updatedAt: new Date() })
     .where(eq(books.id, bookId))
     .returning();
+
+  // Invalidate cache for this book
+  invalidateEnrichedBookCache(bookId);
 
   return result[0];
 }
