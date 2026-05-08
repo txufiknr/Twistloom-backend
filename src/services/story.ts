@@ -161,7 +161,7 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
  */
 export async function setActiveSession(params: SetActiveSessionParams): Promise<DBUserSession | null> {
   const { userId, bookId, pageId, previousPageId } = params;
-  try {
+  // try {
     const result = await dbWrite
       .insert(userSessions)
       .values({
@@ -190,12 +190,12 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
       metadata: { pageId, previousPageId },
     });
     
-    console.log(`[setActiveSession] ✅ Session activated for user ${userId}, book ${bookId}`);
-    return result[0];
-  } catch (error) {
-    console.error(`[setActiveSession] ❌ Failed to set active session for:`, {userId, bookId, error: getErrorMessage(error)});
-    return null;
-  }
+    console.log(`[setActiveSession] 🌟 Session activated:`, params);
+    return result[0] || null;
+  // } catch (error) {
+  //   console.error(`[setActiveSession] ❌ Failed to set active session for:`, {userId, bookId, error: getErrorMessage(error)});
+  //   return null;
+  // }
 }
 
 /**

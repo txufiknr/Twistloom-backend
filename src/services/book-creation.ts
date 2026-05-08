@@ -6,7 +6,7 @@
  */
 
 import type { StoryMCCandidate } from '../types/character.js';
-import type { CreateBookResponse } from '../types/book.js';
+import type { InitializeBookResult } from '../types/book.js';
 import type { ProgressCallback } from '../types/sse.js';
 import type { ThemeValidationResult } from '../types/theme-validation.js';
 import { validateTheme } from '../utils/theme-validation.js';
@@ -65,7 +65,7 @@ class BookCreationError extends Error {
 export async function createBookCore(
   params: BookCreationParams,
   onProgress?: ProgressCallback
-): Promise<CreateBookResponse> {
+): Promise<InitializeBookResult> {
   const { userId, theme, mcCandidate, generateCoverImage, isOriginal } = params;
 
   try {

@@ -21,7 +21,7 @@ import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageBy
 import { dbWrite } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { getStoryProgress, insertStoryState, setActiveSession } from "../services/story.js";
+import { getStoryProgress, insertStoryState } from "../services/story.js";
 import type { BuildNextPageParams, GenerateCandidatePageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
@@ -2408,19 +2408,19 @@ export async function initializeBook(
       void ensureCandidatesForPage(userId, firstUserPage, initialState, book);
     }
 
-    // 10. Set user's active session to the new book and page
-    const session = await setActiveSession({userId, bookId, pageId: firstPage.id});
+    // // 10. Set user's active session to the new book and page
+    // const session = await setActiveSession({userId, bookId, pageId: firstPage.id});
 
     // 11. Return complete book setup
     return {
       book,
       firstPage,
       initialState,
-      session
+      // session
     } satisfies InitializeBookResult;
 
   } catch (error) {
-    console.error(`Failed to initialize book for user ${userId} with theme "${theme}":`, getErrorMessage(error));
+    console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error: getErrorMessage(error) });
     throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
   }
 }
@@ -2783,61 +2783,61 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   return newPage;
 }
 
-/**
- * Goes back to the previous page in the story
- * 
- * This function allows users to navigate back to the previous page by updating
- * the active session to point to the last page in the page history.
- * 
- * @param userId - User ID to get story progress for
- * @returns Previous page data or null if no previous page exists
- * 
- * @example
- * ```typescript
- * // Go back to previous page
- * const previousPage = await goToPreviousPage("user123");
- * if (previousPage) {
- *   console.log(`Returned to page: ${previousPage.text}`);
- * } else {
- *   console.log("No previous page available");
- * }
- * ```
- */
-export async function goToPreviousPage(userId: string): Promise<PersistedStoryPage | null> {
-  try {
-    // 1. Get current story progress (session, page, state, character) in parallel
-    const { page: currentPage, session: activeSession } = await getStoryProgress(userId);
+// /**
+//  * Goes back to the previous page in the story
+//  * 
+//  * This function allows users to navigate back to the previous page by updating
+//  * the active session to point to the last page in the page history.
+//  * 
+//  * @param userId - User ID to get story progress for
+//  * @returns Previous page data or null if no previous page exists
+//  * 
+//  * @example
+//  * ```typescript
+//  * // Go back to previous page
+//  * const previousPage = await goToPreviousPage("user123");
+//  * if (previousPage) {
+//  *   console.log(`Returned to page: ${previousPage.text}`);
+//  * } else {
+//  *   console.log("No previous page available");
+//  * }
+//  * ```
+//  */
+// export async function goToPreviousPage(userId: string): Promise<PersistedStoryPage | null> {
+//   try {
+//     // 1. Get current story progress (session, page, state, character) in parallel
+//     const { page: currentPage, session: activeSession } = await getStoryProgress(userId);
     
-    // 2. Validate all required components exist for navigation
-    if (!activeSession) throw new Error(`No active session found for user ${userId}`);
-    if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
+//     // 2. Validate all required components exist for navigation
+//     if (!activeSession) throw new Error(`No active session found for user ${userId}`);
+//     if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${activeSession.bookId})`);
   
-    // 3. Check if there's a previous page available
-    const { bookId, previousPageId: activePreviousPageId } = activeSession;
-    const previousPageId = currentPage.parentId ?? activePreviousPageId;
-    if (!previousPageId) {
-      console.warn(`[goToPreviousPage] ⚠️ No previous page available (no parentId)`);
-      return null;
-    }
+//     // 3. Check if there's a previous page available
+//     const { bookId, previousPageId: activePreviousPageId } = activeSession;
+//     const previousPageId = currentPage.parentId ?? activePreviousPageId;
+//     if (!previousPageId) {
+//       console.warn(`[goToPreviousPage] ⚠️ No previous page available (no parentId)`);
+//       return null;
+//     }
     
-    // 4. Get the previous page directly by ID
-    const previousPage = await getStoryPageById(userId, bookId, previousPageId);
-    if (!previousPage) {
-      throw new Error('Previous page not found in database');
-    }
+//     // 4. Get the previous page directly by ID
+//     const previousPage = await getStoryPageById(userId, bookId, previousPageId);
+//     if (!previousPage) {
+//       throw new Error('Previous page not found in database');
+//     }
     
-    // 6. Update user session to point to the previous page
-    await setActiveSession({userId, bookId, pageId: previousPage.id, previousPageId: currentPage.id});
+//     // 6. Update user session to point to the previous page
+//     await setActiveSession({userId, bookId, pageId: previousPage.id, previousPageId: currentPage.id});
     
-    console.log(`[goToPreviousPage] ↩️ User ${userId} returned to page ${previousPage.id}`);
+//     console.log(`[goToPreviousPage] ↩️ User ${userId} returned to page ${previousPage.id}`);
     
-    // 7. Return the previous page with all database metadata
-    return previousPage;
-  } catch (error) {
-    console.error(`[goToPreviousPage] ❌ Cannot get previous page:`, getErrorMessage(error));
-    return null;
-  }
-}
+//     // 7. Return the previous page with all database metadata
+//     return previousPage;
+//   } catch (error) {
+//     console.error(`[goToPreviousPage] ❌ Cannot get previous page:`, getErrorMessage(error));
+//     return null;
+//   }
+// }
 
 /**
  * Pre-generates candidate pages for all actions on a story page

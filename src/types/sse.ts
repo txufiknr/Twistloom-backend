@@ -6,7 +6,7 @@
  */
 
 import type { ThemeValidationResult } from './theme-validation.js';
-import type { CreateBookResponse } from './book.js';
+import type { InitializeBookResult } from './book.js';
 
 /**
  * Progress event types for book creation
@@ -50,7 +50,7 @@ export type BookCreationProgressEvent =
   | { type: 'ai_evaluation_start' }
   | { type: 'ai_evaluation_complete' }
   | { type: 'finalizing_start' }
-  | { type: 'complete'; data: CreateBookResponse }
+  | { type: 'complete'; data: InitializeBookResult }
   | { type: 'error'; error: string };
 
 /**

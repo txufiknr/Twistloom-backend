@@ -43,7 +43,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
+import { books, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
@@ -53,8 +53,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { setActiveSession } from "../services/story.js";
-import { getBook, updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
+import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
@@ -1034,66 +1033,66 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
   }
 });
 
-/**
- * POST /api/books/:id/sessions
- * 
- * Creates or updates a reading session for the book.
- * Tracks reading progress and manages active sessions.
- * 
- * @param id - Book ID
- * @param pageId - Current page ID in reading session (optional - auto-finds page 1 if not provided)
- * @returns Session information with progress
- */
-router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-    const { pageId } = req.body;
-    const userId = req.userId!; // Always defined even for guests
-    const bookId = id as string;
+// /**
+//  * POST /api/books/:id/sessions
+//  * 
+//  * Creates or updates a reading session for the book.
+//  * Tracks reading progress and manages active sessions.
+//  * 
+//  * @param id - Book ID
+//  * @param pageId - Current page ID in reading session (optional - auto-finds page 1 if not provided)
+//  * @returns Session information with progress
+//  */
+// router.post("/:id/sessions", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+//   try {
+//     const { id } = req.params;
+//     const { pageId } = req.body;
+//     const userId = req.userId!; // Always defined even for guests
+//     const bookId = id as string;
 
-    // If no pageId provided, find the first page of the book
-    let targetPageId = pageId;
-    if (!pageId) {
-      const firstPage = await dbRead
-        .select({ id: pages.id })
-        .from(pages)
-        .where(and(
-          eq(pages.bookId, bookId),
-          eq(pages.page, 1)
-        ))
-        .limit(1);
+//     // If no pageId provided, find the first page of the book
+//     let targetPageId = pageId;
+//     if (!pageId) {
+//       const firstPage = await dbRead
+//         .select({ id: pages.id })
+//         .from(pages)
+//         .where(and(
+//           eq(pages.bookId, bookId),
+//           eq(pages.page, 1)
+//         ))
+//         .limit(1);
       
-      if (!firstPage.length) {
-        return res.status(404).json({ error: "Book has no pages" });
-      }
+//       if (!firstPage.length) {
+//         return res.status(404).json({ error: "Book has no pages" });
+//       }
       
-      targetPageId = firstPage[0].id;
-    }
+//       targetPageId = firstPage[0].id;
+//     }
 
-    const book = await getBook(bookId);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
+//     const book = await getBook(bookId);
+//     if (!book) {
+//       return handleNotFoundError(res, "Book not found");
+//     }
 
-    // Create or update existing session
-    const session = await setActiveSession({
-      userId, // Guest middleware always sets userId to a string (user ID or guest ID)
-      bookId, 
-      pageId: targetPageId!
-    });
+//     // Create or update existing session
+//     const session = await setActiveSession({
+//       userId, // Guest middleware always sets userId to a string (user ID or guest ID)
+//       bookId, 
+//       pageId: targetPageId!
+//     });
 
-    // Invalidate caches on session start
-    await invalidateExploreCache(); // readCount changed via trigger
-    await invalidateUserProfileCache(userId); // readsCount changed
+//     // Invalidate caches on session start
+//     await invalidateExploreCache(); // readCount changed via trigger
+//     await invalidateUserProfileCache(userId); // readsCount changed
 
-    res.status(201).json({
-      session,
-      book
-    });
-  } catch (error) {
-    handleApiError(res, "Failed to manage session", error);
-  }
-});
+//     res.status(201).json({
+//       session,
+//       book
+//     });
+//   } catch (error) {
+//     handleApiError(res, "Failed to manage session", error);
+//   }
+// });
 
 /**
  * GET /api/books/:identifier/:pageId/candidates

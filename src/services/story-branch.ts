@@ -8,11 +8,10 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { storyStates } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
-import type { StoryState, StoryProgressWithBranch, PreviousPageResult, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps } from "../types/story.js";
+import type { StoryState, StoryProgressWithBranch, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps } from "../types/story.js";
 import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
-import { getStoryPageById } from "./book.js";
-import { getStoryState, getStoryProgress, setActiveSession, getUserSession } from "./story.js";
+import { getStoryState, getStoryProgress, getUserSession } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
 import { getErrorMessage } from "../utils/error.js";
 import { MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
@@ -158,73 +157,73 @@ export async function getStoryProgressWithBranch(
   }
 }
 
-/**
- * Enhanced previous page navigation with branch awareness
- * 
- * This function improves upon the standard goToPreviousPage by:
- * 1. Using branch traversal for validation
- * 2. Providing branch context
- * 3. Handling edge cases better
- * 
- * @param userId - User ID to navigate
- * @param options - Branch traversal options
- * @returns Promise resolving to previous page with branch context
- */
-export async function goToPreviousPageWithBranch(
-  userId: string,
-  options: TraversalOptions = {}
-): Promise<PreviousPageResult> {
-  try {
-    const progress = await getStoryProgressWithBranch(userId, options);
+// /**
+//  * Enhanced previous page navigation with branch awareness
+//  * 
+//  * This function improves upon the standard goToPreviousPage by:
+//  * 1. Using branch traversal for validation
+//  * 2. Providing branch context
+//  * 3. Handling edge cases better
+//  * 
+//  * @param userId - User ID to navigate
+//  * @param options - Branch traversal options
+//  * @returns Promise resolving to previous page with branch context
+//  */
+// export async function goToPreviousPageWithBranch(
+//   userId: string,
+//   options: TraversalOptions = {}
+// ): Promise<PreviousPageResult> {
+//   try {
+//     const progress = await getStoryProgressWithBranch(userId, options);
     
-    if (!progress.page || !progress.session) {
-      return {
-        previousPage: null,
-        branchPath: null,
-        canGoBackFurther: false
-      };
-    }
+//     if (!progress.page || !progress.session) {
+//       return {
+//         previousPage: null,
+//         branchPath: null,
+//         canGoBackFurther: false
+//       };
+//     }
 
-    // Check if we can go back
-    if (!progress.page.parentId) {
-      console.log(`[goToPreviousPageWithBranch] 🚫 Already at root page ${progress.page.id}`);
-      return {
-        previousPage: progress.page,
-        branchPath: progress.branchPath,
-        canGoBackFurther: false
-      };
-    }
+//     // Check if we can go back
+//     if (!progress.page.parentId) {
+//       console.log(`[goToPreviousPageWithBranch] 🚫 Already at root page ${progress.page.id}`);
+//       return {
+//         previousPage: progress.page,
+//         branchPath: progress.branchPath,
+//         canGoBackFurther: false
+//       };
+//     }
 
-    // Get previous page using branch traversal for validation
-    const previousPage = await getStoryPageById(userId, progress.session.bookId, progress.page.parentId);
+//     // Get previous page using branch traversal for validation
+//     const previousPage = await getStoryPageById(userId, progress.session.bookId, progress.page.parentId);
     
-    if (!previousPage) {
-      console.error(`[goToPreviousPageWithBranch] ❌ Previous page ${progress.page.parentId} not found`);
-      return {
-        previousPage: null,
-        branchPath: progress.branchPath,
-        canGoBackFurther: true
-      };
-    }
+//     if (!previousPage) {
+//       console.error(`[goToPreviousPageWithBranch] ❌ Previous page ${progress.page.parentId} not found`);
+//       return {
+//         previousPage: null,
+//         branchPath: progress.branchPath,
+//         canGoBackFurther: true
+//       };
+//     }
 
-    // Update session to point to previous page
-    await setActiveSession({userId, bookId: progress.session.bookId, pageId: previousPage.id});
+//     // Update session to point to previous page
+//     await setActiveSession({userId, bookId: progress.session.bookId, pageId: previousPage.id});
     
-    // Get updated branch path from previous page
-    const updatedBranchPath = await getBranchPath(previousPage.id, userId, options);
+//     // Get updated branch path from previous page
+//     const updatedBranchPath = await getBranchPath(previousPage.id, userId, options);
 
-    console.log(`[goToPreviousPageWithBranch] ↩️ User ${userId} navigated to page ${previousPage.id}`);
+//     console.log(`[goToPreviousPageWithBranch] ↩️ User ${userId} navigated to page ${previousPage.id}`);
 
-    return {
-      previousPage,
-      branchPath: updatedBranchPath,
-      canGoBackFurther: !!previousPage.parentId
-    };
-  } catch (error) {
-    console.error(`[goToPreviousPageWithBranch] ❌ Failed to navigate back for user ${userId}:`, getErrorMessage(error));
-    throw error;
-  }
-}
+//     return {
+//       previousPage,
+//       branchPath: updatedBranchPath,
+//       canGoBackFurther: !!previousPage.parentId
+//     };
+//   } catch (error) {
+//     console.error(`[goToPreviousPageWithBranch] ❌ Failed to navigate back for user ${userId}:`, getErrorMessage(error));
+//     throw error;
+//   }
+// }
 
 /**
  * Validates branch integrity for a given page

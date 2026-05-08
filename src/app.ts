@@ -15,14 +15,10 @@ const app = express();
 // Allow multiple origins: production frontend and local development
 const allowedOrigins = new Set([
   process.env.FRONTEND_URL,
-  'https://twistloom-web.vercel.app',
-  'https://localhost:3002',
-  'http://localhost:3001',
+  'https://twistloom-web.vercel.app', // Production (Vercel deployment)
+  'https://localhost:3002', // Development (HTTPS) via `pnpm dev:ssl`
+  'http://localhost:3001', // Development via `pnpm dev`
 ].filter(Boolean));
-
-// TODO: still got CORS error despite included in allowedOrigins
-// Access to XMLHttpRequest at 'https://twistloom-backend.vercel.app/api/books/019dfcf5-2f57-72f8-9341-e56d12f6f947/019dfcf5-3076-7632-ae01-475c3d52828a' from origin 'https://twistloom-web.vercel.app' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.
-// GET https://twistloom-backend.vercel.app/api/books/019dfcf5-2f57-72f8-9341-e56d12f6f947/019dfcf5-3076-7632-ae01-475c3d52828a net::ERR_FAILED 403 (Forbidden)
 
 // CRITICAL: Raw body middleware for Stripe webhook MUST come before express.json()
 // Stripe requires raw body for webhook signature verification
@@ -34,9 +30,9 @@ app.use(cookieParser()); // Parse cookies for NextAuth authentication
 app.use(cors({
   origin: (origin, callback) => {
     const isAllowed = !origin || origin.endsWith('.vercel.app') || allowedOrigins.has(origin);
-    console.log('[cors] 👉 Incoming origin:', origin);
-    console.log('[cors] 👉 Allowed origins:', allowedOrigins);
-    console.log('[cors] 👉 Allowed?', isAllowed ? '✅' : '❌', isAllowed);
+    // console.log('[cors] 👉 Incoming origin:', origin);
+    // console.log('[cors] 👉 Allowed origins:', allowedOrigins);
+    // console.log('[cors] 👉 Allowed?', isAllowed ? '✅' : '❌', isAllowed);
 
     // Allow requests with no origin (like mobile apps, curl, server-to-server)
     if (isAllowed) return callback(null, true);

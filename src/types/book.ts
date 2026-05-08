@@ -166,16 +166,9 @@ export type InitializeBookResult = {
   firstPage: StoryPage;
   /** Initial story state configuration */
   initialState: StoryState;
-  /** User session for the new book */
-  session: DBUserSession | null;
+  // /** User session for the new book */
+  // session: DBUserSession | null;
 };
-
-export interface CreateBookResponse {
-  book: Book;
-  firstPage: StoryPage;
-  initialState: StoryState;
-  session: DBUserSession | null;
-}
 
 /**
  * Available book sorting options
