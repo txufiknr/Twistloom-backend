@@ -4,6 +4,7 @@
  */
 
 import type { AIResponse } from "../types/ai-chat.js";
+import { group } from '@actions/core';
 
 /**
  * Logs successful AI provider response with standardized format
@@ -11,16 +12,17 @@ import type { AIResponse } from "../types/ai-chat.js";
  * @param response - The AI provider response data
  */
 export function logAISuccess(response: AIResponse<unknown>): void {
-  const { provider, model, output, finishReason, usage } = response;
-  
-  // Log success with output
-  const finishText = finishReason || 'unknown';
-  console.log(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishText})\n"""\n${output}\n"""`);
-  
-  // Log usage if provided
-  if (usage) {
-    console.log(`[${provider}] 📊 Token usage:`, usage);
-  }
+  const { provider, model, output, finishReason = 'unknown', usage } = response;
+
+  group(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason})`, async () => {
+    // Log success with output
+    console.log(`"""\n${output}\n"""`);
+    
+    // Log usage if provided
+    if (usage) {
+      console.log(`[${provider}] 📊 Token usage:`, usage);
+    }
+  });
 }
 
 /**

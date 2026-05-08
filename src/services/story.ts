@@ -4,7 +4,7 @@ import { storyStates, userSessions, userPageProgress, pages } from "../db/schema
 import type { StoryState, StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
-import { getBook, getPageActionsFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
+import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
@@ -99,6 +99,8 @@ export async function getUserSession(userId: string, bookId?: string, pageId?: s
  * ```
  */
 export async function getStoryProgress(userId: string, bookId?: string, pageId?: string): Promise<StoryProgress> {
+  console.log(`[getStoryProgress] 🧩 Getting story progress:`, { userId, bookId, pageId });
+
   try {
     // Step 1: Get active session
     const userSession = await getUserSession(userId, bookId, pageId);
@@ -545,36 +547,73 @@ export async function getPreviousPages(
 ): Promise<UserStoryPage[]> {
   try {
     const previousPages: UserStoryPage[] = [];
+    const expectedPreviousPagesCount = Math.min(MAX_PAGE_HISTORY, actionedPage.page - 1);
     let currentPageId = actionedPage.parentId;
     
     // Traverse backwards through the parent chain
     while (currentPageId && previousPages.length < MAX_PAGE_HISTORY) {
-      // Get the page from database
-      const pageResult = await dbRead
-        .select()
-        .from(pages)
-        .where(eq(pages.id, currentPageId))
-        .limit(1);
+      const userPage = await getUserPage(currentPageId, userId, { bookIdentifier: bookId, client: dbWrite });
+      if (!userPage) break;
       
-      const dbPage = pageResult[0];
-      if (!dbPage) break;
-      
-      // Get the action that led to this page from userPageProgress
-      const selectedActions = await getPageActionsFromDB(userId, bookId, currentPageId);
-      
-      // Map to UserStoryPage with selected action included
-      const userPage = await mapToUserStoryPage(dbPage, userId, selectedActions);
       previousPages.push(userPage);
-      
-      currentPageId = dbPage.parentId;
+      currentPageId = userPage.parentId;
     }
     
     // Reverse to get chronological order (oldest first)
     previousPages.reverse();
+
+    if (previousPages.length !== expectedPreviousPagesCount) {
+      console.warn(`[getPreviousPages] ⚠️ Expected ${expectedPreviousPagesCount} previous pages, got ${previousPages.length}`);
+    }
     
     return previousPages;
   } catch (error) {
     console.error(`[getPreviousPages] ❌ Failed to get previous pages:`, getErrorMessage(error));
     return [];
   }
+}
+
+/**
+ * Retrieves a user's story page with selected action context
+ * 
+ * This function fetches a specific page from the database and enriches it with
+ * the user's interaction history by including the action they selected to reach
+ * this page. The returned UserStoryPage contains both the page content and
+ * the user's journey context.
+ * 
+ * @param pageId - Unique identifier of the page to retrieve
+ * @param userId - User ID for fetching personalized action history
+ * @param options - Optional configuration parameters
+ * @param options.bookIdentifier - Book ID to validate page belongs to correct book
+ * @param options.client - Database client to use (defaults to read client)
+ * @returns Promise resolving to UserStoryPage with selected action, or null if page not found
+ * 
+ * @example
+ * ```typescript
+ * // Basic usage - get page with user's selected action
+ * const userPage = await getUserPage("page123", "user456");
+ * if (userPage) {
+ *   console.log(`User selected: ${userPage.selectedAction?.text}`);
+ * }
+ * 
+ * // With explicit book validation and write client
+ * const page = await getUserPage("page789", "user456", {
+ *   bookIdentifier: "book123",
+ *   client: dbWrite
+ * });
+ * ```
+ */
+export async function getUserPage(pageId: string, userId: string, options: {
+  bookIdentifier?: string,
+  client?: typeof dbRead | typeof dbWrite
+} = {}): Promise<UserStoryPage | null> {
+  // Get the page from database
+  const dbPage = await getPageFromDB(pageId, options);
+  if (!dbPage) return null;
+  
+  // Get the action that led to this page from userPageProgress
+  const selectedActions = await getPageActionsFromDB(userId, dbPage.bookId, pageId);
+  
+  // Map to UserStoryPage with selected action included
+  return await mapToUserStoryPage(dbPage, userId, selectedActions);
 }

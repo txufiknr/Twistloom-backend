@@ -1690,7 +1690,7 @@ PREVIOUS PAGES:
 ${formatPreviousPagesForPrompt(previousPages)}
 
 CURRENT PAGE:
-${formatPageTextForPrompt(page.text)}
+• Page ${page.page}: ${formatPageTextForPrompt(page.text)}
 
 CURRENT SITUATION:
 ${formatCurrentSituationForPrompt(page)}
@@ -2151,10 +2151,7 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * ```
  */
 function createBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
-  return `Create a psychological thriller story from this theme:
-"""
-${theme}
-"""
+  return `Create a psychological thriller story from this theme:\n"""\n${theme}\n"""
 
 HARD RULES (apply to everything below):
 - Write in first-person ("I") POV only (MC = narrator).
@@ -2491,6 +2488,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
   // 1. Create personalized prompt with character, story context, and previous action
   const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
+  console.log(`[generateNextPage] 🧩 actionedPage.page:`, actionedPage.page);
+  console.log(`[generateNextPage] 🧩 previousPages.length:`, previousPages.length);
+  console.log(`[generateNextPage] 🧩 Match?:`, previousPages.length === actionedPage.page - 1 ? '✅' : '❌');
+
   const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages };
   const prompt = buildNextPagePrompt(promptParams);
   const { systemPrompt, documents } = buildSystemPrompt(book, advancedState);
@@ -2682,11 +2683,13 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   let currentSession: UserSession | null = null;
 
   if (!currentState) {
+    console.log(`[generateCandidatePage] 👀 No state provided, getting story progress...`);
     const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
-    console.log(`[generateCandidatePage] 🧩 getStoryProgress session:`, progress.session);
-    console.log(`[generateCandidatePage] 🧩 getStoryProgress state:`, progress.state);
     currentBook ??= progress.book ?? null;
     currentPage ??= progress.page;
+    console.log(`[generateCandidatePage] 🧩 getStoryProgress session:`, progress.session); // null
+    console.log(`[generateCandidatePage] 🧩 getStoryProgress state:`, progress.state); // FIXME: keliru branchId lain
+    console.log(`[generateCandidatePage] 🧩 getStoryProgress currentPage?.page:`, currentPage?.page);
     currentState = progress.state;
     currentSession = progress.session ?? null;
   } else if (!currentBook) {

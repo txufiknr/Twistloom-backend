@@ -10,6 +10,7 @@
  * 
  * Should be run periodically via cron job (e.g., every 15 minutes), but safe to run repeatedly
  */
+import { MAX_BRANCHING_PREGENERATION_LIMIT } from "../config/story.js";
 import { mapToUserStoryPage } from "../services/book.js";
 import { requireEnv } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -48,7 +49,7 @@ export async function retryPendingGenerations(): Promise<void> {
         lt(pages.page, books.totalPages) // Exclude last page
       ))
       .orderBy(desc(books.trendingScore), desc(pages.pendingGenerationCount))
-      .limit(50); // Process up to 50 pages per run
+      .limit(MAX_BRANCHING_PREGENERATION_LIMIT); // Process up to N pages per run
     
     if (pagesWithPending.length === 0) {
       console.log("[retry-pending-generations] ✨ No pending generations to process");

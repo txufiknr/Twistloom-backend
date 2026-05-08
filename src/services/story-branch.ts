@@ -70,6 +70,8 @@ export async function getStoryStateWithBranch(
   options: TraversalOptions = {}
 ): Promise<StoryState | null> {
   try {
+    console.log(`[getStoryStateWithBranch] 🌳 Getting story state for:`, { userId, pageId, bookId });
+
     // First attempt: Get from database & cache
     const persistedState = await getStoryState(userId, pageId);
     if (persistedState) return persistedState;
