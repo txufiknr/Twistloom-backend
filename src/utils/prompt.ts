@@ -14,16 +14,16 @@ import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from
 import { genders } from "../types/user.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserSession, UserStoryPage } from "../types/story.js";
+import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB, resolveBook } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, getStoryPageById, insertBook, insertStoryPage, mapBookFromDb, mapToUserStoryPage, getBook, getPageFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { getStoryProgress, insertStoryState, setActiveSession } from "../services/story.js";
 import type { BuildNextPageParams, GenerateCandidatePageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
-import { generateBranchId } from "../services/story-branch.js";
+import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
@@ -2680,22 +2680,34 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   // Use provided state if available, otherwise fetch from database
   let currentState = providedState;
   let currentBook: Book | null = providedBook ?? null;
-  let currentSession: UserSession | null = null;
+  // let currentSession: UserSession | null = null;
 
   if (!currentState) {
-    console.log(`[generateCandidatePage] 👀 No state provided, getting story progress...`);
-    const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
-    currentBook ??= progress.book ?? null;
-    currentPage ??= progress.page;
-    console.log(`[generateCandidatePage] 🧩 getStoryProgress session:`, progress.session); // null
-    console.log(`[generateCandidatePage] 🧩 getStoryProgress state:`, progress.state); // FIXME: keliru branchId lain
-    console.log(`[generateCandidatePage] 🧩 getStoryProgress currentPage?.page:`, currentPage?.page);
-    currentState = progress.state;
-    currentSession = progress.session ?? null;
+    console.log(`[generateCandidatePage] 👀 No state provided, reconstructing from parent page...`);
+    // For candidate generation, always reconstruct state from parent page to avoid
+    // cross-branch contamination. Don't use getStoryProgress which relies on session
+    // that may point to a different branch's page.
+    const { parentId: parentPageId, bookId } = currentPage || {};
+    if (parentPageId && bookId) {
+      currentState = await getStoryStateWithBranch(userId, bookId, parentPageId);
+      currentBook ??= await getBook(bookId);
+      console.log(`[generateCandidatePage] 🧩 Reconstructed state from parent page ${parentPageId}`);
+    } else {
+      // No parent (root page), use getStoryProgress as fallback
+      console.log(`[generateCandidatePage] ⚠️ No parent page, using getStoryProgress fallback...`);
+      const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
+      currentBook ??= progress.book ?? null;
+      currentPage ??= progress.page;
+      console.log(`[generateCandidatePage] 🧩 getStoryProgress session:`, progress.session);
+      console.log(`[generateCandidatePage] 🧩 getStoryProgress state:`, progress.state);
+      console.log(`[generateCandidatePage] 🧩 getStoryProgress currentPage?.page:`, currentPage?.page);
+      currentState = progress.state;
+      // currentSession = progress.session ?? null;
+    }
   } else if (!currentBook) {
     // If state is provided but book is not, try to get it from session
     const session = await getUserSession(userId);
-    currentSession = session ?? null;
+    // currentSession = session ?? null;
     if (session) {
       currentBook = await getBook(session.bookId) ?? null;
     }
@@ -2703,13 +2715,14 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 
   // 2. Validate all required components exist for story progression
   // Book is required (provided directly for system-generated originals, or fetched from session for user navigation)
-  // Session is optional (not available during book initialization for originals)
+  // Session is optional, not available during background process using system user ID (generate originals, retry pending generations)
+  // Except it's manually triggered via user navigation (GET /api/books/:identifier/:pageId/candidates)
   if (!currentBook) throw new Error(`No active book found for user ${userId}`);
   if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${currentBook.id})`);
   if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${currentPage.id})`);
 
   // Use session bookId if available, otherwise use provided book
-  const { bookId } = currentSession ?? { bookId: currentBook.id };
+  // const { bookId } = currentSession ?? { bookId: currentBook.id };
 
   // 3. Match actionText against current page actions to get full Action object
   const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
@@ -2719,6 +2732,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 
   // 4. Check if next page is pre-generated (candidate) and reuse if available
   const nextPageId = action.destination?.pageId;
+  const bookId = currentBook.id;
   let newPage: PersistedStoryPage | null = null;
   if (nextPageId) {
     newPage = await getStoryPageById(userId, bookId, nextPageId);
@@ -2867,7 +2881,7 @@ export async function goToPreviousPage(userId: string): Promise<PersistedStoryPa
  * @see generateNextPage - Calls this function for main story pages
  */
 export async function ensureCandidatesForPage(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
-  currentBook ??= await resolveBook(page.bookId);
+  currentBook ??= await getBook(page.bookId);
 
   // Early check: skip if book not found
   if (!currentBook) {
