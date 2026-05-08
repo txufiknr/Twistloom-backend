@@ -6,6 +6,38 @@ Twistloom supports a seamless guest user experience that allows users to immedia
 
 ## Architecture
 
+### Guest User ID Consistency
+
+**Key Point:** Guest user IDs are **consistent per browser/device** and are NOT regenerated on each web visit.
+
+#### Cookie-Based Persistence
+- Guest IDs are stored in a cookie named `twistloom_guest_id`
+- Cookie expiration: **30 days**
+- Cookie settings: `httpOnly: true`, `secure: true` (production), `sameSite: 'lax'`
+
+#### ID Generation Behavior
+1. **First visit**: No cookie exists → creates new guest user via `createGuestUser()`
+2. **Subsequent visits**: Cookie exists → reuses the same `guestId` from cookie
+3. **Cookie expires**: After 30 days → generates new ID on next visit
+
+#### Consistency Scenarios
+- **Same browser/device**: ✅ Consistent ID as long as cookie persists
+- **Different browsers**: ❌ Different IDs (cookies are browser-specific)
+- **Private/incognito mode**: ✅ ID persists within session, cleared when session ends
+- **Cookie cleared by user**: ❌ New ID generated on next visit
+- **IP changes**: ✅ No effect - cookie-based, not IP-based
+
+#### Cookie Configuration
+```typescript
+res.cookie(GUEST_COOKIE_NAME, guestId, {
+  httpOnly: true,        // Prevents XSS attacks
+  secure: IS_PRODUCTION, // HTTPS-only in production
+  sameSite: 'lax',       // CSRF protection
+  maxAge: 60 * 60 * 24 * 30, // 30 days
+  path: '/',
+});
+```
+
 ### Guest vs Authenticated Users
 
 | Feature | Guest Users | Authenticated Users |

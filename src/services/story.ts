@@ -308,23 +308,25 @@ export async function insertStoryState(
 export async function markPageVisited(
   userId: string,
   book: Pick<EnrichedBookData, 'id' | 'stats'>,
-  dbPage: Pick<DBPage, 'id' | 'visitCount'>,
-  previousPageId?: string,
+  visitedPage: Pick<DBPage, 'id' | 'visitCount'>,
+  actionedPageId?: string,
   action?: Action // omit for page 1
 ): Promise<BookPageVisit> {
+  console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action });
+
   try {
     const { id: bookId, stats } = book;
-    const { id: pageId, visitCount } = dbPage;
+    const { id: pageId, visitCount } = visitedPage;
 
     // Update active session to point to the new page
-    const session = await setActiveSession({ userId, bookId, pageId, previousPageId });
+    const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId });
     
-    if (action && previousPageId) {
+    if (action && actionedPageId) {
       // Insert page progress record (trigger will increment visitCount in pages table)
       await insertUserPageProgress({
         userId,
         bookId,
-        actionedPageId: previousPageId, // actioned page
+        actionedPageId, // actioned page
         nextPageId: pageId,
         action,
       });
