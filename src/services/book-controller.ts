@@ -31,7 +31,7 @@ import type { DBPage } from "../types/schema.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import type { Action } from "../types/story.js";
-import { handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { handleNotFoundError } from "../utils/error.js";
 import { markPageVisited } from "./story.js";
 
 /**
@@ -573,23 +573,24 @@ export async function visitBookPage(
   const book = await getEnrichedBook(bookId, userId);
   if (!book) return { dbPage };
 
-  // Get previous page (if it's not page 1)
+  // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
   if (pageNumber > 1) {
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
-      handleNotFoundError(res, "Previous page not found");
+      handleNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
       return { dbPage, book };
     }
   
-    // Validate that the action exists on the parent page
-    // TODO: except for premium user via custom action
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
-    const isValidAction = parentDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
-    if (!isValidAction) {
-      handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
-      return { dbPage, book };
-    }
+
+    // Validate that the action exists on the parent page
+    // // TODO: except for premium user via custom action
+    // const isValidAction = parentDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
+    // if (!isValidAction) {
+    //   handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
+    //   return { dbPage, book };
+    // }
 
     // Users can go back and select any action they like in page 1
     if (pageNumber > 2) {

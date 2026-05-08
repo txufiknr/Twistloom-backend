@@ -398,9 +398,7 @@ export async function getEnrichedBook(
   
   // Check cache first
   const cached = enrichedBookCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
+  if (cached) return cached;
 
   // Build query conditions dynamically based on identifier format
   const conditions = [eq(books.slug, identifier)];

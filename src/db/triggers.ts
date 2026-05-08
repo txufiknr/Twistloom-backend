@@ -45,8 +45,8 @@ async function ensureUserSessionTrigger(): Promise<void> {
         IF NEW.status = 'active' THEN
           UPDATE user_sessions 
           SET status = 'past', updated_at = NOW()
-          WHERE userId = NEW.userId 
-            AND bookId != NEW.bookId 
+          WHERE user_id = NEW.user_id 
+            AND book_id != NEW.book_id 
             AND status = 'active';
         END IF;
         RETURN NEW;

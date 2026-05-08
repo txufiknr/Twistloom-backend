@@ -2,7 +2,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
 import type { StoryState, StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession } from "../types/story.js";
-import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserSession } from "../types/schema.js";
+import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
@@ -308,28 +308,37 @@ export async function insertStoryState(
 export async function markPageVisited(
   userId: string,
   book: Pick<EnrichedBookData, 'id' | 'stats'>,
-  visitedPage: Pick<DBPage, 'id' | 'visitCount'>,
-  actionedPageId?: string,
+  visitedPage: Pick<DBPage, 'id' | 'page' | 'visitCount'>,
+  actionedPageId?: string, // omit for page 1
   action?: Action // omit for page 1
 ): Promise<BookPageVisit> {
   console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action });
 
   try {
     const { id: bookId, stats } = book;
-    const { id: pageId, visitCount } = visitedPage;
+    const { id: pageId, page: pageNumber, visitCount } = visitedPage;
 
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId });
-    
-    if (action && actionedPageId) {
+
+    if (pageNumber > 1) {
+      if (!action || !actionedPageId) {
+        throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
+      }
+
       // Insert page progress record (trigger will increment visitCount in pages table)
-      await insertUserPageProgress({
+      const progress = await insertUserPageProgress({
         userId,
         bookId,
-        actionedPageId, // actioned page
+        actionedPageId,
         nextPageId: pageId,
         action,
       });
+      if (progress) {
+        console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
+      } else {
+        console.log(`[markPageVisited] ❌ User page progress not updated`);
+      }
     }
 
     // Calculate visit statistics using denormalized data
@@ -506,9 +515,9 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
   };
 }
 
-export async function insertUserPageProgress(data: DBNewUserPageProgress): Promise<void> {
+export async function insertUserPageProgress(data: DBNewUserPageProgress): Promise<DBUserPageProgress | null> {
   try {
-    await dbWrite
+    const newPageProgress = await dbWrite
       .insert(userPageProgress)
       .values(data)
       .onConflictDoUpdate({
@@ -516,9 +525,13 @@ export async function insertUserPageProgress(data: DBNewUserPageProgress): Promi
         set: {
           action: data.action,
         }
-      });
+      })
+      .returning();
+
+    return newPageProgress[0] || null;
   } catch (error) {
     console.error(`[insertUserPageProgress] ❌ Failed to insert user page progress:`, getErrorMessage(error));
+    return null;
   }
 }
 

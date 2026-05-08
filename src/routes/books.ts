@@ -2137,11 +2137,9 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
 router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => {
   try {
     const { identifier } = req.params;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    // Handle array case for identifier (Express can return string[])
-    const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
-
-    const enrichedBook = await getEnrichedBook(identifierStr, req.userId);
+    const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId);
     if (!enrichedBook) {
       return handleNotFoundError(res, "Book not found");
     }
