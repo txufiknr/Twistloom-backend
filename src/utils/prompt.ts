@@ -2905,6 +2905,11 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
   
   console.log(`[ensureCandidatesForPage] ⏳ ${pendingActions.length} actions need candidate page generation`);
 
+  // Track request start time for dynamic timeout calculation
+  const requestStartTime = Date.now();
+  const VERCEL_TIMEOUT_MS = 300000; // 300 seconds Vercel limit
+  const RESPONSE_BUFFER_MS = 5000; // 5s buffer for response processing
+
   // Use distributed lock to prevent concurrent processing of the same page
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
   const lockResult = await withLock<UserStoryPage | null>(lockKey, async () => {
@@ -2946,41 +2951,61 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
       // Track the last error to determine if action should be removed
       let lastError: unknown = null;
-      const candidatePage = await retryWithBackoffOrNull(
-        () => generateCandidatePage({
-          userId,
-          action,
-          currentPage,
-          currentState,
-          currentBook,
-          generateNewBranchId
-        }),
-        {
-          maxRetries: MAX_BRANCHING_RETRIES,
-          baseDelayMs: 1000,
-          maxDelayMs: 4000,
-          onRetry: (attempt, error) => {
-            lastError = error; // Capture the error for later analysis
-            console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
-          },
-          // Stop retrying if error is non-retryable (e.g. validation errors)
-          shouldRetry: (error) => {
-            try {
-              lastError = error; // Capture the error
-              // Check if error is marked as non-retryable
-              const err = error as ErrorWithCustomProperties;
-              if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
-                console.warn(`[ensureCandidatesForPage] ⛔ Non-retryable error detected:`, getErrorMessage(error));
-                return false;
+      
+      // Add early timeout detection to prevent Vercel 504 errors
+      // Calculate dynamic timeout based on request start time to maximize AI generation time
+      const timeElapsed = Date.now() - requestStartTime;
+      const AI_GENERATION_TIMEOUT_MS = Math.max(VERCEL_TIMEOUT_MS - timeElapsed - RESPONSE_BUFFER_MS, 60000); // Min 60s
+      console.log(`[ensureCandidatesForPage] ⏱️ Dynamic timeout: ${AI_GENERATION_TIMEOUT_MS}ms (elapsed: ${timeElapsed}ms)`);
+      
+      const candidatePage = await Promise.race([
+        retryWithBackoffOrNull(
+          () => generateCandidatePage({
+            userId,
+            action,
+            currentPage,
+            currentState,
+            currentBook,
+            generateNewBranchId
+          }),
+          {
+            maxRetries: MAX_BRANCHING_RETRIES,
+            baseDelayMs: 1000,
+            maxDelayMs: 4000,
+            onRetry: (attempt, error) => {
+              lastError = error; // Capture the error for later analysis
+              console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
+            },
+            // Stop retrying if error is non-retryable (e.g. validation errors)
+            shouldRetry: (error) => {
+              try {
+                lastError = error; // Capture the error
+                // Check if error is marked as non-retryable
+                const err = error as ErrorWithCustomProperties;
+                if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
+                  console.warn(`[ensureCandidatesForPage] ⛔ Non-retryable error detected:`, getErrorMessage(error));
+                  return false;
+                }
+                console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
+                return true;
+              } catch {
+                return true;
               }
-              console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
-              return true;
-            } catch {
-              return true;
             }
           }
-        }
-      );
+        ),
+        new Promise<null>((_, reject) => 
+          setTimeout(() => {
+            console.warn(`[ensureCandidatesForPage] ⏰ AI generation timeout for action "${action.text}" after ${AI_GENERATION_TIMEOUT_MS}ms`);
+            reject(new Error(`AI generation timeout (${AI_GENERATION_TIMEOUT_MS}ms)`));
+          }, AI_GENERATION_TIMEOUT_MS)
+        )
+      ]).catch(error => {
+        // Handle timeout and other errors gracefully
+        console.error(`[ensureCandidatesForPage] ❌ Generation failed for action "${action.text}":`, getErrorMessage(error));
+        lastError = error;
+        return null;
+      });
 
       if (candidatePage) {
         // Success: update action with destination (branchId and pageId)
@@ -3059,12 +3084,12 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       .returning();
 
     console.log(`[ensureCandidatesForPage] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
-    const dbPage = updatedPage[0] || null;
-    return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
-
-    // TODO: got 504 error: Vercel Runtime Timeout Error: Task timed out after 300 seconds
-    // GET /api/books/signal-eats-time/019dfcf9-23f4-7323-9d0b-95c28e4219d8/candidates → 504
-    // do we need to increase? and how to handle timeout gracefully without breaking process and producing server 504 error?
+    const dbPage = updatedPage[0];
+    if (!dbPage) {
+      console.error(`[ensureCandidatesForPage] ❌ Failed to update page ${page.id} - no result returned`);
+      return page; // Return original page as fallback
+    }
+    return await mapToUserStoryPage(dbPage, userId);
   }, 300); // 5-minute lock TTL
 
   // If lock succeeded, return its result
