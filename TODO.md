@@ -3,11 +3,11 @@
 [x] ensure book slug not same as preserved endpoints: stats, explore
 [x] consolidate get page & page visit
 [x] apakah get /user ada `isGuest`?
+[x] Retry pending generation kalo udah stable bikin paralel
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
-[ ] Retry pending generation kalo udah stable bikin paralel
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] User settings api: text size
 

@@ -33,6 +33,7 @@ import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { deepEqualSimple, stripEmptyLines } from "./parser.js";
 import { withLock, LOCK_KEYS } from "./distributed-lock.js";
+import { CandidateGenerationResult, GenerateCandidatesInParallelParams } from "../types/candidates.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2780,6 +2781,113 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 }
 
 /**
+ * Generates candidate pages in parallel for multiple actions
+ * 
+ * This function processes multiple actions simultaneously using Promise.allSettled,
+ * providing better performance and timeout resilience compared to sequential processing.
+ * Each action generation is isolated, so failures don't affect other actions.
+ * 
+ * @param params - Parameters for parallel generation
+ * @returns Array of generation results in the same order as input actions
+ */
+async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
+  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs } = params;
+  
+  // Create generation promises for each action
+  const generationPromises = actions.map(async (action, index) => {
+    const letter = String.fromCharCode(65 + index);
+    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}.`, action.text);
+    
+    // Track the last error to determine if action should be removed
+    let lastError: unknown = null;
+    
+    // Use new branch ID for all but the first action (if initial flag is false)
+    const generateNewBranchId = initialGenerateNewBranchId || index > 0;
+    
+    const candidatePage = await Promise.race([
+      retryWithBackoffOrNull(
+        () => generateCandidatePage({
+          userId,
+          action,
+          currentPage,
+          currentState,
+          currentBook,
+          generateNewBranchId
+        }),
+        {
+          maxRetries: MAX_BRANCHING_RETRIES,
+          baseDelayMs: 1000,
+          maxDelayMs: 4000,
+          onRetry: (attempt, error) => {
+            lastError = error; // Capture the error for later analysis
+            console.error(`[generateCandidatesInParallel] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
+          },
+          // Stop retrying if error is non-retryable (e.g. validation errors)
+          shouldRetry: (error) => {
+            try {
+              lastError = error; // Capture the error
+              // Check if error is marked as non-retryable
+              const err = error as ErrorWithCustomProperties;
+              if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
+                console.warn(`[generateCandidatesInParallel] ⛔ Non-retryable error detected:`, getErrorMessage(error));
+                return false;
+              }
+              console.warn(`[generateCandidatesInParallel] ❓ Should retry for this error?`, getErrorMessage(error));
+              return true;
+            } catch {
+              return true;
+            }
+          }
+        }
+      ),
+      new Promise<null>((_, reject) => 
+        setTimeout(() => {
+          console.warn(`[generateCandidatesInParallel] ⏰ AI generation timeout for action "${action.text}" after ${timeoutMs}ms`);
+          reject(new Error(`AI generation timeout (${timeoutMs}ms)`));
+        }, timeoutMs)
+      )
+    ]).catch(error => {
+      // Handle timeout and other errors gracefully
+      console.error(`[generateCandidatesInParallel] ❌ Generation failed for action "${action.text}":`, getErrorMessage(error));
+      lastError = error;
+      return null;
+    });
+
+    return {
+      action,
+      success: !!candidatePage,
+      candidatePage,
+      error: lastError
+    } satisfies CandidateGenerationResult;
+  });
+
+  // Execute all generations in parallel and wait for completion
+  const results = await Promise.allSettled(generationPromises);
+  
+  // Convert settled results to array and log summary
+  const generationResults: CandidateGenerationResult[] = results.map((result, index) => {
+    if (result.status === 'fulfilled') {
+      return result.value;
+    } else {
+      console.error(`[generateCandidatesInParallel] ❌ Promise rejected for action ${index}:`, result.reason);
+      return {
+        action: actions[index],
+        success: false,
+        candidatePage: null,
+        error: result.reason
+      };
+    }
+  });
+
+  // Log parallel generation summary
+  const successCount = generationResults.filter(r => r.success).length;
+  const failureCount = generationResults.length - successCount;
+  console.log(`[generateCandidatesInParallel] ✅ Parallel generation complete: ${successCount} succeeded, ${failureCount} failed`);
+
+  return generationResults;
+}
+
+/**
  * Pre-generates candidate pages for all actions on a story page
  * 
  * This function implements the branching narrative system by creating destination pages
@@ -2868,86 +2976,34 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       return currentPage;
     }
 
-    // Mark page as generating under lock to make the state visible to other readers
-    // Note: perform update inside the lock so only the lock owner sets the flag
-    // Use a timestamp so we can detect stale generators later (`null` when not generating)
-    await dbWrite
-      .update(pages)
-      .set({ isGeneratingStartedAt: new Date() })
-      .where(eq(pages.id, page.id));
-    console.log(`[ensureCandidatesForPage] 🔒 Set isGeneratingStartedAt for page ${page.id} (lock owner)`);
-
     // Track if any actions were actually updated
     const updatedDBActions = [...initialDBActions];
     let generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
     
-    // For each pending action, create a candidate (AI generation happens outside transaction)
-    // TODO: make it parallel
-    for (const action of recheckedPendingDBActions) {
+    // Calculate dynamic timeout once for all parallel operations
+    const timeElapsed = Date.now() - requestStartTime;
+    const AI_GENERATION_TIMEOUT_MS = Math.max(VERCEL_TIMEOUT_MS - timeElapsed - RESPONSE_BUFFER_MS, 60000); // Min 60s
+    console.log(`[ensureCandidatesForPage] ⏱️ Dynamic timeout for parallel generation: ${AI_GENERATION_TIMEOUT_MS}ms (elapsed: ${timeElapsed}ms)`);
+    
+    // Generate candidates in parallel for better performance and timeout resilience
+    const generationResults = await generateCandidatesInParallel({
+      userId,
+      actions: recheckedPendingDBActions,
+      currentPage,
+      currentState,
+      currentBook,
+      initialGenerateNewBranchId: generateNewBranchId,
+      timeoutMs: AI_GENERATION_TIMEOUT_MS
+    });
+    
+    // Process results and update actions accordingly
+    for (let i = 0; i < generationResults.length; i++) {
+      const result = generationResults[i];
+      const action = result.action;
       const letter = String.fromCharCode(65 + initialDBActions.indexOf(action));
-      console.log(`[ensureCandidatesForPage] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
       
-      // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
-      // Track the last error to determine if action should be removed
-      let lastError: unknown = null;
-      
-      // Add early timeout detection to prevent Vercel 504 errors
-      // Calculate dynamic timeout based on request start time to maximize AI generation time
-      const timeElapsed = Date.now() - requestStartTime;
-      const AI_GENERATION_TIMEOUT_MS = Math.max(VERCEL_TIMEOUT_MS - timeElapsed - RESPONSE_BUFFER_MS, 60000); // Min 60s
-      console.log(`[ensureCandidatesForPage] ⏱️ Dynamic timeout: ${AI_GENERATION_TIMEOUT_MS}ms (elapsed: ${timeElapsed}ms)`);
-      
-      const candidatePage = await Promise.race([
-        retryWithBackoffOrNull(
-          () => generateCandidatePage({
-            userId,
-            action,
-            currentPage,
-            currentState,
-            currentBook,
-            generateNewBranchId
-          }),
-          {
-            maxRetries: MAX_BRANCHING_RETRIES,
-            baseDelayMs: 1000,
-            maxDelayMs: 4000,
-            onRetry: (attempt, error) => {
-              lastError = error; // Capture the error for later analysis
-              console.error(`[ensureCandidatesForPage] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
-            },
-            // Stop retrying if error is non-retryable (e.g. validation errors)
-            shouldRetry: (error) => {
-              try {
-                lastError = error; // Capture the error
-                // Check if error is marked as non-retryable
-                const err = error as ErrorWithCustomProperties;
-                if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
-                  console.warn(`[ensureCandidatesForPage] ⛔ Non-retryable error detected:`, getErrorMessage(error));
-                  return false;
-                }
-                console.warn(`[ensureCandidatesForPage] ❓ Should retry for this error?`, getErrorMessage(error));
-                return true;
-              } catch {
-                return true;
-              }
-            }
-          }
-        ),
-        new Promise<null>((_, reject) => 
-          setTimeout(() => {
-            console.warn(`[ensureCandidatesForPage] ⏰ AI generation timeout for action "${action.text}" after ${AI_GENERATION_TIMEOUT_MS}ms`);
-            reject(new Error(`AI generation timeout (${AI_GENERATION_TIMEOUT_MS}ms)`));
-          }, AI_GENERATION_TIMEOUT_MS)
-        )
-      ]).catch(error => {
-        // Handle timeout and other errors gracefully
-        console.error(`[ensureCandidatesForPage] ❌ Generation failed for action "${action.text}":`, getErrorMessage(error));
-        lastError = error;
-        return null;
-      });
-
-      if (candidatePage) {
+      if (result.success && result.candidatePage) {
         // Success: update action with destination (branchId and pageId)
         console.log(`[ensureCandidatesForPage] ✅ Pre-generated destination page for: ${letter}.`, action.text);
         const actionIndex = updatedDBActions.findIndex(a => deepEqualSimple(a, action));
@@ -2955,8 +3011,8 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           updatedDBActions[actionIndex] = { 
             ...action, 
             destination: { 
-              branchId: candidatePage.branchId, 
-              pageId: candidatePage.id 
+              branchId: result.candidatePage.branchId, 
+              pageId: result.candidatePage.id 
             } 
           };
           hasRealChanges = true;
@@ -2964,10 +3020,10 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
         // After the first generated candidate, subsequent pending actions should use new branches
         generateNewBranchId = true;
       } else {
-        // Failed after all retries: check if it was a validation error before removing
-        const isInvalidAction = lastError && (
-          (lastError as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
-          (lastError as ErrorWithCustomProperties).shouldRetry === false
+        // Failed: check if it was a validation error before removing
+        const isInvalidAction = result.error && (
+          (result.error as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
+          (result.error as ErrorWithCustomProperties).shouldRetry === false
         );
         
         if (isInvalidAction) {
@@ -2980,7 +3036,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           }
         } else {
           // Valid action but generation failed - leave it for future retry
-          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "${action.text}" after ${MAX_BRANCHING_RETRIES} retries`);
+          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "${action.text}":`, result.error ? getErrorMessage(result.error) : 'Unknown error');
         }
       }
     }
