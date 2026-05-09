@@ -6,13 +6,15 @@ This document describes the automatic pre-generation system for story pages in T
 
 ## Architecture
 
-The pre-generation system uses a **fire-and-forget** pattern with **distributed locking** and **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
+The pre-generation system uses a **fire-and-forget** pattern with **distributed locking**, **database-level generation flags**, and **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
 
 - **Instant user experience**: Users can navigate to pre-generated pages immediately
 - **Graceful failure handling**: Failed generations don't block user navigation
 - **Resource efficiency**: Only generates pages for actions users might take
 - **Cascade effect**: Each generated page triggers pre-generation of its own candidates
 - **Concurrent safety**: Distributed locks prevent duplicate generation in serverless environments
+- **Single operation guarantee**: `isGenerating` flag ensures only one generation operation per page
+- **SSE waiting**: Clients can wait for in-progress generations via Server-Sent Events
 
 ## Flow Diagram
 
@@ -75,6 +77,12 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                     │  Filter actions without    │
                     │  complete destination      │
                     │  (!pageId || !branchId)    │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  Set isGenerating=true    │
+                    │  in database (pages table) │
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -142,12 +150,19 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                     │  Update page in DB:       │
                     │  - actions[]              │
                     │  - pendingGenerationCount  │
+                    │  - isGenerating=false     │
                     │  - updatedAt              │
                     └───────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
                     │  Release distributed lock │
+                    └───────────────────────────┘
+                                    │
+                                    ▼
+                    ┌───────────────────────────┐
+                    │  If lock not acquired:    │
+                    │  Clear isGenerating=false │
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -342,6 +357,7 @@ const lockResult = await withLock(lockKey, async () => {
 - **TTL**: 300 seconds (5 minutes) from `DEFAULT_LOCK_TTL`
 - **Purpose**: Prevents multiple serverless instances from processing the same page simultaneously
 - **Idempotent**: Re-checks pending actions after acquiring lock to skip if already processed
+- **Combined with isGenerating flag**: Database flag provides persistent visibility, lock provides runtime safety
 
 ### 3. Retry Logic with Exponential Backoff
 
@@ -454,7 +470,378 @@ try {
 4. **Graceful Fallback**: Caller catches error and retrieves existing page
 5. **No Duplication**: Prevents creating duplicate pages when multiple instances process same action
 
-### 6. EnrichedAction for Frontend
+### 6. isGenerating Flag and SSE Waiting
+
+The `isGenerating` boolean column in the `pages` table provides database-level visibility into candidate generation status:
+
+```typescript
+isGenerating: boolean("is_generating").notNull().default(false)
+```
+
+**How it works:**
+1. **Before lock acquisition**: `ensureCandidatesForPage` sets `isGenerating=true` in database
+2. **During generation**: Flag remains true while AI generation is in progress
+3. **After completion**: Flag is set to `isGenerating=false` when generation finishes or fails
+4. **Lock failure handling**: If distributed lock cannot be acquired, flag is cleared to prevent stuck state
+
+**SSE (Server-Sent Events) Pattern:**
+
+The manual candidate generation endpoint (`GET /api/books/:identifier/:pageId/candidates`) uses SSE to wait for in-progress generations:
+
+```typescript
+// Check if generation is already in progress
+if (dbPage.isGenerating) {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  
+  // Poll for completion (every 2 seconds, max 5 minutes)
+  while (attempts < maxAttempts) {
+    const freshPage = await getPageFromDB(pageId);
+    if (!freshPage.isGenerating) {
+      // Generation complete, send result via SSE
+      res.write(`event: complete\n`);
+      res.write(`data: ${JSON.stringify(userPage)}\n\n`);
+      res.end();
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+}
+```
+
+**SSE Events:**
+- `progress`: Sent every 10 seconds with waiting status and elapsed time
+- `complete`: Sent when generation finishes with the updated page data
+- `error`: Sent if page is deleted during polling
+- `timeout`: Sent after 5 minutes if generation hasn't completed
+
+**Benefits:**
+- **Single operation guarantee**: Multiple concurrent requests don't trigger duplicate AI generation
+- **Real-time updates**: Clients receive progress updates without polling
+- **Resource efficiency**: Expensive AI operations run only once per page
+- **Better UX**: Users see progress instead of waiting blindly
+
+### Frontend Implementation Example (Auto-Detection with TanStack Query)
+
+Here's how to implement the SSE handling for the candidate generation endpoint in a React frontend that auto-detects missing actions and integrates with TanStack Query:
+
+```typescript
+// utils/candidate-generation.ts
+interface GenerationProgress {
+  status: 'waiting' | 'complete' | 'error' | 'timeout';
+  message?: string;
+  warning?: string;
+  error?: string;
+}
+
+interface StoryPage {
+  id: string;
+  page: number;
+  text: string;
+  mood?: string;
+  place?: string;
+  timeOfDay?: string;
+  actions: Action[];
+  originalActionsCount?: number;
+  createdAt: string;
+  warning?: string;
+}
+
+interface Action {
+  text: string;
+  type: string;
+  hint: {
+    text: string;
+    type: string;
+  };
+  destination?: {
+    branchId?: string;
+    pageId?: string;
+  };
+}
+
+export async function generateCandidates(
+  bookIdentifier: string,
+  pageId: string,
+  onProgress?: (progress: GenerationProgress) => void
+): Promise<StoryPage> {
+  const response = await fetch(`/api/books/${bookIdentifier}/${pageId}/candidates`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  // Check if response is SSE (text/event-stream)
+  const contentType = response.headers.get('content-type');
+  
+  if (contentType?.includes('text/event-stream')) {
+    // Handle SSE response
+    return new Promise((resolve, reject) => {
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      
+      if (!reader) {
+        reject(new Error('Response body is not readable'));
+        return;
+      }
+
+      let buffer = '';
+      
+      const processChunk = (chunk: Uint8Array) => {
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6); // Remove 'data: ' prefix
+            if (data.trim()) {
+              try {
+                const parsed = JSON.parse(data);
+                
+                // Handle different event types
+                if (parsed.status === 'complete') {
+                  resolve(parsed);
+                } else if (parsed.status === 'error') {
+                  reject(new Error(parsed.error || 'Generation failed'));
+                } else if (parsed.status === 'timeout') {
+                  resolve(parsed); // Return with warning
+                } else if (parsed.status === 'waiting') {
+                  onProgress?.(parsed);
+                }
+              } catch (error) {
+                console.error('Failed to parse SSE data:', error);
+              }
+            }
+          }
+        }
+      };
+
+      reader.read().then(function pump({ done, value }) {
+        if (done) {
+          // Connection closed
+          reject(new Error('SSE connection closed unexpectedly'));
+          return;
+        }
+        
+        processChunk(value);
+        return reader.read().then(pump);
+      }).catch(reject);
+    });
+  } else {
+    // Handle regular JSON response
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data;
+  }
+}
+
+// API client function for TanStack Query
+export async function booksApiGenerateCandidates(
+  bookSlug: string,
+  pageId: string,
+  onProgress?: (progress: GenerationProgress) => void
+): Promise<StoryPage> {
+  return generateCandidates(bookSlug, pageId, onProgress);
+}
+```
+
+```typescript
+// hooks/useAutoCandidateGeneration.ts
+import { useEffect, useRef } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { booksApiGenerateCandidates } from '../utils/candidate-generation';
+
+interface UseAutoCandidateGenerationProps {
+  page: StoryPage | null;
+  book: { id: string } | null;
+  bookSlug: string;
+  updatePageData: (pageId: string, bookId: string, updates: Partial<StoryPage>) => void;
+  onProgress?: (progress: GenerationProgress) => void;
+  onError?: (error: Error) => void;
+}
+
+export function useAutoCandidateGeneration({
+  page,
+  book,
+  bookSlug,
+  updatePageData,
+  onProgress,
+  onError,
+}: UseAutoCandidateGenerationProps) {
+  // Track which pages have generation in progress to prevent duplicates
+  const generatedCandidatesRef = useRef<Set<string>>(new Set());
+
+  const generateCandidatesMutation = useMutation({
+    mutationFn: ({ bookSlug, pageId }: { bookSlug: string; pageId: string }) =>
+      booksApiGenerateCandidates(bookSlug, pageId, onProgress),
+    onSuccess: (candidatesResponse) => {
+      devConsole.log('[useAutoCandidateGeneration] ✅ Candidates generated successfully', candidatesResponse);
+      
+      // Update page data with new actions from candidates response
+      const { actions } = candidatesResponse;
+      if (page && book) {
+        updatePageData(page.id, book.id, { actions });
+        devConsole.log(`[useAutoCandidateGeneration] 👉 ${actions.length} actions should be displayed now:`, actions);
+      }
+      
+      // Clean up ref on success
+      const generationKey = `${bookSlug}-${page?.id}`;
+      generatedCandidatesRef.current.delete(generationKey);
+    },
+    onError: (error) => {
+      devConsole.error('[useAutoCandidateGeneration] ❌ Failed to generate candidates:', error);
+      
+      // Remove from ref on error to allow retry
+      const generationKey = `${bookSlug}-${page?.id}`;
+      generatedCandidatesRef.current.delete(generationKey);
+      
+      onError?.(error as Error);
+    },
+  });
+
+  // Auto-detect and generate missing candidates
+  useEffect(() => {
+    if (page && book) {
+      const hasMissingActions = page.originalActionsCount && page.originalActionsCount > page.actions.length;
+      const generationKey = `${bookSlug}-${page.id}`;
+      
+      if (hasMissingActions && !generatedCandidatesRef.current.has(generationKey)) {
+        // Mark as generating to prevent duplicate calls
+        generatedCandidatesRef.current.add(generationKey);
+        
+        devConsole.log('[useAutoCandidateGeneration] 🔄 Missing actions detected, generating candidates...', {
+          originalActionsCount: page.originalActionsCount,
+          currentActionsCount: page.actions.length,
+          pageId: page.id
+        });
+
+        generateCandidatesMutation.mutate({ bookSlug, pageId: page.id });
+      }
+    }
+  }, [page, book, bookSlug, generateCandidatesMutation]);
+
+  return {
+    isGenerating: generateCandidatesMutation.isPending,
+    error: generateCandidatesMutation.error,
+  };
+}
+```
+
+```typescript
+// components/ReaderPageClient.tsx
+import React from 'react';
+import { useAutoCandidateGeneration } from '../hooks/useAutoCandidateGeneration';
+
+interface ReaderPageClientProps {
+  page: StoryPage | null;
+  book: { id: string } | null;
+  bookSlug: string;
+  updatePageData: (pageId: string, bookId: string, updates: Partial<StoryPage>) => void;
+}
+
+export function ReaderPageClient({
+  page,
+  book,
+  bookSlug,
+  updatePageData,
+}: ReaderPageClientProps) {
+  // Auto-generate candidates when actions are missing
+  const { isGenerating, error } = useAutoCandidateGeneration({
+    page,
+    book,
+    bookSlug,
+    updatePageData,
+    onProgress: (progress) => {
+      devConsole.log('[ReaderPageClient] 📊 Generation progress:', progress.message);
+      // Optional: Show progress indicator in UI
+    },
+    onError: (error) => {
+      devConsole.error('[ReaderPageClient] ❌ Generation error:', error.message);
+      // Optional: Show error notification
+    },
+  });
+
+  return (
+    <div>
+      {/* Page content */}
+      {page && (
+        <div>
+          <h1>Page {page.page}</h1>
+          <p>{page.text}</p>
+          
+          {/* Generation progress indicator */}
+          {isGenerating && (
+            <div className="mb-4 p-3 bg-blue-50 rounded">
+              <p className="text-sm text-blue-700">
+                🔄 Generating candidate actions...
+              </p>
+            </div>
+          )}
+
+          {/* Generation error */}
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 rounded">
+              <p className="text-sm text-red-700">
+                ❌ Failed to generate actions: {error.message}
+              </p>
+            </div>
+          )}
+          
+          {/* Actions */}
+          <div className="mt-4">
+            {page.actions.map((action, index) => (
+              <div key={index} className="mb-2">
+                {action.destination ? (
+                  <button className="action-button">
+                    {action.text}
+                  </button>
+                ) : (
+                  <div className="text-gray-400">
+                    {action.text} (generating...)
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+**Key Implementation Points:**
+
+1. **Auto-Detection**: Uses `originalActionsCount` vs `actions.length` to detect missing candidates
+2. **TanStack Query Integration**: Leverages `useMutation` for state management and caching
+3. **Duplicate Prevention**: Ref-based tracking prevents multiple generation calls for same page
+4. **SSE Support**: Handles both SSE and JSON responses transparently
+5. **Progress Callbacks**: Optional progress reporting during SSE waiting
+6. **Error Handling**: Automatic retry capability and error cleanup
+7. **Cache Updates**: Integrates with existing TanStack Query cache via `updatePageData`
+
+**Usage Pattern:**
+- Component automatically detects when actions are missing
+- Triggers generation without user intervention
+- Shows progress indicators during generation
+- Updates UI automatically when candidates are ready
+- Handles errors gracefully with retry capability
+
+**Benefits of Auto-Detection Approach:**
+- **Seamless UX**: Users don't need to manually trigger generation
+- **Efficient**: Only generates when actually needed (missing actions)
+- **Integrated**: Works seamlessly with existing TanStack Query setup
+- **Robust**: Proper error handling and state management
+- **Real-time**: SSE progress updates during long operations
+
+### 7. EnrichedAction for Frontend
 
 The frontend receives `EnrichedAction` with navigation metadata:
 
@@ -614,6 +1001,15 @@ await insertUserPageProgress(userId, bookId, pageId, action);
 
 ## API Endpoints
 
+### GET /api/books/:identifier/:pageId/candidates
+- Manually triggers candidate generation for a specific page
+- Checks `isGenerating` flag to detect in-progress generation
+- If `isGenerating=true`: Uses SSE to wait for completion instead of retriggering
+- If `isGenerating=false`: Calls `ensureCandidatesForPage` to start generation
+- **SSE Response**: Sends `progress`, `complete`, `error`, or `timeout` events
+- **JSON Response**: Returns updated page when generation completes immediately
+- Prevents duplicate expensive AI generation operations
+
 ### GET /api/books/:identifier/:branchId/:page
 - Fetches page with enriched actions
 - Filters actions without complete destination
@@ -686,9 +1082,11 @@ Failed candidate generations are automatically retried via a cron job system:
 
 **Database tracking:**
 - `pages.pendingGenerationCount`: Integer column tracking actions without destinations
+- `pages.isGenerating`: Boolean flag indicating if generation is in progress
 - Indexed via `pages_pending_generation_idx` for efficient cron job queries
 - Set during page insertion based on actions without destinations
 - Updated by `ensureCandidatesForPage` after generation attempts
+- `isGenerating` set to `true` before generation, `false` after completion or failure
 
 **Benefits:**
 - Automatic recovery from transient AI failures
@@ -749,6 +1147,8 @@ The automatic pre-generation system provides instant navigation by proactively g
 **Key takeaways:**
 - Pre-generation is asynchronous and non-blocking
 - Distributed locks prevent concurrent processing in serverless environments
+- `isGenerating` flag provides database-level visibility into generation status
+- SSE pattern allows clients to wait for in-progress generations without duplicates
 - Failed generations are tracked via `pendingGenerationCount` and retried by cron job
 - Non-retryable errors cause action removal with fallback "Continue." action
 - Validation only happens during user navigation
@@ -757,3 +1157,4 @@ The automatic pre-generation system provides instant navigation by proactively g
 - Automatic retry system ensures eventual completion of failed generations
 - Separate cron jobs for retrying generations and creating original books
 - Cover image generation integrated into retry cron job
+- Single operation guarantee per (bookId + pageId) combination via isGenerating flag

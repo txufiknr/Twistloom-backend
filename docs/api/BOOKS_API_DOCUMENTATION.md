@@ -823,6 +823,12 @@ Pre-generates candidate pages for all actions on a story page. This ensures that
 - `pageId` (string, required): Page ID for which to generate candidates
 
 **Response (200 OK):**
+
+Two response formats are supported:
+
+**1. JSON Response (Immediate Generation):**
+When generation completes immediately or is not in progress:
+
 ```json
 {
   "id": "page456",
@@ -849,13 +855,47 @@ Pre-generates candidate pages for all actions on a story page. This ensures that
 }
 ```
 
+**2. Server-Sent Events (SSE) Response (In-Progress Generation):**
+When candidate generation is already in progress (`isGenerating=true`), the endpoint uses SSE to wait for completion:
+
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+
+event: progress
+data: {"status": "waiting", "message": "Candidate generation in progress..."}
+
+event: progress
+data: {"status": "waiting", "message": "Still generating... (10s elapsed)"}
+
+event: complete
+data: {"id": "page456", "page": 5, "text": "...", "actions": [...]}
+
+event: timeout
+data: {"id": "page456", "page": 5, "text": "...", "warning": "Generation timeout, returning current state"}
+
+event: error
+data: {"error": "Page not found during polling"}
+```
+
+**SSE Events:**
+- `progress`: Sent every 10 seconds with waiting status and elapsed time
+- `complete`: Sent when generation finishes with updated page data
+- `timeout`: Sent after 5 minutes if generation hasn't completed
+- `error`: Sent if page is deleted during polling or other error occurs
+
 **Behavior:**
 - Validates that page belongs to the specified book
+- Checks `isGenerating` flag to detect in-progress generation
+- If `isGenerating=true`: Uses SSE to wait for completion instead of retriggering generation
+- If `isGenerating=false`: Calls `ensureCandidatesForPage` to start generation
 - Skips last page (no candidates needed for final page)
 - Uses distributed lock to prevent concurrent processing
 - Retries failed generations up to 3 times with exponential backoff
 - Removes invalid actions (e.g., validation errors) from the page
 - Returns updated page with pre-generated candidate destinations
+- **Single operation guarantee**: Only one generation operation runs per (bookId + pageId) combination
 
 **Error Responses:**
 - `400 Bad Request`: Invalid UUID format

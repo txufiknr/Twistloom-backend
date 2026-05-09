@@ -85,6 +85,7 @@ export async function getStoryStateWithBranch(
       getStoryState: async (id: string) => await getStoryState(userId, id)
     };
     
+    // TODO: investigate what's `userId` for
     const reconstructionResult = await reconstructStoryState(pageId, userId, reconstructionDeps, options);
     const reconstructedState = reconstructionResult.state;
     
@@ -363,6 +364,12 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
     console.log(`[cleanupStoryStatesWithStrategy] 📚 Using totalPages from book schema: ${totalPages}`);
     
     // Get all story states for this user/book combination, ordered by page number
+    // TODO: why do we need userId? cleanup should be per branch, regardless of user
+    // example branches:
+    // main -> main (A) -> main (A)
+    // main -> main (A) -> branch1 (B)
+    // main -> branch2 (B) -> branch2 (A)
+    // main -> branch2 (B) -> branch3 (B)
     const allStates = await dbRead
       .select({ 
         pageId: storyStates.pageId,

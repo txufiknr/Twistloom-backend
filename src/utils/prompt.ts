@@ -82,9 +82,9 @@ PAGE FORMAT:
 - Write narrative style and tone in target language.
 - Ensure each continuation page maintains a consistent narrative style that flows smoothly from the previous page based on chosen action.
 - End at a moment of tension or revelation — never resolution.
-- Multiple very short paragraphs (1-3 sentences each).
+- Multiple short paragraphs (1-4 sentences each).
 - Each sentence/short paragraph on a separate line — Goosebumps style spacing for tension.
-- No markdown except italic if needed.
+- No markdown except italic by surrounding a word or phrase with a single asterisk (*) if needed.
 
 BRANCHING STORY RULES:
 - Choices feel meaningful. Some are traps. Some are illusions.
@@ -868,7 +868,7 @@ Score the original content honestly before any corrections. Do not adjust scores
 
 STEP 3 — CORRECT
 Only rewrite if total scoreBefore < 75, or if any single dimension scores below its threshold.
-Follow writing style in "WRITING STYLE:" rules creatively.
+Follow writing style in "WRITING STYLE:" and "PAGE FORMAT:" rules creatively.
 Preserve the original narrative voice and story trajectory. Fix the minimum necessary — do not over-correct.
 Do not introduce plot elements not implied by prior context. Do not change characters' names.
 
@@ -2204,7 +2204,7 @@ Initial Characters:
 - Bio must include one trait that could become a source of threat or betrayal.
 
 First Page:
-- text: follow the rules in "WRITING STYLE:" creatively (max ${MAX_WORDS_PER_PAGE} words).
+- text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - charactersPresent: names of side characters in the scene besides MC. Must match names used in initialCharacters.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - importantObjects: objects introduced or used this page that may have future narrative significance.
@@ -2881,25 +2881,23 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
  * @see generateNextPage - Calls this function for main story pages
  */
 export async function ensureCandidatesForPage(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
+  // Resolve book context: required for totalPages checks and other metadata used later.
   currentBook ??= await getBook(page.bookId);
 
-  // Early check: skip if book not found
+  // Early exit: skip if book not found
   if (!currentBook) {
     console.log(`[ensureCandidatesForPage] ⏩ Skipping: book not found`);
     return page;
   }
 
-  // Early check: skip if this is the last page (no candidates needed)
+  // Early exit: skip if this is the last page (no candidates needed)
   if (page.page >= currentBook.totalPages) {
     console.log(`[ensureCandidatesForPage] ⏩ Skipping last page ${page.page} (no candidates needed)`);
     return page;
   }
 
-  // Filter actions without destination (need pre-generation)
-  // Note: Check both branchId and pageId to match route handler filtering logic
+  // Early exit: skip if no actions need generation
   const pendingActions = page.actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
-
-  // Early return if no actions need generation
   if (pendingActions.length === 0) {
     console.log(`[ensureCandidatesForPage] ✨ No actions need generation`);
     return page;
@@ -2909,11 +2907,12 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
   // Use distributed lock to prevent concurrent processing of the same page
   const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
-  const lockResult = await withLock(lockKey, async () => {
+  const lockResult = await withLock<UserStoryPage | null>(lockKey, async () => {
     // Read current page state (no transaction - avoids idle timeout during AI generation)
     const currentDBPage = await getPageFromDB(page.id, { client: dbWrite });
     if (!currentDBPage) throw new Error('Page not found');
 
+    // Map DB row to the user-facing page shape used by generation code.
     const currentPage = await mapToUserStoryPage(currentDBPage, userId);
     const initialDBActions = currentDBPage.actions;
 
@@ -2923,6 +2922,14 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
       return currentPage;
     }
+
+    // Mark page as generating under lock to make the state visible to other readers
+    // Note: perform update inside the lock so only the lock owner sets the flag
+    await dbWrite
+      .update(pages)
+      .set({ isGenerating: true })
+      .where(eq(pages.id, page.id));
+    console.log(`[ensureCandidatesForPage] 🔒 Set isGenerating=true for page ${page.id} (lock owner)`);
 
     // Track if any actions were actually updated
     const updatedDBActions = [...initialDBActions];
@@ -2988,7 +2995,7 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           };
           hasRealChanges = true;
         }
-        // Subsequent pending actions: Should always create new branches
+        // After the first generated candidate, subsequent pending actions should use new branches
         generateNewBranchId = true;
       } else {
         // Failed after all retries: check if it was a validation error before removing
@@ -3007,20 +3014,19 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
           }
         } else {
           // Valid action but generation failed - leave it for future retry
-          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "${action.text}" after 3 retries`);
+          console.error(`[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "${action.text}" after ${MAX_BRANCHING_RETRIES} retries`);
         }
       }
     }
 
-    // Count actions without destination after processing
+    // Summarize results and decide whether we need to persist changes back to DB
     const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
     const succeededCount = updatedDBActions.length - pendingAfter;
     console.log(`[ensureCandidatesForPage] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
     if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
-    // Update persisted page in a short transaction only if actions were modified
-    // This ensures pendingGenerationCount is always accurate even if some actions fail
-    // Ensure page always has at least one action (for navigation)
+    // Ensure there's at least one navigable action on the page.
+    // If all were removed as invalid, insert a 'Continue' action for navigating to the next page.
     if (updatedDBActions.length === 0) {
       console.warn(`[ensureCandidatesForPage] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
@@ -3035,25 +3041,43 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
       hasRealChanges = true;
     }
     
-    // Return original page if no changes needed
+    // If nothing changed compared to rechecked state, return the current mapped page to avoid a DB update.
     const shouldUpdate = hasRealChanges || pendingAfter !== recheckedPendingDBActions.length;
     if (!shouldUpdate) return currentPage;
 
+    // Persist the updated actions, clear the isGenerating flag and update pending count atomically.
     const updatedPage = await dbWrite
       .update(pages)
       .set({
         actions: updatedDBActions,
         pendingGenerationCount: pendingAfter,
+        isGenerating: false,
         updatedAt: new Date()
       })
       .where(eq(pages.id, page.id))
       .returning();
-    
-    return await mapToUserStoryPage(updatedPage[0], userId);
+
+    console.log(`[ensureCandidatesForPage] 🔓 Set isGenerating=false for page ${page.id}`);
+    const dbPage = updatedPage[0] || null;
+    return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
+
+    // TODO: got 504 error: Vercel Runtime Timeout Error: Task timed out after 300 seconds
+    // GET /api/books/signal-eats-time/019dfcf9-23f4-7323-9d0b-95c28e4219d8/candidates → 504
+    // do we need to increase? and how to handle timeout gracefully without breaking process and producing server 504 error?
   }, 300); // 5-minute lock TTL
 
-  // Return the result or original page if lock couldn't be acquired
-  return lockResult ?? page;
+  // If lock succeeded, return its result
+  if (lockResult) return lockResult;
+  
+  // Otherwise, fetch and return the freshest page state
+  console.log(`[ensureCandidatesForPage] ⚠️ Lock not acquired - another worker is processing page ${page.id}. Returning fresh page state.`);
+  try {
+    const fresh = await getPageFromDB(page.id, { client: dbWrite });
+    return fresh ? await mapToUserStoryPage(fresh, userId) : page;
+  } catch (err) {
+    console.error(`[ensureCandidatesForPage] ❌ Failed to read fresh page after lock failure:`, getErrorMessage(err));
+    return page;
+  }
 }
 
 /**

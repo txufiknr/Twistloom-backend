@@ -559,9 +559,9 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
  */
 export async function visitBookPage(
   res: Response,
-  params: { userId: string, pageId: string, bookIdentifier?: string }
+  params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean }
 ): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage }> {
-  const { userId, pageId, bookIdentifier } = params;
+  const { userId, pageId, bookIdentifier, skipVisit = false } = params;
 
   // Get page
   const dbPage = await getPageFromDB(pageId as string, { bookIdentifier });
@@ -584,14 +584,6 @@ export async function visitBookPage(
   
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
 
-    // Validate that the action exists on the parent page
-    // // TODO: except for premium user via custom action
-    // const isValidAction = parentDbPage.actions.some((a: Action) => deepEqualSimple(a, action));
-    // if (!isValidAction) {
-    //   handleValidationError(res, "Invalid action: The provided action does not exist on the previous page");
-    //   return { dbPage, book };
-    // }
-
     // Users can go back and select any action they like in page 1
     if (pageNumber > 2) {
       // Validate user's action choice: check if user already chose a different action on previous page
@@ -608,6 +600,9 @@ export async function visitBookPage(
       }
     }
   }
+
+  // No user visit track for prefetch (not actual navigation)
+  if (skipVisit) return { dbPage, book };
 
   // Mark page as visited and persists chosen action
   const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);

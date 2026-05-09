@@ -142,6 +142,7 @@ function setCachedPath(userId: string, pageId: string, path: BranchPath): void {
  * @returns Cached state entry or null if not found
  */
 function getCachedState(userId: string, pageId: string): StateCacheEntry | null {
+  // TODO: do we need userId? as story state is always unique per page regardless user
   const cacheKey = `${userId}:${pageId}`;
   const entry = stateCache.get(cacheKey);
   if (!entry) return null;
@@ -747,6 +748,7 @@ export async function reconstructStoryState(
       
       // Ensure threads are present (should be handled by deltas, but verify)
       if (!currentState.threads || currentState.threads.length === 0) {
+        // TODO: should not log this warn for first or initial pages
         console.warn(`[reconstructStoryState] ⚠️ No threads in reconstructed state for page ${currentPageId}, initializing empty array`);
         currentState.threads = [];
       }

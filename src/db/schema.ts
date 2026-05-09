@@ -67,6 +67,7 @@ export const pages = pgTable(
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
     pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
+    isGenerating: boolean("is_generating").notNull().default(false), // Flag indicating if candidate generation is in progress for this page
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
