@@ -55,6 +55,7 @@ import { getEnrichedUserSelect } from "../services/user-controller.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 import { imageUpload, uploadUserProfile } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
+import { guestOrAuthMiddleware } from "../middleware/guest.js";
 
 const router = Router();
 
@@ -106,7 +107,7 @@ const router = Router();
  *   }
  * }
  */
-router.get("/", requireAuth, async (req: Request, res: Response) => {
+router.get("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const cacheKey = CACHE_KEYS.USER_PROFILE(userId);

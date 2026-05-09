@@ -161,41 +161,36 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
  */
 export async function setActiveSession(params: SetActiveSessionParams): Promise<DBUserSession | null> {
   const { userId, bookId, pageId, previousPageId } = params;
-  // try {
-    const result = await dbWrite
-      .insert(userSessions)
-      .values({
-        userId,
-        bookId,
+  const result = await dbWrite
+    .insert(userSessions)
+    .values({
+      userId,
+      bookId,
+      pageId,
+      previousPageId,
+      status: 'active',
+    })
+    .onConflictDoUpdate({
+      target: [userSessions.userId, userSessions.bookId],
+      set: {
         pageId,
         previousPageId,
         status: 'active',
-      })
-      .onConflictDoUpdate({
-        target: [userSessions.userId, userSessions.bookId],
-        set: {
-          pageId,
-          previousPageId,
-          status: 'active',
-          updatedAt: new Date(),
-        }
-      }).returning();
+        updatedAt: new Date(),
+      }
+    }).returning();
 
-    // Log user activity (session update)
-    await logUserActivity({
-      userId,
-      activityType: 'session_updated',
-      targetType: 'book',
-      targetId: bookId,
-      metadata: { pageId, previousPageId },
-    });
-    
-    console.log(`[setActiveSession] 🌟 Session activated:`, params);
-    return result[0] || null;
-  // } catch (error) {
-  //   console.error(`[setActiveSession] ❌ Failed to set active session for:`, {userId, bookId, error: getErrorMessage(error)});
-  //   return null;
-  // }
+  // Log user activity (session update)
+  await logUserActivity({
+    userId,
+    activityType: 'session_updated',
+    targetType: 'book',
+    targetId: bookId,
+    metadata: { pageId, previousPageId },
+  });
+  
+  console.log(`[setActiveSession] 🌟 Session activated:`, params);
+  return result[0] || null;
 }
 
 /**
