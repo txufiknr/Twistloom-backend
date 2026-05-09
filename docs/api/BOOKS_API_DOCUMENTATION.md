@@ -856,7 +856,7 @@ When generation completes immediately or is not in progress:
 ```
 
 **2. Server-Sent Events (SSE) Response (In-Progress Generation):**
-When candidate generation is already in progress (`isGenerating=true`), the endpoint uses SSE to wait for completion:
+When candidate generation is already in progress (`isGeneratingStartedAt` is set), the endpoint uses SSE to wait for completion:
 
 ```http
 Content-Type: text/event-stream
@@ -885,11 +885,11 @@ data: {"error": "Page not found during polling"}
 - `timeout`: Sent after 5 minutes if generation hasn't completed
 - `error`: Sent if page is deleted during polling or other error occurs
 
-**Behavior:**
+- **Behavior:**
 - Validates that page belongs to the specified book
-- Checks `isGenerating` flag to detect in-progress generation
-- If `isGenerating=true`: Uses SSE to wait for completion instead of retriggering generation
-- If `isGenerating=false`: Calls `ensureCandidatesForPage` to start generation
+- Checks `isGeneratingStartedAt` timestamp to detect in-progress generation (non-null means in-progress)
+- If `isGeneratingStartedAt` is set: Uses SSE to wait for completion instead of retriggering generation
+- If `isGeneratingStartedAt` is null: Calls `ensureCandidatesForPage` to start generation
 - Skips last page (no candidates needed for final page)
 - Uses distributed lock to prevent concurrent processing
 - Retries failed generations up to 3 times with exponential backoff

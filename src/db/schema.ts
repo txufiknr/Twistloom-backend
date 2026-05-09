@@ -67,7 +67,7 @@ export const pages = pgTable(
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
     pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
-    isGenerating: boolean("is_generating").notNull().default(false), // Flag indicating if candidate generation is in progress for this page
+    isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }), // When candidate generation started. `null` means not generating.
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
@@ -85,6 +85,8 @@ export const pages = pgTable(
     unique("pages_parent_branch_unique").on(t.parentId, t.branchId),
     // Index for pending generation cron job
     index("pages_pending_generation_idx").on(t.pendingGenerationCount),
+    // -- 4) Optionally add an index for queries:
+    // CREATE INDEX pages_is_generating_started_at_idx ON pages (is_generating_started_at);
   ]
 );
 

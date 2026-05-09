@@ -1108,7 +1108,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
  * 
  * **Authentication:** Required (via `requireAuth`)
  * 
- * If candidate generation is already in progress (isGenerating=true), this endpoint
+ * If candidate generation is already in progress (isGeneratingStartedAt is not null), this endpoint
  * uses Server-Sent Events (SSE) to wait for completion instead of triggering duplicate
  * operations. This prevents expensive AI generation from running multiple times for
  * the same (bookId + pageId) combination.
@@ -1168,9 +1168,9 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       return handleValidationError(res, "Page does not belong to the specified book");
     }
 
-    // Check if generation is already in progress
-    if (dbPage.isGenerating) {
-      console.log(`[GET /candidates] Generation in progress for page ${pageId}, using SSE to wait`);
+    // Check if generation is already in progress (timestamp field)
+    if (dbPage.isGeneratingStartedAt) {
+      console.log(`[GET /candidates] Generation in progress for page ${pageId}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
 
       // Set SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
@@ -1224,8 +1224,8 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
           return;
         }
 
-        // Check if generation is complete
-        if (!freshPage.isGenerating) {
+        // Check if generation is complete (timestamp cleared)
+        if (!freshPage.isGeneratingStartedAt) {
           console.log(`[GET /candidates] Generation completed for page ${pageId} after ${attempts} polls`);
           try {
             const userPage = await mapToUserStoryPage(freshPage, userId);

@@ -1,0 +1,1 @@
+ALTER TABLE "pages" ADD COLUMN "is_generating_started_at" timestamp with time zone;

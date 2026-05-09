@@ -2925,11 +2925,12 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
 
     // Mark page as generating under lock to make the state visible to other readers
     // Note: perform update inside the lock so only the lock owner sets the flag
+    // Use a timestamp so we can detect stale generators later (`null` when not generating)
     await dbWrite
       .update(pages)
-      .set({ isGenerating: true })
+      .set({ isGeneratingStartedAt: new Date() })
       .where(eq(pages.id, page.id));
-    console.log(`[ensureCandidatesForPage] 🔒 Set isGenerating=true for page ${page.id} (lock owner)`);
+    console.log(`[ensureCandidatesForPage] 🔒 Set isGeneratingStartedAt for page ${page.id} (lock owner)`);
 
     // Track if any actions were actually updated
     const updatedDBActions = [...initialDBActions];
@@ -3045,19 +3046,19 @@ export async function ensureCandidatesForPage(userId: string, page: UserStoryPag
     const shouldUpdate = hasRealChanges || pendingAfter !== recheckedPendingDBActions.length;
     if (!shouldUpdate) return currentPage;
 
-    // Persist the updated actions, clear the isGenerating flag and update pending count atomically.
+    // Persist the updated actions, clear the generating timestamp and update pending count atomically.
     const updatedPage = await dbWrite
       .update(pages)
       .set({
         actions: updatedDBActions,
         pendingGenerationCount: pendingAfter,
-        isGenerating: false,
+        isGeneratingStartedAt: null,
         updatedAt: new Date()
       })
       .where(eq(pages.id, page.id))
       .returning();
 
-    console.log(`[ensureCandidatesForPage] 🔓 Set isGenerating=false for page ${page.id}`);
+    console.log(`[ensureCandidatesForPage] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
     const dbPage = updatedPage[0] || null;
     return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
 

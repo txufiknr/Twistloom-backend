@@ -13,7 +13,7 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
 - **Resource efficiency**: Only generates pages for actions users might take
 - **Cascade effect**: Each generated page triggers pre-generation of its own candidates
 - **Concurrent safety**: Distributed locks prevent duplicate generation in serverless environments
-- **Single operation guarantee**: `isGenerating` flag ensures only one generation operation per page
+- **Single operation guarantee**: `isGeneratingStartedAt` timestamp ensures only one generation operation per page and supports heartbeat/stale detection
 - **SSE waiting**: Clients can wait for in-progress generations via Server-Sent Events
 
 ## Flow Diagram
@@ -81,8 +81,7 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Set isGenerating=true    │
-                    │  in database (pages table) │
+                    │  Set isGeneratingStartedAt = now() in database (pages table)
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -150,7 +149,7 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                     │  Update page in DB:       │
                     │  - actions[]              │
                     │  - pendingGenerationCount  │
-                    │  - isGenerating=false     │
+                    │  - isGeneratingStartedAt = NULL
                     │  - updatedAt              │
                     └───────────────────────────┘
                                     │
@@ -162,7 +161,7 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                                     ▼
                     ┌───────────────────────────┐
                     │  If lock not acquired:    │
-                    │  Clear isGenerating=false │
+                    │  Clear isGeneratingStartedAt = NULL
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -357,7 +356,7 @@ const lockResult = await withLock(lockKey, async () => {
 - **TTL**: 300 seconds (5 minutes) from `DEFAULT_LOCK_TTL`
 - **Purpose**: Prevents multiple serverless instances from processing the same page simultaneously
 - **Idempotent**: Re-checks pending actions after acquiring lock to skip if already processed
-- **Combined with isGenerating flag**: Database flag provides persistent visibility, lock provides runtime safety
+- **Combined with isGeneratingStartedAt timestamp**: Database timestamp provides persistent visibility and staleness detection; lock provides runtime safety
 
 ### 3. Retry Logic with Exponential Backoff
 
@@ -470,36 +469,37 @@ try {
 4. **Graceful Fallback**: Caller catches error and retrieves existing page
 5. **No Duplication**: Prevents creating duplicate pages when multiple instances process same action
 
-### 6. isGenerating Flag and SSE Waiting
+### 6. Generation timestamp and SSE waiting
 
-The `isGenerating` boolean column in the `pages` table provides database-level visibility into candidate generation status:
+The `isGeneratingStartedAt` timestamp column in the `pages` table provides durable visibility into candidate generation status and supports heartbeat/staleness detection:
 
 ```typescript
-isGenerating: boolean("is_generating").notNull().default(false)
+// Timestamp when generation started; NULL means not generating
+isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true })
 ```
 
 **How it works:**
-1. **Before lock acquisition**: `ensureCandidatesForPage` sets `isGenerating=true` in database
-2. **During generation**: Flag remains true while AI generation is in progress
-3. **After completion**: Flag is set to `isGenerating=false` when generation finishes or fails
-4. **Lock failure handling**: If distributed lock cannot be acquired, flag is cleared to prevent stuck state
+1. **Before lock acquisition**: `ensureCandidatesForPage` sets `isGeneratingStartedAt = now()` in the database (inside the distributed lock)
+2. **During generation**: `isGeneratingStartedAt` remains non-null while the worker owns the job; worker may periodically refresh heartbeats by updating this timestamp
+3. **After completion**: Worker clears `isGeneratingStartedAt = NULL` when generation finishes or fails
+4. **Stale detection**: A watchdog process or reclaim logic can detect stale timestamps (older than a configured TTL) and either re-enqueue work or clear the timestamp safely
 
 **SSE (Server-Sent Events) Pattern:**
 
-The manual candidate generation endpoint (`GET /api/books/:identifier/:pageId/candidates`) uses SSE to wait for in-progress generations:
+The manual candidate generation endpoint (`GET /api/books/:identifier/:pageId/candidates`) uses SSE to wait for in-progress generations. Check the timestamp existence instead of a boolean:
 
 ```typescript
 // Check if generation is already in progress
-if (dbPage.isGenerating) {
+if (dbPage.isGeneratingStartedAt) {
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  
+
   // Poll for completion (every 2 seconds, max 5 minutes)
   while (attempts < maxAttempts) {
     const freshPage = await getPageFromDB(pageId);
-    if (!freshPage.isGenerating) {
+    if (!freshPage.isGeneratingStartedAt) {
       // Generation complete, send result via SSE
       res.write(`event: complete\n`);
       res.write(`data: ${JSON.stringify(userPage)}\n\n`);
@@ -1003,9 +1003,9 @@ await insertUserPageProgress(userId, bookId, pageId, action);
 
 ### GET /api/books/:identifier/:pageId/candidates
 - Manually triggers candidate generation for a specific page
-- Checks `isGenerating` flag to detect in-progress generation
-- If `isGenerating=true`: Uses SSE to wait for completion instead of retriggering
-- If `isGenerating=false`: Calls `ensureCandidatesForPage` to start generation
+- Checks `isGeneratingStartedAt` timestamp to detect in-progress generation (non-null means in-progress)
+- If `isGeneratingStartedAt` is set: Uses SSE to wait for completion instead of retriggering
+- If `isGeneratingStartedAt` is null: Calls `ensureCandidatesForPage` to start generation
 - **SSE Response**: Sends `progress`, `complete`, `error`, or `timeout` events
 - **JSON Response**: Returns updated page when generation completes immediately
 - Prevents duplicate expensive AI generation operations
@@ -1082,11 +1082,11 @@ Failed candidate generations are automatically retried via a cron job system:
 
 **Database tracking:**
 - `pages.pendingGenerationCount`: Integer column tracking actions without destinations
-- `pages.isGenerating`: Boolean flag indicating if generation is in progress
+- `pages.isGeneratingStartedAt`: Nullable timestamp indicating when generation started (NULL means not generating)
 - Indexed via `pages_pending_generation_idx` for efficient cron job queries
 - Set during page insertion based on actions without destinations
 - Updated by `ensureCandidatesForPage` after generation attempts
-- `isGenerating` set to `true` before generation, `false` after completion or failure
+- `isGeneratingStartedAt` set to `now()` before generation, cleared to `NULL` after completion or failure
 
 **Benefits:**
 - Automatic recovery from transient AI failures
@@ -1147,7 +1147,7 @@ The automatic pre-generation system provides instant navigation by proactively g
 **Key takeaways:**
 - Pre-generation is asynchronous and non-blocking
 - Distributed locks prevent concurrent processing in serverless environments
-- `isGenerating` flag provides database-level visibility into generation status
+-- `isGeneratingStartedAt` timestamp provides database-level visibility into generation status and enables stale detection
 - SSE pattern allows clients to wait for in-progress generations without duplicates
 - Failed generations are tracked via `pendingGenerationCount` and retried by cron job
 - Non-retryable errors cause action removal with fallback "Continue." action
