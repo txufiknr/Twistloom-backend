@@ -92,7 +92,7 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
     let guestId = guestCookie;
 
     if (!guestId) {
-      // Create new guest user in database
+      // Create new guest user in database with isGuest flag
       guestId = await createGuestUser();
       
       // Set guest cookie in response
@@ -275,6 +275,20 @@ Uses `guestOrAuthMiddleware` to allow both guests and authenticated users to cre
 
 **Database Schema:**
 ```sql
+-- users table stores both guest and authenticated users
+-- Guest users are identified by isGuest = true flag
+CREATE TABLE users (
+  user_id UUID PRIMARY KEY,
+  name TEXT,
+  email TEXT UNIQUE,
+  is_guest BOOLEAN NOT NULL DEFAULT false, -- Distinguishes guest users
+  -- ... other user fields
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Index for efficient guest user queries
+CREATE INDEX users_is_guest_idx ON users(is_guest);
+
 -- books table stores both guest and user books
 -- userId references users.id (guest users are valid users in the users table)
 CREATE TABLE books (

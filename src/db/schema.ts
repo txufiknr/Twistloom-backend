@@ -186,6 +186,7 @@ export const users = pgTable(
     gender,
     image, // Profile image ImageKit URL
     imageId, // ImageKit file ID for deletion
+    isGuest: boolean("is_guest").notNull().default(false), // Distinguishes guest users from authenticated users
     lastActive,
     createdAt,
     updatedAt,
@@ -195,6 +196,8 @@ export const users = pgTable(
     index("users_gender_idx").on(t.gender),
     // Index for user creation trends
     index("users_created_at_idx").on(t.createdAt),
+    // Index for guest user queries and cleanup
+    index("users_is_guest_idx").on(t.isGuest),
   ]
 );
 

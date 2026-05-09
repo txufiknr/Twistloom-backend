@@ -134,6 +134,7 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
         bio: userData.bio,
         image: userData.image,
         credits: userData.credits,
+        isGuest: userData.isGuest,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {
@@ -260,6 +261,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         name: userData.name,
         bio: userData.bio,
         image: userData.image,
+        isGuest: userData.isGuest,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {

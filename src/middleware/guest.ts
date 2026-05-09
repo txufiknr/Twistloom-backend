@@ -35,6 +35,7 @@ async function createGuestUser(retryCount = 0): Promise<string> {
   try {
     await dbWrite.insert(users).values({
       userId: guestId,
+      isGuest: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     });

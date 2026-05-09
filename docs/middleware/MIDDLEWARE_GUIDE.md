@@ -170,9 +170,10 @@ router.get('/api/books', guestOrAuthMiddleware, async (req: Request, res: Respon
 - **Domain:** Auto-detected from request headers
 
 **Database Operations:**
-- Creates guest users in `users` table
+- Creates guest users in `users` table with `isGuest: true` flag
 - Handles race conditions with retry logic (max 3 attempts)
 - UUID v7 generation for guest IDs
+- Persistent guest identification via database flag
 
 ---
 
