@@ -4,17 +4,36 @@
 
 This document describes the automatic pre-generation system for story pages in Twistloom. The system proactively generates candidate pages for user actions to provide instant navigation and reduce perceived latency during story progression.
 
+## Multi-Level Pre-Generation
+
+The system supports configurable **multi-level depth pre-generation** to create comprehensive story trees:
+
+- **Level 1 (Synchronous)**: Immediate parallel generation of direct action candidates (returned to user)
+- **Level 2+ (Fire-and-Forget)**: Background generation of deeper levels without blocking response
+- **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
+- **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
+
+### Example Flow:
+```
+Page A (3 actions) → Generate 3 candidates (Level 1 - sync)
+                    ├── Candidate A1 (3 actions) → Generate 3 candidates (Level 2 - async)
+                    ├── Candidate A2 (3 actions) → Generate 3 candidates (Level 2 - async)  
+                    └── Candidate A3 (3 actions) → Generate 3 candidates (Level 2 - async)
+```
+
 ## Architecture
 
-The pre-generation system uses a **fire-and-forget** pattern with **distributed locking**, **database-level generation flags**, and **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
+The pre-generation system uses a **fire-and-forget** pattern with **distributed locking**, **database-level generation flags**, **parallel processing**, and **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
 
-- **Instant user experience**: Users can navigate to pre-generated pages immediately
-- **Graceful failure handling**: Failed generations don't block user navigation
+- **Instant user experience**: Level 1 candidates generated synchronously and returned immediately
+- **Deep pre-generation**: Levels 2+ processed in background without blocking user response
+- **Graceful failure handling**: Failed generations don't block user navigation or background processing
 - **Resource efficiency**: Only generates pages for actions users might take
 - **Cascade effect**: Each generated page triggers pre-generation of its own candidates
 - **Concurrent safety**: Distributed locks prevent duplicate generation in serverless environments
 - **Single operation guarantee**: `isGeneratingStartedAt` timestamp ensures only one generation operation per page and supports heartbeat/stale detection
 - **SSE waiting**: Clients can wait for in-progress generations via Server-Sent Events
+- **Configurable depth**: `MAX_BRANCHING_PREGENERATION_DEPTH` controls how deep the pre-generation goes
 
 ## Flow Diagram
 
@@ -105,8 +124,8 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                     │  Generate candidate        │
                     └───────────────────────────┘
                                     │
-                    ┌───────────────┴───────────────┐
-                    ▼                               ▼
+                                    ├─────────────────────────────────────────────────────────────────┐
+                                    ▼                                                               ▼
           ┌─────────────────┐              ┌─────────────────┐
           │ Has complete    │              │ No complete      │
           │ destination      │              │ destination      │
@@ -116,34 +135,40 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                     │                               │
                     │                               ▼
                     │               ┌───────────────────────────┐
-                    │               │  retryWithBackoffOrNull() │
-                    │               │  (MAX_BRANCHING_RETRIES) │
-                    │               │  (3 retries, 1s/2s/4s)    │
-                    │               │  - shouldRetry callback  │
-                    │               │  - Non-retryable check    │
+                    │               │  PARALLEL GENERATION     │
+                    │               │  Promise.allSettled()    │
+                    │               │  All actions at once     │
                     │               └───────────────────────────┘
                     │                               │
                     │                               ▼
                     │               ┌───────────────────────────┐
-                    │               │  generateCandidatePage()  │
-                    │               │  Generate single page     │
+                    │               │  generateCandidatesInParallel() │
+                    │               │  - Parallel processing     │
+                    │               │  - Depth tracking          │
+                    │               │  - Fire-and-forget deeper  │
                     │               └───────────────────────────┘
                     │                               │
-                    │               ┌───────────────┴───────────────┐
-                    │               ▼                               ▼
-                    │     ┌─────────────────┐              ┌─────────────────┐
-                    │     │ Success         │              │ Invalid action  │
-                    │     │ Update action   │              │ (non-retryable)│
-                    │     │ with dest       │              │ Remove action   │
-                    │     └─────────────────┘              └─────────────────┘
-                    │               │                               │
-                    │               ▼                               ▼
-                    │     ┌─────────────────┐              ┌─────────────────┐
-                    │     │ Set generateNew  │              │ Leave for retry │
-                    │     │ BranchId = true │              │ (valid action)  │
-                    │     └─────────────────┘              └─────────────────┘
-                    │                               │
-                    └───────┬───────────────┘
+                    │               ├───────────────────────────┤
+                    │               ▼                           ▼
+                    │     ┌─────────────────┐         ┌─────────────────┐
+                    │     │ Level 1 (Sync)  │         │ Level 2+ (Async)│
+                    │     │ Return to user  │         │ Background proc │
+                    │     └─────────────────┘         └─────────────────┘
+                    │               │                           │
+                    │               ▼                           ▼
+                    │     ┌─────────────────┐         ┌─────────────────┐
+                    │     │ For each action:│         │ For each success:│
+                    │     │ retryWithBackoff│         │ ensureCandidates │
+                    │     │ generateCandidate│         │ WithDepth()      │
+                    │     └─────────────────┘         └─────────────────┘
+                    │               │                           │
+                    │               ▼                           ▼
+                    │     ┌─────────────────┐         ┌─────────────────┐
+                    │     │ Success/Invalid│         │ Recursive depth │
+                    │     │ Update/Remove  │         │ Until maxDepth  │
+                    │     └─────────────────┘         └─────────────────┘
+                    │                                            │
+                    └────────────────────────────────────────────┘
                                     ▼
                     ┌───────────────────────────┐
                     │  Update page in DB:       │
@@ -469,7 +494,249 @@ try {
 4. **Graceful Fallback**: Caller catches error and retrieves existing page
 5. **No Duplication**: Prevents creating duplicate pages when multiple instances process same action
 
-### 6. Generation timestamp and SSE waiting
+### 6. Multi-Level Depth Configuration
+
+The system supports configurable pre-generation depth via `MAX_BRANCHING_PREGENERATION_DEPTH`:
+
+```typescript
+// From src/config/story.ts
+export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // TODO: use
+```
+
+**Depth Behavior:**
+- **Level 1**: Synchronous parallel generation, results returned to user immediately
+- **Level 2+**: Fire-and-forget background processing, doesn't block user response
+- **Depth Limit**: Generation stops when `currentDepth > maxDepth`
+- **Exponential Growth**: Each level can multiply the total pages (3³ = 27 pages at depth 3)
+
+**Implementation:**
+```typescript
+// Level 1: Synchronous (main response)
+const generationResults = await generateCandidatesInParallel({
+  userId,
+  actions: recheckedPendingDBActions,
+  currentPage,
+  currentState,
+  currentBook,
+  initialGenerateNewBranchId: generateNewBranchId,
+  timeoutMs: AI_GENERATION_TIMEOUT_MS,
+  currentDepth: 1,
+  maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH
+});
+
+// Level 2+: Fire-and-forget background
+if (currentDepth < maxDepth) {
+  Promise.all(
+    successfulResults.map(async (result) => {
+      await ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth);
+    })
+  ); // No await - runs in background
+}
+```
+
+**Benefits:**
+- **Instant Response**: Level 1 completes quickly and returns to user
+- **Deep Coverage**: Background processing ensures deeper levels are ready when needed
+- **Resource Control**: Configurable depth prevents excessive resource usage
+- **Timeout Resilience**: Background processing has more generous timeouts
+
+## Implementation Details
+
+### Branch ID Logic
+
+The system uses sophisticated branch ID management to ensure proper story tree structure:
+
+#### Synchronous Processing (ensureCandidatesForPage)
+```typescript
+let generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
+
+// Process results sequentially to maintain branch ID state
+for (let i = 0; i < generationResults.length; i++) {
+  const result = generationResults[i];
+  
+  if (result.success && result.candidatePage) {
+    // After first successful generation, subsequent actions use new branches
+    generateNewBranchId = true;
+  }
+}
+```
+
+**Logic Flow:**
+- **Initial State**: `generateNewBranchId = true` if some actions already have destinations
+- **First Action**: Uses existing branch (or new branch if none exist)
+- **Subsequent Actions**: Always use new branches (`generateNewBranchId = true`)
+- **Purpose**: Ensures proper story tree branching without conflicts
+
+#### Background Processing (ensureCandidatesForPageWithDepth)
+```typescript
+const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
+
+// Note: generateNewBranchId logic not used in background processing
+// as each action generates independently without affecting others
+```
+
+**Why Different Logic:**
+- **Independent Generation**: Each background action generates without affecting others
+- **No Sequential Dependencies**: Background processing doesn't need to maintain state between actions
+- **Simplified Architecture**: Reduces complexity in fire-and-forget operations
+
+### Timeout Calculation
+
+The system implements dynamic timeout calculation to optimize for different scenarios:
+
+#### Synchronous Processing (User-Facing)
+```typescript
+const timeElapsed = Date.now() - requestStartTime;
+const AI_GENERATION_TIMEOUT_MS = Math.max(VERCEL_TIMEOUT_MS - timeElapsed - RESPONSE_BUFFER_MS, 60000);
+```
+
+**Parameters:**
+- `VERCEL_TIMEOUT_MS`: 300,000ms (5 minutes - Vercel limit)
+- `RESPONSE_BUFFER_MS`: 5,000ms (response processing buffer)
+- **Minimum Timeout**: 60,000ms (1 minute)
+
+**Logic:**
+- Calculate remaining time before Vercel timeout
+- Subtract buffer for response processing
+- Ensure minimum 1 minute for AI generation
+- **Result**: Adaptive timeout based on request progress
+
+#### Background Processing (Fire-and-Forget)
+```typescript
+const requestStartTime = Date.now(); // Track at function start
+const BACKGROUND_TIMEOUT_MS = 180000; // 3 minutes for background
+const timeElapsed = Date.now() - requestStartTime;
+const AI_GENERATION_TIMEOUT_MS = Math.max(BACKGROUND_TIMEOUT_MS - timeElapsed - 5000, 30000);
+```
+
+**Parameters:**
+- `BACKGROUND_TIMEOUT_MS`: 180,000ms (3 minutes - more generous)
+- **Buffer**: 5,000ms (processing buffer)
+- **Minimum Timeout**: 30,000ms (30 seconds)
+
+**Logic:**
+- Fixed 3-minute background timeout (more generous than user-facing)
+- Track elapsed time from function start (not request start)
+- Ensure minimum 30 seconds for AI generation
+- **Result**: Consistent background processing timeout
+
+### Error Handling Patterns
+
+#### Synchronous Processing
+```typescript
+if (result.success && result.candidatePage) {
+  // Update action with destination
+  updatedDBActions[actionIndex] = { 
+    ...action, 
+    destination: { 
+      branchId: result.candidatePage.branchId, 
+      pageId: result.candidatePage.id 
+    } 
+  };
+  generateNewBranchId = true; // Affects subsequent actions
+} else {
+  // Handle validation errors vs retryable errors
+  const isInvalidAction = result.error && (
+    (result.error as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
+    (result.error as ErrorWithCustomProperties).shouldRetry === false
+  );
+  
+  if (isInvalidAction) {
+    // Remove invalid actions permanently
+    updatedDBActions.splice(actionIndex, 1);
+  }
+  // Valid actions with errors remain for future retry
+}
+```
+
+#### Background Processing
+```typescript
+// Fire-and-forget with proper error handling
+void Promise.allSettled(
+  successfulResults.map(async (result) => {
+    try {
+      // Validate required fields before processing
+      if (!candidatePage.id || !candidatePage.bookId || !candidatePage.branchId) {
+        console.error(`Invalid candidate page missing required fields`);
+        return;
+      }
+      
+      // Process without await for true fire-and-forget
+      void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth)
+        .catch(error => console.error(`Background generation failed:`, getErrorMessage(error)));
+    } catch (error) {
+      console.error(`Background processing error:`, getErrorMessage(error));
+    }
+  })
+).then(results => {
+  // Monitor rejected promises without blocking
+  const rejectedCount = results.filter(r => r.status === 'rejected').length;
+  if (rejectedCount > 0) {
+    console.warn(`${rejectedCount} background operations failed`);
+  }
+});
+```
+
+### Type Safety & Validation
+
+#### Runtime Validation
+```typescript
+// Validate required fields before casting
+if (!candidatePage.id || !candidatePage.bookId || !candidatePage.branchId) {
+  console.error(`Invalid candidate page missing required fields:`, {
+    id: candidatePage.id,
+    bookId: candidatePage.bookId,
+    branchId: candidatePage.branchId
+  });
+  return;
+}
+
+// Safe type conversion
+const candidateUserPage: UserStoryPage = {
+  ...candidatePage,
+  selectedActions: []
+};
+```
+
+#### Interface Contracts
+```typescript
+// Type-safe parameter passing
+interface GenerateCandidatesInParallelParams {
+  userId: string;
+  actions: Action[];
+  currentPage: UserStoryPage;
+  currentState: StoryState | null | undefined;
+  currentBook: Book | null;
+  initialGenerateNewBranchId: boolean;
+  timeoutMs: number;
+  currentDepth: number;
+  maxDepth: number;
+}
+```
+
+### Resource Management
+
+#### Distributed Locking
+```typescript
+// Synchronous: 5-minute lock
+await withLock(lockKey, async () => { /* ... */ }, 300);
+
+// Background: 10-minute lock (more generous)
+await withLock(lockKey, async () => { /* ... */ }, 600);
+```
+
+**Lock Duration Rationale:**
+- **Synchronous**: Shorter lock prevents blocking user requests
+- **Background**: Longer lock accommodates extended processing time
+- **Purpose**: Prevents duplicate generation across serverless instances
+
+#### Memory & Performance
+- **Parallel Processing**: `Promise.allSettled()` for concurrent action generation
+- **Fire-and-Forget**: Background operations don't block main response
+- **Type Safety**: Runtime validation prevents memory leaks from invalid objects
+- **Error Boundaries**: Proper error handling prevents cascade failures
+
+### 7. Generation timestamp and SSE waiting
 
 The `isGeneratingStartedAt` timestamp column in the `pages` table provides durable visibility into candidate generation status and supports heartbeat/staleness detection:
 

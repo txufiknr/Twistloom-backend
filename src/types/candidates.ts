@@ -33,4 +33,8 @@ export interface GenerateCandidatesInParallelParams {
   initialGenerateNewBranchId: boolean;
   /** Timeout for each generation operation */
   timeoutMs: number;
+  /** Current depth level for multi-level pre-generation */
+  currentDepth: number;
+  /** Maximum depth to pre-generate */
+  maxDepth: number;
 }

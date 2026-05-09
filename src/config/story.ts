@@ -19,7 +19,7 @@ export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
 export const MAX_BRANCHING_RETRIES = 3;
-export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // TODO: use
+export const MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 export const MAX_BRANCHING_PREGENERATION_LIMIT = 10;
 
 export const ACTION_TEXT_LENGTH = '1 short sentence';
