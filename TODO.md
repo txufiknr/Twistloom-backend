@@ -4,6 +4,7 @@
 [x] consolidate get page & page visit
 [x] apakah get /user ada `isGuest`?
 [x] Retry pending generation kalo udah stable bikin paralel
+[ ] enriched page add contextHistory, characters, phase
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
@@ -11,9 +12,8 @@
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] User settings api: text size
 
-story state:
-[ ] story state: is it really need `maxPage`?
-[ ] Don't output viableEnding if unchanged
+export const FREE_ACTION_SELECTION_UNTIL_PAGE = 1;
+export const FREE_GUEST_SELECT_ACTION_UNTIL_PAGE = 5;
 
 TODO:
 [ ] Stripe switch to live
@@ -35,7 +35,8 @@ by book creator:
 paid:
 [ ] custom action prompt (max 50 chars, prevent sql inject, etc)
 [ ] re-select other action in previous page
-[ ] generate cover image with AI
+[ ] generate cover image with AI (puter)
+[ ] generate page image with AI (puter)
 [ ] see hint for an action
 [ ] use noiz tts api
 

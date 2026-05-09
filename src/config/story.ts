@@ -22,6 +22,9 @@ export const MAX_BRANCHING_RETRIES = 3;
 export const MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 export const MAX_BRANCHING_PREGENERATION_LIMIT = 10;
 
+export const FREE_ACTION_SELECTION_UNTIL_PAGE = 1;
+export const FREE_GUEST_SELECT_ACTION_UNTIL_PAGE = 5;
+
 export const ACTION_TEXT_LENGTH = '1 short sentence';
 export const KEY_EVENT_LENGTH = '1-4 short phrases';
 export const VIABLE_ENDING_LENGTH = '1-3 sentences';

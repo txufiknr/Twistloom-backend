@@ -20,6 +20,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
+import { getStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -729,6 +730,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
   // Query user's chosen action for this page (if authenticated)
   const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, dbPage.bookId, pageId) : [];
 
+  // Get story state for context
+  const storyState = await getStoryState(pageId);
+
   // Handle translation if Accept-Language header is provided and differs from book language
   let translatedText: string | undefined;
   const targetLanguage = shouldTranslate(bookLanguage, acceptLanguage);
@@ -746,6 +750,26 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
     }
     // Note: If translation failed, translationResult.error contains error info
     // but we continue with original text (fallback behavior)
+  }
+
+  // Extract context from story state if available
+  let context: EnrichedStoryPage['context'];
+  if (storyState) {
+    context = {
+      contextHistory: storyState.contextHistory,
+      actionsHistory: storyState.actionsHistory,
+      places: Object.values(storyState.places).map(place => ({
+        name: place.name,
+        type: place.type,
+        context: place.context
+      })),
+      characters: Object.values(storyState.characters).map(character => ({
+        name: character.name,
+        gender: character.gender,
+        role: character.role,
+        bio: character.bio
+      }))
+    };
   }
 
   // Return enriched page with only frontend-relevant fields
@@ -771,6 +795,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
     originalActionsCount: allActions.length,
     selectedActions,
     translatedText,
+    context,
   };
 
   return enrichedPage;

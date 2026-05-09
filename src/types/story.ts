@@ -646,7 +646,16 @@ export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & Omit<Sta
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: Action[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
-export type EnrichedStoryPage = Partial<UserStoryPage> & { originalActionsCount: number, translatedText?: string };
+export type EnrichedStoryPage = Partial<UserStoryPage> & { 
+  originalActionsCount: number, 
+  translatedText?: string,
+  context?: {
+    contextHistory: string;
+    actionsHistory: ActionHistory[];
+    places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
+    characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
+  }
+};
 
 export type Action = {
   /** Action text */

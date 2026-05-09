@@ -33,6 +33,7 @@ import { deepEqualSimple } from "../utils/parser.js";
 import type { Action } from "../types/story.js";
 import { handleNotFoundError } from "../utils/error.js";
 import { markPageVisited } from "./story.js";
+import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -585,7 +586,7 @@ export async function visitBookPage(
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
 
     // Users can go back and select any action they like in page 1
-    if (pageNumber > 2) {
+    if (pageNumber > FREE_ACTION_SELECTION_UNTIL_PAGE + 1) {
       // Validate user's action choice: check if user already chose a different action on previous page
       const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
       if (selectedActions.length > 0) {
