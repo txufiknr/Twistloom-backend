@@ -101,7 +101,6 @@ const router = Router();
  */
 router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.userId!;
     const { bookId, pageId } = req.params;
 
     if (!bookId || !pageId) {
@@ -115,10 +114,10 @@ router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Req
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
 
     // Test reconstruction
-    const reconstructionResult = await reconstructStoryState(pageIdStr, userId, {
+    const reconstructionResult = await reconstructStoryState(pageIdStr, {
       getPageById: async (id: string) => await getPageFromDB(id),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
-      getStoryState: async (id: string) => await getStoryState(userId, id)
+      getStoryState: async (id: string) => await getStoryState(id)
     }, {
       useCache: false, // Force reconstruction for testing
       validatePath: true

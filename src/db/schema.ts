@@ -121,8 +121,7 @@ export const pages = pgTable(
 export const storyStates = pgTable(
   "story_states",
   {
-    userId: userId(), // Initiator
-    pageId: pageId("cascade"), // Delete if page is deleted
+    pageId: pageId("cascade"), // Delete if page is deleted (primary key)
     bookId: bookId("cascade"), // Delete if book is deleted
     page: integer("page").notNull(),
     maxPage: integer("max_page").notNull(),
@@ -146,8 +145,10 @@ export const storyStates = pgTable(
     updatedAt,
   },
   (t) => [
-    // Composite primary key for unique user+book+page combinations
-    primaryKey({ columns: [t.userId, t.bookId, t.pageId] }),
+    // Primary key: state is unique per page (branch-based architecture)
+    primaryKey({ columns: [t.pageId] }),
+    // Index for book queries
+    index("story_states_book_idx").on(t.bookId),
     // Index for current page
     index("story_states_page_idx").on(t.page),
     // Index for difficulty filtering

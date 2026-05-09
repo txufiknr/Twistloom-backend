@@ -87,17 +87,17 @@ export const deletedStateCache = new LRUCache<string, DeletedStateCacheEntry>({
  */
 
 /**
- * Generates cache key for user+page combination
+ * Generates cache key for page (branch-based architecture)
  */
-export function getDeletedStateCacheKey(userId: string, pageId: string): string {
-  return `${userId}:${pageId}`;
+export function getDeletedStateCacheKey(pageId: string): string {
+  return pageId;
 }
 
 /**
  * Gets a cached deleted state if valid
  */
-export function getDeletedState(userId: string, pageId: string): StoryState | null {
-  const key = getDeletedStateCacheKey(userId, pageId);
+export function getDeletedState(pageId: string): StoryState | null {
+  const key = getDeletedStateCacheKey(pageId);
   const entry = deletedStateCache.get(key);
   
   if (!entry) {
@@ -113,8 +113,8 @@ export function getDeletedState(userId: string, pageId: string): StoryState | nu
 /**
  * Caches a story state before deletion
  */
-export function setDeletedState(userId: string, pageId: string, state: StoryState): void {
-  const key = getDeletedStateCacheKey(userId, pageId);
+export function setDeletedState(pageId: string, state: StoryState): void {
+  const key = getDeletedStateCacheKey(pageId);
   
   const entry: DeletedStateCacheEntry = {
     state,

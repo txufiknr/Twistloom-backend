@@ -865,7 +865,7 @@ export async function getBookInitialState(book: Book): Promise<StoryState | null
     }
     
     // Get the story state for the first page
-    const initialState = await getStoryState(book.userId, firstPage[0].id);
+    const initialState = await getStoryState(firstPage[0].id);
     
     if (initialState) {
       console.log(`[getBookInitialState] 🎯 Found initial state for book ${book.id} at page ${initialState.page}`);

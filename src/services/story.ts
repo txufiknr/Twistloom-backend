@@ -218,7 +218,6 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
  * ```
  */
 export async function insertStoryState(
-  userId: string,
   bookId: string,
   pageId: string,
   state: StoryState
@@ -227,7 +226,6 @@ export async function insertStoryState(
     await dbWrite
       .insert(storyStates)
       .values({
-        userId,
         pageId,
         bookId,
         page: state.page,
@@ -247,7 +245,7 @@ export async function insertStoryState(
         contextHistory: state.contextHistory,
       })
       .onConflictDoUpdate({
-        target: [storyStates.userId, storyStates.bookId, storyStates.pageId],
+        target: [storyStates.pageId],
         set: {
           page: state.page,
           maxPage: state.maxPage,
@@ -268,10 +266,10 @@ export async function insertStoryState(
         }
       });
 
-    // Optimize story states strategically
-    await cleanupStoryStatesWithStrategy(userId, bookId);
+    // Optimize story states strategically per book (branch-aware)
+    await cleanupStoryStatesWithStrategy(bookId);
   } catch (error) {
-    console.error(`[insertStoryState] ❌ Failed to insert story state for user ${userId}, page ${pageId}:`, getErrorMessage(error));
+    console.error(`[insertStoryState] ❌ Failed to insert story state for page ${pageId}:`, getErrorMessage(error));
     throw new Error(`Unable to insert story state: ${getErrorMessage(error)}`, { cause: error });
   }
 }
@@ -414,13 +412,12 @@ export async function deactivateSession(userId: string, bookId: string) {
  * @returns Promise resolving to the story state record or null if not found
  */
 export async function getStoryStateFromDB(
-  userId: string,
   pageId: string
 ): Promise<DBStoryState | null> {
   const result = await dbRead
     .select()
     .from(storyStates)
-    .where(and(eq(storyStates.userId, userId), eq(storyStates.pageId, pageId)))
+    .where(eq(storyStates.pageId, pageId))
     .limit(1);
 
   return result[0] || null;
@@ -458,27 +455,26 @@ export async function getStoryStateFromDB(
  * ```
  */
 export async function getStoryState(
-  userId: string,
   pageId: string,
 ): Promise<StoryState | null> {
   try {
     // Try database first
-    const dbResult = await getStoryStateFromDB(userId, pageId);
+    const dbResult = await getStoryStateFromDB(pageId);
     if (dbResult) {
       return mapStoryStateFromDb(dbResult);
     }
     
-    // Fall back to deleted state cache
-    const cachedState = getDeletedState(userId, pageId);
+    // Fall back to deleted state cache (note: cache key no longer includes userId)
+    const cachedState = getDeletedState(pageId);
     if (cachedState) {
-      console.log(`[getStoryState] 🍪 Retrieved from deleted cache for user ${userId}, page ${pageId}`);
+      console.log(`[getStoryState] 🍪 Retrieved from deleted cache for page ${pageId}`);
       return cachedState;
     }
 
     // NO reconstruction here, should use `getStoryStateWithBranch` instead
     return null;
   } catch (error) {
-    console.log(`[getStoryState] ❌ Failed to get story state`, {userId, pageId, error: getErrorMessage(error)});
+    console.log(`[getStoryState] ❌ Failed to get story state for page ${pageId}:`, getErrorMessage(error));
     return null;
   }
 }

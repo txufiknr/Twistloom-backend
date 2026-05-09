@@ -64,8 +64,7 @@ The Branch Traversal System enables efficient navigation and state reconstructio
 #### Story States Table (`storyStates`)
 ```typescript
 {
-  userId: string;           // User identifier
-  pageId: string;          // Page identifier
+  pageId: string;          // Page identifier (primary key - state is unique per page)
   bookId: string;          // Book identifier
   page: number;            // Page number
   maxPage: number;         // Total planned pages
@@ -151,10 +150,10 @@ type StateReconstructionResult = {
 
 **Algorithm:**
 ```typescript
-async function getBranchPath(currentPageId: string, userId: string, options: TraversalOptions): Promise<BranchPath> {
+async function getBranchPath(currentPageId: string, options: TraversalOptions): Promise<BranchPath> {
   // 1. Check cache first (2-minute TTL)
   if (useCache) {
-    const cached = getCachedPath(userId, currentPageId);
+    const cached = getCachedPath(currentPageId);
     if (cached) return cached;
   }
 
@@ -181,8 +180,8 @@ async function getBranchPath(currentPageId: string, userId: string, options: Tra
   // 5. Validate parent-child relationships
   if (validatePath) validateBranchPath(branchPath);
 
-  // 6. Cache result
-  if (useCache) setCachedPath(userId, currentPageId, branchPath);
+  // 6. Cache result (branch-based: cache key is just pageId)
+  if (useCache) setCachedPath(currentPageId, branchPath);
 
   return branchPath;
 }
@@ -202,7 +201,6 @@ async function getBranchPath(currentPageId: string, userId: string, options: Tra
 ```typescript
 async function reconstructStoryState(
   currentPageId: string,
-  userId: string,
   deps: StateReconstructionDeps,
   options: TraversalOptions
 ): Promise<StateReconstructionResult> {
@@ -270,9 +268,9 @@ async function reconstructStoryState(
   currentState.page = branchPath.pages[currentPageIndex].page;
   currentState.maxPage = totalPages;
 
-  // 2g. Cache result
+  // 2g. Cache result (branch-based: cache key is just pageId)
   if (options.useCache !== false) {
-    setCachedState(userId, currentPageId, currentState, result);
+    setCachedState(currentPageId, currentState, result);
   }
 
   return result;
@@ -746,12 +744,32 @@ app.get('/api/admin/test-reconstruction/:pageId', async (req, res) => {
 | **Memory Usage** | High | Optimized | **50% reduction** |
 | **Storage Efficiency** | Full states only | Strategic snapshots | **87% reduction** |
 
-### Scalability
+## Scalability
 
 - **Concurrent Users:** Designed for thousands of concurrent users
 - **Cache Size:** 500 branch paths + 500 reconstructed states per instance
 - **Database Load:** 70% reduction vs full state storage
 - **Memory Usage:** Optimized with LRU eviction and TTL
+
+**Cache Configuration:**
+```typescript
+// Branch Path Cache (branch-based)
+const cacheKey = pageId;  // State unique per page
+branchCache.set(cacheKey, { path, expiresAt: Date.now() + TTL });
+
+// Reconstructed State Cache (branch-based)
+const stateCacheKey = pageId;  // State unique per page
+stateCache.set(stateCacheKey, { state, result, expiresAt: Date.now() + TTL });
+```
+
+**Key Differences from Original Design:**
+| Aspect | Original Design (Obsolete) | Current Implementation |
+|--------|---------------------------|----------------------|
+| **Cache Keys** | User-isolated: `${userId}:${pageId}` | Branch-based: `pageId` |
+| **State Uniqueness** | Per-user states possible | State unique per page (branch-based) |
+| **Cleanup Strategy** | User-scoped cleanup | Branch-aware cleanup |
+| **Primary Key** | `[userId, bookId, pageId] | `[pageId]` |
+| **Architecture** | User-centric | Branch-centric |
 
 ## Key Differences from Original Design
 
@@ -798,14 +816,14 @@ The obsolete documentation proposed a separate snapshot/delta table system that 
 ### 1. Use Branch-Aware State Retrieval
 
 ```typescript
-// ✅ Good: Use branch-aware retrieval
+// ✅ Good: Use branch-aware retrieval (branch-based)
 const state = await getStoryStateWithBranch(userId, bookId, pageId, {
   useCache: true,
   validatePath: true
 });
 
 // ❌ Avoid: Direct DB lookup misses reconstruction
-const state = await getStoryState(userId, pageId);
+const state = await getStoryState(pageId);
 if (!state) {
   // Need to handle reconstruction manually
 }
@@ -814,14 +832,14 @@ if (!state) {
 ### 2. Enable Caching for Production
 
 ```typescript
-// ✅ Good: Enable caching in production
-const result = await reconstructStoryState(pageId, userId, deps, {
+// ✅ Good: Enable caching in production (branch-based)
+const result = await reconstructStoryState(pageId, deps, {
   useCache: true,
   validatePath: true
 });
 
 // ⚠️ Only disable for testing/debugging
-const result = await reconstructStoryState(pageId, userId, deps, {
+const result = await reconstructStoryState(pageId, deps, {
   useCache: false,  // Force reconstruction
   validatePath: true
 });

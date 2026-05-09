@@ -107,12 +107,11 @@ export const MAJOR_EVENT_SNAPSHOT_INTERVAL = 10; // For major events
 /**
  * Gets cached branch path if valid
  * 
- * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to check in cache
  * @returns Cached branch path or null if not found
  */
-function getCachedPath(userId: string, pageId: string): BranchPath | null {
-  const cacheKey = `${userId}:${pageId}`;
+function getCachedPath(pageId: string): BranchPath | null {
+  const cacheKey = pageId;
   const entry = branchCache.get(cacheKey);
   if (!entry) return null;
   
@@ -122,12 +121,11 @@ function getCachedPath(userId: string, pageId: string): BranchPath | null {
 /**
  * Sets branch path in cache with TTL
  * 
- * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to cache
  * @param path - Branch path to cache
  */
-function setCachedPath(userId: string, pageId: string, path: BranchPath): void {
-  const cacheKey = `${userId}:${pageId}`;
+function setCachedPath(pageId: string, path: BranchPath): void {
+  const cacheKey = pageId;
   branchCache.set(cacheKey, {
     path,
     expiresAt: Date.now() + BRANCH_CACHE_TTL
@@ -137,13 +135,12 @@ function setCachedPath(userId: string, pageId: string, path: BranchPath): void {
 /**
  * Gets cached reconstructed state if valid
  * 
- * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to check in cache
  * @returns Cached state entry or null if not found
  */
-function getCachedState(userId: string, pageId: string): StateCacheEntry | null {
-  // TODO: do we need userId? as story state is always unique per page regardless user
-  const cacheKey = `${userId}:${pageId}`;
+function getCachedState(pageId: string): StateCacheEntry | null {
+  // Cache key is just pageId since state is unique per page (branch-based architecture)
+  const cacheKey = pageId;
   const entry = stateCache.get(cacheKey);
   if (!entry) return null;
   
@@ -153,13 +150,12 @@ function getCachedState(userId: string, pageId: string): StateCacheEntry | null 
 /**
  * Sets reconstructed state in cache with TTL
  * 
- * @param userId - User ID for cache key isolation
  * @param pageId - Page ID to cache
  * @param state - Story state to cache
  * @param result - Reconstruction result metadata
  */
-function setCachedState(userId: string, pageId: string, state: StoryState, result: StateReconstructionResult): void {
-  const cacheKey = `${userId}:${pageId}`;
+function setCachedState(pageId: string, state: StoryState, result: StateReconstructionResult): void {
+  const cacheKey = pageId;
   stateCache.set(cacheKey, {
     state,
     result,
@@ -229,7 +225,6 @@ export function getCacheStats(): {
  */
 export async function getBranchPath(
   currentPageId: string,
-  userId: string,
   options: TraversalOptions = {}
 ): Promise<BranchPath> {
   const {
@@ -240,7 +235,7 @@ export async function getBranchPath(
 
   // Check cache first if enabled
   if (useCache) {
-    const cachedPath = getCachedPath(userId, currentPageId);
+    const cachedPath = getCachedPath(currentPageId);
     if (cachedPath) {
       console.log(`[getBranchPath] 🎯 Cache hit for page ${currentPageId}`);
       return cachedPath;
@@ -301,7 +296,7 @@ export async function getBranchPath(
 
   // Cache the result if enabled
   if (useCache) {
-    setCachedPath(userId, currentPageId, branchPath);
+    setCachedPath(currentPageId, branchPath);
   }
 
   console.log(`[getBranchPath] ✅ Traversed ${branchPath.depth} pages: ${branchPath.rootId} → ${branchPath.currentId}`);
@@ -382,8 +377,8 @@ export async function getSiblingPages(pageId: string): Promise<PersistedStoryPag
  * @param pageId - Page ID to analyze
  * @returns Promise resolving to branch statistics
  */
-export async function getBranchStats(pageId: string, userId: string): Promise<BranchStats> {
-  const path = await getBranchPath(pageId, userId);
+export async function getBranchStats(pageId: string): Promise<BranchStats> {
+  const path = await getBranchPath(pageId);
   
   // Count branches at each level
   const branchCounts: number[] = [];
@@ -562,11 +557,10 @@ async function findOptimalSnapshot(
  */
 export async function reconstructStoryState(
   currentPageId: string,
-  userId: string,
   deps: StateReconstructionDeps,
   options: TraversalOptions = {}
 ): Promise<StateReconstructionResult> {
-  const measurement = createReliabilityMeasurement('reconstruction', 'state_reconstruction', userId, {
+  const measurement = createReliabilityMeasurement('reconstruction', 'state_reconstruction', currentPageId, {
     currentPageId,
     useCache: options.useCache,
     validatePath: options.validatePath
@@ -576,12 +570,12 @@ export async function reconstructStoryState(
   try {
     // Check cache first (no retry needed for cache operations)
     if (options.useCache !== false) {
-      const cached = getCachedState(userId, currentPageId);
+      const cached = getCachedState(currentPageId);
       if (cached) {
         console.log(`[reconstructStoryState] 🎯 Cache hit for page ${currentPageId}`);
         const result = cached.result;
-        completeReliabilityMeasurement(measurement, true, { 
-          method: result.method, 
+        completeReliabilityMeasurement(measurement, true, {
+          method: result.method,
           cached: true,
           snapshotsUsed: result.snapshotsUsed,
           deltasApplied: result.deltasApplied
@@ -599,7 +593,7 @@ export async function reconstructStoryState(
         try {
           const directState = await withCircuitBreaker(
             () => deps.getStoryState!(currentPageId),
-            `${GET_STORY_STATE_KEY_PREFIX}:${userId}`,
+            `${GET_STORY_STATE_KEY_PREFIX}:${currentPageId}`,
             GET_STORY_STATE_CIRCUIT_THRESHOLD,
             GET_STORY_STATE_CIRCUIT_TIMEOUT
           );
@@ -614,7 +608,7 @@ export async function reconstructStoryState(
             };
             
             if (options.useCache !== false) {
-              setCachedState(userId, currentPageId, directState, result);
+              setCachedState(currentPageId, directState, result);
             }
             
             console.log(`[reconstructStoryState] ✅ Direct state retrieval for ${currentPageId}`);
@@ -634,8 +628,8 @@ export async function reconstructStoryState(
       // Strategy 2: Hybrid delta + checkpoint reconstruction with retry and circuit breaker
       const branchPath = await retryOperation(
         () => withCircuitBreaker(
-          () => getBranchPath(currentPageId, userId, options),
-          `${GET_BRANCH_PATH_KEY_PREFIX}:${userId}`,
+          () => getBranchPath(currentPageId, options),
+          `${GET_BRANCH_PATH_KEY_PREFIX}:${currentPageId}`,
           GET_BRANCH_PATH_CIRCUIT_THRESHOLD,
           GET_BRANCH_PATH_CIRCUIT_TIMEOUT
         ),
@@ -650,18 +644,18 @@ export async function reconstructStoryState(
         try {
           const currentPage = await withCircuitBreaker(
             () => deps.getPageById!(currentPageId),
-            `${GET_PAGE_BY_ID_KEY_PREFIX}:${userId}`,
+            `${GET_PAGE_BY_ID_KEY_PREFIX}:${currentPageId}`,
             GET_PAGE_BY_ID_CIRCUIT_THRESHOLD,
             GET_PAGE_BY_ID_CIRCUIT_TIMEOUT
-          );
+          )
           
           if (currentPage?.bookId) {
             const book = await withCircuitBreaker(
               () => deps.getBook!(currentPage.bookId),
-              `${GET_BOOK_KEY_PREFIX}:${userId}`,
+              `${GET_BOOK_KEY_PREFIX}:${currentPageId}`,
               GET_BOOK_CIRCUIT_THRESHOLD,
               GET_BOOK_CIRCUIT_TIMEOUT
-            );
+            )
             
             if (book?.totalPages) {
               totalPages = book.totalPages;
@@ -747,9 +741,12 @@ export async function reconstructStoryState(
       }
       
       // Ensure threads are present (should be handled by deltas, but verify)
+      // Skip warning for page 1 or initial pages where threads haven't been established yet
+      const isFirstPage = branchPath.pages[currentPageIndex].page === 1;
       if (!currentState.threads || currentState.threads.length === 0) {
-        // TODO: should not log this warn for first or initial pages
-        console.warn(`[reconstructStoryState] ⚠️ No threads in reconstructed state for page ${currentPageId}, initializing empty array`);
+        if (!isFirstPage) {
+          console.warn(`[reconstructStoryState] ⚠️ No threads in reconstructed state for page ${currentPageId}, initializing empty array`);
+        }
         currentState.threads = [];
       }
       
@@ -764,7 +761,7 @@ export async function reconstructStoryState(
       
       // Cache the result
       if (options.useCache !== false) {
-        setCachedState(userId, currentPageId, currentState, result);
+        setCachedState(currentPageId, currentState, result);
       }
       
       console.log(`[reconstructStoryState] ✅ Reconstruction complete: ${result.method}, ${deltasApplied} deltas, snapshot: ${snapshotInfo.snapshotType}`);
@@ -791,7 +788,6 @@ export async function reconstructStoryState(
     console.warn(`[reconstructStoryState] ❌ All reconstruction strategies failed, creating fallback state`, {
       error: getErrorMessage(error),
       currentPageId,
-      userId,
       options,
       phase: 'reconstruction_failed'
     });
@@ -956,10 +952,9 @@ export function selectOptimalSnapshots(
  */
 export async function getBranchPathsBatch(
   pageIds: string[],
-  userId: string,
   options: TraversalOptions = {}
 ): Promise<BranchPath[]> {
-  console.log(`[getBranchPathsBatch] 📦 Processing ${pageIds.length} branch paths for user ${userId}`);
+  console.log(`[getBranchPathsBatch] 📦 Processing ${pageIds.length} branch paths`);
   
   // Process in parallel batches to avoid overwhelming the database
   const batchSize = 5;
@@ -968,7 +963,7 @@ export async function getBranchPathsBatch(
   for (let i = 0; i < pageIds.length; i += batchSize) {
     const batch = pageIds.slice(i, i + batchSize);
     const batchResults = await Promise.all(
-      batch.map(pageId => getBranchPath(pageId, userId, options))
+      batch.map(pageId => getBranchPath(pageId, options))
     );
     results.push(...batchResults);
   }
@@ -981,12 +976,11 @@ export async function getBranchPathsBatch(
  * Pre-warms cache with commonly accessed branch paths
  * 
  * @param pageIds - Array of page IDs to pre-cache
- * @param userId - User ID for cache key isolation
  */
-export async function preWarmBranchCache(pageIds: string[], userId: string): Promise<void> {
-  console.log(`[preWarmBranchCache] 🔥 Pre-warming cache with ${pageIds.length} pages for user ${userId}`);
+export async function preWarmBranchCache(pageIds: string[]): Promise<void> {
+  console.log(`[preWarmBranchCache] 🔥 Pre-warming cache with ${pageIds.length} pages`);
   
-  await getBranchPathsBatch(pageIds, userId, { useCache: true });
+  await getBranchPathsBatch(pageIds, { useCache: true });
   
-  console.log(`[preWarmBranchCache] ✅ Cache pre-warmed for user ${userId}`);
+  console.log(`[preWarmBranchCache] ✅ Cache pre-warmed`);
 }

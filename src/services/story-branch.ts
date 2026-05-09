@@ -23,8 +23,7 @@ import { createEmptyStoryState } from "../utils/story.js";
 // ============================================================================
 
 export function generateBranchId(): string {
-  // TODO: I want more sophisticated unique name like "little-purple-fox", etc
-  return generateId();
+  return generateId(); // uuid v7
 }
 
 /**
@@ -72,7 +71,7 @@ export async function getStoryStateWithBranch(
     console.log(`[getStoryStateWithBranch] 🌳 Getting story state for:`, { userId, pageId, bookId });
 
     // First attempt: Get from database & cache
-    const persistedState = await getStoryState(userId, pageId);
+    const persistedState = await getStoryState(pageId);
     if (persistedState) return persistedState;
 
     // Second attempt: Reconstruct from branch path using advanced reconstruction
@@ -82,15 +81,14 @@ export async function getStoryStateWithBranch(
     const reconstructionDeps: StateReconstructionDeps = {
       getPageById: async (id: string) => await getPageFromDB(id),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
-      getStoryState: async (id: string) => await getStoryState(userId, id)
+      getStoryState: async (id: string) => await getStoryState(id)
     };
     
-    // TODO: investigate what's `userId` for
-    const reconstructionResult = await reconstructStoryState(pageId, userId, reconstructionDeps, options);
+    const reconstructionResult = await reconstructStoryState(pageId, reconstructionDeps, options);
     const reconstructedState = reconstructionResult.state;
     
     // Get branch path for page number
-    const branchPathData = await getBranchPath(pageId, userId, options);
+    const branchPathData = await getBranchPath(pageId, options);
 
     const book = await getBookFromDB(bookId);
     if (!book) throw new Error("Book not found");
@@ -141,8 +139,8 @@ export async function getStoryProgressWithBranch(
 
     // Get branch information
     const [branchPath, branchStats, siblings] = await Promise.all([
-      getBranchPath(standardProgress.page.id, userId, options),
-      getBranchStats(standardProgress.page.id, userId).catch(() => null),
+      getBranchPath(standardProgress.page.id, options),
+      getBranchStats(standardProgress.page.id).catch(() => null),
       getSiblingPages(standardProgress.page.id)
     ]);
 
@@ -232,11 +230,11 @@ export async function getStoryProgressWithBranch(
  * @param pageId - Page ID to validate
  * @returns Promise resolving to validation result
  */
-export async function validateBranchIntegrity(pageId: string, userId: string): Promise<BranchValidationResult> {
+export async function validateBranchIntegrity(pageId: string): Promise<BranchValidationResult> {
   const issues: string[] = [];
 
   try {
-    const path = await getBranchPath(pageId, userId, { validatePath: true });
+    const path = await getBranchPath(pageId, { validatePath: true });
     
     // Additional validation checks
     if (path.depth > 50) {
@@ -275,10 +273,10 @@ export async function validateBranchIntegrity(pageId: string, userId: string): P
  * @param pageId - Current page ID
  * @returns Promise resolving to navigation options
  */
-export async function getBranchNavigationOptions(pageId: string, userId: string): Promise<BranchNavigationOptions> {
+export async function getBranchNavigationOptions(pageId: string): Promise<BranchNavigationOptions> {
   try {
     const [branchPath, siblings] = await Promise.all([
-      getBranchPath(pageId, userId),
+      getBranchPath(pageId),
       getSiblingPages(pageId)
     ]);
 
@@ -324,8 +322,8 @@ export async function preWarmBranchCacheForUsers(userIds: string[]): Promise<voi
     try {
       const session = await getUserSession(userId);
       if (session?.pageId) {
-        // Pre-warm cache for this specific user
-        await preWarmBranchCache([session.pageId], userId);
+        // Pre-warm cache for this specific page
+        await preWarmBranchCache([session.pageId]);
         warmedUsers++;
       }
     } catch (error) {
@@ -351,7 +349,7 @@ export async function preWarmBranchCacheForUsers(userIds: string[]): Promise<voi
  * Performance: Max 10 delta applications between snapshots
  * Storage: ~13 states per 100-page book vs 3 states in simple strategy
  */
-export async function cleanupStoryStatesWithStrategy(userId: string, bookId: string): Promise<void> {
+export async function cleanupStoryStatesWithStrategy(bookId: string): Promise<void> {
   try {
     // Get book information to retrieve totalPages
     const bookInfo = await getBookFromDB(bookId);
@@ -363,13 +361,8 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
     const totalPages = bookInfo.totalPages;
     console.log(`[cleanupStoryStatesWithStrategy] 📚 Using totalPages from book schema: ${totalPages}`);
     
-    // Get all story states for this user/book combination, ordered by page number
-    // TODO: why do we need userId? cleanup should be per branch, regardless of user
-    // example branches:
-    // main -> main (A) -> main (A)
-    // main -> main (A) -> branch1 (B)
-    // main -> branch2 (B) -> branch2 (A)
-    // main -> branch2 (B) -> branch3 (B)
+    // Get all story states for this book, ordered by page number
+    // Branch-based cleanup: states are unique per page, not per user
     const allStates = await dbRead
       .select({ 
         pageId: storyStates.pageId,
@@ -377,14 +370,11 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
         updatedAt: storyStates.updatedAt 
       })
       .from(storyStates)
-      .where(and(
-        eq(storyStates.userId, userId),
-        eq(storyStates.bookId, bookId)
-      ))
+      .where(eq(storyStates.bookId, bookId))
       .orderBy(storyStates.page);
 
     if (allStates.length === 0) {
-      console.log(`[cleanupStoryStatesWithStrategy] ℹ️ No states to cleanup for user ${userId}, book ${bookId}`);
+      console.log(`[cleanupStoryStatesWithStrategy] ℹ️ No states to cleanup for book ${bookId}`);
       return;
     }
     const pagesToKeep = new Set<string>();
@@ -421,22 +411,21 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
       
       for (const stateToDelete of statesToDelete) {
         // Cache the state before deletion for safety net
-        const fullState = await getStoryState(userId, stateToDelete.pageId);
+        const fullState = await getStoryState(stateToDelete.pageId);
         if (fullState) {
-          setDeletedState(userId, stateToDelete.pageId, fullState);
-          console.log(`[cleanupStoryStatesWithStrategy] 💾 Cached state before deletion for user ${userId}, page ${stateToDelete.pageId} (page ${stateToDelete.page})`);
+          setDeletedState(stateToDelete.pageId, fullState);
+          console.log(`[cleanupStoryStatesWithStrategy] 💾 Cached state before deletion for page ${stateToDelete.pageId} (page ${stateToDelete.page})`);
         }
         
         await dbWrite
           .delete(storyStates)
           .where(and(
-            eq(storyStates.userId, userId),
             eq(storyStates.bookId, bookId),
             eq(storyStates.pageId, stateToDelete.pageId)
           ));
       }
       
-      console.log(`[cleanupStoryStatesWithStrategy] ✨ Strategic cleanup complete: ${statesToDelete.length} deleted, ${pagesToKeep.size} kept for user ${userId}, book ${bookId}`);
+      console.log(`[cleanupStoryStatesWithStrategy] ✨ Strategic cleanup complete: ${statesToDelete.length} deleted, ${pagesToKeep.size} kept for book ${bookId}`);
     } else {
       console.log(`[cleanupStoryStatesWithStrategy] ✅ No cleanup needed: all ${pagesToKeep.size} states are strategic checkpoints`);
     }
@@ -446,7 +435,7 @@ export async function cleanupStoryStatesWithStrategy(userId: string, bookId: str
     console.log(`[cleanupStoryStatesWithStrategy] 📊 Storage efficiency: ${keepRatio}% of states retained (${pagesToKeep.size}/${allStates.length})`);
     
   } catch (error) {
-    console.error(`Failed to cleanup story states for user ${userId}, book ${bookId}:`, getErrorMessage(error));
+    console.error(`Failed to cleanup story states for book ${bookId}:`, getErrorMessage(error));
     // Don't throw error here - cleanup failure shouldn't break the main operation
   }
 }

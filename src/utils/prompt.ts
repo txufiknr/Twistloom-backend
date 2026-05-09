@@ -2398,7 +2398,7 @@ export async function initializeBook(
     }
 
     // 8. Persist story state to database
-    await insertStoryState(userId, bookId, firstPage.id, initialState);
+    await insertStoryState(bookId, firstPage.id, initialState);
 
     // 9. Pre-generate candidate pages for each action in the first page (fire-and-forget)
     // Pass book context to avoid session lookup for system-generated originals
@@ -2626,7 +2626,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const { bookId, id: pageId } = newPage;
 
   // 10. Persist story state for the generated page (page-based state management)
-  await insertStoryState(userId, bookId, pageId, newState);
+  await insertStoryState(bookId, pageId, newState);
 
   // 11. Return the persisted story page with all database metadata
   return newPage;
