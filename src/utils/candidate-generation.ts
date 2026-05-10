@@ -552,8 +552,12 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
             //   console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
             // });
 
+            // Calculate proper state for deeper level generation
+            // This ensures advanceStoryState increments to correct page number and uses updated context
+            const candidateState = await getStoryStateWithBranch(userId, candidatePage.bookId, candidatePage.id);
+            
             // Trigger next level generation via job queue (async, no timeouts)
-            void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, null, {
+            void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
               currentDepth: currentDepth + 1,
               maxDepth,
               priority: 5 // Lower priority for deeper levels
@@ -828,6 +832,75 @@ export async function ensureCandidatesForPageWithStrategy(
     const updatedDBActions = [...initialDBActions];
     let generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
+
+    // Helper functions for DRY code
+    /**
+     * Generate letter mapping for action (A, B, C, etc.)
+     */
+    function generateActionLetter(action: Action): string {
+      return String.fromCharCode(65 + initialDBActions.indexOf(action));
+    }
+
+    /**
+     * Check if error indicates invalid action
+     */
+    function isInvalidActionError(error: unknown): boolean {
+      if (!error) return false;
+      return (
+        (error as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
+        (error as ErrorWithCustomProperties).shouldRetry === false
+      );
+    }
+
+    /**
+     * Update action with destination page
+     */
+    function updateActionWithDestination(
+      action: Action, 
+      candidatePage: PersistedStoryPage, 
+    ): void {
+      const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
+      if (actionIndex !== -1) {
+        updatedDBActions[actionIndex] = { 
+          ...action, 
+          destination: { 
+            branchId: candidatePage.branchId, 
+            pageId: candidatePage.id 
+          } 
+        };
+        hasRealChanges = true;
+      }
+    }
+
+    /**
+     * Process action generation result (success or failure)
+     */
+    function processActionResult(
+      result: CandidateGenerationResult, 
+      letter: string
+    ): void {
+      const action = result.action;
+      
+      if (result.success && result.candidatePage) {
+        // Success: update action with destination
+        console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
+        updateActionWithDestination(action, result.candidatePage);
+      } else {
+        // Handle failed generation
+        const isInvalidAction = isInvalidActionError(result.error);
+        
+        if (isInvalidAction) {
+          console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
+          const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
+          if (actionIndex !== -1) {
+            updatedDBActions.splice(actionIndex, 1);
+            hasRealChanges = true;
+          }
+        } else {
+          console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action "${action.text}":`, result.error ? getErrorMessage(result.error) : 'Unknown error');
+        }
+      }
+    }
     
     // Choose generation strategy based on context
     if (strategy.useParallel) {
@@ -844,49 +917,16 @@ export async function ensureCandidatesForPageWithStrategy(
         maxDepth
       });
       
-      // Process parallel results
+      // Process parallel results using helper functions
       for (let i = 0; i < generationResults.length; i++) {
         const result = generationResults[i];
-        const action = result.action;
-        const letter = String.fromCharCode(65 + initialDBActions.indexOf(action));
-        
-        if (result.success && result.candidatePage) {
-          // Success: update action with destination
-          console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
-          const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
-          if (actionIndex !== -1) {
-            updatedDBActions[actionIndex] = { 
-              ...action, 
-              destination: { 
-                branchId: result.candidatePage.branchId, 
-                pageId: result.candidatePage.id 
-              } 
-            };
-            hasRealChanges = true;
-          }
-        } else {
-          // Handle failed generation
-          const isInvalidAction = result.error && (
-            (result.error as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
-            (result.error as ErrorWithCustomProperties).shouldRetry === false
-          );
-          
-          if (isInvalidAction) {
-            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-            const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
-            if (actionIndex !== -1) {
-              updatedDBActions.splice(actionIndex, 1);
-              hasRealChanges = true;
-            }
-          } else {
-            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action "${action.text}":`, result.error ? getErrorMessage(result.error) : 'Unknown error');
-          }
-        }
+        const letter = generateActionLetter(result.action);
+        processActionResult(result, letter);
       }
     } else {
-      // Sequential generation (for GitHub Actions)
+      // Sequential generation (for GitHub Actions) using helper functions
       for (const action of recheckedPendingDBActions) {
-        const letter = String.fromCharCode(65 + initialDBActions.indexOf(action));
+        const letter = generateActionLetter(action);
         console.log(`[ensureCandidatesForPageWithStrategy] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
         
         // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
@@ -928,41 +968,20 @@ export async function ensureCandidatesForPageWithStrategy(
           }
         );
 
+        // Create result object to reuse processActionResult helper
+        const result: CandidateGenerationResult = {
+          action,
+          success: !!candidatePage,
+          candidatePage: candidatePage || null,
+          error: lastError
+        };
+        
+        // Process result using the same helper as parallel path
+        processActionResult(result, letter);
+        
+        // After the first generated candidate, subsequent pending actions should use new branches
         if (candidatePage) {
-          // Success: update action with destination (branchId and pageId)
-          console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
-          const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
-          if (actionIndex !== -1) {
-            updatedDBActions[actionIndex] = { 
-              ...action, 
-              destination: { 
-                branchId: candidatePage.branchId, 
-                pageId: candidatePage.id 
-              } 
-            };
-            hasRealChanges = true;
-          }
-          // After the first generated candidate, subsequent pending actions should use new branches
           generateNewBranchId = true;
-        } else {
-          // Failed after all retries: check if it was a validation error before removing
-          const isInvalidAction = lastError && (
-            (lastError as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
-            (lastError as ErrorWithCustomProperties).shouldRetry === false
-          );
-          
-          if (isInvalidAction) {
-            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-            const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
-            // Remove invalid actions
-            if (actionIndex !== -1) {
-              updatedDBActions.splice(actionIndex, 1);
-              hasRealChanges = true;
-            }
-          } else {
-            // Valid action but generation failed - leave it for future retry
-            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action "${action.text}" after ${MAX_BRANCHING_RETRIES} retries`);
-          }
         }
       }
     }

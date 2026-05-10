@@ -91,8 +91,9 @@ export async function getStoryStateWithBranch(
     console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page ${pageId}`);
     
     // Create dependencies for reconstruction with branch-aware page retrieval
+    // Note: using dbWrite to avoid read replica stale
     const reconstructionDeps: StateReconstructionDeps = {
-      getPageById: async (id: string) => await getPageFromDB(id),
+      getPageById: async (id: string) => await getPageFromDB(id, { client: dbWrite }),
       getBook: async (bookId: string) => await getBookFromDB(bookId),
       getStoryState: async (id: string) => await getStoryState(id)
     };
