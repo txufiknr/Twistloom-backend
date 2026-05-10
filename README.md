@@ -19,11 +19,12 @@ A sophisticated psychological thriller branching story engine backend that deliv
 
 | Choice | Version | Why |
 |--------|---------|-----|
-| 💻 **TypeScript** | 5.9+ | Type safety, modern features, and excellent IDE support |
+| 💻 **TypeScript** | 6.0+ | Type safety, modern features, and excellent IDE support |
 | 🧩 **Node.js** | 24+ | Proven runtime with excellent async/await support and large ecosystem |
 | 🌐 **Express.js** | 5.2+ | Mature, lightweight, and extensive middleware ecosystem |
 | 🗄️ **Neon (Postgres)** | 17 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
+| ⚡ **pg-boss** | 12.18+ | Robust PostgreSQL-based job queue for async processing |
 | 🚀 **Vercel** | Serverless | Perfect for serverless TypeScript apps with zero-config deployment |
 | 📦 **pnpm** | 10+ | Fast, efficient, and monorepo support |
 
@@ -53,6 +54,16 @@ A sophisticated psychological thriller branching story engine backend that deliv
 - **Place Tracking**: Location-based narrative elements with environmental consistency
 - **Trauma System**: Psychological stress tracking with dynamic difficulty progression
 
+### **Asynchronous Candidate Generation**
+- **Job Queue Processing**: PostgreSQL-based pg-boss for reliable async task processing
+- **Timeout Prevention**: Eliminates Vercel 5-minute timeout limitations through background processing
+- **Strategy Pattern**: Deployment-aware generation (vercel/github-action/cron) with optimized timeouts
+- **Distributed Locking**: Prevents concurrent generation on same page with automatic cleanup
+- **State Preservation**: Serialized story state passed through job queue for context consistency
+- **Progress Tracking**: Real-time SSE events for generation progress monitoring
+- **Retry Logic**: Automatic retry with exponential backoff for failed generations
+- **Multi-Level Generation**: Fire-and-forget deeper level pre-generation for instant user experience
+
 ### **Advanced AI Systems**
 - **Multi-Provider Support**: Fallback across multiple AI providers for reliability and performance
 - **Context Management**: Intelligent story context summarization for coherent narrative progression
@@ -80,19 +91,14 @@ A sophisticated psychological thriller branching story engine backend that deliv
 ```bash
 pnpm dev          # Start development server with hot reload
 pnpm dev:api       # Start API server only
+pnpm dev:cron:trending    # Run trending scores cron job locally
+pnpm dev:cron:generate    # Run originals generation cron job locally
+pnpm dev:cron:retry      # Run retry pending generations cron job locally
 pnpm typecheck    # Run TypeScript type checking
 pnpm lint          # Run ESLint
 pnpm lint:fix      # Auto-fix ESLint issues
-```
-
-### **Database Management**
-```bash
-pnpm db:generate   # Generate database migrations
-pnpm db:migrate    # Apply database migrations
-pnpm db:studio     # Open Drizzle Studio GUI
-pnpm db:test       # Test database connection
-pnpm db:reset      # Reset database (clear + migrate + seed)
-pnpm db:clear      # Clear all database data
+pnpm lint:fast      # Run ESLint without promise checks
+pnpm lint:imports  # Validate import extensions
 ```
 
 ### **Production**
@@ -100,6 +106,36 @@ pnpm db:clear      # Clear all database data
 pnpm build         # Build TypeScript to JavaScript
 pnpm start         # Start production server
 pnpm start:api    # Start production API server
+pnpm start:cron:trending     # Run trending scores cron job in production
+pnpm start:cron:generate     # Run originals generation cron job in production
+pnpm start:cron:retry       # Run retry pending generations cron job in production
+```
+
+### **Database Management**
+```bash
+pnpm db:generate   # Generate database migrations
+pnpm db:migrate    # Apply database migrations
+pnpm db:migrate:prod    # Apply database migrations in production
+pnpm db:studio     # Open Drizzle Studio GUI
+pnpm db:test       # Test database connection
+pnpm db:extensions    # Install database extensions
+pnpm db:extensions:prod    # Install database extensions in production
+pnpm db:triggers    # Create database triggers
+pnpm db:triggers:prod    # Create database triggers in production
+pnpm db:clear      # Clear all database data
+pnpm db:clear:prod      # Clear all database data in production
+pnpm db:reset      # Reset database (clear + migrate + seed)
+pnpm db:reset:prod      # Reset database in production
+```
+
+### **Quality Assurance**
+```bash
+pnpm check         # Run lint, import validation, and typecheck
+pnpm lint          # Run ESLint on all files
+pnpm lint:fix       # Auto-fix ESLint issues
+pnpm lint:fast      # Run ESLint without promise checks
+pnpm lint:imports  # Validate import extensions
+pnpm typecheck      # Run TypeScript type checking
 ```
 
 ## 🧠 AI Prompt System
@@ -281,6 +317,7 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 - `POST /api/books/:id/pages` - Generate new story pages
 - `GET /api/books/:id/pages/:pageId` - Retrieve specific pages
 - `POST /api/books/:id/sessions` - Manage reading sessions
+- `GET /api/books/:identifier/:pageId/candidates` - Get candidate pages with SSE progress tracking
 
 ### **Character System**
 - Dynamic character generation from user candidates
@@ -423,8 +460,16 @@ pnpm db:test --env-file=.env.local
 ### **Code Organization**
 ```
 src/
-├── config/          # Configuration files
+├── config/          # Configuration files and AI client setup
+├── cron/            # Scheduled job handlers
+│   ├── process-candidate-jobs/ # Async candidate generation
+│   ├── cleanup.ts   # Database cleanup jobs
+│   ├── retry-pending-generations.ts # Failed job retry logic
+│   └── ...
 ├── db/              # Database schema and migrations  
+├── lib/             # Core library functions
+│   ├── pgboss.ts    # Job queue management
+│   └── ...
 ├── services/         # Business logic and data access
 │   ├── snapshots.ts # State snapshot management
 │   ├── deltas.ts    # State delta creation and application
@@ -433,6 +478,9 @@ src/
 ├── utils/            # Utility functions and AI prompts
 │   ├── branch-traversal.ts # Core Branch Traversal Algorithm
 │   ├── delta-helpers.ts    # Delta creation utilities
+│   ├── candidate-generation.ts # Synchronous candidate generation
+│   ├── candidate-generation-async.ts # Async job queue generation
+│   ├── prompt.ts    # AI prompt engineering
 │   └── ...
 ├── types/            # TypeScript type definitions
 └── routes/            # API endpoint handlers
@@ -447,6 +495,9 @@ src/
 - **Branch Traversal Algorithm**: Advanced state reconstruction system
 - **Snapshot & Delta Services**: High-performance state management
 - **Delta Helper Utilities**: DRY-compliant delta creation functions
+- **Async Candidate Generation**: PostgreSQL-based job queue system
+- **Job Queue Management**: pg-boss integration for background processing
+- **Strategy Pattern**: Deployment-aware generation with timeout optimization
 
 ---
 

@@ -19,6 +19,46 @@ The system has evolved from **synchronous generation** to **asynchronous job que
 - **State preservation** across async operations
 - **SSE polling** for real-time progress updates
 
+## Strategy-Based Generation Architecture
+
+### **Candidate Generation Strategies**
+
+The system uses three distinct strategies based on deployment context:
+
+| Strategy | Use Case | Timeout | Parallel | Key Features |
+|----------|----------|---------|----------|--------------|
+| **'vercel'** | API requests, user-facing | 4.5 minutes | ✅ Parallel | Fast response, SSE progress |
+| **'github-action'** | Originals generation, manual triggers | 25 minutes | ❌ Sequential | Reliability, detailed logging |
+| **'cron'** | Background processing, retries | 25 minutes | ✅ Parallel | Bulk operations, recovery |
+
+### **Strategy Implementation**
+
+```typescript
+// Strategy configuration based on deployment context
+function getGenerationStrategy(context: CandidateGenerationStrategy): GenerationStrategy {
+  switch (context) {
+    case 'vercel':
+      return {
+        useParallel: true,
+        enforceVercelLimits: true,
+        customTimeoutMs: 270000 // 4.5 minutes
+      };
+    case 'github-action':
+      return {
+        useParallel: false, // Sequential for better error handling
+        enforceVercelLimits: false,
+        customTimeoutMs: 1500000 // 25 minutes
+      };
+    case 'cron':
+      return {
+        useParallel: true, // Parallel for efficiency
+        enforceVercelLimits: false,
+        customTimeoutMs: 1500000 // 25 minutes
+      };
+  }
+}
+```
+
 ## Multi-Level Pre-Generation
 
 The system supports configurable **multi-level depth pre-generation** to create comprehensive story trees:
@@ -37,6 +77,108 @@ The system supports **manual triggering** of specific page generation via GitHub
 - **Environment Variables**: `TRIGGERED_BOOK_ID`, `TRIGGERED_PAGE_ID`, `TRIGGERED_BY_USER`
 - **Targeted Processing**: Processes specific page instead of batch scheduled processing
 - **User Attribution**: Tracks which user triggered the generation for audit purposes
+
+## Candidate Generation Trigger Points
+
+### **1. Book Creation Flow**
+- **Location**: `src/utils/prompt.ts` (line ~2401-2406)
+- **Function**: `generateNextPage()` during book initialization
+- **Current Strategy**: Mixed approach (GitHub Action vs Fire-and-forget)
+- **Recommended Strategy**: 
+  ```typescript
+  // For GitHub cron jobs (originals generation)
+  await ensureCandidatesForPageWithStrategy(userId, firstUserPage, initialState, book, 'github-action');
+  
+  // For user-generated books (fast response)
+  await enqueueCandidateGenerationJob(userId, firstUserPage, book, initialState, { priority: 5 });
+  ```
+- **Purpose**: Ensure immediate availability of candidate pages for first story actions
+
+### **2. Page Navigation Flow**
+- **Location**: `src/routes/books.ts` (GET `/api/books/:identifier/:pageId/candidates`)
+- **Function**: SSE-based candidate generation with progress tracking
+- **Current Strategy**: Uses `ensureCandidatesForPageWithStrategy(userId, page, state, book, 'vercel')`
+- **Recommended Strategy**: **Keep current 'vercel' strategy** - perfect for API requests
+- **Logic**: 
+  ```typescript
+  // Check if generation is already in progress (timestamp field)
+  if (dbPage.isGeneratingStartedAt) {
+    // Use SSE to wait for completion
+    // Poll for generation status every SSE_POLL_INTERVAL_MS
+    // Return completed page to user via SSE
+  } else {
+    // Use vercel strategy for API requests (5-minute timeout)
+    await ensureCandidatesForPageWithStrategy(userId, page, state, book, 'vercel');
+  }
+  ```
+- **Purpose**: Real-time progress feedback during candidate generation
+
+### **3. Async Job Queue System**
+- **Location**: `src/utils/candidate-generation-async.ts`
+- **Function**: `enqueueCandidateGenerationJob()` - **IDEAL CANDIDATE for `ensureCandidatesForPageAsync`**
+- **Current Usage**: **NOT USED** - this is where `ensureCandidatesForPageAsync` should be leveraged
+- **Recommended Integration**:
+  ```typescript
+  // Replace direct enqueueCandidateGeneration calls with ensureCandidatesForPageAsync
+  export async function enqueueCandidateGenerationJob(...) {
+    // Use ensureCandidatesForPageAsync for drop-in replacement
+    return await ensureCandidatesForPageAsync(userId, page, currentState, currentBook);
+  }
+  ```
+- **Strategy Context**: **'cron'** - designed for background job processing
+- **Purpose**: Eliminate Vercel timeout issues through background processing
+
+### **4. Cron Job Processing**
+- **Location**: `src/cron/process-candidate-jobs/route.ts`
+- **Function**: Job queue processor
+- **Current Strategy**: Uses `ensureCandidatesForPageWithStrategy(userId, page, state, book, 'cron')`
+- **Recommended Strategy**: **'cron' strategy** - perfect for background processing
+- **Logic**:
+  ```typescript
+  // Process jobs in parallel for efficiency
+  // Deserialize story state from job data
+  // Use strategy-aware generation based on deployment context
+  // Handle failures and retry logic
+  ```
+- **Purpose**: Reliable background processing of queued generation tasks
+
+### **5. Retry & Recovery System**
+- **Location**: `src/cron/retry-pending-generations.ts`
+- **Function**: `retryFailedGenerations()`
+- **Current Strategy**: Uses synchronous generation
+- **Recommended Strategy**: **'cron' strategy** for retry operations
+- **Logic**:
+  ```typescript
+  // Find pages with failed generations
+  // Enqueue high-priority retry jobs using ensureCandidatesForPageAsync
+  // Track retry attempts and success rates
+  ```
+- **Purpose**: Automatic recovery from failed generation attempts
+
+### **6. GitHub Action Workflow**
+- **Location**: `.github/workflows/retry-pending-generations.yml`
+- **Trigger**: Manual workflow_dispatch or scheduled cron
+- **Current Strategy**: Uses GitHub Action approach
+- **Recommended Strategy**: **'github-action' strategy** - sequential processing
+- **Logic**:
+  ```yaml
+  # Accept inputs for targeted page generation
+  # Call API endpoint that uses 'github-action' strategy
+  # Log execution details and results
+  ```
+- **Purpose**: Manual intervention and debugging capabilities
+
+### **7. SSE Progress Events**
+- **Location**: `src/routes/books.ts` (SSE implementation)
+- **Events**:
+  ```typescript
+  // Overall progress: `event: progress`
+  // Per-action progress: `event: action_progress` (planned enhancement)
+  // Completion: `event: complete`
+  // Errors: `event: error`
+  ```
+- **Strategy Context**: Works with **'vercel' strategy** for real-time feedback
+- **Purpose**: Real-time user feedback during generation process
 
 ### Example Flow:
 ```

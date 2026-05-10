@@ -277,6 +277,18 @@ export function validatePageForGeneration(
  * This function helps migrate existing code by providing a drop-in
  * replacement for ensureCandidatesForPage that uses the job queue.
  * 
+ * Primary Role: Async Job Queue Interface
+ * - Replaces synchronous generation with background job processing
+ * - Eliminates Vercel timeout issues by returning page immediately
+ * - Preserves context by serializing story state in job data
+ * - Provides immediate user response while generating candidates in background
+ * 
+ * Key Features:
+ * - Validation: Uses shared validation logic before enqueuing
+ * - State Serialization: Converts StoryState to JSON for job queue
+ * - Priority & Depth Control: Configurable job processing options
+ * - Batch Processing: Handles multiple pages for retry operations
+ * 
  * @param userId - The user's unique identifier
  * @param page - The story page
  * @param currentState - Optional story state

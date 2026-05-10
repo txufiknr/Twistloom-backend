@@ -10,15 +10,17 @@
 [x] Enriched page: add characters, phase, running summary
 [x] enriched page add contextHistory, characters, phase
 [x] Get Story state fallback get by parentId+stateDelta -> persists DB
+[x] research Pg-boss / bullmq + redis
+[x] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
+[ ] candidate generation SSE UX roadmap
+[ ] code optimization from TODO-pgboss.md
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] User settings api: text size
-[ ] research Pg-boss / bullmq + redis
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
-[ ] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
 [ ] ensureCandidatesForPageAsync
 
 Kasih abjad:

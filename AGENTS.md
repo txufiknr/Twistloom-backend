@@ -325,19 +325,20 @@ import { formatFeedRows } from '../services/feed.js';
 ### Development Scripts
 ```bash
 pnpm dev          # Start development server with hot reload
-pnpm dev:cron     # Run ingestion cron job locally
-pnpm dev:cron:cleanup    # Run cleanup cron job locally
-pnpm dev:cron:rss-finder   # Run RSS finder cron job locally
-pnpm dev:cron:embeddings  # Run embeddings cron job locally
+pnpm dev:api       # Start API server only
+pnpm dev:cron:trending    # Run trending scores cron job locally
+pnpm dev:cron:generate    # Run originals generation cron job locally
+pnpm dev:cron:retry      # Run retry pending generations cron job locally
 ```
 
 ### Production Scripts
 ```bash
+pnpm build         # Build TypeScript to JavaScript
 pnpm start          # Start production server
-pnpm start:cron     # Run ingestion cron job in production
-pnpm start:cron:cleanup    # Run cleanup cron job in production
-pnpm start:cron:rss-finder   # Run RSS finder cron job in production
-pnpm start:cron:embeddings  # Run embeddings cron job in production
+pnpm start:api    # Start production API server
+pnpm start:cron:trending     # Run trending scores cron job in production
+pnpm start:cron:generate     # Run originals generation cron job in production
+pnpm start:cron:retry       # Run retry pending generations cron job in production
 ```
 
 ### Build & Quality Scripts
@@ -347,24 +348,25 @@ pnpm typecheck      # Run TypeScript type checking
 pnpm lint          # Run ESLint on all files
 pnpm lint:fix       # Auto-fix ESLint issues
 pnpm lint:fast      # Run ESLint without promise checks
+pnpm lint:imports  # Validate import extensions
+pnpm check         # Run lint, import validation, and typecheck
 ```
 
 ### Database Scripts
 ```bash
 pnpm db:generate   # Generate database migrations
 pnpm db:migrate    # Run database migrations
+pnpm db:migrate:prod    # Apply database migrations in production
 pnpm db:studio      # Open Drizzle Studio GUI
-pnpm db:seed       # Seed database with initial data
 pnpm db:test       # Test database connection
+pnpm db:extensions    # Install database extensions
+pnpm db:extensions:prod    # Install database extensions in production
+pnpm db:triggers    # Create database triggers
+pnpm db:triggers:prod    # Create database triggers in production
 pnpm db:clear      # Clear all database data
+pnpm db:clear:prod      # Clear all database data in production
 pnpm db:reset      # Reset database (clear + migrate + seed)
-```
-
-### Lock Management Scripts
-```bash
-pnpm lock:clear    # Clear all distributed locks
-pnpm lock:list     # List active distributed locks
-pnpm lock:check    # Check lock status
+pnpm db:reset:prod      # Reset database in production
 ```
 
 ## 🧪 Testing Guidelines

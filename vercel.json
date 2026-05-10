@@ -2,11 +2,5 @@
   "version": 2,
   "rewrites": [
     { "source": "/(.*)", "destination": "/src/app.ts" }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/process-candidate-jobs",
-      "schedule": "1 * * * *"
-    }
   ]
 }

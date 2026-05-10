@@ -2477,13 +2477,21 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const parentBranchId = actionedPage.branchId ?? "main";
   
   // 0. Advance story state based on user action and previous AI turn updates
+  const expectedPageNumber = actionedPage.page + 1;
+  const expectedPreviousPagesLength = actionedPage.page - 1;
   const advancedState = await advanceStoryState(currentState, actionedPage);
 
   // 1. Create personalized prompt with character, story context, and previous action
   const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
   console.log(`[generateNextPage] 🧩 actionedPage.page:`, actionedPage.page);
+  console.log(`[generateNextPage] 🧩 advancedState.page:`, advancedState.page);
+  if (advancedState.page !== expectedPageNumber) {
+    console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${advancedState.page} from advanced story state`);
+    advancedState.page = expectedPageNumber;
+  }
+
   console.log(`[generateNextPage] 🧩 previousPages.length:`, previousPages.length);
-  console.log(`[generateNextPage] 🧩 Match?:`, previousPages.length === actionedPage.page - 1 ? '✅' : '❌');
+  console.log(`[generateNextPage] 🧩 Match?:`, previousPages.length === expectedPreviousPagesLength ? '✅' : '❌');
 
   const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages };
   const prompt = buildNextPagePrompt(promptParams);
