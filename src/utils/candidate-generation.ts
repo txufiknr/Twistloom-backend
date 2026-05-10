@@ -390,7 +390,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
         generateNewBranchId
       });
 
-      console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id}:`, { action, branchId: newPage.branchId });
+      console.log(`[generateCandidatePage] 🌌 Generated new story page ${newPage.id} for ${action.text} (type: ${action.type})`);
     } catch (error) {
       // Check if this is a duplicate destination error (action already has pageId)
       if ((error as ErrorWithCustomProperties).code === 'ACTION_ALREADY_HAS_DESTINATION') {

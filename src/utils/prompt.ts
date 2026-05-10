@@ -8,6 +8,8 @@ import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
+import { ensureCandidatesForPageWithStrategy } from "./candidate-generation.js";
+import { ensureCandidatesForPageAsync } from "./candidate-generation-async.js";
 import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
@@ -30,7 +32,6 @@ import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
-import { ensureCandidatesForPage, ensureCandidatesForPageGitHubAction } from "./candidate-generation.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2399,10 +2400,10 @@ export async function initializeBook(
     await insertStoryState(bookId, firstPage.id, initialState);
 
     // 9. Pre-generate candidate pages for each action in the first page
-    if (isOriginal) { // GitHub cron job, make it await for better logging
-      await ensureCandidatesForPageGitHubAction(userId, firstUserPage, initialState, book);
-    } else { // Fire-and-forget for fast user generated book
-      void ensureCandidatesForPage(userId, firstUserPage, initialState, book);
+    if (isOriginal) { // GitHub cron job, use github-action strategy
+      await ensureCandidatesForPageWithStrategy(userId, firstUserPage, initialState, book, 'github-action');
+    } else { // Fire-and-forget for fast user generated book, use async job queue
+      await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book);
     }
 
     // 10. Return complete book setup

@@ -346,7 +346,7 @@ async function processPageGeneration(
     const { dbWrite } = await import("../db/client.js");
     const { pages } = await import("../db/schema.js");
     const { eq } = await import("drizzle-orm");
-    const { ensureCandidatesForPage } = await import("../utils/candidate-generation.js");
+    const { ensureCandidatesForPageCron } = await import("../utils/candidate-generation.js");
     const { mapToUserStoryPage } = await import("../services/book.js");
     
     // Count actions without complete destination before regeneration
@@ -367,7 +367,7 @@ async function processPageGeneration(
     console.log(`[${logPrefix}] 🔄 Processing page ${pageId} (pending: ${pendingBefore})`);
     
     // Force candidate generation for manual trigger or normal processing
-    const updatedPage = await ensureCandidatesForPage(systemUserId, pageForGeneration);
+    const updatedPage = await ensureCandidatesForPageCron(systemUserId, pageForGeneration);
     
     // Count actions without complete destination after regeneration
     const actionsAfter = updatedPage.actions || [];

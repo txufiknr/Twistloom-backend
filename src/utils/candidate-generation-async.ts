@@ -330,8 +330,8 @@ export async function ensureCandidatesForPageAsync(
   }
   
   // Validate and enqueue
-  const validation = validatePageForGeneration(page, currentBook);
-  if (!validation.canGenerate) {
+  const validation = validatePageForJobEnqueue(page, currentBook);
+  if (!validation.canEnqueue) {
     console.log(`[ensureCandidatesForPageAsync] ⏩ ${validation.reason}`);
     return null;
   }
@@ -340,6 +340,11 @@ export async function ensureCandidatesForPageAsync(
     userId,
     page,
     currentBook,
-    currentState
+    currentState,
+    {
+      priority: 5, // Default priority for async jobs
+      currentDepth: 1,
+      maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH
+    }
   );
 }
