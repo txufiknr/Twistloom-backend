@@ -4,12 +4,27 @@
 
 This document describes the automatic pre-generation system for story pages in Twistloom. The system proactively generates candidate pages for user actions to provide instant navigation and reduce perceived latency during story progression.
 
+## Architecture Evolution
+
+The system has evolved from **synchronous generation** to **asynchronous job queue processing** to solve Vercel timeout issues:
+
+### Legacy Synchronous Approach (Deprecated)
+- Direct AI generation in API requests
+- Prone to Vercel 5-minute timeouts
+- Poor user experience during long generations
+
+### Modern Asynchronous Approach (Current)
+- **pg-boss job queue** for background processing
+- **Vercel cron jobs** for reliable execution
+- **State preservation** across async operations
+- **SSE polling** for real-time progress updates
+
 ## Multi-Level Pre-Generation
 
 The system supports configurable **multi-level depth pre-generation** to create comprehensive story trees:
 
-- **Level 1 (Synchronous)**: Immediate parallel generation of direct action candidates (returned to user)
-- **Level 2+ (Fire-and-Forget)**: Background generation of deeper levels without blocking response
+- **Level 1 (Strategy-Based)**: Generation based on deployment context (vercel/github-action/cron)
+- **Level 2+ (Job Queue)**: Background generation via async job queue
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
 
@@ -33,17 +48,31 @@ Page A (3 actions) → Generate 3 candidates (Level 1 - sync)
 
 ## Architecture
 
-The pre-generation system uses a **fire-and-forget** pattern with **distributed locking**, **database-level generation flags**, **parallel processing**, and **exponential backoff retry** to generate candidate pages asynchronously. This ensures:
+The pre-generation system uses a **strategy-based approach** with **async job queues**, **distributed locking**, **database-level generation flags**, **parallel processing**, and **exponential backoff retry** to generate candidate pages reliably. This ensures:
 
-- **Instant user experience**: Level 1 candidates generated synchronously and returned immediately
-- **Deep pre-generation**: Levels 2+ processed in background without blocking user response
-- **Graceful failure handling**: Failed generations don't block user navigation or background processing
+- **Context-aware generation**: Strategy pattern adapts to deployment environment (vercel/github-action/cron)
+- **State preservation**: Story state is serialized and passed through job queue for consistency
+- **Reliable background processing**: Async job queue prevents Vercel timeouts
+- **Graceful failure handling**: Failed jobs retry automatically with exponential backoff
 - **Resource efficiency**: Only generates pages for actions users might take
-- **Cascade effect**: Each generated page triggers pre-generation of its own candidates
+- **Cascade effect**: Each generated page triggers pre-generation of its own candidates via job queue
 - **Concurrent safety**: Distributed locks prevent duplicate generation in serverless environments
-- **Single operation guarantee**: `isGeneratingStartedAt` timestamp ensures only one generation operation per page and supports heartbeat/stale detection
+- **Single operation guarantee**: `isGeneratingStartedAt` timestamp ensures only one generation operation per page
 - **SSE waiting**: Clients can wait for in-progress generations via Server-Sent Events
 - **Configurable depth**: `MAX_BRANCHING_PREGENERATION_DEPTH` controls how deep the pre-generation goes
+
+### Strategy Pattern Implementation
+
+```typescript
+// Vercel deployment - timeout-aware generation
+ensureCandidatesForPageWithStrategy(userId, page, state, book, 'vercel')
+
+// GitHub Actions - sequential, longer timeouts
+ensureCandidatesForPageWithStrategy(userId, page, state, book, 'github-action')
+
+// Cron jobs - parallel processing, generous timeouts
+ensureCandidatesForPageWithStrategy(userId, page, state, book, 'cron')
+```
 
 ## Flow Diagram
 
@@ -91,24 +120,26 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                  ENSURE CANDIDATES FOR PAGE (ensureCandidatesForPage)     │
-│  Location: src/utils/prompt.ts:2804                                       │
-│  Purpose: Iterate through actions and pre-generate candidate pages        │
+│            ENSURE CANDIDATES FOR PAGE WITH STRATEGY (ensureCandidatesForPageWithStrategy) │
+│  Location: src/utils/candidate-generation.ts:772                          │
+│  Purpose: Strategy-based candidate generation with deployment context       │
 │                                                                           │
-│  This function is the core of the pre-generation system. It scans all     │
-│  actions on a page and generates candidate pages for those without a      │
-│  complete destination (both branchId and pageId).                         │
+│  This function is the core of the modern pre-generation system. It uses     │
+│  a strategy pattern to adapt generation behavior based on deployment     │
+│  environment (vercel/github-action/cron) and processes actions            │
+│  without complete destinations (both branchId and pageId).                │
 │                                                                           │
-│  **Enhanced Book Validation**: When called from API endpoints, the system │
-│  validates page belongs to specified book using `getPageFromDB(pageId,    │
-│  { bookIdentifier })` which resolves book slugs/UUIDs and ensures         │
-│  proper ownership before processing.                                      │
+│  **Strategy-Based Behavior**:                                             │
+│  - 'vercel': Parallel processing with timeout awareness                   │
+│  - 'github-action': Sequential processing with longer timeouts            │
+│  - 'cron': Parallel processing with generous timeouts                     │
 │                                                                           │
 │  Key features:                                                            │
 │  - Distributed lock prevents concurrent processing of same page           │
 │  - Re-checks pending actions after acquiring lock (idempotent)            │
 │  - Removes invalid actions with non-retryable errors                      │
 │  - Adds fallback "Continue." action if all actions are invalid            │
+│  - State preservation through serialization                                 │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼

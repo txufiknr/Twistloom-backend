@@ -1,0 +1,632 @@
+# Candidate Generation Enhancement Roadmap
+
+## Overview
+
+This roadmap outlines the planned enhancements to the candidate generation system, focusing on real-time progress tracking, improved user experience, and better monitoring capabilities. The enhancements will provide per-action progress feedback during candidate generation through Server-Sent Events (SSE).
+
+## Current State Analysis
+
+### ✅ Verified Components
+- **`isGeneratingStartedAt` Management**: Timestamp correctly reset to `null` in all completion paths
+- **SSE Polling**: Working implementation for waiting on in-progress generation
+- **Distributed Locking**: Proper concurrent processing prevention
+- **Strategy Pattern**: Deployment-aware generation (vercel/github-action/cron)
+
+### 🎯 Identified Enhancement Opportunity
+- **Per-Action Progress**: Currently only tracks overall completion
+- **Real-time Feedback**: Users wait blindly during generation
+- **Granular Monitoring**: No visibility into individual action status
+
+## Enhancement Phases
+
+### Phase 1: Core Progress Tracking Infrastructure
+
+**Objective**: Add per-action progress callback system to candidate generation
+
+#### 1.1 Type System Updates
+```typescript
+// src/types/candidates.ts
+export interface GenerateCandidatesInParallelParams {
+  // ... existing fields
+  onProgress?: (action: Action, status: 'started' | 'completed' | 'failed', 
+                result?: PersistedStoryPage, error?: unknown) => void;
+}
+
+export interface ActionProgressEvent {
+  action: string;
+  status: 'started' | 'completed' | 'failed';
+  completed: number;
+  total: number;
+  progress: number; // 0-100
+  error?: string;
+  timestamp: string;
+}
+```
+
+#### 1.2 Generation Function Enhancement
+```typescript
+// src/utils/prompt.ts - generateCandidatesInParallel()
+async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
+  const { actions, onProgress } = params;
+  
+  const generationPromises = actions.map(async (action, index) => {
+    const letter = String.fromCharCode(65 + index);
+    
+    // Notify action start
+    onProgress?.(action, 'started');
+    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}. ${action.text}`);
+    
+    try {
+      const result = await generateCandidatePage({...});
+      
+      // Notify success
+      onProgress?.(action, 'completed', result);
+      console.log(`[generateCandidatesInParallel] ✅ Completed generation for: ${letter}. ${action.text}`);
+      
+      return { action, success: true, candidatePage: result };
+    } catch (error) {
+      // Notify failure
+      onProgress?.(action, 'failed', undefined, error);
+      console.error(`[generateCandidatesInParallel] ❌ Failed generation for: ${letter}. ${action.text}:`, error);
+      
+      return { action, success: false, candidatePage: null, error };
+    }
+  });
+  
+  // ... existing Promise.allSettled logic
+}
+```
+
+#### 1.3 Strategy Integration
+```typescript
+// src/utils/candidate-generation.ts - ensureCandidatesForPageWithStrategy()
+export async function ensureCandidatesForPageWithStrategy(
+  userId: string, 
+  page: UserStoryPage, 
+  currentState?: StoryState | null, 
+  currentBook?: Book | null,
+  context: CandidateGenerationStrategy = 'vercel',
+  options?: {
+    onProgress?: (action: Action, status: 'started' | 'completed' | 'failed', 
+                  result?: PersistedStoryPage, error?: unknown) => void;
+  }
+): Promise<UserStoryPage> {
+  // ... existing validation logic
+  
+  // Generate candidates with progress tracking
+  const generationResults = await generateCandidatesInParallel({
+    userId,
+    actions: recheckedPendingDBActions,
+    currentPage,
+    currentState,
+    currentBook,
+    initialGenerateNewBranchId,
+    timeoutMs,
+    currentDepth,
+    maxDepth,
+    onProgress: options?.onProgress
+  });
+  
+  // ... existing completion logic
+}
+```
+
+**Expected Outcomes**:
+- Per-action progress tracking capability
+- Backward compatibility maintained through optional callbacks
+- Enhanced logging for debugging and monitoring
+
+**Timeline**: 1-2 weeks
+**Priority**: High (Foundation for all subsequent features)
+
+---
+
+### Phase 2: SSE Integration for Real-time Updates
+
+**Objective**: Integrate per-action progress with Server-Sent Events for real-time user feedback
+
+#### 2.1 Enhanced SSE Events
+```typescript
+// src/routes/books.ts - GET /candidates route enhancement
+router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    // ... existing validation logic
+    
+    // Check if generation is already in progress
+    if (dbPage.isGeneratingStartedAt) {
+      // ... existing SSE polling setup
+      
+      // Enhanced polling with action progress support
+      while (attempts < SSE_MAX_ATTEMPTS) {
+        // ... existing polling logic
+        
+        // Check for action progress events in database or cache
+        const progressEvents = await getActionProgressEvents(pageId);
+        for (const event of progressEvents) {
+          res.write(`event: action_progress\n`);
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+        
+        // ... existing completion check
+      }
+    } else {
+      // Direct generation with progress tracking
+      const userPage = await mapToUserStoryPage(dbPage, userId);
+      const totalActions = userPage.actions.filter(a => 
+        !a.destination?.pageId || !a.destination?.branchId
+      ).length;
+      
+      let completedActions = 0;
+      
+      const updatedPage = await ensureCandidatesForPageWithStrategy(
+        userId, userPage, null, null, 'vercel',
+        {
+          onProgress: (action, status, result, error) => {
+            completedActions++;
+            
+            const progressEvent: ActionProgressEvent = {
+              action: action.text,
+              status,
+              completed: completedActions,
+              total: totalActions,
+              progress: Math.round((completedActions / totalActions) * 100),
+              error: error?.message,
+              timestamp: new Date().toISOString()
+            };
+            
+            // Send per-action progress via SSE
+            res.write(`event: action_progress\n`);
+            res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
+            
+            console.log(`[GET /candidates] 📊 Action progress: ${action.text} - ${status} (${completedActions}/${totalActions})`);
+          }
+        }
+      );
+      
+      // Send final completion event
+      res.write(`event: complete\n`);
+      res.write(`data: ${JSON.stringify(updatedPage)}\n\n`);
+      res.end();
+    }
+  } catch (error) {
+    handleApiError(res, "Failed to generate candidates", error);
+  }
+});
+```
+
+#### 2.2 Progress Event Storage (Optional)
+```typescript
+// src/utils/progress-tracking.ts
+export async function storeActionProgressEvent(
+  pageId: string, 
+  event: ActionProgressEvent
+): Promise<void> {
+  // Store in Redis or database for polling scenarios
+  // TTL: 5 minutes to match generation timeout
+}
+
+export async function getActionProgressEvents(
+  pageId: string
+): Promise<ActionProgressEvent[]> {
+  // Retrieve stored events for SSE polling
+  // Clear after retrieval to prevent duplicates
+}
+```
+
+**Expected Outcomes**:
+- Real-time per-action progress updates via SSE
+- Progress percentage and completion tracking
+- Error visibility for failed actions
+- Enhanced user experience during generation
+
+**Timeline**: 2-3 weeks
+**Priority**: High (Direct user impact)
+
+---
+
+### Phase 3: Frontend Integration
+
+**Objective**: Update frontend to handle and display per-action progress events
+
+#### 3.1 Enhanced SSE Client
+```typescript
+// utils/candidate-generation.ts
+interface ActionProgressEvent {
+  action: string;
+  status: 'started' | 'completed' | 'failed';
+  completed: number;
+  total: number;
+  progress: number;
+  error?: string;
+  timestamp: string;
+}
+
+export async function generateCandidates(
+  bookIdentifier: string,
+  pageId: string,
+  onProgress?: (event: ActionProgressEvent) => void,
+  onActionProgress?: (event: ActionProgressEvent) => void
+): Promise<StoryPage> {
+  // ... existing SSE setup
+  
+  const processChunk = (chunk: Uint8Array) => {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    
+    for (const line of lines) {
+      if (line.startsWith('event: progress')) {
+        // Handle overall progress
+        continue; // Skip to next line for data
+      } else if (line.startsWith('event: action_progress')) {
+        // Handle per-action progress
+        const nextLine = lines.shift();
+        if (nextLine?.startsWith('data: ')) {
+          const data = nextLine.slice(6);
+          if (data.trim()) {
+            try {
+              const event = JSON.parse(data) as ActionProgressEvent;
+              onActionProgress?.(event);
+            } catch (error) {
+              console.error('Failed to parse action progress:', error);
+            }
+          }
+        }
+      } else if (line.startsWith('data: ')) {
+        // Handle existing progress/complete/error events
+        const data = line.slice(6);
+        if (data.trim()) {
+          try {
+            const parsed = JSON.parse(data);
+            
+            if (parsed.status === 'complete') {
+              resolve(parsed);
+            } else if (parsed.status === 'waiting') {
+              onProgress?.(parsed);
+            }
+            // ... existing event handling
+          } catch (error) {
+            console.error('Failed to parse SSE data:', error);
+          }
+        }
+      }
+    }
+  };
+  
+  // ... existing SSE connection logic
+}
+```
+
+#### 3.2 React Component Enhancement
+```typescript
+// components/ReaderPageClient.tsx
+export function ReaderPageClient({
+  page,
+  book,
+  bookSlug,
+  updatePageData,
+}: ReaderPageClientProps) {
+  const [actionProgress, setActionProgress] = useState<Map<string, ActionProgressEvent>>(new Map());
+  const [overallProgress, setOverallProgress] = useState<{ completed: number; total: number }>({ completed: 0, total: 0 });
+  
+  const { isGenerating, error } = useAutoCandidateGeneration({
+    page,
+    book,
+    bookSlug,
+    updatePageData,
+    onProgress: (progress) => {
+      // Handle overall progress
+      console.log('[ReaderPageClient] 📊 Overall progress:', progress.message);
+    },
+    onActionProgress: (event) => {
+      // Handle per-action progress
+      setActionProgress(prev => new Map(prev.set(event.action, event)));
+      setOverallProgress({ completed: event.completed, total: event.total });
+      
+      console.log(`[ReaderPageClient] 📈 Action progress: ${event.action} - ${event.status} (${event.progress}%)`);
+    },
+    onError: (error) => {
+      console.error('[ReaderPageClient] ❌ Generation error:', error.message);
+    },
+  });
+  
+  return (
+    <div>
+      {/* Page content */}
+      {page && (
+        <div>
+          <h1>Page {page.page}</h1>
+          <p>{page.text}</p>
+          
+          {/* Overall progress indicator */}
+          {isGenerating && overallProgress.total > 0 && (
+            <div className="mb-4 p-3 bg-blue-50 rounded">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-blue-700">
+                  🔄 Generating candidate actions...
+                </span>
+                <span className="text-sm text-blue-600">
+                  {overallProgress.completed}/{overallProgress.total}
+                </span>
+              </div>
+              <div className="w-full bg-blue-200 rounded-full h-2">
+                <div 
+                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${Math.round((overallProgress.completed / overallProgress.total) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+          
+          {/* Per-action progress */}
+          {actionProgress.size > 0 && (
+            <div className="mb-4 p-3 bg-gray-50 rounded">
+              <h4 className="text-sm font-medium text-gray-700 mb-2">Action Progress:</h4>
+              <div className="space-y-1">
+                {Array.from(actionProgress.entries()).map(([action, event]) => (
+                  <div key={action} className="flex items-center justify-between text-xs">
+                    <span className="text-gray-600 truncate max-w-[200px]">{action}</span>
+                    <span className={`ml-2 ${
+                      event.status === 'completed' ? 'text-green-600' :
+                      event.status === 'failed' ? 'text-red-600' :
+                      'text-blue-600'
+                    }`}>
+                      {event.status === 'completed' ? '✅' :
+                       event.status === 'failed' ? '❌' : '⏳'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Generation error */}
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 rounded">
+              <p className="text-sm text-red-700">
+                ❌ Failed to generate actions: {error.message}
+              </p>
+            </div>
+          )}
+          
+          {/* Actions */}
+          <div className="mt-4">
+            {page.actions.map((action, index) => (
+              <div key={index} className="mb-2">
+                {action.destination ? (
+                  <button className="action-button">
+                    {action.text}
+                  </button>
+                ) : (
+                  <div className="text-gray-400 flex items-center">
+                    <span>{action.text}</span>
+                    {actionProgress.get(action.text) && (
+                      <span className="ml-2 text-xs">
+                        {actionProgress.get(action.text)?.status === 'completed' ? '✅' :
+                         actionProgress.get(action.text)?.status === 'failed' ? '❌' : '⏳'}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+**Expected Outcomes**:
+- Real-time progress indicators in UI
+- Per-action status visibility
+- Enhanced user engagement during generation
+- Better error visibility and debugging
+
+**Timeline**: 2-3 weeks
+**Priority**: High (User-facing improvements)
+
+---
+
+### Phase 4: Advanced Features & Analytics
+
+**Objective**: Add advanced monitoring, retry mechanisms, and analytics
+
+#### 4.1 Individual Action Retry
+```typescript
+// src/utils/candidate-generation.ts
+export interface RetryableAction {
+  action: Action;
+  error: unknown;
+  retryCount: number;
+  maxRetries: number;
+}
+
+export async function retryFailedActions(
+  userId: string,
+  page: UserStoryPage,
+  failedActions: RetryableAction[],
+  onProgress?: (action: Action, status: 'retrying' | 'completed' | 'failed', result?: PersistedStoryPage, error?: unknown) => void
+): Promise<CandidateGenerationResult[]> {
+  const retryResults = await Promise.allSettled(
+    failedActions.map(({ action, retryCount }) => 
+      retryWithBackoffOrNull(
+        () => generateCandidatePage({...}),
+        {
+          maxRetries: MAX_BRANCHING_RETRIES - retryCount,
+          baseDelayMs: 2000, // Longer delay for retries
+          maxDelayMs: 8000,
+          onRetry: (attempt, error) => {
+            onProgress?.(action, 'retrying', undefined, error);
+          }
+        }
+      )
+    )
+  );
+  
+  return retryResults.map((result, index) => ({
+    action: failedActions[index].action,
+    success: result.status === 'fulfilled' && result.value !== null,
+    candidatePage: result.status === 'fulfilled' ? result.value : null,
+    error: result.status === 'rejected' ? result.reason : null
+  }));
+}
+```
+
+#### 4.2 Performance Analytics
+```typescript
+// src/utils/analytics.ts
+export interface GenerationMetrics {
+  pageId: string;
+  userId: string;
+  totalActions: number;
+  successfulActions: number;
+  failedActions: number;
+  averageGenerationTime: number;
+  totalGenerationTime: number;
+  actionMetrics: ActionMetric[];
+  timestamp: string;
+}
+
+export interface ActionMetric {
+  action: string;
+  status: 'completed' | 'failed';
+  generationTime: number;
+  retryCount: number;
+  errorType?: string;
+}
+
+export async function recordGenerationMetrics(metrics: GenerationMetrics): Promise<void> {
+  // Store in analytics database or logging system
+  console.log(`[Analytics] 📊 Generation metrics for page ${metrics.pageId}:`, {
+    successRate: (metrics.successfulActions / metrics.totalActions) * 100,
+    averageTime: metrics.averageGenerationTime,
+    failedCount: metrics.failedActions
+  });
+}
+```
+
+#### 4.3 Enhanced Monitoring Dashboard
+```typescript
+// src/api/admin/generation-metrics.ts
+router.get('/admin/generation-metrics', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const metrics = await getGenerationMetrics({
+      startDate: req.query.startDate as string,
+      endDate: req.query.endDate as string,
+      userId: req.query.userId as string
+    });
+    
+    res.json({
+      summary: {
+        totalGenerations: metrics.length,
+        averageSuccessRate: calculateAverageSuccessRate(metrics),
+        averageGenerationTime: calculateAverageGenerationTime(metrics)
+      },
+      metrics: metrics.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 100)
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to fetch generation metrics", error);
+  }
+});
+```
+
+**Expected Outcomes**:
+- Automatic retry for failed individual actions
+- Comprehensive generation analytics
+- Performance monitoring and optimization insights
+- Admin dashboard for generation health
+
+**Timeline**: 3-4 weeks
+**Priority**: Medium (Operational improvements)
+
+---
+
+## Implementation Considerations
+
+### Performance Impact
+- **Minimal Overhead**: Callback emissions add <1ms to generation time
+- **SSE Efficiency**: Lightweight JSON messages (~100 bytes each)
+- **Database Impact**: Optional progress storage uses Redis with TTL
+
+### Backward Compatibility
+- **Optional Callbacks**: All new parameters are optional
+- **Graceful Degradation**: Existing SSE polling continues to work
+- **Progressive Enhancement**: Features can be rolled out incrementally
+
+### Error Handling
+- **Callback Safety**: Try-catch around all callback invocations
+- **SSE Resilience**: Handle client disconnections gracefully
+- **Retry Isolation**: Failed retries don't affect other actions
+
+### Scalability Considerations
+- **Memory Usage**: Progress events are short-lived (5-minute TTL)
+- **Concurrent Limits**: Distributed locking prevents overload
+- **Rate Limiting**: SSE connections limited per user
+
+## Success Metrics
+
+### User Experience Metrics
+- **Perceived Performance**: User satisfaction with generation feedback
+- **Error Visibility**: Reduced support tickets for generation issues
+- **Engagement**: Higher completion rates for story navigation
+
+### Technical Metrics
+- **Generation Success Rate**: Target >95% with retry mechanism
+- **Average Generation Time**: Maintain <30 seconds per action
+- **SSE Connection Stability**: <1% disconnection rate
+
+### Operational Metrics
+- **Monitoring Coverage**: 100% of generation events tracked
+- **Alert Response Time**: <5 minutes for critical issues
+- **Performance Regression**: <5% increase in generation time
+
+## Risk Assessment & Mitigation
+
+### High Risk
+- **SSE Connection Overload**: Implement connection limits and monitoring
+- **Callback Performance Issues**: Add timeout protection and error boundaries
+
+### Medium Risk
+- **Frontend Compatibility**: Test across browsers and devices
+- **Database Performance**: Monitor progress storage impact
+
+### Low Risk
+- **User Interface Complexity**: Iterative design and user testing
+- **Analytics Storage Costs**: Implement data retention policies
+
+## Timeline Summary
+
+| Phase | Duration | Start Date | End Date | Key Deliverables |
+|-------|----------|------------|----------|------------------|
+| Phase 1 | 1-2 weeks | Week 1 | Week 2 | Progress callback system |
+| Phase 2 | 2-3 weeks | Week 3 | Week 5 | SSE integration |
+| Phase 3 | 2-3 weeks | Week 6 | Week 8 | Frontend updates |
+| Phase 4 | 3-4 weeks | Week 9 | Week 12 | Advanced features |
+
+**Total Timeline**: 12 weeks (3 months)
+
+## Dependencies
+
+### Technical Dependencies
+- **Redis**: For progress event storage (optional)
+- **SSE Support**: Browser compatibility testing
+- **Monitoring Tools**: Analytics dashboard infrastructure
+
+### Team Dependencies
+- **Frontend Team**: React component updates
+- **Backend Team**: SSE and callback implementation
+- **DevOps Team**: Monitoring and alerting setup
+
+## Conclusion
+
+This enhancement roadmap provides a comprehensive approach to improving the candidate generation system with real-time progress tracking. The phased implementation ensures minimal risk while delivering significant user experience improvements.
+
+The key benefits include:
+- **Enhanced User Experience**: Real-time feedback during generation
+- **Better Monitoring**: Granular visibility into generation performance
+- **Improved Reliability**: Automatic retry mechanisms for failed actions
+- **Operational Insights**: Comprehensive analytics for optimization
+
+The implementation maintains backward compatibility while providing a foundation for future enhancements in the candidate generation system.

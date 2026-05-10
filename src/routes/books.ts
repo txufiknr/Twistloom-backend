@@ -46,7 +46,7 @@ import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
-import { formatOneOf, generateBookCreationPromptStream, ensureCandidatesForPage } from "../utils/prompt.js";
+import { formatOneOf, generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
@@ -69,6 +69,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import { isValidUuid } from "../utils/uuid.js";
+import { ensureCandidatesForPage } from "../utils/candidate-generation.js";
 
 const router = Router();
 
@@ -1087,10 +1088,9 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     const dbPage = await getPageFromDB(pageId, { bookIdentifier });
     if (!dbPage) return handleNotFoundError(res, "Page not found");
 
-
     // Check if generation is already in progress (timestamp field)
     if (dbPage.isGeneratingStartedAt) {
-      console.log(`[GET /candidates] Generation in progress for page ${pageId}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
+      console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageId}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
 
       // Set SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
@@ -1108,7 +1108,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
 
       const onClientDisconnect = () => {
         clientDisconnected = true;
-        console.log(`[GET /candidates] Client disconnected while waiting for generation of page ${pageId}`);
+        console.log(`[GET /candidates] ⚠️ Client disconnected while waiting for generation of page ${pageId}`);
         try {
           res.end();
         } catch {
@@ -1204,7 +1204,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     const updatedPage = await ensureCandidatesForPage(
       userId,   // Candidate pages initiator
       userPage, // Used for determining which actions need candidates
-      null,     // Will be inferred in generateCandidatePage via getStoryProgress
+      null,     // Book context (will be resolved in validation)
     );
 
     res.json(updatedPage);

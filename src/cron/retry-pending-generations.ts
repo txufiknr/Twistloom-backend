@@ -346,7 +346,7 @@ async function processPageGeneration(
     const { dbWrite } = await import("../db/client.js");
     const { pages } = await import("../db/schema.js");
     const { eq } = await import("drizzle-orm");
-    const { ensureCandidatesForPage } = await import("../utils/prompt.js");
+    const { ensureCandidatesForPage } = await import("../utils/candidate-generation.js");
     const { mapToUserStoryPage } = await import("../services/book.js");
     
     // Count actions without complete destination before regeneration

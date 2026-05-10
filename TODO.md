@@ -19,6 +19,7 @@
 [ ] research Pg-boss / bullmq + redis
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
+[ ] ensureCandidatesForPageAsync
 
 Kasih abjad:
 [ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "Smash the wrist terminal. If I don’t see it, it’s not real.": AI generation timeout (294174ms)

@@ -580,27 +580,11 @@ export async function getPageActionsFromDB(userId: string, bookId: string, pageI
  */
 export async function getStoryPageById(userId: string, bookId: string, pageId: string): Promise<UserStoryPage | null> {
   try {
-    // Try to get the specific page by pageId
-    const dbPage = await getPageFromDB(pageId);
-    if (dbPage) {
-      // Get user page progress to include selected action
-      return completePageWithSelectedAction(dbPage, userId);
-    }
-    
-    // Fallback: get the first page of the book
-    const firstPage = await dbRead
-      .select()
-      .from(pages)
-      .where(eq(pages.bookId, bookId))
-      .orderBy(asc(pages.page))
-      .limit(1);
-    
-    if (firstPage[0]) {
-      // Get progress for first page
-      return completePageWithSelectedAction(firstPage[0], userId);
-    }
-    
-    return null;
+    // Try to get the specific page by pageId or fallback to first page
+    const dbPage = await getPageFromDB(pageId) ?? await getFirstPage(bookId);
+    if (!dbPage) return null;
+
+    return completePageWithSelectedAction(dbPage, userId);
   } catch (error) {
     console.error(`Failed to get story page for book ${bookId}, page ${pageId}:`, getErrorMessage(error));
     throw new Error(`Unable to retrieve story page: ${getErrorMessage(error)}`, { cause: error });
@@ -873,19 +857,15 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
 export async function getBookInitialState(book: Book): Promise<StoryState | null> {
   try {
     // Get the first page of the book
-    const firstPage = await dbRead
-      .select()
-      .from(pages)
-      .where(and(eq(pages.bookId, book.id), eq(pages.page, 1)))
-      .limit(1);
+    const firstPage = await getFirstPage(book.id);
     
-    if (!firstPage[0]) {
+    if (!firstPage) {
       console.log(`[getBookInitialState] ❓ No pages found for book ${book.id}`);
       return null;
     }
     
     // Get the story state for the first page
-    const initialState = await getStoryStateFromPage(firstPage[0]);
+    const initialState = await getStoryStateFromPage(firstPage);
     if (initialState) {
       console.log(`[getBookInitialState] 🎯 Found initial state for book ${book.id} at page ${initialState.page}`);
     } else {
@@ -897,6 +877,16 @@ export async function getBookInitialState(book: Book): Promise<StoryState | null
     console.error(`[getBookInitialState] ❌ Failed to get initial state for book ${book.id}:`, error);
     return null;
   }
+}
+
+export async function getFirstPage(bookId: string): Promise<DBPage | null> {
+  const firstPage = await dbRead
+    .select()
+    .from(pages)
+    .where(and(eq(pages.bookId, bookId), eq(pages.page, 1)))
+    .limit(1);
+  
+  return firstPage[0] || null;
 }
 
 /**
@@ -1302,7 +1292,7 @@ export async function triggerCandidateGenerationRetry(
   // Fire-and-forget retry
   void (async () => {
     try {
-      const { ensureCandidatesForPage } = await import("../utils/prompt.js");
+      const { ensureCandidatesForPage } = await import("../utils/candidate-generation.js");
       const userPage = await mapToUserStoryPage(page, userId, selectedActions);
       await ensureCandidatesForPage(userId, userPage);
     } catch (error) {

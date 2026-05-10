@@ -1,6 +1,38 @@
 import type { Book } from "./book.js";
 import type { Action, PersistedStoryPage, StoryState, UserStoryPage } from "./story.js";
 
+export type CandidateGenerationStrategy = 'vercel' | 'github-action' | 'cron';
+
+/**
+ * Generation strategy options
+ */
+export interface GenerationStrategy {
+  /** Whether to use parallel generation (default: true) */
+  useParallel?: boolean;
+  /** Whether to enforce Vercel timeout limits (default: true) */
+  enforceVercelLimits?: boolean;
+  /** Custom timeout in milliseconds (overrides calculated timeout) */
+  customTimeoutMs?: number;
+}
+
+/**
+ * Parameters for generating a candidate page for an action
+ */
+export type GenerateCandidatePageParams = {
+  /** User identifier for whom candidate page is being generated */
+  userId: string;
+  /** The action for which to generate a candidate (will be matched against current page actions) */
+  action: Action;
+  /** Current page context */
+  currentPage?: UserStoryPage | null;
+  /** Optional current story state (avoids database lookup when provided) */
+  currentState?: StoryState | null;
+  /** Optional book context (avoids session lookup when provided, e.g., for system-generated originals) */
+  currentBook?: Book | null;
+  /** Whether candidate page should have new branchId */
+  generateNewBranchId?: boolean;
+};
+
 /**
  * Result interface for parallel candidate generation
  */
