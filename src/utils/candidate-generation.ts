@@ -21,6 +21,7 @@ import { generateNextPage } from './prompt.js';
 import { getStoryStateWithBranch } from '../services/story-branch.js';
 import { getStoryProgress, getUserSession } from '../services/story.js';
 import { isValidUuid } from './uuid.js';
+import { generateId } from './uuid.js';
 
 /**
  * Result of candidate generation validation
@@ -109,16 +110,16 @@ export async function validateCandidateGeneration(
     };
   }
 
-  // Early exit: skip if no actions need generation
+  // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    !action.destination?.pageId || !action.destination?.branchId
+    (!action.destination?.pageId || !action.destination?.branchId) && 
+    !action._isFallback // Skip fallback actions that already failed
   );
   
   if (pendingActions.length === 0) {
     return {
       canGenerate: false,
-      reason: `No actions need generation for page ${page.id}`,
-      book: currentBook,
+      reason: 'No actions need candidate generation',
       pendingActions: [],
       currentDepth,
       maxDepth
@@ -180,9 +181,10 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
     };
   }
   
-  // Early exit: skip if no actions need generation
+  // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    !action.destination?.pageId || !action.destination?.branchId
+    (!action.destination?.pageId || !action.destination?.branchId) && 
+    !action._isFallback // Skip fallback actions that already failed
   );
   
   if (pendingActions.length === 0) {
@@ -254,9 +256,20 @@ export function calculateGenerationTimeout(
   if (strategy.enforceVercelLimits && requestStartTime) {
     const VERCEL_TIMEOUT_MS = 300000; // 300 seconds Vercel limit
     const RESPONSE_BUFFER_MS = 5000; // 5s buffer for response processing
+    const MIN_AI_TIMEOUT_MS = 10000; // 10 seconds minimum for AI generation
     const timeElapsed = Date.now() - requestStartTime;
     
-    return Math.max(VERCEL_TIMEOUT_MS - timeElapsed - RESPONSE_BUFFER_MS, 60000); // Min 60s
+    // Calculate remaining time and cap at 4 minutes, floor at 0
+    const remaining = VERCEL_TIMEOUT_MS - timeElapsed - RESPONSE_BUFFER_MS;
+    const timeoutMs = Math.min(Math.max(remaining, 0), 240000);
+    
+    // Bail early if insufficient time for meaningful AI generation
+    if (timeoutMs < MIN_AI_TIMEOUT_MS) {
+      console.warn(`[calculateGenerationTimeout] ⚠️ Only ${timeoutMs}ms remaining, skipping generation (minimum ${MIN_AI_TIMEOUT_MS}ms required)`);
+      return 0; // Signal to skip generation entirely
+    }
+    
+    return timeoutMs;
   }
 
   // Default timeout for non-Vercel environments
@@ -321,7 +334,15 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
     const { parentId: parentPageId, bookId } = currentPage || {};
     if (parentPageId && bookId) {
       currentState = await getStoryStateWithBranch(userId, bookId, parentPageId);
-      currentBook ??= await getBook(bookId);
+      
+      // Add error handling for getBook call
+      try {
+        currentBook ??= await getBook(bookId);
+      } catch (err) {
+        console.error(`[generateCandidatePage] ❌ Failed to fetch book ${bookId}:`, getErrorMessage(err));
+        throw new Error(`Failed to fetch book ${bookId} for candidate generation`);
+      }
+      
       console.log(`[generateCandidatePage] 🧩 Reconstructed state from parent page ${parentPageId}`);
     } else {
       // No parent (root page), use getStoryProgress as fallback
@@ -340,7 +361,14 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
     const session = await getUserSession(userId);
     // currentSession = session ?? null;
     if (session) {
-      currentBook = await getBook(session.bookId) ?? null;
+      // Add error handling for getBook call
+      try {
+        currentBook = await getBook(session.bookId) ?? null;
+      } catch (err) {
+        console.error(`[generateCandidatePage] ❌ Failed to fetch book ${session.bookId} from session:`, getErrorMessage(err));
+        // Continue with null book rather than throwing to allow graceful degradation
+        currentBook = null;
+      }
     }
   }
 
@@ -624,8 +652,11 @@ export async function ensureCandidatesForPageWithDepth(
     return;
   }
 
-  // Skip if no actions need generation
-  const pendingActions = page.actions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+  // Skip if no actions need generation (exclude fallback actions to prevent retry loops)
+  const pendingActions = page.actions.filter(action => 
+    (!action.destination?.pageId || !action.destination?.branchId) && 
+    !action._isFallback // Skip fallback actions that already failed
+  );
   if (pendingActions.length === 0) {
     console.log(`[ensureCandidatesForPageWithDepth] ✨ No actions need generation at depth ${currentDepth}`);
     return;
@@ -727,13 +758,15 @@ export async function ensureCandidatesForPageWithDepth(
     if (updatedDBActions.length === 0) {
       console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
+        id: generateId(), // Add stable ID
         text: "Continue.",
         type: "other",
         hint: {
           text: "See what happens next.",
           type: "none"
         },
-        destination: {}
+        destination: {},
+        _isFallback: true // Sentinel flag to prevent retry loops
       });
       hasRealChanges = true;
     }
@@ -813,7 +846,10 @@ export async function ensureCandidatesForPageWithStrategy(
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
-    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+    const recheckedPendingDBActions = initialDBActions.filter(action => 
+      (!action.destination?.pageId || !action.destination?.branchId) && 
+      !action._isFallback // Skip fallback actions that already failed
+    );
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
       return currentPage;
@@ -833,12 +869,18 @@ export async function ensureCandidatesForPageWithStrategy(
     let generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
 
+    // Build action index map for O(1) lookups (prevents O(n²) performance)
+    const actionIndexMap = new Map(
+      initialDBActions.map((action, index) => [action.id, index])
+    );
+
     // Helper functions for DRY code
     /**
      * Generate letter mapping for action (A, B, C, etc.)
      */
     function generateActionLetter(action: Action): string {
-      return String.fromCharCode(65 + initialDBActions.indexOf(action));
+      const actionIndex = actionIndexMap.get(action.id) ?? 0;
+      return String.fromCharCode(65 + actionIndex);
     }
 
     /**
@@ -853,13 +895,13 @@ export async function ensureCandidatesForPageWithStrategy(
     }
 
     /**
-     * Update action with destination page
+     * Update action with destination page using O(1) Map lookup
      */
     function updateActionWithDestination(
       action: Action, 
       candidatePage: PersistedStoryPage, 
     ): void {
-      const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
+      const actionIndex = actionIndexMap.get(action.id) ?? -1;
       if (actionIndex !== -1) {
         updatedDBActions[actionIndex] = { 
           ...action, 
@@ -891,7 +933,7 @@ export async function ensureCandidatesForPageWithStrategy(
         
         if (isInvalidAction) {
           console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-          const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
+          const actionIndex = actionIndexMap.get(action.id) ?? -1;
           if (actionIndex !== -1) {
             updatedDBActions.splice(actionIndex, 1);
             hasRealChanges = true;
@@ -995,15 +1037,17 @@ export async function ensureCandidatesForPageWithStrategy(
     // Ensure there's at least one navigable action on the page.
     // If all were removed as invalid, insert a 'Continue' action for navigating to the next page.
     if (updatedDBActions.length === 0) {
-      console.warn(`[ensureCandidatesForPage] ⚠️ All actions are invalid, replaced with 1 continue action.`);
+      console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
+        id: generateId(), // Add stable ID
         text: "Continue.",
         type: "other",
         hint: {
           text: "See what happens next.",
           type: "none"
         },
-        destination: {} // Will be pre-generated on next run
+        destination: {}, // Will be pre-generated on next run
+        _isFallback: true // Sentinel flag to prevent retry loops
       });
       hasRealChanges = true;
     }
@@ -1027,11 +1071,7 @@ export async function ensureCandidatesForPageWithStrategy(
     console.log(`[ensureCandidatesForPage] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
     const dbPage = updatedPage[0] || null;
     return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
-
-    // TODO: got 504 error: Vercel Runtime Timeout Error: Task timed out after 300 seconds
-    // GET /api/books/signal-eats-time/019dfcf9-23f4-7323-9d0b-95c28e4219d8/candidates → 504
-    // do we need to increase? and how to handle timeout gracefully without breaking process and producing server 504 error?
-  }, 1500); // 25-minute lock TTL
+  }, 270); // 270-second (4.5-minute) lock TTL to align with Vercel timeout
 
   // If lock succeeded, return its result
   if (lockResult) return lockResult || page;

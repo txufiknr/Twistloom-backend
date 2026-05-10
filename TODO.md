@@ -12,7 +12,7 @@
 [x] Get Story state fallback get by parentId+stateDelta -> persists DB
 [x] research Pg-boss / bullmq + redis
 [x] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
-[ ] candidate generation SSE UX roadmap
+[ ] candidate generation SSE UX roadmap (CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md)
 [ ] code optimization from TODO-pgboss.md
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
@@ -21,7 +21,6 @@
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
-[ ] ensureCandidatesForPageAsync
 
 Kasih abjad:
 [ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "Smash the wrist terminal. If I don’t see it, it’s not real.": AI generation timeout (294174ms)

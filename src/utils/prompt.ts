@@ -23,6 +23,7 @@ import { dbWrite } from "../db/client.js";
 import { insertStoryState } from "../services/story.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId } from "../services/story-branch.js";
+import { generateId } from "./uuid.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
@@ -2597,8 +2598,15 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       // Create updated data with immutable pattern
       const updatedData = { ...data, branchId };
       
+      // Add stable IDs to AI-generated actions for O(1) lookups
+      const actionsWithIds = generatedStoryPage.actions.map(action => ({
+        ...action,
+        id: generateId()
+      }));
+
       return insertStoryPage(userId, newState.page, {
         ...generatedStoryPage,
+        actions: actionsWithIds,
         stateDelta: fullStateDelta,
         aiProvider: response.provider || 'none',
         aiModel: response.model || 'none',

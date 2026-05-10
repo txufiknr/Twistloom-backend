@@ -664,6 +664,8 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
 };
 
 export type Action = {
+  /** Stable unique identifier for action (prevents O(n²) lookups) */
+  id: string;
   /** Action text */
   text: string;
   /** Category of action for psychological impact */
@@ -675,6 +677,8 @@ export type Action = {
     branchId?: string;
     pageId?: string;
   };
+  /** Internal sentinel flag to prevent infinite retry loops for fallback actions */
+  _isFallback?: boolean;
 };
 
 export type ActionHistory = Action & { page: number }

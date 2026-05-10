@@ -184,7 +184,8 @@ export async function enqueueBatchCandidateGenerationJob(
  */
 export function hasPendingCandidates(page: UserStoryPage): boolean {
   const pendingActions = page.actions.filter(action => 
-    !action.destination?.pageId || !action.destination?.branchId
+    (!action.destination?.pageId || !action.destination?.branchId) && 
+    !action._isFallback // Skip fallback actions that already failed
   );
   
   return pendingActions.length > 0;
@@ -204,7 +205,8 @@ export function hasPendingCandidates(page: UserStoryPage): boolean {
  */
 export function getPendingActionsCount(page: UserStoryPage): number {
   return page.actions.filter(action => 
-    !action.destination?.pageId || !action.destination?.branchId
+    (!action.destination?.pageId || !action.destination?.branchId) && 
+    !action._isFallback // Skip fallback actions that already failed
   ).length;
 }
 
