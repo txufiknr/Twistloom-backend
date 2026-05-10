@@ -409,9 +409,13 @@ export async function deactivateSession(userId: string, bookId: string) {
  * @returns Promise resolving to the story state record or null if not found
  */
 export async function getStoryStateFromDB(
-  pageId: string
+  pageId: string,
+  options: {
+    client?: typeof dbRead | typeof dbWrite
+  } = {}
 ): Promise<DBStoryState | null> {
-  const result = await dbRead
+  const { client = dbRead } = options;
+  const result = await client
     .select()
     .from(storyStates)
     .where(eq(storyStates.pageId, pageId))
@@ -461,6 +465,9 @@ export async function getStoryStateFromDB(
  *   console.log("State not found, use getStoryStateWithBranch() for full reconstruction");
  * }
  * 
+ * @note
+ * Using dbWrite client to avoid read replica stale
+ * 
  * // With custom traversal depth
  * const state = await getStoryState("page789", { maxTraversalDepth: 5 });
  * ```
@@ -471,7 +478,7 @@ export async function getStoryState(
 ): Promise<StoryState | null> {
   try {
     // 1. Try direct query from database first
-    const dbResult = await getStoryStateFromDB(pageId);
+    const dbResult = await getStoryStateFromDB(pageId, { client: dbWrite });
     if (dbResult) {
       console.log(`[getStoryState] ✅ Retrieved directly from database for page ${pageId}`);
       return mapStoryStateFromDb(dbResult);
@@ -485,7 +492,7 @@ export async function getStoryState(
     }
 
     // 3. Try lightweight story state reconstruction from parent pages (minimal approach)
-    const dbPage = options.dbPage ?? await getPageFromDB(pageId);
+    const dbPage = options.dbPage ?? await getPageFromDB(pageId, { client: dbWrite });
     if (!dbPage) return null;
     
     // Note: NO heavy branch-aware reconstruction here, should use `getStoryStateWithBranch` instead
