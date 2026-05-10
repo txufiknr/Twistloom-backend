@@ -6,6 +6,7 @@ import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, D
 import { getDeletedState } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
 import { getErrorMessage } from "../utils/error.js";
+import { applyStateDelta } from "../utils/story.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
@@ -314,6 +315,7 @@ export async function markPageVisited(
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId });
 
+    // Start inserting user page progress after reader lands on page 2 onwards
     if (pageNumber > 1) {
       if (!action || !actionedPageId) {
         throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
@@ -419,59 +421,132 @@ export async function getStoryStateFromDB(
 }
 
 /**
- * Gets story state from database and deleted state cache
+ * Gets story state from database, deleted state cache, and lightweight parent chain reconstruction
  * 
- * This function provides basic state retrieval without reconstruction.
- * It only attempts to fetch from database and deleted state cache,
- * returning null if state is not found in either location.
+ * This function provides basic state retrieval with minimal reconstruction capabilities.
+ * It attempts database lookup first, then deleted state cache, and finally lightweight
+ * parent chain traversal for incremental delta reconstruction.
  * 
- * Use {@link getStoryStateWithBranch} for branch-aware reconstruction
- * when the state needs to be reconstructed from snapshots/deltas.
+ * Use {@link getStoryStateWithBranch} for full branch-aware reconstruction
+ * when the state needs complex reconstruction from snapshots/deltas.
  * 
- * @param userId - User identifier for story state
  * @param pageId - Page identifier for story state
- * @returns Promise resolving to story state from DB/cache, or null if not found
+ * @param options - Optional configuration parameters
+ * @param options.dbPage - Pre-fetched page data to avoid extra database query
+ * @param options.maxTraversalDepth - Maximum depth to traverse up parent chain (default: 3)
+ * @returns Promise resolving to story state from DB/cache/reconstruction, or null if not found
  * 
  * Behavior:
  * - First attempts database lookup via getStoryStateFromDB()
  * - Falls back to deleted state cache if database lookup fails
- * - Returns null if state is not found in either location
- * - Does NOT perform any state reconstruction
+ * - Performs lightweight reconstruction by traversing parent chain and applying deltas incrementally
+ * - Applies deltas from oldest parent to newest page to ensure correct state accumulation
+ * - Returns null if state cannot be reconstructed within traversal depth
+ * 
+ * Reconstruction Example:
+ * ```typescript
+ * // Getting story state for page 3 when only page 1 has a stored state:
+ * // 1. Finds page 1 with stored state (base state)
+ * // 2. Collects chain: [page1, page2, page3]
+ * // 3. Applies: page1 (base) + page2.delta + page3.delta = final state
+ * ```
  * 
  * @example
  * ```typescript
  * // Basic state retrieval
- * const state = await getStoryState("user123", "page456");
+ * const state = await getStoryState("page456");
  * if (state) {
  *   console.log(`Found state for page ${state.page}`);
  * } else {
- *   console.log("State not found, use getStoryStateWithBranch() for reconstruction");
+ *   console.log("State not found, use getStoryStateWithBranch() for full reconstruction");
  * }
+ * 
+ * // With custom traversal depth
+ * const state = await getStoryState("page789", { maxTraversalDepth: 5 });
  * ```
  */
 export async function getStoryState(
   pageId: string,
+  options: { dbPage?: DBPage, maxTraversalDepth?: number } = {}
 ): Promise<StoryState | null> {
   try {
-    // Try database first
+    // 1. Try direct query from database first
     const dbResult = await getStoryStateFromDB(pageId);
     if (dbResult) {
+      console.log(`[getStoryState] ✅ Retrieved directly from database for page ${pageId}`);
       return mapStoryStateFromDb(dbResult);
     }
     
-    // Fall back to deleted state cache (note: cache key no longer includes userId)
+    // 2. Try find from recently deleted state cache
     const cachedState = getDeletedState(pageId);
     if (cachedState) {
       console.log(`[getStoryState] 🍪 Retrieved from deleted cache for page ${pageId}`);
       return cachedState;
     }
 
-    // NO reconstruction here, should use `getStoryStateWithBranch` instead
-    return null;
+    // 3. Try lightweight story state reconstruction from parent pages (minimal approach)
+    const dbPage = options.dbPage ?? await getPageFromDB(pageId);
+    if (!dbPage) return null;
+    
+    // Note: NO heavy branch-aware reconstruction here, should use `getStoryStateWithBranch` instead
+    const { maxTraversalDepth = 3 } = options;
+    
+    // Collect all pages in the parent chain from oldest to newest
+    const pageChain: DBPage[] = [];
+    let currentPage: DBPage | null = dbPage;
+    
+    // Traverse up to find the oldest page with a story state within maxTraversalDepth
+    for (let depth = 0; depth < maxTraversalDepth && currentPage?.parentId; depth++) {
+      const parentPage = await getPageFromDB(currentPage.parentId);
+      if (!parentPage) break;
+      
+      // Check if parent has a story state
+      const parentState = await getStoryStateFromDB(parentPage.id);
+      if (parentState) {
+        // Found the oldest page with a state - build the chain from this point
+        pageChain.unshift(parentPage); // Add oldest page first
+        
+        // Build the rest of the chain from parent to current
+        let chainPage: DBPage | null = currentPage;
+        while (chainPage && chainPage.id !== parentPage.id) {
+          pageChain.push(chainPage);
+          chainPage = await getPageFromDB(chainPage.parentId!);
+        }
+        break;
+      }
+      
+      currentPage = parentPage;
+    }
+
+    // If no parent state found, return null
+    if (pageChain.length === 0) {
+      return null;
+    }
+
+    // Apply deltas incrementally from oldest to newest
+    const baseState = await getStoryStateFromDB(pageChain[0].id);
+    if (!baseState) return null;
+    let currentState = mapStoryStateFromDb(baseState);
+    
+    // Start from index 1 (skip the base state page) and apply each page's delta
+    for (let i = 1; i < pageChain.length; i++) {
+      const page = pageChain[i];
+      currentState = applyStateDelta(currentState, page.stateDelta);
+    }
+
+    // Persists reconstructed story state to database (fire-and-forget)
+    void insertStoryState(dbPage.bookId, pageId, currentState);
+
+    console.log(`[getStoryState] 🌳 Reconstructed from from parent pages for page ${pageId}`);
+    return currentState;
   } catch (error) {
-    console.log(`[getStoryState] ❌ Failed to get story state for page ${pageId}:`, getErrorMessage(error));
+    console.log(`[getStoryState] ❌ Failed to get story state for page ${pageId}:`, error);
     return null;
   }
+}
+
+export async function getStoryStateFromPage(dbPage: DBPage): Promise<StoryState | null> {
+  return await getStoryState(dbPage.id, { dbPage });
 }
 
 /**

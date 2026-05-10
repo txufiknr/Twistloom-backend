@@ -20,13 +20,13 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
-import { getStoryState } from "./story.js";
+import { getStoryStateFromPage } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
 import type { AIDocument } from "../types/ai-chat.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
-import { IS_PRODUCTION } from "../config/constants.js";
+import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
 import { sanitizeText, generateSlug } from "../utils/text-processing.js";
@@ -34,7 +34,7 @@ import { generateId, isValidUuid } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { shouldProceedWithRetry } from "../utils/retry.js";
-import { extractStateDelta } from "../utils/story.js";
+import { extractStateDelta, getStoryStateInfo } from "../utils/story.js";
 import { getTranslatedText, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 
@@ -731,7 +731,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
   const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, dbPage.bookId, pageId) : [];
 
   // Get story state for context
-  const storyState = await getStoryState(pageId);
+  const storyState = await getStoryStateFromPage(dbPage);
 
   // Handle translation if Accept-Language header is provided and differs from book language
   let translatedText: string | undefined;
@@ -755,7 +755,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
   // Extract context from story state if available
   let context: EnrichedStoryPage['context'];
   if (storyState) {
+    const { phase } = getStoryStateInfo(storyState);
     context = {
+      phase,
       contextHistory: storyState.contextHistory,
       actionsHistory: storyState.actionsHistory,
       places: Object.values(storyState.places).map(place => ({
@@ -870,18 +872,11 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
  */
 export async function getBookInitialState(book: Book): Promise<StoryState | null> {
   try {
-    // Lazy imports for better memory usage
-    const { dbRead } = await import("../db/client.js");
-    const { pages } = await import("../db/schema.js");
-    const { eq, asc } = await import("drizzle-orm");
-    const { getStoryState } = await import("./story.js");
-    
     // Get the first page of the book
     const firstPage = await dbRead
       .select()
       .from(pages)
-      .where(eq(pages.bookId, book.id))
-      .orderBy(asc(pages.page))
+      .where(and(eq(pages.bookId, book.id), eq(pages.page, 1)))
       .limit(1);
     
     if (!firstPage[0]) {
@@ -890,8 +885,7 @@ export async function getBookInitialState(book: Book): Promise<StoryState | null
     }
     
     // Get the story state for the first page
-    const initialState = await getStoryState(firstPage[0].id);
-    
+    const initialState = await getStoryStateFromPage(firstPage[0]);
     if (initialState) {
       console.log(`[getBookInitialState] 🎯 Found initial state for book ${book.id} at page ${initialState.page}`);
     } else {

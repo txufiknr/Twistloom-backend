@@ -17,7 +17,7 @@ import { dbRead, dbWrite } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { verifyNextAuthToken } from './nextauth.js';
 import { generateId } from '../utils/uuid.js';
-import { IS_PRODUCTION } from '../config/constants.js';
+import { IS_PRODUCTION } from '../config/env.js';
 
 const GUEST_COOKIE_NAME = 'twistloom_guest_id';
 const MAX_GUEST_CREATION_RETRIES = 3;

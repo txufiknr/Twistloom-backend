@@ -22,6 +22,7 @@
  * - GET /api/books/:identifier - Retrieve specific book by slug or id
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
  * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
+ * - POST /api/books/:identifier/:pageId/generate - Pre-generate candidate pages via github workflow (requires auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
  * - POST /api/books/:id/like - Like a book (requires auth)
  * - DELETE /api/books/:id/like - Unlike a book (requires auth)
@@ -1081,23 +1082,11 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       return handleValidationError(res, "Invalid pageId: must be valid uuid");
     }
 
-    // Resolve book by identifier (slug first, then UUID)
+    // Get the page by book identifier from database
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const book = await resolveBook(bookIdentifier);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier });
+    if (!dbPage) return handleNotFoundError(res, "Page not found");
 
-    // Get the page from database
-    const dbPage = await getPageFromDB(pageId);
-    if (!dbPage) {
-      return handleNotFoundError(res, "Page not found");
-    }
-
-    // Verify page belongs to the specified book
-    if (dbPage.bookId !== book.id) {
-      return handleValidationError(res, "Page does not belong to the specified book");
-    }
 
     // Check if generation is already in progress (timestamp field)
     if (dbPage.isGeneratingStartedAt) {
@@ -1216,7 +1205,6 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       userId,   // Candidate pages initiator
       userPage, // Used for determining which actions need candidates
       null,     // Will be inferred in generateCandidatePage via getStoryProgress
-      book      // Used for totalPages check
     );
 
     res.json(updatedPage);
@@ -1316,10 +1304,8 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       const totalCount = totalCountResult.length;
 
       // Apply pagination
-      // TODO: similar books via pgvector embedding
       const offset = (page - 1) * limit;
       const booksResult: EnrichedBookData[] = await query.limit(limit).offset(offset);
-
       const pagination = calculatePaginationMeta(page, limit, totalCount);
 
       return createPaginatedResponse(booksResult, pagination, 'books');
@@ -2139,6 +2125,126 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
     });
   } catch (error) {
     handleApiError(res, "Failed to delete comment", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/generate
+ * 
+ * Triggers the GitHub workflow to retry pending generations for a specific book page.
+ * This endpoint programmatically dispatches the retry-pending-generations workflow.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page ID to trigger generation for
+ * @returns Success message with workflow dispatch status
+ * 
+ * @example
+ * POST /api/books/whispering-halls/page123/generate
+ * 
+ * Response (200):
+ * {
+ *   "message": "Workflow triggered successfully",
+ *   "workflow": "retry-pending-generations",
+ *   "ref": "main"
+ * }
+ */
+router.post("/:identifier/:pageId/generate", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId } = req.params;
+    const userId = req.userId!;
+
+    // Validate book exists and user has access
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const enrichedBook = await getEnrichedBook(bookIdentifier, userId);
+    if (!enrichedBook) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Verify user owns the book (for generation triggering)
+    if (enrichedBook.userId !== userId) {
+      return res.status(403).json({
+        error: "Forbidden: You can only trigger generation for your own books"
+      });
+    }
+
+    // Get GitHub token from environment
+    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
+    if (!githubToken) {
+      return res.status(500).json({
+        error: "GitHub workflow token not configured"
+      });
+    }
+
+    // Extract repository info from environment or use defaults
+    const owner = process.env.GITHUB_REPO_OWNER || "txufiknr";
+    const repo = process.env.GITHUB_REPO_NAME || "Twistloom-backend";
+    const ref = process.env.GITHUB_DEFAULT_BRANCH || "main";
+
+    // Trigger workflow via GitHub REST API
+    const workflowResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/workflows/retry-pending-generations.yml/dispatches`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${githubToken}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Twistloom-Backend'
+      },
+      body: JSON.stringify({
+        ref: ref,
+        inputs: {
+          book_id: enrichedBook.id,
+          page_id: pageId,
+          triggered_by: userId
+        }
+      })
+    });
+
+    if (!workflowResponse.ok) {
+      const errorText = await workflowResponse.text();
+      console.error('[POST /api/books/:identifier/:pageId/generate] GitHub API error:', {
+        status: workflowResponse.status,
+        statusText: workflowResponse.statusText,
+        body: errorText
+      });
+      
+      return res.status(workflowResponse.status).json({
+        error: "Failed to trigger GitHub workflow",
+        details: {
+          status: workflowResponse.status,
+          statusText: workflowResponse.statusText
+        }
+      });
+    }
+
+    // Log user activity (workflow trigger)
+    await logUserActivity({
+      userId,
+      activityType: 'workflow_triggered',
+      targetType: 'book',
+      targetId: enrichedBook.id,
+      metadata: { 
+        workflow: 'retry-pending-generations',
+        pageId: pageId
+      },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
+    res.json({
+      message: "Workflow triggered successfully",
+      workflow: "retry-pending-generations",
+      ref: ref,
+      inputs: {
+        book_id: enrichedBook.id,
+        page_id: pageId,
+        triggered_by: userId
+      }
+    });
+  } catch (error) {
+    console.error('[POST /api/books/:identifier/:pageId/generate] Error:', error);
+    handleApiError(res, "Failed to trigger workflow", error);
   }
 });
 

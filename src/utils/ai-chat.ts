@@ -283,7 +283,7 @@ export async function geminiPrompt(
     (response) => {
       const candidates = response.candidates ?? [];
       if (candidates.length === 0) {
-        console.warn('[gemini] No candidates in response');
+        console.warn('[gemini] ❓ No candidates in response');
         return null;
       }
 
@@ -305,13 +305,13 @@ export async function geminiPrompt(
         return text;
       }
 
-      console.warn('[gemini] No valid candidate found');
+      console.warn('[gemini] ❓ No valid candidate contents');
       return null;
     },
     (response) => {
       const { usageMetadata } = response;
       if (!usageMetadata) {
-        console.warn('[gemini] No usage data in response');
+        console.warn('[gemini] ❓ No usage data in response');
         return undefined;
       }
       return {

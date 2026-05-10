@@ -1,17 +1,39 @@
 /**
- * @summary Runs retry job for failed page pre-generations
- * @description Processes pages with pendingGenerationCount > 0 to regenerate failed candidate pages
+ * @summary Comprehensive story page generation and retry job
+ * @description Multi-purpose cron job supporting both scheduled batch processing and manual trigger execution
+ * 
+ * Dual Execution Modes:
+ * - Scheduled: Processes pages with pendingGenerationCount > 0 to regenerate failed candidate pages
+ * - Manual: Processes specific book/page triggered via GitHub workflow with user attribution
+ * 
+ * Core Functions:
+ * - `retryPendingGenerations()`: Batch processing of pending generations with priority ordering
+ * - `generateMissingOriginalBookCovers()`: Generates AI cover images for books without covers
+ * - `processSpecificPage()`: Targeted processing for manual workflow triggers
+ * - `processPageGeneration()`: Shared logic for both scheduled and manual processing
  * 
  * Idempotency:
- * - Safe to run multiple times: only processes pages with pending generations
- * - Uses consistent query: WHERE pending_generation_count > 0
+ * - Safe to run multiple times: only processes pages with pending generations or specific manual targets
  * - Atomic operations: updates pendingGenerationCount after successful generation
  * - No side effects: only regenerates missing candidates, doesn't modify existing data
+ * - User attribution: Manual triggers include user tracking for audit purposes
  * 
- * Should be run periodically via cron job (e.g., every 15 minutes), but safe to run repeatedly
+ * Execution Context:
+ * - Should be run periodically via cron job (e.g., every hour) for scheduled processing
+ * - Manual triggers via GitHub workflow API with environment variables:
+ *   - `TRIGGERED_BOOK_ID`: Target book identifier
+ *   - `TRIGGERED_PAGE_ID`: Target page identifier  
+ *   - `TRIGGERED_BY_USER`: User who initiated the trigger
+ * 
+ * Performance Features:
+ * - Lazy imports for optimal memory usage and startup time
+ * - Priority ordering: trending score + pending count optimization
+ * - Rate limiting: delays between AI API calls to prevent overwhelming
+ * - Distributed locking: prevents concurrent processing of same page
  */
+import type { DBPage } from "../types/schema.js";
+import type { Action, UserStoryPage } from "../types/story.js";
 import { MAX_BRANCHING_PREGENERATION_LIMIT } from "../config/story.js";
-import { mapToUserStoryPage } from "../services/book.js";
 import { requireEnv } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
 import { delay } from "../utils/time.js";
@@ -20,23 +42,19 @@ export async function retryPendingGenerations(): Promise<void> {
   const startedAt = Date.now();
   
   try {
-    console.log("[retry-pending-generations] 🔄 Starting retry of pending generations...");
+    console.log("[retryPendingGenerations] 🔄 Starting retry of pending generations...");
     
     // Lazy imports for better memory usage and startup time
-    const { dbRead, dbWrite } = await import("../db/client.js");
+    const { dbRead } = await import("../db/client.js");
     const { pages, books } = await import("../db/schema.js");
-    const { eq, gt, lt, desc, and } = await import("drizzle-orm");
-    const { ensureCandidatesForPage } = await import("../utils/prompt.js");
+    const { eq, gt, lt, desc, asc, and } = await import("drizzle-orm");
     const { getPageFromDB } = await import("../services/book.js");
+    const { mapToUserStoryPage } = await import("../services/book.js");
     
-    // Query pages with pending generations (limit to prevent overwhelming system)
-    // Note: Fetch userId and pendingGenerationCount (minimal fields needed)
-    // Prioritize books with highest trending scores
-    // Exclude last page (page.number < totalPages) since it doesn't need candidates
+    // Query pages with pending generations (limit to prevent overwhelming system, minimal fields needed)
     const pagesWithPending = await dbRead
       .select({
         id: pages.id,
-        userId: pages.userId,
         pendingGenerationCount: pages.pendingGenerationCount,
         trendingScore: books.trendingScore,
         page: pages.page,
@@ -46,82 +64,62 @@ export async function retryPendingGenerations(): Promise<void> {
       .innerJoin(books, eq(pages.bookId, books.id))
       .where(and(
         gt(pages.pendingGenerationCount, 0),
-        lt(pages.page, books.totalPages) // Exclude last page
+        lt(pages.page, books.totalPages) // Exclude last page since it doesn't need candidates
       ))
-      .orderBy(desc(books.trendingScore), desc(pages.pendingGenerationCount))
+      .orderBy(
+        desc(books.trendingScore), // Prioritize books with highest trending scores
+        asc(pages.pendingGenerationCount) // Prioritize pages with fewer remaining pending candidate generation
+        // TODO: prioritize branch with smallest furthest generated pages against books.totalPages
+      )
       .limit(MAX_BRANCHING_PREGENERATION_LIMIT); // Process up to N pages per run
     
     if (pagesWithPending.length === 0) {
-      console.log("[retry-pending-generations] ✨ No pending generations to process");
+      console.log("[retryPendingGenerations] ✨ No pending generations to process");
       return;
     }
     
-    console.log(`[retry-pending-generations] 📋 Found ${pagesWithPending.length} pages with pending generations`);
+    console.log(`[retryPendingGenerations] 📋 Found ${pagesWithPending.length} pages with pending generations`);
     
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFailed = 0;
     
-    // TODO: make it parallel
+    // TODO: is it feasible to make it parallel?
     for (const pageData of pagesWithPending) {
       try {
-        console.log(`[retry-pending-generations] 🔄 Processing page ${pageData.id} (pending: ${pageData.pendingGenerationCount})`);
+        console.log(`[retryPendingGenerations] 🔄 Processing page ${pageData.id} (pending: ${pageData.pendingGenerationCount})`);
         
         // Fetch full page data
-        const fullPage = await getPageFromDB(pageData.id);
-        if (!fullPage) {
-          console.warn(`[retry-pending-generations] ⚠️ Page ${pageData.id} not found, skipping`);
+        const dbPage = await getPageFromDB(pageData.id);
+        if (!dbPage) {
+          console.warn(`[retryPendingGenerations] ⚠️ Page ${pageData.id} not found, skipping`);
           continue;
         }
         
         // Convert null fields to undefined for type compatibility
         const systemUserId = requireEnv('SYSTEM_USER_ID');
-        const pageForGeneration = await mapToUserStoryPage(fullPage, systemUserId, []);
+        const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
         
-        // Count actions without complete destination before regeneration
-        const actionsBefore = fullPage.actions || [];
-        const pendingBefore = actionsBefore.filter((action: any) => 
+        // Use shared page generation logic
+        const generationResult = await processPageGeneration(
+          dbPage,
+          systemUserId,
+          pageForGeneration,
+          pageData.id,
+          pageData.pendingGenerationCount === 0,
+          '[retryPendingGenerations]'
+        );
+        
+        const successCount = (pageData.pendingGenerationCount || 0) - (generationResult.updatedPage.actions?.filter((action: Action) => 
           !action.destination?.branchId || !action.destination?.pageId
-        ).length;
+        ).length || 0);
         
-        if (pendingBefore === 0) {
-          console.log(`[retry-pending-generations] ✅ Page ${pageData.id} has no pending actions, resetting counter`);
-          await dbWrite
-            .update(pages)
-            .set({ pendingGenerationCount: 0 })
-            .where(eq(pages.id, pageData.id));
-          continue;
-        }
-        
-        // Retry candidate generation
-        await ensureCandidatesForPage(systemUserId, pageForGeneration);
-        
-        // Fetch updated page to check if generation succeeded
-        const updatedPage = await getPageFromDB(pageData.id, { client: dbWrite });
-        if (!updatedPage) {
-          console.warn(`[retry-pending-generations] ⚠️ Page ${pageData.id} not found after regeneration, skipping`);
-          continue;
-        }
-        
-        // Count actions without complete destination after regeneration
-        const actionsAfter = updatedPage.actions || [];
-        const pendingAfter = actionsAfter.filter((action: any) => 
-          !action.destination?.branchId || !action.destination?.pageId
-        ).length;
-        
-        // Update pendingGenerationCount
-        await dbWrite
-          .update(pages)
-          .set({ pendingGenerationCount: pendingAfter })
-          .where(eq(pages.id, pageData.id));
-        
-        const successCount = pendingBefore - pendingAfter;
         if (successCount > 0) {
           totalSuccess += successCount;
-          console.log(`[retry-pending-generations] ✅ Page ${pageData.id}: ${successCount} actions regenerated (${pendingBefore} → ${pendingAfter} pending)`);
+          console.log(`[retryPendingGenerations] ✅ Page ${pageData.id}: ${successCount} actions regenerated`);
         } else {
-          totalFailed += pendingAfter;
-          console.log(`[retry-pending-generations] ⚠️ Page ${pageData.id}: No actions regenerated (${pendingAfter} still pending)`);
+          totalFailed += pageData.pendingGenerationCount || 0;
+          console.log(`[retryPendingGenerations] ⚠️ Page ${pageData.id}: No actions regenerated`);
         }
         
         totalProcessed++;
@@ -130,20 +128,20 @@ export async function retryPendingGenerations(): Promise<void> {
         await delay(500);
         
       } catch (error) {
-        console.error(`[retry-pending-generations] ❌ Failed to process page ${pageData.id}:`, getErrorMessage(error));
+        console.error(`[retryPendingGenerations] ❌ Failed to process page ${pageData.id}:`, getErrorMessage(error));
         totalFailed++;
         // Continue with next page - don't fail entire batch
       }
     }
     
     const durationMs = Date.now() - startedAt;
-    console.log(`[retry-pending-generations] ✅ Retry completed in ${durationMs}ms:`, {
+    console.log(`[retryPendingGenerations] ✅ Retry completed in ${durationMs}ms:`, {
       pagesProcessed: totalProcessed,
       actionsRegenerated: totalSuccess,
       actionsStillPending: totalFailed
     });
   } catch (error) {
-    console.error("[retry-pending-generations] ❌ Retry job failed:", getErrorMessage(error));
+    console.error("[retryPendingGenerations] ❌ Retry job failed:", getErrorMessage(error));
     throw error;
   }
 }
@@ -168,7 +166,7 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
   const startedAt = Date.now();
   
   try {
-    console.log("[retry-pending-generations] Starting missing cover image generation...");
+    console.log("[generateMissingOriginalBookCovers] Starting missing cover image generation...");
     
     // Lazy imports for better memory usage and startup time
     const { dbRead } = await import("../db/client.js");
@@ -208,19 +206,18 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
       .limit(25); // Process up to 25 books per run
     
     if (originalBooksWithoutCovers.length === 0) {
-      console.log("[retry-pending-generations] ⏩ No original books missing cover images");
+      console.log("[generateMissingOriginalBookCovers] ⏩ No original books missing cover images");
       return;
     }
     
-    console.log(`[retry-pending-generations] 👀 Found ${originalBooksWithoutCovers.length} original books missing cover images`);
-    
+    console.log(`[generateMissingOriginalBookCovers] 👀 Found ${originalBooksWithoutCovers.length} original books missing cover images`);
     let totalProcessed = 0;
     let totalSuccess = 0;
     let totalFailed = 0;
     
     for (const book of originalBooksWithoutCovers) {
       try {
-        console.log(`[retry-pending-generations] 🧠 Generating cover for book "${book.title}" (ID: ${book.id})`);
+        console.log(`[generateMissingOriginalBookCovers] 🧠 Generating cover for book "${book.title}" (ID: ${book.id})`);
         
         // Convert database result to Book type (convert null to undefined where needed)
         const bookForGeneration = {
@@ -238,30 +235,164 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
         
         // Generate and update cover image
         await generateAndUpdateBookCoverImage(bookForGeneration);
-        
+        console.log(`[generateMissingOriginalBookCovers] ✅ Successfully generated cover for book "${book.title}"`);
         totalSuccess++;
-        console.log(`[retry-pending-generations] ✅ Successfully generated cover for book "${book.title}"`);
-        
         totalProcessed++;
         
         // Small delay between books to prevent overwhelming AI API
         await new Promise(resolve => setTimeout(resolve, 1000));
         
       } catch (error) {
-        console.error(`[retry-pending-generations] ❌ Failed to generate cover for book ${book.id}:`, getErrorMessage(error));
+        console.error(`[generateMissingOriginalBookCovers] ❌ Failed to generate cover for book ${book.id}:`, getErrorMessage(error));
         totalFailed++;
         // Continue with next book - don't fail entire batch
       }
     }
     
     const durationMs = Date.now() - startedAt;
-    console.log(`[retry-pending-generations] ✅ Missing cover generation completed in ${durationMs}ms:`, {
+    console.log(`[generateMissingOriginalBookCovers] ✅ Missing cover generation completed in ${durationMs}ms:`, {
       booksProcessed: totalProcessed,
       coversGenerated: totalSuccess,
       coversFailed: totalFailed
     });
   } catch (error) {
-    console.error("[retry-pending-generations] ❌ Missing cover generation job failed:", getErrorMessage(error));
+    console.error("[generateMissingOriginalBookCovers] ❌ Missing cover generation job failed:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Processes a specific page for manual trigger
+ */
+async function processSpecificPage(bookId: string, pageId: string, triggeredBy: string): Promise<void> {
+  const startedAt = Date.now();
+  
+  try {
+    console.log(`[processSpecificPage] 🎯 Processing manual trigger: book=${bookId}, page=${pageId}, user=${triggeredBy}`);
+    
+    // Lazy imports for better memory usage and startup time
+    const { dbWrite } = await import("../db/client.js");
+    const { pages } = await import("../db/schema.js");
+    const { eq } = await import("drizzle-orm");
+    const { getPageFromDB } = await import("../services/book.js");
+    const { mapToUserStoryPage } = await import("../services/book.js");
+
+    // Fetch full page data
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier: bookId });
+    if (!dbPage) {
+      console.warn(`[processSpecificPage] ⚠️ Page ${pageId} not found, skipping`);
+      return;
+    }
+    
+    console.log(`[processSpecificPage] 📋 Found page ${pageId} (pending: ${dbPage.pendingGenerationCount})`);
+    
+    // Convert null fields to undefined for type compatibility
+    const systemUserId = requireEnv('SYSTEM_USER_ID');
+    const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
+    
+    // Force candidate generation for manual trigger (always generate, even if no pending actions)
+    const generationResult = await processPageGeneration(
+      dbPage, 
+      systemUserId, 
+      pageForGeneration, 
+      pageId,
+      false, // Always generate for manual trigger
+      '[processSpecificPage]'
+    );
+    
+    const actionsAfter = generationResult.updatedPage.actions || [];
+    const pendingAfter = actionsAfter.filter((action: Action) => 
+      !action.destination?.branchId || !action.destination?.pageId
+    ).length;
+    
+    // Update pendingGenerationCount
+    await dbWrite
+      .update(pages)
+        .set({ pendingGenerationCount: pendingAfter })
+        .where(eq(pages.id, pageId));
+    
+    const successCount = (dbPage.pendingGenerationCount || 0) - pendingAfter;
+    const durationMs = Date.now() - startedAt;
+    
+    console.log(`[processSpecificPage] ✅ Manual trigger completed in ${durationMs}ms:`, {
+      bookId,
+      pageId,
+      triggeredBy,
+      actionsRegenerated: successCount,
+      actionsStillPending: pendingAfter,
+      beforeAfter: `${(dbPage.pendingGenerationCount || 0)} → ${pendingAfter}`
+    });
+  } catch (error) {
+    console.error(`[processSpecificPage] ❌ Manual trigger failed for book ${bookId}, page ${pageId}:`, getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Common page generation logic for both scheduled and manual processing
+ */
+async function processPageGeneration(
+  dbPage: DBPage,
+  systemUserId: string,
+  pageForGeneration: UserStoryPage,
+  pageId: string,
+  hasNoPendingActions: boolean,
+  logPrefix: string
+): Promise<{ updatedPage: UserStoryPage }> {
+  const startedAt = Date.now();
+  
+  try {
+    // Dynamic imports for this function scope
+    const { dbWrite } = await import("../db/client.js");
+    const { pages } = await import("../db/schema.js");
+    const { eq } = await import("drizzle-orm");
+    const { ensureCandidatesForPage } = await import("../utils/prompt.js");
+    const { mapToUserStoryPage } = await import("../services/book.js");
+    
+    // Count actions without complete destination before regeneration
+    const actionsBefore = dbPage.actions || [];
+    const pendingBefore = actionsBefore.filter((action: Action) => 
+      !action.destination?.branchId || !action.destination?.pageId
+    ).length;
+    
+    if (hasNoPendingActions) {
+      console.log(`[${logPrefix}] ✨ Page ${pageId} has no pending actions, skipping generation`);
+      await dbWrite
+        .update(pages)
+          .set({ pendingGenerationCount: 0 })
+          .where(eq(pages.id, pageId));
+      return { updatedPage: await mapToUserStoryPage(dbPage, systemUserId, []) };
+    }
+    
+    console.log(`[${logPrefix}] 🔄 Processing page ${pageId} (pending: ${pendingBefore})`);
+    
+    // Force candidate generation for manual trigger or normal processing
+    const updatedPage = await ensureCandidatesForPage(systemUserId, pageForGeneration);
+    
+    // Count actions without complete destination after regeneration
+    const actionsAfter = updatedPage.actions || [];
+    const pendingAfter = actionsAfter.filter((action: Action) => 
+      !action.destination?.branchId || !action.destination?.pageId
+    ).length;
+    
+    // Update pendingGenerationCount
+    await dbWrite
+      .update(pages)
+        .set({ pendingGenerationCount: pendingAfter })
+        .where(eq(pages.id, pageId));
+    
+    const successCount = pendingBefore - pendingAfter;
+    const durationMs = Date.now() - startedAt;
+    
+    console.log(`[${logPrefix}] ✅ Page ${pageId} processed in ${durationMs}ms:`, {
+      actionsRegenerated: successCount,
+      actionsStillPending: pendingAfter,
+      beforeAfter: `${pendingBefore} → ${pendingAfter}`
+    });
+    
+    return { updatedPage };
+  } catch (error) {
+    console.error(`[${logPrefix}] ❌ Failed to process page ${pageId}:`, getErrorMessage(error));
     throw error;
   }
 }
@@ -273,8 +404,20 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   
   try {
-    await retryPendingGenerations();
-    await generateMissingOriginalBookCovers();
+    // Check if this is a manual trigger with specific inputs
+    const triggeredBookId = process.env.TRIGGERED_BOOK_ID?.trim();
+    const triggeredPageId = process.env.TRIGGERED_PAGE_ID?.trim();
+    const triggeredByUser = process.env.TRIGGERED_BY_USER?.trim();
+    
+    if (triggeredBookId && triggeredPageId) {
+      console.log(`[retry-pending-generations] 🎯 Manual trigger detected`);
+      await processSpecificPage(triggeredBookId, triggeredPageId, triggeredByUser || 'unknown');
+    } else {
+      console.log(`[retry-pending-generations] 🔄 Scheduled batch processing`);
+      await retryPendingGenerations();
+      await generateMissingOriginalBookCovers();
+    }
+    
     const durationMs = Date.now() - startedAt;
     console.log(`[retry-pending-generations] ✅ Completed in ${durationMs}ms`);
     process.exit(0);

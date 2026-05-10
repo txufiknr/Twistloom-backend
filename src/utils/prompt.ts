@@ -1335,10 +1335,10 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
   const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
   
   if (state) {
-    const inventory = state.inventory.join(', ') || 'none';
+    const inventory: string | null = state.inventory.join(', ') || null;
+    let injuryDetails: string | null = null;
     
     // Format detailed injury information with nested bullet points
-    let injuryDetails = 'none';
     if (state.injuries.length > 0) {
       const injuryList = state.injuries.map(injury => {
         const parts = [];
@@ -1354,10 +1354,10 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
         }
         return injuryLine;
       });
-      injuryDetails = injuryList.join('\n');
+      injuryDetails = `\n${injuryList.join('\n')}`;
     }
     
-    return `${bio}\n- Inventory: ${inventory}\n- Injuries:\n${injuryDetails}`;
+    return [bio, inventory && `- Inventory: ${inventory}`, injuryDetails && `- Injuries: ${injuryDetails}`].filter(Boolean).join('\n');
   }
   return bio;
 }
@@ -2182,7 +2182,7 @@ Actions must be meaningfully distinct — vary between: reckless, cautious, emot
 
 function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string {
   return `Book Metadata:
-- TITLE: ${BOOK_TITLE_LENGTH}. Don't always start with "The". Be creative, mysterious, visceral (you feel it), memorable, not generic.
+- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
@@ -2562,7 +2562,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
           );
         }
   
-        console.log(`[generateNextPage] 👀 freshActionedPage.actions for page ${actionedPage.id}:`, freshActionedPage.actions);
+        // console.log(`[generateNextPage] 👀 freshActionedPage.actions for page ${actionedPage.id}:`, freshActionedPage.actions);
         
         // Check if this specific action already has a destination pageId
         // If it does, skip insertion to prevent duplicate database entries

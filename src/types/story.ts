@@ -650,9 +650,15 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   originalActionsCount: number, 
   translatedText?: string,
   context?: {
+    /** Current story phase classification */
+    phase: StoryPhase;
+    /** AI-summarized context of the story until this page */
     contextHistory: string;
+    /** History of actions made until this page */
     actionsHistory: ActionHistory[];
+    /** All known places so far */
     places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
+    /** All known characters so far */
     characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
   }
 };
@@ -1123,6 +1129,8 @@ export type TraversalOptions = {
   useCache?: boolean;
   /** Whether to validate path integrity (default: true) */
   validatePath?: boolean;
+  /** Whether to persist reconstructed state to database (default: false) */
+  persistState?: boolean;
 };
 
 /**

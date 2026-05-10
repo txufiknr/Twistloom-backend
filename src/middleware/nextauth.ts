@@ -24,7 +24,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { getToken } from 'next-auth/jwt';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
-import { IS_PRODUCTION } from '../config/constants.js';
+import { IS_PRODUCTION } from '../config/env.js';
 
 /**
  * Determines the NextAuth cookie name based on environment

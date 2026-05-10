@@ -4,16 +4,27 @@
 [x] consolidate get page & page visit
 [x] apakah get /user ada `isGuest`?
 [x] Retry pending generation kalo udah stable bikin paralel
-[ ] enriched page add contextHistory, characters, phase
+[x] Ensure Visit count jangan itung system user
+[x] Cleanup story states: Early check kalau existing pages dikit skip
+[x] Book title jangan selalu diawali "The"
+[x] Enriched page: add characters, phase, running summary
+[x] enriched page add contextHistory, characters, phase
+[x] Get Story state fallback get by parentId+stateDelta -> persists DB
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
 [ ] Original: kalau "en", Mc name predefine aja, jangan AI
 [ ] User settings api: text size
+[ ] research Pg-boss / bullmq + redis
+[ ] Candidate pregeneration prioritize yang existing pagesnya dikit
+[ ] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
 
-export const FREE_ACTION_SELECTION_UNTIL_PAGE = 1;
-export const FREE_GUEST_SELECT_ACTION_UNTIL_PAGE = 5;
+Kasih abjad:
+[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "Smash the wrist terminal. If I don’t see it, it’s not real.": AI generation timeout (294174ms)
+[generateCandidatesInParallel] ⏰ AI generation timeout for action "Pull the receipt’s transaction logs. See who bought it—and why." after 294174ms
+[generateCandidatesInParallel] ⏰ AI generation timeout for action "Smash the wrist terminal. If I don’t see it, it’s not real." after 294174ms
+
 
 TODO:
 [ ] Stripe switch to live

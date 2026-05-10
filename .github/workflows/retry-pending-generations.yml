@@ -4,6 +4,19 @@ on:
   schedule:
     - cron: '0 * * * *'   # Every hour
   workflow_dispatch:      # Allow manual triggering
+    inputs:
+      book_id:
+        description: 'ID of the book to retry generation for'
+        required: false
+        type: string
+      page_id:
+        description: 'ID of the specific page to retry generation for'
+        required: false
+        type: string
+      triggered_by:
+        description: 'User ID who triggered the workflow'
+        required: false
+        type: string
 
 jobs:
   retry-pending-generations:
@@ -76,4 +89,8 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NODE_ENV: production
+          # Workflow inputs (if triggered manually)
+          TRIGGERED_BOOK_ID: ${{ github.event.inputs.book_id || '' }}
+          TRIGGERED_PAGE_ID: ${{ github.event.inputs.page_id || '' }}
+          TRIGGERED_BY_USER: ${{ github.event.inputs.triggered_by || '' }}
         timeout-minutes: 30  # Allow more time for AI generation retries

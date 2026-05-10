@@ -6,7 +6,7 @@
  */
 
 import app from "./app.js";
-import { PORT } from "./config/constants.js";
+import { PORT } from "./config/env.js";
 import { hasErrorCode } from "./utils/error.js";
 import { registerGracefulShutdown } from "./utils/graceful-shutdown.js";
 import type http from "node:http";

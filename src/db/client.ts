@@ -29,7 +29,7 @@ import { drizzle } from "drizzle-orm/neon-serverless";
 import { Pool } from "@neondatabase/serverless";
 import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 import * as schema from "./schema.js";
-import { IS_DEVELOPMENT, IS_PRODUCTION, IS_TEST } from "../config/constants.js";
+import { IS_DEVELOPMENT, IS_PRODUCTION, IS_TEST } from "../config/env.js";
 import { getEnv } from "../utils/env.js";
 
 console.log(`👋 Running in ${IS_TEST ? 'test' : process.env['NODE_ENV']} environment`);

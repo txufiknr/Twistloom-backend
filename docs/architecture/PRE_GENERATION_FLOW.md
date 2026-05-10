@@ -13,6 +13,16 @@ The system supports configurable **multi-level depth pre-generation** to create 
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
 
+## Manual Trigger Support
+
+The system supports **manual triggering** of specific page generation via GitHub workflow:
+
+- **API Endpoint**: `POST /api/books/:identifier/:pageId/generate`
+- **GitHub Workflow**: `retry-pending-generations.yml` with `workflow_dispatch` inputs
+- **Environment Variables**: `TRIGGERED_BOOK_ID`, `TRIGGERED_PAGE_ID`, `TRIGGERED_BY_USER`
+- **Targeted Processing**: Processes specific page instead of batch scheduled processing
+- **User Attribution**: Tracks which user triggered the generation for audit purposes
+
 ### Example Flow:
 ```
 Page A (3 actions) → Generate 3 candidates (Level 1 - sync)
@@ -39,46 +49,62 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    BOOK CREATION (createBookCore)                      │
-│  Location: src/services/book-creation.ts:66                           │
+│                    BOOK CREATION (createBookCore)                        │
+│  Location: src/services/book-creation.ts:66                              │
 │  Purpose: Create new book with first page and trigger pre-generation     │
 │                                                                          │
 │  Flow: validateTheme → initializeBook → enrichActions → invalidate caches│
 └─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-                    ┌───────────────────────────┐
-                    │  Create book & first page │
-                    │  insertStoryPage()        │
-                    │  Persists page to DB       │
-                    └───────────────────────────┘
-                                    │
-                                    ▼
-                    ┌───────────────────────────┐
-                    │  Insert story state       │
-                    │  insertStoryState()       │
-                    │  Persists initial state   │
-                    └───────────────────────────┘
-                                    │
-                                    ▼
-                    ┌───────────────────────────┐
-                    │  🔥 FIRE-AND-FORGET        │
-                    │  ensureCandidatesForPage() │
-                    │  (for first page)          │
-                    │  Returns immediately       │
-                    └───────────────────────────┘
+                                   │
+                                   ▼
+                   ┌───────────────────────────┐
+                   │  Create book & first page │
+                   │  insertStoryPage()        │
+                   │  Persists page to DB      │
+                   └───────────────────────────┘
+                                   │
+                                   ▼
+                   ┌───────────────────────────┐
+                   │  Insert story state       │
+                   │  insertStoryState()       │
+                   │  Persists initial state   │
+                   └───────────────────────────┘
+                                   │
+                                   ▼
+       ┌───────────────────┴───────────────────┐
+       ▼                                       ▼
+┌─────────────────┐                   ┌─────────────────┐
+│ MANUAL TRIGGER  │                   │ AUTO PRE-GEN    │
+│ API Endpoint    │                   │ (Book Creation) │
+│ POST /books/    │                   │                 │
+│ :id/:pageId/    │                   │                 │
+│ generate        │                   │                 │
+└─────────────────┘                   └─────────────────┘
+         │                                   │
+         ▼                                   ▼
+┌─────────────────┐                   ┌───────────────────────────┐
+│ GitHub          │                   │  🔥 FIRE-AND-FORGET        │
+│ Workflow        │                   │  ensureCandidatesForPage() │
+│ Dispatch        │                   │  (for first page)          │
+│ with inputs     │                   │  Returns immediately       │
+└─────────────────┘                   └───────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                  ENSURE CANDIDATES FOR PAGE (ensureCandidatesForPage)  │
-│  Location: src/utils/prompt.ts:2804                                      │
+│                  ENSURE CANDIDATES FOR PAGE (ensureCandidatesForPage)     │
+│  Location: src/utils/prompt.ts:2804                                       │
 │  Purpose: Iterate through actions and pre-generate candidate pages        │
-│                                                                          │
-│  This function is the core of the pre-generation system. It scans all    │
-│  actions on a page and generates candidate pages for those without a     │
-│  complete destination (both branchId and pageId).                        │
-│                                                                          │
-│  Key features:                                                           │
+│                                                                           │
+│  This function is the core of the pre-generation system. It scans all     │
+│  actions on a page and generates candidate pages for those without a      │
+│  complete destination (both branchId and pageId).                         │
+│                                                                           │
+│  **Enhanced Book Validation**: When called from API endpoints, the system │
+│  validates page belongs to specified book using `getPageFromDB(pageId,    │
+│  { bookIdentifier })` which resolves book slugs/UUIDs and ensures         │
+│  proper ownership before processing.                                      │
+│                                                                           │
+│  Key features:                                                            │
 │  - Distributed lock prevents concurrent processing of same page           │
 │  - Re-checks pending actions after acquiring lock (idempotent)            │
 │  - Removes invalid actions with non-retryable errors                      │
@@ -87,15 +113,15 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Skip if last page         │
-                    │  (page >= totalPages)      │
+                    │  Skip if last page        │
+                    │  (page >= totalPages)     │
                     └───────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Filter actions without    │
-                    │  complete destination      │
-                    │  (!pageId || !branchId)    │
+                    │  Filter actions without   │
+                    │  complete destination     │
+                    │  (!pageId || !branchId)   │
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -105,23 +131,23 @@ The pre-generation system uses a **fire-and-forget** pattern with **distributed 
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Acquire distributed lock  │
-                    │  withLock()                │
-                    │  Key: lock:candidate:{id}  │
-                    │  TTL: 300 seconds (5 min)  │
+                    │  Acquire distributed lock │
+                    │  withLock()               │
+                    │  Key: lock:candidate:{id} │
+                    │  TTL: 300 seconds (5 min) │
                     └───────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Re-check after lock       │
-                    │  (another instance may     │
-                    │   have processed)          │
+                    │  Re-check after lock      │
+                    │  (another instance may    │
+                    │   have processed)         │
                     └───────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  For each pending action:  │
-                    │  Generate candidate        │
+                    │  For each pending action: │
+                    │  Generate candidate       │
                     └───────────────────────────┘
                                     │
                                     ├─────────────────────────────────────────────────────────────────┐
@@ -539,6 +565,56 @@ if (currentDepth < maxDepth) {
 - **Deep Coverage**: Background processing ensures deeper levels are ready when needed
 - **Resource Control**: Configurable depth prevents excessive resource usage
 - **Timeout Resilience**: Background processing has more generous timeouts
+
+## CRON JOB PROCESSING
+
+### Scheduled vs Manual Processing
+
+The cron job (`retry-pending-generations.ts`) supports dual execution modes:
+
+#### Scheduled Mode (Default)
+```typescript
+// Environment variables not set → batch processing
+if (!triggeredBookId && !triggeredPageId) {
+  await retryPendingGenerations();
+  await generateMissingOriginalBookCovers();
+}
+```
+
+#### Manual Mode (GitHub Workflow)
+```typescript
+// Environment variables set → targeted processing
+const triggeredBookId = process.env.TRIGGERED_BOOK_ID?.trim();
+const triggeredPageId = process.env.TRIGGERED_PAGE_ID?.trim();
+const triggeredByUser = process.env.TRIGGERED_BY_USER?.trim();
+
+if (triggeredBookId && triggeredPageId) {
+  await processSpecificPage(triggeredBookId, triggeredPageId, triggeredByUser || 'unknown');
+}
+```
+
+### Targeted Page Processing
+
+**`processSpecificPage()` Function:**
+- Validates page exists and belongs to specified book
+- Forces generation even if no pending actions (manual trigger override)
+- Uses `ensureCandidatesForPage()` with system user context
+- Updates `pendingGenerationCount` after processing
+- Provides detailed logging with user attribution
+
+**Key Differences from Scheduled Mode:**
+- **Single Target**: Processes one specific page vs. batch of pages
+- **Force Generation**: Generates even when `pendingGenerationCount = 0`
+- **User Attribution**: Logs which user triggered the generation
+- **No Cover Generation**: Skips `generateMissingOriginalBookCovers()` in manual mode
+
+### Environment Variables
+
+| Variable | Purpose | Source |
+|-----------|---------|--------|
+| `TRIGGERED_BOOK_ID` | Target book ID | GitHub workflow input |
+| `TRIGGERED_PAGE_ID` | Target page ID | GitHub workflow input |
+| `TRIGGERED_BY_USER` | User who triggered | GitHub workflow input |
 
 ## Implementation Details
 

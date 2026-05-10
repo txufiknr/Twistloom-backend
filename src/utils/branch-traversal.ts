@@ -533,11 +533,38 @@ async function findOptimalSnapshot(
  * This advanced reconstruction system uses a combination of snapshots (checkpoints)
  * and deltas to efficiently rebuild the complete story state at any point in the branch.
  * 
+ * Incremental Delta Application Principle:
+ * The reconstruction follows a strict chronological approach where deltas are applied
+ * incrementally from the oldest available base state to the current page:
+ * 
+ * Example Case (Reconstructing page 3):
+ * ```
+ * 1. Find optimal snapshot: page 1 (oldest with stored state)
+ * 2. Build branch path: [page1, page2, page3]
+ * 3. Apply deltas chronologically:
+ *    - Start with page1 base state
+ *    - Apply page2.stateDelta → intermediate state
+ *    - Apply page3.stateDelta → final state
+ * 4. Result: page1(base) + page2(delta) + page3(delta) = reconstructed state
+ * ```
+ * 
+ * Key Principles:
+ * - Oldest Base: Always start with earliest available stored state
+ * - Chronological Order: Apply deltas in the order they occurred in the story
+ * - Incremental Accumulation: Each delta builds upon the result of the previous one
+ * - State Integrity: Ensures accurate state reconstruction matching actual story progression
+ * 
  * Strategy:
  * 1. Try direct state retrieval (fastest)
  * 2. Find optimal snapshot using hybrid first/middle/last + interval strategy
- * 3. Apply deltas forward from snapshot to current page
+ * 3. Apply deltas forward from snapshot to current page in chronological order
  * 4. Fallback to basic reconstruction if no snapshot/deltas available
+ * 
+ * Delta Application Process:
+ * - Loop from `snapshotInfo.snapshotIndex + 1` to `currentPageIndex`
+ * - Each iteration: `currentState = applyStateDelta(currentState, page.stateDelta)`
+ * - Ensures proper state accumulation from oldest to newest
+ * - Includes error handling for individual delta failures
  * 
  * @param currentPageId - Current page ID to reconstruct state for
  * @param deps - Dependencies for state reconstruction
@@ -551,8 +578,14 @@ async function findOptimalSnapshot(
  *   getStoryState: (id) => stateService.getState(id)
  * });
  * 
- * console.log(`Reconstructed state with ${result.deltasApplied} deltas`);
+ * console.log(`Reconstructed state with ${result.deltasApplied} deltas using ${result.snapshotsUsed} snapshots`);
  * console.log(`Method used: ${result.method}`);
+ * 
+ * // Reconstruction with custom options
+ * const result = await reconstructStoryState('page456', deps, {
+ *   useCache: false,
+ *   maxTraversalDepth: 10
+ * });
  * ```
  */
 export async function reconstructStoryState(

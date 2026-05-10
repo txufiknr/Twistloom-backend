@@ -197,6 +197,33 @@ async function getBranchPath(currentPageId: string, options: TraversalOptions): 
 
 **Purpose:** Rebuild complete story state at any point in the branch using hybrid delta + checkpoint system.
 
+#### Incremental Delta Application Principle
+
+The reconstruction follows a strict chronological approach where deltas are applied incrementally from the oldest available base state to the current page:
+
+**Example (Reconstructing page 3):**
+```
+1. Find optimal snapshot: page 1 (oldest with stored state)
+2. Build branch path: [page1, page2, page3]
+3. Apply deltas chronologically:
+   - Start with page1 base state
+   - Apply page2.stateDelta → intermediate state
+   - Apply page3.stateDelta → final state
+4. Result: page1(base) + page2(delta) + page3(delta) = reconstructed state
+```
+
+**Key Principles:**
+- **Oldest Base**: Always start with the earliest available stored state
+- **Chronological Order**: Apply deltas in the order they occurred in the story
+- **Incremental Accumulation**: Each delta builds upon the result of the previous one
+- **State Integrity**: Ensures accurate state reconstruction matching actual story progression
+
+**Delta Application Process:**
+- Loop from `snapshotInfo.snapshotIndex + 1` to `currentPageIndex`
+- Each iteration: `currentState = applyStateDelta(currentState, page.stateDelta)`
+- Ensures proper state accumulation from oldest to newest
+- Includes error handling for individual delta failures
+
 **Algorithm:**
 ```typescript
 async function reconstructStoryState(

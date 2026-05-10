@@ -11,10 +11,10 @@ import { eq, and } from "drizzle-orm";
 import type { StoryState, StoryProgressWithBranch, BranchValidationResult, BranchNavigationOptions, TraversalOptions, StateReconstructionDeps } from "../types/story.js";
 import { getBookFromDB, getPageFromDB } from "./book.js";
 import { getBranchPath, getSiblingPages, getBranchStats, reconstructStoryState, preWarmBranchCache } from "../utils/branch-traversal.js";
-import { getStoryState, getStoryProgress, getUserSession } from "./story.js";
+import { getStoryState, getStoryProgress, getUserSession, insertStoryState } from "./story.js";
 import { setDeletedState } from "./story-state-cache.js";
 import { getErrorMessage } from "../utils/error.js";
-import { MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
+import { MAX_ACTION_CHOICES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
 import { createEmptyStoryState } from "../utils/story.js";
 
@@ -35,17 +35,24 @@ export function generateBranchId(): string {
  * 3. Providing fallback state reconstruction for missing data
  * 4. Creating minimal valid state with branch context
  * 
+ * Key Principles:
+ * - Oldest Base: Always start with the earliest available stored state
+ * - Chronological Order: Apply deltas in the order they occurred in the story
+ * - Incremental Accumulation: Each delta builds upon the result of the previous one
+ * - State Integrity: Ensures accurate state reconstruction matching actual story progression
+ * 
+ * Behavior:
+ * - First attempts database lookup via getStoryStateFromDB()
+ * - If database lookup fails, reconstructs using branch traversal with incremental delta application
+ * - Uses optimal snapshot selection (major events → interval → fewer deltas → last)
+ * - Applies deltas chronologically from snapshot position to current page
+ * - Provides comprehensive fallback mechanisms for data integrity
+ * - Maintains branch path context and action history reconstruction
+ * 
  * @param userId - User identifier for the story state
  * @param pageId - Page identifier for the story state
  * @param options - Branch traversal options for cache and validation control
  * @returns Promise resolving to story state or null
- * 
- * Behavior:
- * - First attempts database lookup via getStoryStateFromDB()
- * - If database lookup fails, reconstructs using branch traversal
- * - Uses snapshots and deltas for efficient reconstruction
- * - Applies branch path context and minimal state creation
- * - Provides comprehensive fallback mechanisms for data integrity
  * 
  * @example
  * ```typescript
@@ -55,10 +62,16 @@ export function generateBranchId(): string {
  *   validatePath: true
  * });
  * if (state) {
- *   console.log(`State reconstructed for page ${state.page}`);
+ *   console.log(`State reconstructed for page ${state.page} using ${state.snapshotsUsed || 0} snapshots and ${state.deltasApplied || 0} deltas`);
  * } else {
  *   console.log("State reconstruction failed");
  * }
+ * 
+ * // Reconstruction with custom traversal depth
+ * const state = await getStoryStateWithBranch("user123", "book456", "page789", {
+ *   maxTraversalDepth: 10,
+ *   useCache: false
+ * });
  * ```
  */
 export async function getStoryStateWithBranch(
@@ -100,7 +113,15 @@ export async function getStoryStateWithBranch(
       book.totalPages
     );
 
-    return { ...minimalState, ...reconstructedState };
+    const finalState: StoryState = { ...minimalState, ...reconstructedState };
+
+    // Persist reconstructed story state to database if persistState is true
+    if (options.persistState) {
+      console.log(`[getStoryStateWithBranch] 💾 Persisting reconstructed state for page ${pageId}`);
+      void insertStoryState(bookId, pageId, finalState);
+    }
+
+    return finalState;
   } catch (error) {
     console.error(`[getStoryStateWithBranch] ❌ Failed to get/reconstruct state for page ${pageId}:`, getErrorMessage(error));
     return null;
@@ -290,7 +311,14 @@ export async function cleanupStoryStatesWithStrategy(bookId: string): Promise<vo
       return;
     }
 
-    const totalPages = bookInfo.totalPages;
+    // Early exit: if branchesCount is less than threshold, no need to cleanup
+    const { totalPages, branchesCount } = bookInfo;
+    const branchesCountThreshold = Math.pow(5, MAX_ACTION_CHOICES); // Example: 5^3 (125)
+    if (branchesCount < branchesCountThreshold) {
+      console.log(`[cleanupStoryStatesWithStrategy] ℹ️ Book has less than ${branchesCountThreshold} branches, skipping cleanup`);
+      return;
+    }
+
     console.log(`[cleanupStoryStatesWithStrategy] 📚 Using totalPages from book schema: ${totalPages}`);
     
     // Get all story states for this book, ordered by page number

@@ -13,7 +13,7 @@
  */
 
 import type { Response } from "express";
-import { IS_DEVELOPMENT } from "../config/constants.js";
+import { IS_DEVELOPMENT } from "../config/env.js";
 
 /**
  * Standardized error response interface
