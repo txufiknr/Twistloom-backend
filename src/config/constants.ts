@@ -7,6 +7,7 @@ export const APP_NAME_SLUG: string = 'twistloom';
 export const APP_DESCRIPTION = 'Where your choices shape the story. Step into psychological thrillers that adapt to every decision you make.';
 export const APP_TAGLINE = 'AI-powered platform for creating and reading interactive branching thriller stories.';
 export const APP_TAGLINE_SHORT = 'AI Thriller Story Generator';
+export const APP_WEB_URL = 'https://twistloom-backend.vercel.app';
 
 /**
  * Safely get application version from package.json

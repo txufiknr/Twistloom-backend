@@ -20,7 +20,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
-import { getStoryStateFromPage } from "./story.js";
+import { getStoryState, getStoryStateFromPage } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -307,6 +307,7 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
  * @returns Promise resolving to the book record or null if not found
  */
 export async function getBookFromDB(bookId: string): Promise<DBBook | null> {
+  // TODO: need to implement LRU cache?
   const result = await dbRead
     .select()
     .from(books)
@@ -329,10 +330,11 @@ export async function getBookFromDB(bookId: string): Promise<DBBook | null> {
  * - Returns null if state doesn't exist anywhere
  */
 export async function getBook(bookId: string): Promise<Book | null> {
-  // Try database first
-  const dbResult = await getBookFromDB(bookId);
-  if (dbResult) {
-    return mapBookFromDb(dbResult);
+  try {
+    const dbResult = await getBookFromDB(bookId);
+    if (dbResult) return mapBookFromDb(dbResult);
+  } catch {
+    // Ignore errors
   }
 
   return null;
@@ -499,6 +501,7 @@ export async function getPageFromDB(pageId: string, options: {
   bookIdentifier?: string,
   client?: typeof dbRead | typeof dbWrite
 } = {}): Promise<DBPage | null> {
+  // TODO: need to implement LRU cache?
   const { bookIdentifier, client = dbRead } = options;
 
   try {
@@ -1239,7 +1242,6 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
  * @param userId - User ID initiating the retry
  * @param page - Page data with actions
  * @param userChosenAction - Optional user's chosen action for this page
- * @param hasIncompleteActions - Whether the page has actions without destinations (if known, skips enrichment check)
  * 
  * Behavior:
  * - Checks if actions are missing destinations (unless hasIncompleteActions is provided)
@@ -1269,16 +1271,13 @@ export async function triggerCandidateGenerationRetry(
   userId: string,
   page: DBPage,
   selectedActions?: Action[],
-  hasIncompleteActions?: boolean
 ): Promise<void> {
   // Check for incomplete actions if not provided
-  if (hasIncompleteActions === undefined) {
-    const allActions = page.actions || [];
-    const visibleActions = allActions.filter((action: Action) => 
-      action.destination?.branchId && action.destination?.pageId
-    );
-    hasIncompleteActions = visibleActions.length < allActions.length;
-  }
+  const allActions = page.actions || [];
+  const visibleActions = allActions.filter((action: Action) => 
+    action.destination?.branchId && action.destination?.pageId
+  );
+  const hasIncompleteActions = visibleActions.length < allActions.length;
 
   // Skip if all actions have destinations
   if (!hasIncompleteActions) return;
@@ -1295,9 +1294,14 @@ export async function triggerCandidateGenerationRetry(
   // Fire-and-forget retry
   void (async () => {
     try {
-      const { ensureCandidatesForPage } = await import("../utils/candidate-generation.js");
+      const { ensureCandidatesForPageWithStrategy } = await import("../utils/candidate-generation.js");
       const userPage = await mapToUserStoryPage(page, userId, selectedActions);
-      await ensureCandidatesForPage(userId, userPage);
+      await ensureCandidatesForPageWithStrategy({
+        strategy: 'cron',
+        userId,
+        page: userPage,
+        currentState: await getStoryState(page.id, { dbPage: page, maxTraversalDepth: 1 })
+      });
     } catch (error) {
       console.error(`[triggerCandidateGenerationRetry] ❌ Failed for page ${page.id}:`, getErrorMessage(error));
     }

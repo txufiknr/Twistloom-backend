@@ -9,7 +9,6 @@ import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
 import { ensureCandidatesForPageWithStrategy } from "./candidate-generation.js";
-import { ensureCandidatesForPageAsync } from "./candidate-generation-async.js";
 import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
@@ -22,7 +21,7 @@ import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, in
 import { dbWrite } from "../db/client.js";
 import { insertStoryState } from "../services/story.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
-import { generateBranchId } from "../services/story-branch.js";
+import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { generateId } from "./uuid.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
@@ -2402,9 +2401,23 @@ export async function initializeBook(
 
     // 9. Pre-generate candidate pages for each action in the first page
     if (isOriginal) { // GitHub cron job, use github-action strategy
-      await ensureCandidatesForPageWithStrategy(userId, firstUserPage, initialState, book, 'github-action');
-    } else { // Fire-and-forget for fast user generated book, use async job queue
-      await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book);
+      await ensureCandidatesForPageWithStrategy({
+        strategy: 'github-action',
+        userId,
+        page: firstUserPage,
+        currentState: initialState,
+        currentBook: book,
+      });
+    } else { // Fire-and-forget for fast user generated book result (immediate background processing)
+      // await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book); // Up to 24 hours delay
+      // await ensureCandidatesForPage(userId, firstUserPage, initialState, book); // 4.5 minute Vercel limit
+      const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
+      void triggerBackgroundGeneration({
+        userId,
+        pageId: firstUserPage.id,
+        bookId: book.id,
+        context: 'initializeBook'
+      });
     }
 
     // 10. Return complete book setup
@@ -2475,8 +2488,13 @@ export async function initializeBook(
  * ```
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
-  const { userId, book, currentState, actionedPage, generateNewBranchId = false } = params;
-  const parentBranchId = actionedPage.branchId ?? "main";
+  const { userId, book, actionedPage, generateNewBranchId = false } = params;
+  let { currentState } = params;
+
+  currentState ??= await getStoryStateWithBranch(userId, actionedPage.bookId, actionedPage.id);
+  if (!currentState) {
+    throw new Error(`Failed to get story state for page ${actionedPage.id}`);
+  }
   
   // 0. Advance story state based on user action and previous AI turn updates
   const expectedPageNumber = actionedPage.page + 1;
@@ -2488,6 +2506,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   console.log(`[generateNextPage] 🧩 actionedPage.page:`, actionedPage.page);
   console.log(`[generateNextPage] 🧩 advancedState.page:`, advancedState.page);
   if (advancedState.page !== expectedPageNumber) {
+    // Provided story state might mismatch, but still respect what provided
     console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${advancedState.page} from advanced story state`);
     advancedState.page = expectedPageNumber;
   }
@@ -2548,6 +2567,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
   // 7. Persist generated page to database with automatic retry on branch conflicts
   // Branching decision is made inside the retry function to eliminate race conditions
+  const parentBranchId = actionedPage.branchId ?? "main";
   const newPage = await retryWithBranchConflict<PersistedStoryPage, StoryPageMeta>(
     async (data) => {
       // let branchId = parentBranchId; // Default: same branchId as parent page

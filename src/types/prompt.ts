@@ -14,8 +14,8 @@ export type BuildNextPageParams = {
   userId: string;
   /** Book information containing metadata and settings */
   book: Book;
-  /** Story state for current page (page number not incremented yet) */
-  currentState: StoryState;
+  /** Story state for current page (can be provided for faster generation) */
+  currentState?: StoryState | null;
   /** Current page with selected action for context */
   actionedPage: ActionedStoryPage;
   /** Whether next page should have new branchId */

@@ -181,8 +181,8 @@ logMetrics({
 - Processing statistics and monitoring
 - Manual job triggering for testing
 
-**Cron Schedule**: `1 * * * *` (Every hour at minute 1)
-*Note: User changed from `*/1 * * * *` to `1 * * * *` for cost optimization*
+**Cron Schedule**: `0 0 * * *` (Daily at midnight)
+*Note: Updated for Vercel Hobby tier compatibility (only allows daily cron jobs)*
 
 **Processing Flow**:
 1. Verify CRON_SECRET
@@ -192,6 +192,47 @@ logMetrics({
 5. Return statistics
 
 ### 4. Updated Page Generation Flow
+
+**Vercel Hobby Tier Solution - Extended Timeout Background Function**:
+
+The system now uses a hybrid approach optimized for Vercel Hobby tier limitations:
+
+**Main Route (`/api/books/:identifier/:pageId/candidates`)**:
+```typescript
+// Fire-and-forget pattern with extended timeout
+if (!clientDisconnected && !res.writableEnded) {
+  const { waitUntil } = await import('next/server') as any;
+  
+  // Non-blocking background call to dedicated route
+  waitUntil(
+    fetch(`${process.env.VERCEL_URL}/api/generate-candidates`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-internal-secret': process.env.INTERNAL_SECRET!
+      },
+      body: JSON.stringify({ userId, pageId, bookId: dbPage.bookId }),
+    })
+  );
+  
+  // Immediate response to user
+  res.json(updatedPage);
+}
+```
+
+**Dedicated Background Route (`/api/generate-candidates`)**:
+```typescript
+export const maxDuration = 800; // 13 minutes (Hobby tier max)
+
+// Extended timeout processing using cron strategy (15 minutes)
+const updatedPage = await ensureCandidatesForPageWithStrategy(
+  userId,
+  userPage,
+  currentState,
+  bookContext,
+  'cron' // Uses cron strategy for extended timeout (no Vercel limits)
+);
+```
 
 **Book Creation (`createBookCore`)**:
 ```typescript
@@ -203,17 +244,38 @@ const jobId = await enqueueCandidateGenerationJob(userId, firstUserPage, book, i
 // NOTE: currentState is currently unused in enqueue but kept for API consistency
 ```
 
+**Benefits of Hybrid Approach**:
+- ✅ Immediate user response (no waiting)
+- ✅ Extended timeout (800s vs 60s default)
+- ✅ Hobby tier compatible
+- ✅ No additional infrastructure needed
+- ✅ pg-boss job queue for durability
+- ✅ Daily cron as backup/fallback
+
 **Parallel Generation (`generateCandidatesInParallel`)**:
 ```typescript
 // OLD (fire-and-forget, still timeout-prone):
 void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth);
 
-// NEW (job queue, reliable):
-void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, null, {
-  currentDepth: currentDepth + 1,
-  maxDepth,
-  priority: 5 // Lower priority for deeper levels
-});
+// NEW (hybrid approach - level 2 immediate, level 3+ job queue):
+const nextDepth = currentDepth + 1;
+if (nextDepth === 2) {
+  // Level 2: Immediate fire-and-forget for better UX
+  const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
+  void triggerBackgroundGeneration({
+    userId,
+    pageId: candidatePage.id,
+    bookId: candidatePage.bookId,
+    context: `generateCandidatesInParallel-depth${nextDepth}`
+  });
+} else {
+  // Level 3+: Job queue for less critical deeper levels
+  void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
+    currentDepth: nextDepth,
+    maxDepth,
+    priority: 5 // Lower priority for deeper levels
+  });
+}
 ```
 
 ## Performance Characteristics

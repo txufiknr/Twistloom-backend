@@ -2,7 +2,7 @@
  * Vercel Cron API Route for Processing Candidate Generation Jobs
  * 
  * This endpoint is called by Vercel Cron to process candidate generation jobs
- * from the pg-boss queue. It runs every minute and processes up to 5 jobs
+ * from the pg-boss queue. It runs daily (Hobby tier limitation) and processes up to 5 jobs
  * per invocation to stay within Vercel's free tier limits.
  * 
  * The cron job:
@@ -31,7 +31,7 @@ import { getPageFromDB, mapToUserStoryPage } from '../../../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from '../../../config/story.js';
 import { dbWrite } from '../../../db/client.js';
 import { getErrorMessage } from '../../../utils/error.js';
-import { ensureCandidatesForPage } from '../../../utils/candidate-generation.js';
+import { ensureCandidatesForPageWithStrategy } from '../../../utils/candidate-generation.js';
 import type { StoryState } from '../../../types/story.js';
 
 /**
@@ -112,7 +112,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         }
         
         // Process candidate generation with state context
-        await ensureCandidatesForPage(userId, userPage, currentState, null);
+        await ensureCandidatesForPageWithStrategy({
+          strategy: 'cron',
+          userId,
+          page: userPage,
+          currentState,
+          currentBook: null
+        });
         
         // Mark job as completed
         await boss.complete('generate-candidates', job.id);

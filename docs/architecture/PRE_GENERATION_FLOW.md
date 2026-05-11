@@ -64,9 +64,32 @@ function getGenerationStrategy(context: CandidateGenerationStrategy): Generation
 The system supports configurable **multi-level depth pre-generation** to create comprehensive story trees:
 
 - **Level 1 (Strategy-Based)**: Generation based on deployment context (vercel/github-action/cron)
-- **Level 2+ (Job Queue)**: Background generation via async job queue
+- **Level 2 (Immediate Fire-and-Forget)**: Immediate background generation using `triggerBackgroundGeneration` service
+- **Level 3+ (Job Queue)**: Background generation via async job queue for less critical deeper levels
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
+
+### Hybrid Depth Strategy
+
+The system uses a **hybrid approach** to balance performance and user experience:
+
+**Level 2 - Immediate Processing**:
+- Uses `triggerBackgroundGeneration` for immediate fire-and-forget
+- Extended timeout (15 minutes via cron strategy)
+- Users navigate to level 2 pages quickly after level 1
+- Avoids 24-hour delay from daily cron schedule
+
+**Level 3+ - Job Queue Processing**:
+- Uses `enqueueCandidateGenerationJob` for background processing
+- Less critical depth (users may not reach these pages)
+- Reduces immediate load on system
+- Can wait for daily cron processing
+
+**Benefits of Hybrid Approach**:
+- ✅ Critical paths (level 1-2) are immediately available
+- ✅ Reduced system load for deeper levels
+- ✅ Better user experience for common navigation patterns
+- ✅ Scalable for exponential growth at deeper depths
 
 ## Manual Trigger Support
 

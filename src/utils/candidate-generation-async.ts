@@ -296,7 +296,7 @@ export function validatePageForGeneration(
  * @param currentState - Optional story state
  * @param currentBook - Optional book (will be fetched if not provided)
  * 
- * @returns Promise<string> - Job ID or empty string if no job needed
+ * @returns Promise<string> - Job ID or null if no job needed
  * 
  * @example
  * ```typescript

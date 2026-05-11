@@ -414,6 +414,7 @@ export async function getStoryStateFromDB(
     client?: typeof dbRead | typeof dbWrite
   } = {}
 ): Promise<DBStoryState | null> {
+  // TODO: need to implement LRU cache?
   const { client = dbRead } = options;
   const result = await client
     .select()

@@ -1,7 +1,16 @@
 import type { Book } from "./book.js";
 import type { Action, PersistedStoryPage, StoryState, UserStoryPage } from "./story.js";
 
-export type CandidateGenerationStrategy = 'vercel' | 'github-action' | 'cron';
+/**
+ * Candidate generation strategies for different deployment contexts
+ */
+export type CandidateGenerationStrategy =
+  /** User-facing API requests with immediate response requirements */
+  'vercel' |
+  /** Automated workflows and manual CI/CD operations */
+  'github-action' |
+  /** Background processing and extended timeout operations */
+  'cron';
 
 /**
  * Generation strategy options
@@ -24,7 +33,7 @@ export type GenerateCandidatePageParams = {
   /** The action for which to generate a candidate (will be matched against current page actions) */
   action: Action;
   /** Current page context */
-  currentPage?: UserStoryPage | null;
+  currentPage: UserStoryPage;
   /** Optional current story state (avoids database lookup when provided) */
   currentState?: StoryState | null;
   /** Optional book context (avoids session lookup when provided, e.g., for system-generated originals) */
@@ -86,7 +95,7 @@ export interface GenerateCandidatesInParallelParams {
   /** Current page context */
   currentPage: UserStoryPage;
   /** Current story state */
-  currentState: StoryState | null | undefined;
+  currentState?: StoryState | null;
   /** Current book context */
   currentBook: Book | null;
   /** Whether to generate new branch IDs for subsequent actions */
@@ -99,4 +108,16 @@ export interface GenerateCandidatesInParallelParams {
   maxDepth: number;
   /** Optional progress callback for real-time tracking */
   onProgress?: ActionProgressCallback;
+}
+
+export interface GenerateCandidatesWithStrategyParams {
+  strategy: CandidateGenerationStrategy;
+  userId: string;
+  page: UserStoryPage;
+  currentState?: StoryState | null;
+  currentBook?: Book | null;
+  options?: {
+    timeoutMs?: number;
+    onProgress?: ActionProgressCallback;
+  }
 }

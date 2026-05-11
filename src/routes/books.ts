@@ -1251,13 +1251,12 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     req.on('aborted', onClientDisconnect);
     
     try {
-      const updatedPage = await ensureCandidatesForPageWithStrategy(
+      const updatedPage = await ensureCandidatesForPageWithStrategy({
         userId,   // Candidate pages initiator
-        userPage, // Used for determining which actions need candidates
-        await getStoryState(dbPage.id, { dbPage, maxTraversalDepth: 1 }),
-        null,     // Book context (will be resolved in validation)
-        'vercel',
-        {
+        page: userPage, // Used for determining which actions need candidates
+        currentState: await getStoryState(dbPage.id, { dbPage, maxTraversalDepth: 1 }),
+        strategy: 'vercel',
+        options: {
           onProgress: async (action: Action, status: 'started' | 'completed' | 'failed', result?: PersistedStoryPage, error?: unknown) => {
             // Check if client disconnected before writing
             if (clientDisconnected || res.writableEnded) {
@@ -1294,7 +1293,19 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
             }
           }
         }
-      );
+      });
+
+      // Fire-and-forget background generation for extended timeout
+      if (!clientDisconnected && !res.writableEnded) {
+        // Use shared background generation service
+        const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
+        void triggerBackgroundGeneration({
+          userId,
+          pageId,
+          bookId: dbPage.bookId,
+          context: 'GET /candidates'
+        });
+      }
 
       res.json(updatedPage);
     } finally {

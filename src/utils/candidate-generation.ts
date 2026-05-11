@@ -9,7 +9,7 @@ import { getBook, getPageFromDB, getStoryPageById, mapToUserStoryPage } from '..
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import type { UserStoryPage, StoryState, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerationStrategy } from '../types/candidates.js';
+import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -19,7 +19,6 @@ import { enqueueCandidateGenerationJob } from './candidate-generation-async.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPage } from './prompt.js';
 import { getStoryStateWithBranch } from '../services/story-branch.js';
-import { getStoryProgress, getUserSession } from '../services/story.js';
 import { isValidUuid } from './uuid.js';
 import { generateId } from './uuid.js';
 
@@ -249,36 +248,49 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
  * Determines the appropriate generation strategy based on context
  * 
  * @param context - Generation context
- * @returns Generation strategy configuration
+ * @returns Generation strategy configuration which is optimized for specific
+ * use cases and environments:
+ * 
+ * 'vercel': User-facing API requests with immediate response requirements (Express API Route)
+ * - Timeout: 4.5 minutes (Vercel limits enforced)
+ * - Parallel: ✅ Yes (for performance)
+ * - Use Case: Real-time user interactions via SSE
+ * - Benefits: Fast response, real-time progress tracking
+ * - Limitations: Vercel timeout restrictions
+ * 
+ * 'cron': Background processing and extended timeout operations (Vercel Cron)
+ * - Timeout: 13 minutes (no Vercel limits, align with API route maxDuration)
+ * - Parallel: ✅ Yes (for efficiency)
+ * - Use Case: Background functions, retry processing
+ * - Benefits: Extended timeout, bulk operations
+ * - Limitations: Delayed execution (scheduled)
+ * 
+ * 'github-action': Automated workflows and manual CI/CD operations (GitHub Workflow)
+ * - Timeout: 30 minutes (custom extended)
+ * - Parallel: ❌ No (sequential for reliability and logging)
+ * - Use Case: Originals generation, bulk processing
+ * - Benefits: Detailed logging, error recovery
+ * - Limitations: Slower sequential processing
  */
 export function getGenerationStrategy(context: CandidateGenerationStrategy = 'vercel'): GenerationStrategy {
   switch (context) {
-    case 'vercel':
-      return {
-        useParallel: true,
-        enforceVercelLimits: true,
-        customTimeoutMs: undefined // Use calculated timeout
-      };
+    case 'vercel': return {
+      useParallel: true,
+      enforceVercelLimits: true,
+      customTimeoutMs: undefined // Use calculated timeout
+    };
     
-    case 'github-action':
-      return {
-        useParallel: false, // Sequential for reliability
-        enforceVercelLimits: false, // No Vercel limits in GitHub Actions
-        customTimeoutMs: 600000 // 10 minutes for GitHub Actions
-      };
+    case 'cron': return {
+      useParallel: true, // Parallel for efficiency
+      enforceVercelLimits: false, // No Vercel limits in cron
+      customTimeoutMs: 780_000 // 13 minutes for cron jobs (20s buffer)
+    };
     
-    case 'cron':
-      return {
-        useParallel: true, // Parallel for efficiency
-        enforceVercelLimits: false, // No Vercel limits in cron
-        customTimeoutMs: 900000 // 15 minutes for cron jobs
-      };
-    
-    default:
-      return {
-        useParallel: true,
-        enforceVercelLimits: true
-      };
+    case 'github-action': return {
+      useParallel: false, // Sequential for reliability
+      enforceVercelLimits: false, // No Vercel limits in GitHub Actions
+      customTimeoutMs: 1_800_000 // 30 minutes for GitHub Actions
+    };
   }
 }
 
@@ -352,84 +364,28 @@ export function calculateGenerationTimeout(
  * ```
  */
 export async function generateCandidatePage(params: GenerateCandidatePageParams): Promise<PersistedStoryPage | null> {
-  const { userId, action: actionCandidate, currentState: providedState, currentBook: providedBook, generateNewBranchId } = params;
-  let { currentPage } = params;
-
-  // Check for invalid actions (will be removed)
+  const { userId, action: actionCandidate, currentPage, currentState, generateNewBranchId } = params;
+  let { currentBook } = params;
+  
+  if (!currentPage) {
+    throw createNonRetryableError('currentPage is required');
+  }
+  
+  // 1. Check for invalid actions (will be removed)
   if (!actionCandidate.text) {
-    throw createNonRetryableError(
-      `Invalid action: no text`,
-      'INVALID_ACTION'
-    );
+    throw createNonRetryableError(`Invalid action: no text`, 'INVALID_ACTION');
   }
 
-  // 1. Get current story progress (book, page, state, session) in parallel
-  // Use provided state if available, otherwise fetch from database
-  let currentState = providedState;
-  let currentBook: Book | null = providedBook ?? null;
-  // let currentSession: UserSession | null = null;
-
-  if (!currentState) {
-    console.log(`[generateCandidatePage] 👀 No state provided, reconstructing from parent page...`);
-    // For candidate generation, always reconstruct state from parent page to avoid
-    // cross-branch contamination. Don't use getStoryProgress which relies on session
-    // that may point to a different branch's page.
-    const { parentId: parentPageId, bookId } = currentPage || {};
-    if (parentPageId && bookId) {
-      currentState = await getStoryStateWithBranch(userId, bookId, parentPageId);
-      
-      // Add error handling for getBook call
-      try {
-        currentBook ??= await getBook(bookId);
-      } catch (err) {
-        console.error(`[generateCandidatePage] ❌ Failed to fetch book ${bookId}:`, getErrorMessage(err));
-        throw new Error(`Failed to fetch book ${bookId} for candidate generation`, { cause: err });
-      }
-      
-      console.log(`[generateCandidatePage] 🧩 Reconstructed state from parent page ${parentPageId}`);
-    } else {
-      // No parent (root page), use getStoryProgress as fallback
-      console.log(`[generateCandidatePage] ⚠️ No parent page, using getStoryProgress fallback...`);
-      const progress = await getStoryProgress(userId, currentBook?.id, currentPage?.id);
-      currentBook ??= progress.book ?? null;
-      currentPage ??= progress.page;
-      console.log(`[generateCandidatePage] 🧩 getStoryProgress session:`, progress.session);
-      console.log(`[generateCandidatePage] 🧩 getStoryProgress state:`, progress.state);
-      console.log(`[generateCandidatePage] 🧩 getStoryProgress currentPage?.page:`, currentPage?.page);
-      currentState = progress.state;
-      // currentSession = progress.session ?? null;
-    }
-  } else if (!currentBook) {
-    // If state is provided but book is not, try to get it from session
-    const session = await getUserSession(userId);
-    // currentSession = session ?? null;
-    if (session) {
-      // Add error handling for getBook call
-      try {
-        currentBook = await getBook(session.bookId) ?? null;
-      } catch (err) {
-        console.error(`[generateCandidatePage] ❌ Failed to fetch book ${session.bookId} from session:`, getErrorMessage(err));
-        // Continue with null book rather than throwing to allow graceful degradation
-        currentBook = null;
-      }
-    }
+  // 2. Get book for current page if not provided
+  currentBook ??= await getBook(currentPage.bookId);
+  if (!currentBook) {
+    throw createNonRetryableError(`Book not found for page ${currentPage.id}`, 'BOOK_NOT_FOUND');
   }
-
-  // 2. Validate all required components exist for story progression
-  // Book is required (provided directly for system-generated originals, or fetched from session for user navigation)
-  // Session is optional, not available during background process using system user ID (generate originals, retry pending generations)
-  // Except it's manually triggered via user navigation (GET /api/books/:identifier/:pageId/candidates)
-  if (!currentBook) throw new Error(`No active book found for user ${userId}`);
-  if (!currentPage) throw new Error(`No page found for user ${userId} (bookId: ${currentBook.id})`);
-  if (!currentState) throw new Error(`No state found for user ${userId} (pageId: ${currentPage.id})`);
-
-  // Use session bookId if available, otherwise use provided book
-  // const { bookId } = currentSession ?? { bookId: currentBook.id };
 
   // 3. Match actionText against current page actions to get full Action object
   const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
   if (!action) {
-    throw new Error(`Action "${actionCandidate.text}" not found in current page actions`);
+    throw createNonRetryableError(`Action "${actionCandidate.text}" not found in current page actions`, 'ACTION_NOT_FOUND');
   }
 
   // 4. Check if next page is pre-generated (candidate) and reuse if available
@@ -448,7 +404,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
     // 6a. Create actioned page with selected action for state processing
     const actionedPage: ActionedStoryPage = {
       ...currentPage,
-      selectedAction: action 
+      selectedAction: action
     };
     
     // 6b. Generate next page using AI with dynamic configuration
@@ -476,6 +432,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
         }
       } else {
         // Re-throw other errors
+        // throw createNonRetryableError(getErrorMessage(error), 'GENERATION_FAILED');
         throw error;
       }
     }
@@ -644,28 +601,43 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
               return;
             }
             
-            const candidateUserPage: UserStoryPage = {
-              ...candidatePage,
-              selectedActions: []
-            };
-            
             // Trigger next level generation without blocking current response (fire-and-forget)
             // void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth, options).catch(error => {
             //   console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
             // });
 
-            // Calculate proper state for deeper level generation
-            // This ensures advanceStoryState increments to correct page number and uses updated context
-            const candidateState = await getStoryStateWithBranch(userId, candidatePage.bookId, candidatePage.id);
+            // Hybrid approach: Level 2 immediate, Level 3+ job queue
+            const nextDepth = currentDepth + 1;
+            if (nextDepth === 2) {
+              // Level 2: Immediate fire-and-forget for better UX
+              const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
+              void triggerBackgroundGeneration({
+                userId,
+                pageId: candidatePage.id,
+                bookId: candidatePage.bookId,
+                context: `generateCandidatesInParallel-depth${nextDepth}`
+              });
+              console.log(`[generateCandidatesInParallel] 🚀 Triggered immediate background generation for level ${nextDepth}`);
+            } else {
+              // Level 3+: Job queue for less critical deeper levels
+              // Calculate proper state for deeper level generation
+              // This ensures advanceStoryState increments to correct page number and uses updated context
+              const candidateState = await getStoryStateWithBranch(userId, candidatePage.bookId, candidatePage.id);
+              const candidateUserPage: UserStoryPage = {
+                ...candidatePage,
+                selectedActions: []
+              };
             
-            // Trigger next level generation via job queue (async, no timeouts)
-            void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
-              currentDepth: currentDepth + 1,
-              maxDepth,
-              priority: 5 // Lower priority for deeper levels
-            }).catch(error => {
-              console.error(`[generateCandidatesInParallel] ❌ Failed to enqueue generation job for depth ${currentDepth + 1}:`, getErrorMessage(error));
-            });
+              void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
+                currentDepth: nextDepth,
+                maxDepth,
+                // TODO: shouldn't priority be based on nextDepth instead of always 5?
+                priority: 5 // Lower priority for deeper levels
+              }).catch(error => {
+                console.error(`[generateCandidatesInParallel] ❌ Failed to enqueue generation job for depth ${nextDepth}:`, getErrorMessage(error));
+              });
+              console.log(`[generateCandidatesInParallel] 📋 Enqueued job queue generation for level ${nextDepth}`);
+            }
           } catch (error) {
             console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
           }
@@ -889,27 +861,20 @@ export async function ensureCandidatesForPageWithDepth(
  * @returns Promise<UserStoryPage> - The updated page with generated candidates
  */
 export async function ensureCandidatesForPageWithStrategy(
-  userId: string, 
-  page: UserStoryPage, 
-  currentState?: StoryState | null, 
-  currentBook?: Book | null,
-  context: CandidateGenerationStrategy = 'vercel',
-  options?: {
-    onProgress?: ActionProgressCallback;
-  }
+  params: GenerateCandidatesWithStrategyParams
 ): Promise<UserStoryPage> {
-  const { onProgress } = options || {};
+  const { strategy: context, userId, page, currentState, currentBook: providedBook, options } = params;
+  const { timeoutMs: customTimeoutMs, onProgress } = options || {};
 
   // Use shared validation to eliminate redundant checks
-  const validation = await validateCandidateGeneration(userId, page, currentBook, currentState);
-  
+  const validation = await validateCandidateGeneration(userId, page, providedBook);
   if (!validation.canGenerate) {
     console.log(`[ensureCandidatesForPageWithStrategy] ⏩ ${validation.reason}`);
     return page;
   }
 
   // Extract validated context
-  currentBook = validation.book!;
+  const currentBook = validation.book!;
   const pendingActions = validation.pendingActions;
   const { currentDepth, maxDepth } = validation;
   
@@ -917,7 +882,7 @@ export async function ensureCandidatesForPageWithStrategy(
 
   // Get generation strategy based on context
   const strategy = getGenerationStrategy(context);
-  const timeoutMs = calculateGenerationTimeout(strategy);
+  const timeoutMs = customTimeoutMs ?? calculateGenerationTimeout(strategy);
   
   console.log(`[ensureCandidatesForPageWithStrategy] ⏱️ Using timeout: ${timeoutMs}ms (parallel: ${strategy.useParallel})`);
 
@@ -1193,36 +1158,4 @@ export async function ensureCandidatesForPageWithStrategy(
     console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to read fresh page after lock failure:`, getErrorMessage(err));
     return page;
   }
-}
-
-/**
- * Wrapper function for Vercel environment (parallel generation with timeout limits)
- * 
- * This is the main function used in Vercel serverless functions.
- * It uses parallel generation and respects Vercel's 5-minute timeout limit.
- */
-export async function ensureCandidatesForPage(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
-  return ensureCandidatesForPageWithStrategy(userId, page, currentState, currentBook, 'vercel');
-}
-
-/**
- * Wrapper function for GitHub Actions environment (sequential generation, no timeout limits)
- * 
- * This function is designed for GitHub Actions workflows where we have:
- * - No Vercel timeout constraints
- * - Sequential generation for better reliability
- * - Longer timeout tolerance (10+ minutes)
- */
-export async function ensureCandidatesForPageGitHubAction(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
-  return ensureCandidatesForPageWithStrategy(userId, page, currentState, currentBook, 'github-action');
-}
-
-/**
- * Wrapper function for cron job environment (parallel generation, no timeout limits)
- * 
- * This function is used by Vercel cron jobs for background processing.
- * It uses parallel generation for efficiency and has relaxed timeout constraints.
- */
-export async function ensureCandidatesForPageCron(userId: string, page: UserStoryPage, currentState?: StoryState | null, currentBook?: Book | null): Promise<UserStoryPage> {
-  return ensureCandidatesForPageWithStrategy(userId, page, currentState, currentBook, 'cron');
 }
