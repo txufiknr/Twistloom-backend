@@ -562,6 +562,29 @@ export function extractPartialJSON<T extends Record<string, any>>(
   return result as Partial<T>;
 }
 
+/**
+ * Ensures a URL has a protocol (defaults to https://)
+ * @param url - URL to ensure protocol for
+ * @param defaultProtocol - Protocol to use if none exists (default: 'https://')
+ * @returns URL with guaranteed protocol
+ * 
+ * @example
+ * ```typescript
+ * ensureProtocol('example.com') // Returns: 'https://example.com'
+ * ensureProtocol('http://example.com') // Returns: 'http://example.com'
+ * ensureProtocol('https://example.com') // Returns: 'https://example.com'
+ * ensureProtocol('ftp://example.com', 'https://') // Returns: 'ftp://example.com'
+ * ```
+ */
+export function ensureProtocol(url: string, defaultProtocol: string = 'https://'): string {
+  if (typeof url !== 'string' || !url.trim()) return url;
+  const trimmed = url.trim();
+  
+  return trimmed.includes('://')
+    ? trimmed // If URL already has a protocol, return as-is
+    : `${defaultProtocol}${trimmed}`; // Add default protocol
+}
+
 export function stripEmptyLines(prompt: string): string {
   return !prompt.trim() ? '' : prompt.trim()
     .split('\n')

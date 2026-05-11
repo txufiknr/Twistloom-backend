@@ -651,6 +651,7 @@ export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
 export type EnrichedStoryPage = Partial<UserStoryPage> & { 
   originalActionsCount: number, 
   translatedText?: string,
+  sourceAction?: Action,
   context?: {
     /** Current story phase classification */
     phase: StoryPhase;

@@ -11,6 +11,7 @@
 import { APP_WEB_URL } from '../config/constants.js';
 import { getEnv, requireEnv } from '../utils/env.js';
 import { getErrorMessage } from '../utils/error.js';
+import { ensureProtocol } from '../utils/parser.js';
 
 /**
  * Triggers immediate background candidate generation using fire-and-forget pattern
@@ -55,8 +56,11 @@ export async function triggerBackgroundGeneration(params: {
 
   try {
     // Validate required environment variables
-    const vercelUrl = getEnv('VERCEL_URL', APP_WEB_URL);
+    const vercelRawUrl = getEnv('VERCEL_URL', APP_WEB_URL);
     const internalSecret = requireEnv('INTERNAL_SECRET');
+
+    // Ensure URL has protocol (VERCEL_URL doesn't include https://)
+    const vercelUrl = ensureProtocol(vercelRawUrl);
 
     // const { after } = await import('next/server');
     const { waitUntil } = await import('@vercel/functions');

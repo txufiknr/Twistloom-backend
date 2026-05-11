@@ -189,7 +189,7 @@ export function shouldTranslate(
 
   // Validate language codes
   if (!isValidLanguageCode(targetLanguage) || !isValidLanguageCode(bookLanguage)) {
-    console.warn(`[translate] Invalid language codes - book: ${bookLanguage}, target: ${targetLanguage}`);
+    console.warn(`[translate] ❓ Invalid language codes - book: ${bookLanguage}, target: ${targetLanguage}`);
     return undefined;
   }
 

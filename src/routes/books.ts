@@ -597,16 +597,9 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
     const userId = req.userId!;
 
     // Add userId to the book data
-    const bookWithUserId = {
-      ...bookData,
-      userId
-    };
+    const book = await insertBook({ ...bookData, userId });
 
-    const insertedBook = await insertBook(bookWithUserId);
-
-    res.status(201).json({
-      book: insertedBook,
-    });
+    res.status(201).json({ book });
   } catch (error) {
     handleApiError(res, "Failed to insert book", error);
   }
@@ -659,7 +652,7 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * // Combined search with all filters
  * GET /api/books?search=mystery&language=en&lastUpdated=this-month&tags=thriller
  */
-router.get("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.get("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags } = extractPaginationParams(req);
     const userId = req.userId!;
@@ -1006,11 +999,19 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  */
 router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    const { identifier, pageId, prefetch } = req.params;
+    const { identifier, pageId, prefetch, translate: shouldTranslate } = req.params;
     const userId = req.userId!; // Always defined even for guests
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const skipVisit = prefetch === 'true';
+    const translate = shouldTranslate === 'true';
 
-    const { visitDetails, book, dbPage } = await visitBookPage(res, { userId, pageId: pageId as string, bookIdentifier, skipVisit: prefetch === 'true' });
+    const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
+      userId,
+      pageId: pageId as string,
+      bookIdentifier,
+      skipVisit
+    });
+
     if (!dbPage) return handleNotFoundError(res, "Page not found");
     if (!book) return handleNotFoundError(res, "Book not found");
 
@@ -1019,7 +1020,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
     const bookLanguage = book.language || 'en';
     
     // Return enriched page with only frontend-relevant fields
-    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, acceptLanguage });
+    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, acceptLanguage, translate, sourceAction });
     if (!page) return handleApiError(res, "Failed to get enriched page");
 
     res.json({

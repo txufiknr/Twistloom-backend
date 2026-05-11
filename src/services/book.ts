@@ -752,23 +752,30 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
   } satisfies StoryPage;
 }
 
-export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: string, bookLanguage?: string, acceptLanguage?: string }): Promise<EnrichedStoryPage | null> {
-  const { userId, bookLanguage = 'en', acceptLanguage } = options;
+export async function mapToEnrichedPage(dbPage: DBPage, options: {
+  userId?: string,
+  bookLanguage?: string,
+  acceptLanguage?: string,
+  translate?: boolean,
+  sourceAction?: Action
+}): Promise<EnrichedStoryPage | null> {
+  const { userId, bookLanguage = 'en', acceptLanguage, translate = false, sourceAction } = options;
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
-  const { id: pageId, text } = dbPage;
+  const { id: pageId, text, bookId } = dbPage;
 
   // Query user's chosen action for this page (if authenticated)
-  const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, dbPage.bookId, pageId) : [];
+  const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, bookId, pageId) : [];
 
   // Get story state for context
   const storyState = await getStoryStateFromPage(dbPage);
 
   // Handle translation if Accept-Language header is provided and differs from book language
   let translatedText: string | undefined;
-  const targetLanguage = shouldTranslate(bookLanguage, acceptLanguage);
+  const targetLanguage = translate ? shouldTranslate(bookLanguage, acceptLanguage) : undefined;
 
-  if (targetLanguage && targetLanguage !== bookLanguage) {
+  if (targetLanguage) {
+    console.log(`[mapToEnrichedPage] 🌐 shouldTranslate into:`, targetLanguage);
     const translationResult = await getTranslatedText({
       pageId,
       text,
@@ -778,6 +785,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
     
     if (translationResult.text) {
       translatedText = translationResult.text;
+      console.log(`[mapToEnrichedPage] ✅ Translation success:`, translatedText);
+    } else {
+      console.warn(`[mapToEnrichedPage] ⚠️ Translation failed:`, translationResult.error);
     }
     // Note: If translation failed, translationResult.error contains error info
     // but we continue with original text (fallback behavior)
@@ -808,6 +818,10 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
     };
   }
 
+  if (dbPage.page > 1 && !sourceAction) {
+    console.error(`[mapToEnrichedPage] ❌ Source action should be exists for page ${dbPage.page}`);
+  }
+
   // Return enriched page with only frontend-relevant fields
   // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
   const enrichedPage: EnrichedStoryPage = {
@@ -830,6 +844,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
     actions: visibleActions, // Only actions that has destination page
     originalActionsCount: allActions.length,
     selectedActions,
+    sourceAction,
     translatedText,
     context,
   };

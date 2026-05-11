@@ -560,18 +560,26 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
 export async function visitBookPage(
   res: Response,
   params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean }
-): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage }> {
+): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage, sourceAction?: Action }> {
   const { userId, pageId, bookIdentifier, skipVisit = false } = params;
+  console.log(`[visit] 👓 Visited pageId:`, pageId, `(skipVisit = ${skipVisit})`);
 
   // Get page
   const dbPage = await getPageFromDB(pageId as string, { bookIdentifier });
-  if (!dbPage) return {};
+  if (!dbPage) {
+    console.error(`[visit] ❌ Visited page not found:`, pageId);
+    return {};
+  }
 
   const { page: pageNumber, bookId, parentId: parentPageId } = dbPage;
+  console.log(`[visit] 👓 Visited pageNumber:`, pageNumber);
 
   // Get book
   const book = await getEnrichedBook(bookId, userId);
-  if (!book) return { dbPage };
+  if (!book) {
+    console.error(`[visit] ❌ Book not found:`, bookId);
+    return { dbPage };
+  }
 
   // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
@@ -610,5 +618,5 @@ export async function visitBookPage(
 
   // Mark page as visited and persists chosen action
   const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
-  return { dbPage, book, visitDetails };
+  return { dbPage, book, visitDetails, sourceAction: action };
 }
