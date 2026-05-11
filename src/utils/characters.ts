@@ -12,21 +12,25 @@ import { ucfirst } from "./formatter.js";
 /**
  * Calculates the injury severity label based on severity and decay rate
  * @param injury - Injury object with severity and decayPerPage
- * @returns Severity label: 'permanent', 'high', 'medium', or 'low'
+ * @returns Severity label: 'permanent', 'critical', 'severe', 'moderate', 'mild', or 'none'
  * 
  * @example
  * ```typescript
- * getInjurySeverityLabel({ severity: 0.8, decayPerPage: 0.1 }); // 'high'
+ * getInjurySeverityLabel({ severity: 0.9, decayPerPage: 0.1 }); // 'critical'
+ * getInjurySeverityLabel({ severity: 0.7, decayPerPage: 0.1 }); // 'severe'
  * getInjurySeverityLabel({ severity: 0.5, decayPerPage: 0 }); // 'permanent'
- * getInjurySeverityLabel({ severity: 0.3, decayPerPage: 0.05 }); // 'low'
+ * getInjurySeverityLabel({ severity: 0.3, decayPerPage: 0.05 }); // 'mild'
+ * getInjurySeverityLabel({ severity: 0.1, decayPerPage: 0.05 }); // 'none'
  * ```
  */
 export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
   const { severity = 0.5, decayPerPage = 0 } = injury;
   if (decayPerPage === 0) return 'permanent';
-  if (severity >= 0.7) return 'high';
-  if (severity >= 0.4) return 'medium';
-  return 'low';
+  if (severity >= 0.8) return 'critical';
+  if (severity >= 0.6) return 'severe';
+  if (severity >= 0.4) return 'moderate';
+  if (severity >= 0.2) return 'mild';
+  return 'none';
 }
 
 /**

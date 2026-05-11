@@ -1,15 +1,5 @@
 import type { Gender, KnownGender } from "./user.js";
 
-// export const injurySeverities = [
-//   "mild",
-//   "moderate", 
-//   "severe",
-//   "critical",
-//   "none"
-// ] as const;
-
-// export type InjurySeverity = typeof injurySeverities[number];
-
 /**
  * Main character profile for psychological thriller stories
  * 
@@ -238,7 +228,16 @@ export type Injury = {
   consequences?: string;
 };
 
-export type InjurySeverity = 'high' | 'medium' | 'low' | 'permanent';
+export const injurySeverities = [
+  "mild",
+  "moderate", 
+  "severe",
+  "critical",
+  "permanent",
+  "none"
+] as const;
+
+export type InjurySeverity = typeof injurySeverities[number];
 
 /** Represents a past interaction between characters */
 export type PastInteraction = {
