@@ -1,17 +1,17 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryState, StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession } from "../types/story.js";
+import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
-import { getDeletedState } from "./story-state-cache.js";
+import { getDeletedState, getStoryState as getCachedStoryState, setStoryState as setCachedStoryState } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
-import { getErrorMessage } from "../utils/error.js";
-import { applyStateDelta } from "../utils/story.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY, MAX_TRAVERSAL_DEPTH_SHALLOW } from "../config/story.js";
 import type { BookPageVisit, EnrichedBookData } from "../types/book.js";
+import { getErrorMessage } from "../utils/error.js";
+import { applyStateDelta } from "../utils/story.js";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -414,15 +414,25 @@ export async function getStoryStateFromDB(
     client?: typeof dbRead | typeof dbWrite
   } = {}
 ): Promise<DBStoryState | null> {
-  // TODO: need to implement LRU cache?
+  // Try get from LRU cache first
+  const cachedState = getCachedStoryState(pageId);
+  if (cachedState) return cachedState;
+  
   const { client = dbRead } = options;
   const result = await client
     .select()
     .from(storyStates)
     .where(eq(storyStates.pageId, pageId))
     .limit(1);
-
-  return result[0] || null;
+  
+  const storyState = result[0] || null;
+  
+  // Cache the story state if found
+  if (storyState) {
+    setCachedStoryState(pageId, storyState);
+  }
+  
+  return storyState;
 }
 
 /**

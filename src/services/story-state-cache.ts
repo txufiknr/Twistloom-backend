@@ -1,3 +1,4 @@
+import type { DBStoryState } from "../types/schema.js";
 import type { StoryState } from "../types/story.js";
 import type { CacheEntry, StateCacheEntry } from "../types/story.js";
 import { LRUCache } from "lru-cache";
@@ -17,6 +18,32 @@ export const MAX_CACHE_SIZE = 500;
 
 /** Maximum number of reconstructed states to cache */
 export const MAX_STATE_CACHE_SIZE = 500;
+
+// ============================================================================
+// STORY STATE CACHE CONFIGURATION
+// ============================================================================
+
+/** Cache entry for story states */
+export interface StoryStateCacheEntry {
+  state: DBStoryState;
+  cachedAt: number;
+}
+
+// Hit/miss tracking variables for story states
+let storyStateCacheHits = 0;
+let storyStateCacheMisses = 0;
+
+/** LRU cache for story states with TTL support */
+export const storyStateCache = new LRUCache<string, StoryStateCacheEntry>({
+  max: MAX_STATE_CACHE_SIZE,
+  ttl: STATE_CACHE_TTL,
+  allowStale: false,
+  updateAgeOnGet: true,
+  // Custom dispose method for logging
+  dispose: (value: StoryStateCacheEntry, key: string) => {
+    console.log(`[StoryStateCache] 🗑️ Evicted expired entry: ${key} (age: ${Date.now() - value.cachedAt}ms)`);
+  }
+});
 
 // ============================================================================
 // DELETED STORY STATE CACHE CONFIGURATION
@@ -81,6 +108,92 @@ export const deletedStateCache = new LRUCache<string, DeletedStateCacheEntry>({
     console.log(`[DeletedStateCache] 🗑️ Evicted expired entry: ${key} (age: ${Date.now() - value.deletedAt}ms)`);
   }
 });
+
+/**
+ * Helper functions for story state cache
+ */
+
+/**
+ * Generates cache key for page ID
+ */
+export function getStoryStateCacheKey(pageId: string): string {
+  return pageId;
+}
+
+/**
+ * Gets a cached story state if valid
+ */
+export function getStoryState(pageId: string): DBStoryState | null {
+  const key = getStoryStateCacheKey(pageId);
+  const entry = storyStateCache.get(key);
+  
+  if (!entry) {
+    storyStateCacheMisses++;
+    return null;
+  }
+  
+  storyStateCacheHits++;
+  console.log(`[StoryStateCache] 🍪 Cache hit for ${key} (age: ${Date.now() - entry.cachedAt}ms)`);
+  return entry.state;
+}
+
+/**
+ * Caches a story state
+ */
+export function setStoryState(pageId: string, state: DBStoryState): void {
+  const key = getStoryStateCacheKey(pageId);
+  
+  const entry: StoryStateCacheEntry = {
+    state,
+    cachedAt: Date.now()
+  };
+  
+  storyStateCache.set(key, entry);
+  console.log(`[StoryStateCache] 🍪 Cached state for ${key} (TTL: ${STATE_CACHE_TTL}ms)`);
+}
+
+/**
+ * Gets cache statistics for story states
+ */
+export function getStoryStateCacheStats(): { 
+  size: number; 
+  maxSize: number; 
+  hitRate: number; 
+  hits: number; 
+  misses: number; 
+  totalRequests: number 
+} {
+  const size = storyStateCache.size;
+  const maxSize = storyStateCache.max;
+  const totalRequests = storyStateCacheHits + storyStateCacheMisses;
+  const hitRate = totalRequests > 0 ? (storyStateCacheHits / totalRequests) * 100 : 0;
+  
+  return {
+    size,
+    maxSize,
+    hitRate: Math.round(hitRate * 100) / 100, // Round to 2 decimal places
+    hits: storyStateCacheHits,
+    misses: storyStateCacheMisses,
+    totalRequests
+  };
+}
+
+/**
+ * Clears all story state cache entries
+ */
+export function clearStoryStateCache(): void {
+  storyStateCache.clear();
+  console.log(`[StoryStateCache] ✨ Cache cleared`);
+}
+
+/**
+ * Resets cache statistics without clearing cache data
+ */
+export function resetStoryStateCacheStats(): void {
+  storyStateCacheHits = 0;
+  storyStateCacheMisses = 0;
+  console.log(`[StoryStateCache] 📊 Statistics reset`);
+}
 
 /**
  * Helper functions for deleted state cache operations

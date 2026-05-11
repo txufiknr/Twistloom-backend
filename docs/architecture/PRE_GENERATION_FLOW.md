@@ -864,7 +864,9 @@ export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // TODO: use
 
 **Depth Behavior:**
 - **Level 1**: Synchronous parallel generation, results returned to user immediately
-- **Level 2+**: Fire-and-forget background processing, doesn't block user response
+- **Level 2**: Immediate fire-and-forget background generation (priority 1)
+- **Level 3**: Job queue with medium priority (priority 3)
+- **Level 4+**: Job queue with low priority (priority 5)
 - **Depth Limit**: Generation stops when `currentDepth > maxDepth`
 - **Exponential Growth**: Each level can multiply the total pages (3³ = 27 pages at depth 3)
 

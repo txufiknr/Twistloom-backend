@@ -582,7 +582,6 @@ export async function visitBookPage(
       return { dbPage, book };
     }
   
-    // TODO: edge case no match found, how is it possible?
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
     if (!action) {
       handleNotFoundError(res, `Action for this page not found in the parent page`);

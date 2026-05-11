@@ -618,8 +618,8 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
               void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
                 currentDepth: nextDepth,
                 maxDepth,
-                // TODO: shouldn't priority be based on nextDepth instead of always 5?
-                priority: 5 // Lower priority for deeper levels
+                // Priority decreases with depth: Level 3=3, Level 4+=5 (lower is higher priority)
+                priority: nextDepth === 3 ? 3 : 5
               }).catch(error => {
                 console.error(`[generateCandidatesInParallel] ❌ Failed to enqueue generation job for depth ${nextDepth}:`, getErrorMessage(error));
               });

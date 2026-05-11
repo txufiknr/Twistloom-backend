@@ -257,7 +257,7 @@ const jobId = await enqueueCandidateGenerationJob(userId, firstUserPage, book, i
 // OLD (fire-and-forget, still timeout-prone):
 void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth);
 
-// NEW (hybrid approach - level 2 immediate, level 3+ job queue):
+// NEW (hybrid approach - level 2 immediate, level 3+ job queue with depth-based priority):
 const nextDepth = currentDepth + 1;
 if (nextDepth === 2) {
   // Level 2: Immediate fire-and-forget for better UX
@@ -269,11 +269,12 @@ if (nextDepth === 2) {
     context: `generateCandidatesInParallel-depth${nextDepth}`
   });
 } else {
-  // Level 3+: Job queue for less critical deeper levels
+  // Level 3+: Job queue for less critical deeper levels with depth-based priority
   void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
     currentDepth: nextDepth,
     maxDepth,
-    priority: 5 // Lower priority for deeper levels
+    // Priority decreases with depth: Level 3=3 (medium), Level 4+=5 (low)
+    priority: nextDepth === 3 ? 3 : 5
   });
 }
 ```
