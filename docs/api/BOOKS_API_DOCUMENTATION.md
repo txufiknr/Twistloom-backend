@@ -824,13 +824,60 @@ Pre-generates candidate pages for all actions on a story page. This ensures that
 
 **Response (200 OK):**
 
-Two response formats are supported:
+This endpoint **always** uses Server-Sent Events (SSE) for consistent response format:
 
-**1. JSON Response (Immediate Generation):**
-When generation completes immediately or is not in progress:
+```http
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
 
-```json
-{
+**SSE Events:**
+
+**1. Initial Progress Event:**
+Sent immediately when the endpoint is called.
+
+```http
+event: progress
+data: {"status": "waiting", "message": "Candidate generation started..."}
+```
+
+Or if generation is already in progress:
+
+```http
+event: progress
+data: {"status": "waiting", "message": "Candidate generation in progress..."}
+```
+
+**2. Periodic Progress Events:**
+Sent every 10 seconds during polling with elapsed time.
+
+```http
+event: progress
+data: {"status": "waiting", "message": "Still generating... (10s elapsed)"}
+```
+
+**3. Per-Action Progress Events:**
+Sent when individual actions are completed (if progress event storage is enabled).
+
+```http
+event: action_progress
+data: {
+  "action": "Open the door",
+  "status": "completed",
+  "completed": 2,
+  "total": 3,
+  "progress": 66,
+  "timestamp": "2023-01-01T00:00:00.000Z"
+}
+```
+
+**4. Complete Event:**
+Sent when generation finishes with updated page data.
+
+```http
+event: complete
+data: {
   "id": "page456",
   "page": 5,
   "text": "The hallway stretched endlessly before me...",
@@ -855,46 +902,39 @@ When generation completes immediately or is not in progress:
 }
 ```
 
-**2. Server-Sent Events (SSE) Response (In-Progress Generation):**
-When candidate generation is already in progress (`isGeneratingStartedAt` is set), the endpoint uses SSE to wait for completion:
+**5. Timeout Event:**
+Sent after 5 minutes if generation hasn't completed.
 
 ```http
-Content-Type: text/event-stream
-Cache-Control: no-cache
-Connection: keep-alive
-
-event: progress
-data: {"status": "waiting", "message": "Candidate generation in progress..."}
-
-event: progress
-data: {"status": "waiting", "message": "Still generating... (10s elapsed)"}
-
-event: complete
-data: {"id": "page456", "page": 5, "text": "...", "actions": [...]}
-
 event: timeout
-data: {"id": "page456", "page": 5, "text": "...", "warning": "Generation timeout, returning current state"}
+data: {
+  "id": "page456",
+  "page": 5,
+  "text": "...",
+  "warning": "Generation timeout, returning current state"
+}
+```
 
+**6. Error Event:**
+Sent if page is deleted during polling or other error occurs.
+
+```http
 event: error
 data: {"error": "Page not found during polling"}
 ```
 
-**SSE Events:**
-- `progress`: Sent every 10 seconds with waiting status and elapsed time
-- `complete`: Sent when generation finishes with updated page data
-- `timeout`: Sent after 5 minutes if generation hasn't completed
-- `error`: Sent if page is deleted during polling or other error occurs
-
-- **Behavior:**
+**Behavior:**
 - Validates that page belongs to the specified book
+- Always sets SSE headers first for consistent response format
 - Checks `isGeneratingStartedAt` timestamp to detect in-progress generation (non-null means in-progress)
-- If `isGeneratingStartedAt` is set: Uses SSE to wait for completion instead of retriggering generation
-- If `isGeneratingStartedAt` is null: Calls `ensureCandidatesForPage` to start generation
+- If `isGeneratingStartedAt` is set: Uses SSE to poll for completion
+- If `isGeneratingStartedAt` is null: Triggers background generation via `triggerBackgroundGeneration`, then polls for completion
+- If no actions need generation: Sends SSE complete event immediately with current page
 - Skips last page (no candidates needed for final page)
 - Uses distributed lock to prevent concurrent processing
 - Retries failed generations up to 3 times with exponential backoff
 - Removes invalid actions (e.g., validation errors) from the page
-- Returns updated page with pre-generated candidate destinations
+- Returns updated page with pre-generated candidate destinations via SSE
 - **Single operation guarantee**: Only one generation operation runs per (bookId + pageId) combination
 
 **Error Responses:**

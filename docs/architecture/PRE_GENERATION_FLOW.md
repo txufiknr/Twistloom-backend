@@ -230,22 +230,48 @@ The system supports **manual triggering** of specific page generation via GitHub
 
 ### **2. Page Navigation Flow**
 - **Location**: `src/routes/books.ts` (GET `/api/books/:identifier/:pageId/candidates`)
-- **Function**: SSE-based candidate generation with progress tracking
-- **Current Strategy**: Uses `ensureCandidatesForPageWithStrategy(userId, page, state, book, 'vercel')`
-- **Recommended Strategy**: **Keep current 'vercel' strategy** - perfect for API requests
+- **Function**: SSE-based candidate generation with progress tracking (always SSE, never JSON)
+- **Current Strategy**: Uses `triggerBackgroundGeneration()` to fire-and-forget background generation, then polls for completion via SSE
 - **Logic**: 
   ```typescript
+  // Always set SSE headers first for consistent response format
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.flushHeaders();
+
   // Check if generation is already in progress (timestamp field)
   if (dbPage.isGeneratingStartedAt) {
-    // Use SSE to wait for completion
+    // Use SSE to poll for completion
     // Poll for generation status every SSE_POLL_INTERVAL_MS
     // Return completed page to user via SSE
   } else {
-    // Use vercel strategy for API requests (5-minute timeout)
-    await ensureCandidatesForPageWithStrategy(userId, page, state, book, 'vercel');
+    // Check if any actions need generation
+    if (totalActions === 0) {
+      // Send SSE complete event immediately with current page
+      res.write(`event: complete\n`);
+      res.write(`data: ${JSON.stringify(userPage)}\n\n`);
+      return;
+    }
+
+    // Trigger background generation via triggerBackgroundGeneration
+    // This calls /api/generate-candidates with 'cron' strategy (13-minute timeout)
+    await triggerBackgroundGeneration({
+      userId,
+      pageId,
+      bookId: dbPage.bookId,
+      context: 'GET /candidates'
+    });
+
+    // Then use SSE to poll for completion (same logic as in-progress path)
+    // Poll for generation status every SSE_POLL_INTERVAL_MS
+    // Return completed page to user via SSE
   }
   ```
-- **Purpose**: Real-time progress feedback during candidate generation
+- **Purpose**: Real-time progress feedback during candidate generation with consistent SSE response format
+- **Benefits**:
+  - Consistent SSE-only response (no JSON/SSE duality)
+  - Better separation of concerns (endpoint only polls, background service handles generation)
+  - Extended timeout via background generation (13 minutes vs 4.5 minutes)
+  - Reduced code duplication
 
 ### **3. Async Job Queue System**
 - **Location**: `src/utils/candidate-generation-async.ts`
