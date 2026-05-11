@@ -283,7 +283,7 @@ export function getGenerationStrategy(context: CandidateGenerationStrategy = 've
 }
 
 /**
- * Calculates appropriate timeout based on generation context
+ * Calculates appropriate timeout based on generation context (in milliseconds)
  * 
  * @param strategy - Generation strategy
  * @param requestStartTime - When the request started (for Vercel timeout calculation)
@@ -293,11 +293,10 @@ export function calculateGenerationTimeout(
   strategy: GenerationStrategy,
   requestStartTime?: number
 ): number {
-  if (strategy.customTimeoutMs) {
-    return strategy.customTimeoutMs;
-  }
+  const { customTimeoutMs, enforceVercelLimits } = strategy;
+  if (customTimeoutMs) return customTimeoutMs;
 
-  if (strategy.enforceVercelLimits && requestStartTime) {
+  if (enforceVercelLimits && requestStartTime) {
     const VERCEL_TIMEOUT_MS = 300000; // 300 seconds Vercel limit
     const RESPONSE_BUFFER_MS = 5000; // 5s buffer for response processing
     const MIN_AI_TIMEOUT_MS = 10000; // 10 seconds minimum for AI generation

@@ -4,43 +4,49 @@
  * This module provides storage and retrieval of action progress events
  * for Server-Sent Events polling scenarios.
  * 
- * Phase 2.2 Implementation Status: IN-MEMORY PLACEHOLDER
- * ====================================================
- * This is an in-memory placeholder implementation for Phase 2.2 of the UX Enhancement Roadmap.
- * The actual Redis-based storage will be implemented in a future iteration.
+ * Phase 2.2 Implementation Status: IN-MEMORY LRU CACHE
+ * =====================================================
+ * Uses LRUCache package for automatic TTL management and memory-efficient storage.
+ * Leverages existing "lru-cache" package already used in the codebase (book.ts).
  * 
  * Current Behavior:
- * - storeActionProgressEvent: Stores events in memory with 5-minute TTL
+ * - storeActionProgressEvent: Stores events in LRU cache with 5-minute TTL
  * - getActionProgressEvents: Retrieves and cleans up stored events
+ * - Automatic cleanup handled by LRUCache
  * 
- * Planned Implementation (Phase 2.2):
- * - Redis storage with 5-minute TTL for progress events
- * - Automatic cleanup after retrieval to prevent memory buildup
- * - Atomic operations for concurrent access safety
+ * Cache Configuration:
+ * - Max entries: 100 (prevents memory bloat for concurrent generations)
+ * - TTL: 5 minutes (matches generation timeout)
+ * - Automatic LRU eviction when cache is full
+ * 
+ * Migration Path to Redis (when needed):
+ * - When scaling to multi-server deployments
+ * - When high concurrent users (>100 simultaneous generations)
+ * - When paid Redis tier with guaranteed memory allocation is available
  */
 
+import { LRUCache } from 'lru-cache';
 import type { ActionProgressEvent } from '../types/candidates.js';
 
-// In-memory storage with TTL (Phase 2.2 placeholder)
-const progressEventStore = new Map<string, { events: ActionProgressEvent[], timestamp: number }>();
-const EVENT_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
 /**
- * Cleanup expired events from memory store
+ * LRU cache for progress event storage
+ * 
+ * Cache key format: "progress:{pageId}"
+ * - pageId: Page ID for which progress events are stored
+ * 
+ * TTL: 5 minutes to match generation timeout
+ * Max size: 100 entries to prevent memory bloat (supports ~100 concurrent generations)
  */
-function cleanupExpiredEvents(): void {
-  const now = Date.now();
-  for (const [pageId, data] of progressEventStore.entries()) {
-    if (now - data.timestamp > EVENT_TTL_MS) {
-      progressEventStore.delete(pageId);
-    }
-  }
-}
+const progressEventCache = new LRUCache<string, ActionProgressEvent[]>({
+  max: 100, // Support up to 100 concurrent generations
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
 
 /**
  * Stores an action progress event for later retrieval
  * 
- * PHASE 2.2 IN-MEMORY PLACEHOLDER: Stores events in memory with TTL
+ * Uses LRUCache for automatic TTL management and memory-efficient storage.
+ * Events are appended to existing array for the same pageId.
  * 
  * @param pageId - Page ID for which to store the event
  * @param event - Progress event data to store
@@ -49,27 +55,21 @@ export async function storeActionProgressEvent(
   pageId: string, 
   event: ActionProgressEvent
 ): Promise<void> {
-  // PHASE 2.2 IN-MEMORY PLACEHOLDER: Store with TTL
-  cleanupExpiredEvents();
+  const cacheKey = `progress:${pageId}`;
+  const existingEvents = progressEventCache.get(cacheKey) || [];
   
-  const existing = progressEventStore.get(pageId);
-  if (existing) {
-    existing.events.push(event);
-    existing.timestamp = Date.now(); // Update timestamp on new events
-  } else {
-    progressEventStore.set(pageId, {
-      events: [event],
-      timestamp: Date.now()
-    });
-  }
+  // Append new event to existing events
+  const updatedEvents = [...existingEvents, event];
+  progressEventCache.set(cacheKey, updatedEvents);
   
-  console.log(`[storeActionProgressEvent] 📊 IN-MEMORY - Stored event for page ${pageId}:`, event.status);
+  console.log(`[storeActionProgressEvent] 📊 LRU CACHE - Stored event for page ${pageId}:`, event.status);
 }
 
 /**
  * Retrieves stored action progress events for a page
  * 
- * PHASE 2.2 IN-MEMORY PLACEHOLDER: Retrieves and cleans up events
+ * Retrieves and clears events for the page (simulating Redis behavior).
+ * LRUCache handles automatic TTL cleanup.
  * 
  * @param pageId - Page ID for which to retrieve events
  * @returns Promise resolving to array of stored events
@@ -77,19 +77,12 @@ export async function storeActionProgressEvent(
 export async function getActionProgressEvents(
   pageId: string
 ): Promise<ActionProgressEvent[]> {
-  // PHASE 2.2 IN-MEMORY PLACEHOLDER: Retrieve and cleanup
-  cleanupExpiredEvents();
+  const cacheKey = `progress:${pageId}`;
+  const events = progressEventCache.get(cacheKey) || [];
   
-  const data = progressEventStore.get(pageId);
-  if (!data) {
-    console.log(`[getActionProgressEvents] 📊 IN-MEMORY - No events for page ${pageId}`);
-    return [];
-  }
+  // Clear events after retrieval (simulating Redis behavior)
+  progressEventCache.delete(cacheKey);
   
-  // Return events and cleanup (simulating Redis behavior)
-  const events = [...data.events];
-  progressEventStore.delete(pageId); // Cleanup after retrieval
-  
-  console.log(`[getActionProgressEvents] 📊 IN-MEMORY - Retrieved ${events.length} events for page ${pageId}`);
+  console.log(`[getActionProgressEvents] 📊 LRU CACHE - Retrieved ${events.length} events for page ${pageId}`);
   return events;
 }
