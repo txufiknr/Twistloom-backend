@@ -739,17 +739,20 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: stri
   // Extract context from story state if available
   let context: EnrichedStoryPage['context'];
   if (storyState) {
+    const { places, characters, injuries, inventory, contextHistory, actionsHistory } = storyState;
     const { phase } = getStoryStateInfo(storyState);
     context = {
       phase,
-      contextHistory: storyState.contextHistory,
-      actionsHistory: storyState.actionsHistory,
-      places: Object.values(storyState.places).map(place => ({
+      injuries,
+      inventory,
+      contextHistory,
+      actionsHistory,
+      places: Object.values(places).map(place => ({
         name: place.name,
         type: place.type,
         context: place.context
       })),
-      characters: Object.values(storyState.characters).map(character => ({
+      characters: Object.values(characters).map(character => ({
         name: character.name,
         gender: character.gender,
         role: character.role,

@@ -69,7 +69,10 @@ import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import { isValidUuid } from "../utils/uuid.js";
-import { ensureCandidatesForPage } from "../utils/candidate-generation.js";
+import { ensureCandidatesForPageWithStrategy } from "../utils/candidate-generation.js";
+import type { Action, PersistedStoryPage } from "../types/story.js";
+import { getStoryState } from "../services/story.js";
+import { getActionProgressEvents, storeActionProgressEvent } from "../utils/progress-tracking.js";
 
 const router = Router();
 
@@ -472,8 +475,8 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
     // End response
     res.end();
   } catch (error) {
-    // Send error event if headers not sent
-    if (!res.headersSent) {
+    // Send error event if response is still writable
+    if (!res.writableEnded) {
       initSSEHeaders(res);
     }
     sendSSEEvent(res, {
@@ -544,7 +547,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
     console.error('[GET /api/books/prompt] Error:', error);
     
     // Send SSE error event before closing
-    if (!res.headersSent) {
+    if (!res.writableEnded) {
       const encoder = new TextEncoder();
       const errorMessage = getErrorMessage(error, 'Failed to generate prompt');
       res.write(encoder.encode(`event: error\ndata: ${errorMessage}\n\n`));
@@ -1134,13 +1137,16 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
         // Refresh page from database
         const freshPage = await getPageFromDB(pageId);
         if (!freshPage) {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Page not found during polling' })}\n\n`);
-            res.end();
+          try {
+            if (!res.writableEnded) {
+              res.write(`event: error\n`);
+              res.write(`data: ${JSON.stringify({ error: 'Page not found during polling' })}\n\n`);
+              res.end();
+            }
+          } finally {
+            req.off('close', onClientDisconnect);
+            req.off('aborted', onClientDisconnect);
           }
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
           return;
         }
 
@@ -1165,6 +1171,20 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
             req.off('aborted', onClientDisconnect);
           }
           return;
+        }
+
+        // Check for action progress events in database or cache
+        // Note: This is enhanced polling for per-action progress tracking
+        // TODO Phase 2.2: Progress event storage (optional Redis) - not yet implemented
+        const progressEvents = await getActionProgressEvents?.(pageId);
+        if (progressEvents && progressEvents.length > 0) {
+          for (const event of progressEvents) {
+            if (clientDisconnected || res.writableEnded) {
+              break;
+            }
+            res.write(`event: action_progress\n`);
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          }
         }
 
         // Send progress update periodically
@@ -1201,13 +1221,87 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
 
     // Pre-generate candidates for page (not currently in progress)
     const userPage = await mapToUserStoryPage(dbPage, userId);
-    const updatedPage = await ensureCandidatesForPage(
-      userId,   // Candidate pages initiator
-      userPage, // Used for determining which actions need candidates
-      null,     // Book context (will be resolved in validation)
-    );
+    // TODO: No validation that totalActions matches the actual number of actions that will be processed
+    const totalActions = userPage.actions.filter(a => 
+      !a.destination?.pageId || !a.destination?.branchId
+    ).length;
+      
+    // Validate totalActions count
+    if (totalActions === 0) {
+      console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageId}, returning current page`);
+      res.json(userPage);
+      return;
+    }
+    
+    let completedActions = 0;
+    
+    // Set up client disconnect handling for direct generation path
+    let clientDisconnected = false;
+    const onClientDisconnect = () => {
+      clientDisconnected = true;
+      console.log(`[GET /candidates] ⚠️ Client disconnected during direct generation of page ${pageId}`);
+      try {
+        res.end();
+      } catch {
+        // Ignore errors
+      }
+    };
 
-    res.json(updatedPage);
+    req.on('close', onClientDisconnect);
+    req.on('aborted', onClientDisconnect);
+    
+    try {
+      const updatedPage = await ensureCandidatesForPageWithStrategy(
+        userId,   // Candidate pages initiator
+        userPage, // Used for determining which actions need candidates
+        await getStoryState(dbPage.id, { dbPage, maxTraversalDepth: 1 }),
+        null,     // Book context (will be resolved in validation)
+        'vercel',
+        {
+          onProgress: async (action: Action, status: 'started' | 'completed' | 'failed', result?: PersistedStoryPage, error?: unknown) => {
+            // Check if client disconnected before writing
+            if (clientDisconnected || res.writableEnded) {
+              return;
+            }
+            
+            // Only increment counter for completion events (completed or failed)
+            if (status === 'completed' || status === 'failed') {
+              completedActions++;
+            }
+            
+            const progressEvent = {
+              action: action.text,
+              status,
+              completed: completedActions,
+              total: totalActions,
+              progress: totalActions > 0 ? Math.round((completedActions / totalActions) * 100) : 0,
+              error: error ? getErrorMessage(error) : undefined,
+              timestamp: new Date().toISOString()
+            };
+            
+            try {
+              // Store progress event for polling retrieval
+              await storeActionProgressEvent(pageId, progressEvent);
+              
+              // Send per-action progress via SSE
+              res.write(`event: action_progress\n`);
+              res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
+              
+              console.log(`[GET /candidates] 📊 Action progress: ${action.text} - ${status} (${completedActions}/${totalActions})`);
+            } catch (writeError) {
+              console.error(`[GET /candidates] ❌ Failed to write progress event:`, writeError);
+              // Don't rethrow - just stop sending progress events
+            }
+          }
+        }
+      );
+
+      res.json(updatedPage);
+    } finally {
+      // Clean up event listeners
+      req.off('close', onClientDisconnect);
+      req.off('aborted', onClientDisconnect);
+    }
   } catch (error) {
     handleApiError(res, "Failed to generate candidates", error);
   }

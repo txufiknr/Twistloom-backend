@@ -475,9 +475,10 @@ async function findOptimalSnapshot(
   
   if (availableSnapshots.length === 0) {
     // No snapshot found - return empty state
+    const currentPageInBranch = branchPath.pages[currentPageIndex];
     const emptyState = createEmptyStoryState(
-      branchPath.pages[currentPageIndex].id,
-      branchPath.pages[currentPageIndex].page,
+      currentPageInBranch.id,
+      currentPageInBranch.page,
       totalPages
     );
     
@@ -670,7 +671,16 @@ export async function reconstructStoryState(
         BRANCH_PATH_BASE_DELAY
       );
       
-      const currentPageIndex = branchPath.pages.length - 1;
+      // Find the actual index of currentPageId in the branch path
+      const currentPageIndex = branchPath.pages.findIndex(page => page.id === currentPageId);
+      
+      // Validate that we found the current page
+      if (currentPageIndex === -1) {
+        throw new Error(`Current page ${currentPageId} not found in branch path`);
+      }
+
+      // Get current page in the branch path
+      const currentPageInBranch = branchPath.pages[currentPageIndex];
       
       // Get book information to retrieve totalPages for optimal snapshot selection
       if (deps.getBook) {
@@ -695,7 +705,7 @@ export async function reconstructStoryState(
               console.log(`[reconstructStoryState] 📚 Using totalPages from book schema: ${totalPages}`);
             } else {
               totalPages = Math.max(...branchPath.pages.map(p => p.page));
-            console.log(`[reconstructStoryState] ⚠️ Book not found, using branch path totalPages: ${totalPages}`);
+              console.log(`[reconstructStoryState] ⚠️ Book not found, using branch path totalPages: ${totalPages}`);
             }
           } else {
             totalPages = Math.max(...branchPath.pages.map(p => p.page));
@@ -748,7 +758,7 @@ export async function reconstructStoryState(
       
       // Ensure final state matches current page
       currentState.pageId = currentPageId;
-      currentState.page = branchPath.pages[currentPageIndex].page;
+      currentState.page = currentPageInBranch.page;
       
       // Set maxPage from book schema (obtained during reconstruction)
       currentState.maxPage = totalPages;
@@ -775,7 +785,7 @@ export async function reconstructStoryState(
       
       // Ensure threads are present (should be handled by deltas, but verify)
       // Skip warning for page 1 or initial pages where threads haven't been established yet
-      const isFirstPage = branchPath.pages[currentPageIndex].page === 1;
+      const isFirstPage = currentPageInBranch.page === 1;
       if (!currentState.threads || currentState.threads.length === 0) {
         if (!isFirstPage) {
           console.warn(`[reconstructStoryState] ⚠️ No threads in reconstructed state for page ${currentPageId}, initializing empty array`);

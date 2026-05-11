@@ -19,19 +19,13 @@ This roadmap outlines the planned enhancements to the candidate generation syste
 
 ## Enhancement Phases
 
-### Phase 1: Core Progress Tracking Infrastructure
+### Phase 1: Core Progress Tracking Infrastructure - ✅ **COMPLETED**
 
 **Objective**: Add per-action progress callback system to candidate generation
 
-#### 1.1 Type System Updates
+#### 1.1 Type System Updates - ✅ **IMPLEMENTED**
 ```typescript
 // src/types/candidates.ts
-export interface GenerateCandidatesInParallelParams {
-  // ... existing fields
-  onProgress?: (action: Action, status: 'started' | 'completed' | 'failed', 
-                result?: PersistedStoryPage, error?: unknown) => void;
-}
-
 export interface ActionProgressEvent {
   action: string;
   status: 'started' | 'completed' | 'failed';
@@ -41,43 +35,43 @@ export interface ActionProgressEvent {
   error?: string;
   timestamp: string;
 }
+
+export interface GenerateCandidatesInParallelParams {
+  // ... existing fields
+  onProgress?: (action: Action, status: 'started' | 'completed' | 'failed', 
+                result?: PersistedStoryPage, error?: unknown) => void;
+}
 ```
 
-#### 1.2 Generation Function Enhancement
+#### 1.2 Generation Function Enhancement - ✅ **IMPLEMENTED**
 ```typescript
-// src/utils/prompt.ts - generateCandidatesInParallel()
+// src/utils/candidate-generation.ts - generateCandidatesInParallel()
 async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
-  const { actions, onProgress } = params;
+  const { onProgress } = params;
   
   const generationPromises = actions.map(async (action, index) => {
-    const letter = String.fromCharCode(65 + index);
-    
     // Notify action start
     onProgress?.(action, 'started');
-    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}. ${action.text}`);
     
     try {
       const result = await generateCandidatePage({...});
       
       // Notify success
       onProgress?.(action, 'completed', result);
-      console.log(`[generateCandidatesInParallel] ✅ Completed generation for: ${letter}. ${action.text}`);
-      
       return { action, success: true, candidatePage: result };
     } catch (error) {
       // Notify failure
       onProgress?.(action, 'failed', undefined, error);
-      console.error(`[generateCandidatesInParallel] ❌ Failed generation for: ${letter}. ${action.text}:`, error);
-      
       return { action, success: false, candidatePage: null, error };
     }
   });
   
-  // ... existing Promise.allSettled logic
+  const results = await Promise.allSettled(generationPromises);
+  // ... existing completion logic
 }
 ```
 
-#### 1.3 Strategy Integration
+#### 1.3 Strategy Integration - ✅ **IMPLEMENTED**
 ```typescript
 // src/utils/candidate-generation.ts - ensureCandidatesForPageWithStrategy()
 export async function ensureCandidatesForPageWithStrategy(
@@ -91,23 +85,43 @@ export async function ensureCandidatesForPageWithStrategy(
                   result?: PersistedStoryPage, error?: unknown) => void;
   }
 ): Promise<UserStoryPage> {
-  // ... existing validation logic
+  const { onProgress } = options || {};
   
-  // Generate candidates with progress tracking
-  const generationResults = await generateCandidatesInParallel({
-    userId,
-    actions: recheckedPendingDBActions,
-    currentPage,
-    currentState,
-    currentBook,
-    initialGenerateNewBranchId,
-    timeoutMs,
-    currentDepth,
-    maxDepth,
-    onProgress: options?.onProgress
-  });
+  const totalActions = userPage.actions.filter(a => 
+    !a.destination?.pageId || !a.destination?.branchId
+  ).length;
   
-  // ... existing completion logic
+  let completedActions = 0;
+  
+  const updatedPage = await ensureCandidatesForPageWithStrategy(
+    userId, userPage, null, null, 'vercel',
+    {
+      onProgress: (action, status, result, error) => {
+        completedActions++;
+        
+        const progressEvent = {
+          action: action.text,
+          status,
+          completed: completedActions,
+          total: totalActions,
+          progress: Math.round((completedActions / totalActions) * 100),
+          error: error?.message,
+          timestamp: new Date().toISOString()
+        };
+        
+        // Send per-action progress via SSE
+        res.write(`event: action_progress\n`);
+        res.write(`data: ${JSON.stringify(progressEvent)}\n\n`);
+        
+        console.log(`[GET /candidates] 📊 Action progress: ${action.text} - ${status} (${completedActions}/${totalActions})`);
+      }
+    }
+  );
+  
+  // Send final completion event
+  res.write(`event: complete\n`);
+  res.write(`data: ${JSON.stringify(updatedPage)}\n\n`);
+  res.end();
 }
 ```
 

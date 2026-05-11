@@ -9,7 +9,7 @@ import { getBook, getPageFromDB, getStoryPageById, mapToUserStoryPage } from '..
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import type { UserStoryPage, StoryState, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerationStrategy } from '../types/candidates.js';
+import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerationStrategy } from '../types/candidates.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -22,6 +22,50 @@ import { getStoryStateWithBranch } from '../services/story-branch.js';
 import { getStoryProgress, getUserSession } from '../services/story.js';
 import { isValidUuid } from './uuid.js';
 import { generateId } from './uuid.js';
+
+/**
+ * Performance metrics for candidate generation
+ */
+interface GenerationMetrics {
+  actionCount: number;
+  lookupTime: number;
+  generationTime: number;
+  successCount: number;
+  failureCount: number;
+  timeoutOccurrences: number;
+  lockContentions: number;
+}
+
+/**
+ * Global metrics collector for candidate generation performance
+ */
+const globalMetrics = {
+  totalGenerations: 0,
+  totalLookups: 0,
+  totalTimeouts: 0,
+  totalLockContentions: 0
+};
+
+/**
+ * Log performance metrics for candidate generation
+ */
+function logMetrics(metrics: Partial<GenerationMetrics>): void {
+  globalMetrics.totalGenerations++;
+  globalMetrics.totalLookups += metrics.lookupTime || 0;
+  globalMetrics.totalTimeouts += metrics.timeoutOccurrences ? 1 : 0;
+  globalMetrics.totalLockContentions += metrics.lockContentions ? 1 : 0;
+  
+  console.log(`[candidate-generation-metrics] 📊 Performance metrics:`, {
+    actionCount: metrics.actionCount,
+    lookupTime: metrics.lookupTime,
+    generationTime: metrics.generationTime,
+    successCount: metrics.successCount,
+    failureCount: metrics.failureCount,
+    timeoutOccurrences: metrics.timeoutOccurrences,
+    lockContentions: metrics.lockContentions,
+    totals: { ...globalMetrics }
+  });
+}
 
 /**
  * Result of candidate generation validation
@@ -340,7 +384,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
         currentBook ??= await getBook(bookId);
       } catch (err) {
         console.error(`[generateCandidatePage] ❌ Failed to fetch book ${bookId}:`, getErrorMessage(err));
-        throw new Error(`Failed to fetch book ${bookId} for candidate generation`);
+        throw new Error(`Failed to fetch book ${bookId} for candidate generation`, { cause: err });
       }
       
       console.log(`[generateCandidatePage] 🧩 Reconstructed state from parent page ${parentPageId}`);
@@ -453,12 +497,19 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
  * @returns Array of generation results in the same order as input actions
  */
 async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
-  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth } = params;
+  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress } = params;
+  const startTime = Date.now();
+  const lookupStartTime = Date.now();
+  
+  console.log(`[generateCandidatesInParallel] 🚀 Starting parallel generation for ${actions.length} actions at depth ${currentDepth}/${maxDepth}`);
   
   // Create generation promises for each action
   const generationPromises = actions.map(async (action, index) => {
     const letter = String.fromCharCode(65 + index);
-    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}.`, action.text);
+    
+    // Notify action start
+    onProgress?.(action, 'started');
+    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}. ${action.text}`);
     
     // Track the last error to determine if action should be removed
     let lastError: unknown = null;
@@ -504,16 +555,25 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
       ),
       new Promise<null>((_, reject) => 
         setTimeout(() => {
-          console.warn(`[generateCandidatesInParallel] ⏰ AI generation timeout for action "${action.text}" after ${timeoutMs}ms`);
+          console.warn(`[generateCandidatesInParallel] ⏰ AI generation timeout for action ${letter}. ${action.text} after ${timeoutMs}ms`);
           reject(new Error(`AI generation timeout (${timeoutMs}ms)`));
         }, timeoutMs)
       )
     ]).catch(error => {
       // Handle timeout and other errors gracefully
-      console.error(`[generateCandidatesInParallel] ❌ Generation failed for action "${action.text}":`, getErrorMessage(error));
+      console.error(`[generateCandidatesInParallel] ❌ Generation failed for action ${letter}. ${action.text}:`, getErrorMessage(error));
       lastError = error;
+      
+      // Notify failure
+      onProgress?.(action, 'failed', undefined, error);
       return null;
     });
+
+    // Notify success if generation completed
+    if (candidatePage) {
+      onProgress?.(action, 'completed', candidatePage);
+      console.log(`[generateCandidatesInParallel] ✅ Completed generation for: ${letter}. ${action.text}`);
+    }
 
     return {
       action,
@@ -541,10 +601,25 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
     }
   });
 
-  // Log parallel generation summary
+  // Log parallel generation summary with performance metrics
   const successCount = generationResults.filter(r => r.success).length;
   const failureCount = generationResults.length - successCount;
+  const endTime = Date.now();
+  const totalGenerationTime = endTime - startTime;
+  const lookupTime = lookupStartTime ? startTime - lookupStartTime : 0;
+  
   console.log(`[generateCandidatesInParallel] ✅ Parallel generation complete: ${successCount} succeeded, ${failureCount} failed`);
+  
+  // Log performance metrics
+  logMetrics({
+    actionCount: actions.length,
+    lookupTime,
+    generationTime: totalGenerationTime,
+    successCount,
+    failureCount,
+    timeoutOccurrences: 0, // Would be tracked in timeout handling
+    lockContentions: 0 // Would be tracked in lock acquisition
+  });
 
   // Fire-and-forget deeper level generation for successfully generated candidates
   if (currentDepth < maxDepth) {
@@ -576,7 +651,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
             };
             
             // Trigger next level generation without blocking current response (fire-and-forget)
-            // void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth).catch(error => {
+            // void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth, options).catch(error => {
             //   console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
             // });
 
@@ -616,6 +691,8 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
  * It's used by the fire-and-forget background processing for deeper levels.
  * 
  * @deprecated Now uses `enqueueCandidateGenerationJob` pg-boss job queue system.
+ * @see {@link ../../docs/ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md}
+ * 
  * The replacement is superior because:
  * - No timeout issues: Jobs run in background via cron
  * - Better reliability: pg-boss handles retries and failures
@@ -635,8 +712,13 @@ export async function ensureCandidatesForPageWithDepth(
   currentState: StoryState | null | undefined, 
   currentBook: Book | null,
   currentDepth: number,
-  maxDepth: number
+  maxDepth: number,
+  options?: {
+    onProgress?: ActionProgressCallback;
+  }
 ): Promise<void> {
+  const { onProgress } = options || {};
+
   // Track request start time for timeout calculation
   const requestStartTime = Date.now();
 
@@ -708,7 +790,8 @@ export async function ensureCandidatesForPageWithDepth(
       initialGenerateNewBranchId: generateNewBranchId,
       timeoutMs: AI_GENERATION_TIMEOUT_MS,
       currentDepth,
-      maxDepth
+      maxDepth,
+      onProgress
     });
     
     // Process results and update actions
@@ -811,8 +894,13 @@ export async function ensureCandidatesForPageWithStrategy(
   page: UserStoryPage, 
   currentState?: StoryState | null, 
   currentBook?: Book | null,
-  context: CandidateGenerationStrategy = 'vercel'
+  context: CandidateGenerationStrategy = 'vercel',
+  options?: {
+    onProgress?: ActionProgressCallback;
+  }
 ): Promise<UserStoryPage> {
+  const { onProgress } = options || {};
+
   // Use shared validation to eliminate redundant checks
   const validation = await validateCandidateGeneration(userId, page, currentBook, currentState);
   
@@ -866,7 +954,7 @@ export async function ensureCandidatesForPageWithStrategy(
 
     // Track if any actions were actually updated
     const updatedDBActions = [...initialDBActions];
-    let generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
+    const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
 
     // Build action index map for O(1) lookups (prevents O(n²) performance)
@@ -927,6 +1015,9 @@ export async function ensureCandidatesForPageWithStrategy(
         // Success: update action with destination
         console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
         updateActionWithDestination(action, result.candidatePage);
+        
+        // Notify progress callback
+        onProgress?.(action, 'completed', result.candidatePage);
       } else {
         // Handle failed generation
         const isInvalidAction = isInvalidActionError(result.error);
@@ -939,8 +1030,11 @@ export async function ensureCandidatesForPageWithStrategy(
             hasRealChanges = true;
           }
         } else {
-          console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action "${action.text}":`, result.error ? getErrorMessage(result.error) : 'Unknown error');
+          console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(result.error));
         }
+        
+        // Notify progress callback of failure
+        onProgress?.(action, 'failed', undefined, result.error);
       }
     }
     
@@ -956,7 +1050,8 @@ export async function ensureCandidatesForPageWithStrategy(
         initialGenerateNewBranchId: generateNewBranchId,
         timeoutMs,
         currentDepth,
-        maxDepth
+        maxDepth,
+        onProgress
       });
       
       // Process parallel results using helper functions
@@ -970,6 +1065,9 @@ export async function ensureCandidatesForPageWithStrategy(
       for (const action of recheckedPendingDBActions) {
         const letter = generateActionLetter(action);
         console.log(`[ensureCandidatesForPageWithStrategy] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
+        
+        // Notify progress callback of action start
+        onProgress?.(action, 'started');
         
         // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
         // Track the last error to determine if action should be removed
@@ -994,8 +1092,6 @@ export async function ensureCandidatesForPageWithStrategy(
             // Stop retrying if error is non-retryable (e.g. validation errors)
             shouldRetry: (error) => {
               try {
-                lastError = error; // Capture the error
-                // Check if error is marked as non-retryable
                 const err = error as ErrorWithCustomProperties;
                 if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
                   console.warn(`[ensureCandidatesForPageWithStrategy] ⛔ Non-retryable error detected:`, getErrorMessage(error));
@@ -1008,22 +1104,35 @@ export async function ensureCandidatesForPageWithStrategy(
               }
             }
           }
-        );
+        ).catch(error => {
+          lastError = error;
+        });
 
-        // Create result object to reuse processActionResult helper
-        const result: CandidateGenerationResult = {
-          action,
-          success: !!candidatePage,
-          candidatePage: candidatePage || null,
-          error: lastError
-        };
-        
-        // Process result using the same helper as parallel path
-        processActionResult(result, letter);
-        
-        // After the first generated candidate, subsequent pending actions should use new branches
+        // Process the result (success or failure)
         if (candidatePage) {
-          generateNewBranchId = true;
+          // Success: update the action with the destination
+          console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
+          updateActionWithDestination(action, candidatePage);
+          
+          // Notify progress callback of success
+          onProgress?.(action, 'completed', candidatePage);
+        } else {
+          // Handle failed generation
+          const isInvalidAction = isInvalidActionError(lastError);
+          
+          if (isInvalidAction) {
+            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
+            const actionIndex = actionIndexMap.get(action.id) ?? -1;
+            if (actionIndex !== -1) {
+              updatedDBActions.splice(actionIndex, 1);
+              hasRealChanges = true;
+            }
+          } else {
+            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(lastError));
+          }
+          
+          // Notify progress callback of failure
+          onProgress?.(action, 'failed', undefined, lastError);
         }
       }
     }

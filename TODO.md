@@ -12,8 +12,8 @@
 [x] Get Story state fallback get by parentId+stateDelta -> persists DB
 [x] research Pg-boss / bullmq + redis
 [x] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
+[x] code optimization from TODO-pgboss.md
 [ ] candidate generation SSE UX roadmap (CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md)
-[ ] code optimization from TODO-pgboss.md
 [ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
@@ -22,10 +22,31 @@
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 
-Kasih abjad:
-[ensureCandidatesForPage] ❌ Failed to generate candidate for valid action "Smash the wrist terminal. If I don’t see it, it’s not real.": AI generation timeout (294174ms)
-[generateCandidatesInParallel] ⏰ AI generation timeout for action "Pull the receipt’s transaction logs. See who bought it—and why." after 294174ms
-[generateCandidatesInParallel] ⏰ AI generation timeout for action "Smash the wrist terminal. If I don’t see it, it’s not real." after 294174ms
+Migrate vercel cron to Vercel's Background Functions
+Habis page 2 kok page 2 lagi (I reach over)? 
+Enriched page context tambah:
+- mc: injuries, inventory
+Important objects perlu disimpen di story state?
+Important objects perlu rules? 
+
+Text too short:
+I swung. Hard. The phone met the desk edge—no crack. No scream of glass. Just a dull *thud*.
+
+Page not found:
+Grab my headphones. Drown the voice out.
+
+Habis page 2, page 2 lagi:
+Press my ear to the phone. Listen for breathing.
+
+Parent page 2:
+019e071e-62fa-7019-a2de-e5edb056098b
+    "destination": {
+      "pageId": "019e07d4-34cd-723e-ae41-9ec6feae6ce1",
+      "branchId": "019e07d4-34cd-723e-ae41-98de672ad0b4"
+    }
+
+
+
 
 
 TODO:

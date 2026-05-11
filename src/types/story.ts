@@ -652,6 +652,10 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   context?: {
     /** Current story phase classification */
     phase: StoryPhase;
+    /** Collection of items and resources present in the world at the current page */
+    inventory: string[];
+    /** Represents injuries sustained by the MC */
+    injuries: Injury[];
     /** AI-summarized context of the story until this page */
     contextHistory: string;
     /** History of actions made until this page */

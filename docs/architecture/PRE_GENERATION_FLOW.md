@@ -51,7 +51,7 @@ function getGenerationStrategy(context: CandidateGenerationStrategy): Generation
       };
     case 'cron':
       return {
-        useParallel: true, // Parallel for efficiency
+        useParallel: true, // Parallel for bulk operations
         enforceVercelLimits: false,
         customTimeoutMs: 1500000 // 25 minutes
       };
