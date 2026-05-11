@@ -2620,7 +2620,11 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       }
       
       // Create updated data with immutable pattern
-      const updatedData = { ...data, branchId };
+      const updatedData = { 
+        ...data, 
+        branchId,
+        selectedAction // Pass the selectedAction for duplicate prevention
+      };
 
       return insertStoryPage(userId, expectedPageNumber, {
         ...generatedStoryPage,

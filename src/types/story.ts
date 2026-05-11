@@ -596,7 +596,10 @@ export type StoryPage = {
   aiModel?: string;
 };
 
-export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'>;
+export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> & {
+  /** Optional selected action that triggered this page generation (for duplicate prevention) */
+  selectedAction?: Action;
+};
 
 /**
  * State delta representing incremental changes between pages

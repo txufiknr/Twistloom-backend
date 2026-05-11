@@ -28,6 +28,8 @@ import type { AIDocument } from "../types/ai-chat.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
+import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
+import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
 import { sanitizeText, generateSlug } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
@@ -112,8 +114,31 @@ export async function insertStoryPage(
   page: StoryPage,
   pageMeta: StoryPageMeta,
 ): Promise<PersistedStoryPage> {
-  const { bookId, branchId, parentId } = pageMeta;
+  const { bookId, branchId, parentId, selectedAction } = pageMeta;
+  
   try {
+    // Early validation: check specific selectedAction in parent page if provided
+    if (parentId && selectedAction) {
+      const parentPage = await getPageFromDB(parentId, { client: dbWrite });
+      if (!parentPage) {
+        throw new Error(`Parent page ${parentId} not found`);
+      }
+      
+      // Find the specific action in parent that matches the selectedAction
+      const matchingAction = parentPage.actions.find(action => action.text === selectedAction.text);
+      
+      // Check if the matching action already has a destination pageId
+      if (matchingAction?.destination?.pageId && matchingAction.destination.pageId !== 'pending') {
+        console.warn(`[insertStoryPage] ⚠️ Parent action "${selectedAction.text}" already has destination pageId ${matchingAction.destination.pageId}, skipping insertion`);
+        // Return the existing page instead of inserting a new one
+        const existingPage = await getPageFromDB(matchingAction.destination.pageId, { client: dbWrite });
+        if (existingPage) {
+          return mapToPersistedStoryPage(existingPage);
+        }
+        // If existing page not found, proceed with insertion (race condition handling)
+      }
+    }
+
     // Count actions without destinations for initial pendingGenerationCount
     const pendingGenerationCount = page.actions.filter(action => !action.destination?.pageId).length;
 
@@ -139,17 +164,36 @@ export async function insertStoryPage(
       updatedAt: new Date()
     };
 
-    const result = await dbWrite
-      .insert(pages)
-      .values(newPageData)
-      .returning();
+    // Use retryWithBranchConflict to handle unique constraint violations
+    const result = await retryWithBranchConflict(
+      async (data: DBNewPage) => {
+        const insertResult = await dbWrite
+          .insert(pages)
+          .values(data)
+          .returning();
+        return insertResult[0];
+      },
+      newPageData,
+      generateBranchId,
+      {
+        maxRetries: 3,
+        baseDelayMs: 1000,
+        maxDelayMs: 4000,
+        onRetry: (attempt) => {
+          console.log(`[insertStoryPage] 🔄 Branch conflict retry ${attempt}/3 for page ${pageNumber} (parent: ${parentId})`);
+        },
+        shouldRetry: (error) => {
+          // Only retry on unique constraint violations
+          return isUniqueConstraintError(error);
+        }
+      }
+    );
 
-    const insertedPage = mapToPersistedStoryPage(result[0]);
+    const insertedPage = mapToPersistedStoryPage(result);
     return insertedPage;
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error(`[insertStoryPage] ❌ Failed to insert story page for page ${pageNumber}:`, errorMessage);
-    // console.error(`Full error details:`, error);
     throw new Error(`Unable to insert story page: ${errorMessage}`, { cause: error });
   }
 }
