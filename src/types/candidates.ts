@@ -116,8 +116,12 @@ export interface GenerateCandidatesWithStrategyParams {
   page: UserStoryPage;
   currentState?: StoryState | null;
   currentBook?: Book | null;
-  options?: {
-    timeoutMs?: number;
-    onProgress?: ActionProgressCallback;
-  }
+  options?: GenerateCandidatesOptions
+}
+
+export interface GenerateCandidatesOptions {
+  timeoutMs?: number;
+  onProgress?: ActionProgressCallback;
+  currentDepth?: number;
+  maxDepth?: number;
 }

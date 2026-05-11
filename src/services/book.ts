@@ -711,7 +711,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
 export async function mapToEnrichedPage(dbPage: DBPage, options: { userId?: string, bookLanguage?: string, acceptLanguage?: string }): Promise<EnrichedStoryPage | null> {
   const { userId, bookLanguage = 'en', acceptLanguage } = options;
   const allActions = dbPage.actions;
-  const visibleActions = allActions.filter((action: Action) => action.destination?.branchId && action.destination?.pageId);
+  const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
   const { id: pageId, text } = dbPage;
 
   // Query user's chosen action for this page (if authenticated)
@@ -1274,9 +1274,7 @@ export async function triggerCandidateGenerationRetry(
 ): Promise<void> {
   // Check for incomplete actions if not provided
   const allActions = page.actions || [];
-  const visibleActions = allActions.filter((action: Action) => 
-    action.destination?.branchId && action.destination?.pageId
-  );
+  const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
   const hasIncompleteActions = visibleActions.length < allActions.length;
 
   // Skip if all actions have destinations

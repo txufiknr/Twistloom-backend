@@ -243,22 +243,22 @@ export type PsychologicalFlags = {
  * and narrative events that drive the story forward.
  */
 export const plotFlagTypes = [
-  "clue_found",        // Discovery of important information or evidence
-  "secret_revealed",   // Hidden truth comes to light
+  "clue_found",         // Discovery of important information or evidence
+  "secret_revealed",    // Hidden truth comes to light
   "betrayal_witnessed", // Character betrayal observed or experienced
-  "mystery_started",   // New storyline or puzzle begins
-  "threat_identified", // Danger or antagonist becomes clear
-  "alliance_formed",   // Partnership or cooperation established
+  "mystery_started",    // New storyline or puzzle begins
+  "threat_identified",  // Danger or antagonist becomes clear
+  "alliance_formed",    // Partnership or cooperation established
   "conflict_escalated", // Tension or confrontation increases
-  "sacrifice_made",    // Character gives up something important
-  "truth_hidden",      // Information deliberately concealed
+  "sacrifice_made",     // Character gives up something important
+  "truth_hidden",       // Information deliberately concealed
   "deception_detected", // Lie or manipulation uncovered
-  "escape_attempted",  // Character tries to flee or avoid situation
-  "confrontation",     // Direct face-off between characters
-  "revelation",        // Major truth or discovery revealed
+  "escape_attempted",   // Character tries to flee or avoid situation
+  "confrontation",      // Direct face-off between characters
+  "revelation",         // Major truth or discovery revealed
   "loss_experienced",   // Significant setback or damage occurs
-  "hope_found",        // Positive development or opportunity emerges
-  "other"              // Catch-all for unique plot developments
+  "hope_found",         // Positive development or opportunity emerges
+  "other"               // Catch-all for unique plot developments
 ] as const;
 
 /**
@@ -268,7 +268,6 @@ export const plotFlagTypes = [
  * and autocomplete support for plot flag categorization.
  */
 export type PlotFlagType = typeof plotFlagTypes[number];
-
 
 /** A plot flag representing a significant narrative event. */
 export interface PlotFlag {
@@ -668,9 +667,7 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
 };
 
 export type Action = {
-  /** Stable unique identifier for action (prevents O(n²) lookups) */
-  id: string;
-  /** Action text */
+  /** Action text (serves as unique identifier) */
   text: string;
   /** Category of action for psychological impact */
   type: ActionType;

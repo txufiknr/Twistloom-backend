@@ -29,7 +29,6 @@ import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import type { DBPage } from "../types/schema.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
-import { deepEqualSimple } from "../utils/parser.js";
 import type { Action } from "../types/story.js";
 import { handleNotFoundError } from "../utils/error.js";
 import { markPageVisited } from "./story.js";
@@ -583,14 +582,19 @@ export async function visitBookPage(
       return { dbPage, book };
     }
   
+    // TODO: edge case no match found, how is it possible?
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
+    if (!action) {
+      handleNotFoundError(res, `Action for this page not found in the parent page`);
+      return { dbPage, book };
+    }
 
     // Users can go back and select any action they like in page 1
     if (pageNumber > FREE_ACTION_SELECTION_UNTIL_PAGE + 1) {
       // Validate user's action choice: check if user already chose a different action on previous page
       const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
       if (selectedActions.length > 0) {
-        if (!selectedActions.some((a) => deepEqualSimple(a, action))) {
+        if (!selectedActions.some((a) => a.text === action!.text)) {
           // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
           res.status(400).json({
             error: "Choice made, can't make another choice",

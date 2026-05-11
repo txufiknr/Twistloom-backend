@@ -1223,7 +1223,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     const userPage = await mapToUserStoryPage(dbPage, userId);
     // TODO: No validation that totalActions matches the actual number of actions that will be processed
     const totalActions = userPage.actions.filter(a => 
-      !a.destination?.pageId || !a.destination?.branchId
+      !a.destination?.pageId
     ).length;
       
     // Validate totalActions count

@@ -28,8 +28,8 @@ The system uses three distinct strategies based on deployment context:
 | Strategy | Use Case | Timeout | Parallel | Key Features |
 |----------|----------|---------|----------|--------------|
 | **'vercel'** | API requests, user-facing | 4.5 minutes | ✅ Parallel | Fast response, SSE progress |
-| **'github-action'** | Originals generation, manual triggers | 25 minutes | ❌ Sequential | Reliability, detailed logging |
-| **'cron'** | Background processing, retries | 25 minutes | ✅ Parallel | Bulk operations, recovery |
+| **'github-action'** | Originals generation, manual triggers | 30 minutes | ❌ Sequential | Reliability, detailed logging |
+| **'cron'** | Background processing, retries | 13 minutes | ✅ Parallel | Bulk operations, recovery |
 
 ### **Strategy Implementation**
 
@@ -41,19 +41,19 @@ function getGenerationStrategy(context: CandidateGenerationStrategy): Generation
       return {
         useParallel: true,
         enforceVercelLimits: true,
-        customTimeoutMs: 270000 // 4.5 minutes
+        customTimeoutMs: undefined // Calculated based on Vercel limits
       };
     case 'github-action':
       return {
         useParallel: false, // Sequential for better error handling
         enforceVercelLimits: false,
-        customTimeoutMs: 1500000 // 25 minutes
+        customTimeoutMs: 1800000 // 30 minutes
       };
     case 'cron':
       return {
         useParallel: true, // Parallel for bulk operations
         enforceVercelLimits: false,
-        customTimeoutMs: 1500000 // 25 minutes
+        customTimeoutMs: 780000 // 13 minutes (with 20s buffer)
       };
   }
 }
@@ -68,6 +68,117 @@ The system supports configurable **multi-level depth pre-generation** to create 
 - **Level 3+ (Job Queue)**: Background generation via async job queue for less critical deeper levels
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
+
+### **Action Tracking Simplification**
+
+The system has been optimized to use **text-based action tracking** instead of generated IDs:
+
+#### **Before (Complex):**
+```typescript
+// ❌ Required ID generation and management
+export type Action = {
+  id: string;        // Generated unique identifier
+  text: string;
+  // ...other properties
+}
+
+// ❌ Complex ID-based lookups
+const actionIndexMap = new Map(
+  initialDBActions.map((action, index) => [action.id, index])
+);
+```
+
+#### **After (Simplified):**
+```typescript
+// ✅ Clean text-based identification
+export type Action = {
+  text: string;      // Serves as unique identifier
+  // ...other properties
+}
+
+// ✅ Simple text-based lookups
+const actionIndexMap = new Map(
+  initialDBActions.map((action, index) => [action.text, index])
+);
+```
+
+**Benefits:**
+- **No ID generation overhead** - Simpler code
+- **Human-readable identifiers** - Easier debugging
+- **Same O(1) performance** - Map-based lookups
+- **Cleaner type safety** - No `any` hacks needed
+
+### Retry Loop Prevention with `_isFallback`
+
+The system implements robust **retry loop prevention** using the `_isFallback` sentinel flag:
+
+#### **Mechanism:**
+```typescript
+/** Internal sentinel flag to prevent infinite retry loops for fallback actions */
+_isFallback?: boolean;
+```
+
+#### **How It Works:**
+1. **Invalid Actions**: Actions with validation errors are removed immediately (not marked as fallback)
+2. **Fallback Creation**: When ALL actions fail, create "Continue." action with `_isFallback: true`
+3. **Exclusion**: Fallback actions are filtered out from future processing
+4. **Filter Logic**: `!action._isFallback` prevents retry loops
+
+#### **Implementation:**
+```typescript
+// ✅ Filter out fallback actions from processing
+const pendingActions = page.actions.filter(action => 
+  !action.destination?.pageId && 
+  !action._isFallback // Skip fallback actions that already failed
+);
+
+// ✅ Create fallback action when all others fail
+updatedDBActions.push({
+  text: "Continue.",
+  type: "other",
+  hint: { text: "See what happens next.", type: "none" },
+  destination: {},
+  _isFallback: true // Sentinel flag to prevent retry loops
+});
+```
+
+#### **Benefits:**
+- **Zero infinite loops** - Fallback actions excluded from retry
+- **Graceful degradation** - Users always have navigation option
+- **Clear intent** - `_isFallback` clearly indicates system-generated action
+- **Type safety** - Optional property with proper filtering
+
+## 🎯 **Latest Implementation Details**
+
+### **Core Architecture Changes (2026)**
+
+#### **1. Text-Based Action Tracking**
+- **Removed**: `action.id` generated unique identifiers
+- **Simplified**: Action `text` serves as sole unique identifier
+- **Benefits**: No ID generation overhead, human-readable debugging
+- **Performance**: O(1) Map-based lookups maintained
+
+#### **2. Optimized Action Updates**
+- **Pattern**: Remove-then-insert with Set-based tracking
+- **Type Safety**: No `any` hacks, clean TypeScript
+- **Performance**: O(1) operations with single O(n) cleanup
+- **Reliability**: Consistent state management
+
+#### **3. Enhanced Retry Prevention**
+- **Mechanism**: `_isFallback` sentinel flag
+- **Logic**: Invalid actions removed, fallbacks excluded from retries
+- **Guarantee**: Zero infinite retry loops possible
+
+#### **4. Strategy Configuration Updates**
+- **'vercel'**: 4.5 minutes, parallel processing
+- **'github-action'**: 30 minutes, sequential processing  
+- **'cron'**: 13 minutes, parallel processing
+- **Timeouts**: Aligned with Vercel limits and buffer requirements
+
+#### **5. Simplified Import Structure**
+- **Removed**: Unused `generateId` imports from action generation
+- **Cleaned**: Import statements across all modules
+- **Type Safety**: Full TypeScript compliance maintained
 
 ### Hybrid Depth Strategy
 
@@ -591,7 +702,7 @@ const lockResult = await withLock(lockKey, async () => {
   
   // Re-check pending actions after acquiring lock (idempotent)
   const recheckedPendingDBActions = initialDBActions.filter(
-    action => !action.destination?.pageId || !action.destination?.branchId
+    action => !action.destination?.pageId
   );
   
   // Process actions...

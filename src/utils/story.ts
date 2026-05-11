@@ -587,14 +587,8 @@ export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates)
 export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag): void {
   if (addPlotFlag) {
     // Validate plot flag type - default to "other" if invalid
-    const validType = plotFlagTypes.includes(addPlotFlag.type as any) 
-      ? addPlotFlag.type 
-      : "other";
-    
-    state.plotFlags.push({
-      ...addPlotFlag,
-      type: validType
-    });
+    const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
+    state.plotFlags.push({ ...addPlotFlag, type: validType });
   }
 }
 

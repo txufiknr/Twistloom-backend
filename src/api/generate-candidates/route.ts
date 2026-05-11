@@ -15,6 +15,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { ensureCandidatesForPageWithStrategy } from '../../utils/candidate-generation.js';
 import { getStoryState } from '../../services/story.js';
 import { getBook, getPageFromDB, mapToUserStoryPage } from '../../services/book.js';
+import { isValidUuid } from '../../utils/uuid.js';
 
 /**
  * Maximum duration for this function (Vercel Hobby tier: up to 800s)
@@ -47,9 +48,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // TODO: Malformed JSON will crash the entire route
-    // Fix: Add try-catch around JSON parsing with proper error response
-    const { userId, pageId, bookId } = await req.json();
+    // Parse request body with error handling
+    let parsedBody;
+    try {
+      parsedBody = await req.json();
+    } catch (error) {
+      console.error('[generate-candidates] ❌ Invalid JSON in request body:', error);
+      return NextResponse.json(
+        { error: 'Invalid JSON in request body' },
+        { status: 400 }
+      );
+    }
+
+    const { userId, pageId, bookId } = parsedBody;
     
     if (!userId || !pageId) {
       return NextResponse.json(
@@ -58,7 +69,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    console.log(`[generate-candidates] 🚀 Starting background generation for user ${userId}, page ${pageId}`);
+    // Validate UUID format
+    if (!isValidUuid(userId) || !isValidUuid(pageId)) {
+      return NextResponse.json(
+        { error: 'Invalid format for userId or pageId' },
+        { status: 400 }
+      );
+    }
+
+    console.log(`[generate-candidates] 🚀 Starting background generation for page ${pageId}`);
+    // Note: any `userId` can trigger next page generation for any page, no need for dbPage.userId validation
 
     // Get page and context
     const dbPage = await getPageFromDB(pageId, { bookIdentifier: bookId });
@@ -87,7 +107,7 @@ export async function POST(req: NextRequest) {
       }
     });
     const originalActionsCount = actions.length;
-    const visibleActionsCount = actions.filter(a => a.destination.pageId && a.destination.branchId).length;
+    const visibleActionsCount = actions.filter(a => a.destination.pageId).length;
     const pendingAfter = originalActionsCount - visibleActionsCount;
 
     console.log(`[generate-candidates] ✅ Completed background generation (${visibleActionsCount}/${originalActionsCount}) for page ${pageId}`);

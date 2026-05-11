@@ -13,19 +13,19 @@
 [x] research Pg-boss / bullmq + redis
 [x] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
 [x] code optimization from TODO-pgboss.md
-[ ] candidate generation SSE UX roadmap (CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md)
-[ ] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
+[x] candidate generation SSE UX roadmap (CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md)
+[x] prompt ensure action text unique
+[x] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
-[ ] Original: kalau "en", Mc name predefine aja, jangan AI
+[ ] Originals: Mc name predefine aja, jangan AI
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 
-Migrate vercel cron to Vercel's Background Functions
-Habis page 2 kok page 2 lagi (I reach over)? 
-Enriched page context tambah:
-- mc: injuries, inventory
+[x] Migrate vercel cron to Vercel's Background Functions
+[x] Enriched page context tambah: injuries, inventory
+[ ] Habis page 2 kok page 2 lagi (I reach over)? 
 Important objects perlu disimpen di story state?
 Important objects perlu rules? 
 
@@ -56,7 +56,6 @@ TODO:
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] user: you might like (based on liked books)
 [ ] user preferences schema (interests)
-[ ] user settings schema (font size)
 [ ] display running summary at the end of story (N% readers ended up here)
 [ ] Implement belief
 [ ] Implement corruption curve

@@ -117,7 +117,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           userId,
           page: userPage,
           currentState,
-          currentBook: null
+          options: {
+            currentDepth,
+            maxDepth
+          }
         });
         
         // Mark job as completed

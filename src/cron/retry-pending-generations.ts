@@ -111,7 +111,7 @@ export async function retryPendingGenerations(): Promise<void> {
         );
         
         const successCount = (pageData.pendingGenerationCount || 0) - (generationResult.updatedPage.actions?.filter((action: Action) => 
-          !action.destination?.branchId || !action.destination?.pageId
+          !action.destination?.pageId
         ).length || 0);
         
         if (successCount > 0) {
@@ -302,7 +302,7 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy: 
     
     const actionsAfter = generationResult.updatedPage.actions || [];
     const pendingAfter = actionsAfter.filter((action: Action) => 
-      !action.destination?.branchId || !action.destination?.pageId
+      !action.destination?.pageId
     ).length;
     
     // Update pendingGenerationCount
@@ -352,7 +352,7 @@ async function processPageGeneration(
     // Count actions without complete destination before regeneration
     const actionsBefore = dbPage.actions || [];
     const pendingBefore = actionsBefore.filter((action: Action) => 
-      !action.destination?.branchId || !action.destination?.pageId
+      !action.destination?.pageId
     ).length;
     
     if (hasNoPendingActions) {
@@ -376,7 +376,7 @@ async function processPageGeneration(
     // Count actions without complete destination after regeneration
     const actionsAfter = updatedPage.actions || [];
     const pendingAfter = actionsAfter.filter((action: Action) => 
-      !action.destination?.branchId || !action.destination?.pageId
+      !action.destination?.pageId
     ).length;
     
     // Update pendingGenerationCount

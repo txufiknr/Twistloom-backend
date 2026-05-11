@@ -10,6 +10,7 @@
 
 import { APP_WEB_URL } from '../config/constants.js';
 import { getEnv, requireEnv } from '../utils/env.js';
+import { getErrorMessage } from '../utils/error.js';
 
 /**
  * Triggers immediate background candidate generation using fire-and-forget pattern
@@ -79,7 +80,14 @@ export async function triggerBackgroundGeneration(params: {
     console.log(`[${context}] 🚀 Fired background generation for page ${pageId} (user: ${userId}${bookId ? `, book: ${bookId}` : ''})`);
 
   } catch (error) {
-    console.error(`[${context}] ❌ Failed to trigger background generation:`, error);
-    // Don't rethrow - this is fire-and-forget pattern
+    // Distinguish between configuration errors and runtime errors
+    const errorMessage = getErrorMessage(error);
+    const isConfigurationError = errorMessage.includes('Missing environment variable');
+    if (isConfigurationError) {
+      console.error(`[${context}] ❌ ${errorMessage}`);
+    } else {
+      console.error(`[${context}] ❌ Runtime error:`, error);
+    }
+    // Don't rethrow for fire-and-forget pattern
   }
 }

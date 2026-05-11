@@ -88,7 +88,7 @@ export async function ensureCandidatesForPageWithStrategy(
   const { onProgress } = options || {};
   
   const totalActions = userPage.actions.filter(a => 
-    !a.destination?.pageId || !a.destination?.branchId
+    !a.destination?.pageId
   ).length;
   
   let completedActions = 0;
@@ -167,7 +167,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       // Direct generation with progress tracking
       const userPage = await mapToUserStoryPage(dbPage, userId);
       const totalActions = userPage.actions.filter(a => 
-        !a.destination?.pageId || !a.destination?.branchId
+        !a.destination?.pageId
       ).length;
       
       let completedActions = 0;

@@ -9,7 +9,7 @@ import { getBook, getPageFromDB, getStoryPageById, mapToUserStoryPage } from '..
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import type { UserStoryPage, StoryState, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
+import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -20,7 +20,6 @@ import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBacko
 import { generateNextPage } from './prompt.js';
 import { getStoryStateWithBranch } from '../services/story-branch.js';
 import { isValidUuid } from './uuid.js';
-import { generateId } from './uuid.js';
 
 /**
  * Performance metrics for candidate generation
@@ -100,7 +99,7 @@ export interface CandidateGenerationValidation {
  * 
  * @example
  * ```typescript
- * const validation = await validateCandidateGeneration(userId, page, book);
+ * const validation = await validateCandidateGeneration(page, book);
  * if (!validation.canGenerate) {
  *   console.log(validation.reason);
  *   return;
@@ -109,27 +108,14 @@ export interface CandidateGenerationValidation {
  * ```
  */
 export async function validateCandidateGeneration(
-  userId: string,
   page: UserStoryPage,
   currentBook: Book | null = null,
-  currentState?: StoryState | null,
-  options: {
-    currentDepth?: number;
-    maxDepth?: number;
-  } = {}
+  options: Pick<GenerateCandidatesOptions, 'currentDepth' | 'maxDepth'>
 ): Promise<CandidateGenerationValidation> {
   const { currentDepth = 1, maxDepth = MAX_BRANCHING_PREGENERATION_DEPTH } = options;
   
-  // Resolve book context if not provided
-  if (!currentBook) {
-    try {
-      currentBook = await getBook(page.bookId);
-    } catch (error) {
-      console.error(`[validateCandidateGeneration] ❌ Failed to fetch book ${page.bookId}:`, error);
-    }
-  }
-
   // Early exit: skip if book not found
+  currentBook ??= await getBook(page.bookId);
   if (!currentBook) {
     return {
       canGenerate: false,
@@ -155,7 +141,7 @@ export async function validateCandidateGeneration(
 
   // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    (!action.destination?.pageId || !action.destination?.branchId) && 
+    (!action.destination?.pageId) && 
     !action._isFallback // Skip fallback actions that already failed
   );
   
@@ -226,7 +212,7 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
   
   // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    (!action.destination?.pageId || !action.destination?.branchId) && 
+    (!action.destination?.pageId) && 
     !action._isFallback // Skip fallback actions that already failed
   );
   
@@ -707,7 +693,7 @@ export async function ensureCandidatesForPageWithDepth(
 
   // Skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    (!action.destination?.pageId || !action.destination?.branchId) && 
+    !action.destination?.pageId && 
     !action._isFallback // Skip fallback actions that already failed
   );
   if (pendingActions.length === 0) {
@@ -729,7 +715,7 @@ export async function ensureCandidatesForPageWithDepth(
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock
-    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destination?.pageId || !action.destination?.branchId);
+    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destination?.pageId);
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPageWithDepth] ⏩ Actions already processed by another instance at depth ${currentDepth}`);
       return;
@@ -771,18 +757,20 @@ export async function ensureCandidatesForPageWithDepth(
       const action = result.action;
       
       if (result.success && result.candidatePage) {
-        // Success: update action with destination
-        const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
-        if (actionIndex !== -1) {
-          updatedDBActions[actionIndex] = { 
-            ...action, 
-            destination: { 
-              branchId: result.candidatePage.branchId, 
-              pageId: result.candidatePage.id 
-            } 
-          };
-          hasRealChanges = true;
+        // Success: update action with destination using remove-then-insert pattern
+        const existingIndex = updatedDBActions.findIndex(a => a.text === action.text);
+        if (existingIndex !== -1) {
+          updatedDBActions.splice(existingIndex, 1);
         }
+        
+        updatedDBActions.push({ 
+          ...action,
+          destination: { 
+            branchId: result.candidatePage.branchId, 
+            pageId: result.candidatePage.id 
+          }
+        });
+        hasRealChanges = true;
         // Note: generateNewBranchId logic not used in background processing
         // as each action generates independently without affecting others
       } else {
@@ -794,9 +782,9 @@ export async function ensureCandidatesForPageWithDepth(
         
         if (isInvalidAction) {
           console.error(`[ensureCandidatesForPageWithDepth] ❌ Invalid action "${action.text}" detected, removing from actions`);
-          const actionIndex = updatedDBActions.findIndex(a => a.text === action.text && a.type === action.type);
-          if (actionIndex !== -1) {
-            updatedDBActions.splice(actionIndex, 1);
+          const existingIndex = updatedDBActions.findIndex(a => a.text === action.text);
+          if (existingIndex !== -1) {
+            updatedDBActions.splice(existingIndex, 1);
             hasRealChanges = true;
           }
         }
@@ -812,7 +800,6 @@ export async function ensureCandidatesForPageWithDepth(
     if (updatedDBActions.length === 0) {
       console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
-        id: generateId(), // Add stable ID
         text: "Continue.",
         type: "other",
         hint: {
@@ -863,11 +850,11 @@ export async function ensureCandidatesForPageWithDepth(
 export async function ensureCandidatesForPageWithStrategy(
   params: GenerateCandidatesWithStrategyParams
 ): Promise<UserStoryPage> {
-  const { strategy: context, userId, page, currentState, currentBook: providedBook, options } = params;
-  const { timeoutMs: customTimeoutMs, onProgress } = options || {};
+  const { strategy: context, userId, page, currentState, currentBook: providedBook, options = {} } = params;
+  const { timeoutMs: customTimeoutMs, onProgress } = options;
 
   // Use shared validation to eliminate redundant checks
-  const validation = await validateCandidateGeneration(userId, page, providedBook);
+  const validation = await validateCandidateGeneration(page, providedBook, options);
   if (!validation.canGenerate) {
     console.log(`[ensureCandidatesForPageWithStrategy] ⏩ ${validation.reason}`);
     return page;
@@ -899,7 +886,7 @@ export async function ensureCandidatesForPageWithStrategy(
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
     const recheckedPendingDBActions = initialDBActions.filter(action => 
-      (!action.destination?.pageId || !action.destination?.branchId) && 
+      !action.destination?.pageId && 
       !action._isFallback // Skip fallback actions that already failed
     );
     if (recheckedPendingDBActions.length === 0) {
@@ -917,13 +904,16 @@ export async function ensureCandidatesForPageWithStrategy(
     console.log(`[ensureCandidatesForPage] 🔒 Set isGeneratingStartedAt for page ${page.id} (lock owner)`);
 
     // Track if any actions were actually updated
-    const updatedDBActions = [...initialDBActions];
+    let updatedDBActions = [...initialDBActions];
     const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
 
-    // Build action index map for O(1) lookups (prevents O(n²) performance)
+    // Track removed actions using Set for O(1) lookup (clean, type-safe approach)
+    const removedActionTexts = new Set<string>();
+
+    // Build action index map for O(1) lookups using text as key
     const actionIndexMap = new Map(
-      initialDBActions.map((action, index) => [action.id, index])
+      initialDBActions.map((action, index) => [action.text, index])
     );
 
     // Helper functions for DRY code
@@ -931,7 +921,7 @@ export async function ensureCandidatesForPageWithStrategy(
      * Generate letter mapping for action (A, B, C, etc.)
      */
     function generateActionLetter(action: Action): string {
-      const actionIndex = actionIndexMap.get(action.id) ?? 0;
+      const actionIndex = actionIndexMap.get(action.text) ?? 0;
       return String.fromCharCode(65 + actionIndex);
     }
 
@@ -947,23 +937,39 @@ export async function ensureCandidatesForPageWithStrategy(
     }
 
     /**
-     * Update action with destination page using O(1) Map lookup
+     * Update action with destination page using Map-based O(1) updates
+     * This provides optimal performance and maintains consistency
      */
     function updateActionWithDestination(
       action: Action, 
       candidatePage: PersistedStoryPage, 
     ): void {
-      const actionIndex = actionIndexMap.get(action.id) ?? -1;
-      if (actionIndex !== -1) {
-        updatedDBActions[actionIndex] = { 
+      // Use action index map for O(1) lookup and update
+      const existingIndex = actionIndexMap.get(action.text);
+      
+      if (existingIndex !== undefined) {
+        // Direct update at existing position - O(1) operation
+        updatedDBActions[existingIndex] = { 
           ...action, 
           destination: { 
             branchId: candidatePage.branchId, 
             pageId: candidatePage.id 
           } 
         };
-        hasRealChanges = true;
+      } else {
+        // Append new action - O(1) operation
+        updatedDBActions.push({ 
+          ...action, 
+          destination: { 
+            branchId: candidatePage.branchId, 
+            pageId: candidatePage.id 
+          } 
+        });
+        // Update map with new index
+        actionIndexMap.set(action.text, updatedDBActions.length - 1);
       }
+      
+      hasRealChanges = true;
     }
 
     /**
@@ -988,10 +994,13 @@ export async function ensureCandidatesForPageWithStrategy(
         
         if (isInvalidAction) {
           console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-          const actionIndex = actionIndexMap.get(action.id) ?? -1;
-          if (actionIndex !== -1) {
-            updatedDBActions.splice(actionIndex, 1);
+          // Track removed action using clean Set-based approach
+          const existingIndex = actionIndexMap.get(action.text);
+          if (existingIndex !== undefined) {
+            removedActionTexts.add(action.text);
             hasRealChanges = true;
+            // Remove from map immediately
+            actionIndexMap.delete(action.text);
           }
         } else {
           console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(result.error));
@@ -1000,6 +1009,21 @@ export async function ensureCandidatesForPageWithStrategy(
         // Notify progress callback of failure
         onProgress?.(action, 'failed', undefined, result.error);
       }
+    }
+    
+    /**
+     * Filter out removed actions and rebuild action index map
+     * Clean, type-safe approach using text as key
+     */
+    function filterRemovedActionsAndRebuildMap(): void {
+      // Filter out removed actions using Set-based O(1) lookup
+      updatedDBActions = updatedDBActions.filter(action => !removedActionTexts.has(action.text));
+      
+      // Rebuild action index map for consistency
+      actionIndexMap.clear();
+      updatedDBActions.forEach((action, index) => {
+        actionIndexMap.set(action.text, index);
+      });
     }
     
     // Choose generation strategy based on context
@@ -1086,10 +1110,13 @@ export async function ensureCandidatesForPageWithStrategy(
           
           if (isInvalidAction) {
             console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-            const actionIndex = actionIndexMap.get(action.id) ?? -1;
-            if (actionIndex !== -1) {
-              updatedDBActions.splice(actionIndex, 1);
+            // Track removed action using clean Set-based approach
+            const existingIndex = actionIndexMap.get(action.text);
+            if (existingIndex !== undefined) {
+              removedActionTexts.add(action.text);
               hasRealChanges = true;
+              // Remove from map immediately
+              actionIndexMap.delete(action.text);
             }
           } else {
             console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(lastError));
@@ -1100,6 +1127,9 @@ export async function ensureCandidatesForPageWithStrategy(
         }
       }
     }
+
+    // Filter out removed actions and rebuild action index map before DB operations
+    filterRemovedActionsAndRebuildMap();
 
     // Summarize results and decide whether we need to persist changes back to DB
     const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
@@ -1112,7 +1142,6 @@ export async function ensureCandidatesForPageWithStrategy(
     if (updatedDBActions.length === 0) {
       console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
-        id: generateId(), // Add stable ID
         text: "Continue.",
         type: "other",
         hint: {

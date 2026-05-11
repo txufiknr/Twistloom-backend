@@ -159,7 +159,7 @@ const createFallbackAction = (): Action => ({
 
 // Updated pending actions filter
 const pendingActions = initialDBActions.filter(action => 
-  (!action.destination?.pageId || !action.destination?.branchId) && 
+  !action.destination?.pageId && 
   !action._isFallback // Skip fallback actions that already failed
 );
 

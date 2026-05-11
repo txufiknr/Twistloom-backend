@@ -22,7 +22,6 @@ import { dbWrite } from "../db/client.js";
 import { insertStoryState } from "../services/story.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
-import { generateId } from "./uuid.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
@@ -661,7 +660,7 @@ ${isLastPage ? `  - This is the last page, just provide a single action that con
   - hint.text: what actually happens as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max 2 choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
-  - No two actions should imply the same consequence.
+  - ${isLatePhase ? `Each action text should be distinct despite similar outcomes` : `Each action text should be distinct and convey unique consequences.`}
   - At least one should feel subtly wrong or inadvisable.
 ${isEarlyPhase ? `  - Choices should feel open and curious — stakes are present but not yet dire.` : ''}
 ${isMidPhase ? `  - Choices should reflect the player's established decision patterns. Make the trap feel tailored.` : ''}
@@ -2488,10 +2487,10 @@ export async function initializeBook(
  * ```
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
-  const { userId, book, actionedPage, generateNewBranchId = false } = params;
-  let { currentState } = params;
+  const { userId, book, actionedPage, currentState: providedState, generateNewBranchId = false } = params;
 
-  currentState ??= await getStoryStateWithBranch(userId, actionedPage.bookId, actionedPage.id);
+  // Ensure story state exists for the actioned page
+  const currentState: StoryState | null = providedState ? { ...providedState } : await getStoryStateWithBranch(userId, actionedPage.bookId, actionedPage.id);
   if (!currentState) {
     throw new Error(`Failed to get story state for page ${actionedPage.id}`);
   }
@@ -2507,7 +2506,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   console.log(`[generateNextPage] 🧩 advancedState.page:`, advancedState.page);
   if (advancedState.page !== expectedPageNumber) {
     // Provided story state might mismatch, but still respect what provided
-    console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${advancedState.page} from advanced story state`);
+    console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${advancedState.page} from advancedState`);
     advancedState.page = expectedPageNumber;
   }
 
@@ -2555,6 +2554,11 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // 6. Apply current AI turn's updates to advanced story state
   const stateDelta = extractStateDelta(generatedStoryPage);
   const newState = applyStateDelta(advancedState, stateDelta);
+  if (newState.page !== expectedPageNumber) {
+    // Provided story state might mismatch, but still respect what provided
+    console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${newState.page} from newState`);
+    newState.page = expectedPageNumber;
+  }
   
   // 6.1. Calculate psychological deltas from state changes
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
@@ -2617,16 +2621,9 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
       
       // Create updated data with immutable pattern
       const updatedData = { ...data, branchId };
-      
-      // Add stable IDs to AI-generated actions for O(1) lookups
-      const actionsWithIds = generatedStoryPage.actions.map(action => ({
-        ...action,
-        id: generateId()
-      }));
 
-      return insertStoryPage(userId, newState.page, {
+      return insertStoryPage(userId, expectedPageNumber, {
         ...generatedStoryPage,
-        actions: actionsWithIds,
         stateDelta: fullStateDelta,
         aiProvider: response.provider || 'none',
         aiModel: response.model || 'none',
