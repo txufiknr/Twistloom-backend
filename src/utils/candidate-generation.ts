@@ -457,6 +457,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
     let lastError: unknown = null;
     
     // Use new branch ID for all but the first action (if initial flag is false)
+    // This matches sequential strategy logic: isPartial || generateNewBranchId || index > 0
     const generateNewBranchId = initialGenerateNewBranchId || index > 0;
     
     const candidatePage = await Promise.race([
@@ -732,6 +733,9 @@ export async function ensureCandidatesForPageWithDepth(
     const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let hasRealChanges = false;
     
+    // If there were any existing actions, should generate new branchId for each pending action
+    const isPartial = initialDBActions.length > recheckedPendingDBActions.length;
+    
     // Calculate dynamic timeout for background processing (more generous for background)
     const BACKGROUND_TIMEOUT_MS = 180000; // 3 minutes for background
     const timeElapsed = Date.now() - requestStartTime;
@@ -744,7 +748,7 @@ export async function ensureCandidatesForPageWithDepth(
       currentPage,
       currentState,
       currentBook,
-      initialGenerateNewBranchId: generateNewBranchId,
+      initialGenerateNewBranchId: isPartial || generateNewBranchId,
       timeoutMs: AI_GENERATION_TIMEOUT_MS,
       currentDepth,
       maxDepth,
@@ -1049,13 +1053,19 @@ export async function ensureCandidatesForPageWithStrategy(
         processActionResult(result, letter);
       }
     } else {
+      // If there were any existing actions, should generate new branchId for each pending action
+      const isPartial = initialDBActions.length > recheckedPendingDBActions.length;
+
       // Sequential generation (for GitHub Actions) using helper functions
-      for (const action of recheckedPendingDBActions) {
+      for (const [index, action] of recheckedPendingDBActions.entries()) {
         const letter = generateActionLetter(action);
         console.log(`[ensureCandidatesForPageWithStrategy] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
         
         // Notify progress callback of action start
         onProgress?.(action, 'started');
+        
+        // Calculate generateNewBranchId per action: first action uses parent branchId, subsequent actions get new branchId
+        const actionGenerateNewBranchId = isPartial || generateNewBranchId || index > 0;
         
         // Generate candidate page with retry logic (3 retries with exponential backoff: 1s, 2s, 4s)
         // Track the last error to determine if action should be removed
@@ -1067,7 +1077,7 @@ export async function ensureCandidatesForPageWithStrategy(
             currentPage,
             currentState,
             currentBook,
-            generateNewBranchId
+            generateNewBranchId: actionGenerateNewBranchId
           }),
           {
             maxRetries: MAX_BRANCHING_RETRIES,

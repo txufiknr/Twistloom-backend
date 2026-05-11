@@ -662,7 +662,7 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * // Combined search with all filters
  * GET /api/books?search=mystery&language=en&lastUpdated=this-month&tags=thriller
  */
-router.get("/", requireAuth, async (req: Request, res: Response) => {
+router.get("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags } = extractPaginationParams(req);
     const userId = req.userId!;

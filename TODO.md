@@ -16,6 +16,7 @@
 [x] candidate generation SSE UX roadmap (CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md)
 [x] prompt ensure action text unique
 [x] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
+[ ] job priority harusnya berdasarkan depth
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate

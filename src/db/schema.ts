@@ -328,8 +328,8 @@ export const userPageProgress = pgTable(
   "user_page_progress",
   {
     id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "set null" }),
-    bookId: bookId("set null"),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"),
     actionedPageId: uuid("actioned_page_id").notNull(), // page which action selected from
     nextPageId: uuid("next_page_id").notNull(), // action's destination page ID
     action: jsonb("action").$type<Action>().notNull(),
@@ -528,7 +528,7 @@ export const userSessions = pgTable(
     id: id(),
     userId: userId(),
     bookId: bookId("cascade"), // Delete if book is deleted
-    pageId: pageId("set null"),
+    pageId: pageId("set null"), // Reset to page 1 when page is deleted, but if possible, should revert this into previous page (from userPageProgress)
     previousPageId: uuid("previous_page_id"), // For navigation history
     status: text("status").$type<SessionStatus>().notNull().default("active"),
     createdAt,

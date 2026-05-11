@@ -284,208 +284,122 @@ export async function getActionProgressEvents(
 
 ---
 
-### Phase 3: Frontend Integration
+### Phase 3: Frontend Integration - ✅ **COMPLETED**
 
 **Objective**: Update frontend to handle and display per-action progress events
 
-#### 3.1 Enhanced SSE Client
+#### 3.1 Type System Updates - ✅ **IMPLEMENTED**
 ```typescript
-// utils/candidate-generation.ts
-interface ActionProgressEvent {
+// src/lib/types/api.ts
+export interface ActionProgressEvent {
   action: string;
   status: 'started' | 'completed' | 'failed';
   completed: number;
   total: number;
-  progress: number;
+  progress: number; // 0-100
   error?: string;
   timestamp: string;
 }
+```
 
-export async function generateCandidates(
-  bookIdentifier: string,
+#### 3.2 Enhanced SSE Client - ✅ **IMPLEMENTED**
+```typescript
+// src/lib/services/books-api.ts
+generateCandidates(
+  identifier: string,
   pageId: string,
-  onProgress?: (event: ActionProgressEvent) => void,
-  onActionProgress?: (event: ActionProgressEvent) => void
-): Promise<StoryPage> {
-  // ... existing SSE setup
-  
-  const processChunk = (chunk: Uint8Array) => {
-    buffer += decoder.decode(chunk, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    
-    for (const line of lines) {
-      if (line.startsWith('event: progress')) {
-        // Handle overall progress
-        continue; // Skip to next line for data
-      } else if (line.startsWith('event: action_progress')) {
-        // Handle per-action progress
-        const nextLine = lines.shift();
-        if (nextLine?.startsWith('data: ')) {
-          const data = nextLine.slice(6);
-          if (data.trim()) {
-            try {
-              const event = JSON.parse(data) as ActionProgressEvent;
-              onActionProgress?.(event);
-            } catch (error) {
-              console.error('Failed to parse action progress:', error);
-            }
-          }
-        }
-      } else if (line.startsWith('data: ')) {
-        // Handle existing progress/complete/error events
-        const data = line.slice(6);
-        if (data.trim()) {
-          try {
-            const parsed = JSON.parse(data);
-            
-            if (parsed.status === 'complete') {
-              resolve(parsed);
-            } else if (parsed.status === 'waiting') {
-              onProgress?.(parsed);
-            }
-            // ... existing event handling
-          } catch (error) {
-            console.error('Failed to parse SSE data:', error);
-          }
-        }
-      }
-    }
-  };
-  
-  // ... existing SSE connection logic
+  onProgress?: (event: ActionProgressEvent) => void
+): Promise<GetCandidatesResponse> {
+  // SSE event types per backend API docs
+  type CandidatesSSEEvent =
+    | { type: 'progress'; status: 'waiting'; message: string }
+    | { type: 'action_progress'; action: string; status: 'started' | 'completed' | 'failed'; completed: number; total: number; progress: number; error?: string; timestamp: string }
+    | { type: 'complete'; ... }
+    | { type: 'timeout'; ... }
+    | { type: 'error'; ... };
+
+  const lastEvent = await fetchSSEStream<CandidatesSSEEvent, undefined>(...);
+  // Handle action_progress events
+  if (event.type === 'action_progress') {
+    onProgress?.(event as ActionProgressEvent);
+    devConsole.log('[generateCandidates] 📊 Action progress:', event);
+  }
 }
 ```
 
-#### 3.2 React Component Enhancement
+#### 3.3 Progress UI Component - ✅ **IMPLEMENTED**
 ```typescript
-// components/ReaderPageClient.tsx
-export function ReaderPageClient({
-  page,
-  book,
-  bookSlug,
-  updatePageData,
-}: ReaderPageClientProps) {
-  const [actionProgress, setActionProgress] = useState<Map<string, ActionProgressEvent>>(new Map());
-  const [overallProgress, setOverallProgress] = useState<{ completed: number; total: number }>({ completed: 0, total: 0 });
-  
-  const { isGenerating, error } = useAutoCandidateGeneration({
-    page,
-    book,
-    bookSlug,
-    updatePageData,
-    onProgress: (progress) => {
-      // Handle overall progress
-      console.log('[ReaderPageClient] 📊 Overall progress:', progress.message);
-    },
-    onActionProgress: (event) => {
-      // Handle per-action progress
-      setActionProgress(prev => new Map(prev.set(event.action, event)));
-      setOverallProgress({ completed: event.completed, total: event.total });
-      
-      console.log(`[ReaderPageClient] 📈 Action progress: ${event.action} - ${event.status} (${event.progress}%)`);
-    },
-    onError: (error) => {
-      console.error('[ReaderPageClient] ❌ Generation error:', error.message);
-    },
-  });
-  
-  return (
-    <div>
-      {/* Page content */}
-      {page && (
-        <div>
-          <h1>Page {page.page}</h1>
-          <p>{page.text}</p>
-          
-          {/* Overall progress indicator */}
-          {isGenerating && overallProgress.total > 0 && (
-            <div className="mb-4 p-3 bg-blue-50 rounded">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-sm text-blue-700">
-                  🔄 Generating candidate actions...
-                </span>
-                <span className="text-sm text-blue-600">
-                  {overallProgress.completed}/{overallProgress.total}
-                </span>
-              </div>
-              <div className="w-full bg-blue-200 rounded-full h-2">
-                <div 
-                  className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${Math.round((overallProgress.completed / overallProgress.total) * 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-          
-          {/* Per-action progress */}
-          {actionProgress.size > 0 && (
-            <div className="mb-4 p-3 bg-gray-50 rounded">
-              <h4 className="text-sm font-medium text-gray-700 mb-2">Action Progress:</h4>
-              <div className="space-y-1">
-                {Array.from(actionProgress.entries()).map(([action, event]) => (
-                  <div key={action} className="flex items-center justify-between text-xs">
-                    <span className="text-gray-600 truncate max-w-[200px]">{action}</span>
-                    <span className={`ml-2 ${
-                      event.status === 'completed' ? 'text-green-600' :
-                      event.status === 'failed' ? 'text-red-600' :
-                      'text-blue-600'
-                    }`}>
-                      {event.status === 'completed' ? '✅' :
-                       event.status === 'failed' ? '❌' : '⏳'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          
-          {/* Generation error */}
-          {error && (
-            <div className="mb-4 p-3 bg-red-50 rounded">
-              <p className="text-sm text-red-700">
-                ❌ Failed to generate actions: {error.message}
-              </p>
-            </div>
-          )}
-          
-          {/* Actions */}
-          <div className="mt-4">
-            {page.actions.map((action, index) => (
-              <div key={index} className="mb-2">
-                {action.destination ? (
-                  <button className="action-button">
-                    {action.text}
-                  </button>
-                ) : (
-                  <div className="text-gray-400 flex items-center">
-                    <span>{action.text}</span>
-                    {actionProgress.get(action.text) && (
-                      <span className="ml-2 text-xs">
-                        {actionProgress.get(action.text)?.status === 'completed' ? '✅' :
-                         actionProgress.get(action.text)?.status === 'failed' ? '❌' : '⏳'}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+// src/components/reader/CandidateGenerationProgress.tsx
+export function CandidateGenerationProgress({
+  isGenerating,
+  overallProgress,
+  actionProgress,
+  error,
+}: CandidateGenerationProgressProps) {
+  // Overall progress bar with percentage
+  // Per-action status with icons (✅ ❌ ⏳)
+  // Error display for failed actions
+  // Dark mode support
 }
+```
+
+#### 3.4 ReaderPage Integration - ✅ **IMPLEMENTED**
+```typescript
+// src/app/books/[slug]/[pageId]/ReaderPageClient.tsx
+const [isGenerating, setIsGenerating] = useState(false);
+const [actionProgress, setActionProgress] = useState<Map<string, ActionProgressEvent>>(new Map());
+const [overallProgress, setOverallProgress] = useState<{ completed: number; total: number }>({ completed: 0, total: 0 });
+const [generationError, setGenerationError] = useState<string | undefined>();
+
+const candidatesResponse = await booksApi.generateCandidates(
+  bookSlug,
+  page.id,
+  (event: ActionProgressEvent) => {
+    setActionProgress(prev => new Map(prev.set(event.action, event)));
+    setOverallProgress({ completed: event.completed, total: event.total });
+  }
+);
+
+// Render progress component
+<CandidateGenerationProgress
+  isGenerating={isGenerating}
+  overallProgress={overallProgress}
+  actionProgress={actionProgress}
+  error={generationError}
+/>
 ```
 
 **Expected Outcomes**:
-- Real-time progress indicators in UI
-- Per-action status visibility
-- Enhanced user engagement during generation
-- Better error visibility and debugging
+- ✅ Real-time progress indicators in UI
+- ✅ Per-action status visibility with icons
+- ✅ Enhanced user engagement during generation
+- ✅ Better error visibility and debugging
+- ✅ Dark mode support
+- ✅ Clean, minimal UI that fits within reader interface
 
-**Timeline**: 2-3 weeks
+**Timeline**: ✅ **COMPLETED**
 **Priority**: High (User-facing improvements)
+
+**Implementation Details**:
+- Added `ActionProgressEvent` type to `src/lib/types/api.ts`
+- Updated `BooksApi.generateCandidates()` to accept optional `onProgress` callback
+- Added `action_progress` event type handling in SSE stream processing
+- Created `CandidateGenerationProgress` component with:
+  - Overall progress bar with percentage display
+  - Per-action status list with emoji indicators
+  - Error display for failed actions
+  - Dark mode support via Tailwind classes
+- Integrated progress component into `ReaderPageClient` with:
+  - State management for generation status, progress, and errors
+  - Progress callback integration with `booksApi.generateCandidates()`
+  - Conditional rendering based on generation state
+- Progress state is reset when generation starts and cleared on completion/error
+
+**Files Modified**:
+- `src/lib/types/api.ts` - Added ActionProgressEvent interface
+- `src/lib/services/books-api.ts` - Added onProgress callback and action_progress event handling
+- `src/components/reader/CandidateGenerationProgress.tsx` - New component for progress display
+- `src/app/books/[slug]/[pageId]/ReaderPageClient.tsx` - Integrated progress tracking and UI
 
 ---
 
