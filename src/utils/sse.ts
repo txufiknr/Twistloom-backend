@@ -498,3 +498,203 @@ export function initSSEHeaders(res: Response): void {
 export function sendSSEKeepAlive(res: Response): void {
   res.write(': keep-alive\n\n');
 }
+
+/**
+ * Configuration for SSE polling behavior
+ */
+export interface SSEPollingConfig {
+  /** Interval between polls in milliseconds */
+  pollIntervalMs: number;
+  /** Maximum number of polling attempts */
+  maxAttempts: number;
+  /** Interval for sending progress updates (every N polls) */
+  progressInterval: number;
+}
+
+/**
+ * Options for polling for candidate generation completion
+ */
+export interface PollCandidateGenerationOptions {
+  /** Page ID to poll for */
+  pageId: string;
+  /** User ID for mapping page data */
+  userId: string;
+  /** Express request object */
+  req: any;
+  /** Express response object */
+  res: Response;
+  /** Initial message to send before polling starts */
+  initialMessage: string;
+  /** Function to fetch page from database */
+  getPageFromDB: (pageId: string) => Promise<any>;
+  /** Function to map page to user story page */
+  mapToUserStoryPage: (page: any, userId: string) => Promise<any>;
+  /** Function to get action progress events */
+  getActionProgressEvents?: (pageId: string) => Promise<any[]>;
+  /** Polling configuration */
+  config: SSEPollingConfig;
+}
+
+/**
+ * Polls for candidate generation completion via SSE
+ * 
+ * This function handles the common polling logic for candidate generation,
+ * eliminating duplicate code in route handlers. It polls the database at
+ * regular intervals to check if generation is complete, sends progress updates,
+ * and handles client disconnections gracefully.
+ * 
+ * @param options - Polling options and configuration
+ * @returns Promise that resolves when polling completes or client disconnects
+ * 
+ * @example
+ * ```typescript
+ * await pollForCandidateGeneration({
+ *   pageId,
+ *   userId,
+ *   req,
+ *   res,
+ *   initialMessage: 'Candidate generation in progress...',
+ *   getPageFromDB,
+ *   mapToUserStoryPage,
+ *   getActionProgressEvents,
+ *   config: {
+ *     pollIntervalMs: 2000,
+ *     maxAttempts: 150,
+ *     progressInterval: 5
+ *   }
+ * });
+ * ```
+ */
+export async function pollForCandidateGeneration(
+  options: PollCandidateGenerationOptions
+): Promise<void> {
+  const {
+    pageId,
+    userId,
+    req,
+    res,
+    initialMessage,
+    getPageFromDB,
+    mapToUserStoryPage,
+    getActionProgressEvents,
+    config
+  } = options;
+
+  const { pollIntervalMs, maxAttempts, progressInterval } = config;
+
+  // Send initial message
+  res.write(`event: progress\n`);
+  res.write(`data: ${JSON.stringify({ status: 'waiting', message: initialMessage })}\n\n`);
+
+  let attempts = 0;
+  let clientDisconnected = false;
+
+  const onClientDisconnect = () => {
+    clientDisconnected = true;
+    console.log(`[SSE Polling] ⚠️ Client disconnected while waiting for generation of page ${pageId}`);
+    try {
+      res.end();
+    } catch {
+      // Ignore errors
+    }
+  };
+
+  req.on('close', onClientDisconnect);
+  req.on('aborted', onClientDisconnect);
+
+  try {
+    while (attempts < maxAttempts) {
+      // Break early if client disconnected
+      if (clientDisconnected || res.writableEnded) {
+        req.off('close', onClientDisconnect);
+        req.off('aborted', onClientDisconnect);
+        console.log(`[SSE Polling] Stopping polling for page ${pageId} due to client disconnect`);
+        return;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      attempts++;
+
+      // Refresh page from database
+      const freshPage = await getPageFromDB(pageId);
+      if (!freshPage) {
+        try {
+          if (!res.writableEnded) {
+            res.write(`event: error\n`);
+            res.write(`data: ${JSON.stringify({ error: 'Page not found during polling' })}\n\n`);
+            res.end();
+          }
+        } finally {
+          req.off('close', onClientDisconnect);
+          req.off('aborted', onClientDisconnect);
+        }
+        return;
+      }
+
+      // Check if generation is complete (timestamp cleared)
+      if (!freshPage.isGeneratingStartedAt) {
+        console.log(`[SSE Polling] Generation completed for page ${pageId} after ${attempts} polls`);
+        try {
+          const userPage = await mapToUserStoryPage(freshPage, userId);
+          if (!res.writableEnded) {
+            res.write(`event: complete\n`);
+            res.write(`data: ${JSON.stringify(userPage)}\n\n`);
+            res.end();
+          }
+        } catch {
+          if (!res.writableEnded) {
+            res.write(`event: error\n`);
+            res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
+            res.end();
+          }
+        } finally {
+          req.off('close', onClientDisconnect);
+          req.off('aborted', onClientDisconnect);
+        }
+        return;
+      }
+
+      // Check for action progress events in database or cache
+      if (getActionProgressEvents) {
+        const progressEvents = await getActionProgressEvents(pageId);
+        if (progressEvents && progressEvents.length > 0) {
+          for (const event of progressEvents) {
+            if (clientDisconnected || res.writableEnded) {
+              break;
+            }
+            res.write(`event: action_progress\n`);
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+          }
+        }
+      }
+
+      // Send progress update periodically
+      if (attempts % progressInterval === 0 && !res.writableEnded) {
+        res.write(`event: progress\n`);
+        res.write(`data: ${JSON.stringify({ status: 'waiting', message: `Still generating... (${attempts * pollIntervalMs/1000}s elapsed)` })}\n\n`);
+      }
+    }
+
+    // Timeout - fetch freshest state and return it
+    console.log(`[SSE Polling] Timeout waiting for generation of page ${pageId}`);
+    try {
+      const freshAfterTimeout = await getPageFromDB(pageId);
+      const userPage = await mapToUserStoryPage(freshAfterTimeout, userId);
+      if (!res.writableEnded) {
+        res.write(`event: timeout\n`);
+        res.write(`data: ${JSON.stringify({ ...userPage, warning: 'Generation timeout, returning current state' })}\n\n`);
+        res.end();
+      }
+    } catch {
+      if (!res.writableEnded) {
+        res.write(`event: error\n`);
+        res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
+        res.end();
+      }
+    }
+  } finally {
+    // Clean up event listeners
+    req.off('close', onClientDisconnect);
+    req.off('aborted', onClientDisconnect);
+  }
+}

@@ -543,9 +543,8 @@ export async function getUserBooks(
  */
 export async function getPageFromDB(pageId: string, options: {
   bookIdentifier?: string,
-  client?: typeof dbRead | typeof dbWrite
+  client?: typeof dbRead | typeof dbWrite // use dbWrite to avoid read replica stale
 } = {}): Promise<DBPage | null> {
-  // TODO: need to implement LRU cache?
   const { bookIdentifier, client = dbRead } = options;
 
   try {

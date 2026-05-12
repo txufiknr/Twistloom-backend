@@ -21,7 +21,8 @@
  * - PUT /api/books/:id - Update book information and cover image (requires auth)
  * - GET /api/books/:identifier - Retrieve specific book by slug or id
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
- * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages (requires auth)
+ * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages via SSE (requires auth)
+ * - GET /api/books/:identifier/:pageId/candidates/status - Poll candidate generation status (requires auth)
  * - POST /api/books/:identifier/:pageId/generate - Pre-generate candidate pages via github workflow (requires auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
  * - POST /api/books/:id/like - Like a book (requires auth)
@@ -30,7 +31,7 @@
  * - DELETE /api/books/:id/favorite - Remove book from favorites (requires auth)
  * - GET /api/books/:id/comments - Get book comments with pagination (optional auth)
  * - POST /api/books/:id/comments - Create comment on book (requires auth)
- * - DELETE /api/books/comments/:id - Delete comment (requires auth)
+ * - DELETE /api/books/comments/:id - Delete comment on book (requires auth)
  * - GET /api/books/tags/popular - Get popular tags for filtering (no auth required)
  * - GET /api/books/stats - Get public book statistics (optional auth)
  * - GET /api/books/prompt - Generate book creation prompt via SSE (optional auth)
@@ -43,7 +44,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { formatOneOf, generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -64,12 +65,13 @@ import { consumeCredits } from "../services/credits.js";
 import { logUserActivity } from "../services/user.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { isCreditError } from "../config/errors.js";
-import { initSSEHeaders, sendSSEEvent } from "../utils/sse.js";
+import { initSSEHeaders, sendSSEEvent, pollForCandidateGeneration, type SSEPollingConfig } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents } from "../utils/progress-tracking.js";
+import type { DBPage } from "../types/schema.js";
 
 const router = Router();
 
@@ -77,6 +79,47 @@ const router = Router();
 const SSE_POLL_INTERVAL_MS = 2000; // 2s
 const SSE_MAX_ATTEMPTS = 150; // 5 minutes / 2s
 const SSE_PROGRESS_INTERVAL = 5; // every 5 polls => 10s
+
+// Maximum generation duration before considering it stuck (10 minutes)
+const MAX_GENERATION_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
+// SSE polling config object for reuse
+const SSE_POLLING_CONFIG: SSEPollingConfig = {
+  pollIntervalMs: SSE_POLL_INTERVAL_MS,
+  maxAttempts: SSE_MAX_ATTEMPTS,
+  progressInterval: SSE_PROGRESS_INTERVAL,
+};
+
+/**
+ * Checks if generation is stuck (exceeded maximum duration) and resets it
+ * 
+ * This handles edge cases where background generation crashes or server restarts,
+ * leaving isGeneratingStartedAt set but no actual generation happening.
+ * 
+ * @param dbPage - Page from database
+ * @param pageId - Page ID for logging
+ * @returns Promise resolving to true if generation was reset, false otherwise
+ */
+async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<boolean> {
+  if (!dbPage.isGeneratingStartedAt) return false;
+
+  const now = new Date();
+  const startedAt = new Date(dbPage.isGeneratingStartedAt);
+  const elapsedMs = now.getTime() - startedAt.getTime();
+
+  if (elapsedMs > MAX_GENERATION_DURATION_MS) {
+    console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
+    
+    // Reset the timestamp in database
+    await dbWrite.update(pages)
+      .set({ isGeneratingStartedAt: null })
+      .where(eq(pages.id, dbPage.id));
+    
+    return true;
+  }
+
+  return false;
+}
 
 /**
  * POST /api/books
@@ -1052,6 +1095,9 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
  * This approach prevents expensive AI generation from running multiple times for
  * the same (bookId + pageId) combination and provides a consistent response format.
  * 
+ * Known Issue (in Vercel hobby tier):
+ * SSE connections on Vercel hobby are subject to the same 5-min maxDuration limit
+ * 
  * @param id - Book ID
  * @param pageId - Page ID for which to generate candidates
  * @returns Updated page with pre-generated candidates (via SSE)
@@ -1078,7 +1124,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
 
     // Get the page by book identifier from database
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const dbPage = await getPageFromDB(pageId, { bookIdentifier });
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier, client: dbWrite });
     if (!dbPage) return handleNotFoundError(res, "Page not found");
 
     // Always set SSE headers first for consistent response format
@@ -1087,131 +1133,36 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
+    // Check if generation is stuck (exceeded maximum duration) and reset if needed
+    const wasReset = await checkAndResetStuckGeneration(dbPage);
+    if (wasReset) {
+      // Refresh page after reset
+      dbPage.isGeneratingStartedAt = null;
+    }
+
     // Check if generation is already in progress (timestamp field)
     if (dbPage.isGeneratingStartedAt) {
       console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageId}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
 
-      // Send initial waiting message
-      res.write(`event: progress\n`);
-      res.write(`data: ${JSON.stringify({ status: 'waiting', message: 'Candidate generation in progress...' })}\n\n`);
-
-      // Poll for completion (check every SSE_POLL_INTERVAL_MS, max SSE_MAX_ATTEMPTS)
-      let attempts = 0;
-      let clientDisconnected = false;
-
-      const onClientDisconnect = () => {
-        clientDisconnected = true;
-        console.log(`[GET /candidates] ⚠️ Client disconnected while waiting for generation of page ${pageId}`);
-        try {
-          res.end();
-        } catch {
-          // Ignore errors
-        };
-      };
-
-      req.on('close', onClientDisconnect);
-      req.on('aborted', onClientDisconnect);
-
-      while (attempts < SSE_MAX_ATTEMPTS) {
-        // Break early if client disconnected
-        if (clientDisconnected || res.writableEnded) {
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
-          console.log(`[GET /candidates] Stopping polling for page ${pageId} due to client disconnect`);
-          return;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, SSE_POLL_INTERVAL_MS));
-        attempts++;
-
-        // Refresh page from database
-        const freshPage = await getPageFromDB(pageId);
-        if (!freshPage) {
-          try {
-            if (!res.writableEnded) {
-              res.write(`event: error\n`);
-              res.write(`data: ${JSON.stringify({ error: 'Page not found during polling' })}\n\n`);
-              res.end();
-            }
-          } finally {
-            req.off('close', onClientDisconnect);
-            req.off('aborted', onClientDisconnect);
-          }
-          return;
-        }
-
-        // Check if generation is complete (timestamp cleared)
-        if (!freshPage.isGeneratingStartedAt) {
-          console.log(`[GET /candidates] Generation completed for page ${pageId} after ${attempts} polls`);
-          try {
-            const userPage = await mapToUserStoryPage(freshPage, userId);
-            if (!res.writableEnded) {
-              res.write(`event: complete\n`);
-              res.write(`data: ${JSON.stringify(userPage)}\n\n`);
-              res.end();
-            }
-          } catch {
-            if (!res.writableEnded) {
-              res.write(`event: error\n`);
-              res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-              res.end();
-            }
-          } finally {
-            req.off('close', onClientDisconnect);
-            req.off('aborted', onClientDisconnect);
-          }
-          return;
-        }
-
-        // Check for action progress events in database or cache
-        // Note: This is enhanced polling for per-action progress tracking
-        const progressEvents = await getActionProgressEvents?.(pageId);
-        if (progressEvents && progressEvents.length > 0) {
-          for (const event of progressEvents) {
-            if (clientDisconnected || res.writableEnded) {
-              break;
-            }
-            res.write(`event: action_progress\n`);
-            res.write(`data: ${JSON.stringify(event)}\n\n`);
-          }
-        }
-
-        // Send progress update periodically
-        if (attempts % SSE_PROGRESS_INTERVAL === 0 && !res.writableEnded) {
-          res.write(`event: progress\n`);
-          res.write(`data: ${JSON.stringify({ status: 'waiting', message: `Still generating... (${attempts * SSE_POLL_INTERVAL_MS/1000}s elapsed)` })}\n\n`);
-        }
-      }
-
-      // Timeout - fetch freshest state and return it
-      console.log(`[GET /candidates] Timeout waiting for generation of page ${pageId}`);
-      try {
-        const freshAfterTimeout = await getPageFromDB(pageId, { client: dbWrite });
-        try {
-          const userPage = await mapToUserStoryPage(freshAfterTimeout || dbPage, userId);
-          if (!res.writableEnded) {
-            res.write(`event: timeout\n`);
-            res.write(`data: ${JSON.stringify({ ...userPage, warning: 'Generation timeout, returning current state' })}\n\n`);
-            res.end();
-          }
-        } catch {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-            res.end();
-          }
-        }
-      } finally {
-        req.off('close', onClientDisconnect);
-        req.off('aborted', onClientDisconnect);
-      }
+      // Use shared polling function
+      await pollForCandidateGeneration({
+        pageId,
+        userId,
+        req,
+        res,
+        initialMessage: 'Candidate generation in progress...',
+        getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
+        mapToUserStoryPage,
+        getActionProgressEvents,
+        config: SSE_POLLING_CONFIG,
+      });
       return;
     }
 
     // Generation not in progress - trigger background generation and poll
     const userPage = await mapToUserStoryPage(dbPage, userId);
     const totalActions = userPage.actions.filter(a => !a.destination?.pageId).length;
-      
+
     // Check if any actions need generation
     if (totalActions === 0) {
       console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageId}, sending SSE complete event`);
@@ -1242,122 +1193,150 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       context: 'GET /candidates'
     });
 
-    // Send initial waiting message
-    res.write(`event: progress\n`);
-    res.write(`data: ${JSON.stringify({ status: 'waiting', message: 'Candidate generation started...' })}\n\n`);
-
-    // Poll for completion (same logic as in-progress path)
-    let attempts = 0;
-    let clientDisconnected = false;
-
-    const onClientDisconnect = () => {
-      clientDisconnected = true;
-      console.log(`[GET /candidates] ⚠️ Client disconnected while waiting for generation of page ${pageId}`);
-      try {
-        res.end();
-      } catch {
-        // Ignore errors
-      };
-    };
-
-    req.on('close', onClientDisconnect);
-    req.on('aborted', onClientDisconnect);
-
-    while (attempts < SSE_MAX_ATTEMPTS) {
-      // Break early if client disconnected
-      if (clientDisconnected || res.writableEnded) {
-        req.off('close', onClientDisconnect);
-        req.off('aborted', onClientDisconnect);
-        console.log(`[GET /candidates] Stopping polling for page ${pageId} due to client disconnect`);
-        return;
-      }
-
-      await new Promise(resolve => setTimeout(resolve, SSE_POLL_INTERVAL_MS));
-      attempts++;
-
-      // Refresh page from database
-      const freshPage = await getPageFromDB(pageId);
-      if (!freshPage) {
-        try {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Page not found during polling' })}\n\n`);
-            res.end();
-          }
-        } finally {
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
-        }
-        return;
-      }
-
-      // Check if generation is complete (timestamp cleared)
-      if (!freshPage.isGeneratingStartedAt) {
-        console.log(`[GET /candidates] Generation completed for page ${pageId} after ${attempts} polls`);
-        try {
-          const userPage = await mapToUserStoryPage(freshPage, userId);
-          if (!res.writableEnded) {
-            res.write(`event: complete\n`);
-            res.write(`data: ${JSON.stringify(userPage)}\n\n`);
-            res.end();
-          }
-        } catch {
-          if (!res.writableEnded) {
-            res.write(`event: error\n`);
-            res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-            res.end();
-          }
-        } finally {
-          req.off('close', onClientDisconnect);
-          req.off('aborted', onClientDisconnect);
-        }
-        return;
-      }
-
-      // Check for action progress events in database or cache
-      const progressEvents = await getActionProgressEvents?.(pageId);
-      if (progressEvents && progressEvents.length > 0) {
-        for (const event of progressEvents) {
-          if (clientDisconnected || res.writableEnded) {
-            break;
-          }
-          res.write(`event: action_progress\n`);
-          res.write(`data: ${JSON.stringify(event)}\n\n`);
-        }
-      }
-
-      // Send progress update periodically
-      if (attempts % SSE_PROGRESS_INTERVAL === 0 && !res.writableEnded) {
-        res.write(`event: progress\n`);
-        res.write(`data: ${JSON.stringify({ status: 'waiting', message: `Still generating... (${attempts * SSE_POLL_INTERVAL_MS/1000}s elapsed)` })}\n\n`);
-      }
-    }
-
-    // Timeout - fetch freshest state and return it
-    console.log(`[GET /candidates] Timeout waiting for generation of page ${pageId}`);
-    try {
-      const freshAfterTimeout = await getPageFromDB(pageId, { client: dbWrite });
-      try {
-        const userPage = await mapToUserStoryPage(freshAfterTimeout || dbPage, userId);
-        if (!res.writableEnded) {
-          res.write(`event: timeout\n`);
-          res.write(`data: ${JSON.stringify({ ...userPage, warning: 'Generation timeout, returning current state' })}\n\n`);
-          res.end();
-        }
-      } catch {
-        if (!res.writableEnded) {
-          res.write(`event: error\n`);
-          res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-          res.end();
-        }
-      }
-    } finally {
-      // Clean up event listeners
-      req.off('close', onClientDisconnect);
-      req.off('aborted', onClientDisconnect);
-    }
+    // Use shared polling function
+    await pollForCandidateGeneration({
+      pageId,
+      userId,
+      req,
+      res,
+      initialMessage: 'Candidate generation started...',
+      getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
+      mapToUserStoryPage,
+      getActionProgressEvents,
+      config: SSE_POLLING_CONFIG,
+    });
   } catch (error) {
     handleApiError(res, "Failed to generate candidates", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/:pageId/candidates/status
+ * 
+ * Polling endpoint for candidate generation status
+ * 
+ * Returns current generation status without SSE overhead.
+ * Designed for short-lived polling requests (no timeout risk).
+ * 
+ * **Authentication:** Required (via `guestOrAuthMiddleware`)
+ * 
+ * Response:
+ * {
+ *   isGenerating: boolean;
+ *   completedActions: number;
+ *   totalActions: number;
+ *   actions: Action[];
+ *   startedAt?: string;
+ *   lastUpdated?: string;
+ * }
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page ID for which to check status
+ * @returns Generation status (JSON)
+ * 
+ * @example
+ * GET /api/books/book123/page456/candidates/status
+ * 
+ * Response (200):
+ * {
+ *   "isGenerating": true,
+ *   "completedActions": 2,
+ *   "totalActions": 4,
+ *   "actions": [...],
+ *   "startedAt": "2024-01-01T00:00:00Z",
+ *   "lastUpdated": "2024-01-01T00:00:10Z"
+ * }
+ */
+router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId } = req.params;
+    const userId = req.userId!;
+
+    // Early validation
+    if (!isValidUuid(pageId)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
+
+    // Get the page by book identifier from database
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const dbPage = await getPageFromDB(pageId, { bookIdentifier, client: dbWrite });
+    if (!dbPage) return handleNotFoundError(res, "Page not found");
+
+    // Check if generation is stuck (exceeded maximum duration) and reset if needed
+    const wasReset = await checkAndResetStuckGeneration(dbPage);
+    if (wasReset) {
+      // Refresh page after reset
+      dbPage.isGeneratingStartedAt = null;
+    }
+
+    const userPage = await mapToUserStoryPage(dbPage, userId);
+
+    // Check if generation is in progress (using timestamp field)
+    const isGenerating = !!dbPage.isGeneratingStartedAt;
+
+    if (isGenerating) {
+      // Generation in progress - return current status
+      // Check for progress events in cache
+      const progressEvents = await getActionProgressEvents?.(pageId);
+      
+      let completedActions = 0;
+      let totalActions = 0;
+      
+      if (progressEvents && progressEvents.length > 0) {
+        const latestEvent = progressEvents[progressEvents.length - 1];
+        completedActions = latestEvent.completed;
+        totalActions = latestEvent.total;
+      } else {
+        // Fallback: count actions with destinations
+        const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
+        completedActions = actionsWithDestinations.length;
+        totalActions = userPage.actions.length;
+      }
+
+      return res.json({
+        isGenerating: true,
+        completedActions,
+        totalActions,
+        actions: userPage.actions.filter(a => a.destination?.pageId),
+        startedAt: dbPage.isGeneratingStartedAt?.toISOString(),
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+
+    // Generation not in progress - check if actions are complete
+    const incompleteActions = userPage.actions.filter(a => !a.destination?.pageId);
+    const isComplete = incompleteActions.length === 0;
+
+    if (isComplete) {
+      // All actions complete, return full data
+      return res.json({
+        isGenerating: false,
+        completedActions: userPage.actions.length,
+        totalActions: userPage.actions.length,
+        actions: userPage.actions,
+      });
+    }
+
+    // Actions incomplete, trigger background generation
+    const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
+    await triggerBackgroundGeneration({
+      userId,
+      pageId,
+      bookId: dbPage.bookId,
+      context: 'GET /candidates/status',
+    });
+
+    return res.json({
+      isGenerating: true,
+      completedActions: 0,
+      totalActions: incompleteActions.length,
+      actions: userPage.actions.filter(a => a.destination?.pageId),
+      startedAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+    });
+
+  } catch (error) {
+    handleApiError(res, "Failed to get candidate status", error);
   }
 });
 
