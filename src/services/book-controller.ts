@@ -565,7 +565,7 @@ export async function visitBookPage(
   console.log(`[visit] 👓 Visited pageId:`, pageId, `(skipVisit = ${skipVisit})`);
 
   // Get page
-  const dbPage = await getPageFromDB(pageId as string, { bookIdentifier });
+  const dbPage = await getPageFromDB(pageId, { bookIdentifier });
   if (!dbPage) {
     console.error(`[visit] ❌ Visited page not found:`, pageId);
     return {};
@@ -616,7 +616,17 @@ export async function visitBookPage(
   // No user visit track for prefetch (not actual navigation)
   if (skipVisit) return { dbPage, book };
 
+  const isActionMatch = !action || action.destination.pageId === pageId;
+  if (!isActionMatch) {
+    console.warn(`[visitBookPage] ❌ action.destination.pageId and pageId mismatch`);
+    return { dbPage, book };
+  }
+
   // Mark page as visited and persists chosen action
-  const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
-  return { dbPage, book, visitDetails, sourceAction: action };
+  // try {
+    const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
+    return { dbPage, book, visitDetails, sourceAction: action };
+  // } catch {
+  //   return { dbPage, book };
+  // }
 }

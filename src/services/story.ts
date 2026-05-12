@@ -312,6 +312,10 @@ export async function markPageVisited(
     const { id: bookId, stats } = book;
     const { id: pageId, page: pageNumber, visitCount } = visitedPage;
 
+    if (action && action.destination.pageId !== pageId) {
+      throw new Error(`action.destination.pageId and pageId mismatch`);
+    }
+
     // Update active session to point to the new page
     const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId });
 
@@ -339,18 +343,12 @@ export async function markPageVisited(
     // Calculate visit statistics using denormalized data
     // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
     // visitorPercentage: use read_count from books table (maintained by existing trigger)
-    try {
-      const nthVisit = visitCount + 1;
-      const totalBookReaders = stats.readCount;
-      const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
+    const nthVisit = visitCount + 1;
+    const totalBookReaders = stats.readCount;
+    const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
 
-      console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
-      return { session, nthVisit, visitorPercentage };
-    } catch (error) {
-      console.error(`[markPageVisited] ⚠️ Failed to compute visit stats for page ${pageId}:`, getErrorMessage(error));
-      // Fallback to conservative defaults
-      return { session, nthVisit: 1, visitorPercentage: 0 };
-    }
+    console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
+    return { session, nthVisit, visitorPercentage, readerUserId: userId };
   } catch (error) {
     console.error(`[markPageVisited] ❌ Failed to mark page visited:`, getErrorMessage(error));
     throw new Error(`Unable to mark page visited: ${getErrorMessage(error)}`, { cause: error });

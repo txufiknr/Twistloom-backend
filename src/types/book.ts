@@ -202,4 +202,5 @@ export type BookPageVisit = {
   session?: DBUserSession | null;
   nthVisit: number;
   visitorPercentage: number;
+  readerUserId?: string;
 }

@@ -159,6 +159,257 @@ Currently this is a placeholder since NextAuth handles all session management cl
 5. **Guest Support**: Seamless guest user flow with data migration on login
 6. **Credit System**: Book creation requires authentication and consumes credits (prevents abuse)
 
+## Guest Mode Architecture
+
+### Overview
+
+Guest mode allows unauthenticated users to interact with the application (e.g., generate stories) without creating an account. Guest data is associated with a persistent guest userId and migrated to the authenticated user upon login.
+
+### Architecture
+
+**Backend-Only Cookie Management:**
+
+The backend handles all guest identification and cookie management for security:
+
+- **Cookie Name**: `twistloom_guest_id`
+- **Cookie Type**: httpOnly (JavaScript cannot read it)
+- **Expiry**: 30 days
+- **Security**: httpOnly prevents XSS attacks from stealing guest identity
+- **Persistence**: Same userId across browser restarts, page refreshes, navigation
+
+**Frontend Implementation:**
+
+**File: `src/lib/hooks/useGuest.ts` (frontend)**
+
+The frontend does NOT manage guest cookies. It only checks authentication status:
+
+```typescript
+export function useGuest() {
+  const { data: session, status } = useSession();
+
+  return {
+    isGuest: !session, // Guest if no session
+    isAuthenticated: !!session, // Authenticated if has session
+    isLoading: status === 'loading',
+    user: session?.user || null,
+  };
+}
+```
+
+**Why Frontend Doesn't Manage Guest Cookies:**
+- Backend sets guest cookie as `httpOnly: true` for security
+- JavaScript cannot read httpOnly cookies
+- Frontend only needs to know if user is authenticated (via NextAuth session)
+- Backend handles all guest identification and data association
+
+### Backend Implementation
+
+**File: `src/middleware/guest.ts` (backend)**
+
+The backend implements `guestOrAuthMiddleware` which:
+
+1. Tries NextAuth authentication first
+2. Falls back to guest cookie for unauthenticated users
+3. Creates new guest user if cookie doesn't exist
+4. Sets httpOnly guest cookie in response
+5. Provides `req.guestAuth` object with user info
+
+```typescript
+export async function guestOrAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
+  // Try NextAuth authentication first
+  const user = await verifyNextAuthToken(req);
+
+  if (user) {
+    // Authenticated user
+    req.guestAuth = {
+      isAuthenticated: true,
+      userId: user.id,
+      isGuest: false,
+      user,
+    };
+    req.user = user;
+    next();
+    return;
+  }
+
+  // Guest user - check for guest cookie
+  const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+  let guestId = guestCookie;
+
+  if (!guestId) {
+    // Create new guest user
+    guestId = await createGuestUser();
+
+    // Set guest cookie in response
+    res.cookie(GUEST_COOKIE_NAME, guestId, {
+      httpOnly: true, // Prevent XSS attacks
+      secure: IS_PRODUCTION,
+      sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
+      maxAge: 60 * 60 * 24 * 30, // 30 days
+      path: '/',
+    });
+  }
+
+  req.guestAuth = {
+    isAuthenticated: false,
+    userId: guestId,
+    isGuest: true,
+  };
+  req.userId = guestId; // Set req.userId for rate limiting and route handlers
+
+  next();
+}
+```
+
+**Data Migration on Login:**
+
+**File: `src/middleware/guest.ts` (backend)**
+
+The backend implements `migrateGuestMiddleware` which:
+
+1. Verifies NextAuth authentication
+2. Reads guest cookie from request
+3. Migrates guest data (books, sessions) to authenticated user
+4. Deletes guest user from database
+5. Removes guest cookie from response
+
+```typescript
+export async function migrateGuestMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const user = await verifyNextAuthToken(req);
+
+  if (user) {
+    const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+
+    if (guestCookie && user.id !== guestCookie) {
+      // Migrate guest data to authenticated user
+      await migrateGuestData(guestCookie, user.id);
+
+      // Remove guest cookie
+      res.clearCookie(GUEST_COOKIE_NAME, {
+        path: '/',
+      });
+    }
+  }
+
+  next();
+}
+```
+
+### Guest Flow
+
+1. **User visits site (unauthenticated)**
+   - Backend receives request with no auth cookie
+   - Backend creates guest user in DB (using `generateId()`)
+   - Backend sets httpOnly guest cookie (`twistloom_guest_id`, 30-day expiry)
+   - Frontend shows guest UI (no NextAuth session)
+
+2. **User generates story**
+   - Frontend sends request to backend
+   - Backend receives guest cookie (`twistloom_guest_id`)
+   - Backend associates story with guest user in DB
+   - Story is owned by guest user
+
+3. **User logs in**
+   - Frontend calls NextAuth signIn()
+   - Backend verifies credentials
+   - Backend migrates guest data to authenticated user
+   - Backend deletes guest user from DB
+   - Backend removes guest cookie
+   - User now uses auth cookie
+
+### Guest Cookie Configuration
+
+**Backend:**
+- Name: `twistloom_guest_id`
+- Value: UUID v7 string (from `generateId()`)
+- Expiry: 30 days (2,592,000 seconds)
+- Path: `/`
+- httpOnly: `true` (JavaScript cannot read it)
+- secure: `true` in production
+- sameSite: `'none'` if cross-origin, `'lax` if same-domain
+
+**Frontend:**
+- Does NOT manage guest cookie
+- Does NOT read guest cookie (cannot read httpOnly cookies)
+- Only checks NextAuth session status
+
+### Cookie Persistence Mechanism
+
+**How `twistloom_guest_id` Remains the Same Per Device:**
+
+The guest cookie persists across browser restarts and page refreshes due to standard HTTP cookie behavior:
+
+1. **Browser Cookie Storage**: HTTP cookies with an expiry (`maxAge`) are automatically stored in the browser's cookie database and sent with every request to the matching domain/path until they expire or are explicitly cleared. This is fundamental browser behavior that works across:
+   - Page refreshes
+   - Browser restarts
+   - Tab closures/reopenings
+   - Navigation within the same domain
+
+2. **Cookie Configuration** (from `src/middleware/guest.ts`):
+   ```typescript
+   res.cookie(GUEST_COOKIE_NAME, guestId, {
+     httpOnly: true,
+     secure: IS_PRODUCTION,
+     sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
+     maxAge: 60 * 60 * 24 * 30, // 30 days
+     path: '/',
+   });
+   ```
+   - `maxAge: 30 days` - Browser stores cookie for 30 days from creation
+   - `path: '/'` - Cookie sent for all paths on the domain
+   - Browser handles all persistence automatically
+
+3. **Backend Reuse Logic** (from `src/middleware/guest.ts`):
+   ```typescript
+   const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+   let guestId = guestCookie;
+   
+   if (!guestId) {
+     // Only create new guest if cookie doesn't exist
+     guestId = await createGuestUser();
+     res.cookie(GUEST_COOKIE_NAME, guestId, {...});
+   }
+   ```
+   - Backend checks for existing cookie first on every request
+   - Only generates new guestId if cookie is missing (first visit or expired)
+   - Reuses existing guestId from cookie on all subsequent requests
+
+**Result**: The same `twistloom_guest_id` value is used for all requests from the same browser/device for 30 days, ensuring consistent guest identity across sessions.
+
+### Security Considerations
+
+1. **httpOnly Cookie**: Guest cookie is httpOnly (JavaScript cannot read it)
+   - Prevents XSS attacks from stealing guest identity
+   - Backend manages all guest identification
+   - Frontend only needs authentication status
+
+2. **UUID Uniqueness**: Backend uses `generateId()` (UUID v7) for uniqueness
+
+3. **Data Migration**: Backend ensures atomic migration to prevent data loss
+
+4. **Cookie Expiry**: 30-day expiry balances persistence with security
+
+### Testing
+
+**Test Guest Cookie Persistence:**
+```bash
+# 1. Visit site as guest
+# 2. Check browser cookies (should see twistloom_guest_id)
+# 3. Refresh page
+# 4. Verify same guest userId (backend logs)
+# 5. Close browser, reopen
+# 6. Verify same guest userId (if within 30 days)
+```
+
+**Test Guest Data Migration:**
+```bash
+# 1. Generate story as guest
+# 2. Note story ID
+# 3. Log in with credentials
+# 4. Verify story is now owned by authenticated user
+# 5. Verify guest cookie is removed
+```
+
 ## Backend Implementation
 
 ### 1. Database Schema Changes

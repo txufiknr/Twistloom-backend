@@ -17,6 +17,7 @@
 [x] prompt ensure action text unique
 [x] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 [x] job priority harusnya berdasarkan depth
+[x] ensure twistloom_guest_id always same for 30 days
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
@@ -26,7 +27,7 @@
 
 [x] Migrate vercel cron to Vercel's Background Functions
 [x] Enriched page context tambah: injuries, inventory
-[ ] Habis page 2 kok page 2 lagi (I reach over)? 
+[x] Habis page 2 kok page 2 lagi (I reach over)? 
 Important objects perlu disimpen di story state?
 Important objects perlu rules? 
 
