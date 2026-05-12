@@ -72,6 +72,7 @@ import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents } from "../utils/progress-tracking.js";
 import type { DBPage } from "../types/schema.js";
+import { ActionProgressEvent } from "../types/candidates.js";
 
 const router = Router();
 
@@ -1281,11 +1282,14 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       
       let completedActions = 0;
       let totalActions = 0;
+      let actionProgress: ActionProgressEvent[] = [];
       
       if (progressEvents && progressEvents.length > 0) {
         const latestEvent = progressEvents[progressEvents.length - 1];
         completedActions = latestEvent.completed;
         totalActions = latestEvent.total;
+        // Include all progress events for per-action status
+        actionProgress = progressEvents;
       } else {
         // Fallback: count actions with destinations
         const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
@@ -1298,6 +1302,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         completedActions,
         totalActions,
         actions: userPage.actions.filter(a => a.destination?.pageId),
+        actionProgress, // Include per-action progress events
         startedAt: dbPage.isGeneratingStartedAt?.toISOString(),
         lastUpdated: new Date().toISOString(),
       });

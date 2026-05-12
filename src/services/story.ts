@@ -623,6 +623,11 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
 
 export async function insertUserPageProgress(data: DBNewUserPageProgress): Promise<DBUserPageProgress | null> {
   try {
+    const { action, nextPageId } = data;
+    if (action.destination.pageId !== nextPageId) {
+      throw new Error("Action destination pageId does not match nextPageId");
+    }
+
     const newPageProgress = await dbWrite
       .insert(userPageProgress)
       .values(data)
