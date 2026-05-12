@@ -531,6 +531,8 @@ export interface PollCandidateGenerationOptions {
   mapToUserStoryPage: (page: any, userId: string) => Promise<any>;
   /** Function to get action progress events */
   getActionProgressEvents?: (pageId: string) => Promise<any[]>;
+  /** Function to clear action progress events */
+  clearActionProgressEvents?: (pageId: string) => Promise<void>;
   /** Polling configuration */
   config: SSEPollingConfig;
 }
@@ -577,6 +579,7 @@ export async function pollForCandidateGeneration(
     getPageFromDB,
     mapToUserStoryPage,
     getActionProgressEvents,
+    clearActionProgressEvents,
     config
   } = options;
 
@@ -650,6 +653,10 @@ export async function pollForCandidateGeneration(
         } finally {
           req.off('close', onClientDisconnect);
           req.off('aborted', onClientDisconnect);
+          // Clear progress events after generation completes
+          if (clearActionProgressEvents) {
+            await clearActionProgressEvents(pageId);
+          }
         }
         return;
       }

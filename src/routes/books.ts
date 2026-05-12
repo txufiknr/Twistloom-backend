@@ -70,7 +70,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
 import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
 import { isValidUuid } from "../utils/uuid.js";
-import { getActionProgressEvents } from "../utils/progress-tracking.js";
+import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
 import type { DBPage } from "../types/schema.js";
 import { ActionProgressEvent } from "../types/candidates.js";
 
@@ -1155,6 +1155,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
         getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
         mapToUserStoryPage,
         getActionProgressEvents,
+        clearActionProgressEvents,
         config: SSE_POLLING_CONFIG,
       });
       return;
@@ -1174,6 +1175,8 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
           res.write(`data: ${JSON.stringify(userPage)}\n\n`);
           res.end();
         }
+        // Clear progress events since generation is complete
+        await clearActionProgressEvents(pageId);
       } catch {
         if (!res.writableEnded) {
           res.write(`event: error\n`);
@@ -1204,6 +1207,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
       mapToUserStoryPage,
       getActionProgressEvents,
+      clearActionProgressEvents,
       config: SSE_POLLING_CONFIG,
     });
   } catch (error) {
@@ -1291,10 +1295,20 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         // Include all progress events for per-action status
         actionProgress = progressEvents;
       } else {
-        // Fallback: count actions with destinations
+        // Fallback: count actions with destinations and generate synthetic progress events
         const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
         completedActions = actionsWithDestinations.length;
         totalActions = userPage.actions.length;
+        
+        // Generate synthetic progress events for completed actions
+        actionProgress = actionsWithDestinations.map((action, index) => ({
+          action: action.text,
+          status: 'completed' as const,
+          completed: index + 1,
+          total: userPage.actions.length,
+          progress: Math.round(((index + 1) / userPage.actions.length) * 100),
+          timestamp: new Date().toISOString()
+        }));
       }
 
       return res.json({

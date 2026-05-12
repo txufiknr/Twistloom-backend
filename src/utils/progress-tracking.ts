@@ -68,8 +68,9 @@ export async function storeActionProgressEvent(
 /**
  * Retrieves stored action progress events for a page
  * 
- * Retrieves and clears events for the page (simulating Redis behavior).
- * LRUCache handles automatic TTL cleanup.
+ * Retrieves events for the page without clearing them.
+ * This allows multiple polling requests to access the same progress data.
+ * Use clearActionProgressEvents to explicitly remove events when generation completes.
  * 
  * @param pageId - Page ID for which to retrieve events
  * @returns Promise resolving to array of stored events
@@ -80,9 +81,23 @@ export async function getActionProgressEvents(
   const cacheKey = `progress:${pageId}`;
   const events = progressEventCache.get(cacheKey) || [];
   
-  // Clear events after retrieval (simulating Redis behavior)
-  progressEventCache.delete(cacheKey);
-  
   console.log(`[getActionProgressEvents] 📊 LRU CACHE - Retrieved ${events.length} events for page ${pageId}`);
   return events;
+}
+
+/**
+ * Clears stored action progress events for a page
+ * 
+ * Explicitly removes events from the cache after generation completes.
+ * This should be called when generation is finished to clean up resources.
+ * 
+ * @param pageId - Page ID for which to clear events
+ */
+export async function clearActionProgressEvents(
+  pageId: string
+): Promise<void> {
+  const cacheKey = `progress:${pageId}`;
+  progressEventCache.delete(cacheKey);
+  
+  console.log(`[clearActionProgressEvents] 📊 LRU CACHE - Cleared events for page ${pageId}`);
 }
