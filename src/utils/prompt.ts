@@ -613,7 +613,7 @@ ${isMidPhase ? `  - Only include objects with clear narrative weight. No new red
 ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unless absolutely necessary.` : ''}
 
 inventoryUpdates
-  - Items the MC brings to the scene, the amount, color, and where they are located specifically (backpack, right trouser pocket, etc).
+  - Items the MC brings to the scene, the amount, color, state, and where they are located specifically.
   - Limit it. Only include items that actually matters to the plot.
 
 injuries
@@ -1320,7 +1320,9 @@ function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
  * @example
  * // Character with inventory and injuries
  * "Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
- * - Inventory: flashlight, rope
+ * - Inventory:
+ *   - black cellphone with 50% battery in right pants pocket
+ *   - 5-meter brown rugged rope in backpack
  * - Injuries:
  *   - Deep cut (left arm, severity: 0.7) - acquired: page 5
  *     → Consequence (high): Cannot lift heavy objects
@@ -1332,8 +1334,14 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
   const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
   
   if (state) {
-    const inventory: string | null = state.inventory.join(', ') || null;
+    let inventoryDetails: string | null = null;
     let injuryDetails: string | null = null;
+    
+    // Format inventory items as indented list
+    if (state.inventory.length > 0) {
+      const inventoryList = state.inventory.map(item => `  - ${item}`);
+      inventoryDetails = `\n${inventoryList.join('\n')}`;
+    }
     
     // Format detailed injury information with nested bullet points
     if (state.injuries.length > 0) {
@@ -1354,7 +1362,7 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
       injuryDetails = `\n${injuryList.join('\n')}`;
     }
     
-    return [bio, inventory && `- Inventory: ${inventory}`, injuryDetails && `- Injuries: ${injuryDetails}`].filter(Boolean).join('\n');
+    return [bio, inventoryDetails && `- Inventory: ${inventoryDetails}`, injuryDetails && `- Injuries: ${injuryDetails}`].filter(Boolean).join('\n');
   }
   return bio;
 }
@@ -2214,7 +2222,7 @@ Initial State:
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
-- inventory: what objects MC brings, the amount, and where.
+- inventory: what objects MC brings, the amount, color, state, and where.
 
 Ending Archetypes:
 ${getEndingArchetypesText()}`;

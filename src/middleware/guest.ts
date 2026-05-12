@@ -12,71 +12,45 @@
  * - Supports data migration from guest to authenticated user
  */
 
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction, CookieOptions } from 'express';
+import { eq, and } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
-import { users } from '../db/schema.js';
+import { users, books, userSessions } from '../db/schema.js';
 import { verifyNextAuthToken } from './nextauth.js';
 import { generateId } from '../utils/uuid.js';
-import { IS_PRODUCTION } from '../config/env.js';
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
 
 const GUEST_COOKIE_NAME = 'twistloom_guest_id';
 const GUEST_COOKIE_TTL_MS = 60 * 60 * 24 * 30 * 1000; // 30 days in ms
 const MAX_GUEST_CREATION_RETRIES = 3;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 /**
- * Parses FRONTEND_URL environment variable safely
- * Returns null if URL is malformed or not set
- */
-function parseFrontendHostname(): string | null {
-  try {
-    return process.env.FRONTEND_URL ? new URL(process.env.FRONTEND_URL).hostname : null;
-  } catch {
-    console.error('[guest] ❌ Invalid FRONTEND_URL:', process.env.FRONTEND_URL);
-    return null;
-  }
-}
-
-// Cache frontend hostname at module load for performance
-const FRONTEND_HOSTNAME = parseFrontendHostname();
-
-/**
- * Calculates the cookie domain for cross-subdomain sharing
- * e.g., 'api.example.com' -> '.example.com', 'localhost' -> undefined
+ * Production frontend and backend are on different Vercel subdomains,
+ * so cookies must be sameSite:'none' + secure in production.
+ * In dev, both run on localhost — sameSite:'lax' is sufficient.
  * 
- * Note: Bare domains (e.g., 'example.com') return undefined since there's no subdomain to strip.
- * This is intentional - cross-subdomain sharing only applies when backend is on a subdomain.
+ * frontend urls:
+ * - https://twistloom-web.vercel.app (production)
+ * - http://localhost:3001 (dev)
+ * - https://localhost:3002 (dev https)
  * 
- * Limitation: ccTLDs (e.g., 'api.example.co.uk') may produce incorrect domain (.co.uk instead of .example.co.uk).
- * This is a known hard problem without a perfect solution without a public suffix list.
+ * backend urls:
+ * - https://twistloom-backend.vercel.app (production)
+ * - http://localhost:3000 (dev)
  */
-function getCookieDomain(hostname: string): string | undefined {
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
-    return undefined;
-  }
-  const hostnameParts = hostname.split('.');
-  if (hostnameParts.length > 2) {
-    const domain = '.' + hostnameParts.slice(-2).join('.');
-    // Heuristic: bail if result looks like a bare TLD pair (each part < 4 chars)
-    // This catches some ccTLD cases like .co.uk, .com.au, etc.
-    const parts = domain.slice(1).split('.');
-    if (parts.length === 2 && parts.every(p => p.length < 4)) {
-      return undefined;
-    }
-    return domain;
-  }
-  return undefined;
-}
+const GUEST_COOKIE_OPTIONS: CookieOptions = IS_PRODUCTION
+  ? { httpOnly: true, secure: true, sameSite: 'none', maxAge: GUEST_COOKIE_TTL_MS, path: '/' }
+  : { httpOnly: true, secure: false, sameSite: 'lax', maxAge: GUEST_COOKIE_TTL_MS, path: '/' };
 
-/**
- * Determines if the request is cross-origin (different top-level domains)
- */
-function isCrossOriginRequest(backendHostname: string): boolean {
-  return !!(FRONTEND_HOSTNAME &&
-           backendHostname &&
-           FRONTEND_HOSTNAME !== backendHostname &&
-           !FRONTEND_HOSTNAME.endsWith('.' + backendHostname.replace(/^www\./, '')) &&
-           !backendHostname.endsWith('.' + FRONTEND_HOSTNAME.replace(/^www\./, '')));
-}
+const GUEST_COOKIE_CLEAR_OPTIONS: CookieOptions = { path: '/' };
+
+// ---------------------------------------------------------------------------
+// Guest user creation
+// ---------------------------------------------------------------------------
 
 /**
  * Creates a new guest user in the database with race condition protection
@@ -107,6 +81,10 @@ async function createGuestUser(retryCount = 0): Promise<string> {
   return guestId;
 }
 
+// ---------------------------------------------------------------------------
+// Guest data migration
+// ---------------------------------------------------------------------------
+
 /**
  * Migrates data from a guest user to an authenticated user
  * Transfers all books, sessions, and other data from guest to authenticated user
@@ -115,10 +93,6 @@ async function createGuestUser(retryCount = 0): Promise<string> {
  * @param authenticatedUserId - The authenticated user ID to migrate to
  */
 export async function migrateGuestData(guestId: string, authenticatedUserId: string): Promise<void> {
-  // Import here to avoid circular dependencies
-  const { books, userSessions } = await import('../db/schema.js');
-  const { eq, and } = await import('drizzle-orm');
-
   // Verify guest user exists before migration
   const guestUser = await dbRead
     .select({ userId: users.userId })
@@ -126,26 +100,22 @@ export async function migrateGuestData(guestId: string, authenticatedUserId: str
     .where(and(eq(users.userId, guestId), eq(users.isGuest, true)))
     .limit(1);
 
-  if (!guestUser || guestUser.length === 0) {
+  if (!guestUser.length) {
     console.warn(`[guest] ⚠️ Guest user ${guestId} not found, skipping migration`);
     return;
   }
 
-  // Migrate all books from guest to authenticated user
-  await dbWrite
-    .update(books)
-    .set({ userId: authenticatedUserId })
-    .where(eq(books.userId, guestId));
-
-  // Migrate all sessions from guest to authenticated user
-  await dbWrite
-    .update(userSessions)
-    .set({ userId: authenticatedUserId })
-    .where(eq(userSessions.userId, guestId));
+  // Migrate all user data from guest to authenticated user
+  await dbWrite.update(books).set({ userId: authenticatedUserId }).where(eq(books.userId, guestId));
+  await dbWrite.update(userSessions).set({ userId: authenticatedUserId }).where(eq(userSessions.userId, guestId));
 
   // Delete guest user from database
   await dbWrite.delete(users).where(eq(users.userId, guestId));
 }
+
+// ---------------------------------------------------------------------------
+// Middleware
+// ---------------------------------------------------------------------------
 
 /**
  * Middleware that handles both authenticated and guest users
@@ -172,80 +142,25 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
 
     if (user) {
       // Authenticated user
-      req.guestAuth = {
-        isAuthenticated: true,
-        userId: user.id,
-        isGuest: false,
-        user,
-      };
+      req.guestAuth = { isAuthenticated: true, userId: user.id, isGuest: false, user };
       req.user = user;
       next();
       return;
     }
 
-    // Guest user - check for guest cookie
-    const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
-    let guestId = guestCookie;
+    // Resolve guest ID from cookie, validating it still exists in DB
+    const guestId = await resolveGuestId(req.cookies?.[GUEST_COOKIE_NAME]) ?? await createGuestUser();
 
-    // Verify guest ID exists in database (handles stale cookies pointing to deleted guests)
-    if (guestId) {
-      const { eq } = await import('drizzle-orm');
-      const existing = await dbRead
-        .select({ userId: users.userId })
-        .from(users)
-        .where(eq(users.userId, guestId))
-        .limit(1);
+    // Always refresh TTL on each request (sliding expiry)
+    res.cookie(GUEST_COOKIE_NAME, guestId, GUEST_COOKIE_OPTIONS);
 
-      if (!existing.length) {
-        guestId = null; // Force re-creation below
-      }
-    }
-
-    // Auto-detect backend hostname from request Host header
-    const backendHostname = req.get('host')?.split(':')[0] || 'localhost'; // Remove port if present
-    
-    // Calculate cookie domain and cross-origin status
-    const cookieDomain = getCookieDomain(backendHostname);
-    const isCrossOrigin = isCrossOriginRequest(backendHostname);
-
-    // Create new guest user
-    guestId ??= await createGuestUser();
-
-    // Refresh TTL on each request (sliding session)
-    res.cookie(GUEST_COOKIE_NAME, guestId, {
-      httpOnly: true,
-      secure: IS_PRODUCTION,
-      sameSite: IS_PRODUCTION && isCrossOrigin ? 'none' : 'lax',
-      maxAge: GUEST_COOKIE_TTL_MS,
-      path: '/',
-      domain: cookieDomain,
-    });
-
-    req.guestAuth = {
-      isAuthenticated: false,
-      userId: guestId,
-      isGuest: true,
-    };
+    req.guestAuth = { isAuthenticated: false, userId: guestId, isGuest: true };
     req.userId = guestId; // Set req.userId for rate limiting and route handlers
 
     next();
   } catch (error) {
     console.error('[guest] ❌ Guest middleware error:', error);
-    // On error, create a fallback guest user to ensure userId is always a string
-    try {
-      const fallbackGuestId = await createGuestUser();
-      req.guestAuth = {
-        isAuthenticated: false,
-        userId: fallbackGuestId,
-        isGuest: true,
-      };
-      req.userId = fallbackGuestId;
-    } catch (fallbackError) {
-      console.error('[guest] ❌ Failed to create fallback guest user:', fallbackError);
-      // If even fallback fails, let error middleware handle it
-      return next(error);
-    }
-    next();
+    next(error); // Propagate — don't forward null userId to route handlers
   }
 }
 
@@ -275,23 +190,34 @@ export async function migrateGuestMiddleware(req: Request, res: Response, next: 
       if (guestCookie && user.id !== guestCookie) {
         // Migrate guest data to authenticated user
         await migrateGuestData(guestCookie, user.id);
-
-        // Re-derive cookieDomain to match what was used when setting the cookie
-        const backendHostname = req.get('host')?.split(':')[0] || 'localhost';
-        const cookieDomain = getCookieDomain(backendHostname);
-
-        // Remove guest cookie (must match domain from set() call)
-        res.clearCookie(GUEST_COOKIE_NAME, {
-          path: '/',
-          domain: cookieDomain,
-        });
+        // Remove guest cookie
+        res.clearCookie(GUEST_COOKIE_NAME, GUEST_COOKIE_CLEAR_OPTIONS);
       }
     }
 
     next();
   } catch (error) {
     console.error('[guest] ❌ Guest migration middleware error:', error);
-    // Continue even if migration fails
-    next();
+    next(); // Non-fatal — user is authenticated regardless
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates a guest cookie value against the DB.
+ * Returns the guestId if valid, null if missing or stale.
+ */
+async function resolveGuestId(cookieValue: string | undefined): Promise<string | null> {
+  if (!cookieValue) return null;
+
+  const existing = await dbRead
+    .select({ userId: users.userId })
+    .from(users)
+    .where(and(eq(users.userId, cookieValue), eq(users.isGuest, true)))
+    .limit(1);
+
+  return existing.length ? cookieValue : null;
 }

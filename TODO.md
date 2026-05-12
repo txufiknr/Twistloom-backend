@@ -4,9 +4,8 @@
 [ ] Originals: Mc name predefine aja, jangan AI
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
-
-Important objects perlu disimpen di story state?
-Important objects perlu rules? 
+[ ] Important objects perlu disimpen di story state?
+[ ] Important objects perlu prop tambahan (trait, rules, color, battery)? 
 
 Text too short:
 I swung. Hard. The phone met the desk edge—no crack. No scream of glass. Just a dull *thud*.
