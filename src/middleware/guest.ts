@@ -20,6 +20,7 @@ import { generateId } from '../utils/uuid.js';
 import { IS_PRODUCTION } from '../config/env.js';
 
 const GUEST_COOKIE_NAME = 'twistloom_guest_id';
+const GUEST_COOKIE_TTL = 60 * 60 * 24 * 30; // 30 days
 const MAX_GUEST_CREATION_RETRIES = 3;
 
 /**
@@ -136,18 +137,35 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
       guestId = await createGuestUser();
       
       // Set guest cookie in response
-      // Use 'lax' for same-domain, 'none' only if cross-origin
       // Auto-detect backend hostname from request Host header
-      const frontendHostname = process.env.FRONTEND_URL ? new URL(process.env.FRONTEND_URL).hostname : null;
       const backendHostname = req.get('host')?.split(':')[0] || 'localhost'; // Remove port if present
-      const isCrossOrigin = frontendHostname && backendHostname && frontendHostname !== backendHostname;
+      
+      // Extract domain for cookie (remove subdomain for cross-subdomain sharing)
+      // e.g., 'api.example.com' -> '.example.com', 'localhost' -> undefined (browser default)
+      let cookieDomain: string | undefined;
+      if (backendHostname !== 'localhost' && backendHostname !== '127.0.0.1') {
+        const hostnameParts = backendHostname.split('.');
+        if (hostnameParts.length > 2) {
+          // For subdomains like 'api.example.com', set domain to '.example.com'
+          cookieDomain = '.' + hostnameParts.slice(-2).join('.');
+        }
+      }
+      
+      // Use 'lax' for same-site, 'none' only if cross-origin (different top-level domains)
+      const frontendHostname = process.env.FRONTEND_URL ? new URL(process.env.FRONTEND_URL).hostname : null;
+      const isCrossOrigin = frontendHostname && 
+                           backendHostname && 
+                           frontendHostname !== backendHostname &&
+                           !frontendHostname.endsWith(backendHostname.replace(/^www\./, '')) &&
+                           !backendHostname.endsWith(frontendHostname.replace(/^www\./, ''));
       
       res.cookie(GUEST_COOKIE_NAME, guestId, {
         httpOnly: true, // Prevent XSS attacks
         secure: IS_PRODUCTION,
-        sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
-        maxAge: 60 * 60 * 24 * 30, // 30 days
+        sameSite: IS_PRODUCTION && isCrossOrigin ? 'none' : 'lax',
+        maxAge: GUEST_COOKIE_TTL,
         path: '/',
+        domain: cookieDomain, // Allow cookie sharing across subdomains
       });
     }
 
