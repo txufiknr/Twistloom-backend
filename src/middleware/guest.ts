@@ -20,8 +20,63 @@ import { generateId } from '../utils/uuid.js';
 import { IS_PRODUCTION } from '../config/env.js';
 
 const GUEST_COOKIE_NAME = 'twistloom_guest_id';
-const GUEST_COOKIE_TTL = 60 * 60 * 24 * 30; // 30 days
+const GUEST_COOKIE_TTL_MS = 60 * 60 * 24 * 30 * 1000; // 30 days in ms
 const MAX_GUEST_CREATION_RETRIES = 3;
+
+/**
+ * Parses FRONTEND_URL environment variable safely
+ * Returns null if URL is malformed or not set
+ */
+function parseFrontendHostname(): string | null {
+  try {
+    return process.env.FRONTEND_URL ? new URL(process.env.FRONTEND_URL).hostname : null;
+  } catch {
+    console.error('[guest] ❌ Invalid FRONTEND_URL:', process.env.FRONTEND_URL);
+    return null;
+  }
+}
+
+// Cache frontend hostname at module load for performance
+const FRONTEND_HOSTNAME = parseFrontendHostname();
+
+/**
+ * Calculates the cookie domain for cross-subdomain sharing
+ * e.g., 'api.example.com' -> '.example.com', 'localhost' -> undefined
+ * 
+ * Note: Bare domains (e.g., 'example.com') return undefined since there's no subdomain to strip.
+ * This is intentional - cross-subdomain sharing only applies when backend is on a subdomain.
+ * 
+ * Limitation: ccTLDs (e.g., 'api.example.co.uk') may produce incorrect domain (.co.uk instead of .example.co.uk).
+ * This is a known hard problem without a perfect solution without a public suffix list.
+ */
+function getCookieDomain(hostname: string): string | undefined {
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return undefined;
+  }
+  const hostnameParts = hostname.split('.');
+  if (hostnameParts.length > 2) {
+    const domain = '.' + hostnameParts.slice(-2).join('.');
+    // Heuristic: bail if result looks like a bare TLD pair (each part < 4 chars)
+    // This catches some ccTLD cases like .co.uk, .com.au, etc.
+    const parts = domain.slice(1).split('.');
+    if (parts.length === 2 && parts.every(p => p.length < 4)) {
+      return undefined;
+    }
+    return domain;
+  }
+  return undefined;
+}
+
+/**
+ * Determines if the request is cross-origin (different top-level domains)
+ */
+function isCrossOriginRequest(backendHostname: string): boolean {
+  return !!(FRONTEND_HOSTNAME &&
+           backendHostname &&
+           FRONTEND_HOSTNAME !== backendHostname &&
+           !FRONTEND_HOSTNAME.endsWith('.' + backendHostname.replace(/^www\./, '')) &&
+           !backendHostname.endsWith('.' + FRONTEND_HOSTNAME.replace(/^www\./, '')));
+}
 
 /**
  * Creates a new guest user in the database with race condition protection
@@ -45,7 +100,7 @@ async function createGuestUser(retryCount = 0): Promise<string> {
     if (retryCount >= MAX_GUEST_CREATION_RETRIES) {
       throw new Error(`Failed to create guest user after ${MAX_GUEST_CREATION_RETRIES} retries`, { cause: error });
     }
-    console.warn(`Guest user creation failed (attempt ${retryCount + 1}/${MAX_GUEST_CREATION_RETRIES}), retrying with new ID:`, error);
+    console.warn(`[guest] ⚠️ Guest user creation failed (attempt ${retryCount + 1}/${MAX_GUEST_CREATION_RETRIES}), retrying with new ID:`, error);
     return createGuestUser(retryCount + 1);
   }
 
@@ -62,17 +117,17 @@ async function createGuestUser(retryCount = 0): Promise<string> {
 export async function migrateGuestData(guestId: string, authenticatedUserId: string): Promise<void> {
   // Import here to avoid circular dependencies
   const { books, userSessions } = await import('../db/schema.js');
-  const { eq } = await import('drizzle-orm');
+  const { eq, and } = await import('drizzle-orm');
 
   // Verify guest user exists before migration
   const guestUser = await dbRead
     .select({ userId: users.userId })
     .from(users)
-    .where(eq(users.userId, guestId))
+    .where(and(eq(users.userId, guestId), eq(users.isGuest, true)))
     .limit(1);
 
   if (!guestUser || guestUser.length === 0) {
-    console.warn(`Guest user ${guestId} not found, skipping migration`);
+    console.warn(`[guest] ⚠️ Guest user ${guestId} not found, skipping migration`);
     return;
   }
 
@@ -132,42 +187,39 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
     const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
     let guestId = guestCookie;
 
-    if (!guestId) {
-      // Create new guest user
-      guestId = await createGuestUser();
-      
-      // Set guest cookie in response
-      // Auto-detect backend hostname from request Host header
-      const backendHostname = req.get('host')?.split(':')[0] || 'localhost'; // Remove port if present
-      
-      // Extract domain for cookie (remove subdomain for cross-subdomain sharing)
-      // e.g., 'api.example.com' -> '.example.com', 'localhost' -> undefined (browser default)
-      let cookieDomain: string | undefined;
-      if (backendHostname !== 'localhost' && backendHostname !== '127.0.0.1') {
-        const hostnameParts = backendHostname.split('.');
-        if (hostnameParts.length > 2) {
-          // For subdomains like 'api.example.com', set domain to '.example.com'
-          cookieDomain = '.' + hostnameParts.slice(-2).join('.');
-        }
+    // Verify guest ID exists in database (handles stale cookies pointing to deleted guests)
+    if (guestId) {
+      const { eq } = await import('drizzle-orm');
+      const existing = await dbRead
+        .select({ userId: users.userId })
+        .from(users)
+        .where(eq(users.userId, guestId))
+        .limit(1);
+
+      if (!existing.length) {
+        guestId = null; // Force re-creation below
       }
-      
-      // Use 'lax' for same-site, 'none' only if cross-origin (different top-level domains)
-      const frontendHostname = process.env.FRONTEND_URL ? new URL(process.env.FRONTEND_URL).hostname : null;
-      const isCrossOrigin = frontendHostname && 
-                           backendHostname && 
-                           frontendHostname !== backendHostname &&
-                           !frontendHostname.endsWith(backendHostname.replace(/^www\./, '')) &&
-                           !backendHostname.endsWith(frontendHostname.replace(/^www\./, ''));
-      
-      res.cookie(GUEST_COOKIE_NAME, guestId, {
-        httpOnly: true, // Prevent XSS attacks
-        secure: IS_PRODUCTION,
-        sameSite: IS_PRODUCTION && isCrossOrigin ? 'none' : 'lax',
-        maxAge: GUEST_COOKIE_TTL,
-        path: '/',
-        domain: cookieDomain, // Allow cookie sharing across subdomains
-      });
     }
+
+    // Auto-detect backend hostname from request Host header
+    const backendHostname = req.get('host')?.split(':')[0] || 'localhost'; // Remove port if present
+    
+    // Calculate cookie domain and cross-origin status
+    const cookieDomain = getCookieDomain(backendHostname);
+    const isCrossOrigin = isCrossOriginRequest(backendHostname);
+
+    // Create new guest user
+    guestId ??= await createGuestUser();
+
+    // Refresh TTL on each request (sliding session)
+    res.cookie(GUEST_COOKIE_NAME, guestId, {
+      httpOnly: true,
+      secure: IS_PRODUCTION,
+      sameSite: IS_PRODUCTION && isCrossOrigin ? 'none' : 'lax',
+      maxAge: GUEST_COOKIE_TTL_MS,
+      path: '/',
+      domain: cookieDomain,
+    });
 
     req.guestAuth = {
       isAuthenticated: false,
@@ -178,13 +230,21 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
 
     next();
   } catch (error) {
-    console.error('Guest middleware error:', error);
-    // On error, treat as unauthenticated guest
-    req.guestAuth = {
-      isAuthenticated: false,
-      userId: null,
-      isGuest: true,
-    };
+    console.error('[guest] ❌ Guest middleware error:', error);
+    // On error, create a fallback guest user to ensure userId is always a string
+    try {
+      const fallbackGuestId = await createGuestUser();
+      req.guestAuth = {
+        isAuthenticated: false,
+        userId: fallbackGuestId,
+        isGuest: true,
+      };
+      req.userId = fallbackGuestId;
+    } catch (fallbackError) {
+      console.error('[guest] ❌ Failed to create fallback guest user:', fallbackError);
+      // If even fallback fails, let error middleware handle it
+      return next(error);
+    }
     next();
   }
 }
@@ -216,16 +276,21 @@ export async function migrateGuestMiddleware(req: Request, res: Response, next: 
         // Migrate guest data to authenticated user
         await migrateGuestData(guestCookie, user.id);
 
-        // Remove guest cookie
+        // Re-derive cookieDomain to match what was used when setting the cookie
+        const backendHostname = req.get('host')?.split(':')[0] || 'localhost';
+        const cookieDomain = getCookieDomain(backendHostname);
+
+        // Remove guest cookie (must match domain from set() call)
         res.clearCookie(GUEST_COOKIE_NAME, {
           path: '/',
+          domain: cookieDomain,
         });
       }
     }
 
     next();
   } catch (error) {
-    console.error('Guest migration middleware error:', error);
+    console.error('[guest] ❌ Guest migration middleware error:', error);
     // Continue even if migration fails
     next();
   }

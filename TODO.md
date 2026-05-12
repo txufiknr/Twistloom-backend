@@ -1,23 +1,3 @@
-[x] ensure get /:pageId booknya include author & firstPageId
-[x] enriched book lastPage (from latest userPageProgress)
-[x] ensure book slug not same as preserved endpoints: stats, explore
-[x] consolidate get page & page visit
-[x] apakah get /user ada `isGuest`?
-[x] Retry pending generation kalo udah stable bikin paralel
-[x] Ensure Visit count jangan itung system user
-[x] Cleanup story states: Early check kalau existing pages dikit skip
-[x] Book title jangan selalu diawali "The"
-[x] Enriched page: add characters, phase, running summary
-[x] enriched page add contextHistory, characters, phase
-[x] Get Story state fallback get by parentId+stateDelta -> persists DB
-[x] research Pg-boss / bullmq + redis
-[x] Ensure candidate: kalau cron gausah ttl timeout & gausah paralel (kalau paralel udah stable) 
-[x] code optimization from TODO-pgboss.md
-[x] candidate generation SSE UX roadmap (CANDIDATE_GENERATION_ENHANCEMENT_ROADMAP.md)
-[x] prompt ensure action text unique
-[x] config: MAX_BRANCHING_PREGENERATION_DEPTH = 2;
-[x] job priority harusnya berdasarkan depth
-[x] ensure twistloom_guest_id always same for 30 days
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate
@@ -25,9 +5,6 @@
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 
-[x] Migrate vercel cron to Vercel's Background Functions
-[x] Enriched page context tambah: injuries, inventory
-[x] Habis page 2 kok page 2 lagi (I reach over)? 
 Important objects perlu disimpen di story state?
 Important objects perlu rules? 
 
@@ -46,9 +23,6 @@ Parent page 2:
       "pageId": "019e07d4-34cd-723e-ae41-9ec6feae6ce1",
       "branchId": "019e07d4-34cd-723e-ae41-98de672ad0b4"
     }
-
-
-
 
 
 TODO:

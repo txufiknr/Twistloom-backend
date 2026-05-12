@@ -351,7 +351,7 @@ The guest cookie persists across browser restarts and page refreshes due to stan
      httpOnly: true,
      secure: IS_PRODUCTION,
      sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
-     maxAge: 60 * 60 * 24 * 30, // 30 days
+     maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days in milliseconds
      path: '/',
    });
    ```
