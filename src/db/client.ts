@@ -31,6 +31,7 @@ import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 import * as schema from "./schema.js";
 import { IS_DEVELOPMENT, IS_PRODUCTION, IS_TEST } from "../config/env.js";
 import { getEnv } from "../utils/env.js";
+import type { PgTransaction } from "drizzle-orm/pg-core";
 
 console.log(`👋 Running in ${IS_TEST ? 'test' : process.env['NODE_ENV']} environment`);
 
@@ -71,3 +72,7 @@ export const dbRead: NeonDatabase<typeof schema> = drizzle(readPool, {
  * Default database client (uses write connection)
  */
 export const db = dbWrite;
+
+export type DBTransaction = PgTransaction<any, any, any>;
+
+export type DBClient = typeof dbRead | typeof dbWrite | DBTransaction;

@@ -1152,7 +1152,7 @@ This async book creation system provides a robust solution to bypass Vercel's 5-
 
 1. Refactor `initializeBook()` and its helpers to accept an optional `tx` (database transaction) so `executeWithCredits()` can wrap book creation and credit consumption in one transaction to achieve full atomicity.
 2. Improve `initializeBook()` progress reporting: emit structured step names + percent to store in `generationProgress` and `generationStep` columns for better UX.
-3. Add a signed webhook endpoint the GitHub Actions workflow can call at completion/failure to update `generationStatus` — this eliminates polling and read-replica staleness.
+3. Add a signed webhook endpoint the GitHub Actions workflow (or the workflow runner script) can call at completion/failure to update `generationStatus` — this eliminates frontend polling and read-replica staleness. **IMPLEMENTED**: `POST /api/books/workflow-webhook` now exists and is secured by `x-internal-secret` (see below).
 4. Consider a job queue (BullMQ/Redis) or serverless worker for scalable background generation; GitHub Actions is convenient but limited for high throughput and observability.
   -> not viable for now as I only have Redis free plan
 5. Harden the dispatch path: verify `GITHUB_WORKFLOW_TOKEN` has `workflow` scope and handle API rate limits/retries when calling GitHub REST API.
@@ -1160,3 +1160,23 @@ This async book creation system provides a robust solution to bypass Vercel's 5-
 7. Add monitoring: track workflow dispatch failures, workflow run durations, refund attempts, and book generation success rate.
 
 If you want, I can implement one of these next: add the webhook endpoint + workflow callback, or start the `tx`-refactor for `initializeBook()`.
+
+---
+
+**Webhook: how it works & where to leverage it**
+
+- Endpoint: `POST /api/books/workflow-webhook` (internal). It accepts JSON: `{ bookId, status: 'pending'|'generating'|'completed'|'failed', progress?: number, error?: string }` and requires header `x-internal-secret: <INTERNAL_SECRET>`.
+- Purpose: allow external actors (GitHub Actions runner, other background workers) to inform the backend of progress or final outcome so the frontend and read-replicas see the authoritative state without polling the runner directly.
+- Where to call it:
+  - From the GitHub Actions job steps after `node dist/cron/on-demand-book-creation.js` completes (success/failure). Prefer calling from inside the runner script so the script can send progress updates during generation — the repo now calls the webhook from `src/cron/on-demand-book-creation.ts`.
+  - Alternatively, add a final workflow step using `curl` to POST the completion payload to the webhook (if you prefer not to modify the script).
+- Environment variables required by the runner/workflow:
+  - `WORKFLOW_WEBHOOK_URL` — full URL to `https://your-backend.example.com/api/books/workflow-webhook` (optional if `BACKEND_URL` is configured)
+  - `BACKEND_URL` — alternative base URL; the script will build `${BACKEND_URL}/api/books/workflow-webhook` if `WORKFLOW_WEBHOOK_URL` is not set
+  - `INTERNAL_SECRET` — shared secret value to send in `x-internal-secret` header
+- Implementation notes:
+  - The runner now calls the webhook on progress (debounced to multiples of 10%) and on final completion/failure.
+  - The webhook updates `generationStatus`, `generationProgress`, `generationError`, and `generationCompletedAt` for the given `bookId`.
+  - Keep `initializeBook()` as the owner of persistent progress writes for draft updates; the webhook is a convenience for external notification and for integration with monitoring/alerts.
+
+If you'd like, I can add a short example `curl` snippet for a fallback final-step webhook call in the GitHub Actions workflow.

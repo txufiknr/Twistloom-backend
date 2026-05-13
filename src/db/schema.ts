@@ -292,6 +292,7 @@ export const books = pgTable(
     // Async book creation tracking
     generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),
     generationProgress: integer("generation_progress").default(0), // 0-100
+    generationStep: text("generation_step"),
     generationError: text("generation_error"),
     generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
     generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),

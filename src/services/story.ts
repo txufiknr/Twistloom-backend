@@ -1,4 +1,4 @@
-import { dbRead, dbWrite } from "../db/client.js";
+import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
 import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState } from "../types/story.js";
@@ -216,10 +216,12 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
 export async function insertStoryState(
   bookId: string,
   pageId: string,
-  state: StoryState
+  state: StoryState,
+  options: { client?: DBClient } = {},
 ): Promise<void> {
+  const { client = dbWrite } = options;
   try {
-    await dbWrite
+    await client
       .insert(storyStates)
       .values({
         pageId,
@@ -409,7 +411,7 @@ export async function deactivateSession(userId: string, bookId: string) {
 export async function getStoryStateFromDB(
   pageId: string,
   options: {
-    client?: typeof dbRead | typeof dbWrite
+    client?: DBClient
   } = {}
 ): Promise<DBStoryState | null> {
   // Try get from LRU cache first
@@ -732,7 +734,7 @@ export async function getPreviousPages(
  */
 export async function getUserPage(pageId: string, userId: string, options: {
   bookIdentifier?: string,
-  client?: typeof dbRead | typeof dbWrite
+  client?: DBClient
 } = {}): Promise<UserStoryPage | null> {
   // Get the page from database
   const dbPage = await getPageFromDB(pageId, options);

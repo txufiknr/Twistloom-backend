@@ -4,8 +4,6 @@
  * Type definitions for API response patterns and resource naming conventions.
  */
 
-import type { PgTransaction } from "drizzle-orm/pg-core";
-
 /**
  * Valid resource names for paginated responses
  * 
@@ -20,6 +18,3 @@ export type ResourceName =
   | 'items'          // Generic collection (fallback)
   | 'users'          // Collection of users
   | 'transactions';  // Collection of transactions
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type DBTransaction = PgTransaction<any, any, any>;

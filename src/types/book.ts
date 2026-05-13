@@ -4,6 +4,7 @@ import type { StoryPage, StoryState } from "./story.js";
 import type { DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
+import type { DBTransaction } from "../db/client.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 export type BookGenerationStatus = 'pending' | 'generating' | 'completed' | 'failed';
@@ -156,8 +157,10 @@ export type InitializeBookParams = {
   req?: Request;
   /** Optional: Update existing book by ID instead of inserting new (for async book creation) */
   bookId?: string;
-  /** Optional: Callback to report generation progress */
-  onProgress?: (percentage: number) => Promise<void>;
+  /** Optional: Callback to report generation progress (percentage 0-100) */
+  onProgressPercent?: (percentage: number) => Promise<void>;
+  /** Optional: Database client / transaction to run all DB operations within (for atomicity) */
+  tx?: DBTransaction;
 };
 
 /**

@@ -17,7 +17,7 @@
  * ```
  */
 
-import { dbWrite } from "../db/client.js";
+import { type DBTransaction, dbWrite } from "../db/client.js";
 import { users, transactions } from "../db/schema.js";
 import { CREDIT_COSTS, type CreditCostKey } from "../config/credits.js";
 import { generateId } from "../utils/uuid.js";
@@ -25,7 +25,6 @@ import { eq, and, sql } from "drizzle-orm";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { logUserActivity } from "./user.js";
 import { retryWithBackoffOrNull } from "../utils/retry.js";
-import type { DBTransaction } from "../types/api.js";
 
 /**
  * Credit consumption options

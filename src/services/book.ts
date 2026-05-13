@@ -11,7 +11,7 @@
  * - Type-safe database operations
  */
 
-import { dbRead, dbWrite } from "../db/client.js";
+import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { pages, books, users, userPageProgress } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
@@ -112,13 +112,15 @@ export async function insertStoryPage(
   pageNumber: number,
   page: StoryPage,
   pageMeta: StoryPageMeta,
+  options: { client?: DBClient } = {},
 ): Promise<PersistedStoryPage> {
+  const { client = dbWrite } = options;
   const { bookId, branchId, parentId, selectedAction } = pageMeta;
   
   try {
     // Early validation: check specific selectedAction in parent page if provided
     if (parentId && selectedAction) {
-      const parentPage = await getPageFromDB(parentId, { client: dbWrite });
+      const parentPage = await getPageFromDB(parentId, { client });
       if (!parentPage) {
         throw new Error(`Parent page ${parentId} not found`);
       }
@@ -130,7 +132,7 @@ export async function insertStoryPage(
       if (matchingAction?.destination?.pageId && matchingAction.destination.pageId !== 'pending') {
         console.warn(`[insertStoryPage] ⚠️ Parent action "${selectedAction.text}" already has destination pageId ${matchingAction.destination.pageId}, skipping insertion`);
         // Return the existing page instead of inserting a new one
-        const existingPage = await getPageFromDB(matchingAction.destination.pageId, { client: dbWrite });
+        const existingPage = await getPageFromDB(matchingAction.destination.pageId, { client });
         if (existingPage) {
           return mapToPersistedStoryPage(existingPage);
         }
@@ -166,7 +168,7 @@ export async function insertStoryPage(
     // Use retryWithBranchConflict to handle unique constraint violations
     const result = await retryWithBranchConflict(
       async (data: DBNewPage) => {
-        const insertResult = await dbWrite
+        const insertResult = await client
           .insert(pages)
           .values(data)
           .returning();
@@ -315,7 +317,8 @@ async function generateUniqueSlug(title: string): Promise<string> {
  * @param status - Book status (active, archived, draft)
  * @returns Promise resolving to the inserted book record
  */
-export async function insertBook(book: DBNewBook): Promise<DBBook> {
+export async function insertBook(book: DBNewBook, options: { client?: DBClient } = {}): Promise<DBBook> {
+  const { client = dbWrite } = options;
   // Generate unique slug from title
   const uniqueSlug = await generateUniqueSlug(book.title);
   
@@ -332,7 +335,7 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
     updatedAt: new Date()
   };
 
-  const result = await dbWrite.insert(books).values(newBookData).returning();
+  const result = await client.insert(books).values(newBookData).returning();
   const insertedBook = result[0];
   console.log(`[insertBook] 📔 Inserted book with slug "${uniqueSlug}":`, insertedBook);
   
@@ -350,7 +353,7 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
  * @returns Promise resolving to the book record or null if not found
  */
 export async function getBookFromDB(bookId: string, options: {
-  client?: typeof dbRead | typeof dbWrite // use dbWrite to avoid read replica stale
+  client?: DBClient // use dbWrite to avoid read replica stale
 } = {}): Promise<DBBook | null> {
   const { client = dbRead } = options;
 
@@ -547,7 +550,7 @@ export async function getUserBooks(
  */
 export async function getPageFromDB(pageId: string, options: {
   bookIdentifier?: string,
-  client?: typeof dbRead | typeof dbWrite // use dbWrite to avoid read replica stale
+  client?: DBClient // use dbWrite to avoid read replica stale
 } = {}): Promise<DBPage | null> {
   const { bookIdentifier, client = dbRead } = options;
 

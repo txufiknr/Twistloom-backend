@@ -2284,13 +2284,31 @@ export async function initializeBook(
     isOriginal = false,
     req,
     bookId: draftBookId,
-    onProgress: onProgressPercent
+    onProgressPercent
   } = params;
 
   try {
-    // Emit book initialization start event
+    const client = params.tx ?? dbWrite;
+
+    // Helper to persist progress to DB (if updating a draft) and call percent callback
+    async function setProgress(percentage: number, step?: string) {
+      try {
+        await onProgressPercent?.(percentage);
+      } catch {
+        // ignore callback errors
+      }
+      if (draftBookId) {
+        try {
+          await client.update(books).set({ generationProgress: percentage, generationStep: step ?? null }).where(eq(books.id, draftBookId));
+        } catch (e) {
+          console.warn('[initializeBook] ⚠️ Failed to persist progress:', getErrorMessage(e));
+        }
+      }
+    }
+
+    // Emit book initialization start event and persist initial progress
     await onProgress?.({ type: 'book_initialization_start' });
-    await onProgressPercent?.(10);
+    await setProgress(10, 'initializing');
 
     // 1. Create AI prompt for book creation
     const prompt = createBookCreationPrompt(theme, mcCandidate);
@@ -2343,7 +2361,7 @@ export async function initializeBook(
 
     // 4. Persist book to database with character profile
     await onProgress?.({ type: 'finalizing_start' });
-    await onProgressPercent?.(80);
+    await setProgress(80, 'finalizing');
     
     let book: Book;
     let bookId: string;
@@ -2351,7 +2369,7 @@ export async function initializeBook(
     if (draftBookId) {
       // Update existing book record (async book creation flow)
       // Update with generated content
-      await dbWrite.update(books)
+      await client.update(books)
         .set({
           title,
           hook,
@@ -2365,7 +2383,7 @@ export async function initializeBook(
         .where(eq(books.id, draftBookId));
       
       // Fetch the updated book
-      const dbBook = await getBookFromDB(draftBookId, { client: dbWrite });
+      const dbBook = await getBookFromDB(draftBookId, { client });
       if (!dbBook) {
         throw new Error(`Book not found: ${draftBookId}`);
       }
@@ -2385,7 +2403,7 @@ export async function initializeBook(
         mc,
         isOriginal,
       };
-      const dbBook = await insertBook(newBookData);
+      const dbBook = await insertBook(newBookData, { client });
       book = mapBookFromDb(dbBook);
       bookId = book.id;
     }
@@ -2395,7 +2413,7 @@ export async function initializeBook(
       ...generatedFirstPage,
       aiProvider: response.provider || 'none',
       aiModel: response.model || 'none',
-    }, { bookId });
+    }, { bookId }, { client });
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
 
@@ -2455,7 +2473,7 @@ export async function initializeBook(
     }
 
     // 8. Persist story state to database
-    await insertStoryState(bookId, firstPage.id, initialState);
+    await insertStoryState(bookId, firstPage.id, initialState, { client });
 
     // 9. Pre-generate candidate pages for each action in the first page
     if (isOriginal) { // GitHub cron job, use github-action strategy
@@ -2479,6 +2497,7 @@ export async function initializeBook(
     }
 
     // 10. Invalidate user caches
+    await setProgress(95, 'cleaning-up');
     await invalidateUserBooksCache(userId);
     await invalidateUserProfileCache(userId);
     
@@ -2502,6 +2521,7 @@ export async function initializeBook(
     });
 
     // 13. Return complete book setup
+    await setProgress(100, 'completed');
     return {
       book,
       firstPage,
@@ -2510,6 +2530,15 @@ export async function initializeBook(
 
   } catch (error) {
     console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error: getErrorMessage(error) });
+    // Attempt to mark draft book as failed if present
+    try {
+      if (params.bookId) {
+        const client = params.tx ?? dbWrite;
+        await client.update(books).set({ generationStatus: 'failed', generationError: getErrorMessage(error), generationCompletedAt: new Date(), generationProgress: 0, generationStep: 'failed' }).where(eq(books.id, params.bookId));
+      }
+    } catch (e) {
+      console.warn('[initializeBook] ⚠️ Failed to set book failure status:', getErrorMessage(e));
+    }
     throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
   }
 }

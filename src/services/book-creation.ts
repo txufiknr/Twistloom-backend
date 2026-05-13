@@ -219,11 +219,11 @@ export async function createBookCore(
       const { result: initResult } = await executeWithCredits<InitializeBookResult>(
         userId,
         "STORY_GENERATION",
-        async (_tx) => {
+        async (tx) => {
           // Initialize book within the transaction
           // Note: initializeBook must support transaction parameter for full atomicity
           // For now, we call it outside and rely on executeWithCredits's automatic refund
-          return await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal, req }, onProgress);
+          return await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal, req, tx }, onProgress);
         },
         {
           context,

@@ -263,6 +263,45 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/books/workflow-webhook
+ *
+ * Internal webhook for GitHub Actions workflow to notify completion/failure.
+ * Secured by `INTERNAL_SECRET` header: `x-internal-secret`.
+ *
+ * Body: { bookId: string, status: 'completed'|'failed'|'generating'|'pending', error?: string, progress?: number }
+ */
+router.post('/workflow-webhook', async (req: Request, res: Response) => {
+  try {
+    const secret = req.get('x-internal-secret');
+    if (!secret || secret !== process.env.INTERNAL_SECRET) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const { bookId, status, error: generationError, progress } = req.body as { bookId?: string; status?: string; error?: string; progress?: number };
+    if (!bookId || !status) {
+      return res.status(400).json({ error: 'Missing required fields: bookId, status' });
+    }
+
+    if (!['pending', 'generating', 'completed', 'failed'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const update: Record<string, unknown> = { generationStatus: status };
+    if (typeof progress === 'number') update.generationProgress = Math.max(0, Math.min(100, Math.floor(progress)));
+    if (generationError) update.generationError = String(generationError);
+    if (status === 'completed' || status === 'failed') update.generationCompletedAt = new Date();
+    if (status === 'completed') update.status = 'active';
+
+    await dbWrite.update(books).set(update).where(eq(books.id, bookId));
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[POST /api/books/workflow-webhook] Error:', err);
+    return res.status(500).json({ error: 'Internal error' });
+  }
+});
+
+/**
  * POST /api/books/stream
  *
  * Creates a new psychological thriller book with AI-generated content using SSE.
@@ -445,6 +484,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       status: 'draft', // Will be updated to 'active' when complete
       generationStatus: 'pending',
       generationProgress: 0,
+      generationStep: null,
     };
 
     // STEP 4: CREATE DRAFT BOOK RECORD

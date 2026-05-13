@@ -20,6 +20,25 @@ import { getErrorMessage } from '../utils/error.js';
 import type { StoryMCCandidate } from '../types/character.js';
 import { cleanupObject } from '../utils/parser.js';
 
+async function notifyWorkflowWebhook(payload: { bookId: string; status: string; progress?: number; error?: string }) {
+  try {
+    const webhookUrl = process.env.WORKFLOW_WEBHOOK_URL || process.env.BACKEND_URL && `${process.env.BACKEND_URL.replace(/\/$/, '')}/api/books/workflow-webhook`;
+    const secret = process.env.INTERNAL_SECRET;
+    if (!webhookUrl || !secret) return;
+
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-secret': secret,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn('[creation] ⚠️ Failed to notify workflow webhook:', err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function main() {
   const bookId = process.env.BOOK_ID;
   const userId = process.env.USER_ID;
@@ -55,17 +74,22 @@ async function main() {
 
     // Initialize book (this is the long-running AI generation)
     // Pass bookId to update existing draft instead of creating duplicate
+    let lastProgressSent = 0;
     const result = await initializeBook({
       userId,
       theme,
       mcCandidate: Object.keys(mcCandidate).length > 0 ? mcCandidate : undefined,
       generateCoverImage,
       bookId, // IMPORTANT: Pass bookId to update existing draft
-      onProgress: async (percentage: number) => {
+      // Provide a lightweight percentage callback for logging and webhook notifications —
+      // `initializeBook` persists progress to DB for drafts.
+      onProgressPercent: async (percentage: number) => {
         console.log(`[creation] 🧩 Progress: ${percentage}%`);
-        await dbWrite.update(books)
-          .set({ generationProgress: percentage })
-          .where(eq(books.id, bookId));
+        // Debounce webhook notifications to reduce requests: send on multiples of 10 or on completion
+        if (percentage === 100 || percentage - lastProgressSent >= 10) {
+          lastProgressSent = percentage;
+          await notifyWorkflowWebhook({ bookId, status: 'generating', progress: percentage });
+        }
       }
     });
 
@@ -80,6 +104,9 @@ async function main() {
       })
       .where(eq(books.id, bookId));
 
+    // Notify external webhook (if configured)
+    await notifyWorkflowWebhook({ bookId, status: 'completed', progress: 100 });
+
     console.log('[creation] ✅ Book completed successfully');
   } catch (error) {
     console.error('[creation] ❌ Error:', getErrorMessage(error));
@@ -92,6 +119,9 @@ async function main() {
         generationCompletedAt: new Date(),
       })
       .where(eq(books.id, bookId));
+
+    // Notify external webhook about failure
+    await notifyWorkflowWebhook({ bookId, status: 'failed', error: getErrorMessage(error) });
 
     throw error;
   }

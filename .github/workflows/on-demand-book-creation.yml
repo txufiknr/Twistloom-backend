@@ -109,4 +109,8 @@ jobs:
           MC_CANDIDATE_GENDER: ${{ github.event.inputs.mc_candidate_gender }}
           MC_CANDIDATE_BIO: ${{ github.event.inputs.mc_candidate_bio }}
           GENERATE_COVER_IMAGE: ${{ github.event.inputs.generate_cover_image }}
+          # Optional backend webhook & internal secret for notifying completion/progress
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          WORKFLOW_WEBHOOK_URL: ${{ secrets.WORKFLOW_WEBHOOK_URL }}
+          INTERNAL_SECRET: ${{ secrets.INTERNAL_SECRET }}
         timeout-minutes: 45
