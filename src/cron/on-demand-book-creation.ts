@@ -17,10 +17,11 @@ import { dbWrite } from '../db/client.js';
 import { books } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { getErrorMessage } from '../utils/error.js';
-import type { StoryMCCandidate } from '../types/character.js';
 import { cleanupObject } from '../utils/parser.js';
+import type { StoryMCCandidate } from '../types/character.js';
+import type { BookGenerationPayload } from '../types/book.js';
 
-async function notifyWorkflowWebhook(payload: { bookId: string; status: string; progress?: number; error?: string }) {
+async function notifyWorkflowWebhook(payload: BookGenerationPayload) {
   try {
     const webhookUrl = process.env.WORKFLOW_WEBHOOK_URL || process.env.BACKEND_URL && `${process.env.BACKEND_URL.replace(/\/$/, '')}/api/books/workflow-webhook`;
     const secret = process.env.INTERNAL_SECRET;
@@ -74,7 +75,6 @@ async function main() {
 
     // Initialize book (this is the long-running AI generation)
     // Pass bookId to update existing draft instead of creating duplicate
-    let lastProgressSent = 0;
     const result = await initializeBook({
       userId,
       theme,
@@ -85,9 +85,8 @@ async function main() {
       // `initializeBook` persists progress to DB for drafts.
       onProgressPercent: async (percentage: number) => {
         console.log(`[creation] 🧩 Progress: ${percentage}%`);
-        // Debounce webhook notifications to reduce requests: send on multiples of 10 or on completion
-        if (percentage === 100 || percentage - lastProgressSent >= 10) {
-          lastProgressSent = percentage;
+        // Debounce webhook notifications to reduce requests: send on multiples of 10
+        if (percentage % 10 === 0) {
           await notifyWorkflowWebhook({ bookId, status: 'generating', progress: percentage });
         }
       }

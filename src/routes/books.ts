@@ -58,7 +58,8 @@ import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBoo
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
-import { lastUpdatedFilterOptions, type BookSortOption, type EnrichedBookData } from "../types/book.js";
+import type { BookGenerationPayload, BookGenerationStatus, BookSortOption, EnrichedBookData } from "../types/book.js";
+import { lastUpdatedFilterOptions } from "../types/book.js";
 import type { StoryMC } from "../types/character.js";
 import { createBookCore, createBookValidate, handleBookCreationError } from "../services/book-creation.js";
 import { executeWithCredits, refundCredits } from "../services/credits.js";
@@ -274,19 +275,20 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
   try {
     const secret = req.get('x-internal-secret');
     if (!secret || secret !== process.env.INTERNAL_SECRET) {
-      return res.status(403).json({ error: 'Forbidden' });
+      return handleForbiddenError(res, 'Invalid or missing internal secret');
     }
 
-    const { bookId, status, error: generationError, progress } = req.body as { bookId?: string; status?: string; error?: string; progress?: number };
+    const { bookId, status, error: generationError, progress } = req.body as BookGenerationPayload;
     if (!bookId || !status) {
-      return res.status(400).json({ error: 'Missing required fields: bookId, status' });
+      return handleValidationError(res, 'Missing required fields: bookId, status');
     }
 
-    if (!['pending', 'generating', 'completed', 'failed'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
+    const validStatuses: BookGenerationStatus[] = ['pending', 'generating', 'completed', 'failed'];
+    if (!validStatuses.includes(status)) {
+      return handleValidationError(res, 'Invalid status');
     }
 
-    const update: Record<string, unknown> = { generationStatus: status };
+    const update: Partial<DBNewBook> = { generationStatus: status };
     if (typeof progress === 'number') update.generationProgress = Math.max(0, Math.min(100, Math.floor(progress)));
     if (generationError) update.generationError = String(generationError);
     if (status === 'completed' || status === 'failed') update.generationCompletedAt = new Date();

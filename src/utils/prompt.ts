@@ -16,7 +16,7 @@ import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../type
 import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { books } from "../db/schema.js";
@@ -2291,7 +2291,9 @@ export async function initializeBook(
     const client = params.tx ?? dbWrite;
 
     // Helper to persist progress to DB (if updating a draft) and call percent callback
-    async function setProgress(percentage: number, step?: string) {
+    // TODO: onProgress masukin setProgress aja
+    async function setProgress(percentage: number, step?: BookGenerationStep) {
+      // const percentage = BOOK_GENERATION_PERCENTAGES[step ?? 'initializing'];
       try {
         await onProgressPercent?.(percentage);
       } catch {
@@ -2299,7 +2301,10 @@ export async function initializeBook(
       }
       if (draftBookId) {
         try {
-          await client.update(books).set({ generationProgress: percentage, generationStep: step ?? null }).where(eq(books.id, draftBookId));
+          await client.update(books).set({
+            generationProgress: percentage,
+            generationStep: step ?? null
+          }).where(eq(books.id, draftBookId));
         } catch (e) {
           console.warn('[initializeBook] ⚠️ Failed to persist progress:', getErrorMessage(e));
         }
@@ -2332,7 +2337,7 @@ export async function initializeBook(
       thinkThenOutput: firstBookReviewChecklist,
       // STEP 3: EVALUATING (inside `executePromptForJSON`)
       evaluatorPrompt: buildFirstBookEvaluatorPrompt(theme, mcCandidate),
-    }, onProgress, onProgressPercent);
+    }, onProgress, setProgress);
 
     // 3. Validate AI response
     if (!response.result) {
@@ -2497,7 +2502,7 @@ export async function initializeBook(
     }
 
     // 10. Invalidate user caches
-    await setProgress(95, 'cleaning-up');
+    await setProgress(90, 'cleaning-up');
     await invalidateUserBooksCache(userId);
     await invalidateUserProfileCache(userId);
     
@@ -2534,7 +2539,13 @@ export async function initializeBook(
     try {
       if (params.bookId) {
         const client = params.tx ?? dbWrite;
-        await client.update(books).set({ generationStatus: 'failed', generationError: getErrorMessage(error), generationCompletedAt: new Date(), generationProgress: 0, generationStep: 'failed' }).where(eq(books.id, params.bookId));
+        await client.update(books).set({
+          generationStatus: 'failed',
+          generationError: getErrorMessage(error),
+          generationCompletedAt: new Date(),
+          generationProgress: 0,
+          generationStep: null
+        }).where(eq(books.id, params.bookId));
       }
     } catch (e) {
       console.warn('[initializeBook] ⚠️ Failed to set book failure status:', getErrorMessage(e));
@@ -2792,7 +2803,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 export async function executePromptForJSON<T extends Record<string, unknown>>(
   params: AIPromptForJsonParams<T>,
   onProgress?: ProgressCallback,
-  onProgressPercent?: (percentage: number) => Promise<void>,
+  onProgressPercent?: (percentage: number, step?: BookGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;

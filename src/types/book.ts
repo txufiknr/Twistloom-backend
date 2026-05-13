@@ -8,6 +8,23 @@ import type { DBTransaction } from "../db/client.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 export type BookGenerationStatus = 'pending' | 'generating' | 'completed' | 'failed';
+export type BookGenerationStep = 'initializing' | 'generating' | 'evaluating' | 'reviewing' | 'finalizing' | 'cleaning-up' | 'completed';
+export type BookGenerationPayload = {
+  bookId: string;
+  status: BookGenerationStatus;
+  progress?: number;
+  error?: string
+};
+
+export const BOOK_GENERATION_PERCENTAGES: Record<BookGenerationStep, number> = {
+  'initializing': 10,
+  'generating': 20,
+  'evaluating': 50,
+  'reviewing': 70,
+  'finalizing': 80,
+  'cleaning-up': 90,
+  'completed': 100
+};
 
 /**
  * Book statistics for display

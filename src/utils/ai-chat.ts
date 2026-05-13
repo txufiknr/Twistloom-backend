@@ -17,6 +17,7 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/m
 import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { group } from '@actions/core';
 import type { ProgressCallback } from "../types/sse.js";
+import type { BookGenerationStep } from "../types/book.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -766,7 +767,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   options: AIPromptOptions = {},
   evaluatorPrompt?: string,
   onProgress?: ProgressCallback,
-  onProgressPercent?: (percentage: number) => Promise<void>,
+  // TODO: ganti param pake step aja (refer BOOK_GENERATION_PERCENTAGES)
+  onProgressPercent?: (percentage: number, step?: BookGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
@@ -787,7 +789,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   if (providers.length === 0) return { provider: 'none', output: '' };
 
   await onProgress?.({ type: 'ai_generation_start' });
-  await onProgressPercent?.(20);
+  await onProgressPercent?.(20, 'generating');
 
   // Try each provider in order
   for (const provider of providers) {
@@ -827,7 +829,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     }
 
     await onProgress?.({ type: 'ai_generation_complete' });
-    await onProgressPercent?.(40);
+    await onProgressPercent?.(60, 'evaluating');
 
     if (result?.output) {
       try {
@@ -870,7 +872,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
           // Emit evaluation complete event if evaluatorPrompt was provided
           await onProgress?.({ type: 'ai_evaluation_complete' });
-          await onProgressPercent?.(60);
+          await onProgressPercent?.(70, 'reviewing');
 
           if (evaluationResult) {
             const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;

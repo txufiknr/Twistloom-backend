@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { Gender } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC } from "../types/character.js";
-import type { BookGenerationStatus, BookStatus } from "../types/book.js";
+import type { BookGenerationStatus, BookGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag } from "../types/story.js";
@@ -290,9 +290,9 @@ export const books = pgTable(
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     // Async book creation tracking
-    generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),
+    generationStatus: text("generation_status").$type<BookGenerationStatus | null>().default('pending'),
     generationProgress: integer("generation_progress").default(0), // 0-100
-    generationStep: text("generation_step"),
+    generationStep: text("generation_step").$type<BookGenerationStep | null>(),
     generationError: text("generation_error"),
     generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
     generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
