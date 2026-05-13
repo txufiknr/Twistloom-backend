@@ -47,9 +47,9 @@ All backend phases have been successfully implemented and deployed.
 - `refundCredits()` - Wrapper with retry mechanism
 - Transaction limitation documented (partial atomicity acceptable)
 
-### ⚠️ Frontend Implementation (NEED TO RECHECK)
+### ✅ Frontend Implementation (COMPLETED)
 
-Frontend implementation has not been started yet.
+All frontend phases have been successfully implemented and deployed.
 
 ---
 
@@ -278,116 +278,64 @@ jobs:
 
 **File**: `src/cron/on-demand-book-creation.ts`
 
-**Status**: ✅ COMPLETED - Script exists with proper implementation
+**Status**: ✅ COMPLETED - Script exists and matches current implementation
+
+Current implementation notes:
+
+- Uses `initializeBook()` from `src/utils/prompt.ts` to perform the long-running AI generation.
+- Updates the `books` row `generationStatus`, `generationProgress`, and `generationCompletedAt` via `dbWrite`.
+- Accepts `BOOK_ID`, `USER_ID`, `THEME`, optional `MC_CANDIDATE_*` env vars and `GENERATE_COVER_IMAGE`.
+- Passes `bookId` to `initializeBook()` so the function updates the existing draft instead of inserting a duplicate.
+- Supports an `onProgress` callback that updates `generationProgress` while generation runs.
+
+Representative snippet (actual code in repo):
 
 ```typescript
-/**
- * On-Demand Book Creation Cron Job
- * 
- * Triggered by GitHub Actions workflow to create a book asynchronously.
- * This script runs in GitHub Actions environment with all necessary credentials.
- * 
- * Environment Variables:
- * - BOOK_ID: UUID v7 of the book to create
- * - USER_ID: User ID who requested the book
- * - THEME: Story theme
- * - MC_CANDIDATE_*: Optional main character details
- * - GENERATE_COVER_IMAGE: Whether to generate cover image
- */
-
 import { initializeBook } from '../utils/prompt.js';
 import { dbWrite } from '../db/client.js';
 import { books } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { getErrorMessage } from '../utils/error.js';
-import { StoryMCCandidate } from '../types/character.js';
+import type { StoryMCCandidate } from '../types/character.js';
+import { cleanupObject } from '../utils/parser.js';
 
 async function main() {
   const bookId = process.env.BOOK_ID;
   const userId = process.env.USER_ID;
   const theme = process.env.THEME;
-  
-  if (!bookId || !userId || !theme) {
-    throw new Error('Missing required environment variables: BOOK_ID, USER_ID, THEME');
-  }
+  if (!bookId || !userId || !theme) throw new Error('Missing required environment variables: BOOK_ID, USER_ID, THEME');
 
-  console.log('[On-Demand Book Creation] ⏰ Starting...', { bookId, userId, theme });
+  await dbWrite.update(books)
+    .set({ generationStatus: 'generating', generationStartedAt: new Date() })
+    .where(eq(books.id, bookId));
 
-  try {
-    // Update book status to 'generating'
-    await dbWrite.update(books)
-      .set({
-        generationStatus: 'generating',
-        generationProgress: 10,
-        generationStartedAt: new Date(),
-      })
-      .where(eq(books.id, bookId));
+  const mcCandidate: StoryMCCandidate = cleanupObject({
+    name: process.env.MC_CANDIDATE_NAME || undefined,
+    age: process.env.MC_CANDIDATE_AGE ? parseInt(process.env.MC_CANDIDATE_AGE) : undefined,
+    gender: process.env.MC_CANDIDATE_GENDER || undefined,
+    bio: process.env.MC_CANDIDATE_BIO || undefined,
+  });
 
-    console.log('[On-Demand Book Creation] ✒️ Status updated to generating');
+  const generateCoverImage = process.env.GENERATE_COVER_IMAGE === 'true';
 
-    // Parse mcCandidate from environment variables
-    const mcCandidate: StoryMCCandidate = {
-      name: process.env.MC_CANDIDATE_NAME || undefined,
-      age: process.env.MC_CANDIDATE_AGE ? parseInt(process.env.MC_CANDIDATE_AGE) : undefined,
-      gender: process.env.MC_CANDIDATE_GENDER || undefined,
-      bio: process.env.MC_CANDIDATE_BIO || undefined,
-    };
+  const result = await initializeBook({
+    userId,
+    theme,
+    mcCandidate: Object.keys(mcCandidate).length > 0 ? mcCandidate : undefined,
+    generateCoverImage,
+    bookId, // update existing draft
+    onProgress: async (percentage: number) => {
+      await dbWrite.update(books).set({ generationProgress: percentage }).where(eq(books.id, bookId));
+    }
+  });
 
-    const generateCoverImage = process.env.GENERATE_COVER_IMAGE === 'true';
-
-    // Update progress
-    await dbWrite.update(books)
-      .set({ generationProgress: 30 })
-      .where(eq(books.id, bookId));
-
-    // Initialize book (this is the long-running AI generation)
-    const result = await initializeBook({
-      userId,
-      theme,
-      mcCandidate: Object.keys(mcCandidate).length > 0 ? mcCandidate : undefined,
-      generateCoverImage,
-    });
-
-    console.log('[On-Demand Book Creation] Book initialized successfully');
-
-    // Update progress
-    await dbWrite.update(books)
-      .set({ generationProgress: 80 })
-      .where(eq(books.id, bookId));
-
-    // Update book with generated content
-    await dbWrite.update(books)
-      .set({
-        title: result.book.title,
-        hook: result.book.hook,
-        summary: result.book.summary,
-        keywords: result.book.keywords,
-        status: 'active',
-        generationStatus: 'completed',
-        generationProgress: 100,
-        generationCompletedAt: new Date(),
-      })
-      .where(eq(books.id, bookId));
-
-    console.log('[On-Demand Book Creation] Book completed successfully');
-  } catch (error) {
-    console.error('[On-Demand Book Creation] Error:', error);
-    
-    // Update book status to 'failed'
-    await dbWrite.update(books)
-      .set({
-        generationStatus: 'failed',
-        generationError: getErrorMessage(error),
-        generationCompletedAt: new Date(),
-      })
-      .where(eq(books.id, bookId));
-
-    throw error;
-  }
+  await dbWrite.update(books)
+    .set({ generationStatus: 'completed', generationProgress: 100, generationCompletedAt: new Date() })
+    .where(eq(books.id, bookId));
 }
 
 main().catch((error) => {
-  console.error('[On-Demand Book Creation] Fatal error:', error);
+  dbWrite.update(books).set({ generationStatus: 'failed', generationError: getErrorMessage(error), generationCompletedAt: new Date() }).where(eq(books.id, process.env.BOOK_ID));
   process.exit(1);
 });
 ```
@@ -670,45 +618,48 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
 
 ---
 
-### Phase 6: Environment Configuration ⚠️ PARTIAL
+### Phase 6: Environment Configuration ✅ (checked)
 
-#### 6.1 Add Environment Variables ⚠️
+#### 6.1 Environment Variables
 
-**File**: `.env.local.example` (needs verification)
+**File**: `.env.local.example` — Present in repository and includes workflow configuration variables.
 
-**Status**: ⚠️ NEEDS VERIFICATION - Check if these variables are in .env.local.example
+**Status**: ✅ Verified in repo. The following variables are present and used by the async flow:
 
 ```bash
-# GitHub Workflow Configuration
-GITHUB_WORKFLOW_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
+GITHUB_WORKFLOW_TOKEN=your_github_personal_access_token
 GITHUB_REPO_OWNER=txufiknr
 GITHUB_REPO_NAME=Twistloom-backend
 GITHUB_DEFAULT_BRANCH=main
 ```
 
-**Action Required**: Verify these environment variables are documented in `.env.local.example`
+**Notes**:
+- `GITHUB_WORKFLOW_TOKEN` must be a Personal Access Token (PAT) with the `workflow` scope to dispatch workflows via the REST API.
+- In production, store the token securely as an environment variable or secret (Vercel/GitHub Secrets).
 
-#### 6.2 Update GitHub Secrets ⚠️
+#### 6.2 GitHub Secrets
 
-**Status**: ⚠️ NEEDS VERIFICATION - Check if GitHub secrets are configured
+**Status**: ⚠️ Please ensure these secrets exist in GitHub Actions secrets and production envs.
 
-Add these secrets to GitHub repository settings:
-- `GITHUB_WORKFLOW_TOKEN`: Personal access token with `workflow` scope
-- All existing secrets (DATABASE_URL, AI API keys, etc.)
+Required secrets for GitHub Actions & cron runs:
+- `DATABASE_URL`, `DATABASE_READ_URL`
+- `SYSTEM_USER_ID`
+- AI provider keys (e.g. `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `COHERE_API_KEY`, etc.)
+- `IMAGEKIT_API_KEY_PRIVATE` (if image operations are used)
 
-**Action Required**: Verify GitHub secrets are configured in the repository
+Action: Verify these secrets are set in the repository Settings → Secrets and in production environment variables.
 
 ---
 
 ## Frontend Implementation
 
-### Phase 1: Type Definitions ⚠️ NEED TO RECHECK
+### Phase 1: Type Definitions ✅ COMPLETED
 
-#### 1.1 Add Async Book Creation Types ❌
+#### 1.1 Add Async Book Creation Types ✅
 
 **File**: `src/lib/types/api.ts`
 
-**Status**: ❌ NOT STARTED
+**Status**: ✅ COMPLETED - All async book creation types are defined
 
 ```typescript
 /**
@@ -749,13 +700,13 @@ export interface BookCreationStatus {
 
 ---
 
-### Phase 2: API Service ⚠️ NEED TO RECHECK
+### Phase 2: API Service ✅ COMPLETED
 
-#### 2.1 Add Async Book Creation Method ❌
+#### 2.1 Add Async Book Creation Method ✅
 
 **File**: `src/lib/services/books-api.ts`
 
-**Status**: ❌ NOT STARTED
+**Status**: ✅ COMPLETED - All async book creation methods are implemented
 
 ```typescript
 /**
@@ -872,13 +823,13 @@ async pollBookCreationStatusWithBackoff(
 
 ---
 
-### Phase 3: Component Updates ❌ NOT STARTED
+### Phase 3: Component Updates ✅ COMPLETED
 
-#### 3.1 Update StoryGeneratorInput ❌
+#### 3.1 Update StoryGeneratorInput ✅
 
 **File**: `src/components/home/StoryGeneratorInput.tsx`
 
-**Status**: ❌ NOT STARTED
+**Status**: ✅ COMPLETED - handleGenerateApi uses async method with polling
 
 Update the `handleGenerateApi` function to use async method:
 
@@ -1194,3 +1145,18 @@ If issues arise during deployment:
 ## Conclusion
 
 This async book creation system provides a robust solution to bypass Vercel's 5-minute timeout while maintaining a good user experience. The implementation leverages existing patterns in the codebase and provides a clear migration path with minimal risk.
+
+---
+
+**Recommendations & Quick Improvements**
+
+1. Refactor `initializeBook()` and its helpers to accept an optional `tx` (database transaction) so `executeWithCredits()` can wrap book creation and credit consumption in one transaction to achieve full atomicity.
+2. Improve `initializeBook()` progress reporting: emit structured step names + percent to store in `generationProgress` and `generationStep` columns for better UX.
+3. Add a signed webhook endpoint the GitHub Actions workflow can call at completion/failure to update `generationStatus` — this eliminates polling and read-replica staleness.
+4. Consider a job queue (BullMQ/Redis) or serverless worker for scalable background generation; GitHub Actions is convenient but limited for high throughput and observability.
+  -> not viable for now as I only have Redis free plan
+5. Harden the dispatch path: verify `GITHUB_WORKFLOW_TOKEN` has `workflow` scope and handle API rate limits/retries when calling GitHub REST API.
+6. Add integration tests for `POST /api/books/async`, status polling, and refund on dispatch failure (mocking the dispatch and `initializeBook`).
+7. Add monitoring: track workflow dispatch failures, workflow run durations, refund attempts, and book generation success rate.
+
+If you want, I can implement one of these next: add the webhook endpoint + workflow callback, or start the `tx`-refactor for `initializeBook()`.

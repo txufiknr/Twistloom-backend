@@ -2249,6 +2249,10 @@ ${getEndingArchetypesText()}`;
  * The function provides a complete story foundation with proper database
  * relationships and type-safe operations throughout the pipeline.
  * 
+ * @todo
+ * should make it accept `tx` param for atomicity, but not needed for now
+ * since the async book generation (current primary approach) creates the draft book upfront
+ * 
  * @param params.userId - The user's unique identifier for ownership and session
  * @param params.theme - User's desired story theme or concept
  * @param params.mcCandidate - Partial character profile to customize the main character
@@ -2272,7 +2276,6 @@ export async function initializeBook(
   params: InitializeBookParams,
   onProgress?: ProgressCallback
 ): Promise<InitializeBookResult> {
-  // TODO: should make it accept `tx` param for atomicity
   const {
     userId,
     theme,
