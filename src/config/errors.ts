@@ -13,9 +13,6 @@ import { getErrorMessage } from "../utils/error.js";
 export const CREDIT_ERRORS = {
   /** Standard insufficient credits message */
   INSUFFICIENT_CREDITS: "Insufficient credits",
-  
-  /** Pattern for matching insufficient credits errors */
-  INSUFFICIENT_CREDITS_PATTERN: "Insufficient credits:",
 } as const;
 
 /**
@@ -54,8 +51,8 @@ export const AUTH_ERRORS = {
 /**
  * Type guards for error checking
  */
-export const isCreditError = (error: unknown): boolean => {
-  return getErrorMessage(error).includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS_PATTERN);
+export const isInsufficientCreditsError = (error: unknown): boolean => {
+  return getErrorMessage(error).includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS);
 };
 
 export const isNotFoundError = (error: unknown): boolean => {

@@ -496,6 +496,7 @@ async function reconstructStoryStateFromParentChain(
     // Start from index 1 (skip the base state page) and apply each page's delta
     for (let i = 1; i < pageChain.length; i++) {
       const page = pageChain[i];
+      console.log(`[reconstructStoryStateFromParentChain] 🧩 Applying state delta from page ${page.page}`);
       currentState = applyStateDelta(currentState, page.stateDelta);
     }
 
@@ -559,7 +560,7 @@ export async function getStoryState(
 ): Promise<StoryState | null> {
   try {
     // 1. Try direct query from database first
-    const dbResult = await getStoryStateFromDB(pageId, { client: dbWrite });
+    const dbResult = await getStoryStateFromDB(pageId) ?? await getStoryStateFromDB(pageId, { client: dbWrite });
     if (dbResult) {
       console.log(`[getStoryState] ✅ Retrieved directly from database for page ${pageId}`);
       return mapStoryStateFromDb(dbResult);

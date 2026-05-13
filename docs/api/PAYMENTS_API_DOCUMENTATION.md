@@ -211,11 +211,14 @@ Creates a Stripe checkout session for purchasing credits. The user is redirected
 - **500 Internal Server Error**: Stripe API error
 
 **Behavior:**
-- Validates price ID against available credit packs
-- Creates Stripe checkout session with metadata
-- Includes user ID and credit pack information in session metadata
-- Returns secure checkout URL for payment completion
-- Webhook handles credit allocation after successful payment
+- Validates costKey against CREDIT_COSTS configuration
+- Uses database transaction with row lock for atomic operations
+- Validates credit balance before consumption
+- Creates usage transaction record
+- Logs user activity for analytics and security monitoring
+- Idempotency key support to prevent double charging
+- Rate limiting: 60 requests per minute per user
+- Skips credit consumption for internal system user (cron jobs)
 
 ---
 

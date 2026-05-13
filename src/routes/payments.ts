@@ -34,31 +34,24 @@ import { type TransactionType } from "../types/credits.js";
 import { getErrorMessage, handleApiError } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
 import { consumeCredits, getCreditCost } from "../services/credits.js";
-import { CREDIT_ERRORS } from "../config/errors.js";
-
-/**
- * Helper function to check if error is insufficient credits
- */
-function isInsufficientCreditsError(error: unknown): boolean {
-  return getErrorMessage(error).includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS_PATTERN);
-}
+import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
 
 /**
  * Helper function to handle insufficient credits errors consistently
  * Optimized to reduce database load by using simple error response
  */
-async function handleInsufficientCreditsError(
+export function handleInsufficientCreditsError(
   res: Response,
-  costKey: string
-): Promise<void> {
-  const cost = getCreditCost(costKey as CreditCostKey);
+  costKey: string,
+  error?: unknown
+) {
+  const requiredCredits = getCreditCost(costKey as CreditCostKey);
   
   // Return simple error without additional database query
   // The frontend can fetch current balance if needed
   res.status(402).json({
-    error: CREDIT_ERRORS.INSUFFICIENT_CREDITS,
-    required: cost,
-    available: null, // Frontend can fetch if needed
+    error: getErrorMessage(error, `${CREDIT_ERRORS.INSUFFICIENT_CREDITS}. Requires ${requiredCredits} credits.`),
+    required: requiredCredits,
   });
 }
 
@@ -672,6 +665,11 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
  * - Idempotency key support to prevent double charging
  * - Rate limiting: 60 requests per minute per user
  * 
+ * Enhancement opportunity:
+ * - Using the same idempotent refund pattern (as with `executeWithCredits` and `refundCredits` functions) if needed
+ * - Consistent error handling
+ * - But it should remain a simple credit consumption endpoint
+ * 
  * @example
  * ```typescript
  * // Basic usage
@@ -819,8 +817,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
           await processingCleanup();
         }
         
-        await handleInsufficientCreditsError(res, costKey);
-        return;
+        return handleInsufficientCreditsError(res, costKey);
       }
       
       // Clean up processing flag on error
@@ -833,8 +830,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
   } catch (error) {
     // Check if error is insufficient credits
     if (isInsufficientCreditsError(error)) {
-      await handleInsufficientCreditsError(res, req.body.costKey);
-      return;
+      return handleInsufficientCreditsError(res, req.body.costKey);
     }
     
     handleApiError(res, "Failed to consume credits", error);

@@ -765,7 +765,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   prompt: string, 
   options: AIPromptOptions = {},
   evaluatorPrompt?: string,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  onProgressPercent?: (percentage: number) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
@@ -774,7 +775,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     outputJsonFallbackField,
     systemPrompt = PROMPT_SYSTEM,
     documents,
-    context,
+    context = 'ai',
     logPrompts = false,
     logEvaluationResult = false,
   } = options;
@@ -786,6 +787,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   if (providers.length === 0) return { provider: 'none', output: '' };
 
   await onProgress?.({ type: 'ai_generation_start' });
+  await onProgressPercent?.(20);
 
   // Try each provider in order
   for (const provider of providers) {
@@ -825,6 +827,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     }
 
     await onProgress?.({ type: 'ai_generation_complete' });
+    await onProgressPercent?.(40);
 
     if (result?.output) {
       try {
@@ -843,7 +846,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             ) satisfies AIModelSelection,
             config,
             systemPrompt,
-            context: [options.context, 'evaluation'].filter(Boolean).join('-'),
+            context: `${context}-evaluation`,
             
             // Pass generated raw output as document
             documents: [
@@ -867,6 +870,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
           // Emit evaluation complete event if evaluatorPrompt was provided
           await onProgress?.({ type: 'ai_evaluation_complete' });
+          await onProgressPercent?.(60);
 
           if (evaluationResult) {
             const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
@@ -894,7 +898,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             result: undefined
           };
           parsedResult = parseAISafely(compatibleResponse, {
-            logContext: `${provider}-${context || 'ai-prompt'}`,
+            logContext: `${provider}-${context}`,
             fallbackField: outputJsonFallbackField
           }) as T;
         } else {

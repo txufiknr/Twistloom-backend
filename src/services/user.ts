@@ -202,9 +202,13 @@ export async function updateUserLastActivity(userId: string): Promise<void> {
  * - Can be called from any route handler
  */
 export async function logUserActivity(params: DBNewUserActivityLog): Promise<void> {
+  const { userId } = params;
+  const isInternal = userId === process.env.SYSTEM_USER_ID;
+  if (isInternal) return;
+
   try {
     await dbWrite.insert(userActivityLogs).values(params);
-    await updateUserLastActivity(params.userId);
+    await updateUserLastActivity(userId);
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
     console.error(`[user] ❌ Failed to log activity for user ${params.userId}:`, getErrorMessage(error));

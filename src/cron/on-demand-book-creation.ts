@@ -1,0 +1,103 @@
+/**
+ * On-Demand Book Creation Cron Job
+ * 
+ * Triggered by GitHub Actions workflow to create a book asynchronously.
+ * This script runs in GitHub Actions environment with all necessary credentials.
+ * 
+ * Environment Variables:
+ * - BOOK_ID: UUID v7 of the book to create
+ * - USER_ID: User ID who requested the book
+ * - THEME: Story theme
+ * - MC_CANDIDATE_*: Optional main character details
+ * - GENERATE_COVER_IMAGE: Whether to generate cover image
+ */
+
+import { initializeBook } from '../utils/prompt.js';
+import { dbWrite } from '../db/client.js';
+import { books } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+import { getErrorMessage } from '../utils/error.js';
+import type { StoryMCCandidate } from '../types/character.js';
+import { cleanupObject } from '../utils/parser.js';
+
+async function main() {
+  const bookId = process.env.BOOK_ID;
+  const userId = process.env.USER_ID;
+  const theme = process.env.THEME;
+  
+  if (!bookId || !userId || !theme) {
+    throw new Error('Missing required environment variables: BOOK_ID, USER_ID, THEME');
+  }
+
+  console.log('[creation] ⏰ Starting...', { bookId, userId, theme });
+
+  try {
+    // Update book status to 'generating'
+    await dbWrite.update(books)
+      .set({
+        generationStatus: 'generating',
+        // generationProgress: 10,
+        generationStartedAt: new Date(),
+      })
+      .where(eq(books.id, bookId));
+
+    console.log('[creation] ✒️ Status updated to generating');
+
+    // Parse mcCandidate from environment variables
+    const mcCandidate: StoryMCCandidate = cleanupObject({
+      name: process.env.MC_CANDIDATE_NAME || undefined,
+      age: process.env.MC_CANDIDATE_AGE ? parseInt(process.env.MC_CANDIDATE_AGE) : undefined,
+      gender: process.env.MC_CANDIDATE_GENDER || undefined,
+      bio: process.env.MC_CANDIDATE_BIO || undefined,
+    });
+
+    const generateCoverImage = process.env.GENERATE_COVER_IMAGE === 'true';
+
+    // Initialize book (this is the long-running AI generation)
+    // Pass bookId to update existing draft instead of creating duplicate
+    const result = await initializeBook({
+      userId,
+      theme,
+      mcCandidate: Object.keys(mcCandidate).length > 0 ? mcCandidate : undefined,
+      generateCoverImage,
+      bookId, // IMPORTANT: Pass bookId to update existing draft
+      onProgress: async (percentage: number) => {
+        console.log(`[creation] 🧩 Progress: ${percentage}%`);
+        await dbWrite.update(books)
+          .set({ generationProgress: percentage })
+          .where(eq(books.id, bookId));
+      }
+    });
+
+    console.log('[creation] ✅ Book initialized successfully:', result);
+
+    // Update book generation status (content already updated by initializeBook)
+    await dbWrite.update(books)
+      .set({
+        generationStatus: 'completed',
+        generationProgress: 100,
+        generationCompletedAt: new Date(),
+      })
+      .where(eq(books.id, bookId));
+
+    console.log('[creation] ✅ Book completed successfully');
+  } catch (error) {
+    console.error('[creation] ❌ Error:', getErrorMessage(error));
+    
+    // Update book status to 'failed'
+    await dbWrite.update(books)
+      .set({
+        generationStatus: 'failed',
+        generationError: getErrorMessage(error),
+        generationCompletedAt: new Date(),
+      })
+      .where(eq(books.id, bookId));
+
+    throw error;
+  }
+}
+
+main().catch((error) => {
+  console.error('[creation] Fatal error:', error);
+  process.exit(1);
+});

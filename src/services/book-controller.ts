@@ -157,7 +157,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
  */
 export function handleThemeValidationError(
   res: Response,
-  validationResult: ThemeValidationResult
+  validationResult: ThemeValidationResult,
+  statusCode: number = 400
 ): Response {
   let category: ThemeValidationCategory = 'OTHER';
   let detectedWords: string[] = [];
@@ -229,7 +230,7 @@ export function handleThemeValidationError(
     aiConfidence,
   });
 
-  return res.status(400).json(errorResponse);
+  return res.status(statusCode).json(errorResponse);
 }
 
 /**

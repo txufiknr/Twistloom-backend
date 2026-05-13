@@ -369,9 +369,16 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   }
 
   // 3. Match actionText against current page actions to get full Action object
-  const action = currentPage.actions.find(a => a.text === actionCandidate.text && a.type === actionCandidate.type);
+  const action = currentPage.actions.find(a => a.text === actionCandidate.text);
   if (!action) {
     throw createNonRetryableError(`Action "${actionCandidate.text}" not found in current page actions`, 'ACTION_NOT_FOUND');
+  }
+
+  const nextPageNumber = currentPage.page + 1;
+  console.log(`[generateCandidatePage] ℹ️ Should generate candidates for page ${nextPageNumber}`);
+
+  if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
+    console.warn(`[generateCandidatePage] ⚠️ Unexpected page ${nextPageNumber} is already in plot flags`);
   }
 
   // 4. Check if next page is pre-generated (candidate) and reuse if available
@@ -845,7 +852,7 @@ export async function ensureCandidatesForPageWithDepth(
  * 
  * @param userId - The user's unique identifier
  * @param page - The story page to process
- * @param currentState - Optional story state
+ * @param currentState - Story state for the current page for prompt (highly recommended)
  * @param currentBook - Optional book context
  * @param context - Generation context
  * 
@@ -856,6 +863,11 @@ export async function ensureCandidatesForPageWithStrategy(
 ): Promise<UserStoryPage> {
   const { strategy: context, userId, page, currentState, currentBook: providedBook, options = {} } = params;
   const { timeoutMs: customTimeoutMs, onProgress } = options;
+
+  // It's highly recommended to provide the currentState explicitly
+  if (currentState === undefined) {
+    console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ Base state not provided, will be reconstructed from current page`);
+  }
 
   // Use shared validation to eliminate redundant checks
   const validation = await validateCandidateGeneration(page, providedBook, options);

@@ -7,22 +7,7 @@
 [ ] Important objects perlu disimpen di story state?
 [ ] Important objects perlu prop tambahan (trait, rules, color, battery)? 
 
-Text too short:
-I swung. Hard. The phone met the desk edge—no crack. No scream of glass. Just a dull *thud*.
-
-Page not found:
-Grab my headphones. Drown the voice out.
-
-Habis page 2, page 2 lagi:
-Press my ear to the phone. Listen for breathing.
-
-Parent page 2:
-019e071e-62fa-7019-a2de-e5edb056098b
-    "destination": {
-      "pageId": "019e07d4-34cd-723e-ae41-9ec6feae6ce1",
-      "branchId": "019e07d4-34cd-723e-ae41-98de672ad0b4"
-    }
-
+[GET /candidates/status] 🚀 Fired background generation for page 019e169c-0533-7748-a11a-2c6651b8067c (user: 019e1b4d-09f8-70ff-aae0-40d2f76f776f, book: 019e1655-bd46-7440-950d-5f483e741fc3)
 
 TODO:
 [ ] Stripe switch to live

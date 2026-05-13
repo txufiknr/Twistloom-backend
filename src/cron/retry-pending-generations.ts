@@ -46,10 +46,21 @@ export async function retryPendingGenerations(): Promise<void> {
     
     // Lazy imports for better memory usage and startup time
     const { dbRead, dbWrite } = await import("../db/client.js");
-    const { pages, books } = await import("../db/schema.js");
-    const { eq, gt, lt, desc, asc, and } = await import("drizzle-orm");
+    const { pages, books, userSessions } = await import("../db/schema.js");
+    const { eq, gt, lt, desc, asc, and, sql } = await import("drizzle-orm");
     const { getPageFromDB } = await import("../services/book.js");
     const { mapToUserStoryPage } = await import("../services/book.js");
+    
+    // Subquery to get the most recent active session for each book
+    const mostRecentSession = dbRead
+      .select({
+        bookId: userSessions.bookId,
+        lastActiveAt: sql`MAX(${userSessions.updatedAt})`.as('lastActiveAt')
+      })
+      .from(userSessions)
+      .where(eq(userSessions.status, 'active'))
+      .groupBy(userSessions.bookId)
+      .as('mostRecentSession');
     
     // Query pages with pending generations (limit to prevent overwhelming system, minimal fields needed)
     const pagesWithPending = await dbRead
@@ -59,19 +70,21 @@ export async function retryPendingGenerations(): Promise<void> {
         trendingScore: books.trendingScore,
         page: pages.page,
         totalPages: books.totalPages,
+        lastActiveAt: mostRecentSession.lastActiveAt,
       })
       .from(pages)
       .innerJoin(books, eq(pages.bookId, books.id))
+      .leftJoin(mostRecentSession, eq(books.id, mostRecentSession.bookId))
       .where(and(
         gt(pages.pendingGenerationCount, 0),
         lt(pages.page, books.totalPages) // Exclude last page since it doesn't need candidates
       ))
       .orderBy(
-        desc(books.trendingScore), // Prioritize books with highest trending scores
-        asc(pages.pendingGenerationCount) // Prioritize pages with fewer remaining pending candidate generation
+        desc(mostRecentSession.lastActiveAt), // Prioritize books with most recent active session
+        desc(books.trendingScore), // Then prioritize books with highest trending scores
+        asc(pages.pendingGenerationCount) // Then prioritize pages with fewer remaining pending candidate generation
         // TODO:
         // - prioritize branch with smallest furthest generated pages against books.totalPages
-        // - prioritize book with most recent active session
       )
       .limit(MAX_BRANCHING_PREGENERATION_LIMIT); // Process up to N pages per run
     

@@ -45,10 +45,10 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
-import { formatOneOf, generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
+import { generateBookCreationPromptStream } from "../utils/prompt.js";
+import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -59,20 +59,17 @@ import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import { lastUpdatedFilterOptions, type BookSortOption, type EnrichedBookData } from "../types/book.js";
-import type { StoryMCCandidate } from "../types/character.js";
-import { createBookCore, handleBookCreationError } from "../services/book-creation.js";
-import { consumeCredits } from "../services/credits.js";
+import type { StoryMC } from "../types/character.js";
+import { createBookCore, createBookValidate, handleBookCreationError } from "../services/book-creation.js";
+import { executeWithCredits, refundCredits } from "../services/credits.js";
 import { logUserActivity } from "../services/user.js";
-import { CREDIT_COSTS } from "../config/credits.js";
-import { isCreditError } from "../config/errors.js";
-import { initSSEHeaders, sendSSEEvent, pollForCandidateGeneration, type SSEPollingConfig } from "../utils/sse.js";
 import type { ProgressCallback } from "../types/sse.js";
-import { MAX_THEME_LENGTH } from "../config/theme-validation.js";
-import { MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import { isValidUuid } from "../utils/uuid.js";
+import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
-import type { DBPage } from "../types/schema.js";
-import { ActionProgressEvent } from "../types/candidates.js";
+import type { DBNewBook, DBPage } from "../types/schema.js";
+import type { ActionProgressEvent } from "../types/candidates.js";
+import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../config/env.js";
+import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
 
 const router = Router();
 
@@ -246,64 +243,18 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
     
-    if (!theme) {
-      return res.status(400).json({ 
-        error: "Missing required field: theme is required" 
-      });
-    }
-
-    if (typeof theme !== 'string' || theme.trim().length === 0) {
-      return res.status(400).json({ 
-        error: "Invalid theme: must be a non-empty string" 
-      });
-    }
-
-    // Consume credits for story generation (transactional check included)
-    try {
-      await consumeCredits(userId, "STORY_GENERATION", {
-        context: "book_creation",
-        metadata: { theme: theme.trim() }
-      });
-    } catch (error) {
-      if (isCreditError(error)) {
-        return res.status(402).json({
-          error: {
-            type: "INSUFFICIENT_CREDITS",
-            message: `Insufficient credits to create a story. Requires ${CREDIT_COSTS.STORY_GENERATION} credits.`,
-            required: CREDIT_COSTS.STORY_GENERATION
-          }
-        });
-      }
-      throw error; // Re-throw other errors
-    }
-
     // Use shared core logic (without progress callback for synchronous response)
     const result = await createBookCore(
       {
+        req,
         userId,
         theme,
         mcCandidate,
-        generateCoverImage
+        generateCoverImage,
+        context: "book_creation",
       },
       // No progress callback for POST endpoint (synchronous response)
-      undefined
     );
-
-    // Invalidate popular tags cache since new book may have new keywords
-    await invalidatePopularTagsCache();
-
-    // Log user activity (book creation)
-    await logUserActivity({
-      userId,
-      activityType: 'book_created',
-      targetType: 'book',
-      targetId: result.book.id,
-      metadata: { theme: theme.trim() },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
 
     res.status(201).json(result);
   } catch (error) {
@@ -382,113 +333,6 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
 
-    // STEP 1: VALIDATING THEME
-    // Validate theme (required)
-    if (!theme || typeof theme !== 'string' || theme.trim().length === 0) {
-      return res.status(400).json({
-        error: "Missing required field: theme is required and must be a non-empty string"
-      });
-    }
-
-    // Validate theme length
-    if (theme.trim().length > MAX_THEME_LENGTH) {
-      return res.status(400).json({
-        error: `Theme exceeds maximum length of ${MAX_THEME_LENGTH} characters`
-      });
-    }
-
-    // Consume credits for story generation (transactional check included)
-    try {
-      await consumeCredits(userId, "STORY_GENERATION", {
-        context: "book_creation_stream",
-        metadata: { theme: theme.trim() }
-      });
-    } catch (error) {
-      if (isCreditError(error)) {
-        return res.status(402).json({
-          error: {
-            type: "INSUFFICIENT_CREDITS",
-            message: `Insufficient credits to create a story. Requires ${CREDIT_COSTS.STORY_GENERATION} credits.`,
-            required: CREDIT_COSTS.STORY_GENERATION
-          }
-        });
-      }
-      throw error; // Re-throw other errors
-    }
-
-    // STEP 2: VALIDATING MC CANDIDATE
-    // Validate mcCandidate if provided
-    let parsedMcCandidate: StoryMCCandidate | undefined;
-    if (mcCandidate !== undefined && mcCandidate !== null) {
-      // Ensure mcCandidate is an object
-      if (typeof mcCandidate !== 'object' || Array.isArray(mcCandidate)) {
-        return res.status(400).json({
-          error: "Invalid mcCandidate: must be an object"
-        });
-      }
-
-      // Validate name (optional)
-      if (mcCandidate.name !== undefined) {
-        if (typeof mcCandidate.name !== 'string' || mcCandidate.name.trim().length === 0) {
-          return res.status(400).json({
-            error: "Invalid mcCandidate.name: must be a non-empty string if provided"
-          });
-        }
-      }
-
-      // Validate age (optional)
-      if (mcCandidate.age !== undefined) {
-        if (typeof mcCandidate.age !== 'number' || !Number.isInteger(mcCandidate.age)) {
-          return res.status(400).json({
-            error: "Invalid mcCandidate.age: must be an integer"
-          });
-        }
-        if (mcCandidate.age < MIN_CHARACTER_AGE || mcCandidate.age > MAX_CHARACTER_AGE) {
-          return res.status(400).json({
-            error: `Invalid mcCandidate.age: must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}`
-          });
-        }
-      }
-
-      // Validate gender (optional)
-      if (mcCandidate.gender !== undefined) {
-        if (typeof mcCandidate.gender !== 'string') {
-          return res.status(400).json({
-            error: "Invalid mcCandidate.gender: must be a string"
-          });
-        }
-        const genders = ['male', 'female'];
-        if (!genders.includes(mcCandidate.gender)) {
-          return res.status(400).json({
-            error: `Invalid mcCandidate.gender: must be one of ${formatOneOf(genders)}`
-          });
-        }
-      }
-
-      // Validate bio (optional)
-      if (mcCandidate.bio !== undefined) {
-        if (typeof mcCandidate.bio !== 'string' || mcCandidate.bio.trim().length === 0) {
-          return res.status(400).json({
-            error: "Invalid mcCandidate.bio: must be a non-empty string if provided"
-          });
-        }
-      }
-
-      parsedMcCandidate = mcCandidate as StoryMCCandidate;
-    }
-
-    // STEP 3: VALIDATING GENERATE COVER IMAGE
-    // Validate generateCoverImage if provided
-    let parsedGenerateCoverImage: boolean | undefined;
-    if (generateCoverImage !== undefined) {
-      if (typeof generateCoverImage !== 'boolean') {
-        return res.status(400).json({
-          error: "Invalid generateCoverImage: must be a boolean"
-        });
-      }
-      parsedGenerateCoverImage = generateCoverImage;
-    }
-
     // Initialize SSE headers
     initSSEHeaders(res);
 
@@ -497,15 +341,15 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
       sendSSEEvent(res, event);
     };
 
-    // Credits already consumed above in transactional check
-
     // Create book with progress events
     const result = await createBookCore(
       {
+        req,
         userId,
-        theme: theme.trim(),
-        mcCandidate: parsedMcCandidate,
-        generateCoverImage: parsedGenerateCoverImage
+        theme,
+        mcCandidate,
+        generateCoverImage,
+        context: "book_creation_stream",
       },
       onProgress
     );
@@ -525,6 +369,296 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
       error: getErrorMessage(error)
     });
     res.end();
+  }
+});
+
+/**
+ * POST /api/books/async
+ * 
+ * Creates a new book asynchronously using GitHub Actions.
+ * Returns bookId immediately, bypassing Vercel's 5-minute timeout.
+ * 
+ * Flow:
+ * 1. Validate request parameters
+ * 2. Consume credits
+ * 3. Generate bookId (UUID v7)
+ * 4. Create book record with status 'pending'
+ * 5. Trigger GitHub Actions workflow (unawaited)
+ * 6. Return bookId immediately
+ * 
+ * Frontend should poll GET /api/books/:bookId/status for updates.
+ * 
+ * @param theme - Story theme (required)
+ * @param mcCandidate - Main character candidate (optional)
+ * @param generateCoverImage - Whether to generate cover image (optional)
+ * 
+ * @returns { bookId: string } - The generated book ID
+ * 
+ * @example
+ * POST /api/books/async
+ * Body: {
+ *   "theme": "haunted mansion mystery",
+ *   "mcCandidate": {
+ *     "name": "Sarah",
+ *     "age": 28,
+ *     "gender": "female"
+ *   },
+ *   "generateCoverImage": true
+ * }
+ * 
+ * Response (200):
+ * {
+ *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "message": "Book creation started. Poll /api/books/:bookId/status for updates."
+ * }
+ */
+router.post("/async", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { theme, mcCandidate, generateCoverImage } = req.body;
+    const userId = req.userId!;
+
+    // STEP 1: VALIDATE THEME
+    await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
+
+    // STEP 2: GENERATE BOOK ID
+    const bookId = generateId();
+    
+    // STEP 3: DRAFTING INITIAL DATA
+    const mc: StoryMC = {
+      name: '',
+      age: 0,
+      gender: '',
+      bio: '',
+      ...mcCandidate,
+    };
+
+    const initialBookData: DBNewBook = {
+      id: bookId,
+      userId,
+      title: 'Generating...', // Temporary title
+      hook: null,
+      summary: null,
+      keywords: [],
+      language: 'en',
+      totalPages: 0,
+      mc,
+      status: 'draft', // Will be updated to 'active' when complete
+      generationStatus: 'pending',
+      generationProgress: 0,
+    };
+
+    // STEP 4: CREATE DRAFT BOOK RECORD
+    // Create draft book record before credit consumption
+    // This allows initializeBook to update the existing book instead of creating a duplicate
+    await dbWrite.insert(books).values(initialBookData);
+
+    // STEP 5: CONSUME CREDITS IN TRANSACTION
+    // Use unified transaction flow for atomic credit consumption
+    // Returns correlation ID for idempotent refunds if needed
+    const { correlationId } = await executeWithCredits(
+      userId,
+      "STORY_GENERATION",
+      async (_tx) => {
+        // No operation needed - book already created
+        // Credits consumed for the book creation operation
+        // The actual book update happens in the cron job via initializeBook
+        // await tx.insert(books).values(initialBookData);
+      },
+      {
+        context: "book_creation_async",
+        metadata: { theme: theme.trim(), bookId }
+      }
+    );
+
+    // STEP 5: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
+    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
+    if (!githubToken) {
+      return res.status(500).json({
+        error: "GitHub workflow token not configured"
+      });
+    }
+
+    // Trigger workflow without awaiting
+    fetch(`https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/on-demand-book-creation.yml/dispatches`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${githubToken}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Twistloom-Backend'
+      },
+      body: JSON.stringify({
+        ref: GITHUB_DEFAULT_BRANCH,
+        inputs: {
+          book_id: bookId,
+          user_id: userId,
+          theme: theme.trim(),
+          ...(mcCandidate && {
+            mc_candidate_name: mcCandidate.name,
+            mc_candidate_age: mcCandidate.age,
+            mc_candidate_gender: mcCandidate.gender,
+            mc_candidate_bio: mcCandidate.bio,
+          }),
+          generate_cover_image: generateCoverImage || false,
+        }
+      })
+    }).catch(async (error) => {
+      console.error('[POST /api/books/async] ❌ Failed to trigger workflow:', error);
+      
+      // Update book status to failed
+      await dbWrite.update(books)
+        .set({ 
+          generationStatus: 'failed',
+          generationError: 'Failed to trigger GitHub workflow',
+          generationCompletedAt: new Date()
+        })
+        .where(eq(books.id, bookId));
+      
+      // Refund credits idempotently using correlation ID
+      // This prevents duplicate refunds if the error handler runs multiple times
+      try {
+        await refundCredits(userId, "STORY_GENERATION", {
+          context: "book_creation_async_failed",
+          metadata: { bookId, theme: theme.trim() },
+          correlationId // Use correlation ID from executeWithCredits for idempotency
+        });
+        console.log('[POST /api/books/async] ✅ Credits refunded due to workflow trigger failure');
+      } catch (refundError) {
+        // All retry attempts failed, log for manual review
+        console.error('[POST /api/books/async] ⚠️ All refund attempts failed, manual review required:', {
+          userId,
+          bookId,
+          correlationId,
+          theme: theme.trim(),
+          error: getErrorMessage(refundError)
+        });
+      }
+    });
+
+    // STEP 7: RETURN BOOK ID IMMEDIATELY
+    res.json({
+      bookId,
+      message: "Book creation started. Poll /api/books/:bookId/status for updates."
+    });
+
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'book_creation_started',
+      targetType: 'book',
+      targetId: bookId,
+      metadata: { 
+        theme: theme.trim(),
+        method: 'async',
+      },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+  } catch (error) {
+    console.error('[POST /api/books/async] ❌ Failed to start book creation:', error);
+    handleBookCreationError(res, error, "Failed to start book creation");
+  }
+});
+
+/**
+ * GET /api/books/:bookId/status
+ * 
+ * Polls for book creation status.
+ * Used by frontend to check progress of async book creation.
+ * 
+ * @param bookId - Book ID (UUID v7)
+ * 
+ * @returns BookCreationStatus with current status and progress
+ * 
+ * @example
+ * GET /api/books/01912345-6789-1234-5678-123456789012/status
+ * 
+ * Response (200):
+ * {
+ *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "status": "generating",
+ *   "progress": 45,
+ *   "currentStep": "AI generation in progress",
+ *   "createdAt": "2026-05-12T10:00:00.000Z",
+ *   "updatedAt": "2026-05-12T10:02:30.000Z"
+ * }
+ * 
+ * Response (200) - Complete:
+ * {
+ *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "status": "active",
+ *   "progress": 100,
+ *   "createdAt": "2026-05-12T10:00:00.000Z",
+ *   "updatedAt": "2026-05-12T10:05:00.000Z"
+ * }
+ * 
+ * Response (200) - Failed:
+ * {
+ *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "status": "failed",
+ *   "error": "AI generation failed: timeout",
+ *   "createdAt": "2026-05-12T10:00:00.000Z",
+ *   "updatedAt": "2026-05-12T10:10:00.000Z"
+ * }
+ */
+router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { bookId } = req.params;
+    const userId = req.userId!;
+
+    // Validate bookId format
+    if (!isValidUuid(bookId)) {
+      return handleValidationError(res, "Invalid book ID format");
+    }
+
+    // Fetch book from database
+    // Note: For status polling, we accept potential read replica staleness
+    // TODO: maybe we could make this reliable using retry with backoff?
+    const bookData = await getBookFromDB(bookId) ?? await getBookFromDB(bookId, { client: dbWrite });
+    if (!bookData) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Verify user owns the book
+    if (bookData.userId !== userId) {
+      return handleForbiddenError(res, "You can only view status for your own books");
+    }
+
+    // Map generation status to current step description
+    let currentStep: string | undefined;
+    
+    switch (bookData.generationStatus) {
+      case 'pending':
+        currentStep = 'Waiting for workflow to start';
+        break;
+      case 'generating':
+        currentStep = 'AI generation in progress';
+        break;
+      case 'completed':
+        currentStep = undefined;
+        break;
+      case 'failed':
+        currentStep = 'Generation failed';
+        break;
+      default:
+        currentStep = undefined;
+    }
+
+    res.json({
+      bookId: bookData.id,
+      status: bookData.status || 'draft',
+      generationStatus: bookData.generationStatus,
+      progress: bookData.generationProgress || 0,
+      currentStep,
+      error: bookData.generationError || undefined,
+      createdAt: bookData.createdAt,
+      updatedAt: bookData.updatedAt,
+    });
+  } catch (error) {
+    console.error('[GET /api/books/:bookId/status] Error:', error);
+    handleApiError(res, "Failed to get book status", error);
   }
 });
 
@@ -2321,13 +2455,8 @@ router.post("/:identifier/:pageId/generate", requireAuth, async (req: Request, r
       });
     }
 
-    // Extract repository info from environment or use defaults
-    const owner = process.env.GITHUB_REPO_OWNER || "txufiknr";
-    const repo = process.env.GITHUB_REPO_NAME || "Twistloom-backend";
-    const ref = process.env.GITHUB_DEFAULT_BRANCH || "main";
-
     // Trigger workflow via GitHub REST API
-    const workflowResponse = await fetch(`https://api.github.com/repos/${owner}/${repo}/actions/workflows/retry-pending-generations.yml/dispatches`, {
+    const workflowResponse = await fetch(`https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/retry-pending-generations.yml/dispatches`, {
       method: 'POST',
       headers: {
         'Authorization': `token ${githubToken}`,
@@ -2336,7 +2465,7 @@ router.post("/:identifier/:pageId/generate", requireAuth, async (req: Request, r
         'User-Agent': 'Twistloom-Backend'
       },
       body: JSON.stringify({
-        ref: ref,
+        ref: GITHUB_DEFAULT_BRANCH,
         inputs: {
           book_id: enrichedBook.id,
           page_id: pageId,
@@ -2381,7 +2510,7 @@ router.post("/:identifier/:pageId/generate", requireAuth, async (req: Request, r
     res.json({
       message: "Workflow triggered successfully",
       workflow: "retry-pending-generations",
-      ref: ref,
+      ref: GITHUB_DEFAULT_BRANCH,
       inputs: {
         book_id: enrichedBook.id,
         page_id: pageId,

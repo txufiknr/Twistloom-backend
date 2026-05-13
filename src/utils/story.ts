@@ -258,6 +258,7 @@ function decayInjuries(injuries: Injury[]): Injury[] {
  * ```
  */
 export async function advanceStoryState(state: StoryState, actionedPage: ActionedStoryPage): Promise<StoryState> {
+  console.log(`[advanceStoryState] 🧩 Applying state delta from page ${actionedPage.page}`);
   const updatedState = applyStateDelta(state, actionedPage.stateDelta);
 
   // Remove any existing entries with the same page number to avoid duplicates
@@ -585,11 +586,11 @@ export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates)
  * ```
  */
 export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag): void {
-  if (addPlotFlag) {
-    // Validate plot flag type - default to "other" if invalid
-    const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-    state.plotFlags.push({ ...addPlotFlag, type: validType });
-  }
+  if (!addPlotFlag) return;
+
+  // Validate plot flag type - default to "other" if invalid
+  const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
+  state.plotFlags.push({ ...addPlotFlag, type: validType });
 }
 
 /**

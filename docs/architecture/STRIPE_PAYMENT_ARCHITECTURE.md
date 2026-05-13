@@ -95,15 +95,34 @@ This section tracks which architecture recommendations have been implemented in 
   - Automatic notifications for refunds
   - Includes transaction details in notification data
 
+#### 11. Atomic Credit Consumption with Refunds
+- **Status**: ✅ Implemented
+- **Location**: `src/services/credits.ts`
+- **Details**:
+  - `executeWithCredits()` - Atomic credit consumption with operation execution
+  - `refundCredits()` - Idempotent refund with retry logic
+  - Correlation ID for idempotent refunds
+  - Automatic refund if operation fails
+  - Transaction parameter for full atomicity (optional)
+
+#### 12. Internal User Credit Skip
+- **Status**: ✅ Implemented
+- **Location**: `src/services/credits.ts` lines 68-78
+- **Details**:
+  - Automatically skips credit consumption for system user (cron jobs)
+  - Checks `userId === process.env.SYSTEM_USER_ID`
+  - Returns dummy transaction ID for consistency
+  - Prevents charging internal operations
+
 ### 🔄 Alternative Approaches Considered
 
 #### Option A: Pre-created Stripe Products (Dashboard)
-- **Status**: ❌ Not Implemented
+- **Status**: ✅ Implemented
 - **Reason**: Using dynamic `price_data` for flexibility
 - **Note**: Could migrate to pre-created products for better Stripe dashboard management
 
 #### Option B: Auto-create via Script
-- **Status**: ❌ Not Implemented
+- **Status**: ⏩ Not Intended
 - **Reason**: Dynamic creation sufficient for current needs
 - **Note**: Could implement seed script for product management
 
@@ -594,6 +613,87 @@ if (!pack) {
   return res.status(404).json({ error: "Credit pack not found" });
 }
 ```
+
+---
+
+## 💳 Credit System Architecture
+
+### Atomic Credit Consumption with Refunds
+
+The credit system provides atomic operations for credit consumption with automatic refunds on failure.
+
+#### executeWithCredits Pattern
+
+**Purpose**: Execute an operation atomically with credit consumption, with automatic refund if the operation fails.
+
+**Usage**:
+```typescript
+const { result, correlationId, transactionId } = await executeWithCredits(
+  userId,
+  "STORY_GENERATION",
+  async (tx) => {
+    // Execute operation within transaction
+    await tx.insert(books).values(bookData);
+    return bookId;
+  },
+  {
+    context: "book_creation_async",
+    metadata: { theme: theme.trim(), bookId }
+  }
+);
+```
+
+**Benefits**:
+- Atomic credit consumption and operation execution
+- Automatic refund if operation fails
+- Correlation ID for idempotent refunds
+- Transaction parameter for full atomicity (optional)
+
+**Transaction Limitation**:
+- For full atomicity, the operation callback MUST use the provided `tx` parameter
+- If the operation performs DB operations outside the transaction, partial success scenarios can occur
+- Current limitation: `initializeBook()` does not yet support transaction parameter
+- This is acceptable for async book creation (primary flow bypasses this limitation)
+
+#### refundCredits Pattern
+
+**Purpose**: Idempotent credit refund with retry logic.
+
+**Usage**:
+```typescript
+await refundCredits(userId, "STORY_GENERATION", {
+  context: "book_creation_async_failed",
+  metadata: { bookId, theme: theme.trim() },
+  correlationId // Use correlation ID from executeWithCredits for idempotency
+});
+```
+
+**Benefits**:
+- Idempotent via correlation ID (prevents duplicate refunds)
+- Retry mechanism with exponential backoff (3 retries, 1s base delay)
+- Detailed error logging for manual review
+- Audit trail via correlation ID
+
+#### Internal User Credit Skip
+
+**Purpose**: Automatically skip credit consumption for internal system user (cron jobs, etc.).
+
+**Implementation**:
+```typescript
+const isInternal = userId === process.env.SYSTEM_USER_ID;
+if (isInternal) {
+  console.log(`[consumeCredits] ⚡ Skipping credit consumption for internal user: ${userId}`);
+  return {
+    remainingCredits: 0,
+    transactionId: generateId(),
+  };
+}
+```
+
+**Benefits**:
+- Prevents charging internal operations (cron jobs, system tasks)
+- Consistent API (returns same structure)
+- Logs skip for monitoring
 
 ---
 
@@ -1357,14 +1457,15 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     customer_email: req.user!.email,
     line_items: [
       {
-        price_data: {
-          currency: "usd",
-          product_data: {
-            name: `${pack.title} (${pack.credits} Credits)`,
-            description: pack.description,
-          },
-          unit_amount: Math.round(pack.priceUSD * 100), // Convert to cents
-        },
+        price: pack.priceId,
+        // price_data: {
+        //   currency: "usd",
+        //   product_data: {
+        //     name: `${pack.title} (${pack.credits} Credits)`,
+        //     description: pack.description,
+        //   },
+        //   unit_amount: Math.round(pack.priceUSD * 100), // Convert to cents
+        // },
         quantity: 1,
       },
     ],

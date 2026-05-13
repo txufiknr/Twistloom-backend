@@ -17,7 +17,8 @@ import { eq, and } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, books, userSessions } from '../db/schema.js';
 import { verifyNextAuthToken } from './nextauth.js';
-import { generateId } from '../utils/uuid.js';
+import { generateId, isValidUuid } from '../utils/uuid.js';
+import { getFromCache, setCache } from '../services/cache.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -148,7 +149,7 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
       return;
     }
 
-    // Resolve guest ID from cookie, validating it still exists in DB
+    // Resolve guest ID from cookie
     const guestId = await resolveGuestId(req.cookies?.[GUEST_COOKIE_NAME]) ?? await createGuestUser();
 
     // Always refresh TTL on each request (sliding expiry)
@@ -207,17 +208,67 @@ export async function migrateGuestMiddleware(req: Request, res: Response, next: 
 // ---------------------------------------------------------------------------
 
 /**
- * Validates a guest cookie value against the DB.
- * Returns the guestId if valid, null if missing or stale.
+ * Validates a guest cookie value
+ * 
+ * Principle:
+ * Trust the cookie, don't validate against DB on every request
+ * 
+ * Concerns:
+ * - Transient database connection issue can result new ID in less than 1 day.
+ * - Redis stingy free tier limitation
+ * 
+ * @param dbLookup validating it still exists in DB
+ * 
+ * @returns
+ * - dbLookup false: the guestId if valid, null if invalid.
+ * - dbLookup true: the guestId if valid, null if invalid, missing or stale.
  */
-async function resolveGuestId(cookieValue: string | undefined): Promise<string | null> {
+async function resolveGuestId(cookieValue: string | undefined, dbLookup: boolean = false): Promise<string | null> {
   if (!cookieValue) return null;
 
+  // Format-only validation (no db & Redis)
+  if (!dbLookup) return isValidUuid(cookieValue) ? cookieValue : null;
+
+  // Uses Redis cache with 5-minute TTL to avoid DB connection issues
+  // while maintaining security by validating against the database periodically.
+  return resolveCachedGuestId(cookieValue);
+}
+
+/**
+ * Validates a guest cookie value against the DB with caching.
+ * 
+ * Uses Redis cache with 5-minute TTL to avoid DB connection issues
+ * while maintaining security by validating against the database periodically.
+ * 
+ * @returns the guestId if valid, null if invalid, missing or stale.
+ */
+async function resolveCachedGuestId(cookieValue: string | undefined): Promise<string | null> {
+  if (!cookieValue) return null;
+  if (!isValidUuid(cookieValue)) return null;
+
+  const cacheKey = `guest:valid:${cookieValue}`;
+
+  // Check cache first (5-minute TTL)
+  const cached = await getFromCache<boolean>(cacheKey);
+  if (cached.hit && cached.data !== null) {
+    return cached.data ? cookieValue : null;
+  }
+
+  // Validate against DB
   const existing = await dbRead
     .select({ userId: users.userId })
     .from(users)
     .where(and(eq(users.userId, cookieValue), eq(users.isGuest, true)))
     .limit(1);
 
-  return existing.length ? cookieValue : null;
+  const isValid = existing.length > 0;
+  
+  // Cache result for 5 minutes (300 seconds)
+  // NOTE: This introduces potential cache staleness - if a guest user is deleted,
+  // their ID will still be considered valid for up to 5 minutes until the cache expires.
+  // This is an acceptable trade-off since guest users are rarely deleted and the
+  // security impact is minimal. Consider cache invalidation on guest deletion if needed.
+  await setCache(cacheKey, isValid, 300);
+  
+  return isValid ? cookieValue : null;
 }

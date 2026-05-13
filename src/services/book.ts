@@ -20,7 +20,7 @@ import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
-import { getStoryState, getStoryStateFromPage } from "./story.js";
+import { getStoryStateFromPage } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
@@ -35,7 +35,6 @@ import { sanitizeText, generateSlug } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { shouldProceedWithRetry } from "../utils/retry.js";
 import { extractStateDelta, getStoryStateInfo } from "../utils/story.js";
 import { getTranslatedText, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
@@ -350,9 +349,13 @@ export async function insertBook(book: DBNewBook): Promise<DBBook> {
  * @param bookId - Book identifier to retrieve
  * @returns Promise resolving to the book record or null if not found
  */
-export async function getBookFromDB(bookId: string): Promise<DBBook | null> {
+export async function getBookFromDB(bookId: string, options: {
+  client?: typeof dbRead | typeof dbWrite // use dbWrite to avoid read replica stale
+} = {}): Promise<DBBook | null> {
+  const { client = dbRead } = options;
+
   // TODO: need to implement LRU cache?
-  const result = await dbRead
+  const result = await client
     .select()
     .from(books)
     .where(eq(books.id, bookId))
@@ -375,7 +378,8 @@ export async function getBookFromDB(bookId: string): Promise<DBBook | null> {
  */
 export async function getBook(bookId: string): Promise<Book | null> {
   try {
-    const dbResult = await getBookFromDB(bookId);
+    // const dbResult = await getBookFromDB(bookId);
+    const dbResult = await getBookFromDB(bookId) ?? await getBookFromDB(bookId, { client: dbWrite });
     if (dbResult) return mapBookFromDb(dbResult);
   } catch {
     // Ignore errors
@@ -1291,75 +1295,75 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
   }
 }
 
-/**
- * Triggers a fire-and-forget retry of failed candidate page generations
- * 
- * This function initiates a retry of candidate generation for pages with incomplete actions
- * when users visit them. Uses deduplication to prevent rapid retries within a time window.
- * 
- * @param userId - User ID initiating the retry
- * @param page - Page data with actions
- * @param userChosenAction - Optional user's chosen action for this page
- * 
- * Behavior:
- * - Checks if actions are missing destinations (unless hasIncompleteActions is provided)
- * - Uses deduplication to prevent multiple retries within the time window
- * - Initiates retry asynchronously (fire-and-forget)
- * - Logs errors but doesn't block the response
- * 
- * Deduplication:
- * - Uses time-based keys to prevent retries within the deduplication window
- * - Keys are automatically cleaned up after expiration
- * - Safe for concurrent requests
- * 
- * Performance:
- * - If hasIncompleteActions is true, skips enrichment check for efficiency
- * - If hasIncompleteActions is undefined, performs enrichment check
- * 
- * Example:
- * ```typescript
- * // With pre-checked incomplete actions (efficient)
- * await triggerCandidateGenerationRetry(userId, page, userChosenAction, true);
- * 
- * // Let helper check (less efficient but simpler)
- * await triggerCandidateGenerationRetry(userId, page, userChosenAction);
- * ```
- */
-export async function triggerCandidateGenerationRetry(
-  userId: string,
-  page: DBPage,
-  selectedActions?: Action[],
-): Promise<void> {
-  // Check for incomplete actions if not provided
-  const allActions = page.actions || [];
-  const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
-  const hasIncompleteActions = visibleActions.length < allActions.length;
+// /**
+//  * Triggers a fire-and-forget retry of failed candidate page generations
+//  * 
+//  * This function initiates a retry of candidate generation for pages with incomplete actions
+//  * when users visit them. Uses deduplication to prevent rapid retries within a time window.
+//  * 
+//  * @param userId - User ID initiating the retry
+//  * @param page - Page data with actions
+//  * @param userChosenAction - Optional user's chosen action for this page
+//  * 
+//  * Behavior:
+//  * - Checks if actions are missing destinations (unless hasIncompleteActions is provided)
+//  * - Uses deduplication to prevent multiple retries within the time window
+//  * - Initiates retry asynchronously (fire-and-forget)
+//  * - Logs errors but doesn't block the response
+//  * 
+//  * Deduplication:
+//  * - Uses time-based keys to prevent retries within the deduplication window
+//  * - Keys are automatically cleaned up after expiration
+//  * - Safe for concurrent requests
+//  * 
+//  * Performance:
+//  * - If hasIncompleteActions is true, skips enrichment check for efficiency
+//  * - If hasIncompleteActions is undefined, performs enrichment check
+//  * 
+//  * Example:
+//  * ```typescript
+//  * // With pre-checked incomplete actions (efficient)
+//  * await triggerCandidateGenerationRetry(userId, page, userChosenAction, true);
+//  * 
+//  * // Let helper check (less efficient but simpler)
+//  * await triggerCandidateGenerationRetry(userId, page, userChosenAction);
+//  * ```
+//  */
+// export async function triggerCandidateGenerationRetry(
+//   userId: string,
+//   page: DBPage,
+//   selectedActions?: Action[],
+// ): Promise<void> {
+//   // Check for incomplete actions if not provided
+//   const allActions = page.actions || [];
+//   const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
+//   const hasIncompleteActions = visibleActions.length < allActions.length;
 
-  // Skip if all actions have destinations
-  if (!hasIncompleteActions) return;
+//   // Skip if all actions have destinations
+//   if (!hasIncompleteActions) return;
 
-  // Generate deduplication key based on page ID and time window (default 1 minute)
-  const timeWindow = Math.floor(Date.now() / 60000);
-  const retryKey = `retry:candidate:${page.id}:${timeWindow}`;
+//   // Generate deduplication key based on page ID and time window (default 1 minute)
+//   const timeWindow = Math.floor(Date.now() / 60000);
+//   const retryKey = `retry:candidate:${page.id}:${timeWindow}`;
 
-  // Check if retry should proceed (deduplication)
-  if (!shouldProceedWithRetry(retryKey, 60000)) {
-    return;
-  }
+//   // Check if retry should proceed (deduplication)
+//   if (!shouldProceedWithRetry(retryKey, 60000)) {
+//     return;
+//   }
 
-  // Fire-and-forget retry
-  void (async () => {
-    try {
-      const { ensureCandidatesForPageWithStrategy } = await import("../utils/candidate-generation.js");
-      const userPage = await mapToUserStoryPage(page, userId, selectedActions);
-      await ensureCandidatesForPageWithStrategy({
-        strategy: 'cron',
-        userId,
-        page: userPage,
-        currentState: await getStoryState(page.id, { dbPage: page, maxTraversalDepth: 1 })
-      });
-    } catch (error) {
-      console.error(`[triggerCandidateGenerationRetry] ❌ Failed for page ${page.id}:`, getErrorMessage(error));
-    }
-  })();
-}
+//   // Fire-and-forget retry
+//   void (async () => {
+//     try {
+//       const { ensureCandidatesForPageWithStrategy } = await import("../utils/candidate-generation.js");
+//       const userPage = await mapToUserStoryPage(page, userId, selectedActions);
+//       await ensureCandidatesForPageWithStrategy({
+//         strategy: 'cron',
+//         userId,
+//         page: userPage,
+//         currentState: await getStoryState(page.id, { dbPage: page, maxTraversalDepth: 1 })
+//       });
+//     } catch (error) {
+//       console.error(`[triggerCandidateGenerationRetry] ❌ Failed for page ${page.id}:`, getErrorMessage(error));
+//     }
+//   })();
+// }

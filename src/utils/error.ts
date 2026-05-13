@@ -64,9 +64,11 @@ export function handleApiError(
   if (error) console.error(error);
 
   // Build error response
+  // NOTE: getErrorMessage falls back to the message parameter if error is null/undefined,
+  // providing defensive programming to ensure we always have a meaningful error message.
   const errorResponse: ErrorResponse = {
     success: false,
-    error: message,
+    error: getErrorMessage(error, message),
   };
 
   // Include error details only in development mode

@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { Gender } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC } from "../types/character.js";
-import type { BookStatus } from "../types/book.js";
+import type { BookGenerationStatus, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag } from "../types/story.js";
@@ -289,6 +289,12 @@ export const books = pgTable(
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
+    // Async book creation tracking
+    generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),
+    generationProgress: integer("generation_progress").default(0), // 0-100
+    generationError: text("generation_error"),
+    generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
+    generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },
@@ -307,6 +313,8 @@ export const books = pgTable(
     index("books_user_idx").on(t.userId),
     // Index for status filtering
     index("books_status_idx").on(t.status),
+    // Index for generation status filtering (async book creation)
+    index("books_generation_status_idx").on(t.generationStatus),
     // Index for language filtering
     index("books_language_idx").on(t.language),
     // GIN index for keywords JSONB array (enables efficient array operations)

@@ -17,9 +17,13 @@ import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, InitializeBookParams, InitializeBookResult } from "../types/book.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
+import { books } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { insertStoryState } from "../services/story.js";
+import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache, invalidatePopularTagsCache } from "../services/cache.js";
+import { logUserActivity } from "../services/user.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
@@ -2157,7 +2161,7 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * ```
  */
 function createBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
-  return `Create a psychological thriller story from this theme:\n"""\n${theme}\n"""
+  return `Create a psychological thriller story from this theme:\n"""\n${theme.trim()}\n"""
 
 HARD RULES (apply to everything below):
 - Write in first-person ("I") POV only (MC = narrator).
@@ -2240,7 +2244,7 @@ ${getEndingArchetypesText()}`;
  * 6. Persists first page as root page of the book
  * 7. Links story state to first page
  * 8. Pre-generates candidate pages for each action in the first page (fire-and-forget)
- * 9. Sets user's active session to the new book
+ * 9. Invalidates caches and logs user activity
  * 
  * The function provides a complete story foundation with proper database
  * relationships and type-safe operations throughout the pipeline.
@@ -2248,6 +2252,7 @@ ${getEndingArchetypesText()}`;
  * @param params.userId - The user's unique identifier for ownership and session
  * @param params.theme - User's desired story theme or concept
  * @param params.mcCandidate - Partial character profile to customize the main character
+ * @param params.req - Optional Express request object for activity logging
  * @returns Promise resolving to complete book setup with all components
  * 
  * @example
@@ -2267,11 +2272,22 @@ export async function initializeBook(
   params: InitializeBookParams,
   onProgress?: ProgressCallback
 ): Promise<InitializeBookResult> {
-  const { userId, theme, mcCandidate, generateCoverImage = false, isOriginal = false } = params;
+  // TODO: should make it accept `tx` param for atomicity
+  const {
+    userId,
+    theme,
+    mcCandidate,
+    generateCoverImage = false,
+    isOriginal = false,
+    req,
+    bookId: draftBookId,
+    onProgress: onProgressPercent
+  } = params;
 
   try {
     // Emit book initialization start event
     await onProgress?.({ type: 'book_initialization_start' });
+    await onProgressPercent?.(10);
 
     // 1. Create AI prompt for book creation
     const prompt = createBookCreationPrompt(theme, mcCandidate);
@@ -2295,7 +2311,7 @@ export async function initializeBook(
       thinkThenOutput: firstBookReviewChecklist,
       // STEP 3: EVALUATING (inside `executePromptForJSON`)
       evaluatorPrompt: buildFirstBookEvaluatorPrompt(theme, mcCandidate),
-    }, onProgress);
+    }, onProgress, onProgressPercent);
 
     // 3. Validate AI response
     if (!response.result) {
@@ -2324,20 +2340,52 @@ export async function initializeBook(
 
     // 4. Persist book to database with character profile
     await onProgress?.({ type: 'finalizing_start' });
-    const newBookData: DBNewBook = {
-      userId,
-      title,
-      totalPages,
-      language,
-      hook,
-      summary,
-      keywords,
-      mc,
-      isOriginal,
-    };
-    const dbBook = await insertBook(newBookData);
-    const book = mapBookFromDb(dbBook);
-    const bookId = book.id;
+    await onProgressPercent?.(80);
+    
+    let book: Book;
+    let bookId: string;
+
+    if (draftBookId) {
+      // Update existing book record (async book creation flow)
+      // Update with generated content
+      await dbWrite.update(books)
+        .set({
+          title,
+          hook,
+          summary,
+          keywords,
+          mc,
+          totalPages,
+          language, // Match with theme input
+          status: 'active', // Book is now complete (published)
+        })
+        .where(eq(books.id, draftBookId));
+      
+      // Fetch the updated book
+      const dbBook = await getBookFromDB(draftBookId, { client: dbWrite });
+      if (!dbBook) {
+        throw new Error(`Book not found: ${draftBookId}`);
+      }
+
+      book = mapBookFromDb(dbBook);
+      bookId = draftBookId;
+    } else {
+      // Insert new book record (sync/SSE flows)
+      const newBookData: DBNewBook = {
+        userId,
+        title,
+        totalPages,
+        language,
+        hook,
+        summary,
+        keywords,
+        mc,
+        isOriginal,
+      };
+      const dbBook = await insertBook(newBookData);
+      book = mapBookFromDb(dbBook);
+      bookId = book.id;
+    }
 
     // 5. Persist first page as root page of the book
     const firstPage = await insertStoryPage(userId, 1, {
@@ -2427,7 +2475,30 @@ export async function initializeBook(
       });
     }
 
-    // 10. Return complete book setup
+    // 10. Invalidate user caches
+    await invalidateUserBooksCache(userId);
+    await invalidateUserProfileCache(userId);
+    
+    // 11. Invalidate public caches if book published immediately
+    if (book.status === 'active') {
+      await invalidateExploreCache();
+      await invalidatePopularTagsCache();
+    }
+
+    // 12. Log user activity (book creation)
+    await logUserActivity({
+      userId,
+      activityType: 'book_created',
+      targetType: 'book',
+      targetId: book.id,
+      metadata: { theme: theme.trim() },
+      ipAddress: req?.ip,
+      userAgent: req?.get('user-agent'),
+      platform: req?.get('x-platform'),
+      appVersion: req?.get('x-app-version'),
+    });
+
+    // 13. Return complete book setup
     return {
       book,
       firstPage,
@@ -2497,8 +2568,13 @@ export async function initializeBook(
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
   const { userId, book, actionedPage, currentState: providedState, generateNewBranchId = false } = params;
 
+  // It's highly recommended to provide the currentState explicitly
+  if (!providedState) {
+    console.warn(`[generateNextPage] ⚠️ Base state not provided, will be reconstructed from current page`);
+  }
+
   // Ensure story state exists for the actioned page
-  const currentState: StoryState | null = providedState ? { ...providedState } : await getStoryStateWithBranch(userId, actionedPage.bookId, actionedPage.id);
+  const currentState: StoryState | null = providedState ? structuredClone(providedState) : await getStoryStateWithBranch(userId, actionedPage.bookId, actionedPage.id);
   if (!currentState) {
     throw new Error(`Failed to get story state for page ${actionedPage.id}`);
   }
@@ -2561,6 +2637,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
   // 6. Apply current AI turn's updates to advanced story state
   const stateDelta = extractStateDelta(generatedStoryPage);
+  console.log(`[reconstructStoryState] 🧩 Applying state delta from generated page ${expectedPageNumber}`);
   const newState = applyStateDelta(advancedState, stateDelta);
   if (newState.page !== expectedPageNumber) {
     // Provided story state might mismatch, but still respect what provided
@@ -2682,7 +2759,8 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  */
 export async function executePromptForJSON<T extends Record<string, unknown>>(
   params: AIPromptForJsonParams<T>,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  onProgressPercent?: (percentage: number) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
@@ -2709,6 +2787,7 @@ Do NOT mention this checklist.` : '';
     createAIOptionsWithSchema<T>(configs),
     evaluatorPrompt,
     onProgress,
+    onProgressPercent,
   );
 
   return response;

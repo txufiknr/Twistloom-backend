@@ -50,6 +50,13 @@
       "when": 1778298047184,
       "tag": "0006_numerous_metal_master",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778659385294,
+      "tag": "0007_tan_shadowcat",
+      "breakpoints": true
     }
   ]
 }

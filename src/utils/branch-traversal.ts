@@ -735,6 +735,7 @@ export async function reconstructStoryState(
         try {
           const delta = page.stateDelta;
           if (delta) {
+            console.log(`[reconstructStoryState] 🧩 Applying state delta from page ${page.page}`);
             currentState = await retryOperation(
               async () => applyStateDelta(currentState, delta),
               DELTA_APPLICATION_MAX_RETRIES,

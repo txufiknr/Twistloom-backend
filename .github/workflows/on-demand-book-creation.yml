@@ -1,0 +1,112 @@
+name: On-Demand Book Creation
+
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:
+        description: 'Book ID (UUID v7)'
+        required: true
+        type: string
+      user_id:
+        description: 'User ID who requested the book'
+        required: true
+        type: string
+      theme:
+        description: 'Story theme'
+        required: true
+        type: string
+      mc_candidate_name:
+        description: 'Main character name (optional)'
+        required: false
+        type: string
+      mc_candidate_age:
+        description: 'Main character age (optional)'
+        required: false
+        type: number
+      mc_candidate_gender:
+        description: 'Main character gender (optional)'
+        required: false
+        type: string
+      mc_candidate_bio:
+        description: 'Main character bio (optional)'
+        required: false
+        type: string
+      generate_cover_image:
+        description: 'Whether to generate cover image'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  create-book:
+    name: Create Book
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: |
+          echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+            
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        
+      - name: Build project
+        run: pnpm build
+        
+      - name: Verify build
+        run: test -f dist/cron/on-demand-book-creation.js
+        
+      - name: Run on-demand book creation
+        run: node dist/cron/on-demand-book-creation.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
+          IMAGEKIT_API_KEY_PRIVATE: ${{ secrets.IMAGEKIT_API_KEY_PRIVATE }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
+          # AI provider credentials
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NODE_ENV: production
+          # Workflow inputs
+          BOOK_ID: ${{ github.event.inputs.book_id }}
+          USER_ID: ${{ github.event.inputs.user_id }}
+          THEME: ${{ github.event.inputs.theme }}
+          MC_CANDIDATE_NAME: ${{ github.event.inputs.mc_candidate_name }}
+          MC_CANDIDATE_AGE: ${{ github.event.inputs.mc_candidate_age }}
+          MC_CANDIDATE_GENDER: ${{ github.event.inputs.mc_candidate_gender }}
+          MC_CANDIDATE_BIO: ${{ github.event.inputs.mc_candidate_bio }}
+          GENERATE_COVER_IMAGE: ${{ github.event.inputs.generate_cover_image }}
+        timeout-minutes: 45

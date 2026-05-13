@@ -3,8 +3,10 @@ import type { PlaceMood, PlaceType } from "./places.js";
 import type { StoryPage, StoryState } from "./story.js";
 import type { DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
+import type { Request } from "express";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
+export type BookGenerationStatus = 'pending' | 'generating' | 'completed' | 'failed';
 
 /**
  * Book statistics for display
@@ -84,7 +86,6 @@ export interface EnrichedBookData {
   language: string | null;
   topPick: Date | null;
   isOriginal: boolean;
-  // branchesCount?: number;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
@@ -151,6 +152,12 @@ export type InitializeBookParams = {
   generateCoverImage?: boolean;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal?: boolean;
+  /** Express request object for activity log */
+  req?: Request;
+  /** Optional: Update existing book by ID instead of inserting new (for async book creation) */
+  bookId?: string;
+  /** Optional: Callback to report generation progress */
+  onProgress?: (percentage: number) => Promise<void>;
 };
 
 /**
@@ -203,4 +210,18 @@ export type BookPageVisit = {
   nthVisit: number;
   visitorPercentage: number;
   readerUserId?: string;
+}
+
+/**
+ * Book creation status for polling endpoint
+ */
+export interface BookCreationStatus {
+  bookId: string;
+  status: BookStatus; // Publication state (active, archived, draft)
+  generationStatus: BookGenerationStatus; // Generation tracking (pending, generating, completed, failed)
+  progress?: number; // 0-100
+  currentStep?: string;
+  error?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
