@@ -16,7 +16,7 @@ import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../type
 import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import type { Book, BookCreationResponse, BookGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationProgress, BookGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { books } from "../db/schema.js";
@@ -35,6 +35,7 @@ import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
+import { updateBookGenerationStatus } from "../services/book-creation.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2249,10 +2250,6 @@ ${getEndingArchetypesText()}`;
  * The function provides a complete story foundation with proper database
  * relationships and type-safe operations throughout the pipeline.
  * 
- * @todo
- * should make it accept `tx` param for atomicity, but not needed for now
- * since the async book generation (current primary approach) creates the draft book upfront
- * 
  * @param params.userId - The user's unique identifier for ownership and session
  * @param params.theme - User's desired story theme or concept
  * @param params.mcCandidate - Partial character profile to customize the main character
@@ -2276,6 +2273,7 @@ export async function initializeBook(
   params: InitializeBookParams,
   onProgress?: ProgressCallback
 ): Promise<InitializeBookResult> {
+  const client = params.tx ?? dbWrite;
   const {
     userId,
     theme,
@@ -2284,36 +2282,24 @@ export async function initializeBook(
     isOriginal = false,
     req,
     bookId: draftBookId,
-    onProgressPercent
   } = params;
 
-  try {
-    const client = params.tx ?? dbWrite;
-
-    // Helper to persist progress to DB (if updating a draft) and call percent callback
-    // TODO: onProgress masukin setProgress aja
-    async function setProgress(percentage: number, step?: BookGenerationStep) {
-      // const percentage = BOOK_GENERATION_PERCENTAGES[step ?? 'initializing'];
-      try {
-        await onProgressPercent?.(percentage);
-      } catch {
-        // ignore callback errors
-      }
-      if (draftBookId) {
-        try {
-          await client.update(books).set({
-            generationProgress: percentage,
-            generationStep: step ?? null
-          }).where(eq(books.id, draftBookId));
-        } catch (e) {
-          console.warn('[initializeBook] ⚠️ Failed to persist progress:', getErrorMessage(e));
-        }
-      }
+  // Helper to persist book generation progress to DB
+  // async function onGenerationProgress(step: BookGenerationStep) {
+  async function onGenerationProgress(progress: string | BookGenerationProgress) {
+    if (!draftBookId) return;
+    try {
+      const progressValues: BookGenerationProgress = typeof progress === 'string' ? { step: progress as BookGenerationStep } : progress;
+      void updateBookGenerationStatus({ bookId: draftBookId, ...progressValues });
+    } catch (e) {
+      console.warn('[initializeBook] ⚠️ Failed to persist generation status:', getErrorMessage(e));
     }
+  }
 
+  try {
     // Emit book initialization start event and persist initial progress
     await onProgress?.({ type: 'book_initialization_start' });
-    await setProgress(10, 'initializing');
+    await onGenerationProgress('initializing');
 
     // 1. Create AI prompt for book creation
     const prompt = createBookCreationPrompt(theme, mcCandidate);
@@ -2337,7 +2323,7 @@ export async function initializeBook(
       thinkThenOutput: firstBookReviewChecklist,
       // STEP 3: EVALUATING (inside `executePromptForJSON`)
       evaluatorPrompt: buildFirstBookEvaluatorPrompt(theme, mcCandidate),
-    }, onProgress, setProgress);
+    }, onProgress, onGenerationProgress);
 
     // 3. Validate AI response
     if (!response.result) {
@@ -2366,7 +2352,7 @@ export async function initializeBook(
 
     // 4. Persist book to database with character profile
     await onProgress?.({ type: 'finalizing_start' });
-    await setProgress(80, 'finalizing');
+    await onGenerationProgress('finalizing');
     
     let book: Book;
     let bookId: string;
@@ -2502,7 +2488,6 @@ export async function initializeBook(
     }
 
     // 10. Invalidate user caches
-    await setProgress(90, 'cleaning-up');
     await invalidateUserBooksCache(userId);
     await invalidateUserProfileCache(userId);
     
@@ -2526,7 +2511,7 @@ export async function initializeBook(
     });
 
     // 13. Return complete book setup
-    await setProgress(100, 'completed');
+    await onGenerationProgress('completed');
     return {
       book,
       firstPage,
@@ -2535,21 +2520,8 @@ export async function initializeBook(
 
   } catch (error) {
     console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error: getErrorMessage(error) });
-    // Attempt to mark draft book as failed if present
-    try {
-      if (params.bookId) {
-        const client = params.tx ?? dbWrite;
-        await client.update(books).set({
-          generationStatus: 'failed',
-          generationError: getErrorMessage(error),
-          generationCompletedAt: new Date(),
-          generationProgress: 0,
-          generationStep: null
-        }).where(eq(books.id, params.bookId));
-      }
-    } catch (e) {
-      console.warn('[initializeBook] ⚠️ Failed to set book failure status:', getErrorMessage(e));
-    }
+    // Attempt to mark book generation status as failed
+    await onGenerationProgress({ status: 'failed', error: getErrorMessage(error) });
     throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
   }
 }
@@ -2798,12 +2770,13 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  * 
  * @param params - Parameters for the prompt
  * @param onProgress - Optional progress callback for SSE events
+ * @param onGenerationProgress - Optional callback to update generation progress in DB
  * @returns AI response with JSON output
  */
 export async function executePromptForJSON<T extends Record<string, unknown>>(
   params: AIPromptForJsonParams<T>,
   onProgress?: ProgressCallback,
-  onProgressPercent?: (percentage: number, step?: BookGenerationStep) => Promise<void>,
+  onGenerationProgress?: (step: BookGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
@@ -2830,7 +2803,7 @@ Do NOT mention this checklist.` : '';
     createAIOptionsWithSchema<T>(configs),
     evaluatorPrompt,
     onProgress,
-    onProgressPercent,
+    onGenerationProgress,
   );
 
   return response;

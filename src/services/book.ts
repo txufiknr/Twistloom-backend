@@ -357,7 +357,7 @@ export async function getBookFromDB(bookId: string, options: {
 } = {}): Promise<DBBook | null> {
   const { client = dbRead } = options;
 
-  // TODO: need to implement LRU cache?
+  // TODO: need to implement LRU cache (only for 'active' book)?
   const result = await client
     .select()
     .from(books)
@@ -1002,7 +1002,7 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
     
     // Generate images without writing to disk
     const { buffers } = await geminiGenerateImage(fullPrompt, {
-      numberOfImages: total || 1, // TODO: 3 for premium users
+      numberOfImages: total || 1, // TODO: 3 selectable images for premium users
       aspectRatio: "3:4",
     });
     

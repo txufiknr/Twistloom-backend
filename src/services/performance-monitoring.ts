@@ -213,7 +213,6 @@ function checkPerformanceTargets(metric: PerformanceMetric): void {
   switch (metric.type) {
     case 'reconstruction':
       if (metric.durationMs > targets.RECONSTRUCTION_TIME_MS) {
-        // TODO: do we need to increase targets.RECONSTRUCTION_TIME_MS?
         console.warn(`[Performance] ⚠️ Slow reconstruction: ${metric.durationMs}ms (target: ${targets.RECONSTRUCTION_TIME_MS}ms) for user ${metric.userId}, operation: ${metric.operation}`);
       }
       break;

@@ -767,8 +767,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   options: AIPromptOptions = {},
   evaluatorPrompt?: string,
   onProgress?: ProgressCallback,
-  // TODO: ganti param pake step aja (refer BOOK_GENERATION_PERCENTAGES)
-  onProgressPercent?: (percentage: number, step?: BookGenerationStep) => Promise<void>,
+  onGenerationProgress?: (step: BookGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
@@ -789,7 +788,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   if (providers.length === 0) return { provider: 'none', output: '' };
 
   await onProgress?.({ type: 'ai_generation_start' });
-  await onProgressPercent?.(20, 'generating');
+  await onGenerationProgress?.('generating');
 
   // Try each provider in order
   for (const provider of providers) {
@@ -829,7 +828,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     }
 
     await onProgress?.({ type: 'ai_generation_complete' });
-    await onProgressPercent?.(60, 'evaluating');
+    await onGenerationProgress?.('evaluating');
 
     if (result?.output) {
       try {
@@ -872,7 +871,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
           // Emit evaluation complete event if evaluatorPrompt was provided
           await onProgress?.({ type: 'ai_evaluation_complete' });
-          await onProgressPercent?.(70, 'reviewing');
+          await onGenerationProgress?.('reviewing');
 
           if (evaluationResult) {
             const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;

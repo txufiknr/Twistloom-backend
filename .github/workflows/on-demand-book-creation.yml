@@ -7,35 +7,6 @@ on:
         description: 'Book ID (UUID v7)'
         required: true
         type: string
-      user_id:
-        description: 'User ID who requested the book'
-        required: true
-        type: string
-      theme:
-        description: 'Story theme'
-        required: true
-        type: string
-      mc_candidate_name:
-        description: 'Main character name (optional)'
-        required: false
-        type: string
-      mc_candidate_age:
-        description: 'Main character age (optional)'
-        required: false
-        type: number
-      mc_candidate_gender:
-        description: 'Main character gender (optional)'
-        required: false
-        type: string
-      mc_candidate_bio:
-        description: 'Main character bio (optional)'
-        required: false
-        type: string
-      generate_cover_image:
-        description: 'Whether to generate cover image'
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   create-book:
@@ -100,15 +71,8 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NODE_ENV: production
-          # Workflow inputs
+          # Workflow input
           BOOK_ID: ${{ github.event.inputs.book_id }}
-          USER_ID: ${{ github.event.inputs.user_id }}
-          THEME: ${{ github.event.inputs.theme }}
-          MC_CANDIDATE_NAME: ${{ github.event.inputs.mc_candidate_name }}
-          MC_CANDIDATE_AGE: ${{ github.event.inputs.mc_candidate_age }}
-          MC_CANDIDATE_GENDER: ${{ github.event.inputs.mc_candidate_gender }}
-          MC_CANDIDATE_BIO: ${{ github.event.inputs.mc_candidate_bio }}
-          GENERATE_COVER_IMAGE: ${{ github.event.inputs.generate_cover_image }}
           # Optional backend webhook & internal secret for notifying completion/progress
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           WORKFLOW_WEBHOOK_URL: ${{ secrets.WORKFLOW_WEBHOOK_URL }}

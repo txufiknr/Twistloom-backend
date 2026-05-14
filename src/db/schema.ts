@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
 import type { Gender } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
-import type { StoryMC } from "../types/character.js";
+import type { StoryMC, StoryMCCandidate } from "../types/character.js";
 import type { BookGenerationStatus, BookGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -289,13 +289,6 @@ export const books = pgTable(
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
-    // Async book creation tracking
-    generationStatus: text("generation_status").$type<BookGenerationStatus | null>().default('pending'),
-    generationProgress: integer("generation_progress").default(0), // 0-100
-    generationStep: text("generation_step").$type<BookGenerationStep | null>(),
-    generationError: text("generation_error"),
-    generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
-    generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },
@@ -314,8 +307,6 @@ export const books = pgTable(
     index("books_user_idx").on(t.userId),
     // Index for status filtering
     index("books_status_idx").on(t.status),
-    // Index for generation status filtering (async book creation)
-    index("books_generation_status_idx").on(t.generationStatus),
     // Index for language filtering
     index("books_language_idx").on(t.language),
     // GIN index for keywords JSONB array (enables efficient array operations)
@@ -326,6 +317,62 @@ export const books = pgTable(
     index("books_hook_gin_idx").using("gin", sql`hook gin_trgm_ops`),
     // GIN index for summary with pg_trgm (enables efficient ILIKE search with leading wildcards)
     index("books_summary_gin_idx").using("gin", sql`summary gin_trgm_ops`),
+  ]
+);
+
+/**
+ * Async book generations tracking table
+ * @summary Track async book creation generation status and parameters
+ * @example
+ * {
+ *   "id": "gen123",
+ *   "book_id": "book456",
+ *   "user_id": "user789",
+ *   "theme": "psychological thriller",
+ *   "mc_candidate": {
+ *     "name": "Sarah Chen",
+ *     "age": 28,
+ *     "gender": "female",
+ *     "bio": "A detective with a troubled past"
+ *   },
+ *   "generate_cover": true,
+ *   "generation_status": "in_progress",
+ *   "generation_step": "generating",
+ *   "generation_progress": 50,
+ *   "generation_error": null,
+ *   "generation_started_at": "2023-01-01T00:00:00.000Z",
+ *   "generation_completed_at": null,
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const bookGenerations = pgTable(
+  "book_generations",
+  {
+    bookId: bookId("cascade").primaryKey(),
+    userId: userId(),
+    theme: text("theme"),
+    mcCandidate: jsonb("mc_candidate").$type<StoryMCCandidate>(),
+    generateCoverImage: boolean("generate_cover_image").notNull().default(false),
+    generationStatus: text("generation_status").$type<BookGenerationStatus | null>().default('pending'),
+    generationStep: text("generation_step").$type<BookGenerationStep | null>(),
+    // generationProgress: integer("generation_progress").default(0), // 0-100
+    generationError: text("generation_error"),
+    generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
+    generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
+    isRefunded: timestamp("is_refunded"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for book generation queries
+    index("book_generations_book_idx").on(t.bookId),
+    // Index for user queries (e.g., fetching user's pending generations)
+    index("book_generations_user_idx").on(t.userId),
+    // Index for generation status filtering
+    index("book_generations_status_idx").on(t.generationStatus),
+    // Index for active generations
+    index("book_generations_active_idx").on(t.generationStatus).where(sql`${t.generationStatus} = 'in_progress'`),
   ]
 );
 

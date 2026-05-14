@@ -6,122 +6,100 @@
  * 
  * Environment Variables:
  * - BOOK_ID: UUID v7 of the book to create
- * - USER_ID: User ID who requested the book
- * - THEME: Story theme
- * - MC_CANDIDATE_*: Optional main character details
- * - GENERATE_COVER_IMAGE: Whether to generate cover image
+ * 
+ * The script retrieves theme, mcCandidate, generateCoverImage, and userId
+ * from the bookGenerations table using the provided bookId.
  */
 
 import { initializeBook } from '../utils/prompt.js';
-import { dbWrite } from '../db/client.js';
-import { books } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
 import { getErrorMessage } from '../utils/error.js';
-import { cleanupObject } from '../utils/parser.js';
-import type { StoryMCCandidate } from '../types/character.js';
-import type { BookGenerationPayload } from '../types/book.js';
+import { bookGenerations } from '../db/schema.js';
+import { dbRead } from '../db/client.js';
+import { eq } from 'drizzle-orm';
+import { updateBookGenerationStatus } from '../services/book-creation.js';
 
-async function notifyWorkflowWebhook(payload: BookGenerationPayload) {
-  try {
-    const webhookUrl = process.env.WORKFLOW_WEBHOOK_URL || process.env.BACKEND_URL && `${process.env.BACKEND_URL.replace(/\/$/, '')}/api/books/workflow-webhook`;
-    const secret = process.env.INTERNAL_SECRET;
-    if (!webhookUrl || !secret) return;
+// async function notifyWorkflowWebhook(payload: BookGenerationPayload) {
+//   try {
+//     const webhookUrl = process.env.WORKFLOW_WEBHOOK_URL || process.env.BACKEND_URL && `${process.env.BACKEND_URL.replace(/\/$/, '')}/api/books/workflow-webhook`;
+//     const secret = process.env.INTERNAL_SECRET;
+//     if (!webhookUrl || !secret) return;
 
-    await fetch(webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-internal-secret': secret,
-      },
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    console.warn('[creation] ⚠️ Failed to notify workflow webhook:', err instanceof Error ? err.message : String(err));
-  }
-}
+//     await fetch(webhookUrl, {
+//       method: 'POST',
+//       headers: {
+//         'Content-Type': 'application/json',
+//         'x-internal-secret': secret,
+//       },
+//       body: JSON.stringify(payload),
+//     });
+//   } catch (err) {
+//     console.warn('[creation] ⚠️ Failed to notify workflow webhook:', getErrorMessage(err));
+//   }
+// }
 
 async function main() {
   const bookId = process.env.BOOK_ID;
-  const userId = process.env.USER_ID;
-  const theme = process.env.THEME;
   
-  if (!bookId || !userId || !theme) {
-    throw new Error('Missing required environment variables: BOOK_ID, USER_ID, THEME');
+  if (!bookId) {
+    throw new Error('Missing required environment variable: BOOK_ID');
   }
 
-  console.log('[creation] ⏰ Starting...', { bookId, userId, theme });
+  console.log('[creation] ⏰ Prepare to write the book:', bookId);
 
   try {
-    // Update book status to 'generating'
-    await dbWrite.update(books)
-      .set({
-        generationStatus: 'generating',
-        // generationProgress: 10,
-        generationStartedAt: new Date(),
+    // Fetch book generation data from database
+    const generationData = await dbRead
+      .select({
+        userId: bookGenerations.userId,
+        theme: bookGenerations.theme,
+        mcCandidate: bookGenerations.mcCandidate,
+        generateCoverImage: bookGenerations.generateCoverImage,
       })
-      .where(eq(books.id, bookId));
+      .from(bookGenerations)
+      .where(eq(bookGenerations.bookId, bookId))
+      .limit(1);
 
-    console.log('[creation] ✒️ Status updated to generating');
+    if (!generationData.length) {
+      throw new Error(`Book generation record not found for bookId: ${bookId}`);
+    }
 
-    // Parse mcCandidate from environment variables
-    const mcCandidate: StoryMCCandidate = cleanupObject({
-      name: process.env.MC_CANDIDATE_NAME || undefined,
-      age: process.env.MC_CANDIDATE_AGE ? parseInt(process.env.MC_CANDIDATE_AGE) : undefined,
-      gender: process.env.MC_CANDIDATE_GENDER || undefined,
-      bio: process.env.MC_CANDIDATE_BIO || undefined,
+    const { userId, theme, mcCandidate, generateCoverImage } = generationData[0];
+
+    if (!userId || !theme) {
+      throw new Error(`Missing required fields in bookGenerations: userId=${userId}, theme=${theme}`);
+    }
+
+    console.log('[creation] ✒️ Writing the book...', { 
+      bookId, 
+      userId, 
+      theme, 
+      mcCandidate,
+      generateCoverImage 
     });
 
-    const generateCoverImage = process.env.GENERATE_COVER_IMAGE === 'true';
+    // Update book generation step to 'initializing'
+    void updateBookGenerationStatus({ bookId, step: 'initializing' });
 
     // Initialize book (this is the long-running AI generation)
     // Pass bookId to update existing draft instead of creating duplicate
     const result = await initializeBook({
       userId,
       theme,
-      mcCandidate: Object.keys(mcCandidate).length > 0 ? mcCandidate : undefined,
+      mcCandidate: mcCandidate || undefined,
       generateCoverImage,
       bookId, // IMPORTANT: Pass bookId to update existing draft
-      // Provide a lightweight percentage callback for logging and webhook notifications —
-      // `initializeBook` persists progress to DB for drafts.
-      onProgressPercent: async (percentage: number) => {
-        console.log(`[creation] 🧩 Progress: ${percentage}%`);
-        // Debounce webhook notifications to reduce requests: send on multiples of 10
-        if (percentage % 10 === 0) {
-          await notifyWorkflowWebhook({ bookId, status: 'generating', progress: percentage });
-        }
-      }
     });
 
     console.log('[creation] ✅ Book initialized successfully:', result);
 
     // Update book generation status (content already updated by initializeBook)
-    await dbWrite.update(books)
-      .set({
-        generationStatus: 'completed',
-        generationProgress: 100,
-        generationCompletedAt: new Date(),
-      })
-      .where(eq(books.id, bookId));
-
-    // Notify external webhook (if configured)
-    await notifyWorkflowWebhook({ bookId, status: 'completed', progress: 100 });
+    void updateBookGenerationStatus({ bookId, step: 'completed' });
 
     console.log('[creation] ✅ Book completed successfully');
   } catch (error) {
-    console.error('[creation] ❌ Error:', getErrorMessage(error));
-    
-    // Update book status to 'failed'
-    await dbWrite.update(books)
-      .set({
-        generationStatus: 'failed',
-        generationError: getErrorMessage(error),
-        generationCompletedAt: new Date(),
-      })
-      .where(eq(books.id, bookId));
-
-    // Notify external webhook about failure
-    await notifyWorkflowWebhook({ bookId, status: 'failed', error: getErrorMessage(error) });
-
+    const errorMessage = getErrorMessage(error);
+    console.error('[creation] ❌ Book generation error:', errorMessage);
+    void updateBookGenerationStatus({ bookId, status: 'failed', error: errorMessage });
     throw error;
   }
 }

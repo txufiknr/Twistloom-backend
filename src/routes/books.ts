@@ -44,11 +44,11 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments } from "../db/schema.js";
+import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
+import { getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -58,19 +58,20 @@ import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBoo
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
-import type { BookGenerationPayload, BookGenerationStatus, BookSortOption, EnrichedBookData } from "../types/book.js";
+import type { BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { lastUpdatedFilterOptions } from "../types/book.js";
-import type { StoryMC } from "../types/character.js";
-import { createBookCore, createBookValidate, handleBookCreationError } from "../services/book-creation.js";
+import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, refundCredits } from "../services/credits.js";
 import { logUserActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
-import type { DBNewBook, DBPage } from "../types/schema.js";
+import type { DBNewBook, DBNewBookGeneration, DBPage } from "../types/schema.js";
 import type { ActionProgressEvent } from "../types/candidates.js";
 import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
+import { cleanupObject } from "../utils/parser.js";
+import type { StoryMC } from "../types/character.js";
 
 const router = Router();
 
@@ -269,7 +270,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * Internal webhook for GitHub Actions workflow to notify completion/failure.
  * Secured by `INTERNAL_SECRET` header: `x-internal-secret`.
  *
- * Body: { bookId: string, status: 'completed'|'failed'|'generating'|'pending', error?: string, progress?: number }
+ * Body: { bookId: string, status?: BookGenerationStatus, error?: string, step: BookGenerationStep }
  */
 router.post('/workflow-webhook', async (req: Request, res: Response) => {
   try {
@@ -278,28 +279,13 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
       return handleForbiddenError(res, 'Invalid or missing internal secret');
     }
 
-    const { bookId, status, error: generationError, progress } = req.body as BookGenerationPayload;
-    if (!bookId || !status) {
-      return handleValidationError(res, 'Missing required fields: bookId, status');
-    }
+    const payload = req.body as BookGenerationPayload;
+    await updateBookGenerationStatus(payload);
 
-    const validStatuses: BookGenerationStatus[] = ['pending', 'generating', 'completed', 'failed'];
-    if (!validStatuses.includes(status)) {
-      return handleValidationError(res, 'Invalid status');
-    }
-
-    const update: Partial<DBNewBook> = { generationStatus: status };
-    if (typeof progress === 'number') update.generationProgress = Math.max(0, Math.min(100, Math.floor(progress)));
-    if (generationError) update.generationError = String(generationError);
-    if (status === 'completed' || status === 'failed') update.generationCompletedAt = new Date();
-    if (status === 'completed') update.status = 'active';
-
-    await dbWrite.update(books).set(update).where(eq(books.id, bookId));
-
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('[POST /api/books/workflow-webhook] Error:', err);
-    return res.status(500).json({ error: 'Internal error' });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[POST /api/books/workflow-webhook] ❌ Error:', error);
+    handleBookCreationError(res, error, "Failed to process workflow webhook");
   }
 });
 
@@ -470,7 +456,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       age: 0,
       gender: '',
       bio: '',
-      ...mcCandidate,
+      ...cleanupObject(mcCandidate),
     };
 
     const initialBookData: DBNewBook = {
@@ -484,27 +470,29 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       totalPages: 0,
       mc,
       status: 'draft', // Will be updated to 'active' when complete
-      generationStatus: 'pending',
-      generationProgress: 0,
-      generationStep: null,
     };
 
-    // STEP 4: CREATE DRAFT BOOK RECORD
-    // Create draft book record before credit consumption
-    // This allows initializeBook to update the existing book instead of creating a duplicate
-    await dbWrite.insert(books).values(initialBookData);
+    const initialBookGenerationData: DBNewBookGeneration = {
+      bookId,
+      userId,
+      theme,
+      mcCandidate,
+      generateCoverImage: generateCoverImage || false,
+      generationStatus: 'pending',
+    };
 
-    // STEP 5: CONSUME CREDITS IN TRANSACTION
+    // STEP 4: CONSUME CREDITS IN TRANSACTION
     // Use unified transaction flow for atomic credit consumption
-    // Returns correlation ID for idempotent refunds if needed
+    // Returns correlation ID for idempotent refunds
     const { correlationId } = await executeWithCredits(
       userId,
       "STORY_GENERATION",
-      async (_tx) => {
-        // No operation needed - book already created
+      async (tx) => {
+        // STEP 5: CREATE DRAFT BOOK RECORD
         // Credits consumed for the book creation operation
         // The actual book update happens in the cron job via initializeBook
-        // await tx.insert(books).values(initialBookData);
+        await tx.insert(books).values(initialBookData);
+        await tx.insert(bookGenerations).values(initialBookGenerationData);
       },
       {
         context: "book_creation_async",
@@ -512,12 +500,10 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       }
     );
 
-    // STEP 5: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
+    // STEP 6: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
     const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
     if (!githubToken) {
-      return res.status(500).json({
-        error: "GitHub workflow token not configured"
-      });
+      return handleApiError(res, "GitHub workflow token not configured");
     }
 
     // Trigger workflow without awaiting
@@ -533,28 +519,17 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
         ref: GITHUB_DEFAULT_BRANCH,
         inputs: {
           book_id: bookId,
-          user_id: userId,
-          theme: theme.trim(),
-          ...(mcCandidate && {
-            mc_candidate_name: mcCandidate.name,
-            mc_candidate_age: mcCandidate.age,
-            mc_candidate_gender: mcCandidate.gender,
-            mc_candidate_bio: mcCandidate.bio,
-          }),
-          generate_cover_image: generateCoverImage || false,
         }
       })
     }).catch(async (error) => {
       console.error('[POST /api/books/async] ❌ Failed to trigger workflow:', error);
       
       // Update book status to failed
-      await dbWrite.update(books)
-        .set({ 
-          generationStatus: 'failed',
-          generationError: 'Failed to trigger GitHub workflow',
-          generationCompletedAt: new Date()
-        })
-        .where(eq(books.id, bookId));
+      void updateBookGenerationStatus({
+        bookId,
+        status: 'failed',
+        error: 'Failed to trigger GitHub workflow',
+      });
       
       // Refund credits idempotently using correlation ID
       // This prevents duplicate refunds if the error handler runs multiple times
@@ -564,6 +539,12 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
           metadata: { bookId, theme: theme.trim() },
           correlationId // Use correlation ID from executeWithCredits for idempotency
         });
+        
+        // Mark book as refunded in bookGenerations table
+        await dbWrite.update(bookGenerations)
+          .set({ isRefunded: new Date() })
+          .where(eq(bookGenerations.bookId, bookId));
+        
         console.log('[POST /api/books/async] ✅ Credits refunded due to workflow trigger failure');
       } catch (refundError) {
         // All retry attempts failed, log for manual review
@@ -655,48 +636,90 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
       return handleValidationError(res, "Invalid book ID format");
     }
 
-    // Fetch book from database
-    // Note: For status polling, we accept potential read replica staleness
-    // TODO: maybe we could make this reliable using retry with backoff?
-    const bookData = await getBookFromDB(bookId) ?? await getBookFromDB(bookId, { client: dbWrite });
-    if (!bookData) {
+    // Fetch book and generation data from both tables
+    const bookData = await dbRead
+      .select({
+        // From books table
+        bookId: books.id,
+        bookUserId: books.userId,
+        bookStatus: books.status,
+        bookCreatedAt: books.createdAt,
+        bookUpdatedAt: books.updatedAt,
+        // From bookGenerations table
+        generationStatus: bookGenerations.generationStatus,
+        generationStep: bookGenerations.generationStep,
+        generationError: bookGenerations.generationError,
+        generationStartedAt: bookGenerations.generationStartedAt,
+        generationCompletedAt: bookGenerations.generationCompletedAt,
+      })
+      .from(books)
+      .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    if (!bookData.length) {
       return handleNotFoundError(res, "Book not found");
     }
 
+    const data = bookData[0];
+
     // Verify user owns the book
-    if (bookData.userId !== userId) {
+    if (data.bookUserId !== userId) {
       return handleForbiddenError(res, "You can only view status for your own books");
     }
 
     // Map generation status to current step description
-    let currentStep: string | undefined;
+    let generationStepDescription: string | undefined;
     
-    switch (bookData.generationStatus) {
+    switch (data.generationStatus) {
       case 'pending':
-        currentStep = 'Waiting for workflow to start';
+        generationStepDescription = 'Waiting for workflow to start';
         break;
-      case 'generating':
-        currentStep = 'AI generation in progress';
+      case 'in_progress':
+        generationStepDescription = `AI generation in progress: ${data.generationStep || 'initializing'}`;
         break;
       case 'completed':
-        currentStep = undefined;
+        generationStepDescription = 'Book generation completed';
         break;
       case 'failed':
-        currentStep = 'Generation failed';
+        generationStepDescription = 'Book generation failed';
         break;
       default:
-        currentStep = undefined;
+        generationStepDescription = undefined;
     }
 
+    // // Calculate progress based on generation step
+    // let progress = 0;
+    // if (data.generationStatus === 'completed') {
+    //   progress = 100;
+    // } else if (data.generationStatus === 'failed') {
+    //   progress = 0;
+    // } else if (data.generationStatus === 'in_progress' && data.generationStep) {
+    //   // Estimate progress based on step
+    //   const stepProgress: Record<BookGenerationStep, number> = {
+    //     initializing: 10,
+    //     generating: 50,
+    //     evaluating: 70,
+    //     reviewing: 85,
+    //     finalizing: 95,
+    //     completed: 100,
+    //   };
+    //   progress = stepProgress[data.generationStep] || 0;
+    // }
+
     res.json({
-      bookId: bookData.id,
-      status: bookData.status || 'draft',
-      generationStatus: bookData.generationStatus,
-      progress: bookData.generationProgress || 0,
-      currentStep,
-      error: bookData.generationError || undefined,
-      createdAt: bookData.createdAt,
-      updatedAt: bookData.updatedAt,
+      bookId: data.bookId,
+      status: data.bookStatus || 'draft',
+      generationStatus: data.generationStatus,
+      generationStep: data.generationStep,
+      // progress,
+      // currentStep,
+      generationStepDescription,
+      error: data.generationError || undefined,
+      createdAt: data.bookCreatedAt,
+      updatedAt: data.bookUpdatedAt,
+      generationStartedAt: data.generationStartedAt,
+      generationCompletedAt: data.generationCompletedAt,
     });
   } catch (error) {
     console.error('[GET /api/books/:bookId/status] Error:', error);
