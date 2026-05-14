@@ -58,7 +58,7 @@ import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBoo
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
-import type { BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
+import type { BookCreationStatus, BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { lastUpdatedFilterOptions } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, refundCredits } from "../services/credits.js";
@@ -270,7 +270,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
  * Internal webhook for GitHub Actions workflow to notify completion/failure.
  * Secured by `INTERNAL_SECRET` header: `x-internal-secret`.
  *
- * Body: { bookId: string, status?: BookGenerationStatus, error?: string, step: BookGenerationStep }
+ * Body: { bookId: string, status?: BookGenerationStatus, error?: string, step: StoryGenerationStep }
  */
 router.post('/workflow-webhook', async (req: Request, res: Response) => {
   try {
@@ -484,6 +484,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       mcCandidate,
       generateCoverImage: generateCoverImage || false,
       generationStatus: 'pending',
+      generationStep: 'theme_validation',
     };
 
     // STEP 4: CONSUME CREDITS IN TRANSACTION
@@ -697,18 +698,20 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
         generationStepDescription = undefined;
     }
 
-    res.json({
+    const status: BookCreationStatus = {
       bookId: data.bookId,
       status: data.bookStatus || 'draft',
-      generationStatus: data.generationStatus,
-      generationStep: data.generationStep,
+      generationStatus: data.generationStatus || 'pending',
+      generationStep: data.generationStep || 'theme_validation',
       generationStepDescription,
-      error: data.generationError || undefined,
+      error: data.generationError,
       createdAt: data.bookCreatedAt,
       updatedAt: data.bookUpdatedAt,
       generationStartedAt: data.generationStartedAt,
       generationCompletedAt: data.generationCompletedAt,
-    });
+    };
+
+    res.json(status);
   } catch (error) {
     console.error('[GET /api/books/:bookId/status] Error:', error);
     handleApiError(res, "Failed to get book status", error);

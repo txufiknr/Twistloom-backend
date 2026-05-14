@@ -6,7 +6,7 @@
  */
 
 import type { StoryMCCandidate } from '../types/character.js';
-import type { BookGenerationPayload, BookGenerationStatus, BookGenerationStep, InitializeBookResult } from '../types/book.js';
+import type { BookGenerationPayload, BookGenerationStatus, StoryGenerationStep, InitializeBookResult } from '../types/book.js';
 import type { ProgressCallback } from '../types/sse.js';
 import type { ThemeValidationResult } from '../types/theme-validation.js';
 import { validateTheme } from '../utils/theme-validation.js';
@@ -298,7 +298,7 @@ export function handleBookCreationError(res: Response, error: unknown, defaultMe
 async function updateBookGenerationStatusCore(
   bookId: string,
   status?: BookGenerationStatus,
-  step?: BookGenerationStep,
+  step?: StoryGenerationStep,
   error?: string
 ): Promise<void> {
   // 1. Validations
@@ -306,12 +306,16 @@ async function updateBookGenerationStatusCore(
     throw new BookCreationError('Missing required fields: bookId', undefined, 400);
   }
 
-  const validSteps = new Set<BookGenerationStep>(['initializing', 'generating', 'evaluating', 'reviewing', 'finalizing', 'completed']);
+  const validSteps = new Set<StoryGenerationStep>([
+    'theme_validation', 'book_initialization', 'ai_generation', 'ai_evaluation', 'finalizing', 'complete'
+  ]);
   if (step && !validSteps.has(step)) {
     throw new BookCreationError('Invalid step', undefined, 400);
   }
   
-  const validStatuses = new Set<BookGenerationStatus>(['pending', 'in_progress', 'completed', 'failed']);
+  const validStatuses = new Set<BookGenerationStatus>([
+    'pending', 'in_progress', 'completed', 'failed'
+  ]);
   if (status && !validStatuses.has(status)) {
     throw new BookCreationError('Invalid status', undefined, 400);
   }
@@ -329,9 +333,11 @@ async function updateBookGenerationStatusCore(
   }
 
   // Auto-derive status from step for consistency
-  if (step === 'completed') {
+  if (step === 'complete') {
     update.generationStatus = 'completed';
-  } else if (step === 'initializing') {
+  } else if (step === 'theme_validation') {
+    update.generationStatus = 'pending';
+  } else if (step) {
     update.generationStatus = 'in_progress';
   }
 

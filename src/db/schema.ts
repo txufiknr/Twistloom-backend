@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { Gender } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC, StoryMCCandidate } from "../types/character.js";
-import type { BookGenerationStatus, BookGenerationStep, BookStatus } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag } from "../types/story.js";
@@ -355,7 +355,7 @@ export const bookGenerations = pgTable(
     mcCandidate: jsonb("mc_candidate").$type<StoryMCCandidate>(),
     generateCoverImage: boolean("generate_cover_image").notNull().default(false),
     generationStatus: text("generation_status").$type<BookGenerationStatus | null>().default('pending'),
-    generationStep: text("generation_step").$type<BookGenerationStep | null>(),
+    generationStep: text("generation_step").$type<StoryGenerationStep | null>(),
     // generationProgress: integer("generation_progress").default(0), // 0-100
     generationError: text("generation_error"),
     generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),

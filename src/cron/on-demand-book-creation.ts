@@ -78,7 +78,7 @@ async function main() {
     });
 
     // Update book generation step to 'initializing'
-    void updateBookGenerationStatus({ bookId, step: 'initializing' });
+    void updateBookGenerationStatus({ bookId, step: 'book_initialization' });
 
     // Initialize book (this is the long-running AI generation)
     // Pass bookId to update existing draft instead of creating duplicate
@@ -93,7 +93,7 @@ async function main() {
     console.log('[creation] ✅ Book initialized successfully:', result);
 
     // Update book generation status (content already updated by initializeBook)
-    void updateBookGenerationStatus({ bookId, step: 'completed' });
+    void updateBookGenerationStatus({ bookId, step: 'complete' });
 
     console.log('[creation] ✅ Book completed successfully');
   } catch (error) {

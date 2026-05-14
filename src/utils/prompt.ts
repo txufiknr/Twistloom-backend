@@ -16,7 +16,7 @@ import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../type
 import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import type { Book, BookCreationResponse, BookGenerationProgress, BookGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { books } from "../db/schema.js";
@@ -2284,12 +2284,11 @@ export async function initializeBook(
     bookId: draftBookId,
   } = params;
 
-  // Helper to persist book generation progress to DB
-  // async function onGenerationProgress(step: BookGenerationStep) {
-  async function onGenerationProgress(progress: string | BookGenerationProgress) {
+  // Helper to persist book generation progress to DB (fire-and-forget)
+  async function onGenerationProgress(progress: StoryGenerationStep | BookGenerationProgress) {
     if (!draftBookId) return;
     try {
-      const progressValues: BookGenerationProgress = typeof progress === 'string' ? { step: progress as BookGenerationStep } : progress;
+      const progressValues: BookGenerationProgress = typeof progress === 'string' ? { step: progress } : progress;
       void updateBookGenerationStatus({ bookId: draftBookId, ...progressValues });
     } catch (e) {
       console.warn('[initializeBook] ⚠️ Failed to persist generation status:', getErrorMessage(e));
@@ -2299,7 +2298,7 @@ export async function initializeBook(
   try {
     // Emit book initialization start event and persist initial progress
     await onProgress?.({ type: 'book_initialization_start' });
-    await onGenerationProgress('initializing');
+    await onGenerationProgress('book_initialization');
 
     // 1. Create AI prompt for book creation
     const prompt = createBookCreationPrompt(theme, mcCandidate);
@@ -2511,7 +2510,7 @@ export async function initializeBook(
     });
 
     // 13. Return complete book setup
-    await onGenerationProgress('completed');
+    await onGenerationProgress('complete');
     return {
       book,
       firstPage,
@@ -2776,7 +2775,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 export async function executePromptForJSON<T extends Record<string, unknown>>(
   params: AIPromptForJsonParams<T>,
   onProgress?: ProgressCallback,
-  onGenerationProgress?: (step: BookGenerationStep) => Promise<void>,
+  onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
   const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;

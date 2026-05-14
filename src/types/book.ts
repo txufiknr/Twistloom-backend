@@ -8,14 +8,31 @@ import type { DBTransaction } from "../db/client.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
-export type BookGenerationStep = 'initializing' | 'generating' | 'evaluating' | 'reviewing' | 'finalizing' | 'completed';
+export type StoryGenerationStep = 'theme_validation' | 'book_initialization' | 'ai_generation' | 'ai_evaluation' | 'finalizing' | 'complete';
+
 export type BookGenerationPayload = {
   bookId: string;
-  step?: BookGenerationStep;
+  step?: StoryGenerationStep;
   status?: BookGenerationStatus;
   error?: string;
 };
 export type BookGenerationProgress = Omit<BookGenerationPayload, 'bookId'>;
+
+/**
+ * Book creation status for polling endpoint
+ */
+export interface BookCreationStatus {
+  bookId: string;
+  status: BookStatus; // Publication state (active, archived, draft)
+  generationStatus: BookGenerationStatus; // Generation tracking (pending, in_progress, completed, failed)
+  generationStep: StoryGenerationStep;
+  generationStepDescription?: string;
+  error?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  generationStartedAt?: Date | null;
+  generationCompletedAt?: Date | null;
+}
 
 /**
  * Book statistics for display
@@ -219,18 +236,4 @@ export type BookPageVisit = {
   nthVisit: number;
   visitorPercentage: number;
   readerUserId?: string;
-}
-
-/**
- * Book creation status for polling endpoint
- */
-export interface BookCreationStatus {
-  bookId: string;
-  status: BookStatus; // Publication state (active, archived, draft)
-  generationStatus: BookGenerationStatus; // Generation tracking (pending, generating, completed, failed)
-  progress?: number; // 0-100
-  currentStep?: string;
-  error?: string;
-  createdAt: Date;
-  updatedAt: Date;
 }
