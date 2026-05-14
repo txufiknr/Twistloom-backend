@@ -443,6 +443,11 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
+    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
+
+    if (!githubToken) {
+      return handleApiError(res, "GitHub workflow token not configured");
+    }
 
     // STEP 1: VALIDATE THEME
     await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
@@ -501,12 +506,6 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
     );
 
     // STEP 6: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
-    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
-    if (!githubToken) {
-      return handleApiError(res, "GitHub workflow token not configured");
-    }
-
-    // Trigger workflow without awaiting
     fetch(`https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/on-demand-book-creation.yml/dispatches`, {
       method: 'POST',
       headers: {
@@ -593,34 +592,44 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
  * 
  * @param bookId - Book ID (UUID v7)
  * 
- * @returns BookCreationStatus with current status and progress
+ * @returns BookCreationStatus with current status and generation step
  * 
  * @example
  * GET /api/books/01912345-6789-1234-5678-123456789012/status
  * 
- * Response (200):
+ * Response (200) - In Progress:
  * {
  *   "bookId": "01912345-6789-1234-5678-123456789012",
- *   "status": "generating",
- *   "progress": 45,
- *   "currentStep": "AI generation in progress",
+ *   "status": "draft",
+ *   "generationStatus": "in_progress",
+ *   "generationStep": "generating",
+ *   "generationStepDescription": "AI generation in progress: generating",
  *   "createdAt": "2026-05-12T10:00:00.000Z",
- *   "updatedAt": "2026-05-12T10:02:30.000Z"
+ *   "updatedAt": "2026-05-12T10:02:30.000Z",
+ *   "generationStartedAt": "2026-05-12T10:00:05.000Z",
+ *   "generationCompletedAt": null
  * }
  * 
  * Response (200) - Complete:
  * {
  *   "bookId": "01912345-6789-1234-5678-123456789012",
  *   "status": "active",
- *   "progress": 100,
+ *   "generationStatus": "completed",
+ *   "generationStep": "completed",
+ *   "generationStepDescription": "Book generation completed",
  *   "createdAt": "2026-05-12T10:00:00.000Z",
- *   "updatedAt": "2026-05-12T10:05:00.000Z"
+ *   "updatedAt": "2026-05-12T10:05:00.000Z",
+ *   "generationStartedAt": "2026-05-12T10:00:05.000Z",
+ *   "generationCompletedAt": "2026-05-12T10:05:00.000Z"
  * }
  * 
  * Response (200) - Failed:
  * {
  *   "bookId": "01912345-6789-1234-5678-123456789012",
- *   "status": "failed",
+ *   "status": "draft",
+ *   "generationStatus": "failed",
+ *   "generationStep": null,
+ *   "generationStepDescription": "Book generation failed",
  *   "error": "AI generation failed: timeout",
  *   "createdAt": "2026-05-12T10:00:00.000Z",
  *   "updatedAt": "2026-05-12T10:10:00.000Z"
@@ -688,32 +697,11 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
         generationStepDescription = undefined;
     }
 
-    // // Calculate progress based on generation step
-    // let progress = 0;
-    // if (data.generationStatus === 'completed') {
-    //   progress = 100;
-    // } else if (data.generationStatus === 'failed') {
-    //   progress = 0;
-    // } else if (data.generationStatus === 'in_progress' && data.generationStep) {
-    //   // Estimate progress based on step
-    //   const stepProgress: Record<BookGenerationStep, number> = {
-    //     initializing: 10,
-    //     generating: 50,
-    //     evaluating: 70,
-    //     reviewing: 85,
-    //     finalizing: 95,
-    //     completed: 100,
-    //   };
-    //   progress = stepProgress[data.generationStep] || 0;
-    // }
-
     res.json({
       bookId: data.bookId,
       status: data.bookStatus || 'draft',
       generationStatus: data.generationStatus,
       generationStep: data.generationStep,
-      // progress,
-      // currentStep,
       generationStepDescription,
       error: data.generationError || undefined,
       createdAt: data.bookCreatedAt,

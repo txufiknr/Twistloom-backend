@@ -41,6 +41,18 @@ interface ConsumeCreditsOptions {
 }
 
 /**
+ * Result of a credit consumption operation
+ */
+interface ConsumeCreditsResult<T> {
+  /** The result of the credit-consuming operation */
+  result: T;
+  /** Correlation ID for linking this transaction with idempotent refunds */
+  correlationId: string;
+  /** Database transaction ID for the credit consumption record */
+  transactionId: string;
+}
+
+/**
  * Consumes credits from a user's account
  * 
  * @param userId - User ID to consume credits from
@@ -504,7 +516,7 @@ export async function executeWithCredits<T>(
   costKey: CreditCostKey,
   operation: (tx: DBTransaction) => Promise<T>,
   options: ConsumeCreditsOptions = {}
-): Promise<{ result: T; correlationId: string; transactionId: string }> {
+): Promise<ConsumeCreditsResult<T>> {
   const cost = CREDIT_COSTS[costKey];
   const correlationId = options.correlationId || generateId();
   
