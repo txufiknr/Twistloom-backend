@@ -76,7 +76,7 @@ export async function triggerBackgroundGeneration(params: {
         body: JSON.stringify({ 
           userId, 
           pageId, 
-          bookId: bookId || undefined
+          bookId,
         }),
       })
     );

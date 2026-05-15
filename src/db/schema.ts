@@ -288,6 +288,8 @@ export const books = pgTable(
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
+    commentsCount: integer("comments_count").notNull().default(0), // Total parent comments (maintained by trigger)
+    completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     createdAt,
     updatedAt,
@@ -399,6 +401,8 @@ export const userPageProgress = pgTable(
     index("user_page_progress_user_book_idx").on(t.userId, t.bookId),
     // Index for finding specific page progress
     index("user_page_progress_page_idx").on(t.actionedPageId),
+    // Composite index for complete count queries (optimized for completeCount query)
+    index("user_page_progress_book_actioned_idx").on(t.bookId, t.actionedPageId),
     // Index for action tracking
     // index("user_page_progress_action_gin_idx").using("gin", t.action),
   ]
@@ -524,6 +528,9 @@ export const userComments = pgTable(
     
     // Index for comment threading
     index("user_comments_parent_idx").on(t.parentCommentId),
+    
+    // Composite index for parent comments count (optimized for commentsCount query)
+    index("user_comments_book_parent_idx").on(t.bookId, t.parentCommentId),
     
     // Index for recent comments
     index("user_comments_created_idx").on(t.createdAt.desc()),

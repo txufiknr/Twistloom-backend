@@ -44,7 +44,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { guestOrAuthMiddleware } from "../middleware/guest.js";
-import { books, pages, userSessions, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
+import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -937,37 +937,11 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     
     // Fetch function for cache
     const fetchBooks = async () => {
-      // Create subquery for latest user sessions using ROW_NUMBER() window function
-      const latestUserSessions = dbRead
-        .select({
-          id: userSessions.id,
-          userId: userSessions.userId,
-          bookId: userSessions.bookId,
-          pageId: userSessions.pageId,
-          updatedAt: userSessions.updatedAt,
-          rowNumber: sql<number>`ROW_NUMBER() OVER (PARTITION BY ${userSessions.userId}, ${userSessions.bookId} ORDER BY ${userSessions.updatedAt} DESC)`.as('row_number')
-        })
-        .from(userSessions)
-        .where(eq(userSessions.userId, userId))
-        .as('latestUserSessions');
-
-      // Build base query with enriched fields
+      // Build base query with enriched fields (lastReadAt and lastPage are now included in getEnrichedBookSelect)
       const baseQuery = dbRead
-        .select({
-          ...getEnrichedBookSelect(userId),
-          lastReadAt: latestUserSessions.updatedAt,
-          lastPage: latestUserSessions.pageId
-        })
+        .select(getEnrichedBookSelect(userId))
         .from(books)
-        .leftJoin(users, eq(books.userId, users.userId))
-        .leftJoin(
-          latestUserSessions,
-          and(
-            eq(latestUserSessions.bookId, books.id),
-            eq(latestUserSessions.userId, userId),
-            eq(latestUserSessions.rowNumber, 1) // Only get the latest session per book
-          )
-        );
+        .leftJoin(users, eq(books.userId, users.userId));
 
       // Build comprehensive query using shared helper
       const { query, countQuery } = buildBookQuery<typeof baseQuery>({
@@ -1528,7 +1502,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
 
     // Actions incomplete, trigger background generation
     const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
-    await triggerBackgroundGeneration({
+    void triggerBackgroundGeneration({  // Fire-and-forget - doesn't block response
       userId,
       pageId,
       bookId: dbPage.bookId,

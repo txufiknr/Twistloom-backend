@@ -304,6 +304,155 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to update book comments count when comments are inserted or deleted
+ * 
+ * This trigger fires AFTER INSERT OR DELETE on user_comments table:
+ * 1. When a parent comment is added or removed (parent_comment_id IS NULL)
+ * 2. Updates comments_count to match count of parent comments for the book
+ * 3. Ensures denormalized count stays synchronized
+ * 
+ * Note: Only counts parent comments (parent_comment_id IS NULL), not replies
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookCommentsCountTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_book_comments_count()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Only update for parent comments (not replies)
+        IF (TG_OP = 'INSERT' AND NEW.parent_comment_id IS NULL) OR
+           (TG_OP = 'DELETE' AND OLD.parent_comment_id IS NULL) THEN
+          UPDATE books
+          SET comments_count = (
+            SELECT COUNT(*)
+            FROM user_comments
+            WHERE book_id = COALESCE(NEW.book_id, OLD.book_id)
+              AND parent_comment_id IS NULL
+          ),
+              updated_at = NOW()
+          WHERE id = COALESCE(NEW.book_id, OLD.book_id);
+        END IF;
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing triggers if they exist
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_comments_insert_comments_trigger ON user_comments;
+    `);
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_comments_delete_comments_trigger ON user_comments;
+    `);
+    
+    // Create the triggers
+    await dbWrite.execute(`
+      CREATE TRIGGER user_comments_insert_comments_trigger
+        AFTER INSERT ON user_comments
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_comments_count();
+    `);
+    
+    await dbWrite.execute(`
+      CREATE TRIGGER user_comments_delete_comments_trigger
+        AFTER DELETE ON user_comments
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_comments_count();
+    `);
+    
+    console.log("✅ Book comments count trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book comments count trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Creates trigger to update book complete count when users reach the last page
+ * 
+ * This trigger fires AFTER INSERT OR UPDATE on user_page_progress table:
+ * 1. When a user progresses to a page that is the last page of the book
+ * 2. Updates complete_count to match unique users who reached the last page
+ * 3. Ensures denormalized count stays synchronized
+ * 
+ * Note: Counts unique users (DISTINCT user_id) who reached the last page
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureBookCompleteCountTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_book_complete_count()
+      RETURNS TRIGGER AS $$
+      DECLARE
+        v_book_id UUID;
+        v_total_pages INTEGER;
+      BEGIN
+        v_book_id := COALESCE(NEW.book_id, OLD.book_id);
+        
+        -- Get total pages for this book
+        SELECT total_pages INTO v_total_pages
+        FROM books
+        WHERE id = v_book_id;
+        
+        -- Check if the actioned page is the last page
+        IF EXISTS (
+          SELECT 1
+          FROM pages
+          WHERE book_id = v_book_id
+            AND page = v_total_pages
+            AND id = COALESCE(NEW.actioned_page_id, OLD.actioned_page_id)
+        ) THEN
+          UPDATE books
+          SET complete_count = (
+            SELECT COUNT(DISTINCT user_id)
+            FROM user_page_progress
+            WHERE book_id = v_book_id
+              AND actioned_page_id IN (
+                SELECT id
+                FROM pages
+                WHERE book_id = v_book_id
+                  AND page = v_total_pages
+              )
+          ),
+              updated_at = NOW()
+          WHERE id = v_book_id;
+        END IF;
+        
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing triggers if they exist
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_page_progress_complete_trigger ON user_page_progress;
+    `);
+    
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER user_page_progress_complete_trigger
+        AFTER INSERT OR UPDATE ON user_page_progress
+        FOR EACH ROW
+        EXECUTE FUNCTION update_book_complete_count();
+    `);
+    
+    console.log("✅ Book complete count trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create book complete count trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates trigger to decrement book branches count when the last page of a branch is deleted
  * 
  * This trigger fires AFTER DELETE on pages table:
@@ -404,6 +553,8 @@ export async function ensureTriggers(): Promise<void> {
     await ensureBookBranchesIncrementTrigger();
     await ensureBookBranchesDecrementTrigger();
     await ensurePageVisitCountIncrementTrigger();
+    await ensureBookCommentsCountTrigger();
+    await ensureBookCompleteCountTrigger();
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);

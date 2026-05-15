@@ -76,7 +76,6 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
     language: books.language,
     topPick: books.topPick,
     isOriginal: books.isOriginal,
-    // branchesCount: books.branchesCount,
     createdAt: books.createdAt,
     updatedAt: books.updatedAt,
     mc: books.mc,
@@ -88,29 +87,13 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
       name: users.penName || users.name,
       image: users.image,
     },
-    // Denormalized engagement metrics (O(1) performance)
+    // Denormalized engagement metrics (O(1) performance, maintained by trigger)
     stats: {
       likesCount: books.likesCount,
       readCount: books.readCount,
-      // Comments count (only parent comments, indexed by bookId)
-      commentsCount: sql<number>`COALESCE((
-        SELECT COUNT(*) 
-        FROM user_comments 
-        WHERE book_id = books.id AND parent_comment_id IS NULL
-      ), 0)`,
-      // Branches count (from denormalized column)
+      commentsCount: books.commentsCount,
       branchesCount: books.branchesCount,
-      // Complete count (unique users who reached the last page)
-      completeCount: sql<number>`COALESCE((
-        SELECT COUNT(DISTINCT user_id)
-        FROM user_page_progress
-        WHERE book_id = books.id
-        AND actioned_page_id IN (
-          SELECT id 
-          FROM pages 
-          WHERE book_id = books.id AND page = books.total_pages
-        )
-      ), 0)`,
+      completeCount: books.completeCount,
     },
     // User-specific flags (indexed by userId and targetId/bookId)
     isLiked: currentUserId 
@@ -127,14 +110,52 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
-    // First page ID (page 1 of the book)
+    // Last read tracking (optional fields for user session data) - combined lateral join for better performance
+    lastReadAt: currentUserId
+      ? sql<Date | null>`(
+          SELECT ls.updated_at 
+          FROM LATERAL (
+            SELECT updated_at, page_id 
+            FROM user_sessions 
+            WHERE user_id = ${currentUserId} AND book_id = books.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+          ) ls
+        )`
+      : sql<Date | null>`null`,
+    lastPage: currentUserId
+      ? sql<string | null>`(
+          SELECT ls.page_id::text 
+          FROM LATERAL (
+            SELECT updated_at, page_id 
+            FROM user_sessions 
+            WHERE user_id = ${currentUserId} AND book_id = books.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+          ) ls
+        )`
+      : sql<string | null>`null`,
+    // First page data (page 1 of the book) - combined lateral join for better performance
     firstPageId: sql<string>`(
-      SELECT id 
-      FROM pages 
-      WHERE book_id = books.id AND page = 1 
-      LIMIT 1
+      SELECT fp.id 
+      FROM LATERAL (
+        SELECT id, text 
+        FROM pages 
+        WHERE book_id = books.id AND page = 1 
+        LIMIT 1
+      ) fp
     )`,
-  };
+    // First page text content (page 1 of the book)
+    firstPageText: sql<string>`(
+      SELECT fp.text 
+      FROM LATERAL (
+        SELECT id, text 
+        FROM pages 
+        WHERE book_id = books.id AND page = 1 
+        LIMIT 1
+      ) fp
+    )`,
+  } satisfies Record<keyof EnrichedBookData, unknown>;
 }
 
 /**

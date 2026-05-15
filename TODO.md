@@ -1,3 +1,15 @@
+[ ] check triggerBackgroundGeneration immediate atau engga, check level 2 depth di pre generation docs
+[ ] recheck ${vercelUrl}/api/generate-candidates API implementation
+[ ] consider tambah method generate candidate via on-demand github workflow (input page id), lock pake isGeneratingStartedAt
+[ ] EnrichedBookData add `firstPageText`
+[ ] choice made ensure nggak return enriched page data
+
+// Status 400 (dns:0.10000000055879354ms,tcp:70.70000000018626ms,req:31.90000000037253ms,res:997.6999999992549ms)
+{
+  "error": "Choice made, can't make another choice",
+  "message": "You already chose a different action on this page"
+}
+
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong
 [ ] Cron: detect pages yg action object kosong, generate

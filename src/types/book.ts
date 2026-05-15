@@ -122,6 +122,7 @@ export interface EnrichedBookData {
   lastReadAt?: Date | null;
   lastPage?: string | null;
   firstPageId: string;
+  firstPageText: string;
 }
 
 /**

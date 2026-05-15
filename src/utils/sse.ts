@@ -500,15 +500,40 @@ export function sendSSEKeepAlive(res: Response): void {
 }
 
 /**
+ * Detects if an error is a transient network error
+ *
+ * Network errors should be retried with backoff, while permanent errors
+ * should fail fast.
+ */
+function isNetworkError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    return message.includes('network') ||
+           message.includes('timeout') ||
+           message.includes('econnrefused') ||
+           message.includes('enotfound') ||
+           message.includes('etimedout') ||
+           message.includes('fetch failed') ||
+           message.includes('connection reset') ||
+           message.includes('connection refused');
+  }
+  return false;
+}
+
+/**
  * Configuration for SSE polling behavior
  */
 export interface SSEPollingConfig {
-  /** Interval between polls in milliseconds */
+  /** Initial interval between polls in milliseconds */
   pollIntervalMs: number;
   /** Maximum number of polling attempts */
   maxAttempts: number;
   /** Interval for sending progress updates (every N polls) */
   progressInterval: number;
+  /** Maximum backoff interval in milliseconds (default: 10000) */
+  maxBackoffMs?: number;
+  /** Whether to use exponential backoff (default: true) */
+  exponentialBackoff?: boolean;
 }
 
 /**
@@ -535,6 +560,8 @@ export interface PollCandidateGenerationOptions {
   clearActionProgressEvents?: (pageId: string) => Promise<void>;
   /** Polling configuration */
   config: SSEPollingConfig;
+  /** Optional AbortSignal for cancellation */
+  signal?: AbortSignal;
 }
 
 /**
@@ -580,10 +607,11 @@ export async function pollForCandidateGeneration(
     mapToUserStoryPage,
     getActionProgressEvents,
     clearActionProgressEvents,
-    config
+    config,
+    signal
   } = options;
 
-  const { pollIntervalMs, maxAttempts, progressInterval } = config;
+  const { pollIntervalMs: initialPollIntervalMs, maxAttempts, progressInterval, maxBackoffMs = 10000, exponentialBackoff = true } = config;
 
   // Send initial message
   res.write(`event: progress\n`);
@@ -591,6 +619,8 @@ export async function pollForCandidateGeneration(
 
   let attempts = 0;
   let clientDisconnected = false;
+  let backoffMs = initialPollIntervalMs;
+  const startTime = Date.now();
 
   const onClientDisconnect = () => {
     clientDisconnected = true;
@@ -607,6 +637,14 @@ export async function pollForCandidateGeneration(
 
   try {
     while (attempts < maxAttempts) {
+      // Check for abort signal
+      if (signal?.aborted) {
+        console.log(`[SSE Polling] 🛑 Polling aborted via signal for page ${pageId}`);
+        req.off('close', onClientDisconnect);
+        req.off('aborted', onClientDisconnect);
+        throw new DOMException('Polling aborted', 'AbortError');
+      }
+
       // Break early if client disconnected
       if (clientDisconnected || res.writableEnded) {
         req.off('close', onClientDisconnect);
@@ -615,11 +653,41 @@ export async function pollForCandidateGeneration(
         return;
       }
 
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
       attempts++;
 
-      // Refresh page from database
-      const freshPage = await getPageFromDB(pageId);
+      // Exponential backoff: 2s → 4s → 8s → max configured
+      if (exponentialBackoff) {
+        backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+      }
+
+      // Refresh page from database with network error handling
+      let freshPage;
+      try {
+        freshPage = await getPageFromDB(pageId);
+      } catch (dbError) {
+        // Distinguish between network errors and permanent errors
+        if (isNetworkError(dbError)) {
+          console.warn(`[SSE Polling] ⚠️ Network error, will retry (attempt ${attempts}):`, dbError);
+          // Continue to next iteration with backoff
+          continue;
+        }
+
+        // Permanent error - fail fast
+        console.error(`[SSE Polling] ❌ Permanent error, failing:`, dbError);
+        try {
+          if (!res.writableEnded) {
+            res.write(`event: error\n`);
+            res.write(`data: ${JSON.stringify({ error: 'Database error during polling' })}\n\n`);
+            res.end();
+          }
+        } finally {
+          req.off('close', onClientDisconnect);
+          req.off('aborted', onClientDisconnect);
+        }
+        return;
+      }
+
       if (!freshPage) {
         try {
           if (!res.writableEnded) {
@@ -677,8 +745,9 @@ export async function pollForCandidateGeneration(
 
       // Send progress update periodically
       if (attempts % progressInterval === 0 && !res.writableEnded) {
+        const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
         res.write(`event: progress\n`);
-        res.write(`data: ${JSON.stringify({ status: 'waiting', message: `Still generating... (${attempts * pollIntervalMs/1000}s elapsed)` })}\n\n`);
+        res.write(`data: ${JSON.stringify({ status: 'waiting', message: `Still generating... (${elapsedSeconds}s elapsed)` })}\n\n`);
       }
     }
 
