@@ -6,7 +6,7 @@ This document describes the automatic pre-generation system for story pages in T
 
 ## Architecture Evolution
 
-The system has evolved from **synchronous generation** to **asynchronous job queue processing** to solve Vercel timeout issues:
+The system has evolved from **synchronous generation** to **GitHub Actions workflow processing** to solve timeout issues and ensure Express.js compatibility:
 
 ### Legacy Synchronous Approach (Deprecated)
 - Direct AI generation in API requests
@@ -14,10 +14,11 @@ The system has evolved from **synchronous generation** to **asynchronous job que
 - Poor user experience during long generations
 
 ### Modern Asynchronous Approach (Current)
-- **pg-boss job queue** for background processing
-- **Vercel cron jobs** for reliable execution
+- **GitHub Actions workflows** for background processing
+- **Express.js compatible** (no Next.js dependencies)
 - **State preservation** across async operations
 - **SSE polling** for real-time progress updates
+- **Idempotent workflow triggering** via isGeneratingStartedAt
 
 ## Strategy-Based Generation Architecture
 
@@ -28,7 +29,7 @@ The system uses three distinct strategies based on deployment context:
 | Strategy | Use Case | Timeout | Parallel | Key Features |
 |----------|----------|---------|----------|--------------|
 | **'vercel'** | API requests, user-facing | 4.5 minutes | ✅ Parallel | Fast response, SSE progress |
-| **'github-action'** | Originals generation, manual triggers | 30 minutes | ❌ Sequential | Reliability, detailed logging |
+| **'github-action'** | On-demand generation, manual triggers | 30 minutes | ❌ Sequential | Express.js compatible, detailed logging |
 | **'cron'** | Background processing, retries | 13 minutes | ✅ Parallel | Bulk operations, recovery |
 
 ### **Strategy Implementation**
@@ -64,7 +65,7 @@ function getGenerationStrategy(context: CandidateGenerationStrategy): Generation
 The system supports configurable **multi-level depth pre-generation** to create comprehensive story trees:
 
 - **Level 1 (Strategy-Based)**: Generation based on deployment context (vercel/github-action/cron)
-- **Level 2 (Immediate Fire-and-Forget)**: Immediate background generation using `triggerBackgroundGeneration` service
+- **Level 2 (Immediate GitHub Workflow)**: Immediate background generation using `triggerGitHubWorkflow`
 - **Level 3+ (Job Queue)**: Background generation via async job queue for less critical deeper levels
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3

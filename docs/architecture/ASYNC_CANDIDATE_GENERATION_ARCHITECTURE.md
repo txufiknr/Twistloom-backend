@@ -2,12 +2,13 @@
 
 ## Overview
 
-This document describes the refactored asynchronous candidate generation system that solves Vercel's 5-minute timeout limitations by using pg-boss job queues instead of synchronous AI generation.
+This document describes the asynchronous candidate generation system that solves timeout limitations by using on-demand GitHub Actions workflows for Express.js deployments. The system provides reliable background processing with extended timeouts (30 minutes) and real-time progress updates via Server-Sent Events (SSE).
 
 ## Problem Statement
 
 ### Original Issues
 - **Vercel Timeout**: Synchronous AI generation often exceeded 5-minute limit
+- **Express.js Incompatibility**: Next.js `after()` and `waitUntil()` don't work in Express.js
 - **Poor UX**: Users experienced timeouts and failed page generation
 - **Resource Waste**: Long-running serverless functions were inefficient
 - **Scalability**: Synchronous processing didn't scale with user load
@@ -24,444 +25,446 @@ The `ensureCandidatesForPage` function performed synchronous AI generation chain
 
 ### Core Design Principles
 1. **Immediate Response**: API calls return in <10 seconds
-2. **Background Processing**: Heavy AI work moved to job queue
-3. **No Timeouts**: Job processing has flexible time limits
-4. **Scalable**: Horizontal scaling via multiple cron workers
+2. **Background Processing**: Heavy AI work moved to GitHub Actions workflows
+3. **Extended Timeouts**: 30-minute timeout via GitHub Actions (vs 5-minute Vercel limit)
+4. **Express.js Compatible**: Works with Express.js deployment (no Next.js dependencies)
 5. **Fault Tolerant**: Built-in retries and error handling
+6. **Real-time Progress**: SSE polling for generation status updates
 
 ### Technology Stack
-- **Job Queue**: pg-boss (PostgreSQL-native)
+- **Workflow Trigger**: GitHub Actions `workflow_dispatch` API
+- **Processing**: GitHub Actions runners (30-minute timeout)
+- **Progress Tracking**: LRU cache for action progress events (5-minute TTL)
+- **Polling**: Server-Sent Events (SSE) for real-time updates
 - **Database**: Neon PostgreSQL (shared with app data)
-- **Processing**: Vercel Cron Jobs (every minute)
-- **Retry Logic**: pg-boss built-in exponential backoff
-- **Monitoring**: Job state tracking and statistics
+- **Retry Logic**: Built-in exponential backoff with network error detection
 
 ## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           USER REQUEST                                │
-│                     (POST /api/books/create)                          │
+│                           USER REQUEST                                  │
+│              (GET /api/books/:id/:pageId/candidates)                    │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      API LAYER                                         │
-│  • generateNextPage() - Fast (<10s)                                   │
-│  • enqueueCandidateGenerationJob() - Immediate enqueue                 │
-│  • Return page to user immediately                                    │
+│                      API LAYER (Express.js)                             │
+│  • validateAndRetrievePageForGeneration() - Validation & retrieval      │
+│  • triggerGitHubWorkflow() - Dispatch GitHub workflow                   │
+│  • pollForCandidateGeneration() - SSE polling for progress              │
+│  • Immediate SSE response with progress updates                         │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    PG-BOSS JOB QUEUE                                   │
-│  • PostgreSQL-based job storage                                        │
-│  • Built-in retry logic (3 attempts, exponential backoff)             │
-│  • Job prioritization and expiration                                  │
-│  • Atomic job operations with database                                │
+│                 GITHUB ACTIONS WORKFLOW                                 │
+│  • retry-pending-generations.yml - On-demand workflow dispatch          │
+│  • 30-minute timeout (vs 5-minute Vercel limit)                         │
+│  • Environment variables: book_id, page_id, triggered_by                │
+│  • Full environment access and logging                                  │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                   VERCEL CRON WORKER                                    │
-│  • Runs every minute: /api/cron/process-candidate-jobs                │
-│  • Processes up to 5 jobs per invocation                             │
-│  • Calls ensureCandidatesForPage() with no time pressure              │
-│  • Marks jobs complete/failed                                         │
+│                  CRON JOB PROCESSING                                    │
+│  • src/cron/retry-pending-generations.ts                                │
+│  • processSpecificPage() - Targeted page generation                     │
+│  • ensureCandidatesForPageWithStrategy() - 'cron' strategy              │
+│  • 13-minute timeout with parallel processing                           │
 └─────────────────────────┬───────────────────────────────────────────────┘
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                  AI GENERATION LAYER                                    │
-│  • ensureCandidatesForPage() - Original logic preserved               │
-│  • generateCandidatesInParallel() - Parallel processing               │
-│  • AI model calls (Cerebras, Mistral, etc.)                           │
-│  • Database updates (pages, actions, destinations)                    │
+│  • ensureCandidatesForPageWithStrategy() - Strategy-based generation    │
+│  • generateCandidatesInParallel() - Parallel processing                 │
+│  • AI model calls (Cerebras, Mistral, etc.)                             │
+│  • Database updates (pages, actions, destinations)                      │
+│  • Progress event storage (LRU cache)                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  SSE PROGRESS UPDATES                                   │
+│  • pollForCandidateGeneration() - Polls database for completion         │
+│  • getActionProgressEvents() - Retrieves progress from cache            │
+│  • Real-time updates via SSE (event: progress, action_progress)         │
+│  • Exponential backoff polling (2s → 4s → 8s → 10s max)                 │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Key Components
 
-### 1. pg-boss Job Queue System (`src/lib/pgboss.ts`)
+### 1. GitHub Workflow Trigger (`src/utils/candidate-generation.ts`)
 
-**Purpose**: PostgreSQL-native job queue for reliable background processing
+**Purpose**: Dispatches GitHub Actions workflow for on-demand candidate generation
 
 **Key Features**:
-- Singleton connection management
-- Automatic retry with exponential backoff
-- Job expiration and cleanup
-- Queue statistics and monitoring
-- Neon PostgreSQL optimized configuration
+- **Idempotent**: Checks if generation is already in progress (isGeneratingStartedAt)
+- **Express.js Compatible**: Works with Express.js (no Next.js dependencies)
+- **Extended Timeout**: 30-minute timeout via GitHub Actions (vs 5-minute Vercel limit)
+- **State Management**: Sets isGeneratingStartedAt before triggering, resets on errors
+- **Error Handling**: Resets isGeneratingStartedAt on failures to allow retry
 
 **Configuration**:
 ```typescript
-const BOSS_CONFIG = {
-  connectionString: process.env.DATABASE_URL,
-  max: 2, // Neon-safe connection limit
-  retryLimit: 3,
-  retryDelay: 30,
-  retryBackoff: true,
-  expireInSeconds: 600, // 10 minute max lifetime
-};
+// Environment variables required
+GITHUB_WORKFLOW_TOKEN=ghp_xxx  // GitHub personal access token
+GITHUB_REPO_OWNER=your-username
+GITHUB_REPO_NAME=your-repo
+GITHUB_DEFAULT_BRANCH=main
 ```
-
-**Job Types**:
-- `generate-candidates`: Individual page candidate generation
-- `batch-generate-candidates`: Bulk processing operations
-
-### 2. Async Candidate Generation (`src/utils/prompt-async.ts`)
-
-**Purpose**: High-level API for enqueuing candidate generation jobs
-
-**Key Functions**:
-- `enqueueCandidateGenerationJob()`: Queue single page generation
-- `enqueueBatchCandidateGenerationJob()`: Queue multiple pages
-- `validatePageForGeneration()`: Pre-flight validation
-- `ensureCandidatesForPageAsync()`: Drop-in replacement
 
 **Usage Example**:
 ```typescript
-// Replace synchronous call:
-// await ensureCandidatesForPage(userId, newPage, newState);
+const { triggerGitHubWorkflow } = await import('../utils/candidate-generation.js');
 
-// With async job enqueue:
-const jobId = await enqueueCandidateGenerationJob(userId, newPage, currentBook, newState);
-console.log(`Job enqueued: ${jobId}`);
+const result = await triggerGitHubWorkflow({
+  bookId: 'book123',
+  pageId: 'page456',
+  userId: 'user789',
+  context: 'GET /candidates'
+});
+
+if (result.success) {
+  console.log('Workflow triggered successfully');
+} else if (result.alreadyInProgress) {
+  console.log('Generation already in progress');
+} else {
+  console.error('Failed to trigger workflow:', result.error);
+}
 ```
 
-**✅ State Context Preservation**: The `currentState` parameter is now **fully utilized** - it's serialized and stored in job data, then deserialized during job processing. This ensures consistent story context and eliminates the need for state reconstruction.
+**Idempotency Guarantee**:
+- Checks `isGeneratingStartedAt` before triggering
+- Sets `isGeneratingStartedAt = now()` before workflow dispatch
+- Returns `alreadyInProgress: true` if already generating
+- Resets `isGeneratingStartedAt = null` on errors
 
-### 3. Performance Monitoring & Metrics (Phase 3.2) ✅ **IMPLEMENTED**
+### 2. SSE Polling (`src/utils/sse.ts`)
 
-### **Enhanced Metrics Collection**
-- **Action Lookup Performance**: O(n²) → O(1) with Map-based indexing
-- **Generation Time Tracking**: Detailed timing for performance analysis
-- **Success/Failure Rates**: Comprehensive error tracking
-- **Lock Contention Monitoring**: Track distributed lock usage
-- **Resource Utilization**: Memory and CPU usage patterns
+**Purpose**: Real-time progress updates via Server-Sent Events
 
-### **Performance Improvements**
-- **Map-Based Action Indexing**: Stable IDs with O(1) lookups
-- **Optimized Timeout Calculation**: Accurate remaining time with early bail-out
-- **Lock TTL Alignment**: 270s TTL prevents 10-minute blocks
-- **Fallback Action Guards**: Prevent infinite retry loops
+**Key Features**:
+- **Exponential Backoff**: 2s → 4s → 8s → 10s max
+- **Client Disconnect Detection**: Stops polling if client disconnects
+- **Network Error Handling**: Retries on network failures
+- **Progress Event Streaming**: Real-time per-action progress
+- **LRU Cache Integration**: Retrieves progress from in-memory cache
 
-### **Metrics Implementation**
+**Configuration**:
 ```typescript
-interface GenerationMetrics {
-  actionCount: number;
-  lookupTime: number;
-  generationTime: number;
-  successCount: number;
-  failureCount: number;
-  timeoutOccurrences: number;
-  lockContentions: number;
-}
+const SSE_POLLING_CONFIG: SSEPollingConfig = {
+  pollIntervalMs: 2000, // 2 seconds
+  maxAttempts: 150, // 5 minutes total
+  progressInterval: 5, // Every 5 polls = 10 seconds
+};
+```
 
-// Performance logging with detailed metrics
-logMetrics({
-  actionCount: actions.length,
-  lookupTime: 0, // O(1) with Map indexing
-  generationTime: totalGenerationTime,
-  successCount,
-  failureCount,
-  timeoutOccurrences: 0,
-  lockContentions: 0
+**Usage Example**:
+```typescript
+await pollForCandidateGeneration({
+  pageId,
+  userId,
+  req,
+  res,
+  initialMessage: 'Candidate generation started...',
+  getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
+  mapToUserStoryPage,
+  getActionProgressEvents,
+  clearActionProgressEvents,
+  config: SSE_POLLING_CONFIG,
 });
 ```
 
-### 3. Vercel Cron Worker (`src/api/cron/process-candidate-jobs/route.ts`)
+### 3. Progress Tracking (`src/utils/progress-tracking.ts`)
 
-**Purpose**: Processes queued jobs without time pressure
+**Purpose**: In-memory LRU cache for action progress events
 
 **Key Features**:
-- Security via CRON_SECRET verification
-- Batch processing (up to 5 jobs per run)
-- Error handling and job completion
-- Processing statistics and monitoring
-- Manual job triggering for testing
+- **LRU Cache**: Max 100 entries, 5-minute TTL
+- **Per-Action Progress**: Tracks individual action generation status
+- **Redis Migration Path**: Clear path to Redis for multi-server deployments
+- **Automatic Cleanup**: Expired entries automatically removed
 
-**Cron Schedule**: `0 0 * * *` (Daily at midnight)
-*Note: Updated for Vercel Hobby tier compatibility (only allows daily cron jobs)*
+**Configuration**:
+```typescript
+const PROGRESS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const PROGRESS_CACHE_MAX_SIZE = 100; // Max entries
+```
+
+**Usage Example**:
+```typescript
+// Store progress event
+await storeActionProgressEvent(pageId, {
+  action: 'Investigate the noise',
+  status: 'in_progress',
+  completed: 1,
+  total: 3,
+  progress: 33,
+  timestamp: new Date().toISOString()
+});
+
+// Retrieve progress events
+const events = await getActionProgressEvents(pageId);
+
+// Clear events after completion
+await clearActionProgressEvents(pageId);
+```
+
+### 4. Cron Job Processing (`src/cron/retry-pending-generations.ts`)
+
+**Purpose**: Processes GitHub workflow triggers and retries failed generations
+
+**Key Features**:
+- **Manual Trigger Support**: Accepts environment variables for targeted processing
+- **Strategy-Based Generation**: Uses 'cron' strategy with 13-minute timeout
+- **Parallel Processing**: Processes actions in parallel for efficiency
+- **Progress Event Storage**: Stores progress in LRU cache during generation
+- **Cleanup**: Resets isGeneratingStartedAt to null on completion/failure
+
+**Environment Variables** (for manual triggers):
+```bash
+TRIGGERED_BOOK_ID=book123
+TRIGGERED_PAGE_ID=page456
+TRIGGERED_BY_USER=user789
+```
 
 **Processing Flow**:
-1. Verify CRON_SECRET
-2. Fetch up to 5 jobs from pg-boss
-3. Process each job in parallel
-4. Mark jobs complete/failed
-5. Return statistics
+1. Check for manual trigger environment variables
+2. If present, process specific page via processSpecificPage()
+3. Otherwise, process failed generations via retryFailedGenerations()
+4. Use 'cron' strategy with extended timeout
+5. Store progress events in LRU cache
+6. Reset isGeneratingStartedAt to null on completion
 
-### 4. Updated Page Generation Flow
+### 5. API Endpoints (`src/routes/books.ts`)
 
-**Vercel Hobby Tier Solution - Extended Timeout Background Function**:
+**GET /api/books/:identifier/:pageId/candidates**:
+- Validates page and user access
+- Triggers GitHub workflow if not already in progress
+- Polls for completion via SSE
+- Returns real-time progress updates
 
-The system now uses a hybrid approach optimized for Vercel Hobby tier limitations:
+**GET /api/books/:identifier/:pageId/candidates/status**:
+- Returns current generation status
+- Triggers GitHub workflow if actions incomplete
+- Returns progress events from cache
+- Fast JSON response (no SSE)
 
-**Main Route (`/api/books/:identifier/:pageId/candidates`)**:
-```typescript
-// Fire-and-forget pattern with extended timeout
-if (!clientDisconnected && !res.writableEnded) {
-  const { waitUntil } = await import('next/server') as any;
-  
-  // Non-blocking background call to dedicated route
-  waitUntil(
-    fetch(`${process.env.VERCEL_URL}/api/generate-candidates`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'x-internal-secret': process.env.INTERNAL_SECRET!
-      },
-      body: JSON.stringify({ userId, pageId, bookId: dbPage.bookId }),
-    })
-  );
-  
-  // Immediate response to user
-  res.json(updatedPage);
-}
-```
-
-**Dedicated Background Route (`/api/generate-candidates`)**:
-```typescript
-export const maxDuration = 800; // 13 minutes (Hobby tier max)
-
-// Extended timeout processing using cron strategy (15 minutes)
-const updatedPage = await ensureCandidatesForPageWithStrategy(
-  userId,
-  userPage,
-  currentState,
-  bookContext,
-  'cron' // Uses cron strategy for extended timeout (no Vercel limits)
-);
-```
-
-**Book Creation (`createBookCore`)**:
-```typescript
-// OLD (synchronous, timeout-prone):
-await ensureCandidatesForPage(userId, firstUserPage, initialState, book);
-
-// NEW (async, immediate):
-const jobId = await enqueueCandidateGenerationJob(userId, firstUserPage, book, initialState);
-// NOTE: currentState is currently unused in enqueue but kept for API consistency
-```
-
-**Benefits of Hybrid Approach**:
-- ✅ Immediate user response (no waiting)
-- ✅ Extended timeout (800s vs 60s default)
-- ✅ Hobby tier compatible
-- ✅ No additional infrastructure needed
-- ✅ pg-boss job queue for durability
-- ✅ Daily cron as backup/fallback
-
-**Parallel Generation (`generateCandidatesInParallel`)**:
-```typescript
-// OLD (fire-and-forget, still timeout-prone):
-void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth);
-
-// NEW (hybrid approach - level 2 immediate, level 3+ job queue with depth-based priority):
-const nextDepth = currentDepth + 1;
-if (nextDepth === 2) {
-  // Level 2: Immediate fire-and-forget for better UX
-  const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
-  void triggerBackgroundGeneration({
-    userId,
-    pageId: candidatePage.id,
-    bookId: candidatePage.bookId,
-    context: `generateCandidatesInParallel-depth${nextDepth}`
-  });
-} else {
-  // Level 3+: Job queue for less critical deeper levels with depth-based priority
-  void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
-    currentDepth: nextDepth,
-    maxDepth,
-    // Priority decreases with depth: Level 3=3 (medium), Level 4+=5 (low)
-    priority: nextDepth === 3 ? 3 : 5
-  });
-}
-```
+**Common Validation**:
+- `validateAndRetrievePageForGeneration()`: Shared validation function
+- UUID validation for pageId
+- Page lookup from database
+- Stuck generation reset (10-minute max)
+- User page mapping
 
 ## Performance Characteristics
 
 ### Response Times
-- **API Response**: <10 seconds (page generation only)
-- **Job Enqueue**: <100ms (database write)
-- **Job Processing**: 2-10 minutes (no time pressure)
+- **API Response**: <1 second (workflow trigger only)
+- **Workflow Dispatch**: <500ms (GitHub API call)
+- **Generation Processing**: 2-10 minutes (GitHub Actions, no time pressure)
+- **SSE Polling**: 2-second intervals with exponential backoff
 - **Total UX Time**: ~30-120 seconds (user reads page, candidates ready)
 
 ### Throughput
-- **Concurrent Jobs**: Limited by cron worker count
-- **Jobs per Hour**: ~300 (5 jobs × 60 minutes)
-- **Scalability**: Horizontal via multiple cron intervals
-- **Cost Efficiency**: Pay only for processing time used
+- **Concurrent Workflows**: Limited by GitHub Actions concurrency limits
+- **Workflows per Hour**: ~60 (1 per minute per page)
+- **Scalability**: Horizontal via GitHub Actions parallelism
+- **Cost Efficiency**: Free tier includes 2000 minutes/month
 
 ### Reliability
-- **Retry Logic**: 3 attempts with exponential backoff
-- **Error Isolation**: Failed jobs don't block others
-- **Monitoring**: Job state tracking and statistics
-- **Recovery**: Automatic retry and manual job triggering
-
-## Migration Strategy
-
-### Phase 1: Parallel Implementation
-- ✅ Create async system alongside existing synchronous code
-- ✅ Maintain backward compatibility
-- ✅ Enable feature flags for gradual rollout
-
-### Phase 2: Gradual Migration
-- 🔄 Update book creation flow to use async jobs
-- 🔄 Update parallel generation to use job queue
-- 🔄 Monitor performance and error rates
-
-### Phase 3: Cleanup - ✅ **COMPLETED**
-- ✅ Remove old synchronous code
-- ✅ Update documentation and monitoring
-- ✅ Optimize job processing parameters
-- ✅ Performance monitoring & metrics implementation
-- ✅ Code cleanup & optimization
+- **Idempotency**: Single workflow per page (isGeneratingStartedAt check)
+- **Error Handling**: Automatic reset on failures
+- **Monitoring**: GitHub Actions workflow logs
+- **Recovery**: Manual retry via status endpoint
 
 ## Configuration
 
 ### Environment Variables
 ```bash
+# GitHub workflow configuration
+GITHUB_WORKFLOW_TOKEN=ghp_xxx  # GitHub personal access token
+GITHUB_REPO_OWNER=your-username
+GITHUB_REPO_NAME=your-repo
+GITHUB_DEFAULT_BRANCH=main
+
 # Database (shared with app)
 DATABASE_URL=postgresql://...
 
-# Cron security
-CRON_SECRET=your-secret-key
-
-# Optional: Job processing tuning
-PG_BOSS_MAX_CONNECTIONS=2
-PG_BOSS_RETRY_LIMIT=3
-PG_BOSS_RETRY_DELAY=30
+# Optional: Manual trigger for cron job
+TRIGGERED_BOOK_ID=book123
+TRIGGERED_PAGE_ID=page456
+TRIGGERED_BY_USER=user789
 ```
 
-### Vercel Configuration (`vercel.json`)
-```json
-{
-  "version": 2,
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/src/app.ts" }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/process-candidate-jobs",
-      "schedule": "1 * * * *"
-    }
-  ]
-}
+### GitHub Workflow Configuration (`.github/workflows/retry-pending-generations.yml`)
+```yaml
+name: Retry Pending Generations
+
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:
+        description: Book ID to process
+        required: true
+        type: string
+      page_id:
+        description: Page ID to process
+        required: true
+        type: string
+      triggered_by:
+        description: User who triggered the workflow
+        required: true
+        type: string
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: pnpm install
+      - name: Run generation
+        run: pnpm tsx src/cron/retry-pending-generations.ts
+        env:
+          TRIGGERED_BOOK_ID: ${{ inputs.book_id }}
+          TRIGGERED_PAGE_ID: ${{ inputs.page_id }}
+          TRIGGERED_BY_USER: ${{ inputs.triggered_by }}
 ```
 
 ## Monitoring and Observability
 
-### Job Queue Statistics
+### Generation Status
 ```typescript
-const stats = await getQueueStats();
-// Returns: { created, completed, failed, active, expired, cancelled }
+// Check if generation is in progress
+const dbPage = await getPageFromDB(pageId, { client: dbWrite });
+const isGenerating = !!dbPage.isGeneratingStartedAt;
+
+// Get progress events from cache
+const progressEvents = await getActionProgressEvents(pageId);
 ```
 
 ### Logging Strategy
-- **Job Enqueue**: `[enqueueCandidateGenerationJob] 📋 Job {jobId} enqueued`
-- **Job Processing**: `[cron] Processing job {jobId} for page {pageId}`
-- **Success**: `[cron] ✅ Completed job {jobId} in {duration}ms`
-- **Failure**: `[cron] ❌ Failed job {jobId}: {error}`
+- **Workflow Trigger**: `[context] 🚀 Triggering GitHub workflow for page {pageId}`
+- **Already In Progress**: `[context] ℹ️ Generation already in progress for page {pageId}`
+- **Workflow Success**: `[context] 🚀 GitHub workflow triggered successfully`
+- **Workflow Failure**: `[context] ❌ Failed to trigger GitHub workflow: {error}`
+- **Generation Start**: `[cron] Starting generation for page {pageId}`
+- **Generation Complete**: `[cron] ✅ Completed generation for page {pageId} in {duration}ms`
 
 ### Error Handling
-- **Validation Errors**: Non-retryable, job marked failed
-- **AI Failures**: Retryable (up to 3 attempts)
-- **Database Errors**: Retryable with exponential backoff
-- **Timeout Errors**: Job expiration and cleanup
+- **Validation Errors**: Non-retryable, reset isGeneratingStartedAt
+- **GitHub API Errors**: Reset isGeneratingStartedAt, return error message
+- **Network Errors**: Retry with exponential backoff in SSE polling
+- **Timeout Errors**: Reset isGeneratingStartedAt after 10 minutes
 
 ## Testing Strategy
 
-### Unit Tests
-- Job enqueue/validation logic
-- Error handling and retry behavior
-- Configuration and connection management
-
-### Integration Tests
-- End-to-end job processing flow
-- Database transaction consistency
-- Cron worker functionality
-
-### Load Tests
-- Concurrent job processing
-- Queue throughput limits
-- Resource utilization under load
-
 ### Manual Testing
 ```bash
-# Test job enqueue
-curl -X POST https://your-app.vercel.app/api/cron/process-candidate-jobs \
-  -H "Authorization: Bearer $CRON_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"test","pageId":"test","bookId":"test"}'
+# Test GitHub workflow trigger
+curl -X GET "https://your-app.com/api/books/book123/page456/candidates" \
+  -H "Content-Type: text/event-stream"
 
-# Check queue stats
-curl https://your-app.vercel.app/api/health
+# Check generation status
+curl -X GET "https://your-app.com/api/books/book123/page456/candidates/status"
+
+# Manual cron trigger (via GitHub Actions UI)
+# Navigate to: Actions > Retry Pending Generations > Run workflow
+# Input: book_id, page_id, triggered_by
 ```
+
+### Integration Testing
+- End-to-end workflow dispatch
+- SSE polling with progress updates
+- isGeneratingStartedAt lifecycle
+- Error handling and reset logic
 
 ## Troubleshooting
 
 ### Common Issues
 
-**Jobs Not Processing**:
-- Check CRON_SECRET configuration
-- Verify Vercel cron schedule
-- Review pg-boss connection status
+**Workflow Not Triggering**:
+- Check GITHUB_WORKFLOW_TOKEN configuration
+- Verify GitHub repo owner/name/branch
+- Review GitHub API rate limits
+- Check workflow file exists in `.github/workflows/`
 
-**High Failure Rate**:
-- Check AI model availability
-- Review database connection limits
-- Monitor job expiration settings
+**Generation Stuck**:
+- Check isGeneratingStartedAt timestamp (should reset after 10 minutes)
+- Review GitHub Actions workflow logs
+- Verify cron job is running
+- Check for database connectivity issues
 
-**Performance Issues**:
-- Optimize batch size (MAX_JOBS_PER_RUN)
-- Adjust cron frequency
-- Review job priority distribution
+**SSE Polling Failing**:
+- Verify SSE headers are set correctly
+- Check client disconnect handling
+- Review network error retry logic
+- Ensure progress cache is accessible
 
 ### Debug Commands
 ```typescript
-// Check job queue health
-await healthCheck();
+// Check generation status
+const dbPage = await getPageFromDB(pageId, { client: dbWrite });
+console.log('isGeneratingStartedAt:', dbPage.isGeneratingStartedAt);
 
-// Get queue statistics
-await getQueueStats();
+// Get progress events
+const events = await getActionProgressEvents(pageId);
+console.log('Progress events:', events);
 
-// Manual job retry
-await enqueueCandidateGenerationJob(userId, page, book);
+// Manual workflow trigger
+const result = await triggerGitHubWorkflow({
+  bookId: 'book123',
+  pageId: 'page456',
+  userId: 'user789',
+  context: 'manual-debug'
+});
+console.log('Result:', result);
 ```
 
 ## Future Improvements
 
 ### Short Term
-- **Job Prioritization**: Higher priority for user-facing pages
-- **Batch Optimization**: Dynamic batch sizing based on load
-- **Enhanced Monitoring**: Dashboard for job queue metrics
+- **Redis Migration**: Replace LRU cache with Redis for multi-server deployments
+- **Webhook Notifications**: Notify frontend when generation completes
+- **Retry Queue**: Automatic retry for failed generations
 
 ### Long Term
-- **Multi-Queue System**: Separate queues for different job types
-- **Distributed Workers**: Dedicated worker instances
-- **Smart Scheduling**: Load-based cron frequency adjustment
+- **Distributed Locking**: Redis-based locks for better scalability
+- **Priority Queues**: Different priority levels for different generation types
+- **Metrics Dashboard**: Real-time monitoring of generation metrics
 
 ## Cost Analysis
 
-### Vercel Costs
-- **Cron Jobs**: Free tier includes 1000 invocations/month
-- **Function Execution**: Pay only for actual processing time
-- **Database**: Shared with existing Neon database
+### GitHub Actions Costs
+- **Free Tier**: 2000 minutes/month
+- **Public Repos**: Unlimited free minutes
+- **Private Repos**: 2000 free minutes/month
+- **Overage**: $0.008 per minute
 
 ### Resource Efficiency
-- **Reduced Timeouts**: Fewer failed user requests
-- **Better Utilization**: Process only when jobs exist
-- **Scalable Growth**: Linear cost scaling with user load
+- **Reduced Timeouts**: No Vercel timeout issues
+- **Better Utilization**: Process only when triggered
+- **Scalable Growth**: Linear cost scaling with usage
+- **Express.js Compatible**: No Vercel-specific dependencies
 
 ## Conclusion
 
-The asynchronous candidate generation architecture solves the Vercel timeout problem while improving reliability, scalability, and user experience. By leveraging pg-boss and Vercel cron jobs, the system provides:
+The asynchronous candidate generation architecture using GitHub Actions workflows solves timeout limitations while improving reliability, scalability, and user experience. By leveraging GitHub Actions for background processing, the system provides:
 
-- **Immediate API responses** (<10 seconds)
-- **Reliable background processing** (no timeouts)
-- **Built-in fault tolerance** (retries and error handling)
-- **Cost-effective scaling** (pay-per-use model)
-- **Operational simplicity** (PostgreSQL-native queue)
+- **Immediate API responses** (<1 second)
+- **Extended timeout processing** (30 minutes via GitHub Actions)
+- **Express.js compatibility** (no Next.js dependencies)
+- **Built-in fault tolerance** (idempotency and error handling)
+- **Real-time progress updates** (SSE polling)
+- **Cost-effective scaling** (GitHub Actions free tier)
 
-The migration strategy ensures zero downtime and gradual rollout, while the monitoring and testing approaches provide confidence in the new system's reliability.
+The idempotency guarantee via `isGeneratingStartedAt` ensures single workflow per page, while the SSE polling provides real-time feedback to users. This architecture is production-ready for Express.js deployments.

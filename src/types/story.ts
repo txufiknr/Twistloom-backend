@@ -99,6 +99,21 @@ export const actionTypes = {
 };
 
 /**
+ * Action relationship/directional modifiers
+ * 
+ * This gives you a two-dimensional system: action type (psychological) +
+ * relationship (directional), providing richer narrative context.
+ */
+export const actionRelationships = {
+  "trust": "Place faith in, rely upon, believe",
+  "doubt": "Question, suspect, withhold belief",
+  "deny": "Refuse, contradict, reject",
+  "follow": "Obey, trail, emulate",
+  "approach": "Move toward, initiate contact",
+  "withdraw": "Pull back, retreat, distance"
+};
+
+/**
  * Union type of all possible mood values
  * 
  * Generated from the moods array to ensure type safety

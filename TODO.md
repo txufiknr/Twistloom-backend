@@ -2,12 +2,12 @@
 [x] recheck ${vercelUrl}/api/generate-candidates API implementation
 [x] ensure triggerBackgroundGeneration immediate
 [x] choice made ensure nggak return enriched page data
-[ ] create UserActivityType type
+[x] create UserActivityType type
 [ ] ganti approach:
 - hapus Next.js API route (gak bakal work)
-- pake on-demand github workflow (input page id), lock pake isGeneratingStartedAt
-- perlu pageGenerations schema kayak bookGenerations
-- no need for @vercel/functions
+- no need for pg-boss (pgboss.ts)
+- no need for daily vercel cron (vercel.json)
+- no need for /api
 
 Implementation Analysis
 
@@ -30,8 +30,6 @@ Solution:
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Important objects perlu disimpen di story state?
 [ ] Important objects perlu prop tambahan (trait, rules, color, battery)? 
-
-[GET /candidates/status] 🚀 Fired background generation for page 019e169c-0533-7748-a11a-2c6651b8067c (user: 019e1b4d-09f8-70ff-aae0-40d2f76f776f, book: 019e1655-bd46-7440-950d-5f483e741fc3)
 
 TODO:
 [ ] Stripe switch to live

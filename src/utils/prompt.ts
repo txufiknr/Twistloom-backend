@@ -8,7 +8,7 @@ import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
-import { ensureCandidatesForPageWithStrategy } from "./candidate-generation.js";
+import { ensureCandidatesForPageWithStrategy, triggerGitHubWorkflow } from "./candidate-generation.js";
 import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
@@ -2475,10 +2475,9 @@ export async function initializeBook(
         currentBook: book,
       });
     } else { // Fire-and-forget for fast user generated book result (immediate background processing)
-      // await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book); // Up to 24 hours delay
+      // await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book); // pg-boss, up to 24 hours cron delay
       // await ensureCandidatesForPage(userId, firstUserPage, initialState, book); // 4.5 minute Vercel limit
-      const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
-      void triggerBackgroundGeneration({
+      void triggerGitHubWorkflow({
         userId,
         pageId: firstUserPage.id,
         bookId: book.id,

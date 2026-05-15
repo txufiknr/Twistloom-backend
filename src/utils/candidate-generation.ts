@@ -605,8 +605,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
             const nextDepth = currentDepth + 1;
             if (nextDepth === 2) {
               // Level 2: Immediate fire-and-forget for better UX
-              const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
-              void triggerBackgroundGeneration({
+              void triggerGitHubWorkflow({
                 userId,
                 pageId: candidatePage.id,
                 bookId: candidatePage.bookId,
@@ -1220,13 +1219,20 @@ export async function ensureCandidatesForPageWithStrategy(
  * 
  * This is the recommended approach for Express.js deployments where Vercel's waitUntil is unavailable.
  * 
+ * **Idempotency**: This function is idempotent per pageId - it checks if generation is already
+ * in progress (isGeneratingStartedAt not null) and returns early if so. It sets isGeneratingStartedAt
+ * to now() before triggering the workflow to prevent duplicate triggers.
+ * 
+ * **Cleanup**: The cron job (retry-pending-generations.ts) is responsible for resetting
+ * isGeneratingStartedAt to null when generation completes or fails.
+ * 
  * @param params - Workflow trigger parameters
  * @param params.bookId - Book ID to trigger generation for
  * @param params.pageId - Page ID to trigger generation for
  * @param params.userId - User ID who triggered the generation
  * @param params.context - Context for logging (defaults to 'github-workflow-trigger')
  * 
- * @returns Promise<{ success: boolean; error?: string }> - Workflow dispatch result
+ * @returns Promise<{ success: boolean; error?: string; alreadyInProgress?: boolean }> - Workflow dispatch result
  * 
  * @example
  * ```typescript
@@ -1239,6 +1245,8 @@ export async function ensureCandidatesForPageWithStrategy(
  * 
  * if (result.success) {
  *   console.log('Workflow triggered successfully');
+ * } else if (result.alreadyInProgress) {
+ *   console.log('Generation already in progress');
  * } else {
  *   console.error('Failed to trigger workflow:', result.error);
  * }
@@ -1249,15 +1257,37 @@ export async function triggerGitHubWorkflow(params: {
   pageId: string;
   userId: string;
   context?: string;
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; error?: string; alreadyInProgress?: boolean }> {
   const { bookId, pageId, userId, context = 'github-workflow-trigger' } = params;
   console.log(`[${context}] 🚀 Triggering GitHub workflow for page ${pageId}`);
 
   try {
+    // Check if generation is already in progress (idempotency check)
+    const dbPage = await getPageFromDB(pageId, { client: dbWrite });
+    if (!dbPage) {
+      console.error(`[${context}] ❌ Page ${pageId} not found`);
+      return { success: false, error: 'Page not found' };
+    }
+
+    if (dbPage.isGeneratingStartedAt) {
+      console.log(`[${context}] ℹ️ Generation already in progress for page ${pageId} (started at ${dbPage.isGeneratingStartedAt})`);
+      return { success: true, alreadyInProgress: true };
+    }
+
+    // Set isGeneratingStartedAt to now() to mark generation as in progress
+    await dbWrite.update(pages)
+      .set({ isGeneratingStartedAt: new Date() })
+      .where(eq(pages.id, pageId));
+    console.log(`[${context}] ✅ Set isGeneratingStartedAt for page ${pageId}`);
+
     // Get GitHub token from environment
     const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
     if (!githubToken) {
       console.error(`[${context}] ❌ GITHUB_WORKFLOW_TOKEN not configured`);
+      // Reset isGeneratingStartedAt since we can't trigger the workflow
+      await dbWrite.update(pages)
+        .set({ isGeneratingStartedAt: null })
+        .where(eq(pages.id, pageId));
       return { success: false, error: 'GitHub workflow token not configured' };
     }
 
@@ -1290,6 +1320,10 @@ export async function triggerGitHubWorkflow(params: {
         statusText: workflowResponse.statusText,
         body: errorText
       });
+      // Reset isGeneratingStartedAt since workflow trigger failed
+      await dbWrite.update(pages)
+        .set({ isGeneratingStartedAt: null })
+        .where(eq(pages.id, pageId));
       return {
         success: false,
         error: `GitHub API error: ${workflowResponse.status} ${workflowResponse.statusText}`
@@ -1301,6 +1335,14 @@ export async function triggerGitHubWorkflow(params: {
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error(`[${context}] ❌ Failed to trigger GitHub workflow:`, errorMessage);
+    // Reset isGeneratingStartedAt on error to allow retry
+    try {
+      await dbWrite.update(pages)
+        .set({ isGeneratingStartedAt: null })
+        .where(eq(pages.id, pageId));
+    } catch (resetError) {
+      console.error(`[${context}] ⚠️ Failed to reset isGeneratingStartedAt:`, getErrorMessage(resetError));
+    }
     return { success: false, error: errorMessage };
   }
 }
