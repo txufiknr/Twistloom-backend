@@ -603,6 +603,9 @@ export async function visitBookPage(
     return { dbPage };
   }
 
+  // No user visit track for prefetch (not actual navigation)
+  if (skipVisit) return { dbPage, book };
+
   // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
   if (pageNumber > 1) {
@@ -638,9 +641,6 @@ export async function visitBookPage(
       }
     }
   }
-
-  // No user visit track for prefetch (not actual navigation)
-  if (skipVisit) return { dbPage, book };
 
   const isActionMatch = !action || action.destination.pageId === pageId;
   if (!isActionMatch) {

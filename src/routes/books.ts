@@ -72,7 +72,7 @@ import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../c
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
 import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
-import type { Action, UserStoryPage } from "../types/story.js";
+import type { UserStoryPage } from "../types/story.js";
 import { triggerGitHubWorkflow } from "../utils/candidate-generation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 
@@ -141,9 +141,7 @@ async function validateAndRetrievePageForGeneration(
   userId: string
 ): Promise<{ dbPage: DBPage; userPage: UserStoryPage; wasReset: boolean } | null> {
   // Early validation
-  if (!isValidUuid(pageId)) {
-    return null;
-  }
+  if (!isValidUuid(pageId)) return null;
 
   // Get the page by book identifier from database
   const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
@@ -1236,8 +1234,8 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
 /**
  * GET /api/books/:identifier/:pageId
  * 
- * Retrieves a specific page within a branch of a book.
- * Accepts both slug and UUID v7 as identifier.
+ * Retrieves a specific page within a book.
+ * Accepts both slug and UUID v7 as book identifier.
  * 
  * Supports translation via Accept-Language header. If the requested language
  * differs from the book's language, the page text will be translated and cached.
@@ -1251,9 +1249,9 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
   try {
     const { identifier, pageId, prefetch, translate: shouldTranslate } = req.params;
     const userId = req.userId!; // Always defined even for guests
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const skipVisit = prefetch === 'true' || req.method === 'HEAD';
-    const translate = shouldTranslate === 'true';
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
+    const skipVisit = prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
+    const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
 
     const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
       userId,
@@ -1272,6 +1270,22 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
     const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, acceptLanguage, translate, sourceAction });
     if (!page) return handleApiError(res, "Failed to get enriched page");
 
+    // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
+    const lastModified = dbPage.updatedAt;
+    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${acceptLanguage || 'en'}`;
+    const etag = `"${etagInput}"`;
+
+    // Check If-None-Match header (ETag includes translation params)
+    const ifNoneMatch = req.get('If-None-Match');
+    if (ifNoneMatch === etag) {
+      return res.status(304).end();
+    }
+
+    // Set caching headers
+    res.set('Last-Modified', lastModified.toUTCString());
+    res.set('ETag', etag);
+    res.set('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
+
     res.json({
       page,
       book,
@@ -1289,7 +1303,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
  * This ensures that when users select actions, the corresponding destination pages
  * are immediately available without waiting for AI generation.
  * 
- * **Authentication:** Required (via `requireAuth`)
+ * **Authentication:** Guest or authenticated (via `guestOrAuthMiddleware`)
  * 
  * **Response Format:** Always uses Server-Sent Events (SSE)
  * 
@@ -1327,12 +1341,13 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
 
+    if (!isValidUuid(pageIdStr)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
+
     // Use common validation and page retrieval
     const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
     if (!validationResult) {
-      if (!isValidUuid(pageIdStr)) {
-        return handleValidationError(res, "Invalid pageId: must be valid uuid");
-      }
       return handleNotFoundError(res, "Page not found");
     }
 
@@ -1351,9 +1366,9 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       : 'Candidate generation started...';
 
     // Check if some actions need generation
-    const totalActions = userPage.actions.filter((a: Action) => !a.destination?.pageId).length;
+    const totalPendingActions = userPage.actions.filter(a => !a.destination?.pageId).length;
 
-    if (totalActions === 0) {
+    if (totalPendingActions === 0) {
       console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
       try {
         if (!res.writableEnded) {
@@ -1480,26 +1495,26 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         actionProgress = progressEvents;
       } else {
         // Fallback: count actions with destinations and generate synthetic progress events
-        const actionsWithDestinations = userPage.actions.filter((a: Action) => a.destination?.pageId);
+        const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
         completedActions = actionsWithDestinations.length;
         totalActions = userPage.actions.length;
         
         // Generate synthetic progress events for completed actions
-        actionProgress = actionsWithDestinations.map((action: Action, index: number) => ({
+        actionProgress = actionsWithDestinations.map((action, index) => ({
           action: action.text,
-          status: 'completed' as const,
+          status: 'completed',
           completed: index + 1,
           total: userPage.actions.length,
           progress: Math.round(((index + 1) / userPage.actions.length) * 100),
           timestamp: new Date().toISOString()
-        }));
+        }) satisfies ActionProgressEvent);
       }
 
       return res.json({
         isGenerating: true,
         completedActions,
         totalActions,
-        actions: userPage.actions.filter((a: Action) => a.destination?.pageId),
+        actions: userPage.actions.filter(a => a.destination?.pageId),
         actionProgress, // Include per-action progress events
         startedAt: dbPage.isGeneratingStartedAt?.toISOString(),
         lastUpdated: new Date().toISOString(),
@@ -1507,7 +1522,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     }
 
     // Generation not in progress - check if actions are complete
-    const incompleteActions = userPage.actions.filter((a: Action) => !a.destination?.pageId);
+    const incompleteActions = userPage.actions.filter(a => !a.destination?.pageId);
     const isComplete = incompleteActions.length === 0;
 
     if (isComplete) {
@@ -1532,7 +1547,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       isGenerating: true,
       completedActions: 0,
       totalActions: incompleteActions.length,
-      actions: userPage.actions.filter((a: Action) => a.destination?.pageId),
+      actions: userPage.actions.filter(a => a.destination?.pageId),
       startedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),
     });
@@ -1573,9 +1588,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (search) {
       const validation = validateSearchQuery(search);
       if (!validation.isValid) {
-        return res.status(400).json({
-          error: validation.error
-        });
+        return handleValidationError(res, validation.error || 'Invalid search query');
       }
       sanitizedSearch = validation.sanitized;
     }
@@ -1584,17 +1597,13 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     if (language) {
       const langValidation = validateLanguageCode(language);
       if (!langValidation.isValid) {
-        return res.status(400).json({
-          error: langValidation.error
-        });
+        return handleValidationError(res, langValidation.error || 'Invalid language code');
       }
     }
 
     // Validate lastUpdated filter if provided
     if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
-      return res.status(400).json({
-        error: `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`
-      });
+      return handleValidationError(res, `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`);
     }
     
     // Validate and normalize sortBy parameter
@@ -2517,6 +2526,22 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     if (!enrichedBook) {
       return handleNotFoundError(res, "Book not found");
     }
+
+    // Generate ETag from updatedAt + userId (user-specific columns: isLiked, isRead, lastReadAt, lastPage)
+    const lastModified = enrichedBook.updatedAt;
+    const etagInput = `${lastModified.getTime()}-${req.userId || 'anonymous'}`;
+    const etag = `"${etagInput}"`;
+
+    // Check If-None-Match header (ETag includes userId for user-specific data)
+    const ifNoneMatch = req.get('If-None-Match');
+    if (ifNoneMatch === etag) {
+      return res.status(304).end();
+    }
+
+    // Set caching headers
+    res.set('Last-Modified', lastModified.toUTCString());
+    res.set('ETag', etag);
+    res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
 
     res.json({ book: enrichedBook });
   } catch (error) {

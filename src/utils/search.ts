@@ -139,9 +139,7 @@ export function validateSearchQuery(searchQuery: string): ValidationResult {
  */
 export function validateLanguageCode(language: string | undefined): { isValid: boolean; sanitized?: string; error?: string } {
   // If no language provided, it's valid
-  if (!language) {
-    return { isValid: true };
-  }
+  if (!language) return { isValid: true };
 
   const trimmed = language.trim();
   

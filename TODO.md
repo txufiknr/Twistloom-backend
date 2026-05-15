@@ -1,14 +1,15 @@
-[x] EnrichedBookData add `firstPageText`
-[x] recheck ${vercelUrl}/api/generate-candidates API implementation
-[x] ensure triggerBackgroundGeneration immediate
-[x] choice made ensure nggak return enriched page data
-[x] create UserActivityType type
+[x] Trigger delete liked books = delete userFavorites
+[x] generate story: ai validation dulu sebelum return bookId
+[x] Add Plot flags dari choice A & B leaked ke C
+[x] Get page LRU cache & Implement Last-Modified or ETag
+
+[ ] Lru cache trending books 2 minute
+[ ] Page 1 selected actions masih none
 
 [ ] ganti approach:
-- hapus Next.js API route (gak bakal work)
+- no need for Next.js API route ("/api")
 - no need for pg-boss (pgboss.ts)
 - no need for daily vercel cron (vercel.json)
-- no need for /api
 
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong

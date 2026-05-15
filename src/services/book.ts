@@ -68,8 +68,63 @@ const publicBookStatsCache = new LRUCache<string, {
   pagesCrafted: number;
 }>({
   max: 1,
-  ttl: 3 * 60 * 1000, // 3 minutes
+  ttl: 2 * 60 * 1000, // 2 minutes
 });
+
+/**
+ * LRU cache for enriched page data
+ * 
+ * Cache key format: "page:{pageId}:{userId|null}:{translate}:{acceptLanguage|en}"
+ * - pageId: Page identifier
+ * - userId: Current user ID (or "null" for anonymous) - affects selectedActions
+ * - translate: Whether translation is enabled
+ * - acceptLanguage: Target language code (or "en" default) - affects translatedText
+ * 
+ * Only caches pages with no incomplete actions (all actions have destinations).
+ * Pages with pending generation are not cached since they change frequently.
+ * 
+ * TTL: 2 minutes to balance freshness with performance
+ * Max size: 500 entries to prevent memory bloat
+ */
+const enrichedPageCache = new LRUCache<string, EnrichedStoryPage>({
+  max: 500,
+  ttl: 2 * 60 * 1000, // 2 minutes
+});
+
+/**
+ * Generates cache key for enriched page data
+ * 
+ * @param pageId - Page identifier
+ * @param userId - Optional current user ID
+ * @param translate - Whether translation is enabled
+ * @param acceptLanguage - Optional target language code
+ * @returns Cache key string
+ */
+function getEnrichedPageCacheKey(
+  pageId: string,
+  userId?: string | null,
+  translate: boolean = false,
+  acceptLanguage?: string | null
+): string {
+  return `page:${pageId}:${userId || 'null'}:${translate}:${acceptLanguage || 'en'}`;
+}
+
+/**
+ * Invalidates cache entries for a specific page
+ * 
+ * Removes all cache entries for a page regardless of user context or language.
+ * Called when page data is mutated (update, delete, action generation completes).
+ * 
+ * @param pageId - Page identifier to invalidate
+ */
+export function invalidateEnrichedPageCache(pageId: string): void {
+  // Find and delete all cache keys matching the page identifier
+  for (const key of enrichedPageCache.keys()) {
+    if (key.startsWith(`page:${pageId}:`)) {
+      enrichedPageCache.delete(key);
+    }
+  }
+}
 
 /**
  * Generates cache key for enriched book data
@@ -775,6 +830,58 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
   } satisfies StoryPage;
 }
 
+/**
+ * Maps database page data to enriched page format with caching
+ * 
+ * This function transforms raw database page data into a frontend-ready format,
+ * including user-specific data (selected actions), translation support, and
+ * story context. Uses LRU cache for performance when pages have complete actions.
+ * 
+ * **Caching Behavior:**
+ * - Only caches pages with no incomplete actions (all actions have destinations)
+ * - Pages with pending generation are not cached since they change frequently
+ * - Cache key includes: pageId, userId, translate, acceptLanguage
+ * - Cache TTL: 2 minutes to balance freshness with performance
+ * 
+ * **User-Specific Data:**
+ * - selectedActions: User's chosen actions for this page (varies per user)
+ * - translatedText: Translated text if Accept-Language differs from book language
+ * - context: Story state including places, characters, injuries, inventory
+ * 
+ * **Performance Considerations:**
+ * - Database queries: selectedActions (if authenticated), storyState
+ * - Translation API call: Only when translation is requested and needed
+ * - Cache hit: Returns immediately without database queries
+ * 
+ * @param dbPage - Raw page data from database
+ * @param options - Configuration options for enrichment
+ * @param options.userId - Optional current user ID for user-specific selectedActions
+ * @param options.bookLanguage - Book's language code (default: 'en')
+ * @param options.acceptLanguage - Optional target language for translation
+ * @param options.translate - Whether to enable translation (default: false)
+ * @param options.sourceAction - Source action that led to this page (required for pages > 1)
+ * @returns Promise resolving to enriched page or null if mapping fails
+ * 
+ * @example
+ * ```typescript
+ * // Basic usage without translation
+ * const page = await mapToEnrichedPage(dbPage, { userId: 'user123' });
+ * 
+ * // With translation to Spanish
+ * const translatedPage = await mapToEnrichedPage(dbPage, {
+ *   userId: 'user123',
+ *   bookLanguage: 'en',
+ *   acceptLanguage: 'es',
+ *   translate: true
+ * });
+ * 
+ * // With source action for page navigation
+ * const pageWithSource = await mapToEnrichedPage(dbPage, {
+ *   userId: 'user123',
+ *   sourceAction: selectedAction
+ * });
+ * ```
+ */
 export async function mapToEnrichedPage(dbPage: DBPage, options: {
   userId?: string,
   bookLanguage?: string,
@@ -784,8 +891,16 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
 }): Promise<EnrichedStoryPage | null> {
   const { userId, bookLanguage = 'en', acceptLanguage, translate = false, sourceAction } = options;
   const allActions = dbPage.actions;
-  const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
+  const visibleActions = allActions.filter(action => action.destination?.pageId);
+  const hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, text, bookId } = dbPage;
+
+  // Check cache first (only for pages with complete actions)
+  const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, acceptLanguage);
+  if (!hasIncompleteActions) {
+    const cached = enrichedPageCache.get(cacheKey);
+    if (cached) return cached;
+  }
 
   // Query user's chosen action for this page (if authenticated)
   const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, bookId, pageId) : [];
@@ -871,6 +986,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
     translatedText,
     context,
   };
+
+  // Cache the result only if page has complete actions (no pending generation)
+  if (!hasIncompleteActions) {
+    enrichedPageCache.set(cacheKey, enrichedPage);
+  }
 
   return enrichedPage;
 }

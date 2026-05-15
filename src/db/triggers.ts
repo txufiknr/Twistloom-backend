@@ -521,6 +521,58 @@ async function ensureBookBranchesDecrementTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to delete from user_favorites when a book is unliked from user_likes
+ * 
+ * This trigger fires AFTER DELETE on user_likes table:
+ * 1. When a user unlikes a book (target_type = 'book')
+ * 2. Deletes the corresponding entry from user_favorites for the same user+book
+ * 3. Ensures consistency between likes and favorites
+ * 
+ * Note: Only triggers when target_type is 'book' (not comments or users)
+ * 
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION cleanup_user_favorites_on_unlike()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Only process if the unliked item was a book
+        IF OLD.target_type = 'book' THEN
+          DELETE FROM user_favorites
+          WHERE user_id = OLD.user_id
+            AND book_id = OLD.target_id;
+        END IF;
+        RETURN OLD;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    
+    // Drop existing trigger if it exists
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_likes_delete_favorites_trigger ON user_likes;
+    `);
+    
+    // Create the trigger
+    await dbWrite.execute(`
+      CREATE TRIGGER user_likes_delete_favorites_trigger
+        AFTER DELETE ON user_likes
+        FOR EACH ROW
+        EXECUTE FUNCTION cleanup_user_favorites_on_unlike();
+    `);
+    
+    console.log("✅ User favorites cleanup trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create user favorites cleanup trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates all necessary database triggers
  * 
  * Sets up triggers for automated data consistency and business logic enforcement.
@@ -533,6 +585,7 @@ async function ensureBookBranchesDecrementTrigger(): Promise<void> {
  * - Creates book likes count increment/decrement triggers
  * - Creates book read count increment trigger
  * - Creates book branches count increment/decrement triggers
+ * - Creates user favorites cleanup trigger
  * - Logs successful creation operations
  * - Handles errors gracefully with detailed logging
  * 
@@ -555,6 +608,9 @@ export async function ensureTriggers(): Promise<void> {
     await ensurePageVisitCountIncrementTrigger();
     await ensureBookCommentsCountTrigger();
     await ensureBookCompleteCountTrigger();
+
+    // Create user favorites cleanup trigger
+    await ensureUserFavoritesCleanupTrigger();
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);

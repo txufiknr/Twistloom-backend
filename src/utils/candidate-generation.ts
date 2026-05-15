@@ -1270,7 +1270,7 @@ export async function triggerGitHubWorkflow(params: {
     }
 
     if (dbPage.isGeneratingStartedAt) {
-      console.log(`[${context}] ℹ️ Generation already in progress for page ${pageId} (started at ${dbPage.isGeneratingStartedAt})`);
+      console.log(`[${context}] ⏳ Generation already in progress for page ${pageId} (started at ${dbPage.isGeneratingStartedAt})`);
       return { success: true, alreadyInProgress: true };
     }
 
