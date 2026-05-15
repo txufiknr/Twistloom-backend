@@ -215,131 +215,94 @@ The system supports **manual triggering** of specific page generation via GitHub
 
 ## Candidate Generation Trigger Points
 
-### **1. Book Creation Flow**
-- **Location**: `src/utils/prompt.ts` (line ~2401-2406)
-- **Function**: `generateNextPage()` during book initialization
-- **Current Strategy**: Mixed approach (GitHub Action vs Fire-and-forget)
-- **Recommended Strategy**: 
-  ```typescript
-  // For GitHub cron jobs (originals generation)
-  await ensureCandidatesForPageWithStrategy(userId, firstUserPage, initialState, book, 'github-action');
-  
-  // For user-generated books (fast response)
-  await enqueueCandidateGenerationJob(userId, firstUserPage, book, initialState, { priority: 5 });
-  ```
-- **Purpose**: Ensure immediate availability of candidate pages for first story actions
+### **1. Book Creation (`initializeBook`)**
+```typescript
+// OLD (synchronous, timeout-prone):
+await ensureCandidatesForPage(userId, firstUserPage, initialState, book);
 
-### **2. Page Navigation Flow**
-- **Location**: `src/routes/books.ts` (GET `/api/books/:identifier/:pageId/candidates`)
-- **Function**: SSE-based candidate generation with progress tracking (always SSE, never JSON)
-- **Current Strategy**: Uses `triggerBackgroundGeneration()` to fire-and-forget background generation, then polls for completion via SSE
-- **Logic**: 
-  ```typescript
-  // Always set SSE headers first for consistent response format
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.flushHeaders();
+// NEW (GitHub workflow, immediate):
+void triggerGitHubWorkflow({
+  userId,
+  pageId: firstUserPage.id,
+  bookId: book.id,
+  context: 'initializeBook'
+});
+```
 
-  // Check if generation is already in progress (timestamp field)
-  if (dbPage.isGeneratingStartedAt) {
-    // Use SSE to poll for completion
-    // Poll for generation status every SSE_POLL_INTERVAL_MS
-    // Return completed page to user via SSE
-  } else {
-    // Check if any actions need generation
-    if (totalActions === 0) {
-      // Send SSE complete event immediately with current page
-      res.write(`event: complete\n`);
-      res.write(`data: ${JSON.stringify(userPage)}\n\n`);
-      return;
-    }
+### **2. Page Visit (`visitBookPage`)**
+```typescript
+// Triggers generation when user visits a page without candidates
+if (userPage.actions.some(a => !a.destination?.pageId)) {
+  await ensureCandidatesForPageWithStrategy(userId, userPage, currentState, book, 'vercel');
+}
+```
 
-    // Trigger background generation via triggerBackgroundGeneration
-    // This calls /api/generate-candidates with 'cron' strategy (13-minute timeout)
-    await triggerBackgroundGeneration({
-      userId,
-      pageId,
-      bookId: dbPage.bookId,
-      context: 'GET /candidates'
-    });
+### **3. API Endpoint (`GET /candidates`)**
+```typescript
+// Triggers GitHub workflow if not already in progress
+if (!isGenerating) {
+  void triggerGitHubWorkflow({
+    userId,
+    pageId,
+    bookId: dbPage.bookId,
+    context: 'GET /candidates'
+  });
+}
 
-    // Then use SSE to poll for completion (same logic as in-progress path)
-    // Poll for generation status every SSE_POLL_INTERVAL_MS
-    // Return completed page to user via SSE
-  }
-  ```
-- **Purpose**: Real-time progress feedback during candidate generation with consistent SSE response format
-- **Benefits**:
-  - Consistent SSE-only response (no JSON/SSE duality)
-  - Better separation of concerns (endpoint only polls, background service handles generation)
-  - Extended timeout via background generation (13 minutes vs 4.5 minutes)
-  - Reduced code duplication
+// Poll for completion via SSE
+await pollForCandidateGeneration({
+  pageId,
+  userId,
+  req,
+  res,
+  initialMessage: 'Candidate generation started...',
+  getPageFromDB,
+  mapToUserStoryPage,
+  getActionProgressEvents,
+  clearActionProgressEvents,
+  config: SSE_POLLING_CONFIG,
+});
+```
 
-### **3. Async Job Queue System**
+### **4. Async Job Queue System**
 - **Location**: `src/utils/candidate-generation-async.ts`
-- **Function**: `enqueueCandidateGenerationJob()` - **IDEAL CANDIDATE for `ensureCandidatesForPageAsync`**
-- **Current Usage**: **NOT USED** - this is where `ensureCandidatesForPageAsync` should be leveraged
-- **Recommended Integration**:
-  ```typescript
-  // Replace direct enqueueCandidateGeneration calls with ensureCandidatesForPageAsync
-  export async function enqueueCandidateGenerationJob(...) {
-    // Use ensureCandidatesForPageAsync for drop-in replacement
-    return await ensureCandidatesForPageAsync(userId, page, currentState, currentBook);
-  }
-  ```
+- **Function**: `enqueueCandidateGenerationJob()` - for deeper level generation (level 3+)
+- **Current Usage**: Used for level 3+ generation in parallel processing
 - **Strategy Context**: **'cron'** - designed for background job processing
-- **Purpose**: Eliminate Vercel timeout issues through background processing
+- **Purpose**: Queue less critical deeper levels for background processing
 
-### **4. Cron Job Processing**
-- **Location**: `src/cron/process-candidate-jobs/route.ts`
-- **Function**: Job queue processor
+### **5. GitHub Workflow Processing**
+- **Location**: `src/cron/retry-pending-generations.ts`
+- **Function**: Processes GitHub workflow triggers
 - **Current Strategy**: Uses `ensureCandidatesForPageWithStrategy(userId, page, state, book, 'cron')`
-- **Recommended Strategy**: **'cron' strategy** - perfect for background processing
-- **Logic**:
-  ```typescript
-  // Process jobs in parallel for efficiency
-  // Deserialize story state from job data
-  // Use strategy-aware generation based on deployment context
-  // Handle failures and retry logic
-  ```
-- **Purpose**: Reliable background processing of queued generation tasks
+- **Trigger**: Via GitHub Actions `workflow_dispatch` API
+- **Environment Variables**: `TRIGGERED_BOOK_ID`, `TRIGGERED_PAGE_ID`, `TRIGGERED_BY_USER`
+- **Purpose**: Reliable background processing with 30-minute timeout
 
-### **5. Retry & Recovery System**
+### **6. Retry & Recovery System**
 - **Location**: `src/cron/retry-pending-generations.ts`
 - **Function**: `retryFailedGenerations()`
-- **Current Strategy**: Uses synchronous generation
-- **Recommended Strategy**: **'cron' strategy** for retry operations
+- **Current Strategy**: Uses 'cron' strategy with extended timeout
 - **Logic**:
   ```typescript
   // Find pages with failed generations
-  // Enqueue high-priority retry jobs using ensureCandidatesForPageAsync
+  // Process using cron strategy with 13-minute timeout
   // Track retry attempts and success rates
   ```
 - **Purpose**: Automatic recovery from failed generation attempts
 
-### **6. GitHub Action Workflow**
-- **Location**: `.github/workflows/retry-pending-generations.yml`
-- **Trigger**: Manual workflow_dispatch or scheduled cron
-- **Current Strategy**: Uses GitHub Action approach
-- **Recommended Strategy**: **'github-action' strategy** - sequential processing
-- **Logic**:
-  ```yaml
-  # Accept inputs for targeted page generation
-  # Call API endpoint that uses 'github-action' strategy
-  # Log execution details and results
-  ```
-- **Purpose**: Manual intervention and debugging capabilities
+## Conclusion
 
-### **7. SSE Progress Events**
-- **Location**: `src/routes/books.ts` (SSE implementation)
-- **Events**:
-  ```typescript
-  // Overall progress: `event: progress`
-  // Per-action progress: `event: action_progress` (planned enhancement)
-  // Completion: `event: complete`
-  // Errors: `event: error`
-  ```
-- **Strategy Context**: Works with **'vercel' strategy** for real-time feedback
-- **Purpose**: Real-time user feedback during generation process
+The pre-generation system has evolved from synchronous generation to GitHub Actions workflow-based processing for Express.js compatibility. The system provides:
+
+- **Immediate Response**: API calls return in <1 second
+- **Extended Timeout**: 30-minute timeout via GitHub Actions (vs 5-minute Vercel limit)
+- **Express.js Compatible**: No Next.js dependencies
+- **Idempotent Triggers**: Single workflow per page via isGeneratingStartedAt
+- **Real-time Progress**: SSE polling for generation status
+- **Multi-level Strategy**: Different approaches for different generation depths
+
+**Note**: Per-action progress tracking infrastructure exists but is not yet integrated. The `ActionProgressCallback` is invoked during generation but not connected to the `storeActionProgressEvent()` cache. This integration is required for fine-grained per-action progress updates via SSE.
 
 ### Example Flow:
 ```

@@ -74,6 +74,7 @@ import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
 import type { Action, UserStoryPage } from "../types/story.js";
 import { triggerGitHubWorkflow } from "../utils/candidate-generation.js";
+import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 
 const router = Router();
 
@@ -81,9 +82,6 @@ const router = Router();
 const SSE_POLL_INTERVAL_MS = 2000; // 2s
 const SSE_MAX_ATTEMPTS = 150; // 5 minutes / 2s
 const SSE_PROGRESS_INTERVAL = 5; // every 5 polls => 10s
-
-// Maximum generation duration before considering it stuck (10 minutes)
-const MAX_GENERATION_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 // SSE polling config object for reuse
 const SSE_POLLING_CONFIG: SSEPollingConfig = {

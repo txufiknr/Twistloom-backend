@@ -55,6 +55,23 @@ const enrichedBookCache = new LRUCache<string, EnrichedBookData>({
 });
 
 /**
+ * LRU cache for public book statistics
+ * 
+ * Cache key: "public:book:stats"
+ * 
+ * TTL: 3 minutes to balance freshness with performance
+ * Max size: 1 entry (single global stats object)
+ */
+const publicBookStatsCache = new LRUCache<string, {
+  storiesCreated: number;
+  branchesExplored: number;
+  pagesCrafted: number;
+}>({
+  max: 1,
+  ttl: 3 * 60 * 1000, // 3 minutes
+});
+
+/**
  * Generates cache key for enriched book data
  * 
  * @param identifier - Book slug or ID
@@ -1109,6 +1126,8 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
  * - branchesExplored: Total number of unique branches across all books (pre-calculated)
  * - pagesCrafted: Total number of pages created
  * 
+ * Results are cached for 3 minutes to reduce database load.
+ * 
  * @returns Promise resolving to object containing the three stats
  * 
  * @example
@@ -1124,6 +1143,14 @@ export async function getPublicBookStats(): Promise<{
   branchesExplored: number;
   pagesCrafted: number;
 }> {
+  const cacheKey = 'public:book:stats';
+  
+  // Try to get from cache first
+  const cached = publicBookStatsCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   try {
     // Get total number of books (stories created) using SQL COUNT(*)
     // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
@@ -1144,11 +1171,16 @@ export async function getPublicBookStats(): Promise<{
       .select({ count: sql<number>`count(*)::int` })
       .from(pages);
 
-    return {
+    const stats = {
       storiesCreated: booksCount[0].count,
       branchesExplored: branchesCount[0].count,
       pagesCrafted: pagesCount[0].count,
     };
+
+    // Store in cache
+    publicBookStatsCache.set(cacheKey, stats);
+
+    return stats;
   } catch (error) {
     console.error('Failed to get public book stats:', getErrorMessage(error));
     throw new Error(`Unable to retrieve public book stats: ${getErrorMessage(error)}`, { cause: error });

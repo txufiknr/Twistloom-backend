@@ -182,6 +182,8 @@ await pollForCandidateGeneration({
 
 **Purpose**: In-memory LRU cache for action progress events
 
+**⚠️ Current Status**: Infrastructure exists but **not fully integrated**. The cache functions are defined but not connected to the generation callbacks.
+
 **Key Features**:
 - **LRU Cache**: Max 100 entries, 5-minute TTL
 - **Per-Action Progress**: Tracks individual action generation status
@@ -194,24 +196,32 @@ const PROGRESS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const PROGRESS_CACHE_MAX_SIZE = 100; // Max entries
 ```
 
-**Usage Example**:
+**Intended Usage** (not yet implemented):
 ```typescript
-// Store progress event
-await storeActionProgressEvent(pageId, {
-  action: 'Investigate the noise',
-  status: 'in_progress',
-  completed: 1,
-  total: 3,
-  progress: 33,
-  timestamp: new Date().toISOString()
-});
+// During generation, store progress events via callback
+const onProgress: ActionProgressCallback = async (action, status, result, error) => {
+  await storeActionProgressEvent(pageId, {
+    action: action.text,
+    status,
+    completed: status === 'completed' ? 1 : 0,
+    total: actions.length,
+    progress: status === 'completed' ? 100 : 0,
+    timestamp: new Date().toISOString(),
+    error: error ? getErrorMessage(error) : undefined
+  });
+};
 
-// Retrieve progress events
+// Retrieve progress events during SSE polling
 const events = await getActionProgressEvents(pageId);
 
 // Clear events after completion
 await clearActionProgressEvents(pageId);
 ```
+
+**Integration Required**:
+- Connect `ActionProgressCallback` in `generateCandidatesInParallel()` to `storeActionProgressEvent()`
+- Pass callback from API routes through to generation functions
+- Test SSE polling with actual per-action progress updates
 
 ### 4. Cron Job Processing (`src/cron/retry-pending-generations.ts`)
 
