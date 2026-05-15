@@ -22,6 +22,7 @@ export type DBNewStoryState = typeof storyStates.$inferInsert;
 /** Complete book data as stored in database */
 export type DBBook = typeof books.$inferSelect;
 export type DBNewBook = typeof books.$inferInsert;
+export type DBUpdateBook = Partial<Omit<DBNewBook, 'id' | 'userId' | 'createdAt'>>;
 
 /** Complete book data as stored in database */
 export type DBBookGeneration = typeof bookGenerations.$inferSelect;

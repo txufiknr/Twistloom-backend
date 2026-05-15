@@ -17,7 +17,7 @@ import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
-import type { DBBook, DBNewBook, DBNewPage, DBPage } from "../types/schema.js";
+import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
 import { getStoryStateFromPage } from "./story.js";
@@ -488,7 +488,7 @@ export async function getEnrichedBook(
  */
 export async function updateBook(
   bookId: string,
-  updates: Partial<Omit<DBNewBook, 'id' | 'userId' | 'createdAt'>>
+  updates: DBUpdateBook
 ): Promise<DBBook> {
   const result = await dbWrite
     .update(books)

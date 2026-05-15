@@ -1251,6 +1251,7 @@ export async function triggerGitHubWorkflow(params: {
   context?: string;
 }): Promise<{ success: boolean; error?: string }> {
   const { bookId, pageId, userId, context = 'github-workflow-trigger' } = params;
+  console.log(`[${context}] 🚀 Triggering GitHub workflow for page ${pageId}`);
 
   try {
     // Get GitHub token from environment
