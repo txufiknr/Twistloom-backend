@@ -1350,13 +1350,13 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       return;
     }
 
-    // Trigger background generation
-    console.log(`[GET /candidates] 🚀 Triggering background generation for page ${pageId}`);
-    const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
-    void triggerBackgroundGeneration({
-      userId,
-      pageId,
+    // Trigger background generation via GitHub workflow (works on Express deployment)
+    console.log(`[GET /candidates] 🚀 Triggering GitHub workflow for page ${pageId}`);
+    const { triggerGitHubWorkflow } = await import('../utils/candidate-generation.js');
+    void triggerGitHubWorkflow({
       bookId: dbPage.bookId,
+      pageId,
+      userId,
       context: 'GET /candidates'
     });
 
@@ -1499,12 +1499,13 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       });
     }
 
-    // Actions incomplete, trigger background generation
-    const { triggerBackgroundGeneration } = await import('../services/background-generation.js');
-    void triggerBackgroundGeneration({  // Fire-and-forget - doesn't block response
-      userId,
-      pageId,
+    // Actions incomplete, trigger background generation via GitHub workflow (works on Express deployment)
+    console.log(`[GET /candidates/status] 🚀 Triggering GitHub workflow for page ${pageId}`);
+    const { triggerGitHubWorkflow } = await import('../utils/candidate-generation.js');
+    void triggerGitHubWorkflow({
       bookId: dbPage.bookId,
+      pageId,
+      userId,
       context: 'GET /candidates/status',
     });
 
@@ -2434,121 +2435,6 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
     });
   } catch (error) {
     handleApiError(res, "Failed to delete comment", error);
-  }
-});
-
-/**
- * POST /api/books/:identifier/:pageId/generate
- * 
- * Triggers the GitHub workflow to retry pending generations for a specific book page.
- * This endpoint programmatically dispatches the retry-pending-generations workflow.
- * 
- * @param identifier - Book slug or UUID v7
- * @param pageId - Page ID to trigger generation for
- * @returns Success message with workflow dispatch status
- * 
- * @example
- * POST /api/books/whispering-halls/page123/generate
- * 
- * Response (200):
- * {
- *   "message": "Workflow triggered successfully",
- *   "workflow": "retry-pending-generations",
- *   "ref": "main"
- * }
- */
-router.post("/:identifier/:pageId/generate", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { identifier, pageId } = req.params;
-    const userId = req.userId!;
-
-    // Validate book exists and user has access
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const enrichedBook = await getEnrichedBook(bookIdentifier, userId);
-    if (!enrichedBook) {
-      return handleNotFoundError(res, "Book not found");
-    }
-
-    // Verify user owns the book (for generation triggering)
-    if (enrichedBook.userId !== userId) {
-      return res.status(403).json({
-        error: "Forbidden: You can only trigger generation for your own books"
-      });
-    }
-
-    // Get GitHub token from environment
-    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
-    if (!githubToken) {
-      return res.status(500).json({
-        error: "GitHub workflow token not configured"
-      });
-    }
-
-    // Trigger workflow via GitHub REST API
-    const workflowResponse = await fetch(`https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/retry-pending-generations.yml/dispatches`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `token ${githubToken}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'Twistloom-Backend'
-      },
-      body: JSON.stringify({
-        ref: GITHUB_DEFAULT_BRANCH,
-        inputs: {
-          book_id: enrichedBook.id,
-          page_id: pageId,
-          triggered_by: userId
-        }
-      })
-    });
-
-    if (!workflowResponse.ok) {
-      const errorText = await workflowResponse.text();
-      console.error('[POST /api/books/:identifier/:pageId/generate] GitHub API error:', {
-        status: workflowResponse.status,
-        statusText: workflowResponse.statusText,
-        body: errorText
-      });
-      
-      return res.status(workflowResponse.status).json({
-        error: "Failed to trigger GitHub workflow",
-        details: {
-          status: workflowResponse.status,
-          statusText: workflowResponse.statusText
-        }
-      });
-    }
-
-    // Log user activity (workflow trigger)
-    await logUserActivity({
-      userId,
-      activityType: 'workflow_triggered',
-      targetType: 'book',
-      targetId: enrichedBook.id,
-      metadata: { 
-        workflow: 'retry-pending-generations',
-        pageId: pageId
-      },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
-
-    res.json({
-      message: "Workflow triggered successfully",
-      workflow: "retry-pending-generations",
-      ref: GITHUB_DEFAULT_BRANCH,
-      inputs: {
-        book_id: enrichedBook.id,
-        page_id: pageId,
-        triggered_by: userId
-      }
-    });
-  } catch (error) {
-    console.error('[POST /api/books/:identifier/:pageId/generate] Error:', error);
-    handleApiError(res, "Failed to trigger workflow", error);
   }
 });
 

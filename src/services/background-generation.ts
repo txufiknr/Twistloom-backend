@@ -6,6 +6,14 @@
  * 
  * This service eliminates code duplication and provides a consistent interface
  * for triggering background generation across different parts of the application.
+ * 
+ * @deprecated This service uses Vercel's waitUntil which doesn't work in Express.js.
+ * Use triggerGitHubWorkflow from utils/candidate-generation.ts instead.
+ * 
+ * For Express.js deployments, use triggerGitHubWorkflow() which dispatches
+ * the retry-pending-generations GitHub workflow with 30-minute timeout.
+ * 
+ * This service is kept for backward compatibility with Vercel deployments only.
  */
 
 import { APP_WEB_URL } from '../config/constants.js';
@@ -24,6 +32,8 @@ import { ensureProtocol } from '../utils/parser.js';
  * @param params.pageId - Page ID for which to generate candidates
  * @param params.bookId - Book ID containing the page (optional but recommended)
  * @param params.context - Context for logging (defaults to 'background-generation')
+ * 
+ * @deprecated it's Vercel-specific, won't work on Express.js API
  * 
  * @returns Promise<void> - Fire-and-forget pattern (no waiting)
  * 

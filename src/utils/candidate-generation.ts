@@ -7,6 +7,7 @@
 
 import { getBook, getPageFromDB, getStoryPageById, mapToUserStoryPage } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
+import { GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_DEFAULT_BRANCH } from '../config/env.js';
 import type { UserStoryPage, StoryState, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
 import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
@@ -1208,5 +1209,97 @@ export async function ensureCandidatesForPageWithStrategy(
   } catch (err) {
     console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to read fresh page after lock failure:`, getErrorMessage(err));
     return page;
+  }
+}
+
+/**
+ * Triggers GitHub workflow for on-demand candidate generation
+ * 
+ * This function dispatches the retry-pending-generations workflow via GitHub REST API,
+ * which runs in GitHub Actions with extended timeout (30 minutes) and full environment access.
+ * 
+ * This is the recommended approach for Express.js deployments where Vercel's waitUntil is unavailable.
+ * 
+ * @param params - Workflow trigger parameters
+ * @param params.bookId - Book ID to trigger generation for
+ * @param params.pageId - Page ID to trigger generation for
+ * @param params.userId - User ID who triggered the generation
+ * @param params.context - Context for logging (defaults to 'github-workflow-trigger')
+ * 
+ * @returns Promise<{ success: boolean; error?: string }> - Workflow dispatch result
+ * 
+ * @example
+ * ```typescript
+ * const result = await triggerGitHubWorkflow({
+ *   bookId: 'book123',
+ *   pageId: 'page456',
+ *   userId: 'user789',
+ *   context: 'GET /candidates'
+ * });
+ * 
+ * if (result.success) {
+ *   console.log('Workflow triggered successfully');
+ * } else {
+ *   console.error('Failed to trigger workflow:', result.error);
+ * }
+ * ```
+ */
+export async function triggerGitHubWorkflow(params: {
+  bookId: string;
+  pageId: string;
+  userId: string;
+  context?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const { bookId, pageId, userId, context = 'github-workflow-trigger' } = params;
+
+  try {
+    // Get GitHub token from environment
+    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
+    if (!githubToken) {
+      console.error(`[${context}] ❌ GITHUB_WORKFLOW_TOKEN not configured`);
+      return { success: false, error: 'GitHub workflow token not configured' };
+    }
+
+    // Trigger workflow via GitHub REST API
+    const workflowResponse = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/retry-pending-generations.yml/dispatches`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `token ${githubToken}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Twistloom-Backend'
+        },
+        body: JSON.stringify({
+          ref: GITHUB_DEFAULT_BRANCH,
+          inputs: {
+            book_id: bookId,
+            page_id: pageId,
+            triggered_by: userId
+          }
+        })
+      }
+    );
+
+    if (!workflowResponse.ok) {
+      const errorText = await workflowResponse.text();
+      console.error(`[${context}] ❌ GitHub API error:`, {
+        status: workflowResponse.status,
+        statusText: workflowResponse.statusText,
+        body: errorText
+      });
+      return {
+        success: false,
+        error: `GitHub API error: ${workflowResponse.status} ${workflowResponse.statusText}`
+      };
+    }
+
+    console.log(`[${context}] 🚀 GitHub workflow triggered successfully for page ${pageId} (book: ${bookId}, user: ${userId})`);
+    return { success: true };
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+    console.error(`[${context}] ❌ Failed to trigger GitHub workflow:`, errorMessage);
+    return { success: false, error: errorMessage };
   }
 }

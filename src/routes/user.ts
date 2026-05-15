@@ -44,7 +44,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { users, userSessions, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
-import type { LikeTargetType } from "../types/user.js";
+import type { LikeTargetType, UserActivityType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -2210,7 +2210,7 @@ router.get("/activity-logs", requireAuth, async (req: Request, res: Response) =>
     
     // Add activity type filter if provided
     if (activityType) {
-      baseConditions.push(eq(userActivityLogs.activityType, activityType as string));
+      baseConditions.push(eq(userActivityLogs.activityType, activityType as UserActivityType));
     }
     
     // Add target type filter if provided

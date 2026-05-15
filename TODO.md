@@ -2,17 +2,25 @@
 [x] recheck ${vercelUrl}/api/generate-candidates API implementation
 [x] ensure triggerBackgroundGeneration immediate
 [x] choice made ensure nggak return enriched page data
-
-ganti approach:
+[ ] create UserActivityType type
+[ ] ganti approach:
 - hapus Next.js API route (gak bakal work)
 - pake on-demand github workflow (input page id), lock pake isGeneratingStartedAt
 - perlu pageGenerations schema kayak bookGenerations
-- each action mandatory has destination pageId & branchId
-- on create actions, insert page with text "Generating..."
-- cron job detect page with text "Generating..."
-- no need for pendingGenerationCount & isGeneratingStartedAt
-- no need for originalActionsCount
 - no need for @vercel/functions
+
+Implementation Analysis
+
+Current Issues:
+1. GET /candidates uses triggerBackgroundGeneration with waitUntil (Vercel-specific) - won't work in Express
+2. POST /generate has GitHub workflow trigger logic that's duplicated
+3. GitHub workflow runs in separate environment, can't provide real-time SSE feedback
+
+Solution:
+1. Extract GitHub workflow trigger into reusable function in candidate-generation.ts
+2. Update GET /candidates to trigger GitHub workflow instead of triggerBackgroundGeneration
+3. Keep SSE polling - it will poll database while GitHub workflow processes
+4. Remove redundant POST /generate endpoint
 
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong

@@ -47,3 +47,15 @@ export interface User {
   createdAt?: string;
   updatedAt?: string;
 }
+
+export type UserActivityType =
+  'workflow_triggered' |
+  'book_creation_started' |
+  'book_created' |
+  'liked' |
+  'favorited' |
+  'commented' |
+  'followed' |
+  'credits_consumed' |
+  'credits_added' |
+  'session_updated';

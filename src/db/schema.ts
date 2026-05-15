@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
-import type { Gender } from "../types/user.js";
+import type { Gender, UserActivityType } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC, StoryMCCandidate } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
@@ -630,7 +630,7 @@ export const userActivityLogs = pgTable(
   {
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
-    activityType: text("activity_type").notNull(), // e.g., "book_created", "liked", "commented", "followed", "favorited", "session_updated"
+    activityType: text("activity_type").$type<UserActivityType>().notNull(), // e.g., "book_created", "liked", "commented", "followed", "favorited", "session_updated"
     targetType: text("target_type"), // e.g., "book", "comment", "user"
     targetId: uuid("target_id"), // ID of the target entity
     metadata: jsonb("metadata"), // Additional context-specific data
