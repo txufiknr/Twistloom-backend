@@ -1,14 +1,18 @@
-[ ] check triggerBackgroundGeneration immediate atau engga, check level 2 depth di pre generation docs
-[ ] recheck ${vercelUrl}/api/generate-candidates API implementation
-[ ] consider tambah method generate candidate via on-demand github workflow (input page id), lock pake isGeneratingStartedAt
-[ ] EnrichedBookData add `firstPageText`
-[ ] choice made ensure nggak return enriched page data
+[x] EnrichedBookData add `firstPageText`
+[x] recheck ${vercelUrl}/api/generate-candidates API implementation
+[x] ensure triggerBackgroundGeneration immediate
+[x] choice made ensure nggak return enriched page data
 
-// Status 400 (dns:0.10000000055879354ms,tcp:70.70000000018626ms,req:31.90000000037253ms,res:997.6999999992549ms)
-{
-  "error": "Choice made, can't make another choice",
-  "message": "You already chose a different action on this page"
-}
+ganti approach:
+- hapus Next.js API route (gak bakal work)
+- pake on-demand github workflow (input page id), lock pake isGeneratingStartedAt
+- perlu pageGenerations schema kayak bookGenerations
+- each action mandatory has destination pageId & branchId
+- on create actions, insert page with text "Generating..."
+- cron job detect page with text "Generating..."
+- no need for pendingGenerationCount & isGeneratingStartedAt
+- no need for originalActionsCount
+- no need for @vercel/functions
 
 [ ] Consolidate like & save (like bisa save ke collection)
 [ ] generate next page / insert page: prevent actions kosong

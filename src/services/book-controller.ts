@@ -30,7 +30,7 @@ import { createRelevanceExpression } from "../utils/search.js";
 import type { DBPage } from "../types/schema.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import type { Action } from "../types/story.js";
-import { handleNotFoundError } from "../utils/error.js";
+import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 
@@ -609,13 +609,15 @@ export async function visitBookPage(
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
       handleNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
-      return { dbPage, book };
+      // return { dbPage, book };
+      return {};
     }
   
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
     if (!action) {
       handleNotFoundError(res, `Action for this page not found in the parent page`);
-      return { dbPage, book };
+      // return { dbPage, book };
+      return {};
     }
 
     // Users can go back and select any action they like in page 1
@@ -625,11 +627,13 @@ export async function visitBookPage(
       if (selectedActions.length > 0) {
         if (!selectedActions.some((a) => a.text === action!.text)) {
           // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
-          res.status(400).json({
-            error: "Choice made, can't make another choice",
-            message: "You already chose a different action on this page"
-          });
-          return { dbPage, book };
+          handleForbiddenError(res, "Choice made, can't make another choice");
+          // res.status(403).json({
+          //   error: "Choice made, can't make another choice",
+          //   message: "You already chose a different action on this page"
+          // });
+          // return { dbPage, book };
+          return {};
         }
       }
     }
@@ -645,10 +649,6 @@ export async function visitBookPage(
   }
 
   // Mark page as visited and persists chosen action
-  // try {
-    const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
-    return { dbPage, book, visitDetails, sourceAction: action };
-  // } catch {
-  //   return { dbPage, book };
-  // }
+  const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
+  return { dbPage, book, visitDetails, sourceAction: action };
 }

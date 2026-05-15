@@ -1210,7 +1210,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
     const { identifier, pageId, prefetch, translate: shouldTranslate } = req.params;
     const userId = req.userId!; // Always defined even for guests
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const skipVisit = prefetch === 'true';
+    const skipVisit = prefetch === 'true' || req.method === 'HEAD';
     const translate = shouldTranslate === 'true';
 
     const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
@@ -1220,8 +1220,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       skipVisit
     });
 
-    if (!dbPage) return handleNotFoundError(res, "Page not found");
-    if (!book) return handleNotFoundError(res, "Book not found");
+    if (!dbPage || !book) return;
 
     // Handle translation if Accept-Language header is provided and differs from book language
     const acceptLanguage = req.headers['accept-language'] as string | undefined;
