@@ -60,27 +60,27 @@ export interface CandidateGenerationResult {
  * Progress event for individual action generation
  */
 export interface ActionProgressEvent {
-  /** Action text being processed */
+  /** Action text being processed (unique identifier) */
   action: string;
   /** Current status of the action */
   status: ActionProgressStatus;
-  /** Number of actions completed so far */
-  completed: number;
-  /** Total number of actions to process */
-  total: number;
-  /** Progress percentage (0-100) */
-  progress: number;
   /** Error message if status is 'failed' */
   error?: string;
   /** ISO timestamp of when the event occurred */
   timestamp: string;
 }
 
+/** Status of an action generation operation */
 export type ActionProgressStatus = 'started' | 'completed' | 'failed';
+/** Callback for tracking per-action generation progress */
 export type ActionProgressCallback = (
+  /** The action being processed */
   action: Action,
+  /** Current status of the action generation */
   status: ActionProgressStatus,
+  /** Generated candidate page if successful */
   result?: PersistedStoryPage,
+  /** Error if generation failed */
   error?: unknown
 ) => void;
 
@@ -106,22 +106,34 @@ export interface GenerateCandidatesInParallelParams {
   currentDepth: number;
   /** Maximum depth to pre-generate */
   maxDepth: number;
-  /** Optional progress callback for real-time tracking */
+  /** Optional progress callback for per-action real-time tracking */
   onProgress?: ActionProgressCallback;
 }
 
+/** Parameters for generating candidates with a specific strategy */
 export interface GenerateCandidatesWithStrategyParams {
+  /** Generation strategy to use */
   strategy: CandidateGenerationStrategy;
+  /** User ID for database operations */
   userId: string;
+  /** Current page to generate candidates for */
   page: UserStoryPage;
+  /** Current story state for context */
   currentState?: StoryState | null;
+  /** Current book context */
   currentBook?: Book | null;
+  /** Optional generation options */
   options?: GenerateCandidatesOptions
 }
 
+/** Optional configuration for candidate generation */
 export interface GenerateCandidatesOptions {
+  /** Timeout for each generation operation in milliseconds */
   timeoutMs?: number;
+  /** Optional progress callback for per-action real-time tracking */
   onProgress?: ActionProgressCallback;
+  /** Current depth level for multi-level pre-generation */
   currentDepth?: number;
+  /** Maximum depth to pre-generate */
   maxDepth?: number;
 }

@@ -1,103 +1,137 @@
 /**
  * Progress event storage system for candidate generation
- * 
+ *
  * This module provides storage and retrieval of action progress events
  * for Server-Sent Events polling scenarios.
- * 
- * Phase 2.2 Implementation Status: IN-MEMORY LRU CACHE
- * =====================================================
- * Uses LRUCache package for automatic TTL management and memory-efficient storage.
- * Leverages existing "lru-cache" package already used in the codebase (book.ts).
- * 
+ *
+ * Implementation Status: DATABASE PERSISTENT STORAGE
+ * ===================================================
+ * Uses PostgreSQL database for persistent progress tracking across server restarts
+ * and long-running generation processes (up to 30+ minutes).
+ *
  * Current Behavior:
- * - storeActionProgressEvent: Stores events in LRU cache with 5-minute TTL
- * - getActionProgressEvents: Retrieves and cleans up stored events
- * - Automatic cleanup handled by LRUCache
- * 
- * Cache Configuration:
- * - Max entries: 100 (prevents memory bloat for concurrent generations)
- * - TTL: 5 minutes (matches generation timeout)
- * - Automatic LRU eviction when cache is full
- * 
- * Migration Path to Redis (when needed):
- * - When scaling to multi-server deployments
- * - When high concurrent users (>100 simultaneous generations)
- * - When paid Redis tier with guaranteed memory allocation is available
+ * - storeActionProgressEvent: Upserts progress events to database
+ * - getActionProgressEvents: Retrieves all progress events for a page
+ * - clearActionProgressEvents: Deletes progress events for a page
+ *
+ * Database Schema:
+ * - Table: action_progress
+ * - Unique constraint: (pageId, actionText)
+ * - TTL: No TTL (persistent storage)
+ * - Automatic cleanup via explicit deletion
+ *
+ * Benefits over LRU cache:
+ * - Survives server restarts
+ * - Supports long-running processes (30+ minutes)
+ * - Enables multi-server deployments
+ * - Provides audit trail and debugging capabilities
  */
 
-import { LRUCache } from 'lru-cache';
+import { dbWrite } from '../db/client.js';
+import { actionProgress } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
 import type { ActionProgressEvent } from '../types/candidates.js';
 
 /**
- * LRU cache for progress event storage
- * 
- * Cache key format: "progress:{pageId}"
- * - pageId: Page ID for which progress events are stored
- * 
- * TTL: 5 minutes to match generation timeout
- * Max size: 100 entries to prevent memory bloat (supports ~100 concurrent generations)
- */
-const progressEventCache = new LRUCache<string, ActionProgressEvent[]>({
-  max: 100, // Support up to 100 concurrent generations
-  ttl: 5 * 60 * 1000, // 5 minutes
-});
-
-/**
- * Stores an action progress event for later retrieval
- * 
- * Uses LRUCache for automatic TTL management and memory-efficient storage.
- * Events are appended to existing array for the same pageId.
- * 
+ * Stores or updates an action progress event in the database
+ *
+ * Uses upsert operation to handle both new and existing progress entries.
+ * This allows for status updates (e.g., started -> completed) without duplicate entries.
+ *
  * @param pageId - Page ID for which to store the event
  * @param event - Progress event data to store
  */
 export async function storeActionProgressEvent(
-  pageId: string, 
+  pageId: string,
   event: ActionProgressEvent
 ): Promise<void> {
-  const cacheKey = `progress:${pageId}`;
-  const existingEvents = progressEventCache.get(cacheKey) || [];
-  
-  // Append new event to existing events
-  const updatedEvents = [...existingEvents, event];
-  progressEventCache.set(cacheKey, updatedEvents);
-  
-  console.log(`[storeActionProgressEvent] 📊 LRU CACHE - Stored event for page ${pageId}:`, event.status);
+  try {
+    // Determine timestamps based on status
+    const startedAt = event.status === 'started' ? new Date(event.timestamp) : undefined;
+    const completedAt = event.status === 'completed' || event.status === 'failed' ? new Date(event.timestamp) : undefined;
+
+    // Upsert progress entry
+    await dbWrite
+      .insert(actionProgress)
+      .values({
+        pageId,
+        actionText: event.action,
+        status: event.status,
+        error: event.error,
+        startedAt,
+        completedAt,
+      })
+      .onConflictDoUpdate({
+        target: [actionProgress.pageId, actionProgress.actionText],
+        set: {
+          status: event.status,
+          error: event.error,
+          startedAt: startedAt || actionProgress.startedAt,
+          completedAt: completedAt || actionProgress.completedAt,
+          updatedAt: new Date(),
+        },
+      });
+
+    console.log(`[storeActionProgressEvent] 📊 DATABASE - Stored event for page ${pageId}, action "${event.action}":`, event.status);
+  } catch (error) {
+    console.error(`[storeActionProgressEvent] ❌ Failed to store progress event:`, error);
+    throw error;
+  }
 }
 
 /**
- * Retrieves stored action progress events for a page
- * 
+ * Retrieves all action progress events for a page from the database
+ *
  * Retrieves events for the page without clearing them.
  * This allows multiple polling requests to access the same progress data.
  * Use clearActionProgressEvents to explicitly remove events when generation completes.
- * 
+ *
  * @param pageId - Page ID for which to retrieve events
  * @returns Promise resolving to array of stored events
  */
 export async function getActionProgressEvents(
   pageId: string
 ): Promise<ActionProgressEvent[]> {
-  const cacheKey = `progress:${pageId}`;
-  const events = progressEventCache.get(cacheKey) || [];
-  
-  console.log(`[getActionProgressEvents] 📊 LRU CACHE - Retrieved ${events.length} events for page ${pageId}`);
-  return events;
+  try {
+    const rows = await dbWrite
+      .select()
+      .from(actionProgress)
+      .where(eq(actionProgress.pageId, pageId));
+
+    const events: ActionProgressEvent[] = rows.map(row => ({
+      action: row.actionText,
+      status: row.status,
+      error: row.error || undefined,
+      timestamp: row.updatedAt.toISOString(),
+    }));
+
+    console.log(`[getActionProgressEvents] 📊 DATABASE - Retrieved ${events.length} events for page ${pageId}`);
+    return events;
+  } catch (error) {
+    console.error(`[getActionProgressEvents] ❌ Failed to retrieve progress events:`, error);
+    throw error;
+  }
 }
 
 /**
- * Clears stored action progress events for a page
- * 
- * Explicitly removes events from the cache after generation completes.
+ * Clears all action progress events for a page from the database
+ *
+ * Explicitly removes events from the database after generation completes.
  * This should be called when generation is finished to clean up resources.
- * 
+ *
  * @param pageId - Page ID for which to clear events
  */
 export async function clearActionProgressEvents(
   pageId: string
 ): Promise<void> {
-  const cacheKey = `progress:${pageId}`;
-  progressEventCache.delete(cacheKey);
-  
-  console.log(`[clearActionProgressEvents] 📊 LRU CACHE - Cleared events for page ${pageId}`);
+  try {
+    await dbWrite
+      .delete(actionProgress)
+      .where(eq(actionProgress.pageId, pageId));
+
+    console.log(`[clearActionProgressEvents] 📊 DATABASE - Cleared events for page ${pageId}`);
+  } catch (error) {
+    console.error(`[clearActionProgressEvents] ❌ Failed to clear progress events:`, error);
+    throw error;
+  }
 }

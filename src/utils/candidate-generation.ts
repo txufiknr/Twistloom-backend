@@ -10,10 +10,11 @@ import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../con
 import { GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_DEFAULT_BRANCH } from '../config/env.js';
 import type { UserStoryPage, StoryState, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
+import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
+import { storeActionProgressEvent } from './progress-tracking.js';
 import { eq } from 'drizzle-orm';
 import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { enqueueCandidateGenerationJob } from './candidate-generation-async.js';
@@ -684,6 +685,25 @@ export async function ensureCandidatesForPageWithDepth(
 ): Promise<void> {
   const { onProgress } = options || {};
 
+  // Wrap onProgress callback to store progress in database
+  const onActionProgress: ActionProgressCallback = async (
+    action: Action,
+    status: ActionProgressStatus,
+    result?: PersistedStoryPage,
+    error?: unknown
+  ) => {
+    // Store progress event in database
+    await storeActionProgressEvent(page.id, {
+      action: action.text,
+      status,
+      error: error ? getErrorMessage(error) : undefined,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Call original callback if provided
+    onProgress?.(action, status, result, error);
+  };
+
   // Track request start time for timeout calculation
   const requestStartTime = Date.now();
 
@@ -759,7 +779,7 @@ export async function ensureCandidatesForPageWithDepth(
       timeoutMs: AI_GENERATION_TIMEOUT_MS,
       currentDepth,
       maxDepth,
-      onProgress
+      onProgress: onActionProgress
     });
     
     // Process results and update actions
@@ -863,6 +883,25 @@ export async function ensureCandidatesForPageWithStrategy(
 ): Promise<UserStoryPage> {
   const { strategy: context, userId, page, currentState, currentBook: providedBook, options = {} } = params;
   const { timeoutMs: customTimeoutMs, onProgress } = options;
+
+  // Wrap onProgress callback to store progress in database
+  const onActionProgress: ActionProgressCallback = async (
+    action: Action,
+    status: ActionProgressStatus,
+    result?: PersistedStoryPage,
+    error?: unknown
+  ) => {
+    // Store progress event in database
+    await storeActionProgressEvent(page.id, {
+      action: action.text,
+      status,
+      error: error ? getErrorMessage(error) : undefined,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Call original callback if provided
+    onProgress?.(action, status, result, error);
+  };
 
   // It's highly recommended to provide the currentState explicitly
   if (currentState === undefined) {
@@ -992,22 +1031,22 @@ export async function ensureCandidatesForPageWithStrategy(
      * Process action generation result (success or failure)
      */
     function processActionResult(
-      result: CandidateGenerationResult, 
+      result: CandidateGenerationResult,
       letter: string
     ): void {
       const action = result.action;
-      
+
       if (result.success && result.candidatePage) {
         // Success: update action with destination
         console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
         updateActionWithDestination(action, result.candidatePage);
-        
+
         // Notify progress callback
-        onProgress?.(action, 'completed', result.candidatePage);
+        onActionProgress(action, 'completed', result.candidatePage);
       } else {
         // Handle failed generation
         const isInvalidAction = isInvalidActionError(result.error);
-        
+
         if (isInvalidAction) {
           console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
           // Track removed action using clean Set-based approach
@@ -1021,9 +1060,9 @@ export async function ensureCandidatesForPageWithStrategy(
         } else {
           console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(result.error));
         }
-        
+
         // Notify progress callback of failure
-        onProgress?.(action, 'failed', undefined, result.error);
+        onActionProgress(action, 'failed', undefined, result.error);
       }
     }
     
@@ -1055,7 +1094,7 @@ export async function ensureCandidatesForPageWithStrategy(
         timeoutMs,
         currentDepth,
         maxDepth,
-        onProgress
+        onProgress: onActionProgress
       });
       
       // Process parallel results using helper functions
@@ -1072,9 +1111,9 @@ export async function ensureCandidatesForPageWithStrategy(
       for (const [index, action] of recheckedPendingDBActions.entries()) {
         const letter = generateActionLetter(action);
         console.log(`[ensureCandidatesForPageWithStrategy] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
-        
+
         // Notify progress callback of action start
-        onProgress?.(action, 'started');
+        onActionProgress(action, 'started');
         
         // Calculate generateNewBranchId per action: first action uses parent branchId, subsequent actions get new branchId
         const actionGenerateNewBranchId = isPartial || generateNewBranchId || index > 0;
@@ -1123,13 +1162,13 @@ export async function ensureCandidatesForPageWithStrategy(
           // Success: update the action with the destination
           console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
           updateActionWithDestination(action, candidatePage);
-          
+
           // Notify progress callback of success
-          onProgress?.(action, 'completed', candidatePage);
+          onActionProgress(action, 'completed', candidatePage);
         } else {
           // Handle failed generation
           const isInvalidAction = isInvalidActionError(lastError);
-          
+
           if (isInvalidAction) {
             console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
             // Track removed action using clean Set-based approach
@@ -1143,9 +1182,9 @@ export async function ensureCandidatesForPageWithStrategy(
           } else {
             console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(lastError));
           }
-          
+
           // Notify progress callback of failure
-          onProgress?.(action, 'failed', undefined, lastError);
+          onActionProgress(action, 'failed', undefined, lastError);
         }
       }
     }

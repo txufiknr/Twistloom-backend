@@ -9,6 +9,7 @@ import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
+import type { ActionProgressStatus } from "../types/candidates.js";
 import { generateId } from "../utils/uuid.js";
 import { BOOK_AVERAGE_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
@@ -405,6 +406,53 @@ export const userPageProgress = pgTable(
     index("user_page_progress_book_actioned_idx").on(t.bookId, t.actionedPageId),
     // Index for action tracking
     // index("user_page_progress_action_gin_idx").using("gin", t.action),
+  ]
+);
+
+/**
+ * Action progress tracking table
+ * @summary Track per-action generation progress for branching candidates
+ * @example
+ * {
+ *   "id": "progress123",
+ *   "page_id": "page456",
+ *   "action_text": "Investigate the noise",
+ *   "status": "completed",
+ *   "progress": 100,
+ *   "error": null,
+ *   "started_at": "2023-01-01T00:00:00.000Z",
+ *   "completed_at": "2023-01-01T00:05:00.000Z",
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:05:00.000Z"
+ * }
+ */
+export const actionProgress = pgTable(
+  "action_progress",
+  {
+    id: id(),
+    pageId: pageId("cascade"),
+    /** Action text (unique identifier for the action) */
+    actionText: text("action_text").notNull(),
+    /** Current status of the action generation */
+    status: text("status").$type<ActionProgressStatus>().notNull().default('started'),
+    /** Error message if status is 'failed' */
+    error: text("error"),
+    /** Timestamp when action generation started */
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    /** Timestamp when action generation completed */
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Unique constraint on (pageId, actionText) to ensure one progress entry per action
+    unique("action_progress_page_action_unique").on(t.pageId, t.actionText),
+    // Index for querying progress by page
+    index("action_progress_page_idx").on(t.pageId),
+    // Index for filtering by status (e.g., find all failed actions)
+    index("action_progress_status_idx").on(t.status),
+    // Index for active generations (in-progress actions)
+    index("action_progress_active_idx").on(t.status).where(sql`${t.status} = 'started'`),
   ]
 );
 

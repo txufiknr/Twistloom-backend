@@ -2,6 +2,7 @@
 [x] generate story: ai validation dulu sebelum return bookId
 [x] Add Plot flags dari choice A & B leaked ke C
 [x] Get page LRU cache & Implement Last-Modified or ETag
+[x] complete per-action candidate generation progress tracking
 
 [ ] Lru cache trending books 2 minute
 [ ] Page 1 selected actions masih none
@@ -18,7 +19,7 @@
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Important objects perlu disimpen di story state?
-[ ] Important objects perlu prop tambahan (trait, rules, color, battery)? 
+[ ] Important objects perlu prop tambahan: trait (custom fields: color, battery-level), rules (custom string array), status (broken, missing)? 
 
 TODO:
 [ ] Stripe switch to live

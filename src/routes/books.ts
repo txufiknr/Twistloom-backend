@@ -1480,32 +1480,23 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
 
     if (isGenerating) {
       // Generation in progress - return current status
-      // Check for progress events in cache
-      const progressEvents = await getActionProgressEvents?.(pageIdStr);
-      
-      let completedActions = 0;
-      let totalActions = 0;
+      // Check for progress events in database
+      const progressEvents = await getActionProgressEvents(pageIdStr);
+
+      // Calculate completed/total from page actions (SSOT)
+      const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
+      const completedActions = actionsWithDestinations.length;
+      const totalActions = userPage.actions.length;
       let actionProgress: ActionProgressEvent[] = [];
-      
+
       if (progressEvents && progressEvents.length > 0) {
-        const latestEvent = progressEvents[progressEvents.length - 1];
-        completedActions = latestEvent.completed;
-        totalActions = latestEvent.total;
         // Include all progress events for per-action status
         actionProgress = progressEvents;
       } else {
-        // Fallback: count actions with destinations and generate synthetic progress events
-        const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
-        completedActions = actionsWithDestinations.length;
-        totalActions = userPage.actions.length;
-        
-        // Generate synthetic progress events for completed actions
-        actionProgress = actionsWithDestinations.map((action, index) => ({
+        // Fallback: generate synthetic progress events for completed actions
+        actionProgress = actionsWithDestinations.map((action) => ({
           action: action.text,
           status: 'completed',
-          completed: index + 1,
-          total: userPage.actions.length,
-          progress: Math.round(((index + 1) / userPage.actions.length) * 100),
           timestamp: new Date().toISOString()
         }) satisfies ActionProgressEvent);
       }
@@ -1526,7 +1517,8 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     const isComplete = incompleteActions.length === 0;
 
     if (isComplete) {
-      // All actions complete, return full data
+      // All actions complete, clear progress events and return full data
+      await clearActionProgressEvents(pageIdStr);
       return res.json({
         isGenerating: false,
         completedActions: userPage.actions.length,
