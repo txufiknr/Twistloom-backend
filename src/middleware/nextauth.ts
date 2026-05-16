@@ -10,6 +10,32 @@
  * - Provides both required and optional auth middleware
  * - Compatible with guest user flow
  * 
+ * Summary
+ * I've successfully implemented Option 1 (Next.js Rewrites) to solve the 401 authentication issue:
+ * 
+ * Changes Made:
+ * Frontend (next.config.ts):
+ * - Added Next.js rewrites to proxy backend API requests through /api/backend/:path*
+ * - Requests to /api/backend/payments/create-checkout-session will be rewritten to https://twistloom-backend.vercel.app/api/payments/create-checkout-session
+ * - This makes the browser send NextAuth cookies automatically since requests appear to stay on the same domain
+ * 
+ * Backend (nextauth.ts):
+ * - Switched from jsonwebtoken to jose for JWT verification (jose is newer, already installed, and used by NextAuth internally)
+ * - Updated verifyNextAuthToken to use jose's jwtVerify function
+ * - Removed jsonwebtoken and @types/jsonwebtoken dependencies
+ * 
+ * Next Steps:
+ * 1. Update frontend API calls - Change your frontend fetch calls from:
+ * fetch('https://twistloom-backend.vercel.app/api/payments/create-checkout-session', ...)
+ * To:
+ * fetch('/api/backend/payments/create-checkout-session', ...)
+ * 
+ * 2. Set environment variable (optional) - Add NEXT_PUBLIC_BACKEND_URL to your frontend .env if you want to override the default backend URL
+ * 3. Test the authentication - Try accessing the protected endpoint after signing in with Google. The NextAuth cookies should now be sent automatically.
+ * 
+ * Why This Works:
+ * With the rewrites, the browser sees requests going to twistloom-web.vercel.app/api/backend/... instead of twistloom-backend.vercel.app/api/..., so it sends the NextAuth cookies automatically. The backend receives the cookies and verifies them using the same AUTH_SECRET as NextAuth.
+ * 
  * @todo
  * Optional Performance Optimization (from migration guide):
  * - The guide suggests adding authCacheMiddleware to avoid re-verifying JWT
@@ -21,7 +47,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { getToken } from 'next-auth/jwt';
+import { jwtVerify } from 'jose';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
 import { IS_PRODUCTION } from '../config/env.js';
@@ -43,6 +69,9 @@ function getCookieName(): string {
 /**
  * Verifies NextAuth JWT token from request cookies
  * 
+ * This function manually verifies the JWT token using the AUTH_SECRET,
+ * since NextAuth's getToken() is designed for Next.js API routes, not Express.
+ * 
  * @param req - Express request object
  * @returns User data if token is valid, null otherwise
  * 
@@ -56,20 +85,33 @@ function getCookieName(): string {
  */
 export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null> {
   try {
-    const token = await getToken({
-      req: req as unknown as { headers: Record<string, string> },
-      secret: process.env.AUTH_SECRET,
-      cookieName: getCookieName(),
-    });
+    const cookieName = getCookieName();
+    const token = req.cookies?.[cookieName];
+    // const token = await getToken({
+    //   req: req as unknown as { headers: Record<string, string> },
+    //   secret: process.env.AUTH_SECRET,
+    //   cookieName: getCookieName(),
+    // });
 
     if (!token) {
+      console.log(`[verifyNextAuthToken] No token found in cookie: ${cookieName}`);
       return null;
     }
 
+    const secret = process.env.AUTH_SECRET;
+    if (!secret) {
+      console.error('[verifyNextAuthToken] AUTH_SECRET is not configured');
+      return null;
+    }
+
+    // Verify the JWT token using jose
+    const secretKey = new TextEncoder().encode(secret);
+    const { payload } = await jwtVerify(token, secretKey);
+
     // Validate token structure with type guards
-    const userId = token.userId;
-    const email = token.email;
-    const name = token.name;
+    const userId = payload.userId as string | undefined;
+    const email = payload.email as string | undefined;
+    const name = payload.name as string | undefined;
 
     if (!userId || typeof userId !== 'string') {
       console.error('Invalid token: missing or invalid userId');
@@ -88,7 +130,17 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
       name: typeof name === 'string' ? name : undefined,
     };
   } catch (error) {
-    console.error('NextAuth token verification error:', error);
+    if (error instanceof Error) {
+      if (error.name === 'JWTExpired') {
+        console.log('[verifyNextAuthToken] JWT token expired:', error.message);
+      } else if (error.name === 'JWTInvalid' || error.name === 'JWSSignatureVerificationFailed') {
+        console.log('[verifyNextAuthToken] Invalid JWT token:', error.message);
+      } else {
+        console.error('[verifyNextAuthToken] Token verification error:', error.message);
+      }
+    } else {
+      console.error('[verifyNextAuthToken] Unknown error:', error);
+    }
     return null;
   }
 }

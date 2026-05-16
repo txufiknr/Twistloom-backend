@@ -1105,7 +1105,6 @@ Example response:
 ```
 
 POST /user/checkin — add to response (201 created):
-- `bonusAwarded` (number): the consecutive bonus awarded for this check-in (0 if none)
 - `currentStreak` (number): updated streak after this check-in
 - `totalCreditsClaimed` (number): updated total credits claimed after awarding
 
@@ -1115,7 +1114,6 @@ Example response:
 {
   "success": true,
   "creditsAwarded": 30,
-  "bonusAwarded": 15,
   "checkInDate": "2026-05-04",
   "currentStreak": 4,
   "totalCreditsClaimed": 195,

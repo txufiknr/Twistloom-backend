@@ -652,7 +652,6 @@ export async function visitBookPage(
             // return { dbPage, book };
             return {};
           } else {
-            // TODO: IMPORTANT: consume CREDIT_COSTS.CHOOSE_OTHER_ACTION credits
             shouldConsumeCredits = true;
           }
         }

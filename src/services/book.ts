@@ -429,7 +429,6 @@ export async function getBookFromDB(bookId: string, options: {
 } = {}): Promise<DBBook | null> {
   const { client = dbRead } = options;
 
-  // TODO: need to implement LRU cache (only for 'active' book)?
   const result = await client
     .select()
     .from(books)
@@ -452,6 +451,7 @@ export async function getBookFromDB(bookId: string, options: {
  * - Returns null if state doesn't exist anywhere
  */
 export async function getBook(bookId: string): Promise<Book | null> {
+  // TODO: need to implement LRU cache (only for 'active' book)?
   try {
     // const dbResult = await getBookFromDB(bookId);
     const dbResult = await getBookFromDB(bookId) ?? await getBookFromDB(bookId, { client: dbWrite });

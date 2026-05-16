@@ -12,6 +12,7 @@ import { MAX_PAGE_HISTORY, MAX_TRAVERSAL_DEPTH_SHALLOW } from "../config/story.j
 import type { BookPageVisit, EnrichedBookData } from "../types/book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { applyStateDelta } from "../utils/story.js";
+import { executeWithCredits, refundCredits } from "./credits.js";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -321,54 +322,140 @@ export async function markPageVisited(params: {
 
   console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action, shouldConsumeCredits });
 
+  const { id: bookId, stats } = book;
+  const { id: pageId, page: pageNumber, visitCount } = visitedPage;
+
+  if (action && action.destination.pageId !== pageId) {
+    throw new Error(`action.destination.pageId and pageId mismatch`);
+  }
+
+  // Skip credit consumption for internal system user
+  const isInternal = userId === process.env.SYSTEM_USER_ID;
+  let correlationId: string | undefined;
+
   try {
-    const { id: bookId, stats } = book;
-    const { id: pageId, page: pageNumber, visitCount } = visitedPage;
+    let session: DBUserSession | null | undefined;
+    let nthVisit: number;
+    let visitorPercentage: number;
 
-    if (action && action.destination.pageId !== pageId) {
-      throw new Error(`action.destination.pageId and pageId mismatch`);
-    }
-
-    // TODO: if `shouldConsumeCredits` true, use `tx` for atomicity
-    // const client = shouldConsumeCredits ? tx : dbWrite;
-    const client = dbWrite;
-
-    // Update active session to point to the new page
-    const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
-
-    // Start inserting user page progress after reader lands on page 2 onwards
-    if (pageNumber > 1) {
-      if (!action || !actionedPageId) {
-        throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
-      }
-
-      // Insert page progress record (trigger will increment visitCount in pages table)
-      const progress = await insertUserPageProgress({
+    if (shouldConsumeCredits && !isInternal) {
+      // User request: consume credits and mark page visited atomically
+      // This ensures credits are refunded if marking page visited fails
+      const executeCreditsResult = await executeWithCredits<BookPageVisit>(
         userId,
-        bookId,
-        actionedPageId,
-        nextPageId: pageId,
-        action,
-        client,
-      });
-      if (progress) {
-        console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
-      } else {
-        console.log(`[markPageVisited] ❌ User page progress not updated`);
+        "CHOOSE_OTHER_ACTION",
+        async (tx) => {
+          // Update active session to point to the new page
+          const sessionResult = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client: tx });
+
+          // Start inserting user page progress after reader lands on page 2 onwards
+          if (pageNumber > 1) {
+            if (!action || !actionedPageId) {
+              throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
+            }
+
+            // Insert page progress record (trigger will increment visitCount in pages table)
+            const progress = await insertUserPageProgress({
+              userId,
+              bookId,
+              actionedPageId,
+              nextPageId: pageId,
+              action,
+              client: tx,
+            });
+            if (progress) {
+              console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
+            } else {
+              console.log(`[markPageVisited] ❌ User page progress not updated`);
+            }
+          }
+
+          // Calculate visit statistics using denormalized data
+          // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
+          // visitorPercentage: use read_count from books table (maintained by existing trigger)
+          const nthVisitResult = visitCount + 1;
+          const totalBookReaders = stats.readCount;
+          const visitorPercentageResult = totalBookReaders === 0 ? 100 : Math.round((nthVisitResult / totalBookReaders) * 100);
+
+          console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisitResult}, visitorPercentage=${visitorPercentageResult}%)`);
+          
+          return { session: sessionResult, nthVisit: nthVisitResult, visitorPercentage: visitorPercentageResult, readerUserId: userId };
+        },
+        {
+          context: "choose_other_action",
+          metadata: { bookId, pageId, pageNumber }
+        }
+      );
+      
+      session = executeCreditsResult.result.session ?? null;
+      nthVisit = executeCreditsResult.result.nthVisit;
+      visitorPercentage = executeCreditsResult.result.visitorPercentage;
+      correlationId = executeCreditsResult.correlationId;
+    } else {
+      // Internal user or no credit consumption: mark page visited without credit transaction
+      const client = dbWrite;
+
+      // Update active session to point to the new page
+      session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
+
+      // Start inserting user page progress after reader lands on page 2 onwards
+      if (pageNumber > 1) {
+        if (!action || !actionedPageId) {
+          throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
+        }
+
+        // Insert page progress record (trigger will increment visitCount in pages table)
+        const progress = await insertUserPageProgress({
+          userId,
+          bookId,
+          actionedPageId,
+          nextPageId: pageId,
+          action,
+          client,
+        });
+        if (progress) {
+          console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
+        } else {
+          console.log(`[markPageVisited] ❌ User page progress not updated`);
+        }
       }
+
+      // Calculate visit statistics using denormalized data
+      // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
+      // visitorPercentage: use read_count from books table (maintained by existing trigger)
+      nthVisit = visitCount + 1;
+      const totalBookReaders = stats.readCount;
+      visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
+
+      console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
     }
 
-    // Calculate visit statistics using denormalized data
-    // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
-    // visitorPercentage: use read_count from books table (maintained by existing trigger)
-    const nthVisit = visitCount + 1;
-    const totalBookReaders = stats.readCount;
-    const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
-
-    console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
     return { session, nthVisit, visitorPercentage, readerUserId: userId };
   } catch (error) {
     console.error(`[markPageVisited] ❌ Failed to mark page visited:`, getErrorMessage(error));
+    
+    // Refund credits idempotently using correlation ID for non-internal users
+    // This prevents duplicate refunds if the error handler runs multiple times
+    if (shouldConsumeCredits && !isInternal && correlationId) {
+      try {
+        await refundCredits(userId, "CHOOSE_OTHER_ACTION", {
+          context: "choose_other_action_failed",
+          metadata: { bookId, pageId, pageNumber },
+          correlationId // Use correlation ID from executeWithCredits for idempotency
+        });
+        console.log('[markPageVisited] ✅ Credits refunded due to page visit failure');
+      } catch (refundError) {
+        // All retry attempts failed, log for manual review
+        console.error('[markPageVisited] ⚠️ All refund attempts failed, manual review required:', {
+          userId,
+          correlationId,
+          bookId,
+          pageId,
+          error: getErrorMessage(refundError)
+        });
+      }
+    }
+    
     throw new Error(`Unable to mark page visited: ${getErrorMessage(error)}`, { cause: error });
   }
 }
