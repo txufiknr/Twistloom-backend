@@ -1,3 +1,4 @@
+import type { DBClient } from "../db/client.js";
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, RelationshipUpdate } from "./character.js";
@@ -1124,6 +1125,8 @@ export type SetActiveSessionParams = {
   pageId: string;
   /** Previous page ID (optional, for tracking navigation) */
   previousPageId?: string;
+  /** Use dbWrite to avoid read replica stale */
+  client?: DBClient;
 };
 
 /**

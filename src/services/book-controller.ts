@@ -581,15 +581,16 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
  */
 export async function visitBookPage(
   res: Response,
-  params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean }
+  params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean, consumeCredits?: boolean }
 ): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage, sourceAction?: Action }> {
-  const { userId, pageId, bookIdentifier, skipVisit = false } = params;
+  const { userId, pageId, bookIdentifier, skipVisit = false, consumeCredits = false } = params;
   console.log(`[visit] 👓 Visited pageId:`, pageId, `(skipVisit = ${skipVisit})`);
 
   // Get page
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
   if (!dbPage) {
     console.error(`[visit] ❌ Visited page not found:`, pageId);
+    handleNotFoundError(res, `Page not found`);
     return {};
   }
 
@@ -600,7 +601,9 @@ export async function visitBookPage(
   const book = await getEnrichedBook(bookId, userId);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
-    return { dbPage };
+    // return { dbPage };
+    handleNotFoundError(res, `Book not found`);
+    return {};
   }
 
   // No user visit track for prefetch (not actual navigation)
@@ -608,9 +611,12 @@ export async function visitBookPage(
 
   // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
+  let shouldConsumeCredits = false;
+
   if (pageNumber > 1) {
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
+      console.error(`[visit] ❌ Previous page not found:`, parentPageId);
       handleNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
       // return { dbPage, book };
       return {};
@@ -618,9 +624,16 @@ export async function visitBookPage(
   
     action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
     if (!action) {
+      console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
       handleNotFoundError(res, `Action for this page not found in the parent page`);
       // return { dbPage, book };
       return {};
+    }
+
+    const isActionMatch = !action || action.destination.pageId === pageId;
+    if (!isActionMatch) {
+      console.error(`[visitBookPage] ❌ action.destination.pageId and pageId mismatch`);
+      return { dbPage, book };
     }
 
     // Users can go back and select any action they like in page 1
@@ -629,26 +642,32 @@ export async function visitBookPage(
       const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
       if (selectedActions.length > 0) {
         if (!selectedActions.some((a) => a.text === action!.text)) {
-          // TODO: except for premium user via choose other action (consumes CREDIT_COSTS.CHOOSE_OTHER_ACTION credits)
-          handleForbiddenError(res, "Choice made, can't make another choice");
-          // res.status(403).json({
-          //   error: "Choice made, can't make another choice",
-          //   message: "You already chose a different action on this page"
-          // });
-          // return { dbPage, book };
-          return {};
+          if (!consumeCredits) {
+            console.error(`[visit] ❌ Choice made, can't make another choice`);
+            handleForbiddenError(res, "Choice made, can't make another choice");
+            // res.status(403).json({
+            //   error: "Choice made, can't make another choice",
+            //   message: "You already chose a different action on this page"
+            // });
+            // return { dbPage, book };
+            return {};
+          } else {
+            // TODO: IMPORTANT: consume CREDIT_COSTS.CHOOSE_OTHER_ACTION credits
+            shouldConsumeCredits = true;
+          }
         }
       }
     }
   }
 
-  const isActionMatch = !action || action.destination.pageId === pageId;
-  if (!isActionMatch) {
-    console.warn(`[visitBookPage] ❌ action.destination.pageId and pageId mismatch`);
-    return { dbPage, book };
-  }
-
   // Mark page as visited and persists chosen action
-  const visitDetails = await markPageVisited(userId, book, dbPage, parentPageId ?? undefined, action);
+  const visitDetails = await markPageVisited({
+    userId,
+    book,
+    visitedPage: dbPage,
+    actionedPageId: parentPageId ?? undefined,
+    action,
+    shouldConsumeCredits
+  });
   return { dbPage, book, visitDetails, sourceAction: action };
 }

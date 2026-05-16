@@ -2085,9 +2085,7 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
 router.get("/checkin/status", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    
     const status = await getCheckInStatus(userId);
-    
     res.json(status);
 
     // Update user's last activity timestamp
@@ -2101,7 +2099,7 @@ router.get("/checkin/status", requireAuth, async (req: Request, res: Response) =
  * POST /user/checkin
  * 
  * Performs daily check-in and awards free credits to the authenticated user.
- * Each check-in awards 30 free credits (configurable via DAILY_CHECKIN_CREDITS).
+ * Each check-in awards 5 free credits (configurable via DAILY_CHECKIN_BONUS).
  * Users can only check-in once per UTC day.
  * 
  * @route POST /user/checkin

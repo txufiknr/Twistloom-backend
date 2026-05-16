@@ -4,6 +4,14 @@
 [x] Get page LRU cache & Implement Last-Modified or ETag
 [x] complete per-action candidate generation progress tracking
 [x] can we update pendingGenerationCount via trigger which auto-detect from actions column?
+[ ] /api/payments/create-checkout-session 401 unauthorized
+
+please examine my `requireAuth` middleware and `verifyNextAuthToken` function implementation
+I signed in with Google, but I always got 401 when accessing API with `requireAuth` middleware
+for eample when: POST /payments/create-checkout-session
+can you investigate and solve the issue?
+
+can you adjust user checkin API routes response shape in this backend project to accomodate frontend needs accordingly?
 
 [ ] Lru cache trending books 2 minute
 [ ] Page 1 selected actions masih none

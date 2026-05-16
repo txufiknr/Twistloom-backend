@@ -14,6 +14,7 @@ import { generateId } from "../utils/uuid.js";
 import { BOOK_AVERAGE_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
+import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
 /** Pre-defined columns */
 const id = () => uuid("id").primaryKey().$defaultFn(generateId);
@@ -181,7 +182,7 @@ export const users = pgTable(
     email: text("email").unique("users_email_unique"), // Unique constraint for login
     passwordHash: text("password_hash"), // Hashed password for email/password authentication
     stripeCustomerID: text("stripe_customer_id").unique("users_stripe_customer_id_unique"),
-    credits: integer("credits").notNull().default(50),
+    credits: integer("credits").notNull().default(FIRST_TIME_CREDITS),
     penName: text("pen_name"),
     bio: text("bio"), // User bio/description
     gender,

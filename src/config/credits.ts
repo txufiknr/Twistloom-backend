@@ -82,18 +82,26 @@ export const CREDIT_COSTS = {
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 } as const;
 
+/** Credits bonus for first-time users */
+export const FIRST_TIME_CREDITS = 50;
+
 /**
  * Daily check-in rewards
  * @overview Defines free credits awarded for daily user check-ins
  */
-export const DAILY_CHECKIN_CREDITS = 30;
+// Big 20 credits bonus on 7th consecutive day
+export const DAILY_CHECKIN_DAYS = 7;
+// Flat 5 credits bonus on day 1-6
+export const DAILY_CHECKIN_BONUS = 5;
+// Bonus applied on the 7th consecutive day
+export const DAILY_CHECKIN_BIG_BONUS = 20;
 
 export type CreditCostKey = keyof typeof CREDIT_COSTS;
 
 export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",
-    title: "Observer Package (50 credits)",
+    title: "Observer Package",
     tagline: "You watch… but rarely interfere.",
     description:
       "Perfect for first-time readers. Explore branching paths and test how your decisions shape the story.",
@@ -101,14 +109,12 @@ export const CREDIT_PACKS: CreditPack[] = [
     priceUSD: 2.99,
     priceId: "price_1TSq8CFmDKrMqBDfv8hHK8hi", // Stripe Price ID
     productId: "prod_URjbG0HYUqTKjj",
-    highlight: false,
     badge: null,
-    valueTag: "~10-12 choices",
     color: "gray",
   },
   {
     id: "investigator",
-    title: "Investigator Package (150 credits)",
+    title: "Investigator Package",
     tagline: "You follow the clues. Carefully.",
     description:
       "Dig deeper into the mystery. Enough credits to influence key decisions and unlock hidden paths.",
@@ -116,14 +122,12 @@ export const CREDIT_PACKS: CreditPack[] = [
     priceUSD: 7.99,
     priceId: "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
     productId: "prod_URjhcMuRg9MAl7",
-    highlight: true,
     badge: "🔥 Most Popular",
-    valueTag: "~30-40 choices",
     color: "blue",
   },
   {
     id: "mastermind",
-    title: "Mastermind Package (500 credits)",
+    title: "Mastermind Package",
     tagline: "You don't follow the story. You control it.",
     description:
       "Take full control of the narrative. Craft custom actions, explore alternate endings, and bend the story to your will.",
@@ -131,9 +135,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     priceUSD: 19.99,
     priceId: "price_1TSqEpFmDKrMqBDfhrwd9wOn",
     productId: "prod_URjiSAzuitp1le",
-    highlight: false,
     badge: "💎 Best Value",
-    valueTag: "~120+ choices",
     color: "purple",
   },
 ];

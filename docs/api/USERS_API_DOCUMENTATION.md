@@ -1080,6 +1080,49 @@ Performs daily check-in and awards free credits to the authenticated user. Each 
 - Records credit transaction with context "daily_checkin"
 - Invalidates user profile cache (credits changed)
 
+**Backend integration (required fields & implementation guidance):**
+
+To support the frontend consecutive check-in UI and eliminate client-side heuristics, the check-in endpoints should return the following additional fields.
+
+GET /user/checkin/status — add to response (200):
+- `currentStreak` (number): number of consecutive days the user has checked in up to yesterday (or today if already checked in). This should be computed using UTC dates.
+- `nextClaimAmount` (number): total credits the user will receive if they check in today (base daily credits + consecutive bonus for the next day).
+
+Example response:
+
+```json
+{
+  "canCheckIn": true,
+  "lastCheckInDate": "2026-05-03",
+  "totalCheckIns": 5,
+  "totalCreditsClaimed": 150,
+  "currentStreak": 3,
+  "nextClaimAmount": 45,
+  "recentCheckIns": [
+    { "checkInDate": "2026-05-03", "creditsClaimed": 30, "createdAt": "2026-05-03T00:00:00.000Z" }
+  ]
+}
+```
+
+POST /user/checkin — add to response (201 created):
+- `bonusAwarded` (number): the consecutive bonus awarded for this check-in (0 if none)
+- `currentStreak` (number): updated streak after this check-in
+- `totalCreditsClaimed` (number): updated total credits claimed after awarding
+
+Example response:
+
+```json
+{
+  "success": true,
+  "creditsAwarded": 30,
+  "bonusAwarded": 15,
+  "checkInDate": "2026-05-04",
+  "currentStreak": 4,
+  "totalCreditsClaimed": 195,
+  "message": "Successfully claimed 30 daily credits"
+}
+```
+
 ---
 
 ## Activity Logs

@@ -59,3 +59,28 @@ export type UserActivityType =
   'credits_consumed' |
   'credits_added' |
   'session_updated';
+
+export interface CheckinRecord {
+  checkInDate: string; // YYYY-MM-DD
+  creditsClaimed: number;
+  createdAt: Date;
+}
+
+export interface CheckinPostResponse {
+  success: boolean;
+  creditsAwarded: number;
+  checkInDate: string;
+  message: string;
+  currentStreak: number;
+  totalCreditsClaimed: number;
+}
+
+export interface CheckinStatusResponse {
+  canCheckIn: boolean;
+  lastCheckInDate: string | null;
+  totalCheckIns: number;
+  totalCreditsClaimed: number;
+  currentStreak: number;
+  nextClaimAmount: number;
+  recentCheckIns: CheckinRecord[];
+}

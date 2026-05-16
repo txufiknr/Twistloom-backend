@@ -110,9 +110,7 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
       priceUSD: pack.priceUSD,
       priceId: pack.priceId,
       productId: pack.productId,
-      highlight: pack.highlight,
       badge: pack.badge,
-      valueTag: pack.valueTag,
       color: pack.color,
     }));
 

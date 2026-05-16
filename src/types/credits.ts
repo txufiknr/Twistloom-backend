@@ -15,12 +15,8 @@ export interface CreditPack {
   priceId: string;
   /** Stripe Product ID for reference */
   productId: string;
-  /** Whether to highlight this pack as recommended */
-  highlight: boolean;
   /** Optional badge text (e.g., "Most Popular") */
   badge: string | null;
-  /** Approximate number of choices/uses */
-  valueTag: string;
   /** Color theme for UI display */
   color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
 }

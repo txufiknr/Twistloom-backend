@@ -137,3 +137,13 @@ export interface GenerateCandidatesOptions {
   /** Maximum depth to pre-generate */
   maxDepth?: number;
 }
+
+export interface CandidateGenerationStatus {
+  isGenerating: boolean;
+  completedActions: number;
+  totalActions: number;
+  actions: Action[];
+  actionProgress: ActionProgressEvent[];
+  startedAt?: string;
+  lastUpdated: string;
+}

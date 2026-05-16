@@ -632,8 +632,15 @@ export async function getPageFromDB(pageId: string, options: {
     if (bookIdentifier) {
       bookId = isValidUuid(bookIdentifier) ? bookIdentifier : undefined;
       if (!bookId) {
-        const book = await resolveBook(bookIdentifier);
-        bookId = book?.id;
+        const book = await client
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1);
+
+        if (book.length > 0) {
+          bookId = book[0].id;
+        }
       }
   
       if (!bookId) throw new Error("Book not found");

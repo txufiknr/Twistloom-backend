@@ -67,7 +67,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
 import type { DBNewBook, DBNewBookGeneration, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { ActionProgressEvent } from "../types/candidates.js";
+import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidates.js";
 import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
 import { cleanupObject } from "../utils/parser.js";
@@ -98,7 +98,7 @@ const SSE_POLLING_CONFIG: SSEPollingConfig = {
  * 
  * @param dbPage - Page from database
  * @param pageId - Page ID for logging
- * @returns Promise resolving to true if generation was reset, false otherwise
+ * @returns Promise resolving to true if it's generating, false otherwise
  */
 async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<boolean> {
   if (!dbPage.isGeneratingStartedAt) return false;
@@ -114,11 +114,13 @@ async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<boolean> {
     await dbWrite.update(pages)
       .set({ isGeneratingStartedAt: null })
       .where(eq(pages.id, dbPage.id));
-    
-    return true;
+
+    // Refresh page after reset
+    dbPage.isGeneratingStartedAt = null;
+    return false;
   }
 
-  return false;
+  return true;
 }
 
 /**
@@ -139,7 +141,7 @@ async function validateAndRetrievePageForGeneration(
   identifier: string,
   pageId: string,
   userId: string
-): Promise<{ dbPage: DBPage; userPage: UserStoryPage; wasReset: boolean } | null> {
+): Promise<{ dbPage: DBPage; userPage: UserStoryPage; isGenerating: boolean } | null> {
   // Early validation
   if (!isValidUuid(pageId)) return null;
 
@@ -149,16 +151,12 @@ async function validateAndRetrievePageForGeneration(
   if (!dbPage) return null;
 
   // Check if generation is stuck and reset if needed
-  const wasReset = await checkAndResetStuckGeneration(dbPage);
-  if (wasReset) {
-    // Refresh page after reset
-    dbPage.isGeneratingStartedAt = null;
-  }
+  const isGenerating = await checkAndResetStuckGeneration(dbPage);
 
   // Map to user story page
   const userPage = await mapToUserStoryPage(dbPage, userId);
 
-  return { dbPage, userPage, wasReset };
+  return { dbPage, userPage, isGenerating };
 }
 
 /**
@@ -1247,17 +1245,19 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  */
 router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
-    const { identifier, pageId, prefetch, translate: shouldTranslate } = req.params;
+    const { identifier, pageId, prefetch, translate: shouldTranslate, credits } = req.params;
     const userId = req.userId!; // Always defined even for guests
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
     const skipVisit = prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
     const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
+    const consumeCredits = credits === 'true'; // Should consume credits
 
     const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
       userId,
       pageId: pageId as string,
       bookIdentifier,
-      skipVisit
+      skipVisit,
+      consumeCredits
     });
 
     if (!dbPage || !book) return;
@@ -1464,24 +1464,25 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
     const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
 
+    if (!isValidUuid(pageIdStr)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
+
     // Use common validation and page retrieval
     const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
     if (!validationResult) {
-      if (!isValidUuid(pageIdStr)) {
-        return handleValidationError(res, "Invalid pageId: must be valid uuid");
-      }
       return handleNotFoundError(res, "Page not found");
     }
 
     const { dbPage, userPage } = validationResult;
 
     // Check if generation is in progress (using timestamp field)
-    const isGenerating = !!dbPage.isGeneratingStartedAt;
-
+    const isGenerating = await checkAndResetStuckGeneration(dbPage);
     if (isGenerating) {
       // Generation in progress - return current status
       // Check for progress events in database
       const progressEvents = await getActionProgressEvents(pageIdStr);
+      const startedAt = dbPage.isGeneratingStartedAt!.toISOString();
 
       // Calculate completed/total from page actions (SSOT)
       const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
@@ -1501,30 +1502,38 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         }) satisfies ActionProgressEvent);
       }
 
-      return res.json({
+      const response: CandidateGenerationStatus = {
         isGenerating: true,
         completedActions,
         totalActions,
         actions: userPage.actions.filter(a => a.destination?.pageId),
         actionProgress, // Include per-action progress events
-        startedAt: dbPage.isGeneratingStartedAt?.toISOString(),
+        startedAt,
         lastUpdated: new Date().toISOString(),
-      });
+      };
+
+      console.log(`[GET /candidates/status] ⏰ Generation in progress for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
+      return res.json(response);
     }
 
     // Generation not in progress - check if actions are complete
     const incompleteActions = userPage.actions.filter(a => !a.destination?.pageId);
+    const completedActions = userPage.actions.filter(a => a.destination?.pageId);
     const isComplete = incompleteActions.length === 0;
 
     if (isComplete) {
       // All actions complete, clear progress events and return full data
       await clearActionProgressEvents(pageIdStr);
+      console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr}: ${completedActions.length}/${userPage.actions.length} actions completed`);
       return res.json({
         isGenerating: false,
         completedActions: userPage.actions.length,
         totalActions: userPage.actions.length,
         actions: userPage.actions,
-      });
+        actionProgress: [],
+        startedAt: undefined,
+        lastUpdated: userPage.updatedAt.toISOString(),
+      } satisfies CandidateGenerationStatus);
     }
 
     // Actions incomplete, trigger background generation via GitHub workflow
@@ -1535,14 +1544,20 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       context: 'GET /candidates/status',
     });
 
+    console.log(`[GET /candidates/status] 🚀 Generation started for page ${pageIdStr} (actions: ${completedActions.length}/${userPage.actions.length})`);
     return res.json({
       isGenerating: true,
-      completedActions: 0,
-      totalActions: incompleteActions.length,
-      actions: userPage.actions.filter(a => a.destination?.pageId),
+      completedActions: completedActions.length,
+      totalActions: userPage.actions.length,
+      actions: completedActions,
+      actionProgress: incompleteActions.map(a => ({
+        action: a.text,
+        status: 'started',
+        timestamp: new Date().toISOString()
+      }) satisfies ActionProgressEvent),
       startedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),
-    });
+    } satisfies CandidateGenerationStatus);
 
   } catch (error) {
     handleApiError(res, "Failed to get candidate status", error);

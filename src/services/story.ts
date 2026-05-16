@@ -161,8 +161,8 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
  * ```
  */
 export async function setActiveSession(params: SetActiveSessionParams): Promise<DBUserSession | null> {
-  const { userId, bookId, pageId, previousPageId } = params;
-  const result = await dbWrite
+  const { userId, bookId, pageId, previousPageId, client = dbWrite } = params;
+  const result = await client
     .insert(userSessions)
     .values({
       userId,
@@ -188,6 +188,7 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
     targetType: 'book',
     targetId: bookId,
     metadata: { pageId, previousPageId },
+    client,
   });
   
   console.log(`[setActiveSession] 🌟 Session activated:`, params);
@@ -301,14 +302,24 @@ export async function insertStoryState(
  * console.log(`You're visitor #${visitDetails.nthVisit}`);
  * ```
  */
-export async function markPageVisited(
+export async function markPageVisited(params: {
   userId: string,
   book: Pick<EnrichedBookData, 'id' | 'stats'>,
   visitedPage: Pick<DBPage, 'id' | 'page' | 'visitCount'>,
   actionedPageId?: string, // omit for page 1
   action?: Action // omit for page 1
-): Promise<BookPageVisit> {
-  console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action });
+  shouldConsumeCredits?: boolean // whether to consume credits for choosing a different action (only applicable for page 2 onwards)
+}): Promise<BookPageVisit> {
+  const {
+    userId,
+    book,
+    visitedPage,
+    actionedPageId,
+    action,
+    shouldConsumeCredits = false
+  } = params;
+
+  console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action, shouldConsumeCredits });
 
   try {
     const { id: bookId, stats } = book;
@@ -318,8 +329,12 @@ export async function markPageVisited(
       throw new Error(`action.destination.pageId and pageId mismatch`);
     }
 
+    // TODO: if `shouldConsumeCredits` true, use `tx` for atomicity
+    // const client = shouldConsumeCredits ? tx : dbWrite;
+    const client = dbWrite;
+
     // Update active session to point to the new page
-    const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId });
+    const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
 
     // Start inserting user page progress after reader lands on page 2 onwards
     if (pageNumber > 1) {
@@ -334,6 +349,7 @@ export async function markPageVisited(
         actionedPageId,
         nextPageId: pageId,
         action,
+        client,
       });
       if (progress) {
         console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
@@ -624,14 +640,14 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
   };
 }
 
-export async function insertUserPageProgress(data: DBNewUserPageProgress): Promise<DBUserPageProgress | null> {
+export async function insertUserPageProgress(data: DBNewUserPageProgress & { client?: DBClient }): Promise<DBUserPageProgress | null> {
   try {
-    const { action, nextPageId } = data;
+    const { action, nextPageId, client = dbWrite } = data;
     if (action.destination.pageId !== nextPageId) {
       throw new Error("Action destination pageId does not match nextPageId");
     }
 
-    const newPageProgress = await dbWrite
+    const newPageProgress = await client
       .insert(userPageProgress)
       .values(data)
       .onConflictDoUpdate({

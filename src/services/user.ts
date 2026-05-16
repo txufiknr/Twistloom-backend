@@ -11,15 +11,16 @@
  * - Type-safe operations
  */
 
-import { dbRead, dbWrite } from "../db/client.js";
+import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
-import { DAILY_CHECKIN_CREDITS } from "../config/credits.js";
+import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
-import type { DBNewUserActivityLog } from "../types/schema.js";
 import { requireEnv } from "../utils/env.js";
+import type { DBNewUserActivityLog } from "../types/schema.js";
+import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 
 /**
  * Cleans up orphaned user records
@@ -127,11 +128,11 @@ export async function cleanupOrphanedUsers(): Promise<number> {
  * - Different users have independent debounce timers
  * - Returns execution status for debugging
  */
-export async function updateUserLastActivity(userId: string): Promise<void> {
+export async function updateUserLastActivity(userId: string, client: DBClient = dbWrite): Promise<void> {
   try {
     const result = await debounceAsync(
       async (userId: string): Promise<void> => {
-        await dbWrite
+        await client
           .update(users)
           .set({
             lastActive: new Date(),
@@ -201,14 +202,14 @@ export async function updateUserLastActivity(userId: string): Promise<void> {
  * - Logs errors for debugging
  * - Can be called from any route handler
  */
-export async function logUserActivity(params: DBNewUserActivityLog): Promise<void> {
-  const { userId } = params;
+export async function logUserActivity(params: DBNewUserActivityLog & { client?: DBClient }): Promise<void> {
+  const { userId, client = dbWrite } = params;
   const isInternal = userId === process.env.SYSTEM_USER_ID;
   if (isInternal) return;
 
   try {
-    await dbWrite.insert(userActivityLogs).values(params);
-    await updateUserLastActivity(userId);
+    await client.insert(userActivityLogs).values(params);
+    await updateUserLastActivity(userId, client);
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
     console.error(`[user] ❌ Failed to log activity for user ${params.userId}:`, getErrorMessage(error));
@@ -351,12 +352,7 @@ export async function checkCanCheckIn(userId: string): Promise<{
  * console.log(`Awarded ${result.creditsAwarded} credits`);
  * ```
  */
-export async function performDailyCheckIn(userId: string): Promise<{
-  success: boolean;
-  creditsAwarded: number;
-  checkInDate: string;
-  message: string;
-}> {
+export async function performDailyCheckIn(userId: string): Promise<CheckinPostResponse> {
   const todayUTC = getCurrentUTCDay();
   
   try {
@@ -372,38 +368,73 @@ export async function performDailyCheckIn(userId: string): Promise<{
         .limit(1);
       
       if (existingCheckIn.length > 0) {
+        console.warn(`[checkin] ⚠️ User ${userId} attempted to check in again today`);
         return {
           success: false,
           creditsAwarded: 0,
+          currentStreak: 0,
+          totalCreditsClaimed: 0,
           checkInDate: todayUTC,
           message: "Already checked in today",
-        };
+        } satisfies CheckinPostResponse;
       }
-      
-      // Create check-in record
+
+      // Compute consecutive streak up to yesterday (for awarding)
+      const recent = await tx
+        .select({ checkInDate: userCheckins.checkInDate })
+        .from(userCheckins)
+        .where(eq(userCheckins.userId, userId))
+        .orderBy(desc(userCheckins.checkInDate))
+        .limit(DAILY_CHECKIN_DAYS);
+
+      const dateSet = new Set(recent.map(r => r.checkInDate));
+      const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
+      let prevStreak = 0;
+      for (let i = 1; i <= DAILY_CHECKIN_DAYS; i++) {
+        const d = new Date(utcToday);
+        d.setUTCDate(d.getUTCDate() - i);
+        const iso = d.toISOString().slice(0, 10);
+        if (dateSet.has(iso)) prevStreak++; else break;
+      }
+
+      const nextIndex = Math.min(prevStreak + 1, DAILY_CHECKIN_DAYS);
+      // Flat per-day bonus: days 1-6 => DAILY_CHECKIN_BONUS each, day 7 => DAILY_CHECKIN_BIG_BONUS
+      const creditsToAward = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+
+      // Create check-in record with total credits claimed (base + bonus)
       await tx.insert(userCheckins).values({
         userId,
         checkInDate: todayUTC,
-        creditsClaimed: DAILY_CHECKIN_CREDITS,
+        creditsClaimed: creditsToAward,
       });
-      
+
       // Import credits service to add credits (prevent circular deps)
       const { addCredits } = await import("./credits.js");
-      
-      // Add credits to user
-      await addCredits(userId, DAILY_CHECKIN_CREDITS, {
+
+      // Add credits to user (include bonus in transaction context)
+      await addCredits(userId, creditsToAward, {
         context: "daily_checkin",
-        metadata: { checkInDate: todayUTC },
+        metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward },
       });
-      
-      console.log(`[user] ✅ User ${userId} checked in and claimed ${DAILY_CHECKIN_CREDITS} credits`);
-      
+
+      // Compute new totals for response
+      const totals = await tx
+        .select({ totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})` })
+        .from(userCheckins)
+        .where(eq(userCheckins.userId, userId))
+        .limit(1);
+
+      const totalCreditsClaimed = totals[0]?.totalCreditsClaimed || 0;
+
+      console.log(`[checkin] 🎁 User ${userId} checked in and claimed ${creditsToAward} credits!`);
       return {
         success: true,
-        creditsAwarded: DAILY_CHECKIN_CREDITS,
+        creditsAwarded: creditsToAward,
+        currentStreak: prevStreak + 1,
+        totalCreditsClaimed,
         checkInDate: todayUTC,
-        message: `Successfully claimed ${DAILY_CHECKIN_CREDITS} daily credits`,
-      };
+        message: `Successfully claimed ${creditsToAward} daily credits`,
+      } satisfies CheckinPostResponse;
     });
   } catch (error) {
     console.error("[user] ❌ Failed to perform daily check-in:", getErrorMessage(error));
@@ -424,17 +455,7 @@ export async function performDailyCheckIn(userId: string): Promise<{
  * console.log(`Last check-in: ${status.lastCheckInDate}`);
  * ```
  */
-export async function getCheckInStatus(userId: string): Promise<{
-  canCheckIn: boolean;
-  lastCheckInDate: string | null;
-  totalCheckIns: number;
-  totalCreditsClaimed: number;
-  recentCheckIns: Array<{
-    checkInDate: string;
-    creditsClaimed: number;
-    createdAt: Date;
-  }>;
-}> {
+export async function getCheckInStatus(userId: string): Promise<CheckinStatusResponse> {
   try {
     // Check if user can check-in today
     const canCheckInStatus = await checkCanCheckIn(userId);
@@ -467,13 +488,41 @@ export async function getCheckInStatus(userId: string): Promise<{
       .where(eq(userCheckins.userId, userId))
       .limit(1);
     
+    // Compute current consecutive streak (include today if present)
+    const dateSet = new Set(checkInHistory.map(c => c.checkInDate));
+    const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
+    let streak = 0;
+    for (let i = 0; i < DAILY_CHECKIN_DAYS; i++) {
+      const d = new Date(utcToday);
+      d.setUTCDate(d.getUTCDate() - i);
+      const iso = d.toISOString().slice(0, 10);
+      if (dateSet.has(iso)) streak++; else break;
+    }
+
+    // For nextClaimAmount, compute using streak excluding today (start from yesterday)
+    let streakExcludingToday = 0;
+    for (let i = 1; i <= DAILY_CHECKIN_DAYS; i++) {
+      const d = new Date(utcToday);
+      d.setUTCDate(d.getUTCDate() - i);
+      const iso = d.toISOString().slice(0, 10);
+      if (dateSet.has(iso)) streakExcludingToday++; else break;
+    }
+
+    let nextClaimAmount = 0;
+    if (canCheckInStatus.canCheckIn) {
+      const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
+      nextClaimAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+    }
+
     return {
       canCheckIn: canCheckInStatus.canCheckIn,
       lastCheckInDate: canCheckInStatus.lastCheckInDate,
       totalCheckIns: totals[0]?.totalCheckIns || 0,
       totalCreditsClaimed: totals[0]?.totalCreditsClaimed || 0,
+      currentStreak: streak,
+      nextClaimAmount,
       recentCheckIns: checkInHistory,
-    };
+    } satisfies CheckinStatusResponse;
   } catch (error) {
     console.error("[user] ❌ Failed to get check-in status:", getErrorMessage(error));
     throw error;
