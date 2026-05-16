@@ -32,7 +32,7 @@
  * - Distributed locking: prevents concurrent processing of same page
  */
 import type { DBPage } from "../types/schema.js";
-import type { Action, UserStoryPage } from "../types/story.js";
+import type { UserStoryPage } from "../types/story.js";
 import { MAX_BRANCHING_PREGENERATION_LIMIT } from "../config/story.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 import { requireEnv } from "../utils/env.js";
@@ -116,26 +116,22 @@ export async function retryPendingGenerations(): Promise<string[]> {
         // Convert null fields to undefined for type compatibility
         const systemUserId = requireEnv('SYSTEM_USER_ID');
         const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
-        const pendingGenerationCount = pageData.pendingGenerationCount || 0;
-        const hasNoPendingActions = pendingGenerationCount === 0;
-        
+        const pendingBefore = pageData.pendingGenerationCount || 0;
+        const hasNoPendingActions = pendingBefore === 0;
+
         // Use shared page generation logic
         const generationResult = await processPageGeneration(
           dbPage,
           pageForGeneration,
           hasNoPendingActions,
-          '[retryPendingGenerations]'
+          'retryPendingGenerations'
         );
-        
-        const successCount = pendingGenerationCount - (generationResult.updatedPage.actions?.filter((action: Action) => 
-          !action.destination?.pageId
-        ).length || 0);
-        
-        if (successCount > 0) {
-          totalSuccess += successCount;
-          console.log(`[retryPendingGenerations] ✅ Page ${pageData.id}: ${successCount} actions regenerated`);
+
+        if (generationResult.successCount > 0) {
+          totalSuccess += generationResult.successCount;
+          console.log(`[retryPendingGenerations] ✅ Page ${pageData.id}: ${generationResult.successCount} actions regenerated`);
         } else {
-          totalFailed += pendingGenerationCount;
+          totalFailed += pendingBefore;
           console.log(`[retryPendingGenerations] ⚠️ Page ${pageData.id}: No actions regenerated`);
         }
         
@@ -285,14 +281,11 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
  */
 async function processSpecificPage(bookId: string, pageId: string, triggeredBy?: string): Promise<string | null> {
   const startedAt = Date.now();
-  
+
   try {
     console.log(`[processSpecificPage] 🎯 Processing manual trigger: book=${bookId}, page=${pageId}, user=${triggeredBy}`);
-    
+
     // Lazy imports for better memory usage and startup time
-    const { dbWrite } = await import("../db/client.js");
-    const { pages } = await import("../db/schema.js");
-    const { eq } = await import("drizzle-orm");
     const { getPageFromDB } = await import("../services/book.js");
     const { mapToUserStoryPage } = await import("../services/book.js");
 
@@ -302,42 +295,29 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
       console.warn(`[processSpecificPage] ⚠️ Page ${pageId} not found, skipping`);
       return null;
     }
-    
-    console.log(`[processSpecificPage] 📋 Found page ${pageId} (pending: ${dbPage.pendingGenerationCount})`);
-    
+
     // Convert null fields to undefined for type compatibility
     const systemUserId = requireEnv('SYSTEM_USER_ID');
     const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
-    
+    const pendingBefore = dbPage.pendingGenerationCount || 0;
+
     // Force candidate generation for manual trigger (always generate, even if no pending actions)
     const generationResult = await processPageGeneration(
-      dbPage, 
-      pageForGeneration, 
+      dbPage,
+      pageForGeneration,
       false, // Always generate for manual trigger
-      '[processSpecificPage]'
+      'processSpecificPage'
     );
-    
-    const actionsAfter = generationResult.updatedPage.actions || [];
-    const pendingAfter = actionsAfter.filter((action: Action) => 
-      !action.destination?.pageId
-    ).length;
-    
-    // Update pendingGenerationCount
-    await dbWrite
-      .update(pages)
-        .set({ pendingGenerationCount: pendingAfter })
-        .where(eq(pages.id, pageId));
-    
-    const successCount = (dbPage.pendingGenerationCount || 0) - pendingAfter;
+
     const durationMs = Date.now() - startedAt;
-    
+
     console.log(`[processSpecificPage] ✅ Manual trigger completed in ${durationMs}ms:`, {
       bookId,
       pageId,
       triggeredBy,
-      actionsRegenerated: successCount,
-      actionsStillPending: pendingAfter,
-      beforeAfter: `${(dbPage.pendingGenerationCount || 0)} → ${pendingAfter}`
+      actionsRegenerated: generationResult.successCount,
+      actionsStillPending: generationResult.pendingAfter,
+      beforeAfter: `${pendingBefore} → ${generationResult.pendingAfter}`
     });
     return pageId;
   } catch (error) {
@@ -353,68 +333,56 @@ async function processPageGeneration(
   dbPage: DBPage,
   pageForGeneration: UserStoryPage,
   hasNoPendingActions: boolean,
-  logPrefix: string
-): Promise<{ updatedPage: UserStoryPage }> {
+  context: string
+): Promise<{ updatedPage: UserStoryPage; successCount: number; pendingAfter: number }> {
   const startedAt = Date.now();
   const pageId = pageForGeneration.id;
-  
+
   try {
     // Dynamic imports for this function scope
-    const { dbWrite } = await import("../db/client.js");
-    const { pages } = await import("../db/schema.js");
-    const { eq } = await import("drizzle-orm");
     const { ensureCandidatesForPageWithStrategy } = await import("../utils/candidate-generation.js");
-    const { mapToUserStoryPage } = await import("../services/book.js");
 
-    const systemUserId = requireEnv('SYSTEM_USER_ID');
-    
-    // Early exit: No pending actions, nothing to do
-    if (hasNoPendingActions) {
-      console.log(`[${logPrefix}] ✨ Page ${pageId} has no pending actions, skipping generation`);
-      await dbWrite
-        .update(pages)
-          .set({ pendingGenerationCount: 0 })
-          .where(eq(pages.id, pageId));
-      return { updatedPage: await mapToUserStoryPage(dbPage, systemUserId, []) };
-    }
-    
     // Count actions without complete destination before regeneration
+    const systemUserId = requireEnv('SYSTEM_USER_ID');
     const actionsBefore = dbPage.actions || [];
     const pendingBefore = actionsBefore.filter(action => !action.destination?.pageId).length;
-    
-    console.log(`[${logPrefix}] 🔄 Processing page ${pageId} (pending: ${pendingBefore})`);
-    
+
+    hasNoPendingActions = hasNoPendingActions || pendingBefore === 0;
+
+    // Early exit: No pending actions, nothing to do
+    if (hasNoPendingActions) {
+      console.log(`[${context}] ✨ Page ${pageId} has no pending actions, skipping generation`);
+      return { updatedPage: pageForGeneration, successCount: 0, pendingAfter: 0 };
+    }
+
+    console.log(`[${context}] 🔄 Processing page ${pageId} (pending: ${pendingBefore})`);
+
     // Force candidate generation for manual trigger or normal processing
     const updatedPage = await ensureCandidatesForPageWithStrategy({
       strategy: 'cron',
       userId: systemUserId,
       page: pageForGeneration,
     });
-    
+
     // Count actions without complete destination after regeneration
     const actionsAfter = updatedPage.actions || [];
-    const pendingAfter = actionsAfter.filter((action: Action) => 
-      !action.destination?.pageId
+    const pendingAfter = actionsAfter.filter(action =>
+      !action.destination?.pageId ||
+      !action._isFallback
     ).length;
-    
-    // Update pendingGenerationCount
-    await dbWrite
-      .update(pages)
-        .set({ pendingGenerationCount: pendingAfter })
-        .where(eq(pages.id, pageId));
-    
+
     const successCount = pendingBefore - pendingAfter;
     const durationMs = Date.now() - startedAt;
-    
-    console.log(`[${logPrefix}] ✅ Page ${pageId} processed in ${durationMs}ms:`, {
+
+    console.log(`[${context}] ✅ Page ${pageId} processed in ${durationMs}ms:`, {
       actionsRegenerated: successCount,
       actionsStillPending: pendingAfter,
       beforeAfter: `${pendingBefore} → ${pendingAfter}`
     });
-    
-    return { updatedPage };
+
+    return { updatedPage, successCount, pendingAfter };
   } catch (error) {
-    console.error(`[${logPrefix}] ❌ Failed to process page ${pageId}:`, getErrorMessage(error));
+    console.error(`[${context}] ❌ Failed to process page ${pageId}:`, getErrorMessage(error));
     throw error;
   }
 }

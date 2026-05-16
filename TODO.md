@@ -3,19 +3,19 @@
 [x] Add Plot flags dari choice A & B leaked ke C
 [x] Get page LRU cache & Implement Last-Modified or ETag
 [x] complete per-action candidate generation progress tracking
+[x] can we update pendingGenerationCount via trigger which auto-detect from actions column?
 
 [ ] Lru cache trending books 2 minute
 [ ] Page 1 selected actions masih none
 
 [ ] ganti approach:
+- is `_isFallback` really needed?
 - no need for Next.js API route ("/api")
 - no need for pg-boss (pgboss.ts)
 - no need for daily vercel cron (vercel.json)
+- no need for ensureCandidatesForPageWithDepth
 
-[ ] Consolidate like & save (like bisa save ke collection)
-[ ] generate next page / insert page: prevent actions kosong
-[ ] Cron: detect pages yg action object kosong, generate
-[ ] Originals: Mc name predefine aja, jangan AI
+[ ] Originals: Mc name predefine casts aja, jangan AI
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Important objects perlu disimpen di story state?

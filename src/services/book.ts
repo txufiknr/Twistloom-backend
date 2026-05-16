@@ -212,8 +212,8 @@ export async function insertStoryPage(
       }
     }
 
-    // Count actions without destinations for initial pendingGenerationCount
-    const pendingGenerationCount = page.actions.filter(action => !action.destination?.pageId).length;
+    // // Count actions without destinations for initial pendingGenerationCount
+    // const pendingGenerationCount = pageMeta.pendingGenerationCount ?? page.actions.filter(action => !action.destination?.pageId).length;
 
     const newPageData: DBNewPage = {
       userId,
@@ -232,7 +232,7 @@ export async function insertStoryPage(
       stateDelta: extractStateDelta(page),
       aiProvider: page.aiProvider || null,
       aiModel: page.aiModel || null,
-      pendingGenerationCount,
+      // pendingGenerationCount,
       createdAt: new Date(),
       updatedAt: new Date()
     };

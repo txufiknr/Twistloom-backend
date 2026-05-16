@@ -14,7 +14,7 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
@@ -2596,6 +2596,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const expectedPageNumber = actionedPage.page + 1;
   const expectedPreviousPagesLength = actionedPage.page - 1;
   const advancedState = await advanceStoryState(currentState, actionedPage);
+  // const isLastPage = expectedPageNumber === book.totalPages;
 
   // 1. Create personalized prompt with character, story context, and previous action
   const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
@@ -2690,14 +2691,9 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
           );
         }
   
-        // console.log(`[generateNextPage] 👀 freshActionedPage.actions for page ${actionedPage.id}:`, freshActionedPage.actions);
-        
         // Check if this specific action already has a destination pageId
         // If it does, skip insertion to prevent duplicate database entries
-        const currentAction = freshActionedPage.actions.find(a => 
-          a.text === selectedAction.text && a.type === selectedAction.type
-        );
-        
+        const currentAction = freshActionedPage.actions.find(a => a.text === selectedAction.text);
         if (currentAction?.destination?.pageId) {
           console.log(`[generateNextPage] ⏭️ Action "${selectedAction.text}" already has destination pageId ${currentAction.destination.pageId}, skipping insertion`);
           throw createNonRetryableError(
@@ -2717,19 +2713,22 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         console.log(`[generateNextPage] 🌳 Using new branchId:`, branchId);
       }
       
-      // Create updated data with immutable pattern
-      const updatedData = { 
-        ...data, 
-        branchId,
-        selectedAction // Pass the selectedAction for duplicate prevention
-      };
-
-      return insertStoryPage(userId, expectedPageNumber, {
+      const pageToInsert: StoryPage = {
         ...generatedStoryPage,
         stateDelta: fullStateDelta,
         aiProvider: response.provider || 'none',
         aiModel: response.model || 'none',
-      }, updatedData);
+      };
+
+      // Create updated data with immutable pattern
+      const updatedData: StoryPageMeta = { 
+        ...data, 
+        branchId,
+        selectedAction, // Pass the selectedAction for duplicate prevention
+        // pendingGenerationCount: isLastPage ? 0 : undefined
+      };
+
+      return insertStoryPage(userId, expectedPageNumber, pageToInsert, updatedData);
     },
     {
       bookId: actionedPage.bookId,

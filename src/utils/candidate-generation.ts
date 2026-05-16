@@ -76,7 +76,7 @@ export interface CandidateGenerationValidation {
   /** Reason why generation cannot proceed (if applicable) */
   reason?: string;
   /** Book context (resolved if available) */
-  book?: Book | null;
+  book: Book | null;
   /** Actions that need generation */
   pendingActions: Action[];
   /** Current depth for generation */
@@ -114,7 +114,8 @@ export async function validateCandidateGeneration(
   currentBook: Book | null = null,
   options: Pick<GenerateCandidatesOptions, 'currentDepth' | 'maxDepth'>
 ): Promise<CandidateGenerationValidation> {
-  const { currentDepth = 1, maxDepth = MAX_BRANCHING_PREGENERATION_DEPTH } = options;
+  const { currentDepth = 1, maxDepth: providedMaxDepth = MAX_BRANCHING_PREGENERATION_DEPTH } = options;
+  const maxDepth = Math.min(providedMaxDepth, MAX_BRANCHING_PREGENERATION_DEPTH);
   
   // Early exit: skip if book not found
   currentBook ??= await getBook(page.bookId);
@@ -143,7 +144,7 @@ export async function validateCandidateGeneration(
 
   // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    (!action.destination?.pageId) && 
+    !action.destination?.pageId && 
     !action._isFallback // Skip fallback actions that already failed
   );
   
@@ -151,6 +152,7 @@ export async function validateCandidateGeneration(
     return {
       canGenerate: false,
       reason: 'No actions need candidate generation',
+      book: currentBook,
       pendingActions: [],
       currentDepth,
       maxDepth
@@ -195,6 +197,7 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
   pendingActions: Action[];
 } {
   // Early exit: skip if book not found
+  // currentBook ??= await getBook(page.bookId);
   if (!currentBook) {
     return {
       canEnqueue: false,
@@ -214,7 +217,7 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
   
   // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
   const pendingActions = page.actions.filter(action => 
-    (!action.destination?.pageId) && 
+    !action.destination?.pageId && 
     !action._isFallback // Skip fallback actions that already failed
   );
   
@@ -743,7 +746,10 @@ export async function ensureCandidatesForPageWithDepth(
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock
-    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destination?.pageId);
+    const recheckedPendingDBActions = initialDBActions.filter(action => 
+      !action.destination?.pageId && 
+      !action._isFallback // Skip fallback actions that already failed
+    );
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPageWithDepth] ⏩ Actions already processed by another instance at depth ${currentDepth}`);
       return;
@@ -826,8 +832,10 @@ export async function ensureCandidatesForPageWithDepth(
     const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
     const succeededCount = updatedDBActions.length - pendingAfter;
     console.log(`[ensureCandidatesForPageWithDepth] ✅ Depth ${currentDepth}: ${succeededCount}/${updatedDBActions.length} actions generated`);
+    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
     // Ensure there's at least one navigable action
+    // If all were removed as invalid, insert a 'Continue' action for navigating to the next page.
     if (updatedDBActions.length === 0) {
       console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
@@ -903,16 +911,16 @@ export async function ensureCandidatesForPageWithStrategy(
     onProgress?.(action, status, result, error);
   };
 
-  // It's highly recommended to provide the currentState explicitly
-  if (currentState === undefined) {
-    console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ Base state not provided, will be reconstructed from current page`);
-  }
-
   // Use shared validation to eliminate redundant checks
   const validation = await validateCandidateGeneration(page, providedBook, options);
   if (!validation.canGenerate) {
     console.log(`[ensureCandidatesForPageWithStrategy] ⏩ ${validation.reason}`);
     return page;
+  }
+
+  // It's highly recommended to provide the currentState explicitly
+  if (currentState === undefined) {
+    console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ Base state not provided, will be reconstructed from current page`);
   }
 
   // Extract validated context

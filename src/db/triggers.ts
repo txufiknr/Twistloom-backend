@@ -522,14 +522,14 @@ async function ensureBookBranchesDecrementTrigger(): Promise<void> {
 
 /**
  * Creates trigger to delete from user_favorites when a book is unliked from user_likes
- * 
+ *
  * This trigger fires AFTER DELETE on user_likes table:
  * 1. When a user unlikes a book (target_type = 'book')
  * 2. Deletes the corresponding entry from user_favorites for the same user+book
  * 3. Ensures consistency between likes and favorites
- * 
+ *
  * Note: Only triggers when target_type is 'book' (not comments or users)
- * 
+ *
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
  * - Safe to run multiple times without errors
@@ -551,12 +551,12 @@ async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
       END;
       $$ LANGUAGE plpgsql;
     `);
-    
+
     // Drop existing trigger if it exists
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_likes_delete_favorites_trigger ON user_likes;
     `);
-    
+
     // Create the trigger
     await dbWrite.execute(`
       CREATE TRIGGER user_likes_delete_favorites_trigger
@@ -564,10 +564,74 @@ async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
         FOR EACH ROW
         EXECUTE FUNCTION cleanup_user_favorites_on_unlike();
     `);
-    
+
     console.log("✅ User favorites cleanup trigger created successfully!");
   } catch (error) {
     console.error("❌ Failed to create user favorites cleanup trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
+ * Creates trigger to auto-update pendingGenerationCount based on actions
+ *
+ * This trigger fires BEFORE INSERT OR UPDATE on pages table:
+ * 1. When actions column is changed
+ * 2. Counts actions where destination.pageId is null
+ * 3. Updates pendingGenerationCount with that count
+ * 4. Ensures SSOT for pending generation tracking
+ *
+ * Note: Excludes fallback actions (_isFallback = true) from count
+ *
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION
+ * - Safe to run multiple times without errors
+ */
+async function ensurePendingGenerationCountTrigger(): Promise<void> {
+  try {
+    // Create the trigger function
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_pending_generation_count()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Count actions without destination.pageId (excluding fallback actions)
+        NEW.pending_generation_count = (
+          SELECT COUNT(*)
+          FROM jsonb_array_elements(NEW.actions) AS action
+          WHERE (action->>'destination'->>'pageId') IS NULL
+            AND (action->>'_isFallback')::boolean IS NOT TRUE
+        );
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    // Drop existing triggers if they exist
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_insert_pending_count_trigger ON pages;
+    `);
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_update_pending_count_trigger ON pages;
+    `);
+
+    // Create the triggers
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_insert_pending_count_trigger
+        BEFORE INSERT ON pages
+        FOR EACH ROW
+        EXECUTE FUNCTION update_pending_generation_count();
+    `);
+
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_update_pending_count_trigger
+        BEFORE UPDATE OF actions ON pages
+        FOR EACH ROW
+        EXECUTE FUNCTION update_pending_generation_count();
+    `);
+
+    console.log("✅ Pending generation count trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create pending generation count trigger:", getErrorMessage(error));
     throw error;
   }
 }
@@ -611,6 +675,9 @@ export async function ensureTriggers(): Promise<void> {
 
     // Create user favorites cleanup trigger
     await ensureUserFavoritesCleanupTrigger();
+
+    // Create pending generation count trigger
+    await ensurePendingGenerationCountTrigger();
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);
