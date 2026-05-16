@@ -8,7 +8,7 @@
 import { getBook, getPageFromDB, getStoryPageById, mapToUserStoryPage } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import { GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_DEFAULT_BRANCH } from '../config/env.js';
-import type { UserStoryPage, StoryState, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
+import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
 import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidates.js';
 import { getErrorMessage } from './error.js';
@@ -17,11 +17,8 @@ import { pages } from '../db/schema.js';
 import { storeActionProgressEvent } from './progress-tracking.js';
 import { eq } from 'drizzle-orm';
 import { LOCK_KEYS, withLock } from './distributed-lock.js';
-import { enqueueCandidateGenerationJob } from './candidate-generation-async.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPage } from './prompt.js';
-import { getStoryStateWithBranch } from '../services/story-branch.js';
-import { isValidUuid } from './uuid.js';
 
 /**
  * Performance metrics for candidate generation
@@ -83,6 +80,47 @@ export interface CandidateGenerationValidation {
   currentDepth: number;
   /** Maximum depth for generation */
   maxDepth: number;
+}
+
+/**
+ * Check if a page has pending candidate generation
+ * 
+ * This function can be used to determine if a page needs candidate
+ * generation without actually triggering it.
+ * 
+ * @param page - The story page to check
+ * @returns boolean - True if the page has pending actions
+ * 
+ * @example
+ * ```typescript
+ * const needsGeneration = hasPendingCandidates(page);
+ * if (needsGeneration) {
+ *   await enqueueCandidateGenerationJob(userId, page, book);
+ * }
+ * ```
+ */
+export function hasPendingCandidates(page: UserStoryPage): boolean {
+  const pendingActions = getPendingActionsCount(page);
+  return pendingActions > 0;
+}
+
+/**
+ * Get pending actions count for a page
+ * 
+ * @param page - The story page to check
+ * @returns number - Number of actions needing generation
+ * 
+ * @example
+ * ```typescript
+ * const pendingCount = getPendingActionsCount(page);
+ * console.log(`Page has ${pendingCount} pending actions`);
+ * ```
+ */
+export function getPendingActionsCount(page: UserStoryPage): number {
+  return page.actions.filter(action => 
+    !action.destination?.pageId && 
+    !action._isFallback // Skip fallback actions that already failed
+  ).length;
 }
 
 /**
@@ -151,7 +189,7 @@ export async function validateCandidateGeneration(
   if (pendingActions.length === 0) {
     return {
       canGenerate: false,
-      reason: 'No actions need candidate generation',
+      reason: 'All actions are complete',
       book: currentBook,
       pendingActions: [],
       currentDepth,
@@ -589,8 +627,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
           try {
             const candidatePage = result.candidatePage!;
             
-            // Convert PersistedStoryPage to UserStoryPage for background generation
-            // Validate required fields before casting
+            // Validate required fields
             if (!candidatePage.id || !candidatePage.bookId || !candidatePage.branchId) {
               console.error(`[generateCandidatesInParallel] ❌ Invalid candidate page missing required fields:`, {
                 id: candidatePage.id,
@@ -600,15 +637,9 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
               return;
             }
             
-            // Trigger next level generation without blocking current response (fire-and-forget)
-            // void ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth, options).catch(error => {
-            //   console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
-            // });
-
-            // Hybrid approach: Level 2 immediate, Level 3+ job queue
             const nextDepth = currentDepth + 1;
-            if (nextDepth === 2) {
-              // Level 2: Immediate fire-and-forget for better UX
+            if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH) {
+              // Immediate fire-and-forget for better UX
               void triggerGitHubWorkflow({
                 userId,
                 pageId: candidatePage.id,
@@ -617,24 +648,8 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
               });
               console.log(`[generateCandidatesInParallel] 🚀 Triggered immediate background generation for level ${nextDepth}`);
             } else {
-              // Level 3+: Job queue for less critical deeper levels
-              // Calculate proper state for deeper level generation
-              // This ensures advanceStoryState increments to correct page number and uses updated context
-              const candidateState = await getStoryStateWithBranch(userId, candidatePage.bookId, candidatePage.id);
-              const candidateUserPage: UserStoryPage = {
-                ...candidatePage,
-                selectedActions: []
-              };
-            
-              void enqueueCandidateGenerationJob(userId, candidateUserPage, currentBook, candidateState, {
-                currentDepth: nextDepth,
-                maxDepth,
-                // Priority decreases with depth: Level 3=3, Level 4+=5 (lower is higher priority)
-                priority: nextDepth === 3 ? 3 : 5
-              }).catch(error => {
-                console.error(`[generateCandidatesInParallel] ❌ Failed to enqueue generation job for depth ${nextDepth}:`, getErrorMessage(error));
-              });
-              console.log(`[generateCandidatesInParallel] 📋 Enqueued job queue generation for level ${nextDepth}`);
+              console.log(`[generateCandidatesInParallel] ⏳ No need to do anything for level ${nextDepth}, let GitHub Workflow done the hourly job`);
+              // No need to do anything, let GitHub Workflow done the hourly job
             }
           } catch (error) {
             console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
@@ -651,225 +666,6 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
   }
 
   return generationResults;
-}
-
-/**
- * Pre-generates candidate pages for all actions on a story page with depth control
- * 
- * This is the internal function that handles multi-level pre-generation with depth control.
- * It's used by the fire-and-forget background processing for deeper levels.
- * 
- * @deprecated Now uses `enqueueCandidateGenerationJob` pg-boss job queue system.
- * @see {@link ../../docs/ASYNC_CANDIDATE_GENERATION_ARCHITECTURE.md}
- * 
- * The replacement is superior because:
- * - No timeout issues: Jobs run in background via cron
- * - Better reliability: pg-boss handles retries and failures
- * - Scalability: Can process multiple jobs concurrently
- * - Monitoring: Job queue provides better observability
- * 
- * @param userId - The user's unique identifier for database operations
- * @param page - The story page whose actions need candidate generation
- * @param currentState - Optional story state for the page
- * @param currentBook - Optional book context
- * @param currentDepth - Current depth level (1-based)
- * @param maxDepth - Maximum depth to generate
- */
-export async function ensureCandidatesForPageWithDepth(
-  userId: string, 
-  page: UserStoryPage, 
-  currentState: StoryState | null | undefined, 
-  currentBook: Book | null,
-  currentDepth: number,
-  maxDepth: number,
-  options?: {
-    onProgress?: ActionProgressCallback;
-  }
-): Promise<void> {
-  const { onProgress } = options || {};
-
-  // Wrap onProgress callback to store progress in database
-  const onActionProgress: ActionProgressCallback = async (
-    action: Action,
-    status: ActionProgressStatus,
-    result?: PersistedStoryPage,
-    error?: unknown
-  ) => {
-    // Store progress event in database
-    await storeActionProgressEvent(page.id, {
-      action: action.text,
-      status,
-      error: error ? getErrorMessage(error) : undefined,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Call original callback if provided
-    onProgress?.(action, status, result, error);
-  };
-
-  // Track request start time for timeout calculation
-  const requestStartTime = Date.now();
-
-  // Validate page ID before proceeding
-  if (!isValidUuid(page.id)) {
-    console.error(`[ensureCandidatesForPageWithDepth] ❌ Invalid page ID (must be uuid v7)`);
-    return;
-  }
-
-  // Skip if depth limit reached
-  if (currentDepth > maxDepth) {
-    console.log(`[ensureCandidatesForPageWithDepth] ⏩ Depth limit reached (${currentDepth}/${maxDepth}), skipping generation`);
-    return;
-  }
-
-  // Skip if no actions need generation (exclude fallback actions to prevent retry loops)
-  const pendingActions = page.actions.filter(action => 
-    !action.destination?.pageId && 
-    !action._isFallback // Skip fallback actions that already failed
-  );
-  if (pendingActions.length === 0) {
-    console.log(`[ensureCandidatesForPageWithDepth] ✨ No actions need generation at depth ${currentDepth}`);
-    return;
-  }
-  
-  console.log(`[ensureCandidatesForPageWithDepth] ⏳ Depth ${currentDepth}/${maxDepth}: ${pendingActions.length} actions need candidate generation`);
-
-  // Use distributed lock to prevent concurrent processing of the same page
-  const lockKey = LOCK_KEYS.CANDIDATE_GENERATION(page.id);
-  await withLock(lockKey, async () => {
-    // Read current page state
-    const currentDBPage = await getPageFromDB(page.id, { client: dbWrite });
-    if (!currentDBPage) throw new Error('Page not found');
-
-    // Map DB row to the user-facing page shape
-    const currentPage = await mapToUserStoryPage(currentDBPage, userId);
-    const initialDBActions = currentDBPage.actions;
-
-    // Re-check pending actions after acquiring lock
-    const recheckedPendingDBActions = initialDBActions.filter(action => 
-      !action.destination?.pageId && 
-      !action._isFallback // Skip fallback actions that already failed
-    );
-    if (recheckedPendingDBActions.length === 0) {
-      console.log(`[ensureCandidatesForPageWithDepth] ⏩ Actions already processed by another instance at depth ${currentDepth}`);
-      return;
-    }
-
-    // Mark page as generating
-    await dbWrite
-      .update(pages)
-      .set({ isGeneratingStartedAt: new Date() })
-      .where(eq(pages.id, page.id));
-
-    // Track if any actions were actually updated
-    const updatedDBActions = [...initialDBActions];
-    const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
-    let hasRealChanges = false;
-    
-    // If there were any existing actions, should generate new branchId for each pending action
-    const isPartial = initialDBActions.length > recheckedPendingDBActions.length;
-    
-    // Calculate dynamic timeout for background processing (more generous for background)
-    const BACKGROUND_TIMEOUT_MS = 180000; // 3 minutes for background
-    const timeElapsed = Date.now() - requestStartTime;
-    const AI_GENERATION_TIMEOUT_MS = Math.max(BACKGROUND_TIMEOUT_MS - timeElapsed - 5000, 30000); // Min 30s
-    
-    // Generate candidates in parallel
-    const generationResults = await generateCandidatesInParallel({
-      userId,
-      actions: recheckedPendingDBActions,
-      currentPage,
-      currentState,
-      currentBook,
-      initialGenerateNewBranchId: isPartial || generateNewBranchId,
-      timeoutMs: AI_GENERATION_TIMEOUT_MS,
-      currentDepth,
-      maxDepth,
-      onProgress: onActionProgress
-    });
-    
-    // Process results and update actions
-    for (let i = 0; i < generationResults.length; i++) {
-      const result = generationResults[i];
-      const action = result.action;
-      
-      if (result.success && result.candidatePage) {
-        // Success: update action with destination using remove-then-insert pattern
-        const existingIndex = updatedDBActions.findIndex(a => a.text === action.text);
-        if (existingIndex !== -1) {
-          updatedDBActions.splice(existingIndex, 1);
-        }
-        
-        updatedDBActions.push({ 
-          ...action,
-          destination: { 
-            branchId: result.candidatePage.branchId, 
-            pageId: result.candidatePage.id 
-          }
-        });
-        hasRealChanges = true;
-        // Note: generateNewBranchId logic not used in background processing
-        // as each action generates independently without affecting others
-      } else {
-        // Failed: check if it was a validation error before removing
-        const isInvalidAction = result.error && (
-          (result.error as ErrorWithCustomProperties).code === 'INVALID_ACTION' ||
-          (result.error as ErrorWithCustomProperties).shouldRetry === false
-        );
-        
-        if (isInvalidAction) {
-          console.error(`[ensureCandidatesForPageWithDepth] ❌ Invalid action "${action.text}" detected, removing from actions`);
-          const existingIndex = updatedDBActions.findIndex(a => a.text === action.text);
-          if (existingIndex !== -1) {
-            updatedDBActions.splice(existingIndex, 1);
-            hasRealChanges = true;
-          }
-        }
-      }
-    }
-
-    // Summarize results
-    const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
-    const succeededCount = updatedDBActions.length - pendingAfter;
-    console.log(`[ensureCandidatesForPageWithDepth] ✅ Depth ${currentDepth}: ${succeededCount}/${updatedDBActions.length} actions generated`);
-    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ ${pendingAfter} still pending for candidate page generation`);
-
-    // Ensure there's at least one navigable action
-    // If all were removed as invalid, insert a 'Continue' action for navigating to the next page.
-    if (updatedDBActions.length === 0) {
-      console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
-      updatedDBActions.push({
-        text: "Continue.",
-        type: "other",
-        hint: {
-          text: "See what happens next.",
-          type: "none"
-        },
-        destination: {},
-        _isFallback: true // Sentinel flag to prevent retry loops
-      });
-      hasRealChanges = true;
-    }
-    
-    // Update database if changes were made
-    if (hasRealChanges) {
-      await dbWrite
-        .update(pages)
-        .set({
-          actions: updatedDBActions,
-          pendingGenerationCount: pendingAfter,
-          isGeneratingStartedAt: null,
-          updatedAt: new Date()
-        })
-        .where(eq(pages.id, page.id));
-    } else {
-      // Clear generation flag even if no changes
-      await dbWrite
-        .update(pages)
-        .set({ isGeneratingStartedAt: null })
-        .where(eq(pages.id, page.id));
-    }
-  }, 600); // 10-minute lock for background processing
 }
 
 /**
@@ -967,8 +763,8 @@ export async function ensureCandidatesForPageWithStrategy(
     console.log(`[ensureCandidatesForPage] 🔒 Set isGeneratingStartedAt for page ${page.id} (lock owner)`);
 
     // Track if any actions were actually updated
-    let updatedDBActions = [...initialDBActions];
     const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
+    let updatedDBActions = [...initialDBActions];
     let hasRealChanges = false;
 
     // Track removed actions using Set for O(1) lookup (clean, type-safe approach)
@@ -1203,13 +999,13 @@ export async function ensureCandidatesForPageWithStrategy(
     // Summarize results and decide whether we need to persist changes back to DB
     const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
     const succeededCount = updatedDBActions.length - pendingAfter;
-    console.log(`[ensureCandidatesForPage] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
-    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPage] ⚠️ ${pendingAfter} still pending for candidate page generation`);
+    console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
+    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ ${pendingAfter} still pending for candidate page generation`);
 
     // Ensure there's at least one navigable action on the page.
     // If all were removed as invalid, insert a 'Continue' action for navigating to the next page.
     if (updatedDBActions.length === 0) {
-      console.warn(`[ensureCandidatesForPageWithDepth] ⚠️ All actions are invalid, replaced with 1 continue action.`);
+      console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
         text: "Continue.",
         type: "other",
@@ -1239,7 +1035,7 @@ export async function ensureCandidatesForPageWithStrategy(
       .where(eq(pages.id, page.id))
       .returning();
 
-    console.log(`[ensureCandidatesForPage] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
+    console.log(`[ensureCandidatesForPageWithStrategy] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
     const dbPage = updatedPage[0] || null;
     return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
   }, 270); // 270-second (4.5-minute) lock TTL to align with Vercel timeout

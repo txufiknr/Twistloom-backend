@@ -24,7 +24,6 @@ A sophisticated psychological thriller branching story engine backend that deliv
 | 🌐 **Express.js** | 5.2+ | Mature, lightweight, and extensive middleware ecosystem |
 | 🗄️ **Neon (Postgres)** | 17 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
-| ⚡ **pg-boss** | 12.18+ | Robust PostgreSQL-based job queue for async processing |
 | 🚀 **Vercel** | Serverless | Perfect for serverless TypeScript apps with zero-config deployment |
 | 📦 **pnpm** | 10+ | Fast, efficient, and monorepo support |
 
@@ -55,11 +54,11 @@ A sophisticated psychological thriller branching story engine backend that deliv
 - **Trauma System**: Psychological stress tracking with dynamic difficulty progression
 
 ### **Asynchronous Candidate Generation**
-- **Job Queue Processing**: PostgreSQL-based pg-boss for reliable async task processing
-- **Timeout Prevention**: Eliminates Vercel 5-minute timeout limitations through background processing
+- **GitHub Workflow Processing**: Hourly GitHub Actions for reliable async task processing
+- **Timeout Prevention**: Eliminates Vercel 5-minute timeout limitations through scheduled background processing
 - **Strategy Pattern**: Deployment-aware generation (vercel/github-action/cron) with optimized timeouts
 - **Distributed Locking**: Prevents concurrent generation on same page with automatic cleanup
-- **State Preservation**: Serialized story state passed through job queue for context consistency
+- **State Preservation**: Database-driven state management for context consistency
 - **Progress Tracking**: Real-time SSE events for generation progress monitoring
 - **Retry Logic**: Automatic retry with exponential backoff for failed generations
 - **Multi-Level Generation**: Fire-and-forget deeper level pre-generation for instant user experience
@@ -495,8 +494,8 @@ src/
 - **Branch Traversal Algorithm**: Advanced state reconstruction system
 - **Snapshot & Delta Services**: High-performance state management
 - **Delta Helper Utilities**: DRY-compliant delta creation functions
-- **Async Candidate Generation**: PostgreSQL-based job queue system
-- **Job Queue Management**: pg-boss integration for background processing
+- **Async Candidate Generation**: GitHub Actions-based scheduled processing
+- **Job Queue Management**: Database-driven pending generation tracking
 - **Strategy Pattern**: Deployment-aware generation with timeout optimization
 
 ---

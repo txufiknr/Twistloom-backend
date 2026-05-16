@@ -66,7 +66,7 @@ The system supports configurable **multi-level depth pre-generation** to create 
 
 - **Level 1 (Strategy-Based)**: Generation based on deployment context (vercel/github-action/cron)
 - **Level 2 (Immediate GitHub Workflow)**: Immediate background generation using `triggerGitHubWorkflow`
-- **Level 3+ (Job Queue)**: Background generation via async job queue for less critical deeper levels
+- **Level 3+ (Hourly GitHub Workflow)**: Background generation via hourly scheduled GitHub Actions for less critical deeper levels
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
 
@@ -186,22 +186,23 @@ updatedDBActions.push({
 The system uses a **hybrid approach** to balance performance and user experience:
 
 **Level 2 - Immediate Processing**:
-- Uses `triggerBackgroundGeneration` for immediate fire-and-forget
-- Extended timeout (15 minutes via cron strategy)
+- Uses `triggerGitHubWorkflow` for immediate fire-and-forget
+- Extended timeout (30 minutes via github-action strategy)
 - Users navigate to level 2 pages quickly after level 1
-- Avoids 24-hour delay from daily cron schedule
+- Avoids waiting for hourly scheduled processing
 
-**Level 3+ - Job Queue Processing**:
-- Uses `enqueueCandidateGenerationJob` for background processing
+**Level 3+ - Hourly GitHub Workflow**:
+- Relies on hourly GitHub Actions workflow for background processing
 - Less critical depth (users may not reach these pages)
 - Reduces immediate load on system
-- Can wait for daily cron processing
+- Processed during scheduled hourly runs
 
 **Benefits of Hybrid Approach**:
 - ✅ Critical paths (level 1-2) are immediately available
 - ✅ Reduced system load for deeper levels
 - ✅ Better user experience for common navigation patterns
-- ✅ Scalable for exponential growth at deeper depths
+- ✅ Scalable for exponential growth at deeper levels
+- ✅ No persistent worker process needed (serverless-friendly)
 
 ## Manual Trigger Support
 
@@ -264,14 +265,7 @@ await pollForCandidateGeneration({
 });
 ```
 
-### **4. Async Job Queue System**
-- **Location**: `src/utils/candidate-generation-async.ts`
-- **Function**: `enqueueCandidateGenerationJob()` - for deeper level generation (level 3+)
-- **Current Usage**: Used for level 3+ generation in parallel processing
-- **Strategy Context**: **'cron'** - designed for background job processing
-- **Purpose**: Queue less critical deeper levels for background processing
-
-### **5. GitHub Workflow Processing**
+### **4. GitHub Workflow Processing**
 - **Location**: `src/cron/retry-pending-generations.ts`
 - **Function**: Processes GitHub workflow triggers
 - **Current Strategy**: Uses `ensureCandidatesForPageWithStrategy(userId, page, state, book, 'cron')`
@@ -279,7 +273,7 @@ await pollForCandidateGeneration({
 - **Environment Variables**: `TRIGGERED_BOOK_ID`, `TRIGGERED_PAGE_ID`, `TRIGGERED_BY_USER`
 - **Purpose**: Reliable background processing with 30-minute timeout
 
-### **6. Retry & Recovery System**
+### **5. Retry & Recovery System**
 - **Location**: `src/cron/retry-pending-generations.ts`
 - **Function**: `retryFailedGenerations()`
 - **Current Strategy**: Uses 'cron' strategy with extended timeout
@@ -314,14 +308,14 @@ Page A (3 actions) → Generate 3 candidates (Level 1 - sync)
 
 ## Architecture
 
-The pre-generation system uses a **strategy-based approach** with **async job queues**, **distributed locking**, **database-level generation flags**, **parallel processing**, and **exponential backoff retry** to generate candidate pages reliably. This ensures:
+The pre-generation system uses a **strategy-based approach** with **GitHub Actions workflows**, **distributed locking**, **database-level generation flags**, **parallel processing**, and **exponential backoff retry** to generate candidate pages reliably. This ensures:
 
 - **Context-aware generation**: Strategy pattern adapts to deployment environment (vercel/github-action/cron)
-- **State preservation**: Story state is serialized and passed through job queue for consistency
-- **Reliable background processing**: Async job queue prevents Vercel timeouts
-- **Graceful failure handling**: Failed jobs retry automatically with exponential backoff
+- **State preservation**: Story state is preserved through database operations for consistency
+- **Reliable background processing**: GitHub Actions workflows prevent Vercel timeouts
+- **Graceful failure handling**: Failed generations retry automatically with exponential backoff
 - **Resource efficiency**: Only generates pages for actions users might take
-- **Cascade effect**: Each generated page triggers pre-generation of its own candidates via job queue
+- **Cascade effect**: Each generated page triggers pre-generation of its own candidates via GitHub workflow
 - **Concurrent safety**: Distributed locks prevent duplicate generation in serverless environments
 - **Single operation guarantee**: `isGeneratingStartedAt` timestamp ensures only one generation operation per page
 - **SSE waiting**: Clients can wait for in-progress generations via Server-Sent Events
@@ -828,9 +822,8 @@ export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // TODO: use
 
 **Depth Behavior:**
 - **Level 1**: Synchronous parallel generation, results returned to user immediately
-- **Level 2**: Immediate fire-and-forget background generation (priority 1)
-- **Level 3**: Job queue with medium priority (priority 3)
-- **Level 4+**: Job queue with low priority (priority 5)
+- **Level 2**: Immediate GitHub workflow trigger (fire-and-forget)
+- **Level 3+**: Hourly GitHub workflow processing (scheduled background)
 - **Depth Limit**: Generation stops when `currentDepth > maxDepth`
 - **Exponential Growth**: Each level can multiply the total pages (3³ = 27 pages at depth 3)
 
@@ -849,21 +842,27 @@ const generationResults = await generateCandidatesInParallel({
   maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH
 });
 
-// Level 2+: Fire-and-forget background
+// Level 2: Immediate GitHub workflow trigger
 if (currentDepth < maxDepth) {
-  Promise.all(
-    successfulResults.map(async (result) => {
-      await ensureCandidatesForPageWithDepth(userId, candidateUserPage, null, currentBook, currentDepth + 1, maxDepth);
-    })
-  ); // No await - runs in background
+  const nextDepth = currentDepth + 1;
+  if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH) {
+    void triggerGitHubWorkflow({
+      userId,
+      pageId: candidatePage.id,
+      bookId: currentBook.id,
+      context: 'generateCandidatesInParallel'
+    });
+  }
+  // Level 3+: No action needed - hourly GitHub workflow will process
 }
 ```
 
 **Benefits:**
 - **Instant Response**: Level 1 completes quickly and returns to user
-- **Deep Coverage**: Background processing ensures deeper levels are ready when needed
+- **Deep Coverage**: GitHub workflow ensures deeper levels are ready when needed
 - **Resource Control**: Configurable depth prevents excessive resource usage
-- **Timeout Resilience**: Background processing has more generous timeouts
+- **Timeout Resilience**: GitHub workflow has 30-minute timeout (vs 5-minute Vercel limit)
+- **Serverless-Friendly**: No persistent worker process needed
 
 ## CRON JOB PROCESSING
 

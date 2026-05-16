@@ -8,13 +8,6 @@
 [ ] Lru cache trending books 2 minute
 [ ] Page 1 selected actions masih none
 
-[ ] ganti approach:
-- is `_isFallback` really needed?
-- no need for Next.js API route ("/api")
-- no need for pg-boss (pgboss.ts)
-- no need for daily vercel cron (vercel.json)
-- no need for ensureCandidatesForPageWithDepth
-
 [ ] Originals: Mc name predefine casts aja, jangan AI
 [ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
