@@ -72,6 +72,14 @@ function getCookieName(): string {
  * This function manually verifies the JWT token using the AUTH_SECRET,
  * since NextAuth's getToken() is designed for Next.js API routes, not Express.
  * 
+ * twistloom-web.vercel.app → twistloom-backend.vercel.app = cross-domain,
+ * no automatic cookie sending.
+ * 
+ * Note:
+ * - Requires Express cookie-parser middleware: `app.use(cookieParser());`
+ * - For cross-domain requests with cookies, needs CORS configured with credentials support: `app.use(cors({ origin: 'https://twistloom-web.vercel.app', credentials: true }));`
+ * - Your frontend fetch calls need credentials: 'include' for cross-domain cookie sending.
+ * 
  * @param req - Express request object
  * @returns User data if token is valid, null otherwise
  * 
@@ -87,6 +95,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
   try {
     const cookieName = getCookieName();
     const token = req.cookies?.[cookieName];
+
     // const token = await getToken({
     //   req: req as unknown as { headers: Record<string, string> },
     //   secret: process.env.AUTH_SECRET,
@@ -114,12 +123,12 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     const name = payload.name as string | undefined;
 
     if (!userId || typeof userId !== 'string') {
-      console.error('Invalid token: missing or invalid userId');
+      console.error('[verifyNextAuthToken] ❌ Invalid token: missing or invalid userId');
       return null;
     }
 
     if (!email || typeof email !== 'string') {
-      console.error('Invalid token: missing or invalid email');
+      console.error('[verifyNextAuthToken] ❌ Invalid token: missing or invalid email');
       return null;
     }
 
@@ -132,14 +141,14 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
   } catch (error) {
     if (error instanceof Error) {
       if (error.name === 'JWTExpired') {
-        console.log('[verifyNextAuthToken] JWT token expired:', error.message);
+        console.warn('[verifyNextAuthToken] ⚠️ JWT token expired:', error.message);
       } else if (error.name === 'JWTInvalid' || error.name === 'JWSSignatureVerificationFailed') {
-        console.log('[verifyNextAuthToken] Invalid JWT token:', error.message);
+        console.warn('[verifyNextAuthToken] ⚠️ Invalid JWT token:', error.message);
       } else {
-        console.error('[verifyNextAuthToken] Token verification error:', error.message);
+        console.error('[verifyNextAuthToken] ❌ Token verification error:', error.message);
       }
     } else {
-      console.error('[verifyNextAuthToken] Unknown error:', error);
+      console.error('[verifyNextAuthToken] ❌ Unknown error:', error);
     }
     return null;
   }

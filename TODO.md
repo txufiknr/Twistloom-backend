@@ -4,18 +4,13 @@
 [x] Get page LRU cache & Implement Last-Modified or ETag
 [x] complete per-action candidate generation progress tracking
 [x] can we update pendingGenerationCount via trigger which auto-detect from actions column?
-[ ] /api/payments/create-checkout-session 401 unauthorized
 
-please examine my `requireAuth` middleware and `verifyNextAuthToken` function implementation
-I signed in with Google, but I always got 401 when accessing API with `requireAuth` middleware
-for example when: POST /payments/create-checkout-session
-can you investigate and solve the issue?
-
+[x] /api/payments/create-checkout-session 401 unauthorized
+[ ] On demand github workflow gak jalan
 [ ] Lru cache trending books 2 minute
 [ ] Page 1 selected actions masih none
 
 [ ] Originals: Mc name predefine casts aja, jangan AI
-[ ] User settings api: text size
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Important objects perlu disimpen di story state?
 [ ] Important objects perlu prop tambahan: trait (custom fields: color, battery-level), rules (custom string array), status (broken, missing)? 
@@ -26,7 +21,7 @@ TODO:
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] user: you might like (based on liked books)
-[ ] user preferences schema (interests)
+[ ] user preferences schema (interests, text size)
 [ ] display running summary at the end of story (N% readers ended up here)
 [ ] Implement belief
 [ ] Implement corruption curve

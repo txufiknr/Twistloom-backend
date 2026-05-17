@@ -269,10 +269,11 @@ export function getSimilarBookSelect(targetKeywords: string[], currentUserId: st
   return {
     ...baseSelect,
     // Calculate Jaccard similarity using SQL array operations
+    // Cast jsonb to text[] using ARRAY() with jsonb_array_elements_text for proper conversion
     similarityScore: sql<number>`
       (
-        cardinality(${books.keywords}::text[] & ${targetKeywords}::text[])::float
-        / NULLIF(cardinality(${books.keywords}::text[] | ${targetKeywords}::text[]), 0)
+        cardinality(ARRAY(SELECT jsonb_array_elements_text(${books.keywords})) & ${targetKeywords}::text[])::float
+        / NULLIF(cardinality(ARRAY(SELECT jsonb_array_elements_text(${books.keywords})) | ${targetKeywords}::text[]), 0)
       )
     `,
   };

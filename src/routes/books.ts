@@ -1230,341 +1230,6 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
 });
 
 /**
- * GET /api/books/:identifier/:pageId
- * 
- * Retrieves a specific page within a book.
- * Accepts both slug and UUID v7 as book identifier.
- * 
- * Supports translation via Accept-Language header. If the requested language
- * differs from the book's language, the page text will be translated and cached.
- * 
- * @param identifier - Book slug or UUID v7
- * @param pageId - Page identifier (e.g., "main", "abc123")
- * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
- * @returns Page with actions and book metadata
- */
-router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const { identifier, pageId, prefetch, translate: shouldTranslate, credits } = req.params;
-    const userId = req.userId!; // Always defined even for guests
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
-    const skipVisit = prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
-    const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
-    const consumeCredits = credits === 'true'; // Should consume credits
-
-    const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
-      userId,
-      pageId: pageId as string,
-      bookIdentifier,
-      skipVisit,
-      consumeCredits
-    });
-
-    if (!dbPage || !book) return;
-
-    // Handle translation if Accept-Language header is provided and differs from book language
-    const acceptLanguage = req.headers['accept-language'] as string | undefined;
-    const bookLanguage = book.language || 'en';
-    
-    // Return enriched page with only frontend-relevant fields
-    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, acceptLanguage, translate, sourceAction });
-    if (!page) return handleApiError(res, "Failed to get enriched page");
-
-    // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
-    const lastModified = dbPage.updatedAt;
-    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${acceptLanguage || 'en'}`;
-    const etag = `"${etagInput}"`;
-
-    // Check If-None-Match header (ETag includes translation params)
-    const ifNoneMatch = req.get('If-None-Match');
-    if (ifNoneMatch === etag) {
-      return res.status(304).end();
-    }
-
-    // Set caching headers
-    res.set('Last-Modified', lastModified.toUTCString());
-    res.set('ETag', etag);
-    res.set('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
-
-    res.json({
-      page,
-      book,
-      visitDetails
-    });
-  } catch (error) {
-    handleApiError(res, "Failed to retrieve page", error);
-  }
-});
-
-/**
- * GET /api/books/:identifier/:pageId/candidates
- * 
- * Pre-generates candidate pages for all actions on a story page.
- * This ensures that when users select actions, the corresponding destination pages
- * are immediately available without waiting for AI generation.
- * 
- * **Authentication:** Guest or authenticated (via `guestOrAuthMiddleware`)
- * 
- * **Response Format:** Always uses Server-Sent Events (SSE)
- * 
- * This endpoint always returns SSE responses for consistency:
- * - If generation is already in progress (isGeneratingStartedAt is set): Polls for completion
- * - If generation is not in progress: Triggers background generation, then polls for completion
- * - If no actions need generation: Sends SSE complete event immediately
- * 
- * This approach prevents expensive AI generation from running multiple times for
- * the same (bookId + pageId) combination and provides a consistent response format.
- * 
- * Known Issue (in Vercel hobby tier):
- * SSE connections on Vercel hobby are subject to the same 5-min maxDuration limit
- * 
- * @param id - Book ID
- * @param pageId - Page ID for which to generate candidates
- * @returns Updated page with pre-generated candidates (via SSE)
- * 
- * @example
- * GET /api/books/book123/page456/candidates
- * 
- * Response (200) - SSE format:
- * event: progress
- * data: {"status": "waiting", "message": "Candidate generation in progress..."}
- * 
- * event: complete
- * data: {"id": "page456", "page": 5, "text": "...", "actions": [...]}
- */
-router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const { identifier, pageId } = req.params;
-    const userId = req.userId!;
-
-    // Handle array case for identifier and pageId
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
-
-    if (!isValidUuid(pageIdStr)) {
-      return handleValidationError(res, "Invalid pageId: must be valid uuid");
-    }
-
-    // Use common validation and page retrieval
-    const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
-    if (!validationResult) {
-      return handleNotFoundError(res, "Page not found");
-    }
-
-    const { dbPage, userPage } = validationResult;
-
-    // Always set SSE headers first for consistent response format
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-
-    // Determine if generation is already in progress
-    const isGenerating = !!dbPage.isGeneratingStartedAt;
-    const initialMessage = isGenerating 
-      ? 'Candidate generation in progress...' 
-      : 'Candidate generation started...';
-
-    // Check if some actions need generation
-    const totalPendingActions = userPage.actions.filter(a => !a.destination?.pageId).length;
-
-    if (totalPendingActions === 0) {
-      console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
-      try {
-        if (!res.writableEnded) {
-          res.write(`event: complete\n`);
-          res.write(`data: ${JSON.stringify(userPage)}\n\n`);
-          res.end();
-        }
-        // Clear progress events since generation is complete
-        await clearActionProgressEvents(pageIdStr);
-      } catch {
-        if (!res.writableEnded) {
-          res.write(`event: error\n`);
-          res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
-          res.end();
-        }
-      }
-      return;
-    }
-
-    // Trigger background generation via GitHub workflow if not already in progress
-    if (!isGenerating) {
-      void triggerGitHubWorkflow({
-        bookId: dbPage.bookId,
-        pageId: pageIdStr,
-        userId,
-        context: 'GET /candidates'
-      });
-    } else {
-      console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageIdStr}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
-    }
-
-    // Use shared polling function
-    await pollForCandidateGeneration({
-      pageId: pageIdStr,
-      userId,
-      req,
-      res,
-      initialMessage,
-      getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
-      mapToUserStoryPage,
-      getActionProgressEvents,
-      clearActionProgressEvents,
-      config: SSE_POLLING_CONFIG,
-    });
-  } catch (error) {
-    handleApiError(res, "Failed to generate candidates", error);
-  }
-});
-
-/**
- * GET /api/books/:identifier/:pageId/candidates/status
- * 
- * Polling endpoint for candidate generation status
- * 
- * Returns current generation status without SSE overhead.
- * Designed for short-lived polling requests (no timeout risk).
- * 
- * **Authentication:** Required (via `guestOrAuthMiddleware`)
- * 
- * Response:
- * {
- *   isGenerating: boolean;
- *   completedActions: number;
- *   totalActions: number;
- *   actions: Action[];
- *   startedAt?: string;
- *   lastUpdated?: string;
- * }
- * 
- * @param identifier - Book slug or UUID v7
- * @param pageId - Page ID for which to check status
- * @returns Generation status (JSON)
- * 
- * @example
- * GET /api/books/book123/page456/candidates/status
- * 
- * Response (200):
- * {
- *   "isGenerating": true,
- *   "completedActions": 2,
- *   "totalActions": 4,
- *   "actions": [...],
- *   "startedAt": "2024-01-01T00:00:00Z",
- *   "lastUpdated": "2024-01-01T00:00:10Z"
- * }
- */
-router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const { identifier, pageId } = req.params;
-    const userId = req.userId!;
-
-    // Handle array case for identifier and pageId
-    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
-
-    if (!isValidUuid(pageIdStr)) {
-      return handleValidationError(res, "Invalid pageId: must be valid uuid");
-    }
-
-    // Use common validation and page retrieval
-    const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
-    if (!validationResult) {
-      return handleNotFoundError(res, "Page not found");
-    }
-
-    const { dbPage, userPage } = validationResult;
-
-    // Check if generation is in progress (using timestamp field)
-    const isGenerating = await checkAndResetStuckGeneration(dbPage);
-    if (isGenerating) {
-      // Generation in progress - return current status
-      // Check for progress events in database
-      const progressEvents = await getActionProgressEvents(pageIdStr);
-      const startedAt = dbPage.isGeneratingStartedAt!.toISOString();
-
-      // Calculate completed/total from page actions (SSOT)
-      const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
-      const completedActions = actionsWithDestinations.length;
-      const totalActions = userPage.actions.length;
-      let actionProgress: ActionProgressEvent[] = [];
-
-      if (progressEvents && progressEvents.length > 0) {
-        // Include all progress events for per-action status
-        actionProgress = progressEvents;
-      } else {
-        // Fallback: generate synthetic progress events for completed actions
-        actionProgress = actionsWithDestinations.map((action) => ({
-          action: action.text,
-          status: 'completed',
-          timestamp: new Date().toISOString()
-        }) satisfies ActionProgressEvent);
-      }
-
-      const response: CandidateGenerationStatus = {
-        isGenerating: true,
-        completedActions,
-        totalActions,
-        actions: userPage.actions.filter(a => a.destination?.pageId),
-        actionProgress, // Include per-action progress events
-        startedAt,
-        lastUpdated: new Date().toISOString(),
-      };
-
-      console.log(`[GET /candidates/status] ⏰ Generation in progress for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
-      return res.json(response);
-    }
-
-    // Generation not in progress - check if actions are complete
-    const incompleteActions = userPage.actions.filter(a => !a.destination?.pageId);
-    const completedActions = userPage.actions.filter(a => a.destination?.pageId);
-    const isComplete = incompleteActions.length === 0;
-
-    if (isComplete) {
-      // All actions complete, clear progress events and return full data
-      await clearActionProgressEvents(pageIdStr);
-      console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr}: ${completedActions.length}/${userPage.actions.length} actions completed`);
-      return res.json({
-        isGenerating: false,
-        completedActions: userPage.actions.length,
-        totalActions: userPage.actions.length,
-        actions: userPage.actions,
-        actionProgress: [],
-        startedAt: undefined,
-        lastUpdated: userPage.updatedAt.toISOString(),
-      } satisfies CandidateGenerationStatus);
-    }
-
-    // Actions incomplete, trigger background generation via GitHub workflow
-    void triggerGitHubWorkflow({
-      bookId: dbPage.bookId,
-      pageId: pageIdStr,
-      userId,
-      context: 'GET /candidates/status',
-    });
-
-    console.log(`[GET /candidates/status] 🚀 Generation started for page ${pageIdStr} (actions: ${completedActions.length}/${userPage.actions.length})`);
-    return res.json({
-      isGenerating: true,
-      completedActions: completedActions.length,
-      totalActions: userPage.actions.length,
-      actions: completedActions,
-      actionProgress: incompleteActions.map(a => ({
-        action: a.text,
-        status: 'started',
-        timestamp: new Date().toISOString()
-      }) satisfies ActionProgressEvent),
-      startedAt: new Date().toISOString(),
-      lastUpdated: new Date().toISOString(),
-    } satisfies CandidateGenerationStatus);
-
-  } catch (error) {
-    handleApiError(res, "Failed to get candidate status", error);
-  }
-});
-
-/**
  * GET /api/books/explore
  * 
  * Retrieves all published books for exploration.
@@ -2553,6 +2218,341 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     res.json({ book: enrichedBook });
   } catch (error) {
     handleApiError(res, "Failed to retrieve book", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/:pageId
+ * 
+ * Retrieves a specific page within a book.
+ * Accepts both slug and UUID v7 as book identifier.
+ * 
+ * Supports translation via Accept-Language header. If the requested language
+ * differs from the book's language, the page text will be translated and cached.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier (e.g., "main", "abc123")
+ * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
+ * @returns Page with actions and book metadata
+ */
+router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId, prefetch, translate: shouldTranslate, credits } = req.params;
+    const userId = req.userId!; // Always defined even for guests
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
+    const skipVisit = prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
+    const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
+    const consumeCredits = credits === 'true'; // Should consume credits
+
+    const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
+      userId,
+      pageId: pageId as string,
+      bookIdentifier,
+      skipVisit,
+      consumeCredits
+    });
+
+    if (!dbPage || !book) return;
+
+    // Handle translation if Accept-Language header is provided and differs from book language
+    const acceptLanguage = req.headers['accept-language'] as string | undefined;
+    const bookLanguage = book.language || 'en';
+    
+    // Return enriched page with only frontend-relevant fields
+    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, acceptLanguage, translate, sourceAction });
+    if (!page) return handleApiError(res, "Failed to get enriched page");
+
+    // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
+    const lastModified = dbPage.updatedAt;
+    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${acceptLanguage || 'en'}`;
+    const etag = `"${etagInput}"`;
+
+    // Check If-None-Match header (ETag includes translation params)
+    const ifNoneMatch = req.get('If-None-Match');
+    if (ifNoneMatch === etag) {
+      return res.status(304).end();
+    }
+
+    // Set caching headers
+    res.set('Last-Modified', lastModified.toUTCString());
+    res.set('ETag', etag);
+    res.set('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
+
+    res.json({
+      page,
+      book,
+      visitDetails
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve page", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/:pageId/candidates
+ * 
+ * Pre-generates candidate pages for all actions on a story page.
+ * This ensures that when users select actions, the corresponding destination pages
+ * are immediately available without waiting for AI generation.
+ * 
+ * **Authentication:** Guest or authenticated (via `guestOrAuthMiddleware`)
+ * 
+ * **Response Format:** Always uses Server-Sent Events (SSE)
+ * 
+ * This endpoint always returns SSE responses for consistency:
+ * - If generation is already in progress (isGeneratingStartedAt is set): Polls for completion
+ * - If generation is not in progress: Triggers background generation, then polls for completion
+ * - If no actions need generation: Sends SSE complete event immediately
+ * 
+ * This approach prevents expensive AI generation from running multiple times for
+ * the same (bookId + pageId) combination and provides a consistent response format.
+ * 
+ * Known Issue (in Vercel hobby tier):
+ * SSE connections on Vercel hobby are subject to the same 5-min maxDuration limit
+ * 
+ * @param id - Book ID
+ * @param pageId - Page ID for which to generate candidates
+ * @returns Updated page with pre-generated candidates (via SSE)
+ * 
+ * @example
+ * GET /api/books/book123/page456/candidates
+ * 
+ * Response (200) - SSE format:
+ * event: progress
+ * data: {"status": "waiting", "message": "Candidate generation in progress..."}
+ * 
+ * event: complete
+ * data: {"id": "page456", "page": 5, "text": "...", "actions": [...]}
+ */
+router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId } = req.params;
+    const userId = req.userId!;
+
+    // Handle array case for identifier and pageId
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
+
+    if (!isValidUuid(pageIdStr)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
+
+    // Use common validation and page retrieval
+    const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
+    if (!validationResult) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    const { dbPage, userPage } = validationResult;
+
+    // Always set SSE headers first for consistent response format
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    // Determine if generation is already in progress
+    const isGenerating = !!dbPage.isGeneratingStartedAt;
+    const initialMessage = isGenerating 
+      ? 'Candidate generation in progress...' 
+      : 'Candidate generation started...';
+
+    // Check if some actions need generation
+    const totalPendingActions = userPage.actions.filter(a => !a.destination?.pageId).length;
+
+    if (totalPendingActions === 0) {
+      console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
+      try {
+        if (!res.writableEnded) {
+          res.write(`event: complete\n`);
+          res.write(`data: ${JSON.stringify(userPage)}\n\n`);
+          res.end();
+        }
+        // Clear progress events since generation is complete
+        await clearActionProgressEvents(pageIdStr);
+      } catch {
+        if (!res.writableEnded) {
+          res.write(`event: error\n`);
+          res.write(`data: ${JSON.stringify({ error: 'Failed to process page data' })}\n\n`);
+          res.end();
+        }
+      }
+      return;
+    }
+
+    // Trigger background generation via GitHub workflow if not already in progress
+    if (!isGenerating) {
+      void triggerGitHubWorkflow({
+        bookId: dbPage.bookId,
+        pageId: pageIdStr,
+        userId,
+        context: 'GET /candidates'
+      });
+    } else {
+      console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageIdStr}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
+    }
+
+    // Use shared polling function
+    await pollForCandidateGeneration({
+      pageId: pageIdStr,
+      userId,
+      req,
+      res,
+      initialMessage,
+      getPageFromDB: (pid) => getPageFromDB(pid, { client: dbWrite }),
+      mapToUserStoryPage,
+      getActionProgressEvents,
+      clearActionProgressEvents,
+      config: SSE_POLLING_CONFIG,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to generate candidates", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/:pageId/candidates/status
+ * 
+ * Polling endpoint for candidate generation status
+ * 
+ * Returns current generation status without SSE overhead.
+ * Designed for short-lived polling requests (no timeout risk).
+ * 
+ * **Authentication:** Required (via `guestOrAuthMiddleware`)
+ * 
+ * Response:
+ * {
+ *   isGenerating: boolean;
+ *   completedActions: number;
+ *   totalActions: number;
+ *   actions: Action[];
+ *   startedAt?: string;
+ *   lastUpdated?: string;
+ * }
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page ID for which to check status
+ * @returns Generation status (JSON)
+ * 
+ * @example
+ * GET /api/books/book123/page456/candidates/status
+ * 
+ * Response (200):
+ * {
+ *   "isGenerating": true,
+ *   "completedActions": 2,
+ *   "totalActions": 4,
+ *   "actions": [...],
+ *   "startedAt": "2024-01-01T00:00:00Z",
+ *   "lastUpdated": "2024-01-01T00:00:10Z"
+ * }
+ */
+router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId } = req.params;
+    const userId = req.userId!;
+
+    // Handle array case for identifier and pageId
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
+
+    if (!isValidUuid(pageIdStr)) {
+      return handleValidationError(res, "Invalid pageId: must be valid uuid");
+    }
+
+    // Use common validation and page retrieval
+    const validationResult = await validateAndRetrievePageForGeneration(bookIdentifier, pageIdStr, userId);
+    if (!validationResult) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    const { dbPage, userPage } = validationResult;
+
+    // Check if generation is in progress (using timestamp field)
+    const isGenerating = await checkAndResetStuckGeneration(dbPage);
+    if (isGenerating) {
+      // Generation in progress - return current status
+      // Check for progress events in database
+      const progressEvents = await getActionProgressEvents(pageIdStr);
+      const startedAt = dbPage.isGeneratingStartedAt!.toISOString();
+
+      // Calculate completed/total from page actions (SSOT)
+      const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
+      const completedActions = actionsWithDestinations.length;
+      const totalActions = userPage.actions.length;
+      let actionProgress: ActionProgressEvent[] = [];
+
+      if (progressEvents && progressEvents.length > 0) {
+        // Include all progress events for per-action status
+        actionProgress = progressEvents;
+      } else {
+        // Fallback: generate synthetic progress events for completed actions
+        actionProgress = actionsWithDestinations.map((action) => ({
+          action: action.text,
+          status: 'completed',
+          timestamp: new Date().toISOString()
+        }) satisfies ActionProgressEvent);
+      }
+
+      const response: CandidateGenerationStatus = {
+        isGenerating: true,
+        completedActions,
+        totalActions,
+        actions: userPage.actions.filter(a => a.destination?.pageId),
+        actionProgress, // Include per-action progress events
+        startedAt,
+        lastUpdated: new Date().toISOString(),
+      };
+
+      console.log(`[GET /candidates/status] ⏰ Generation in progress for page ${pageIdStr}: ${completedActions}/${totalActions} actions completed`);
+      return res.json(response);
+    }
+
+    // Generation not in progress - check if actions are complete
+    const incompleteActions = userPage.actions.filter(a => !a.destination?.pageId);
+    const completedActions = userPage.actions.filter(a => a.destination?.pageId);
+    const isComplete = incompleteActions.length === 0;
+
+    if (isComplete) {
+      // All actions complete, clear progress events and return full data
+      await clearActionProgressEvents(pageIdStr);
+      console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr}: ${completedActions.length}/${userPage.actions.length} actions completed`);
+      return res.json({
+        isGenerating: false,
+        completedActions: userPage.actions.length,
+        totalActions: userPage.actions.length,
+        actions: userPage.actions,
+        actionProgress: [],
+        startedAt: undefined,
+        lastUpdated: userPage.updatedAt.toISOString(),
+      } satisfies CandidateGenerationStatus);
+    }
+
+    // Actions incomplete, trigger background generation via GitHub workflow
+    void triggerGitHubWorkflow({
+      bookId: dbPage.bookId,
+      pageId: pageIdStr,
+      userId,
+      context: 'GET /candidates/status',
+    });
+
+    console.log(`[GET /candidates/status] 🚀 Generation started for page ${pageIdStr} (actions: ${completedActions.length}/${userPage.actions.length})`);
+    return res.json({
+      isGenerating: true,
+      completedActions: completedActions.length,
+      totalActions: userPage.actions.length,
+      actions: completedActions,
+      actionProgress: incompleteActions.map(a => ({
+        action: a.text,
+        status: 'started',
+        timestamp: new Date().toISOString()
+      }) satisfies ActionProgressEvent),
+      startedAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+    } satisfies CandidateGenerationStatus);
+
+  } catch (error) {
+    handleApiError(res, "Failed to get candidate status", error);
   }
 });
 
