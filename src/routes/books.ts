@@ -1208,7 +1208,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
           // Exclude the target book itself
           sql`${books.id} != ${book.id}`,
           // Only include books with keywords
-          sql`cardinality(${books.keywords}::text[]) > 0`,
+          sql`jsonb_array_length(${books.keywords}) > 0`,
           // Only include active books
           eq(books.status, 'active')
         )

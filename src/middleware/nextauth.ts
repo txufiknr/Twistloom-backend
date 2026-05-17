@@ -47,7 +47,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { jwtVerify } from 'jose';
+import { jwtVerify, jwtDecrypt, type JWTPayload } from 'jose';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
 import { IS_PRODUCTION } from '../config/env.js';
@@ -72,6 +72,12 @@ function getCookieName(): string {
  * This function manually verifies the JWT token using the AUTH_SECRET,
  * since NextAuth's getToken() is designed for Next.js API routes, not Express.
  * 
+ * Auth.js v5 supports both signed (JWS) and encrypted (JWE) tokens:
+ * - JWS (JSON Web Signature): Token is signed and can be verified with jwtVerify
+ * - JWE (JSON Web Encryption): Token is encrypted and must be decrypted with jwtDecrypt
+ * 
+ * This function attempts both methods to support both token types.
+ * 
  * twistloom-web.vercel.app → twistloom-backend.vercel.app = cross-domain,
  * no automatic cookie sending.
  * 
@@ -94,28 +100,40 @@ function getCookieName(): string {
 export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null> {
   try {
     const cookieName = getCookieName();
-    const token = req.cookies?.[cookieName];
-
-    // const token = await getToken({
-    //   req: req as unknown as { headers: Record<string, string> },
-    //   secret: process.env.AUTH_SECRET,
-    //   cookieName: getCookieName(),
-    // });
-
-    if (!token) {
-      console.log(`[verifyNextAuthToken] No token found in cookie: ${cookieName}`);
-      return null;
-    }
-
     const secret = process.env.AUTH_SECRET;
     if (!secret) {
-      console.error('[verifyNextAuthToken] AUTH_SECRET is not configured');
+      console.error('[verifyNextAuthToken] 💀 AUTH_SECRET is not configured');
       return null;
     }
 
-    // Verify the JWT token using jose
+    // const token = await getToken({ req: req as unknown as { headers: Record<string, string> }, secret, cookieName });
+    const token = req.cookies?.[cookieName];
+    if (!token) {
+      console.log(`[verifyNextAuthToken] ✨ No token found in cookie: ${cookieName}`);
+      return null;
+    }  
+
     const secretKey = new TextEncoder().encode(secret);
-    const { payload } = await jwtVerify(token, secretKey);
+    let payload: JWTPayload;
+
+    // Auth.js v5 may use encrypted tokens (JWE) instead of signed tokens (JWS)
+    // Try decryption first (for JWE), then verification (for JWS)
+    try {
+      // Try to decrypt (for encrypted/JWE tokens)
+      const { payload: decryptedPayload } = await jwtDecrypt(token, secretKey);
+      payload = decryptedPayload;
+      console.log('[verifyNextAuthToken] ✅ Token decrypted successfully (JWE)');
+    } catch (decryptError) {
+      // If decryption fails, try verification (for signed/JWS tokens)
+      try {
+        const { payload: verifiedPayload } = await jwtVerify(token, secretKey);
+        payload = verifiedPayload;
+        console.log('[verifyNextAuthToken] ✅ Token verified successfully (JWS)');
+      } catch (verifyError) {
+        console.error('[verifyNextAuthToken] ❌ Token verification failed (both JWE and JWS):', { decryptError, verifyError });
+        throw verifyError;
+      }
+    }
 
     // Validate token structure with type guards
     const userId = payload.userId as string | undefined;
@@ -142,7 +160,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     if (error instanceof Error) {
       if (error.name === 'JWTExpired') {
         console.warn('[verifyNextAuthToken] ⚠️ JWT token expired:', error.message);
-      } else if (error.name === 'JWTInvalid' || error.name === 'JWSSignatureVerificationFailed') {
+      } else if (error.name === 'JWTInvalid' || error.name === 'JWSSignatureVerificationFailed' || error.name === 'JWEInvalid') {
         console.warn('[verifyNextAuthToken] ⚠️ Invalid JWT token:', error.message);
       } else {
         console.error('[verifyNextAuthToken] ❌ Token verification error:', error.message);

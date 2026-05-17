@@ -268,14 +268,35 @@ export function getSimilarBookSelect(targetKeywords: string[], currentUserId: st
   
   return {
     ...baseSelect,
-    // Calculate Jaccard similarity using SQL array operations
-    // Cast jsonb to text[] using ARRAY() with jsonb_array_elements_text for proper conversion
+
+    // Calculate Jaccard similarity using jsonb array operations
+    // J(A, B) = |A ∩ B| / |A ∪ B|
+    // Work entirely with jsonb and text values, never cast to text[]
     similarityScore: sql<number>`
       (
-        cardinality(ARRAY(SELECT jsonb_array_elements_text(${books.keywords})) & ${targetKeywords}::text[])::float
-        / NULLIF(cardinality(ARRAY(SELECT jsonb_array_elements_text(${books.keywords})) | ${targetKeywords}::text[]), 0)
+        WITH book_elems AS (
+          SELECT DISTINCT jsonb_array_elements_text(${books.keywords}) AS elem
+        ),
+        target_elems AS (
+          SELECT DISTINCT jsonb_array_elements_text(${targetKeywords}::jsonb) AS elem
+        ),
+        intersection_count AS (
+          SELECT COUNT(*)::float AS count
+          FROM book_elems b
+          INNER JOIN target_elems t ON b.elem = t.elem
+        ),
+        union_count AS (
+          SELECT COUNT(*)::float AS count
+          FROM (
+            SELECT elem FROM book_elems
+            UNION
+            SELECT elem FROM target_elems
+          ) u
+        )
+        SELECT i.count / NULLIF(u.count, 0)
+        FROM intersection_count i, union_count u
       )
-    `,
+    `
   };
 }
 
