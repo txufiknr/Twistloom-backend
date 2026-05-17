@@ -122,13 +122,13 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
       // Try to decrypt (for encrypted/JWE tokens)
       const { payload: decryptedPayload } = await jwtDecrypt(token, secretKey);
       payload = decryptedPayload;
-      console.log('[verifyNextAuthToken] ✅ Token decrypted successfully (JWE)');
+      console.log('[verifyNextAuthToken] ✅ Token decrypted successfully (JWE):', payload);
     } catch (decryptError) {
       // If decryption fails, try verification (for signed/JWS tokens)
       try {
         const { payload: verifiedPayload } = await jwtVerify(token, secretKey);
         payload = verifiedPayload;
-        console.log('[verifyNextAuthToken] ✅ Token verified successfully (JWS)');
+        console.log('[verifyNextAuthToken] ✅ Token verified successfully (JWS):', payload);
       } catch (verifyError) {
         console.error('[verifyNextAuthToken] ❌ Token verification failed (both JWE and JWS):', { decryptError, verifyError });
         throw verifyError;
