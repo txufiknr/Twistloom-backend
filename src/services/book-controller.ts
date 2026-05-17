@@ -266,45 +266,44 @@ export function handleThemeValidationError(
 export function getSimilarBookSelect(targetKeywords: string[], currentUserId: string | null = null) {
   const baseSelect = getEnrichedBookSelect(currentUserId);
   
+  // Construct the similarity calculation SQL fragment for reuse in SELECT and ORDER BY
+  const targetKeywordsJson = sql.raw(`'${JSON.stringify(targetKeywords).replace(/'/g, "''")}'::jsonb`);
+  const similarityCalculation = sql<number>`
+    (
+      WITH book_elems AS (
+        SELECT DISTINCT jsonb_array_elements_text(${books.keywords}) AS elem
+      ),
+      target_elems AS (
+        SELECT DISTINCT elem
+        FROM jsonb_array_elements_text(${targetKeywordsJson}) AS elem
+      ),
+      intersection_count AS (
+        SELECT COUNT(*)::float AS count
+        FROM book_elems b
+        INNER JOIN target_elems t ON b.elem = t.elem
+      ),
+      union_count AS (
+        SELECT COUNT(*)::float AS count
+        FROM (
+          SELECT elem FROM book_elems
+          UNION
+          SELECT elem FROM target_elems
+        ) u
+      )
+      SELECT i.count / NULLIF(u.count, 0)
+      FROM intersection_count i, union_count u
+    )
+  `;
+  
   return {
     ...baseSelect,
 
     // Calculate Jaccard similarity using jsonb array operations
     // J(A, B) = |A ∩ B| / |A ∪ B|
     // Work entirely with jsonb and text values, never cast to text[]
-
-    // SELECT DISTINCT jsonb_array_elements_text(${targetKeywords}::jsonb) AS elem
-
-    // SELECT DISTINCT elem
-    // FROM jsonb_array_elements_text(${sql.raw(`'${JSON.stringify(targetKeywords).replace(/'/g, "''")}'::jsonb`)}) AS elem
-
-    // SELECT DISTINCT unnest(${sql.raw(targetKeywordsArray)}) AS elem
-    similarityScore: sql<number>`
-      (
-        WITH book_elems AS (
-          SELECT DISTINCT jsonb_array_elements_text(${books.keywords}) AS elem
-        ),
-        target_elems AS (
-          SELECT DISTINCT elem
-          FROM jsonb_array_elements_text(${sql.raw(`'${JSON.stringify(targetKeywords).replace(/'/g, "''")}'::jsonb`)}) AS elem
-        ),
-        intersection_count AS (
-          SELECT COUNT(*)::float AS count
-          FROM book_elems b
-          INNER JOIN target_elems t ON b.elem = t.elem
-        ),
-        union_count AS (
-          SELECT COUNT(*)::float AS count
-          FROM (
-            SELECT elem FROM book_elems
-            UNION
-            SELECT elem FROM target_elems
-          ) u
-        )
-        SELECT i.count / NULLIF(u.count, 0)
-        FROM intersection_count i, union_count u
-      )
-    `
+    similarityScore: similarityCalculation,
+    // Also include the calculation for ORDER BY reference
+    similarityScoreExpr: similarityCalculation,
   };
 }
 

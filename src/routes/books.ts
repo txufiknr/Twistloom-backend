@@ -1197,10 +1197,9 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
     }
 
     // Get similar books with enriched data
+    const similarBooksSelect = getSimilarBookSelect(book.keywords, currentUserId);
     const similarBooks = await dbRead
-      .select({
-        ...getSimilarBookSelect(book.keywords, currentUserId),
-      })
+      .select(similarBooksSelect)
       .from(books)
       .leftJoin(users, eq(books.userId, users.userId))
       .where(
@@ -1213,7 +1212,8 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
           eq(books.status, 'active')
         )
       )
-      .orderBy(desc(sql`similarityScore`))
+      // .orderBy(desc(sql`similarityScore`))
+      .orderBy(desc(similarBooksSelect.similarityScoreExpr))
       .limit(limit);
 
     res.json({

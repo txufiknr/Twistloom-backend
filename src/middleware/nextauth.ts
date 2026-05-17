@@ -54,16 +54,17 @@ import { IS_PRODUCTION } from '../config/env.js';
 
 /**
  * Determines the NextAuth cookie name based on environment
- * NextAuth v5 uses conditional cookie naming for localhost support
+ * Auth.js v5 uses new cookie naming convention: authjs.session-token
  * 
  * @returns Cookie name for the current environment
  */
 function getCookieName(): string {
-  // Development: next-auth.session-token (no __Secure prefix, works on HTTP)
-  // Production: __Secure-next-auth.session-token (requires HTTPS)
+  // Auth.js v5 changed cookie names from next-auth.session-token to authjs.session-token
+  // Development: authjs.session-token (no __Secure prefix, works on HTTP)
+  // Production: __Secure-authjs.session-token (requires HTTPS)
   return IS_PRODUCTION
-    ? '__Secure-next-auth.session-token'
-    : 'next-auth.session-token';
+    ? '__Secure-authjs.session-token'
+    : 'authjs.session-token';
 }
 
 /**
@@ -106,12 +107,37 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
       return null;
     }
 
-    // const token = await getToken({ req: req as unknown as { headers: Record<string, string> }, secret, cookieName });
-    const token = req.cookies?.[cookieName];
+    // Debug: Log all available cookies
+    console.log('[verifyNextAuthToken] 🔍 All cookies:', Object.keys(req.cookies || {}));
+    console.log('[verifyNextAuthToken] 🔍 Looking for cookie:', cookieName);
+
+    // Try multiple possible cookie names for Auth.js v5
+    const possibleCookieNames = [
+      cookieName,
+      'next-auth.session-token',
+      '__Secure-next-auth.session-token',
+      'authjs.session-token',
+      '__Secure-authjs.session-token',
+    ];
+
+    let token: string | undefined;
+
+    for (const name of possibleCookieNames) {
+      if (req.cookies?.[name]) {
+        token = req.cookies[name];
+        console.log(`[verifyNextAuthToken] ✅ Found token in cookie: ${name}`);
+        break;
+      }
+    }
+
     if (!token) {
-      console.log(`[verifyNextAuthToken] ✨ No token found in cookie: ${cookieName}`);
+      console.log(`[verifyNextAuthToken] ✨ No token found in any of these cookies:`, possibleCookieNames);
       return null;
-    }  
+    }
+
+    // Debug: Log token format (first 50 chars)
+    console.log('[verifyNextAuthToken] 🔍 Token preview:', token.substring(0, 50));
+    console.log('[verifyNextAuthToken] 🔍 Token length:', token.length);
 
     const secretKey = new TextEncoder().encode(secret);
     let payload: JWTPayload;
