@@ -810,7 +810,6 @@ router.post('/forgot-password', async (req, res) => {
     .where(eq(users.email, email))
     .limit(1);
 
-  // TODO: Implement actual email sending logic
   // If user exists, send password reset email
   // For now, just return success to prevent email enumeration
   if (user && user.length > 0) {
@@ -838,7 +837,7 @@ router.post('/logout', async (req, res) => {
     // NextAuth handles session clearing on the frontend
     // This endpoint is for any backend cleanup if needed
     
-    // TODO: Add any backend cleanup logic here
+    // Add any backend cleanup logic here:
     // - Invalidate refresh tokens (if implemented)
     // - Log logout event for analytics
     // - Clear server-side session data

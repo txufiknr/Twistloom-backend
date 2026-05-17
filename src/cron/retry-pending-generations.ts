@@ -84,9 +84,9 @@ export async function retryPendingGenerations(): Promise<string[]> {
       .orderBy(
         desc(mostRecentSession.lastActiveAt), // Prioritize books with most recent active session
         desc(books.trendingScore), // Then prioritize books with highest trending scores
-        asc(pages.pendingGenerationCount) // Then prioritize pages with fewer remaining pending candidate generation
-        // TODO:
-        // - prioritize branch with smallest furthest generated pages against books.totalPages
+        desc(pages.visitCount), // Then prioritize pages with most visits
+        asc(pages.page), // Then prioritize pages with smaller page numbers
+        asc(pages.pendingGenerationCount), // Then prioritize pages with fewer remaining pending candidate generation
       )
       .limit(MAX_BRANCHING_PREGENERATION_LIMIT); // Process up to N pages per run
     

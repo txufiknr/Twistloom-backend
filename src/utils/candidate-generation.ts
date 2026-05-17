@@ -1121,12 +1121,12 @@ export async function triggerGitHubWorkflow(params: {
     await dbWrite.update(pages)
       .set({ isGeneratingStartedAt: new Date() })
       .where(eq(pages.id, pageId));
-    console.log(`[${context}] ✅ Set isGeneratingStartedAt for page ${pageId}`);
+    console.log(`[${context}] ⏰ Set isGeneratingStartedAt for page ${pageId}`);
 
     // Get GitHub token from environment
     const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
     if (!githubToken) {
-      console.error(`[${context}] ❌ GITHUB_WORKFLOW_TOKEN not configured`);
+      console.error(`[${context}] 💀 GITHUB_WORKFLOW_TOKEN not configured`);
       // Reset isGeneratingStartedAt since we can't trigger the workflow
       await dbWrite.update(pages)
         .set({ isGeneratingStartedAt: null })

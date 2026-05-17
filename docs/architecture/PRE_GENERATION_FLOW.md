@@ -817,7 +817,7 @@ The system supports configurable pre-generation depth via `MAX_BRANCHING_PREGENE
 
 ```typescript
 // From src/config/story.ts
-export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // TODO: use
+export const MAX_BRANCHING_PREGENERATION_DEPTH = 2;
 ```
 
 **Depth Behavior:**

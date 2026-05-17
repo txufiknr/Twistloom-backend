@@ -55,6 +55,22 @@ const enrichedBookCache = new LRUCache<string, EnrichedBookData>({
 });
 
 /**
+ * LRU cache for basic book data
+ * 
+ * Cache key format: "book:{bookId}"
+ * - bookId: Book identifier
+ * 
+ * Only caches books with 'active' status (published and stable).
+ * 
+ * TTL: 5 minutes to balance freshness with performance
+ * Max size: 1000 entries to prevent memory bloat
+ */
+const bookCache = new LRUCache<string, Book>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
+
+/**
  * LRU cache for public book statistics
  * 
  * Cache key: "public:book:stats"
@@ -124,6 +140,28 @@ export function invalidateEnrichedPageCache(pageId: string): void {
       enrichedPageCache.delete(key);
     }
   }
+}
+
+/**
+ * Generates cache key for basic book data
+ * 
+ * @param bookId - Book identifier
+ * @returns Cache key string
+ */
+function getBookCacheKey(bookId: string): string {
+  return `book:${bookId}`;
+}
+
+/**
+ * Invalidates cache entries for a specific book (basic cache)
+ * 
+ * Removes cache entry for a book by ID.
+ * Called when book data is mutated (create, update, delete).
+ * 
+ * @param bookId - Book ID to invalidate
+ */
+export function invalidateBookCache(bookId: string): void {
+  bookCache.delete(getBookCacheKey(bookId));
 }
 
 /**
@@ -412,6 +450,7 @@ export async function insertBook(book: DBNewBook, options: { client?: DBClient }
   console.log(`[insertBook] 📔 Inserted book with slug "${uniqueSlug}":`, insertedBook);
   
   // Invalidate cache for this book (by both ID and slug)
+  invalidateBookCache(insertedBook.id);
   invalidateEnrichedBookCache(insertedBook.id);
   invalidateEnrichedBookCache(insertedBook.slug!);
   
@@ -439,23 +478,34 @@ export async function getBookFromDB(bookId: string, options: {
 }
 
 /**
- * Gets story state with fallback to deleted state cache
+ * Gets a book by ID with LRU caching for active books
  * 
- * @param userId - User identifier for the story state
- * @param pageId - Page identifier for the story state
- * @returns Promise resolving to the story state record or null if not found
+ * @param bookId - Book identifier to retrieve
+ * @returns Promise resolving to the book record or null if not found
  * 
  * Behavior:
- * - First tries to get from database
- * - Falls back to deleted state cache if not found
- * - Returns null if state doesn't exist anywhere
+ * - Checks cache first for active books
+ * - Falls back to database query if cache miss
+ * - Only caches books with 'active' status (published and stable)
+ * - Returns null if book doesn't exist
  */
 export async function getBook(bookId: string): Promise<Book | null> {
-  // TODO: need to implement LRU cache (only for 'active' book)?
+  const cacheKey = getBookCacheKey(bookId);
+  
+  // Check cache first
+  const cached = bookCache.get(cacheKey);
+  if (cached) return cached;
+
   try {
-    // const dbResult = await getBookFromDB(bookId);
     const dbResult = await getBookFromDB(bookId) ?? await getBookFromDB(bookId, { client: dbWrite });
-    if (dbResult) return mapBookFromDb(dbResult);
+    if (dbResult) {
+      const book = mapBookFromDb(dbResult);
+      // Only cache active books (published and stable)
+      if (book.status === 'active') {
+        bookCache.set(cacheKey, book);
+      }
+      return book;
+    }
   } catch {
     // Ignore errors
   }
@@ -512,6 +562,8 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
  * Uses LRU cache for performance. Cache key includes both book identifier
  * and user ID since results are user-specific (isLiked, isRead flags).
  * 
+ * Only caches books with 'active' status (published and stable).
+ * 
  * @param identifier - Book slug or ID to retrieve
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
  * @returns Promise resolving to enriched book data or null if not found
@@ -543,8 +595,10 @@ export async function getEnrichedBook(
 
   if (result.length > 0) {
     const enrichedBook = result[0] as EnrichedBookData;
-    // Cache the result
-    enrichedBookCache.set(cacheKey, enrichedBook);
+    // Only cache active books (published and stable)
+    if (enrichedBook.status === 'active') {
+      enrichedBookCache.set(cacheKey, enrichedBook);
+    }
     return enrichedBook;
   }
 
@@ -569,6 +623,7 @@ export async function updateBook(
     .returning();
 
   // Invalidate cache for this book
+  invalidateBookCache(bookId);
   invalidateEnrichedBookCache(bookId);
 
   return result[0];
@@ -1146,7 +1201,7 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
     
     // Generate images without writing to disk
     const { buffers } = await geminiGenerateImage(fullPrompt, {
-      numberOfImages: total || 1, // TODO: 3 selectable images for premium users
+      numberOfImages: total || 1,
       aspectRatio: "3:4",
     });
     
@@ -1225,7 +1280,7 @@ export async function uploadBookCoverImage(
  * ```
  */
 export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryState): Promise<void> {
-  const buffers = await generateCoverImages(book, state, 1);
+  const buffers = await generateCoverImages(book, state, 1); // TODO: 3 selectable images for premium users
   if (buffers.length === 0) return; // Cover image generation failed
 
   const oldImageId = book.imageId;

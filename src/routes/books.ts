@@ -100,15 +100,25 @@ const SSE_POLLING_CONFIG: SSEPollingConfig = {
  * @param pageId - Page ID for logging
  * @returns Promise resolving to true if it's generating, false otherwise
  */
-async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<boolean> {
-  if (!dbPage.isGeneratingStartedAt) return false;
+async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
+  const isGenerating = !!dbPage.isGeneratingStartedAt;
+  const totalPendingActions = dbPage.pendingGenerationCount || dbPage.actions.filter(a => !a.destination?.pageId).length;
+  const isDone = totalPendingActions === 0;
+
+  if (!isGenerating) return { isGenerating: false, isDone, totalPendingActions };
 
   const now = new Date();
-  const startedAt = new Date(dbPage.isGeneratingStartedAt);
+  const startedAt = new Date(dbPage.isGeneratingStartedAt!);
   const elapsedMs = now.getTime() - startedAt.getTime();
+  const isStuck = elapsedMs > MAX_GENERATION_DURATION_MS;
 
-  if (elapsedMs > MAX_GENERATION_DURATION_MS) {
-    console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
+  if (isStuck || isDone) {
+    if (isStuck) {
+      console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
+    }
+    if (isDone) {
+      console.log(`[checkAndResetStuckGeneration] ✅ Generation done for page ${dbPage.id}, resetting isGeneratingStartedAt`);
+    }
     
     // Reset the timestamp in database
     await dbWrite.update(pages)
@@ -117,10 +127,10 @@ async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<boolean> {
 
     // Refresh page after reset
     dbPage.isGeneratingStartedAt = null;
-    return false;
+    return { isGenerating: false, isDone, totalPendingActions };
   }
 
-  return true;
+  return { isGenerating: true, isDone, totalPendingActions };
 }
 
 /**
@@ -141,7 +151,7 @@ async function validateAndRetrievePageForGeneration(
   identifier: string,
   pageId: string,
   userId: string
-): Promise<{ dbPage: DBPage; userPage: UserStoryPage; isGenerating: boolean } | null> {
+): Promise<{ dbPage: DBPage; userPage: UserStoryPage; isGenerating: boolean; isDone: boolean; totalPendingActions: number } | null> {
   // Early validation
   if (!isValidUuid(pageId)) return null;
 
@@ -151,12 +161,12 @@ async function validateAndRetrievePageForGeneration(
   if (!dbPage) return null;
 
   // Check if generation is stuck and reset if needed
-  const isGenerating = await checkAndResetStuckGeneration(dbPage);
+  const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
 
   // Map to user story page
   const userPage = await mapToUserStoryPage(dbPage, userId);
 
-  return { dbPage, userPage, isGenerating };
+  return { dbPage, userPage, isGenerating, isDone, totalPendingActions };
 }
 
 /**
@@ -2343,7 +2353,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       return handleNotFoundError(res, "Page not found");
     }
 
-    const { dbPage, userPage } = validationResult;
+    const { dbPage, userPage, isGenerating, isDone } = validationResult;
 
     // Always set SSE headers first for consistent response format
     res.setHeader('Content-Type', 'text/event-stream');
@@ -2351,16 +2361,8 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    // Determine if generation is already in progress
-    const isGenerating = !!dbPage.isGeneratingStartedAt;
-    const initialMessage = isGenerating 
-      ? 'Candidate generation in progress...' 
-      : 'Candidate generation started...';
-
     // Check if some actions need generation
-    const totalPendingActions = userPage.actions.filter(a => !a.destination?.pageId).length;
-
-    if (totalPendingActions === 0) {
+    if (isDone) {
       console.log(`[GET /candidates] ℹ️ No actions need generation for page ${pageIdStr}, sending SSE complete event`);
       try {
         if (!res.writableEnded) {
@@ -2391,6 +2393,11 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     } else {
       console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageIdStr}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
     }
+
+    // Determine if generation is already in progress
+    const initialMessage = isGenerating 
+      ? 'Candidate generation in progress...' 
+      : 'Candidate generation started...';
 
     // Use shared polling function
     await pollForCandidateGeneration({
@@ -2466,39 +2473,39 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       return handleNotFoundError(res, "Page not found");
     }
 
-    const { dbPage, userPage } = validationResult;
+    const { dbPage, userPage, isGenerating, isDone } = validationResult;
+
+    // Calculate completed/total from page actions (SSOT)
+    const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
+    const actionsWithoutDestinations = userPage.actions.filter(a => !a.destination?.pageId);
+    const completedActions = actionsWithDestinations.length;
+    const totalActions = userPage.actions.length;
 
     // Check if generation is in progress (using timestamp field)
-    const isGenerating = await checkAndResetStuckGeneration(dbPage);
     if (isGenerating) {
       // Generation in progress - return current status
       // Check for progress events in database
       const progressEvents = await getActionProgressEvents(pageIdStr);
       const startedAt = dbPage.isGeneratingStartedAt!.toISOString();
 
-      // Calculate completed/total from page actions (SSOT)
-      const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
-      const completedActions = actionsWithDestinations.length;
-      const totalActions = userPage.actions.length;
-      let actionProgress: ActionProgressEvent[] = [];
-
-      if (progressEvents && progressEvents.length > 0) {
+      const actionProgress: ActionProgressEvent[] = progressEvents.length > 0
         // Include all progress events for per-action status
-        actionProgress = progressEvents;
-      } else {
-        // Fallback: generate synthetic progress events for completed actions
-        actionProgress = actionsWithDestinations.map((action) => ({
-          action: action.text,
-          status: 'completed',
-          timestamp: new Date().toISOString()
-        }) satisfies ActionProgressEvent);
-      }
+        ? progressEvents
+        // Fallback: generate synthetic progress events for actions
+        : userPage.actions.map((action) => {
+          const hasDestination = !!action.destination?.pageId;
+          return {
+            action: action.text,
+            status: hasDestination ? 'completed' : 'started',
+            timestamp: new Date().toISOString()
+          } satisfies ActionProgressEvent;
+        });
 
       const response: CandidateGenerationStatus = {
         isGenerating: true,
         completedActions,
         totalActions,
-        actions: userPage.actions.filter(a => a.destination?.pageId),
+        actions: actionsWithDestinations,
         actionProgress, // Include per-action progress events
         startedAt,
         lastUpdated: new Date().toISOString(),
@@ -2509,14 +2516,11 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     }
 
     // Generation not in progress - check if actions are complete
-    const incompleteActions = userPage.actions.filter(a => !a.destination?.pageId);
-    const completedActions = userPage.actions.filter(a => a.destination?.pageId);
-    const isComplete = incompleteActions.length === 0;
-
-    if (isComplete) {
+    if (isDone) {
       // All actions complete, clear progress events and return full data
-      await clearActionProgressEvents(pageIdStr);
-      console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr}: ${completedActions.length}/${userPage.actions.length} actions completed`);
+      console.log(`[GET /candidates/status] ✅ Generation complete for page ${pageIdStr} - all actions completed`);
+      void clearActionProgressEvents(pageIdStr);
+
       return res.json({
         isGenerating: false,
         completedActions: userPage.actions.length,
@@ -2527,8 +2531,9 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         lastUpdated: userPage.updatedAt.toISOString(),
       } satisfies CandidateGenerationStatus);
     }
-
+    
     // Actions incomplete, trigger background generation via GitHub workflow
+    console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: ${completedActions}/${userPage.actions.length} actions completed`);
     void triggerGitHubWorkflow({
       bookId: dbPage.bookId,
       pageId: pageIdStr,
@@ -2536,13 +2541,12 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       context: 'GET /candidates/status',
     });
 
-    console.log(`[GET /candidates/status] 🚀 Generation started for page ${pageIdStr} (actions: ${completedActions.length}/${userPage.actions.length})`);
     return res.json({
       isGenerating: true,
-      completedActions: completedActions.length,
-      totalActions: userPage.actions.length,
-      actions: completedActions,
-      actionProgress: incompleteActions.map(a => ({
+      completedActions,
+      totalActions,
+      actions: actionsWithDestinations,
+      actionProgress: actionsWithoutDestinations.map(a => ({
         action: a.text,
         status: 'started',
         timestamp: new Date().toISOString()
