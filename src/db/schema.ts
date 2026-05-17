@@ -899,7 +899,9 @@ export const pageTranslations = pgTable(
     id: id(),
     pageId: pageId("cascade"), // Delete if page is deleted
     language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
+    // TODO: change to `text`, include more columns
     translatedText: text("translated_text").notNull(), // Translated page text
+    // actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
     createdAt,
     updatedAt,
   },

@@ -275,6 +275,82 @@ export async function insertStoryState(
 }
 
 /**
+ * Helper function to mark a page as visited with the given database client
+ * 
+ * This function contains the common logic for marking a page as visited,
+ * used by both credit transaction and non-credit paths.
+ * 
+ * @param params - Parameters for marking page visited
+ * @returns Promise that resolves with session data and visit statistics
+ */
+async function markPageVisitedWithClient(params: {
+  userId: string,
+  bookId: string,
+  pageId: string,
+  pageNumber: number,
+  visitCount: number,
+  stats: Pick<EnrichedBookData, 'stats'>['stats'],
+  actionedPageId?: string,
+  action?: Action,
+  client: DBClient
+}): Promise<BookPageVisit> {
+  const {
+    userId,
+    bookId,
+    pageId,
+    pageNumber,
+    visitCount,
+    stats,
+    actionedPageId,
+    action,
+    client
+  } = params;
+
+  // Update active session to point to the new page
+  const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
+
+  // Insert user page progress for pages > 1, or manually increment visitCount for page 1
+  if (pageNumber > 1) {
+    if (!action || !actionedPageId) {
+      throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
+    }
+
+    // Insert page progress record (trigger will increment visitCount in pages table)
+    const progress = await insertUserPageProgress({
+      userId,
+      bookId,
+      actionedPageId,
+      nextPageId: pageId,
+      action,
+      client,
+    });
+    if (progress) {
+      console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
+    } else {
+      console.log(`[markPageVisited] ❌ User page progress not updated`);
+    }
+  } else {
+    // Page 1: manually increment visitCount since no user_page_progress record is inserted
+    await client
+      .update(pages)
+      .set({ visitCount: sql`${pages.visitCount} + 1`, updatedAt: new Date() })
+      .where(eq(pages.id, pageId));
+    console.log(`[markPageVisited] 📈 Manually incremented visitCount for page 1`);
+  }
+
+  // Calculate visit statistics using denormalized data
+  // nthVisit: visitCount + 1 (already incremented above for page 1, or will be incremented by trigger for pages > 1)
+  // visitorPercentage: use read_count from books table (maintained by existing trigger)
+  const nthVisit = visitCount + 1;
+  const totalBookReaders = stats.readCount;
+  const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
+
+  console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
+
+  return { session, nthVisit, visitorPercentage, readerUserId: userId };
+}
+
+/**
  * Marks a page as visited by updating user session and page progress
  * 
  * This function is called when a user actually navigates to a page (not during pre-generation).
@@ -334,9 +410,7 @@ export async function markPageVisited(params: {
   let correlationId: string | undefined;
 
   try {
-    let session: DBUserSession | null | undefined;
-    let nthVisit: number;
-    let visitorPercentage: number;
+    let result: BookPageVisit;
 
     if (shouldConsumeCredits && !isInternal) {
       // User request: consume credits and mark page visited atomically
@@ -345,41 +419,17 @@ export async function markPageVisited(params: {
         userId,
         "CHOOSE_OTHER_ACTION",
         async (tx) => {
-          // Update active session to point to the new page
-          const sessionResult = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client: tx });
-
-          // Start inserting user page progress after reader lands on page 2 onwards
-          if (pageNumber > 1) {
-            if (!action || !actionedPageId) {
-              throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
-            }
-
-            // Insert page progress record (trigger will increment visitCount in pages table)
-            const progress = await insertUserPageProgress({
-              userId,
-              bookId,
-              actionedPageId,
-              nextPageId: pageId,
-              action,
-              client: tx,
-            });
-            if (progress) {
-              console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
-            } else {
-              console.log(`[markPageVisited] ❌ User page progress not updated`);
-            }
-          }
-
-          // Calculate visit statistics using denormalized data
-          // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
-          // visitorPercentage: use read_count from books table (maintained by existing trigger)
-          const nthVisitResult = visitCount + 1;
-          const totalBookReaders = stats.readCount;
-          const visitorPercentageResult = totalBookReaders === 0 ? 100 : Math.round((nthVisitResult / totalBookReaders) * 100);
-
-          console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisitResult}, visitorPercentage=${visitorPercentageResult}%)`);
-          
-          return { session: sessionResult, nthVisit: nthVisitResult, visitorPercentage: visitorPercentageResult, readerUserId: userId };
+          return await markPageVisitedWithClient({
+            userId,
+            bookId,
+            pageId,
+            pageNumber,
+            visitCount,
+            stats,
+            actionedPageId,
+            action,
+            client: tx
+          });
         },
         {
           context: "choose_other_action",
@@ -387,50 +437,24 @@ export async function markPageVisited(params: {
         }
       );
       
-      session = executeCreditsResult.result.session ?? null;
-      nthVisit = executeCreditsResult.result.nthVisit;
-      visitorPercentage = executeCreditsResult.result.visitorPercentage;
+      result = executeCreditsResult.result;
       correlationId = executeCreditsResult.correlationId;
     } else {
       // Internal user or no credit consumption: mark page visited without credit transaction
-      const client = dbWrite;
-
-      // Update active session to point to the new page
-      session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
-
-      // Start inserting user page progress after reader lands on page 2 onwards
-      if (pageNumber > 1) {
-        if (!action || !actionedPageId) {
-          throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
-        }
-
-        // Insert page progress record (trigger will increment visitCount in pages table)
-        const progress = await insertUserPageProgress({
-          userId,
-          bookId,
-          actionedPageId,
-          nextPageId: pageId,
-          action,
-          client,
-        });
-        if (progress) {
-          console.log(`[markPageVisited] 🌟 User page progress updated:`, progress);
-        } else {
-          console.log(`[markPageVisited] ❌ User page progress not updated`);
-        }
-      }
-
-      // Calculate visit statistics using denormalized data
-      // nthVisit: Approximate as visitCount + 1 (trigger increments on insert, but we use approximation to avoid replica lag)
-      // visitorPercentage: use read_count from books table (maintained by existing trigger)
-      nthVisit = visitCount + 1;
-      const totalBookReaders = stats.readCount;
-      visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
-
-      console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
+      result = await markPageVisitedWithClient({
+        userId,
+        bookId,
+        pageId,
+        pageNumber,
+        visitCount,
+        stats,
+        actionedPageId,
+        action,
+        client: dbWrite
+      });
     }
 
-    return { session, nthVisit, visitorPercentage, readerUserId: userId };
+    return result;
   } catch (error) {
     console.error(`[markPageVisited] ❌ Failed to mark page visited:`, getErrorMessage(error));
     

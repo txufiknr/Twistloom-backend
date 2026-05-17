@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { pages, books, users, userPageProgress } from "../db/schema.js";
+import { pages, books, users, userPageProgress, userSessions } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -1509,6 +1509,95 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
   } catch (error) {
     console.error('[getPopularTags] Failed to fetch popular tags:', getErrorMessage(error));
     return [];
+  }
+}
+
+/**
+ * Retrieves user's recent books with reading status for "Continue reading" section
+ * 
+ * Joins userSessions with books and pages to get the most recently read books.
+ * Calculates reading status based on current page vs total pages.
+ * 
+ * @param userId - User identifier to fetch recent books for
+ * @param limit - Maximum number of recent books to return (default: 10)
+ * @param offset - Number of books to skip for pagination (default: 0)
+ * @returns Promise resolving to object with recent books array and total count
+ * 
+ * @example
+ * ```typescript
+ * const { books, totalCount } = await getUserRecentBooks('user123', 5, 0);
+ * // Returns:
+ * // {
+ * //   books: [
+ * //     {
+ * //       bookId: 'book456',
+ * //       title: 'The Haunting',
+ * //       totalPages: 50,
+ * //       currentPage: 25,
+ * //       status: 'in_progress',
+ * //       updatedAt: '2023-01-01T00:00:00.000Z',
+ * //       ...
+ * //     },
+ * //     {
+ * //       bookId: 'book789',
+ * //       title: 'The Mystery',
+ * //       totalPages: 30,
+ * //       currentPage: 30,
+ * //       status: 'completed',
+ * //       updatedAt: '2023-01-02T00:00:00.000Z',
+ * //       ...
+ * //     }
+ * //   ],
+ * //   totalCount: 15
+ * // }
+ * ```
+ */
+export async function getUserRecentBooks(userId: string, limit: number = 10, offset: number = 0) {
+  try {
+    // Get total count first
+    const countResult = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userSessions)
+      .innerJoin(books, eq(userSessions.bookId, books.id))
+      .where(eq(userSessions.userId, userId));
+
+    const totalCount = countResult[0]?.count || 0;
+
+    // Get paginated results
+    const result = await dbRead
+      .select({
+        id: books.id,
+        title: books.title,
+        hook: books.hook,
+        summary: books.summary,
+        image: books.image,
+        totalPages: books.totalPages,
+        currentPage: pages.page,
+        currentPageId: userSessions.pageId,
+        sessionUpdatedAt: userSessions.updatedAt,
+        bookUpdatedAt: books.updatedAt,
+        mc: books.mc,
+        keywords: books.keywords,
+        status: books.status,
+      })
+      .from(userSessions)
+      .innerJoin(books, eq(userSessions.bookId, books.id))
+      .innerJoin(pages, eq(userSessions.pageId, pages.id))
+      .where(eq(userSessions.userId, userId))
+      .orderBy(desc(userSessions.updatedAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Calculate reading status for each book
+    const recentBooks = result.map((row) => ({
+      ...row,
+      readingStatus: row.currentPage >= row.totalPages ? 'completed' : 'in_progress',
+    }));
+
+    return { books: recentBooks, totalCount };
+  } catch (error) {
+    console.error('[getUserRecentBooks] ❌ Failed to fetch recent books:', getErrorMessage(error));
+    return { books: [], totalCount: 0 };
   }
 }
 

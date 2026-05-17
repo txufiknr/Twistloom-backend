@@ -4,10 +4,14 @@
 [x] Get page LRU cache & Implement Last-Modified or ETag
 [x] complete per-action candidate generation progress tracking
 [x] can we update pendingGenerationCount via trigger which auto-detect from actions column?
-
-[x] /api/payments/create-checkout-session 401 unauthorized
+[x] GET /books/recent (continue reading)
+[@] /api/payments/create-checkout-session 401 unauthorized
+[@] Reader reach kok 0%
+[ ] Investigate: Kenapa on-deman github workflow nggak ke trigger
+[ ] Infer desired ending if provided in theme input: if user mention anything about desired ending in theme input, use it for viableEnding
+[ ] cron: auto translate page ke indo
 [ ] On demand github workflow gak jalan
-[ ] Lru cache trending books 2 minute
+[ ] Lru cache trending books page 1 for 2 minute
 [ ] Page 1 selected actions masih none
 
 [ ] Originals: Mc name predefine casts aja, jangan AI
@@ -15,14 +19,13 @@
 [ ] Important objects perlu disimpen di story state?
 [ ] Important objects perlu prop tambahan: trait (custom fields: color, battery-level), rules (custom string array), status (broken, missing)? 
 
-TODO:
 [ ] Stripe switch to live
 [ ] type validation using https://typia.io/
 [ ] search jaccard, need change to cursor pagination?
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] user: you might like (based on liked books)
-[ ] user preferences schema (interests, text size)
-[ ] display running summary at the end of story (N% readers ended up here)
+[ ] userSettings schema (interests, text size, email notification settings)
+[ ] display contextHistory at the end of story (N% readers ended up here)
 [ ] Implement belief
 [ ] Implement corruption curve
 

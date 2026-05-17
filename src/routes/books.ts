@@ -17,6 +17,7 @@
  * - POST /api/books - Create new psychological thriller books (requires auth + credits)
  * - POST /api/books/stream - Create new psychological thriller books with streaming (requires auth + credits)
  * - GET /api/books - Retrieve user's book library (requires auth)
+ * - GET /api/books/recent - Retrieve user's recent books for "Continue reading" section (requires auth)
  * - GET /api/books/explore - Explore published books with search and pagination (optional auth)
  * - PUT /api/books/:id - Update book information and cover image (requires auth)
  * - GET /api/books/:identifier - Retrieve specific book by slug or id
@@ -54,7 +55,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
+import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, getUserRecentBooks } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
@@ -1023,6 +1024,65 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     res.json(result);
   } catch (error) {
     handleApiError(res, "Failed to retrieve books", error);
+  }
+});
+
+/**
+ * GET /api/books/recent
+ * 
+ * Retrieves user's recent books for "Continue reading" section.
+ * Returns books with reading progress status (in_progress or completed).
+ * Supports pagination for large reading histories.
+ * 
+ * @query page - Page number for pagination (default: 1)
+ * @query limit - Number of books per page (default: 10)
+ * @returns Paginated array of recent books with reading status
+ * 
+ * @example
+ * GET /api/books/recent?page=1&limit=5
+ * 
+ * Response (200):
+ * {
+ *   "data": [
+ *     {
+ *       "bookId": "book456",
+ *       "title": "The Haunting",
+ *       "hook": "A mysterious ghost haunts an old mansion...",
+ *       "summary": "A psychological thriller about...",
+ *       "image": "https://example.com/cover.jpg",
+ *       "totalPages": 50,
+ *       "currentPage": 25,
+ *       "currentPageId": "page789",
+ *       "sessionUpdatedAt": "2023-01-01T00:00:00.000Z",
+ *       "bookUpdatedAt": "2023-01-01T00:00:00.000Z",
+ *       "mc": { "name": "Sarah", "age": 28, "gender": "female" },
+ *       "keywords": ["thriller", "mystery"],
+ *       "status": "active",
+ *       "readingStatus": "in_progress"
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "currentPage": 1,
+ *     "itemsPerPage": 5,
+ *     "totalItems": 15,
+ *     "totalPages": 3,
+ *     "hasNext": true,
+ *     "hasPrev": false
+ *   }
+ * }
+ */
+router.get("/recent", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
+    const userId = req.userId!;
+    const offset = (page - 1) * limit;
+
+    const { books: recentBooks, totalCount } = await getUserRecentBooks(userId, limit, offset);
+    const pagination = calculatePaginationMeta(page, limit, totalCount);
+
+    res.json(createPaginatedResponse(recentBooks, pagination, 'books'));
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve recent books", error);
   }
 });
 
@@ -2477,9 +2537,16 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
 
     // Calculate completed/total from page actions (SSOT)
     const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
-    const actionsWithoutDestinations = userPage.actions.filter(a => !a.destination?.pageId);
     const completedActions = actionsWithDestinations.length;
     const totalActions = userPage.actions.length;
+    const progressEventFallback = userPage.actions.map((action) => {
+      const hasDestination = !!action.destination?.pageId;
+      return {
+        action: action.text,
+        status: hasDestination ? 'completed' : 'started',
+        timestamp: new Date().toISOString()
+      } satisfies ActionProgressEvent;
+    });
 
     // Check if generation is in progress (using timestamp field)
     if (isGenerating) {
@@ -2492,14 +2559,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         // Include all progress events for per-action status
         ? progressEvents
         // Fallback: generate synthetic progress events for actions
-        : userPage.actions.map((action) => {
-          const hasDestination = !!action.destination?.pageId;
-          return {
-            action: action.text,
-            status: hasDestination ? 'completed' : 'started',
-            timestamp: new Date().toISOString()
-          } satisfies ActionProgressEvent;
-        });
+        : progressEventFallback;
 
       const response: CandidateGenerationStatus = {
         isGenerating: true,
@@ -2526,7 +2586,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
         completedActions: userPage.actions.length,
         totalActions: userPage.actions.length,
         actions: userPage.actions,
-        actionProgress: [],
+        actionProgress: progressEventFallback,
         startedAt: undefined,
         lastUpdated: userPage.updatedAt.toISOString(),
       } satisfies CandidateGenerationStatus);
@@ -2546,11 +2606,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       completedActions,
       totalActions,
       actions: actionsWithDestinations,
-      actionProgress: actionsWithoutDestinations.map(a => ({
-        action: a.text,
-        status: 'started',
-        timestamp: new Date().toISOString()
-      }) satisfies ActionProgressEvent),
+      actionProgress: progressEventFallback,
       startedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),
     } satisfies CandidateGenerationStatus);
