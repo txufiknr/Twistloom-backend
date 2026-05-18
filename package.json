@@ -44,6 +44,7 @@
   "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319",
   "dependencies": {
     "@actions/core": "^3.0.0",
+    "@auth/express": "^0.12.2",
     "@cerebras/cerebras_cloud_sdk": "^1.64.1",
     "@google/genai": "^1.40.0",
     "@imagekit/nodejs": "^7.3.0",
@@ -58,7 +59,6 @@
     "drizzle-orm": "0.45.1",
     "express": "^5.2.1",
     "groq-sdk": "^0.37.0",
-    "jose": "^6.2.2",
     "lru-cache": "^11.3.5",
     "multer": "^2.1.1",
     "next-auth": "5.0.0-beta.31",

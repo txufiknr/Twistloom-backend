@@ -13,6 +13,11 @@
 
 A sophisticated psychological thriller branching story engine backend that delivers immersive, AI-powered interactive narratives. Built with cutting-edge TypeScript and modern web technologies, this platform creates dynamic, choice-driven stories where readers' decisions shape the outcome through intelligent character psychology, environmental storytelling, and multi-layered horror mechanics. The system leverages advanced AI providers to generate compelling content that adapts to user choices while maintaining narrative consistency and psychological depth.
 
+## 🌐 URLs
+
+- **Backend API**: https://twistloom-backend.vercel.app
+- **Frontend Web**: https://twistloom-web.vercel.app
+
 ## 🏗️ Tech Stack
 
 ### **Technologies**

@@ -9,6 +9,7 @@ import app from "./app.js";
 import { PORT } from "./config/env.js";
 import { hasErrorCode } from "./utils/error.js";
 import { registerGracefulShutdown } from "./utils/graceful-shutdown.js";
+import { validateGitHubWorkflowConfig } from "./utils/candidate-generation.js";
 import type http from "node:http";
 
 /* -------------------------------------------------- */
@@ -38,6 +39,9 @@ if (!process.env.AUTH_SECRET) {
   console.error('🔐 Generate one with: openssl rand -base64 32');
   process.exit(1);
 }
+
+// Validate GitHub workflow configuration for on-demand candidate generation
+validateGitHubWorkflowConfig();
 
 /* -------------------------------------------------- */
 /* Start Server                                       */

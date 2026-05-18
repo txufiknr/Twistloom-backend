@@ -7,7 +7,7 @@
 [x] GET /books/recent (continue reading)
 [@] /api/payments/create-checkout-session 401 unauthorized
 [@] Reader reach kok 0%
-[ ] Investigate: Kenapa on-deman github workflow nggak ke trigger
+[ ] Investigate: Kenapa on-demand github workflow nggak ke trigger
 [ ] Infer desired ending if provided in theme input: if user mention anything about desired ending in theme input, use it for viableEnding
 [ ] cron: auto translate page ke indo
 [ ] On demand github workflow gak jalan

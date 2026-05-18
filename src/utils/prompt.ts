@@ -2477,11 +2477,13 @@ export async function initializeBook(
     } else { // Fire-and-forget for fast user generated book result (immediate background processing)
       // await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book); // pg-boss, up to 24 hours cron delay
       // await ensureCandidatesForPage(userId, firstUserPage, initialState, book); // 4.5 minute Vercel limit
-      void triggerGitHubWorkflow({
+      triggerGitHubWorkflow({
         userId,
         pageId: firstUserPage.id,
         bookId: book.id,
         context: 'initializeBook'
+      }).catch(error => {
+        console.error('[initializeBook] ❌ Failed to trigger GitHub workflow:', error);
       });
     }
 

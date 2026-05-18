@@ -11,6 +11,9 @@ importers:
       '@actions/core':
         specifier: ^3.0.0
         version: 3.0.0
+      '@auth/express':
+        specifier: ^0.12.2
+        version: 0.12.2(express@5.2.1)
       '@cerebras/cerebras_cloud_sdk':
         specifier: ^1.64.1
         version: 1.64.1
@@ -53,9 +56,6 @@ importers:
       groq-sdk:
         specifier: ^0.37.0
         version: 0.37.0
-      jose:
-        specifier: ^6.2.2
-        version: 6.2.2
       lru-cache:
         specifier: ^11.3.5
         version: 11.3.5
@@ -151,6 +151,11 @@ packages:
         optional: true
       nodemailer:
         optional: true
+
+  '@auth/express@0.12.2':
+    resolution: {integrity: sha512-IYsDgorPDb5O7/81+ja+PsC/Iu1Sem+ck9X6AmbbIsfXCjzm1zSnrKImDdAOG1xjuhMUXLXYGxekrJnxP9kr0w==}
+    peerDependencies:
+      express: ^4.18.2 || ^5.0.0
 
   '@aws-crypto/sha256-browser@5.2.0':
     resolution: {integrity: sha512-AXfN/lGotSQwu6HNcEsIASo7kWXZ5HYWvfOmSNKDsEqC4OashTp8alTmaz+F7TC2L083SFv5RdB+qU3Vs1kZqw==}
@@ -2735,6 +2740,15 @@ snapshots:
       oauth4webapi: 3.8.5
       preact: 10.24.3
       preact-render-to-string: 6.5.11(preact@10.24.3)
+
+  '@auth/express@0.12.2(express@5.2.1)':
+    dependencies:
+      '@auth/core': 0.41.2
+      express: 5.2.1
+    transitivePeerDependencies:
+      - '@simplewebauthn/browser'
+      - '@simplewebauthn/server'
+      - nodemailer
 
   '@aws-crypto/sha256-browser@5.2.0':
     dependencies:

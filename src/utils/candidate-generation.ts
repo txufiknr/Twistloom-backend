@@ -17,7 +17,7 @@ import { pages } from '../db/schema.js';
 import { storeActionProgressEvent } from './progress-tracking.js';
 import { eq } from 'drizzle-orm';
 import { LOCK_KEYS, withLock } from './distributed-lock.js';
-import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
+import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoff, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPage } from './prompt.js';
 
 /**
@@ -640,11 +640,13 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
             const nextDepth = currentDepth + 1;
             if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH) {
               // Immediate fire-and-forget for better UX
-              void triggerGitHubWorkflow({
+              triggerGitHubWorkflow({
                 userId,
                 pageId: candidatePage.id,
                 bookId: candidatePage.bookId,
                 context: `generateCandidatesInParallel-depth${nextDepth}`
+              }).catch(error => {
+                console.error(`[generateCandidatesInParallel] ❌ Failed to trigger GitHub workflow for level ${nextDepth}:`, error);
               });
               console.log(`[generateCandidatesInParallel] 🚀 Triggered immediate background generation for level ${nextDepth}`);
             } else {
@@ -1055,6 +1057,35 @@ export async function ensureCandidatesForPageWithStrategy(
 }
 
 /**
+ * Validates GitHub workflow configuration at startup
+ * 
+ * This function checks if the required environment variables for GitHub workflow
+ * triggering are properly configured. It logs a warning if any are missing.
+ * 
+ * Should be called during application startup to fail fast if configuration is invalid.
+ */
+export function validateGitHubWorkflowConfig(): void {
+  const token = process.env.GITHUB_WORKFLOW_TOKEN;
+  const repoOwner = GITHUB_REPO_OWNER;
+  const repoName = GITHUB_REPO_NAME;
+  const branch = GITHUB_DEFAULT_BRANCH;
+
+  const missing: string[] = [];
+  if (!token) missing.push('GITHUB_WORKFLOW_TOKEN');
+  if (!repoOwner) missing.push('GITHUB_REPO_OWNER');
+  if (!repoName) missing.push('GITHUB_REPO_NAME');
+  if (!branch) missing.push('GITHUB_DEFAULT_BRANCH');
+
+  if (missing.length > 0) {
+    console.error('⚠️ GitHub workflow configuration incomplete. Missing environment variables:', missing.join(', '));
+    console.error('⚠️ On-demand candidate generation will not work without these variables.');
+    console.error('⚠️ Please set them in your environment or .env.local file.');
+  } else {
+    console.log('✅ GitHub workflow configuration validated successfully');
+  }
+}
+
+/**
  * Triggers GitHub workflow for on-demand candidate generation
  * 
  * This function dispatches the retry-pending-generations workflow via GitHub REST API,
@@ -1065,6 +1096,13 @@ export async function ensureCandidatesForPageWithStrategy(
  * **Idempotency**: This function is idempotent per pageId - it checks if generation is already
  * in progress (isGeneratingStartedAt not null) and returns early if so. It sets isGeneratingStartedAt
  * to now() before triggering the workflow to prevent duplicate triggers.
+ * 
+ * **Retry Logic**: Uses retryWithBackoff utility for transient failures (network errors, rate limits).
+ * Retries up to 3 times with exponential backoff (1s, 2s, 4s). Only retries on specific HTTP status codes:
+ * - 429 (Rate limit)
+ * - 502 (Bad gateway)
+ * - 503 (Service unavailable)
+ * - 504 (Gateway timeout)
  * 
  * **Cleanup**: The cron job (retry-pending-generations.ts) is responsible for resetting
  * isGeneratingStartedAt to null when generation completes or fails.
@@ -1102,6 +1140,7 @@ export async function triggerGitHubWorkflow(params: {
   context?: string;
 }): Promise<{ success: boolean; error?: string; alreadyInProgress?: boolean }> {
   const { bookId, pageId, userId, context = 'github-workflow-trigger' } = params;
+  
   console.log(`[${context}] 🚀 Triggering GitHub workflow for page ${pageId}`);
 
   try {
@@ -1134,50 +1173,76 @@ export async function triggerGitHubWorkflow(params: {
       return { success: false, error: 'GitHub workflow token not configured' };
     }
 
-    // Trigger workflow via GitHub REST API
-    const workflowResponse = await fetch(
-      `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/retry-pending-generations.yml/dispatches`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `token ${githubToken}`,
-          'Accept': 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'Twistloom-Backend'
-        },
-        body: JSON.stringify({
-          ref: GITHUB_DEFAULT_BRANCH,
-          inputs: {
-            book_id: bookId,
-            page_id: pageId,
-            triggered_by: userId
+    // Trigger workflow via GitHub REST API with retry logic
+    await retryWithBackoff(
+      async () => {
+        console.log(`[${context}] 📡 Triggering GitHub workflow dispatch`);
+        
+        const workflowResponse = await fetch(
+          `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/retry-pending-generations.yml/dispatches`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `token ${githubToken}`,
+              'Accept': 'application/vnd.github.v3+json',
+              'Content-Type': 'application/json',
+              'User-Agent': 'Twistloom-Backend'
+            },
+            body: JSON.stringify({
+              ref: GITHUB_DEFAULT_BRANCH,
+              inputs: {
+                book_id: bookId,
+                page_id: pageId,
+                triggered_by: userId
+              }
+            })
           }
-        })
+        );
+
+        if (workflowResponse.ok) {
+          console.log(`[${context}] 🚀 GitHub workflow triggered successfully for page ${pageId} (book: ${bookId}, user: ${userId})`);
+          return;
+        }
+
+        const errorText = await workflowResponse.text();
+        const error = new Error(`GitHub API error: ${workflowResponse.status} ${workflowResponse.statusText}`) as ErrorWithCustomProperties;
+        error.code = `GITHUB_API_${workflowResponse.status}`;
+        
+        // Mark as non-retryable for non-transient errors
+        const isRetryable = workflowResponse.status === 429 || // Rate limit
+                            workflowResponse.status === 502 || // Bad gateway
+                            workflowResponse.status === 503 || // Service unavailable
+                            workflowResponse.status === 504;  // Gateway timeout
+
+        if (!isRetryable) {
+          error.shouldRetry = false;
+        }
+
+        console.error(`[${context}] ❌ GitHub API error:`, {
+          status: workflowResponse.status,
+          statusText: workflowResponse.statusText,
+          body: errorText,
+          retryable: isRetryable
+        });
+
+        throw error;
+      },
+      {
+        maxRetries: 3,
+        baseDelayMs: 1000,
+        maxDelayMs: 4000,
+        exponentialBackoff: true,
+        onRetry: (attempt, error) => {
+          console.log(`[${context}] 🔄 Retrying GitHub workflow dispatch (attempt ${attempt}/3):`, error);
+        }
       }
     );
 
-    if (!workflowResponse.ok) {
-      const errorText = await workflowResponse.text();
-      console.error(`[${context}] ❌ GitHub API error:`, {
-        status: workflowResponse.status,
-        statusText: workflowResponse.statusText,
-        body: errorText
-      });
-      // Reset isGeneratingStartedAt since workflow trigger failed
-      await dbWrite.update(pages)
-        .set({ isGeneratingStartedAt: null })
-        .where(eq(pages.id, pageId));
-      return {
-        success: false,
-        error: `GitHub API error: ${workflowResponse.status} ${workflowResponse.statusText}`
-      };
-    }
-
-    console.log(`[${context}] 🚀 GitHub workflow triggered successfully for page ${pageId} (book: ${bookId}, user: ${userId})`);
     return { success: true };
+
   } catch (error) {
     const errorMessage = getErrorMessage(error);
-    console.error(`[${context}] ❌ Failed to trigger GitHub workflow:`, errorMessage);
+    console.error(`[${context}] ❌ Failed to trigger GitHub workflow after retries:`, errorMessage);
     // Reset isGeneratingStartedAt on error to allow retry
     try {
       await dbWrite.update(pages)

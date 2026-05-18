@@ -437,7 +437,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, bio, gender, imageUrl } = req.body;
+    const { name, bio, gender, imageUrl, isNewUser } = req.body;
 
     // Check if user exists
     const existingUser = await dbRead
@@ -448,6 +448,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
         gender: users.gender,
         image: users.image,
         imageId: users.imageId,
+        isNewUser: users.isNewUser,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt
       })
@@ -512,6 +513,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
       gender: normalizeGender(gender),
       image: newImageUrl || null,
       imageId: newImageId || null,
+      isNewUser: isNewUser || false,
     });
 
     // Only proceed if there are actual updates

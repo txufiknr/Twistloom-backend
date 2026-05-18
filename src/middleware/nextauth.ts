@@ -2,16 +2,16 @@
  * NextAuth v5 Cookie-Based Authentication Middleware
  * 
  * This module provides middleware functions to verify NextAuth JWT tokens
- * sent via httpOnly cookies.
+ * sent via httpOnly cookies using @auth/express.
  * 
  * Architecture:
- * - Uses NextAuth's getToken() to verify JWT cookies
- * - Supports conditional cookie naming for NextAuth v5
+ * - Uses @auth/express's getSession() to verify Auth.js session cookies
+ * - Automatically handles Auth.js v5's proprietary JWE encryption
  * - Provides both required and optional auth middleware
  * - Compatible with guest user flow
  * 
  * Summary
- * I've successfully implemented Option 1 (Next.js Rewrites) to solve the 401 authentication issue:
+ * Implemented Option 1 (Next.js Rewrites) to solve the 401 authentication issue:
  * 
  * Changes Made:
  * Frontend (next.config.ts):
@@ -20,9 +20,15 @@
  * - This makes the browser send NextAuth cookies automatically since requests appear to stay on the same domain
  * 
  * Backend (nextauth.ts):
- * - Switched from jsonwebtoken to jose for JWT verification (jose is newer, already installed, and used by NextAuth internally)
- * - Updated verifyNextAuthToken to use jose's jwtVerify function
- * - Removed jsonwebtoken and @types/jsonwebtoken dependencies
+ * - Switched from jose to @auth/express for session verification
+ * - Updated verifyNextAuthToken to use @auth/express's getSession function
+ * - Removed manual JWT decryption/verification logic (now handled by @auth/express)
+ * - Removed jose dependency
+ * 
+ * Why @auth/express instead of jose:
+ * Auth.js tokens use JWE (JSON Web Encryption) with proprietary encryption structure.
+ * @auth/express abstracts away HKDF key derivation, decryption algorithms, and cookie parsing.
+ * It's the official and recommended way to verify Auth.js sessions in Express backends.
  * 
  * Next Steps:
  * 1. Update frontend API calls - Change your frontend fetch calls from:
@@ -34,58 +40,27 @@
  * 3. Test the authentication - Try accessing the protected endpoint after signing in with Google. The NextAuth cookies should now be sent automatically.
  * 
  * Why This Works:
- * With the rewrites, the browser sees requests going to twistloom-web.vercel.app/api/backend/... instead of twistloom-backend.vercel.app/api/..., so it sends the NextAuth cookies automatically. The backend receives the cookies and verifies them using the same AUTH_SECRET as NextAuth.
- * 
- * @todo
- * Optional Performance Optimization (from migration guide):
- * - The guide suggests adding authCacheMiddleware to avoid re-verifying JWT
- * - This provides ~50-70% reduction in JWT verification overhead
- * - Not implemented here because Express middleware runs sequentially
- * - JWT is only verified once per request in current architecture
- * - To implement: Add middleware that checks if req.user is already set
- * - See BACKEND_AUTH_MIGRATION_GUIDE.md Step 9 for details
+ * With the rewrites, the browser sees requests going to twistloom-web.vercel.app/api/backend/... instead of twistloom-backend.vercel.app/api/..., so it sends the NextAuth cookies automatically. The backend receives the cookies and verifies them using the same AUTH_SECRET as NextAuth via @auth/express.
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { jwtVerify, jwtDecrypt, type JWTPayload } from 'jose';
+import { getSession } from '@auth/express';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
-import { IS_PRODUCTION } from '../config/env.js';
 
 /**
- * Determines the NextAuth cookie name based on environment
- * Auth.js v5 uses new cookie naming convention: authjs.session-token
+ * Verifies NextAuth session token from request cookies using @auth/express
  * 
- * @returns Cookie name for the current environment
- */
-function getCookieName(): string {
-  // Auth.js v5 changed cookie names from next-auth.session-token to authjs.session-token
-  // Development: authjs.session-token (no __Secure prefix, works on HTTP)
-  // Production: __Secure-authjs.session-token (requires HTTPS)
-  return IS_PRODUCTION
-    ? '__Secure-authjs.session-token'
-    : 'authjs.session-token';
-}
-
-/**
- * Verifies NextAuth JWT token from request cookies
+ * This function uses @auth/express's getSession() to verify Auth.js session cookies.
+ * It automatically handles Auth.js v5's proprietary JWE encryption and cookie parsing.
  * 
- * This function manually verifies the JWT token using the AUTH_SECRET,
- * since NextAuth's getToken() is designed for Next.js API routes, not Express.
- * 
- * Auth.js v5 supports both signed (JWS) and encrypted (JWE) tokens:
- * - JWS (JSON Web Signature): Token is signed and can be verified with jwtVerify
- * - JWE (JSON Web Encryption): Token is encrypted and must be decrypted with jwtDecrypt
- * 
- * This function attempts both methods to support both token types.
- * 
- * twistloom-web.vercel.app → twistloom-backend.vercel.app = cross-domain,
- * no automatic cookie sending.
+ * With Next.js rewrites, the browser sends cookies automatically since requests
+ * appear to stay on the same domain (twistloom-web.vercel.app/api/backend/...).
  * 
  * Note:
  * - Requires Express cookie-parser middleware: `app.use(cookieParser());`
- * - For cross-domain requests with cookies, needs CORS configured with credentials support: `app.use(cors({ origin: 'https://twistloom-web.vercel.app', credentials: true }));`
- * - Your frontend fetch calls need credentials: 'include' for cross-domain cookie sending.
+ * - AUTH_SECRET must be shared between Next.js frontend and Express backend
+ * - No need for manual cookie parsing or JWT decryption - @auth/express handles it
  * 
  * @param req - Express request object
  * @returns User data if token is valid, null otherwise
@@ -100,100 +75,49 @@ function getCookieName(): string {
  */
 export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null> {
   try {
-    const cookieName = getCookieName();
     const secret = process.env.AUTH_SECRET;
     if (!secret) {
       console.error('[verifyNextAuthToken] 💀 AUTH_SECRET is not configured');
       return null;
     }
 
-    // Debug: Log all available cookies
-    console.log('[verifyNextAuthToken] 🔍 All cookies:', Object.keys(req.cookies || {}));
-    console.log('[verifyNextAuthToken] 🔍 Looking for cookie:', cookieName);
+    // getSession automatically looks inside request headers for the Auth.js cookie
+    // and handles decryption/verification using the shared AUTH_SECRET
+    const session = await getSession(req, {
+      providers: [], // Empty since Next.js frontend manages providers
+      secret,
+      session: { strategy: 'jwt' },
+    });
 
-    // Try multiple possible cookie names for Auth.js v5
-    const possibleCookieNames = [
-      cookieName,
-      'next-auth.session-token',
-      '__Secure-next-auth.session-token',
-      'authjs.session-token',
-      '__Secure-authjs.session-token',
-    ];
-
-    let token: string | undefined;
-
-    for (const name of possibleCookieNames) {
-      if (req.cookies?.[name]) {
-        token = req.cookies[name];
-        console.log(`[verifyNextAuthToken] ✅ Found token in cookie: ${name}`);
-        break;
-      }
-    }
-
-    if (!token) {
-      console.log(`[verifyNextAuthToken] ✨ No token found in any of these cookies:`, possibleCookieNames);
+    if (!session?.user) {
+      console.log('[verifyNextAuthToken] ✨ No valid session found');
       return null;
     }
 
-    // Debug: Log token format (first 50 chars)
-    console.log('[verifyNextAuthToken] 🔍 Token preview:', token.substring(0, 50));
-    console.log('[verifyNextAuthToken] 🔍 Token length:', token.length);
+    console.log('[verifyNextAuthToken] ✅ Session verified:', session.user);
 
-    const secretKey = new TextEncoder().encode(secret);
-    let payload: JWTPayload;
-
-    // Auth.js v5 may use encrypted tokens (JWE) instead of signed tokens (JWS)
-    // Try decryption first (for JWE), then verification (for JWS)
-    try {
-      // Try to decrypt (for encrypted/JWE tokens)
-      const { payload: decryptedPayload } = await jwtDecrypt(token, secretKey);
-      payload = decryptedPayload;
-      console.log('[verifyNextAuthToken] ✅ Token decrypted successfully (JWE):', payload);
-    } catch (decryptError) {
-      // If decryption fails, try verification (for signed/JWS tokens)
-      try {
-        const { payload: verifiedPayload } = await jwtVerify(token, secretKey);
-        payload = verifiedPayload;
-        console.log('[verifyNextAuthToken] ✅ Token verified successfully (JWS):', payload);
-      } catch (verifyError) {
-        console.error('[verifyNextAuthToken] ❌ Token verification failed (both JWE and JWS):', { decryptError, verifyError });
-        throw verifyError;
-      }
-    }
-
-    // Validate token structure with type guards
-    const userId = payload.userId as string | undefined;
-    const email = payload.email as string | undefined;
-    const name = payload.name as string | undefined;
+    // Validate and extract user data from session
+    const userId = session.user.id as string | undefined;
+    const email = session.user.email as string | undefined;
+    const name = session.user.name as string | undefined;
 
     if (!userId || typeof userId !== 'string') {
-      console.error('[verifyNextAuthToken] ❌ Invalid token: missing or invalid userId');
+      console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid userId');
       return null;
     }
 
     if (!email || typeof email !== 'string') {
-      console.error('[verifyNextAuthToken] ❌ Invalid token: missing or invalid email');
+      console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid email');
       return null;
     }
 
-    // Extract user data from token with validation
     return {
       id: userId,
       email,
       name: typeof name === 'string' ? name : undefined,
     };
   } catch (error) {
-    if (error instanceof Error) {
-      if (error.name === 'JWTExpired') {
-        console.warn('[verifyNextAuthToken] ⚠️ JWT token expired:', error.message);
-      } else if (error.name === 'JWTInvalid' || error.name === 'JWSSignatureVerificationFailed' || error.name === 'JWEInvalid') {
-        console.warn('[verifyNextAuthToken] ⚠️ Invalid JWT token:', error.message);
-      } else {
-        console.error('[verifyNextAuthToken] ❌ Token verification error:', error.message);
-      }
-    } else {
-      console.error('[verifyNextAuthToken] ❌ Unknown error:', error);
-    }
+    console.error('[verifyNextAuthToken] ❌ Session verification error:', error);
     return null;
   }
 }

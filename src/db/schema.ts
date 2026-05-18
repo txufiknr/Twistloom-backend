@@ -189,6 +189,7 @@ export const users = pgTable(
     image, // Profile image ImageKit URL
     imageId, // ImageKit file ID for deletion
     isGuest: boolean("is_guest").notNull().default(false), // Distinguishes guest users from authenticated users
+    isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     lastActive,
     createdAt,
     updatedAt,

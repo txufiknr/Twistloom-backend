@@ -2444,11 +2444,13 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
 
     // Trigger background generation via GitHub workflow if not already in progress
     if (!isGenerating) {
-      void triggerGitHubWorkflow({
+      triggerGitHubWorkflow({
         bookId: dbPage.bookId,
         pageId: pageIdStr,
         userId,
         context: 'GET /candidates'
+      }).catch(error => {
+        console.error(`[GET /candidates] ❌ Failed to trigger GitHub workflow:`, error);
       });
     } else {
       console.log(`[GET /candidates] 🛬 Generation in progress for page ${pageIdStr}, using SSE to wait (started at ${dbPage.isGeneratingStartedAt})`);
@@ -2594,12 +2596,25 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     
     // Actions incomplete, trigger background generation via GitHub workflow
     console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: ${completedActions}/${userPage.actions.length} actions completed`);
-    void triggerGitHubWorkflow({
+    
+    // Trigger workflow and wait for result to ensure it actually starts
+    const workflowResult = await triggerGitHubWorkflow({
       bookId: dbPage.bookId,
       pageId: pageIdStr,
       userId,
       context: 'GET /candidates/status',
     });
+
+    // If workflow trigger failed, log error and inform client
+    if (!workflowResult.success && !workflowResult.alreadyInProgress) {
+      console.error(`[GET /candidates/status] ❌ Failed to trigger GitHub workflow for page ${pageIdStr}:`, workflowResult.error);
+      // Return error response to client so they can retry
+      return res.status(503).json({
+        error: 'Failed to trigger generation workflow',
+        details: workflowResult.error,
+        isGenerating: false,
+      });
+    }
 
     return res.json({
       isGenerating: true,

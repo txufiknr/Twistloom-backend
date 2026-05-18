@@ -649,7 +649,7 @@ export async function pollForCandidateGeneration(
       if (clientDisconnected || res.writableEnded) {
         req.off('close', onClientDisconnect);
         req.off('aborted', onClientDisconnect);
-        console.log(`[SSE Polling] Stopping polling for page ${pageId} due to client disconnect`);
+        console.log(`[SSE Polling] ⛔ Stopping polling for page ${pageId} due to client disconnect`);
         return;
       }
 
