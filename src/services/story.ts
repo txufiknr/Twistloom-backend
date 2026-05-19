@@ -192,7 +192,7 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
     client,
   });
   
-  console.log(`[setActiveSession] 🌟 Session activated:`, params);
+  console.log(`[setActiveSession] 🌟 Session activated:`, { userId, bookId, pageId, previousPageId });
   return result[0] || null;
 }
 

@@ -711,7 +711,7 @@ export async function getPageFromDB(pageId: string, options: {
       .select()
       .from(pages)
       .where(and(...whereConditions))
-      .limit(1);    
+      .limit(1);
     return result[0] || null;
   } catch (error) {
     const errorMessage = getErrorMessage(error);

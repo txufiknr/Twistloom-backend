@@ -145,6 +145,7 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
       // Authenticated user
       req.guestAuth = { isAuthenticated: true, userId: user.id, isGuest: false, user };
       req.user = user;
+      req.userId = user.id;
       next();
       return;
     }
@@ -239,6 +240,10 @@ async function resolveGuestId(cookieValue: string | undefined, dbLookup: boolean
  * 
  * Uses Redis cache with 5-minute TTL to avoid DB connection issues
  * while maintaining security by validating against the database periodically.
+ * 
+ * Security Critical:
+ * - Guest validation is security-sensitive; shared cache using Redis ensures consistency
+ * - Cache invalidation on guest deletion - only possible with Redis
  * 
  * @returns the guestId if valid, null if invalid, missing or stale.
  */

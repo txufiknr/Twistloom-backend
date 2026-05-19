@@ -38,6 +38,10 @@ export interface PaginationParams {
   language?: string;
   /** Tags filter (comma-separated) */
   tags?: string;
+  /** Age range filter (format: n-m, e.g., 18-30) */
+  ageRange?: string;
+  /** Gender filter (male/female) */
+  gender?: string;
 }
 
 /**
@@ -92,6 +96,8 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
   const lastUpdated = req.query.lastUpdated as string | undefined;
   const language = req.query.language as string | undefined;
   const tags = req.query.tags as string | undefined;
+  const ageRange = req.query.ageRange as string | undefined;
+  const gender = req.query.gender as string | undefined;
 
   return {
     page,
@@ -102,7 +108,9 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
     sortOrder,
     lastUpdated,
     language,
-    tags
+    tags,
+    ageRange,
+    gender
   };
 }
 

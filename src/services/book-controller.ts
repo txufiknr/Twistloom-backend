@@ -376,6 +376,37 @@ export function buildLanguageFilterCondition(language?: string) {
 }
 
 /**
+ * Builds age range filter condition for main character age
+ * 
+ * @param minAge - Minimum age (inclusive)
+ * @param maxAge - Maximum age (inclusive)
+ * @returns SQL condition or null if no age range
+ */
+export function buildAgeRangeFilterCondition(minAge?: number, maxAge?: number) {
+  if (minAge === undefined || maxAge === undefined) {
+    return null;
+  }
+
+  // Filter by books.mc->age field (JSONB)
+  return sql`${books.mc}->>'age'::int BETWEEN ${minAge} AND ${maxAge}`;
+}
+
+/**
+ * Builds gender filter condition for main character gender
+ * 
+ * @param gender - Gender value (male/female)
+ * @returns SQL condition or null if no gender
+ */
+export function buildGenderFilterCondition(gender?: string) {
+  if (!gender) {
+    return null;
+  }
+
+  // Filter by books.mc->gender field (JSONB)
+  return sql`${books.mc}->>'gender' = ${gender}`;
+}
+
+/**
  * Builds search condition with ILIKE patterns for multiple fields
  * 
  * @param search - Search query string
@@ -447,15 +478,22 @@ export function buildBookQuery<T>(
     language?: string;
     /** Time filter */
     lastUpdated?: string;
+    /** Age range filter (minAge, maxAge) */
+    minAge?: number;
+    maxAge?: number;
+    /** Gender filter */
+    gender?: string;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender } = params;
   
   // Build filter conditions using shared helpers
   const timeCondition = buildTimeFilterCondition(lastUpdated);
   const languageCondition = buildLanguageFilterCondition(language);
   const searchCondition = buildSearchCondition(search);
   const tagsCondition = buildTagsFilterCondition(tags || []);
+  const ageRangeCondition = buildAgeRangeFilterCondition(minAge, maxAge);
+  const genderCondition = buildGenderFilterCondition(gender);
   
   // Combine all conditions with base condition
   const finalCondition = combineFilterConditions(
@@ -463,7 +501,9 @@ export function buildBookQuery<T>(
     timeCondition,
     languageCondition,
     searchCondition,
-    tagsCondition
+    tagsCondition,
+    ageRangeCondition,
+    genderCondition
   );
   
   // Apply where condition to main query

@@ -47,6 +47,21 @@ import type { Request, Response, NextFunction } from 'express';
 import { getSession } from '@auth/express';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
+import { dbRead } from '../db/client.js';
+import { users } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+import { LRUCache } from 'lru-cache';
+
+/**
+ * LRU cache for email -> userId mappings
+ * 
+ * Caches user ID lookups to reduce database query overhead.
+ * Uses a maximum of 1000 entries with a 5-minute TTL.
+ */
+const userIdCache = new LRUCache<string, string>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
 
 /**
  * Verifies NextAuth session token from request cookies using @auth/express
@@ -90,32 +105,39 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     });
 
     if (!session?.user) {
+      // Posibilities:
+      // 1. The token expired: The maxAge of the Auth.js session cookie has passed.
+      // 2. The token is invalid: The Express backend is using a different AUTH_SECRET than Next.js, meaning it cannot decrypt the cookie.
+      // 3. The cookie is missing: If you didn't set up the Next.js Rewrites proxy (or custom domains) discussed earlier, the browser stripped the cookie before it reached Express, leaving getSession() with nothing to parse.
       console.log('[verifyNextAuthToken] ✨ No valid session found');
+      // To make sure your user is kicked out of Next.js when Express rejects the token,
+      // you must handle the 401 response in your frontend network requests and
+      // trigger the Auth.js signOut() function.
       return null;
     }
 
     console.log('[verifyNextAuthToken] ✅ Session verified:', session.user);
 
     // Validate and extract user data from session
-    const userId = session.user.id as string | undefined;
     const email = session.user.email as string | undefined;
     const name = session.user.name as string | undefined;
-
-    if (!userId || typeof userId !== 'string') {
-      console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid userId');
-      return null;
-    }
 
     if (!email || typeof email !== 'string') {
       console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid email');
       return null;
     }
 
-    return {
-      id: userId,
-      email,
-      name: typeof name === 'string' ? name : undefined,
-    };
+    const userId = await getUserId(email);
+    if (userId) {
+      return {
+        id: userId,
+        email,
+        name,
+      };
+    }
+
+    console.error('[verifyNextAuthToken] ❌ User not found in database');
+    return null;
   } catch (error) {
     console.error('[verifyNextAuthToken] ❌ Session verification error:', error);
     return null;
@@ -179,4 +201,52 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
     req.userId = user.id; // Backward compatibility with existing routes
   }
   next();
+}
+
+/**
+ * Retrieves user ID from database using email, with LRU caching
+ * 
+ * This function queries the database to find a user ID by email address.
+ * Results are cached in an LRU cache to reduce database query overhead for
+ * repeated lookups of the same email.
+ * 
+ * Cache behavior:
+ * - Maximum 1000 entries
+ * - 5-minute TTL per entry
+ * - Cache hit: Returns cached ID immediately
+ * - Cache miss: Queries database and caches result
+ * 
+ * @param email - User email address to look up
+ * @returns User ID if found, null otherwise
+ * 
+ * @example
+ * ```typescript
+ * const userId = await getUserId('user@example.com');
+ * if (userId) {
+ *   console.log('User ID:', userId);
+ * }
+ * ```
+ */
+async function getUserId(email: string): Promise<string | null> {
+  // Check cache first
+  const cachedId = userIdCache.get(email);
+  if (cachedId) {
+    return cachedId;
+  }
+
+  // Query database if not in cache
+  const user = await dbRead
+    .select({ id: users.userId })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (user.length > 0) {
+    const userId = user[0].id;
+    // Cache the result
+    userIdCache.set(email, userId);
+    return userId;
+  }
+
+  return null;
 }

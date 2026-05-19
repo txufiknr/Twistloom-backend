@@ -53,7 +53,7 @@ import { getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/b
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, getUserRecentBooks } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -1314,11 +1314,13 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @query sortBy - Field to sort by (default: updatedAt)
  * @query sortOrder - Sort direction (default: desc)
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
+ * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
+ * @query gender - Filter by main character gender (male/female)
  * @returns Paginated list of published books
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags } = extractPaginationParams(req);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender } = extractPaginationParams(req);
     const userId = req.userId || null;
     
     // Extract tags from query parameter (comma-separated)
@@ -1336,11 +1338,35 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     }
 
     // Validate language code if provided
+    let sanitizedLanguage: string | undefined;
     if (language) {
       const langValidation = validateLanguageCode(language);
       if (!langValidation.isValid) {
         return handleValidationError(res, langValidation.error || 'Invalid language code');
       }
+      sanitizedLanguage = langValidation.sanitized;
+    }
+
+    // Validate age range if provided
+    let minAge: number | undefined;
+    let maxAge: number | undefined;
+    if (ageRange) {
+      const ageValidation = validateAgeRange(ageRange);
+      if (!ageValidation.isValid) {
+        return handleValidationError(res, ageValidation.error || 'Invalid age range');
+      }
+      minAge = ageValidation.minAge;
+      maxAge = ageValidation.maxAge;
+    }
+
+    // Validate gender if provided
+    let sanitizedGender: string | undefined;
+    if (gender) {
+      const genderValidation = validateGender(gender);
+      if (!genderValidation.isValid) {
+        return handleValidationError(res, genderValidation.error || 'Invalid gender');
+      }
+      sanitizedGender = genderValidation.sanitized;
     }
 
     // Validate lastUpdated filter if provided
@@ -1353,9 +1379,9 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       ? (sortBy as BookSortOption) 
       : 'newest';
     
-    // Cache page 1 without search, tags, language, and time filters
+    // Cache page 1 without search, tags, language, ageRange, gender, and time filters
     // Trending uses shorter TTL (5 min) due to incremental updates, newest uses longer TTL (30 min)
-    const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated;
+    const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender;
     const cacheKey = bookSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
     const cacheTTL = bookSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
     
@@ -1376,8 +1402,11 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
         genericSortBy: sortBy, // Secondary: generic fallback (when no search)
         sortOrder,
         tags: tagsArray,
-        language,
-        lastUpdated
+        language: sanitizedLanguage,
+        lastUpdated,
+        minAge,
+        maxAge,
+        gender: sanitizedGender
       });
 
       const totalCountResult = await countQuery;

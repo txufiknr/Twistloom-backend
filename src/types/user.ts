@@ -35,6 +35,8 @@ export interface UserStats {
   likesReceived: number;
 }
 
+export type UserTier = 'standard' | 'vip';
+
 export interface User {
   id: string;
   email?: string | null;
@@ -42,8 +44,9 @@ export interface User {
   name?: string | null;
   bio?: string | null;
   image?: string | null;
-  isGuest?: boolean;
   stats?: UserStats;
+  tier?: UserTier;
+  isGuest?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

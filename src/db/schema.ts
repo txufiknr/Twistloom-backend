@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
-import type { Gender, UserActivityType } from "../types/user.js";
+import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { StoryMC, StoryMCCandidate } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
@@ -21,7 +21,7 @@ const id = () => uuid("id").primaryKey().$defaultFn(generateId);
 const userId = () => uuid("user_id").notNull();
 const bookId = (onDelete: UpdateDeleteAction = "cascade") => uuid("book_id").notNull().references(() => books.id, { onDelete });
 const pageId = (onDelete: UpdateDeleteAction = "cascade") => uuid("page_id").notNull().references(() => pages.id, { onDelete });
-const gender = text("gender").$type<Gender | null>();
+const gender = text("gender").$type<Gender>();
 const date = text("date").notNull(); // YYYY-MM-DD format
 const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
@@ -188,6 +188,7 @@ export const users = pgTable(
     gender,
     image, // Profile image ImageKit URL
     imageId, // ImageKit file ID for deletion
+    tier: text("tier").$type<UserTier>(),
     isGuest: boolean("is_guest").notNull().default(false), // Distinguishes guest users from authenticated users
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     lastActive,
@@ -286,7 +287,7 @@ export const books = pgTable(
     trendingScore: real("trending_score").default(0),
     isOriginal: boolean("is_original").notNull().default(false),
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['thriller', 'action', 'crime', 'horror', 'killer', 'murder', 'mystery', 'suspense']
-    status: text("status").$type<BookStatus | null>().default('active'),
+    status: text("status").$type<BookStatus>().default('active'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book
@@ -359,8 +360,8 @@ export const bookGenerations = pgTable(
     theme: text("theme"),
     mcCandidate: jsonb("mc_candidate").$type<StoryMCCandidate>(),
     generateCoverImage: boolean("generate_cover_image").notNull().default(false),
-    generationStatus: text("generation_status").$type<BookGenerationStatus | null>().default('pending'),
-    generationStep: text("generation_step").$type<StoryGenerationStep | null>(),
+    generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),
+    generationStep: text("generation_step").$type<StoryGenerationStep>(),
     // generationProgress: integer("generation_progress").default(0), // 0-100
     generationError: text("generation_error"),
     generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),

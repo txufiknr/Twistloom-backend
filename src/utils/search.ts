@@ -14,6 +14,7 @@
 
 import { sql, and, or } from "drizzle-orm";
 import { sanitizeText } from "./text-processing.js";
+import type { KnownGender } from "../types/user.js";
 
 /**
  * Maximum search query length to prevent abuse
@@ -155,6 +156,106 @@ export function validateLanguageCode(language: string | undefined): { isValid: b
   return {
     isValid: true,
     sanitized: trimmed.toLowerCase()
+  };
+}
+
+/**
+ * Validates age range parameter (format: n-m, e.g., 18-30)
+ * 
+ * @param ageRange - Age range string to validate
+ * @returns Validation result with parsed min/max ages or error
+ * 
+ * @example
+ * ```typescript
+ * const result = validateAgeRange("18-30");
+ * // { isValid: true, minAge: 18, maxAge: 30 }
+ * 
+ * const invalid = validateAgeRange("invalid");
+ * // { isValid: false, error: "Invalid age range format. Must be n-m (e.g., 18-30)" }
+ * ```
+ */
+export function validateAgeRange(ageRange: string | undefined): { isValid: boolean; minAge?: number; maxAge?: number; error?: string } {
+  if (!ageRange) return { isValid: true };
+
+  const trimmed = ageRange.trim();
+  const parts = trimmed.split('-');
+
+  if (parts.length !== 2) {
+    return {
+      isValid: false,
+      error: 'Invalid age range format. Must be n-m (e.g., 18-30)'
+    };
+  }
+
+  const minAge = parseInt(parts[0]);
+  const maxAge = parseInt(parts[1]);
+
+  if (isNaN(minAge) || isNaN(maxAge)) {
+    return {
+      isValid: false,
+      error: 'Invalid age range. Both values must be numbers'
+    };
+  }
+
+  if (minAge < 0 || maxAge < 0) {
+    return {
+      isValid: false,
+      error: 'Invalid age range. Ages must be non-negative'
+    };
+  }
+
+  if (minAge > maxAge) {
+    return {
+      isValid: false,
+      error: 'Invalid age range. Minimum age cannot be greater than maximum age'
+    };
+  }
+
+  if (maxAge > 150) {
+    return {
+      isValid: false,
+      error: 'Invalid age range. Maximum age cannot exceed 150'
+    };
+  }
+
+  return {
+    isValid: true,
+    minAge,
+    maxAge
+  };
+}
+
+/**
+ * Validates gender parameter (male/female)
+ * 
+ * @param gender - Gender string to validate
+ * @returns Validation result with sanitized gender or error
+ * 
+ * @example
+ * ```typescript
+ * const result = validateGender("male");
+ * // { isValid: true, sanitized: "male" }
+ * 
+ * const invalid = validateGender("invalid");
+ * // { isValid: false, error: "Invalid gender. Must be male or female" }
+ * ```
+ */
+export function validateGender(gender: string | undefined): { isValid: boolean; sanitized?: string; error?: string } {
+  if (!gender) return { isValid: true };
+
+  const trimmed = gender.trim().toLowerCase();
+  const validGenders: KnownGender[] = ['male', 'female'];
+
+  if (!validGenders.includes(trimmed)) {
+    return {
+      isValid: false,
+      error: 'Invalid gender. Must be male or female'
+    };
+  }
+
+  return {
+    isValid: true,
+    sanitized: trimmed
   };
 }
 
