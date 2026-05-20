@@ -346,10 +346,7 @@ async function processPageGeneration(
 
     // Count actions without complete destination after regeneration
     const actionsAfter = updatedPage.actions || [];
-    const pendingAfter = actionsAfter.filter(action =>
-      !action.destination?.pageId ||
-      !action._isFallback
-    ).length;
+    const pendingAfter = actionsAfter.filter(action => !action.destination?.pageId).length;
 
     const successCount = pendingBefore - pendingAfter;
     const durationMs = Date.now() - startedAt;

@@ -48,7 +48,7 @@ function getGenerationStrategy(context: CandidateGenerationStrategy): Generation
       return {
         useParallel: false, // Sequential for better error handling
         enforceVercelLimits: false,
-        customTimeoutMs: 1800000 // 30 minutes
+        customTimeoutMs: MAX_GENERATION_DURATION_MS // 30 minutes
       };
     case 'cron':
       return {

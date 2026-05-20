@@ -20,6 +20,7 @@ import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPage } from './prompt.js';
 import { dispatchGitHubWorkflow } from './github-workflow.js';
+import { MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
 
 /**
  * Performance metrics for candidate generation
@@ -118,10 +119,7 @@ export function hasPendingCandidates(page: UserStoryPage): boolean {
  * ```
  */
 export function getPendingActionsCount(page: UserStoryPage): number {
-  return page.actions.filter(action => 
-    !action.destination?.pageId && 
-    !action._isFallback // Skip fallback actions that already failed
-  ).length;
+  return page.actions.filter(action => !action.destination?.pageId).length;
 }
 
 /**
@@ -181,11 +179,8 @@ export async function validateCandidateGeneration(
     };
   }
 
-  // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
-  const pendingActions = page.actions.filter(action => 
-    !action.destination?.pageId && 
-    !action._isFallback // Skip fallback actions that already failed
-  );
+  // Early exit: skip if no actions need generation
+  const pendingActions = page.actions.filter(action => !action.destination?.pageId);
   
   if (pendingActions.length === 0) {
     return {
@@ -254,11 +249,8 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
     };
   }
   
-  // Early exit: skip if no actions need generation (exclude fallback actions to prevent retry loops)
-  const pendingActions = page.actions.filter(action => 
-    !action.destination?.pageId && 
-    !action._isFallback // Skip fallback actions that already failed
-  );
+  // Early exit: skip if no actions need generation
+  const pendingActions = page.actions.filter(action => !action.destination?.pageId);
   
   if (pendingActions.length === 0) {
     return {
@@ -313,13 +305,13 @@ export function getGenerationStrategy(context: CandidateGenerationStrategy = 've
     case 'cron': return {
       useParallel: true, // Parallel for efficiency
       enforceVercelLimits: false, // No Vercel limits in cron
-      customTimeoutMs: 780_000 // 13 minutes for cron jobs (20s buffer)
+      customTimeoutMs: MAX_GENERATION_PARALLEL_DURATION_MS // 13 minutes for cron jobs (20s buffer)
     };
     
     case 'github-action': return {
       useParallel: false, // Sequential for reliability
       enforceVercelLimits: false, // No Vercel limits in GitHub Actions
-      customTimeoutMs: 1_800_000 // 30 minutes for GitHub Actions
+      customTimeoutMs: MAX_GENERATION_DURATION_MS // 30 minutes for GitHub Actions
     };
   }
 }
@@ -358,7 +350,7 @@ export function calculateGenerationTimeout(
   }
 
   // Default timeout for non-Vercel environments
-  return 600000; // 10 minutes
+  return MAX_GENERATION_DURATION_MS; // 30 minutes
 }
 
 /**
@@ -747,10 +739,7 @@ export async function ensureCandidatesForPageWithStrategy(
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
-    const recheckedPendingDBActions = initialDBActions.filter(action => 
-      !action.destination?.pageId && 
-      !action._isFallback // Skip fallback actions that already failed
-    );
+    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destination?.pageId);
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
       return currentPage;
@@ -1017,7 +1006,7 @@ export async function ensureCandidatesForPageWithStrategy(
           type: "none"
         },
         destination: {}, // Will be pre-generated on next run
-        _isFallback: true // Sentinel flag to prevent retry loops
+        // _isFallback: true // Sentinel flag to prevent retry loops
       });
       hasRealChanges = true;
     }
@@ -1041,7 +1030,7 @@ export async function ensureCandidatesForPageWithStrategy(
     console.log(`[ensureCandidatesForPageWithStrategy] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
     const dbPage = updatedPage[0] || null;
     return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
-  }, 270); // 270-second (4.5-minute) lock TTL to align with Vercel timeout
+  }, Math.floor(MAX_GENERATION_DURATION_MS / 1000));
 
   // If lock succeeded, return its result
   if (lockResult) return lockResult || page;

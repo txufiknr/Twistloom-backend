@@ -14,6 +14,7 @@
 [ ] userSettings schema (interests, text size, email notification settings)
 [ ] Implement belief
 [ ] Implement corruption curve
+[ ] [ReaderPageClient] 📈 Overall progress: 0%
 [x] visitor percentage page 1 should always 100%
 [x] docs: stripe VIP subscription
 [ ] VIP benefits:

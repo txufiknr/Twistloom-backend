@@ -698,8 +698,8 @@ export type Action = {
     branchId?: string;
     pageId?: string;
   };
-  /** Internal sentinel flag to prevent infinite retry loops for fallback actions */
-  _isFallback?: boolean;
+  // /** Internal sentinel flag to prevent infinite retry loops for fallback actions */
+  // _isFallback?: boolean;
 };
 
 export type ActionHistory = Action & { page: number }

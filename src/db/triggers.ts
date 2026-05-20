@@ -586,8 +586,6 @@ async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
  * 3. Updates pendingGenerationCount with that count
  * 4. Ensures SSOT for pending generation tracking
  *
- * Note: Excludes fallback actions (_isFallback = true) from count
- *
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
  * - Safe to run multiple times without errors
@@ -604,7 +602,6 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
           SELECT COUNT(*)
           FROM jsonb_array_elements(NEW.actions) AS action
           WHERE (action->>'destination'->>'pageId') IS NULL
-            AND (action->>'_isFallback')::boolean IS NOT TRUE
         );
         RETURN NEW;
       END;
