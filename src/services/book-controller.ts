@@ -155,7 +155,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         LIMIT 1
       ) fp
     )`,
-    // TODO: join query with bookTranslations
+    // TODO: join query with bookTranslations (is it possible?)
     translation: sql<DBBookTranslations | null>`null`,
   } satisfies Record<keyof EnrichedBookData, unknown>;
 }
@@ -269,6 +269,7 @@ export function getSimilarBookSelect(targetKeywords: string[], currentUserId: st
   const baseSelect = getEnrichedBookSelect(currentUserId);
   
   // Construct the similarity calculation SQL fragment for reuse in SELECT and ORDER BY
+  // TODO: add `books.keywordsText` column (updated via trigger) to eliminate heavy CTE calculations
   const targetKeywordsJson = sql.raw(`'${JSON.stringify(targetKeywords).replace(/'/g, "''")}'::jsonb`);
   const similarityCalculation = sql<number>`
     (

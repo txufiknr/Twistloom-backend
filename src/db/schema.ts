@@ -908,6 +908,8 @@ export const bookTranslations = pgTable(
     hook: text("hook"), // Translated book hook
     summary: text("summary"), // Translated book summary
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Translated keywords
+    providerType: text("provider_type").$type<'ai' | 'translator'>(), // AI or translator
+    providerName: text("provider_name"),
     createdAt,
     updatedAt,
   },
@@ -947,6 +949,8 @@ export const pageTranslations = pgTable(
     keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
     importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
+    providerType: text("provider_type").$type<'ai' | 'translator'>(), // AI or translator
+    providerName: text("provider_name"),
     createdAt,
     updatedAt,
   },

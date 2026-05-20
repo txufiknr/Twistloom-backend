@@ -177,6 +177,8 @@ export async function getPageTranslation({
       keyEvents: translatedKeyEvents,
       importantObjects: translatedImportantObjects,
       actions: translatedActions,
+      providerType: 'translator',
+      providerName: 'libre',
       updatedAt: new Date()
     }).returning();
 

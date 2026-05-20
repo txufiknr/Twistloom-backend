@@ -1,7 +1,7 @@
 [@] /api/payments/create-checkout-session 401 unauthorized
 [@] Reader reach kok 0%
 [@] Investigate: Kenapa on-demand github workflow nggak ke trigger
-[ ] cron: auto translate page ke indo
+[ ] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')
 [ ] Page 1 selected actions masih none
 [ ] Originals: Mc name predefine casts aja, jangan AI
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
