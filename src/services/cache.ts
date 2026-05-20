@@ -49,7 +49,7 @@ export async function getFromCache<T>(key: string): Promise<CacheResult<T>> {
     }
     return { data: null, hit: false };
   } catch (error) {
-    console.error(`❌ Cache get failed for key ${key}:`, error);
+    console.error(`[cache] ❌ Get failed for key ${key}:`, error);
     return { data: null, hit: false };
   }
 }
@@ -73,7 +73,7 @@ export async function setCache<T>(key: string, value: T, ttlSeconds: number = CA
     await redis.set(key, JSON.stringify(value), { ex: ttlSeconds });
     return true;
   } catch (error) {
-    console.error(`❌ Cache set failed for key ${key}:`, error);
+    console.error(`[cache] ❌ Set failed for key ${key}:`, error);
     return false;
   }
 }
@@ -95,7 +95,7 @@ export async function deleteCache(key: string): Promise<boolean> {
     await redis.del(key);
     return true;
   } catch (error) {
-    console.error(`❌ Cache delete failed for key ${key}:`, error);
+    console.error(`[cache] ❌ Delete failed for key ${key}:`, error);
     return false;
   }
 }
@@ -132,7 +132,7 @@ export async function deleteCachePattern(pattern: string): Promise<number> {
     
     return deletedCount;
   } catch (error) {
-    console.error(`❌ Cache pattern delete failed for pattern ${pattern}:`, error);
+    console.error(`[cache] ❌ Delete failed for pattern ${pattern}:`, error);
     return 0;
   }
 }

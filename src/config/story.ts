@@ -1,8 +1,7 @@
 import type { ActionType, AIActionConfig } from "../types/story.js";
 
-export const BOOK_MIN_PAGES = 100;
-export const BOOK_MAX_PAGES = 150;
-export const BOOK_AVERAGE_PAGES = 120;
+export const BOOK_MIN_PAGES = 80;
+export const BOOK_MAX_PAGES = 200;
 export const MIN_CHARS_PER_PAGE = 200;
 export const MAX_WORDS_PER_PAGE = 120;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
@@ -20,7 +19,7 @@ export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
 export const MAX_BRANCHING_RETRIES = 3;
 export const MAX_BRANCHING_PREGENERATION_DEPTH = 2;
-export const MAX_BRANCHING_PREGENERATION_LIMIT = 10;
+export const MAX_BRANCHING_PREGENERATION_LIMIT = 3;
 export const MAX_TRAVERSAL_DEPTH_SHALLOW = 3;
 
 export const FREE_ACTION_SELECTION_UNTIL_PAGE = 1;

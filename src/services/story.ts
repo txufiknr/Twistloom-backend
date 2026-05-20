@@ -307,15 +307,16 @@ async function markPageVisitedWithClient(params: {
   } = params;
 
   // Update active session to point to the new page
+  // Trigger on user_sessions will automatically increment visitCount for all pages including page 1
   const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
 
-  // Insert user page progress for pages > 1, or manually increment visitCount for page 1
+  // Insert user page progress for pages > 1 (for branch reconstruction)
   if (pageNumber > 1) {
     if (!action || !actionedPageId) {
       throw new Error(`action and actionedPageId must be provided for pageNumber ${pageNumber}`);
     }
 
-    // Insert page progress record (trigger will increment visitCount in pages table)
+    // Insert page progress record
     const progress = await insertUserPageProgress({
       userId,
       bookId,
@@ -329,21 +330,14 @@ async function markPageVisitedWithClient(params: {
     } else {
       console.log(`[markPageVisited] ❌ User page progress not updated`);
     }
-  } else {
-    // Page 1: manually increment visitCount since no user_page_progress record is inserted
-    await client
-      .update(pages)
-      .set({ visitCount: sql`${pages.visitCount} + 1`, updatedAt: new Date() })
-      .where(eq(pages.id, pageId));
-    console.log(`[markPageVisited] 📈 Manually incremented visitCount for page 1`);
   }
 
   // Calculate visit statistics using denormalized data
-  // nthVisit: visitCount + 1 (already incremented above for page 1, or will be incremented by trigger for pages > 1)
-  // visitorPercentage: use read_count from books table (maintained by existing trigger)
+  // nthVisit: visitCount + 1 (trigger will increment visitCount after this function completes)
+  // visitorPercentage: percentage of book readers who have visited this page (nthVisit / totalBookReaders)
   const nthVisit = visitCount + 1;
   const totalBookReaders = stats.readCount;
-  const visitorPercentage = totalBookReaders === 0 ? 100 : Math.round((nthVisit / totalBookReaders) * 100);
+  const visitorPercentage = totalBookReaders === 0 ? 100 : Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
 
   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
 

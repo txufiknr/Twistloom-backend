@@ -68,13 +68,13 @@ import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
 import type { DBNewBook, DBNewBookGeneration, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidates.js";
+import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidate-generation.js";
 import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
 import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
 import type { UserStoryPage } from "../types/story.js";
-import { triggerGitHubWorkflow } from "../utils/candidate-generation.js";
+import { triggerCandidateGenerationWorkflow } from "../utils/candidate-generation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 
 const router = Router();
@@ -2351,6 +2351,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       consumeCredits
     });
 
+    // Response already sent by `visitBookPage` internally
     if (!dbPage || !book) return;
 
     // Handle translation if Accept-Language header is provided and differs from book language
@@ -2473,7 +2474,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
 
     // Trigger background generation via GitHub workflow if not already in progress
     if (!isGenerating) {
-      triggerGitHubWorkflow({
+      triggerCandidateGenerationWorkflow({
         bookId: dbPage.bookId,
         pageId: pageIdStr,
         userId,
@@ -2627,7 +2628,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: ${completedActions}/${userPage.actions.length} actions completed`);
     
     // Trigger workflow and wait for result to ensure it actually starts
-    const workflowResult = await triggerGitHubWorkflow({
+    const workflowResult = await triggerCandidateGenerationWorkflow({
       bookId: dbPage.bookId,
       pageId: pageIdStr,
       userId,

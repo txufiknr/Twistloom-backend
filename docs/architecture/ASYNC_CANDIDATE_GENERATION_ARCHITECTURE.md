@@ -51,7 +51,7 @@ The `ensureCandidatesForPage` function performed synchronous AI generation chain
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                      API LAYER (Express.js)                             │
 │  • validateAndRetrievePageForGeneration() - Validation & retrieval      │
-│  • triggerGitHubWorkflow() - Dispatch GitHub workflow                   │
+│  • triggerCandidateGenerationWorkflow() - Dispatch GitHub workflow                   │
 │  • pollForCandidateGeneration() - SSE polling for progress              │
 │  • Immediate SSE response with progress updates                         │
 └─────────────────────────┬───────────────────────────────────────────────┘
@@ -118,9 +118,9 @@ GITHUB_DEFAULT_BRANCH=main
 
 **Usage Example**:
 ```typescript
-const { triggerGitHubWorkflow } = await import('../utils/candidate-generation.js');
+const { triggerCandidateGenerationWorkflow } = await import('../utils/candidate-generation.js');
 
-const result = await triggerGitHubWorkflow({
+const result = await triggerCandidateGenerationWorkflow({
   bookId: 'book123',
   pageId: 'page456',
   userId: 'user789',
@@ -431,7 +431,7 @@ const events = await getActionProgressEvents(pageId);
 console.log('Progress events:', events);
 
 // Manual workflow trigger
-const result = await triggerGitHubWorkflow({
+const result = await triggerCandidateGenerationWorkflow({
   bookId: 'book123',
   pageId: 'page456',
   userId: 'user789',

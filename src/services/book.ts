@@ -17,7 +17,7 @@ import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
-import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
+import type { DBBook, DBNewBook, DBNewPage, DBPage, DBPageTranslations, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
 import { getStoryStateFromPage } from "./story.js";
@@ -36,7 +36,7 @@ import { generateId, isValidUuid } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { extractStateDelta, getStoryStateInfo } from "../utils/story.js";
-import { getTranslatedText, shouldTranslate } from "./translation.js";
+import { getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 
 /**
@@ -94,7 +94,7 @@ const publicBookStatsCache = new LRUCache<string, {
  * - pageId: Page identifier
  * - userId: Current user ID (or "null" for anonymous) - affects selectedActions
  * - translate: Whether translation is enabled
- * - acceptLanguage: Target language code (or "en" default) - affects translatedText
+ * - acceptLanguage: Target language code (or "en" default) - affects translation
  * 
  * Only caches pages with no incomplete actions (all actions have destinations).
  * Pages with pending generation are not cached since they change frequently.
@@ -907,7 +907,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * 
  * **User-Specific Data:**
  * - selectedActions: User's chosen actions for this page (varies per user)
- * - translatedText: Translated text if Accept-Language differs from book language
+ * - translation: Translated page if Accept-Language differs from book language
  * - context: Story state including places, characters, injuries, inventory
  * 
  * **Performance Considerations:**
@@ -955,7 +955,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter(action => action.destination?.pageId);
   const hasIncompleteActions = allActions.length > visibleActions.length;
-  const { id: pageId, text, bookId } = dbPage;
+  const { id: pageId, bookId } = dbPage;
 
   // Check cache first (only for pages with complete actions)
   const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, acceptLanguage);
@@ -971,21 +971,20 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
   const storyState = await getStoryStateFromPage(dbPage);
 
   // Handle translation if Accept-Language header is provided and differs from book language
-  let translatedText: string | undefined;
+  let translation: DBPageTranslations | undefined;
   const targetLanguage = translate ? shouldTranslate(bookLanguage, acceptLanguage) : undefined;
 
   if (targetLanguage) {
     console.log(`[mapToEnrichedPage] 🌐 shouldTranslate into:`, targetLanguage);
-    const translationResult = await getTranslatedText({
-      pageId,
-      text,
+    const translationResult = await getPageTranslation({
+      page: dbPage,
       bookLanguage,
       targetLanguage
     });
     
-    if (translationResult.text) {
-      translatedText = translationResult.text;
-      console.log(`[mapToEnrichedPage] ✅ Translation success:`, translatedText);
+    if (translationResult.translation) {
+      translation = translationResult.translation;
+      console.log(`[mapToEnrichedPage] ✅ Translation to ${targetLanguage} success: ${translation.text.slice(0, 25)}...`);
     } else {
       console.warn(`[mapToEnrichedPage] ⚠️ Translation failed:`, translationResult.error);
     }
@@ -1045,7 +1044,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction,
-    translatedText,
+    translation,
     context,
   };
 

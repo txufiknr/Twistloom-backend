@@ -52,7 +52,7 @@
 import { dbRead } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_AVERAGE_PAGES, BOOK_MAX_PAGES } from "../config/story.js";
+import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_MIN_PAGES, BOOK_MAX_PAGES } from "../config/story.js";
 import type { DBPage, DBStoryState } from "../types/schema.js";
 import type { PersistedStoryPage, StoryState, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry } from "../types/story.js";
 import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
@@ -600,7 +600,7 @@ export async function reconstructStoryState(
     validatePath: options.validatePath
   });
   
-  let totalPages = BOOK_AVERAGE_PAGES; // Fallback to default
+  let totalPages = BOOK_MIN_PAGES; // Fallback to default
   try {
     // Check cache first (no retry needed for cache operations)
     if (options.useCache !== false) {

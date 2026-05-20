@@ -34,17 +34,24 @@
 import type { DBPage } from "../types/schema.js";
 import type { UserStoryPage } from "../types/story.js";
 import { MAX_BRANCHING_PREGENERATION_LIMIT } from "../config/story.js";
-import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
+import { MAX_GENERATION_DURATION_MS, MAX_PENDING_BOOK_COVER_PER_RUN } from "../config/candidate-generation.js";
 import { requireEnv } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
 import { delay } from "../utils/time.js";
+import { mapBookFromDb } from "../services/book.js";
 
 export async function retryPendingGenerations(): Promise<string[]> {
   const startedAt = Date.now();
   const processedPageIds: string[] = [];
+
+  if (MAX_BRANCHING_PREGENERATION_LIMIT > 0) {
+    console.log("[retryPendingGenerations] 🔄 Starting retry of pending generations...");
+  } else {
+    console.log("[retryPendingGenerations] ⏩ Pending generation retry is disabled");
+    return [];
+  }
   
   try {
-    console.log("[retryPendingGenerations] 🔄 Starting retry of pending generations...");
     
     // Lazy imports for better memory usage and startup time
     const { dbRead, dbWrite } = await import("../db/client.js");
@@ -180,8 +187,14 @@ export async function retryPendingGenerations(): Promise<string[]> {
 export async function generateMissingOriginalBookCovers(): Promise<void> {
   const startedAt = Date.now();
   
+  if (MAX_PENDING_BOOK_COVER_PER_RUN > 0) {
+    console.log("[generateMissingOriginalBookCovers] 🎨 Starting missing cover image generation...");
+  } else {
+    console.log("[generateMissingOriginalBookCovers] ⏩ Cover image generation is disabled");
+    return;
+  }
+
   try {
-    console.log("[generateMissingOriginalBookCovers] Starting missing cover image generation...");
     
     // Lazy imports for better memory usage and startup time
     const { dbRead } = await import("../db/client.js");
@@ -192,33 +205,11 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
     // Query original books without cover images (limit to prevent overwhelming the system)
     // Prioritize books with lowest branchesCount, then by highest trendingScore
     const originalBooksWithoutCovers = await dbRead
-      .select({
-        id: books.id,
-        title: books.title,
-        hook: books.hook,
-        summary: books.summary,
-        trendingScore: books.trendingScore,
-        userId: books.userId,
-        image: books.image,
-        imageId: books.imageId,
-        isOriginal: books.isOriginal,
-        keywords: books.keywords,
-        totalPages: books.totalPages,
-        language: books.language,
-        slug: books.slug,
-        status: books.status,
-        mc: books.mc,
-        likesCount: books.likesCount,
-        readCount: books.readCount,
-        branchesCount: books.branchesCount,
-        topPick: books.topPick,
-        createdAt: books.createdAt,
-        updatedAt: books.updatedAt,
-      })
+      .select()
       .from(books)
       .where(and(eq(books.isOriginal, true), isNull(books.image)))
       .orderBy(asc(books.branchesCount), desc(books.trendingScore))
-      .limit(25); // Process up to 25 books per run
+      .limit(MAX_PENDING_BOOK_COVER_PER_RUN); // Process up to N books per run
     
     if (originalBooksWithoutCovers.length === 0) {
       console.log("[generateMissingOriginalBookCovers] ⏩ No original books missing cover images");
@@ -235,18 +226,7 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
         console.log(`[generateMissingOriginalBookCovers] 🧠 Generating cover for book "${book.title}" (ID: ${book.id})`);
         
         // Convert database result to Book type (convert null to undefined where needed)
-        const bookForGeneration = {
-          ...book,
-          slug: book.slug || undefined,
-          hook: book.hook || '',
-          summary: book.summary || '',
-          language: book.language || 'en',
-          trendingScore: book.trendingScore || 0,
-          image: book.image || undefined,
-          imageId: book.imageId || undefined,
-          status: book.status || 'active',
-          topPick: book.topPick || undefined,
-        };
+        const bookForGeneration = mapBookFromDb(book);
         
         // Generate and update cover image
         await generateAndUpdateBookCoverImage(bookForGeneration);
@@ -500,7 +480,8 @@ async function main(): Promise<void> {
     } else {
       console.log(`[retry-pending-generations] 🔄 Scheduled batch processing`);
       processedPageIds = await retryPendingGenerations();
-      await generateMissingOriginalBookCovers();
+      // Note: Automatic cover image AI generation is disabled to reduce cost and load, manual handcraft is encouraged
+      // await generateMissingOriginalBookCovers();
     }
     
     // Cleanup: Reset isGeneratingStartedAt to null for processed pages only

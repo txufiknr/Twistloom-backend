@@ -1437,7 +1437,7 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
   const pageProgress = currentPage / totalPages;
 
   /**
-   * Phase boundaries (assuming BOOK_AVERAGE_PAGES as baseline):
+   * Phase boundaries:
    * Early — first ~25% of pages: mystery seeding, character establishment, unreliability introduction
    * Mid — 25–70%: tension rhythm, thread weaving, psychological profiling exploitation
    * Late — 70–90%: thread convergence, payoff setup, reality fracture escalation

@@ -6,8 +6,8 @@
  * 
  * @example
  * ```typescript
- * // Get translated text with caching
- * const translatedText = await getTranslatedText({
+ * // Get page translation with caching
+ * const translation = await getPageTranslation({
  *   pageId: "page123",
  *   text: "Hello world",
  *   bookLanguage: "en",
@@ -19,12 +19,13 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { pageTranslations } from "../db/schema.js";
 import { getErrorMessage } from "../utils/error.js";
-import { translateText } from "./translate.js";
+import { translateTexts } from "./translate.js";
 import { eq, and } from "drizzle-orm";
 import { LRUCache } from "lru-cache";
+import type { DBPage, DBPageTranslations } from "../types/schema.js";
 
 // Global translation cache instance using lru-cache package
-const translationCache = new LRUCache<string, string>({
+const translationCache = new LRUCache<string, DBPageTranslations>({
   max: 1000, // Maximum number of items
   ttl: 1000 * 60 * 60, // 1 hour TTL
   allowStale: false,
@@ -34,11 +35,9 @@ const translationCache = new LRUCache<string, string>({
 /**
  * Translation request parameters
  */
-interface GetTranslatedTextParams {
-  /** Page ID for caching and database storage */
-  pageId: string;
-  /** Original text to translate */
-  text: string;
+interface GetPageTranslationParams {
+  /** Page object for caching and database storage */
+  page: DBPage;
   /** Source language code (ISO 639-1) */
   bookLanguage: string;
   /** Target language code (ISO 639-1) */
@@ -48,9 +47,9 @@ interface GetTranslatedTextParams {
 /**
  * Translation result interface
  */
-export interface TranslationResult {
-  /** Translated text if successful */
-  text?: string;
+export interface PageTranslationResult {
+  /** Complete page translation data if successful */
+  translation?: DBPageTranslations;
   /** Error information if translation failed */
   error?: {
     message: string;
@@ -63,33 +62,35 @@ export interface TranslationResult {
  * Gets translated text with caching and database persistence
  * 
  * @param params - Translation parameters
- * @returns Translation result with text or error information
+ * @returns Translation result with complete page translation data or error information
  * 
  * @example
  * ```typescript
- * const result = await getTranslatedText({
+ * const result = await getPageTranslation({
  *   pageId: "page123",
  *   text: "The hallway stretched endlessly before me...",
  *   bookLanguage: "en",
  *   targetLanguage: "es"
  * });
- * // Returns: { text: "El pasillo se extendía infinitamente ante mí..." } 
+ * // Returns: { translation: { id: "trans123", pageId: "page123", language: "es", text: "El pasillo...", ... } } 
  * // or: { error: { message: "Translation failed", details: "...", originalText: "..." } }
  * ```
  */
-export async function getTranslatedText({
-  pageId,
-  text,
+export async function getPageTranslation({
+  page,
   bookLanguage,
   targetLanguage
-}: GetTranslatedTextParams): Promise<TranslationResult> {
+}: GetPageTranslationParams): Promise<PageTranslationResult> {
+  // TODO: I've refactored this function to accept whole DBPage object instead of just text
+  // can you continue complete the implementation to translate all necessary texts (text, place, keyEvents, importantObjects, actions) optimally & efficiently?
+
   // Create cache key with safer separator
-  const cacheKey = `${pageId}|${targetLanguage}`;
+  const cacheKey = `${page.id}|${targetLanguage}`;
 
   // Check memory cache first
   const cachedTranslation = translationCache.get(cacheKey);
   if (cachedTranslation) {
-    return { text: cachedTranslation };
+    return { translation: cachedTranslation };
   }
 
   try {
@@ -99,51 +100,103 @@ export async function getTranslatedText({
       .from(pageTranslations)
       .where(
         and(
-          eq(pageTranslations.pageId, pageId),
+          eq(pageTranslations.pageId, page.id),
           eq(pageTranslations.language, targetLanguage)
         )
       )
       .limit(1);
 
     if (existingTranslation.length > 0) {
-      const translatedText = existingTranslation[0].translatedText;
+      const translation = existingTranslation[0];
       
       // Cache the result for future requests
-      translationCache.set(cacheKey, translatedText);
+      translationCache.set(cacheKey, translation);
       
-      return { text: translatedText };
+      return { translation };
     }
 
-    // No existing translation, translate and cache
-    const translatedText = await translateText({
-      text,
+    // No existing translation, translate all fields efficiently
+    // Collect all texts to translate in bulk
+    const textsToTranslate: string[] = [page.text];
+    const textIndices: { [key: string]: number } = { text: 0 };
+
+    let placeIndex: number | undefined;
+    if (page.place) {
+      placeIndex = textsToTranslate.length;
+      textIndices.place = placeIndex;
+      textsToTranslate.push(page.place);
+    }
+
+    let keyEventsStartIndex: number | undefined;
+    if (page.keyEvents && page.keyEvents.length > 0) {
+      keyEventsStartIndex = textsToTranslate.length;
+      textsToTranslate.push(...page.keyEvents);
+    }
+
+    let importantObjectsStartIndex: number | undefined;
+    if (page.importantObjects && page.importantObjects.length > 0) {
+      importantObjectsStartIndex = textsToTranslate.length;
+      textsToTranslate.push(...page.importantObjects);
+    }
+
+    let actionsStartIndex: number | undefined;
+    if (page.actions && page.actions.length > 0) {
+      actionsStartIndex = textsToTranslate.length;
+      textsToTranslate.push(...page.actions.map((a) => a.text));
+    }
+
+    // Translate all texts in a single API call
+    const translatedTexts = await translateTexts({
+      texts: textsToTranslate,
       target: targetLanguage,
       source: bookLanguage
     });
 
+    // Extract translated values from the result array
+    const translatedText = translatedTexts[0];
+    const translatedPlace = placeIndex !== undefined ? translatedTexts[placeIndex] : undefined;
+    const translatedKeyEvents = keyEventsStartIndex !== undefined 
+      ? translatedTexts.slice(keyEventsStartIndex, keyEventsStartIndex + (page.keyEvents?.length || 0))
+      : [];
+    const translatedImportantObjects = importantObjectsStartIndex !== undefined
+      ? translatedTexts.slice(importantObjectsStartIndex, importantObjectsStartIndex + (page.importantObjects?.length || 0))
+      : [];
+    const translatedActions = actionsStartIndex !== undefined
+      ? page.actions!.map((action, i) => ({
+          ...action,
+          text: translatedTexts[actionsStartIndex! + i]
+        }))
+      : [];
+
     // Persist translation to database
-    await dbWrite.insert(pageTranslations).values({
-      pageId,
+    const newTranslation = await dbWrite.insert(pageTranslations).values({
+      pageId: page.id,
       language: targetLanguage,
-      translatedText,
+      text: translatedText,
+      place: translatedPlace,
+      keyEvents: translatedKeyEvents,
+      importantObjects: translatedImportantObjects,
+      actions: translatedActions,
       updatedAt: new Date()
-    });
+    }).returning();
+
+    const translation = newTranslation[0];
 
     // Cache the result for future requests
-    translationCache.set(cacheKey, translatedText);
+    translationCache.set(cacheKey, translation);
 
-    return { text: translatedText };
+    return { translation };
   } catch (error) {
     // Log translation error but return undefined to allow fallback
     const errorMessage = getErrorMessage(error);
-    console.warn(`[translate] ⚠️ Failed to translate page ${pageId} to ${targetLanguage}:`, errorMessage);
+    console.warn(`[translate] ⚠️ Failed to translate page ${page.id} to ${targetLanguage}:`, errorMessage);
     
     // Return error metadata for transparency
     return {
       error: {
         message: "Translation failed",
         details: errorMessage,
-        originalText: text
+        originalText: page.text
       }
     };
   }

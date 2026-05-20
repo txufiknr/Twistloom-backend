@@ -3,7 +3,7 @@ import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
-import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
+import type { DBNewPage, DBPage, DBPageTranslations, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
 
 /**
@@ -666,7 +666,7 @@ export type UserStoryPage = PersistedStoryPage & { selectedActions: Action[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
 export type EnrichedStoryPage = Partial<UserStoryPage> & { 
   originalActionsCount: number, 
-  translatedText?: string,
+  translation?: DBPageTranslations,
   sourceAction?: Action,
   context?: {
     /** Current story phase classification */

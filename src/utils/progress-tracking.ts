@@ -30,7 +30,7 @@
 import { dbWrite } from '../db/client.js';
 import { actionProgress } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import type { ActionProgressEvent } from '../types/candidates.js';
+import type { ActionProgressEvent } from '../types/candidate-generation.js';
 
 /**
  * Stores or updates an action progress event in the database

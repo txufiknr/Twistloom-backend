@@ -1,7 +1,7 @@
 import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
 import type { StoryPage, StoryState } from "./story.js";
-import type { DBUserSession } from "./schema.js";
+import type { DBBookTranslations, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
@@ -123,6 +123,7 @@ export interface EnrichedBookData {
   lastPage?: string | null;
   firstPageId: string;
   firstPageText: string;
+  translation?: DBBookTranslations
 }
 
 /**

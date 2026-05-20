@@ -4,11 +4,11 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, BOOK_AVERAGE_PAGES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
-import { ensureCandidatesForPageWithStrategy, triggerGitHubWorkflow } from "./candidate-generation.js";
+import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
 import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
@@ -1085,7 +1085,7 @@ SCORING RUBRIC:
    Deduct points for:
    - Flags set to default values (trust: medium, fear: low, curiosity: high) without scene justification
    - viableEnding that could apply to any psychological thriller
-   - totalPages at exactly ${BOOK_AVERAGE_PAGES} regardless of theme scope
+   - totalPages at exact multiple of 10 regardless of theme scope
 
 6. METADATA QUALITY (0-10) — Threshold: 7
    Award points for:
@@ -2162,7 +2162,7 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * ```
  */
 function createBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
-  return `Create a psychological thriller story from this theme:\n"""\n${theme.trim()}\n"""
+  return `Create a psychological thriller story from this theme input from user:\n"""\n${theme.trim()}\n"""
 
 HARD RULES (apply to everything below):
 - Write in first-person ("I") POV only (MC = narrator).
@@ -2196,10 +2196,10 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
-- TOTAL PAGES: Target ~${BOOK_AVERAGE_PAGES}. Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Let theme complexity and MC arc influence the count.
+- TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
 
 Main Character (MC):
-${mcCandidate?.name ? `- MC's name is ${mcCandidate.name}.` : `- If MC's name provided in theme, strictly use it.
+${mcCandidate?.name ? `- MC's name is ${mcCandidate.name}.` : `- If MC's name provided in theme input, strictly use it.
 - If not provided, generate unique (rare) name but appropriate and memorable name based on age and language context.`}
 - bio: infer from theme if provided, must include at least one psychological trait that will be used against them.
 
@@ -2223,7 +2223,7 @@ First Page:
 Initial State:
 - Set flags based on opening scene — not defaults.
 - difficulty should reflect how hostile the world is to this MC at the start.
-- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme.
+- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme. If user mention anything about desired ending in theme input, respect it.
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
@@ -2477,7 +2477,7 @@ export async function initializeBook(
     } else { // Fire-and-forget for fast user generated book result (immediate background processing)
       // await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book); // pg-boss, up to 24 hours cron delay
       // await ensureCandidatesForPage(userId, firstUserPage, initialState, book); // 4.5 minute Vercel limit
-      triggerGitHubWorkflow({
+      triggerCandidateGenerationWorkflow({
         userId,
         pageId: firstUserPage.id,
         bookId: book.id,

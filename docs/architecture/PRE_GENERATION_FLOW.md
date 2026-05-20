@@ -65,7 +65,7 @@ function getGenerationStrategy(context: CandidateGenerationStrategy): Generation
 The system supports configurable **multi-level depth pre-generation** to create comprehensive story trees:
 
 - **Level 1 (Strategy-Based)**: Generation based on deployment context (vercel/github-action/cron)
-- **Level 2 (Immediate GitHub Workflow)**: Immediate background generation using `triggerGitHubWorkflow`
+- **Level 2 (Immediate GitHub Workflow)**: Immediate background generation using `triggerCandidateGenerationWorkflow`
 - **Level 3+ (Hourly GitHub Workflow)**: Background generation via hourly scheduled GitHub Actions for less critical deeper levels
 - **Configurable Depth**: Controlled via `MAX_BRANCHING_PREGENERATION_DEPTH` (default: 2)
 - **Exponential Growth**: 3 actions × 3 candidates × 3 candidates = 27 total pages at depth 3
@@ -186,7 +186,7 @@ updatedDBActions.push({
 The system uses a **hybrid approach** to balance performance and user experience:
 
 **Level 2 - Immediate Processing**:
-- Uses `triggerGitHubWorkflow` for immediate fire-and-forget
+- Uses `triggerCandidateGenerationWorkflow` for immediate fire-and-forget
 - Extended timeout (30 minutes via github-action strategy)
 - Users navigate to level 2 pages quickly after level 1
 - Avoids waiting for hourly scheduled processing
@@ -222,7 +222,7 @@ The system supports **manual triggering** of specific page generation via GitHub
 await ensureCandidatesForPage(userId, firstUserPage, initialState, book);
 
 // NEW (GitHub workflow, immediate):
-void triggerGitHubWorkflow({
+void triggerCandidateGenerationWorkflow({
   userId,
   pageId: firstUserPage.id,
   bookId: book.id,
@@ -242,7 +242,7 @@ if (userPage.actions.some(a => !a.destination?.pageId)) {
 ```typescript
 // Triggers GitHub workflow if not already in progress
 if (!isGenerating) {
-  void triggerGitHubWorkflow({
+  void triggerCandidateGenerationWorkflow({
     userId,
     pageId,
     bookId: dbPage.bookId,
@@ -846,7 +846,7 @@ const generationResults = await generateCandidatesInParallel({
 if (currentDepth < maxDepth) {
   const nextDepth = currentDepth + 1;
   if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH) {
-    void triggerGitHubWorkflow({
+    void triggerCandidateGenerationWorkflow({
       userId,
       pageId: candidatePage.id,
       bookId: currentBook.id,

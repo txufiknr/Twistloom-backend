@@ -75,3 +75,66 @@ export async function translateText({
 
   return data.translatedText;
 }
+
+/**
+ * Translates multiple texts in a single API call for efficiency
+ * 
+ * @param params - Translation parameters
+ * @param params.texts - Array of texts to translate
+ * @param params.target - Target language code (ISO 639-1: en, es, fr, etc.)
+ * @param params.source - Source language code (default: "auto" for auto-detection)
+ * @returns Array of translated texts in the same order as input
+ * 
+ * @throws Error if translation request fails
+ * 
+ * @example
+ * ```typescript
+ * const translated = await translateTexts({
+ *   texts: ["Hello", "World", "Goodbye"],
+ *   target: "es"
+ * });
+ * // Returns: ["Hola", "Mundo", "Adiós"]
+ * ```
+ */
+export async function translateTexts({
+  texts,
+  target,
+  source = "auto",
+}: {
+  texts: string[];
+  target: string;
+  source?: string;
+}): Promise<string[]> {
+  if (texts.length === 0) return [];
+
+  // Single text, use the simpler function
+  if (texts.length === 1) {
+    return [await translateText({ text: texts[0], target, source })];
+  }
+
+  // LibreTranslate supports batch translation by sending an array
+  const res = await fetch("https://libretranslate.com/translate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      q: texts,
+      source,
+      target,
+      format: "text",
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`LibreTranslate API returned status ${res.status}`);
+  }
+
+  const data = await res.json();
+  
+  if (!data.translatedText || !Array.isArray(data.translatedText)) {
+    throw new Error("No translated text array returned from LibreTranslate API");
+  }
+
+  return data.translatedText;
+}

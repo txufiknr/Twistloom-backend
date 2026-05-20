@@ -9,9 +9,9 @@ import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
-import type { ActionProgressStatus } from "../types/candidates.js";
+import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import { generateId } from "../utils/uuid.js";
-import { BOOK_AVERAGE_PAGES } from "../config/story.js";
+import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
@@ -278,7 +278,7 @@ export const books = pgTable(
     userId: userId().references(() => users.userId, { onDelete: "set null" }),
     slug: text("slug").unique(), // SEO-friendly URL identifier (null if not implemented)
     title: text("title").notNull(),
-    totalPages: integer("total_pages").notNull().default(BOOK_AVERAGE_PAGES),
+    totalPages: integer("total_pages").notNull().default(BOOK_MIN_PAGES),
     language: text("language"),
     hook: text("hook"),
     summary: text("summary"),
@@ -883,6 +883,47 @@ export const userNotifications = pgTable(
 );
 
 /**
+ * Book translations table
+ * @summary Stores translated versions of book metadata for multi-language support
+ * @example
+ * {
+ *   "id": "bookTrans123",
+ *   "book_id": "book456",
+ *   "language": "es",
+ *   "title": "El Fantasma",
+ *   "hook": "Un misterioso fantasma acecha una mansión antigua...",
+ *   "summary": "Un thriller psicológico sobre...",
+ *   "keywords": ["fantasma", "mansión", "misterio"],
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const bookTranslations = pgTable(
+  "book_translations",
+  {
+    id: id(),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
+    title: text("title"), // Translated book title
+    hook: text("hook"), // Translated book hook
+    summary: text("summary"), // Translated book summary
+    keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Translated keywords
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Unique constraint on (bookId, language) to ensure one translation per book per language
+    unique("book_translations_book_language_unique").on(t.bookId, t.language),
+    // Index for book translations lookup
+    index("book_translations_book_idx").on(t.bookId),
+    // Index for language filtering
+    index("book_translations_language_idx").on(t.language),
+    // Index for cleanup (old translations)
+    index("book_translations_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
  * Page translations table
  * @summary Stores translated versions of page text for multi-language support
  * @example
@@ -901,9 +942,11 @@ export const pageTranslations = pgTable(
     id: id(),
     pageId: pageId("cascade"), // Delete if page is deleted
     language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
-    // TODO: change to `text`, include more columns
-    translatedText: text("translated_text").notNull(), // Translated page text
-    // actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
+    text: text("translated_text").notNull(), // Translated page text
+    place: text("place"), // Current place where the story is taking place
+    keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
+    importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
+    actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
     createdAt,
     updatedAt,
   },

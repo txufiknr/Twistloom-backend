@@ -27,7 +27,7 @@ import type { BookPageVisit, BookSortOption, EnrichedBookData } from "../types/b
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
-import type { DBPage } from "../types/schema.js";
+import type { DBBookTranslations, DBPage } from "../types/schema.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import type { Action } from "../types/story.js";
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
@@ -155,6 +155,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         LIMIT 1
       ) fp
     )`,
+    // TODO: join query with bookTranslations
+    translation: sql<DBBookTranslations | null>`null`,
   } satisfies Record<keyof EnrichedBookData, unknown>;
 }
 
@@ -670,7 +672,6 @@ export async function visitBookPage(
   const book = await getEnrichedBook(bookId, userId);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
-    // return { dbPage };
     handleNotFoundError(res, `Book not found`);
     return {};
   }
@@ -687,7 +688,6 @@ export async function visitBookPage(
     if (!parentDbPage) {
       console.error(`[visit] ❌ Previous page not found:`, parentPageId);
       handleNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
-      // return { dbPage, book };
       return {};
     }
   
@@ -695,7 +695,6 @@ export async function visitBookPage(
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
       handleNotFoundError(res, `Action for this page not found in the parent page`);
-      // return { dbPage, book };
       return {};
     }
 
@@ -712,13 +711,9 @@ export async function visitBookPage(
       if (selectedActions.length > 0) {
         if (!selectedActions.some((a) => a.text === action!.text)) {
           if (!consumeCredits) {
-            console.error(`[visit] ❌ Choice made, can't make another choice`);
+            // User already chose a different action on this page; can't continue except they pay credits
+            console.error(`[visit] 💥 Choice made, can't make another choice`);
             handleForbiddenError(res, "Choice made, can't make another choice");
-            // res.status(403).json({
-            //   error: "Choice made, can't make another choice",
-            //   message: "You already chose a different action on this page"
-            // });
-            // return { dbPage, book };
             return {};
           } else {
             shouldConsumeCredits = true;
