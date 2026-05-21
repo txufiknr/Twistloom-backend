@@ -643,13 +643,16 @@ ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unl
 inventory
   - Items the MC brings to the scene. Can include the amount, traits, and where it located.
   - Limit it. Only include items that actually matters to the plot.
+  - If no changes, output empty array or omit this field entirely.
+  - Otherwise, include all current items in MC possession with updated values.
 
 injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
   - If an action is taken to heal, or anything made injury worse, update the injury severity and description accordingly.
   - If healed, set severity to 0 - system will auto-remove fully healed injuries.
   - If healed but leaves permanent scar/story relevance, move to character's visualDescription.
-  - If no meaningful injury-related action occurs, omit this field entirely.
+  - If no meaningful injury-related action occurs, output empty array or omit this field entirely.
+  - Otherwise, include all previous injuries with updated values.
   - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").
 
 traumaTagUpdates
@@ -2269,8 +2272,8 @@ Initial State:
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
-- inventory: what items MC brings, can include the amount, traits, and where it located.
-- injuries: represents injuries sustained by the MC in the first page.
+- inventory: if any, what items MC brings, can include the amount, traits, and where it located.
+- injuries: if any, injuries sustained by the MC in the first page.
 
 Ending Archetypes:
 ${getEndingArchetypesText()}`;
