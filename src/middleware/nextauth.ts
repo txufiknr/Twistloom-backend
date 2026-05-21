@@ -51,6 +51,7 @@ import { dbRead } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
+import { createOrUpdateOAuthUser, migrateGuestToAuthUser } from '../services/user-controller.js';
 
 /**
  * LRU cache for email -> userId mappings
@@ -76,6 +77,8 @@ const userIdCache = new LRUCache<string, string>({
  * - Requires Express cookie-parser middleware: `app.use(cookieParser());`
  * - AUTH_SECRET must be shared between Next.js frontend and Express backend
  * - No need for manual cookie parsing or JWT decryption - @auth/express handles it
+ * - Auto-creates users for first-time OAuth login (Google)
+ * - Migrates guest data to authenticated user on login
  * 
  * @param req - Express request object
  * @returns User data if token is valid, null otherwise
@@ -121,23 +124,44 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     // Validate and extract user data from session
     const email = session.user.email as string | undefined;
     const name = session.user.name as string | undefined;
+    const image = session.user.image as string | undefined;
 
     if (!email || typeof email !== 'string') {
       console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid email');
       return null;
     }
 
-    const userId = await getUserId(email);
-    if (userId) {
-      return {
-        id: userId,
-        email,
-        name,
-      };
+    // Check if user exists in database
+    let userId = await getUserId(email);
+    
+    if (!userId) {
+      // First-time OAuth login - create user in database
+      console.log('[verifyNextAuthToken] 🆕 First-time OAuth login, creating user:', email);
+      userId = await createOrUpdateOAuthUser(email, name, image);
+      
+      // Invalidate cache for the new user
+      userIdCache.delete(email);
+    } else {
+      // Existing user - update profile data from OAuth provider
+      console.log('[verifyNextAuthToken] 🔄 Updating existing user profile from OAuth:', email);
+      await createOrUpdateOAuthUser(email, name, image);
+      
+      // Invalidate cache to ensure fresh data
+      userIdCache.delete(email);
     }
 
-    console.error('[verifyNextAuthToken] ❌ User not found in database');
-    return null;
+    // Migrate guest data if guest cookie exists
+    const guestCookie = req.cookies?.['twistloom_guest_id'];
+    if (guestCookie && guestCookie !== userId) {
+      console.log('[verifyNextAuthToken] 🔄 Migrating guest data:', guestCookie, '->', userId);
+      await migrateGuestToAuthUser(guestCookie, userId);
+    }
+
+    return {
+      id: userId,
+      email,
+      name,
+    };
   } catch (error) {
     console.error('[verifyNextAuthToken] ❌ Session verification error:', error);
     return null;

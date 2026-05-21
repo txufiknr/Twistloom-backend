@@ -2,9 +2,13 @@ name: Retry Pending Generations
 
 on:
   schedule:
-    - cron: '0 * * * *'   # Every hour
+    - cron: '0 */2 * * *' # Every 2 hours
   workflow_dispatch:      # Allow manual triggering
     inputs:
+      book_title:
+        description: 'Title of the book to retry generation for'
+        required: false
+        type: string
       book_id:
         description: 'ID of the book to retry generation for'
         required: false
@@ -20,7 +24,8 @@ on:
 
 jobs:
   retry-pending-generations:
-    name: Retry Failed Page Generations
+    # If input is provided, results in "Candidate Generations for {book_title}". Otherwise, results in "Routine Candidate Generations".
+    name: ${{ inputs.book_title != '' && format('Candidate Generations for {0}', inputs.book_title) || 'Routine Candidate Generations' }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -79,7 +84,6 @@ jobs:
           IMAGEKIT_API_KEY_PRIVATE: ${{ secrets.IMAGEKIT_API_KEY_PRIVATE }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
           # AI provider credentials
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -88,9 +92,12 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          NODE_ENV: production
           # Workflow inputs (if triggered manually)
           TRIGGERED_BOOK_ID: ${{ github.event.inputs.book_id || '' }}
           TRIGGERED_PAGE_ID: ${{ github.event.inputs.page_id || '' }}
           TRIGGERED_BY_USER: ${{ github.event.inputs.triggered_by || '' }}
+          # GitHub token for next depth generations
+          GITHUB_WORKFLOW_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
+          NODE_ENV: production
         timeout-minutes: 30  # Allow more time for AI generation retries

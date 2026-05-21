@@ -12,16 +12,18 @@
 [ ] Enhanced search (jaccard by book keywords & title)
 [ ] GET /user/recommendations: you might like (based on liked books)
 [ ] userSettings schema (interests, text size, email notification settings)
+[ ] userLogins schema (userId, userAgent) -> database sessions (Drizzle adapter)
 [ ] Implement belief
 [ ] Implement corruption curve
-[ ] [ReaderPageClient] 📈 Overall progress: 0%
+
+[x] trigger read_count masih ngaco, visit_count udah bener 1
+[x] inventory buat kayak injury, jangan string array
+[x] add inventory, injuries di type StoryStateInitialGeneration (tambah juga di evaluator prompt: instruction & format)
 [x] visitor percentage page 1 should always 100%
 [x] docs: stripe VIP subscription
-[ ] VIP benefits:
-    - VIP badge
-    - triple check-in bonus
-    - +50 credits every month (on activation & renewal)
-
+[x] Originals prevent duplicate title
+[x] Github workflow Dynamic job name (book title)
+[x] Non retryable error kok dipertanyakan? 
 
 by book creator:
 [ ] soundtrack based on mood

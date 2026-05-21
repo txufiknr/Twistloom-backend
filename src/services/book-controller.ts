@@ -57,9 +57,10 @@ import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
  * - Performance acceptable since only 2 subqueries per book
  * 
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
+ * @param language - Optional language code to include translation data (e.g., "es", "fr")
  * @returns Select object with enriched book fields
  */
-export function getEnrichedBookSelect(currentUserId: string | null = null) {
+export function getEnrichedBookSelect(currentUserId: string | null = null, language: string | null = null) {
   return {
     // Basic book fields
     id: books.id,
@@ -155,8 +156,27 @@ export function getEnrichedBookSelect(currentUserId: string | null = null) {
         LIMIT 1
       ) fp
     )`,
-    // TODO: join query with bookTranslations (is it possible?)
-    translation: sql<DBBookTranslations | null>`null`,
+    // Translation data from bookTranslations table when language is provided and differs from book's original language
+    translation: language
+      ? sql<DBBookTranslations | null>`(
+          SELECT jsonb_build_object(
+            'id', bt.id,
+            'bookId', bt.book_id,
+            'language', bt.language,
+            'title', bt.title,
+            'hook', bt.hook,
+            'summary', bt.summary,
+            'keywords', bt.keywords,
+            'providerType', bt.provider_type,
+            'providerName', bt.provider_name,
+            'createdAt', bt.created_at,
+            'updatedAt', bt.updated_at
+          )
+          FROM book_translations bt
+          WHERE bt.book_id = books.id AND bt.language = ${language} AND ${language} <> ${books.language}
+          LIMIT 1
+        )`
+      : sql<DBBookTranslations | null>`null`,
   } satisfies Record<keyof EnrichedBookData, unknown>;
 }
 
@@ -263,10 +283,11 @@ export function handleThemeValidationError(
  * 
  * @param targetKeywords - Keywords array from the target book for similarity calculation
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
+ * @param language - Optional language code to include translation data (e.g., "es", "fr")
  * @returns Select object with enriched book fields and similarity score
  */
-export function getSimilarBookSelect(targetKeywords: string[], currentUserId: string | null = null) {
-  const baseSelect = getEnrichedBookSelect(currentUserId);
+export function getSimilarBookSelect(targetKeywords: string[], currentUserId: string | null = null, language: string | null = null) {
+  const baseSelect = getEnrichedBookSelect(currentUserId, language);
   
   // Construct the similarity calculation SQL fragment for reuse in SELECT and ORDER BY
   // TODO: add `books.keywordsText` column (updated via trigger) to eliminate heavy CTE calculations
@@ -509,22 +530,31 @@ export function buildBookQuery<T>(
     genderCondition
   );
   
+  // Apply secondary sorting: contextual sorting (before where to allow addSelect)
+  let query = baseQuery;
+  if (search) {
+    // Search relevance scoring takes precedence over generic sorting
+    const relevanceExpression = createRelevanceExpression(search, books);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    query = (query as any).addSelect({
+      relevanceScore: relevanceExpression
+    });
+  }
+
   // Apply where condition to main query
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let query = (baseQuery as any).where(finalCondition);
+  query = (query as any).where(finalCondition);
   
   // Apply primary sorting: book-specific sorting (acts as category filter)
   if (bookSortBy) {
     query = applyBookSorting(query, bookSortBy);
   }
   
-  // Apply secondary sorting: contextual sorting
+  // Apply orderBy for search relevance
   if (search) {
-    // Search relevance scoring takes precedence over generic sorting
     const relevanceExpression = createRelevanceExpression(search, books);
-    query = query.addSelect({
-      relevanceScore: relevanceExpression
-    }).orderBy(desc(relevanceExpression));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    query = (query as any).orderBy(desc(relevanceExpression));
   } else if (genericSortBy) {
     // Apply generic column sorting only when no search
     query = applySorting(query, genericSortBy, sortOrder);
@@ -653,9 +683,9 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
  */
 export async function visitBookPage(
   res: Response,
-  params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean, consumeCredits?: boolean }
+  params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean, consumeCredits?: boolean, language?: string | null }
 ): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage, sourceAction?: Action }> {
-  const { userId, pageId, bookIdentifier, skipVisit = false, consumeCredits = false } = params;
+  const { userId, pageId, bookIdentifier, skipVisit = false, consumeCredits = false, language } = params;
   console.log(`[visit] 👓 Visited pageId:`, pageId, `(skipVisit = ${skipVisit})`);
 
   // Get page
@@ -670,7 +700,7 @@ export async function visitBookPage(
   console.log(`[visit] 👓 Visited pageNumber:`, pageNumber);
 
   // Get book
-  const book = await getEnrichedBook(bookId, userId);
+  const book = await getEnrichedBook(bookId, userId, language);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
     handleNotFoundError(res, `Book not found`);

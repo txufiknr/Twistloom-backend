@@ -107,3 +107,18 @@ export const formatNumber = (
 
   return `${formatted}${suffix}`;
 };
+
+/**
+ * Format milliseconds to human-readable time string (e.g., "2m 13s")
+ */
+export function formatDuration(ms: number): string {
+  if (!ms || ms === 0) return '0s';
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  
+  if (minutes > 0) {
+    return `${minutes}m ${remainingSeconds}s`;
+  }
+  return `${remainingSeconds}s`;
+}

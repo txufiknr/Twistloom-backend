@@ -49,7 +49,7 @@ import { books, pages, deletedImages, users, userLikes, userFavorites, userComme
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
+import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -68,12 +68,11 @@ import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
 import type { DBNewBook, DBNewBookGeneration, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidate-generation.js";
+import type { ActionProgressEvent, CandidateGenerationPageValidation, CandidateGenerationStatus } from "../types/candidate-generation.js";
 import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
 import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
-import type { UserStoryPage } from "../types/story.js";
 import { triggerCandidateGenerationWorkflow } from "../utils/candidate-generation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 
@@ -152,14 +151,18 @@ async function validateAndRetrievePageForGeneration(
   identifier: string,
   pageId: string,
   userId: string
-): Promise<{ dbPage: DBPage; userPage: UserStoryPage; isGenerating: boolean; isDone: boolean; totalPendingActions: number } | null> {
+): Promise<CandidateGenerationPageValidation | null> {
   // Early validation
   if (!isValidUuid(pageId)) return null;
 
   // Get the page by book identifier from database
   const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+
   const dbPage = await getPageFromDB(pageId, { bookIdentifier, client: dbWrite });
   if (!dbPage) return null;
+
+  const dbBook = await getBookFromDB(dbPage.bookId);
+  if (!dbBook) return null;
 
   // Check if generation is stuck and reset if needed
   const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
@@ -167,7 +170,7 @@ async function validateAndRetrievePageForGeneration(
   // Map to user story page
   const userPage = await mapToUserStoryPage(dbPage, userId);
 
-  return { dbPage, userPage, isGenerating, isDone, totalPendingActions };
+  return { dbBook, dbPage, userPage, isGenerating, isDone, totalPendingActions };
 }
 
 /**
@@ -974,21 +977,21 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
     }
     
     // Validate and normalize sortBy parameter
-    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
-      ? (sortBy as BookSortOption) 
+    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '')
+      ? (sortBy as BookSortOption)
       : 'newest';
-    
+
     // Skip caching for search queries (dynamic)
     const shouldCache = !search && !language && !lastUpdated && tagsArray.length === 0;
-    const cacheKey = lastUpdated 
+    const cacheKey = lastUpdated
       ? `books:user:${userId}:page:${page}:lastUpdated:${lastUpdated}`
       : CACHE_KEYS.USER_BOOKS(userId, page);
-    
+
     // Fetch function for cache
     const fetchBooks = async () => {
       // Build base query with enriched fields (lastReadAt and lastPage are now included in getEnrichedBookSelect)
       const baseQuery = dbRead
-        .select(getEnrichedBookSelect(userId))
+        .select(getEnrichedBookSelect(userId, req.headerLanguage))
         .from(books)
         .leftJoin(users, eq(books.userId, users.userId));
 
@@ -1267,7 +1270,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
     }
 
     // Get similar books with enriched data
-    const similarBooksSelect = getSimilarBookSelect(book.keywords, currentUserId);
+    const similarBooksSelect = getSimilarBookSelect(book.keywords, currentUserId, req.headerLanguage);
     const similarBooks = await dbRead
       .select(similarBooksSelect)
       .from(books)
@@ -1375,21 +1378,21 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     }
     
     // Validate and normalize sortBy parameter
-    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '') 
-      ? (sortBy as BookSortOption) 
+    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '')
+      ? (sortBy as BookSortOption)
       : 'newest';
-    
+
     // Cache page 1 without search, tags, language, ageRange, gender, and time filters
     // Trending uses shorter TTL (5 min) due to incremental updates, newest uses longer TTL (30 min)
     const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender;
     const cacheKey = bookSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
     const cacheTTL = bookSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
-    
+
     // Fetch function for cache
     const fetchBooks = async () => {
       // Build base query with enriched fields
       const baseQuery = dbRead
-        .select(getEnrichedBookSelect(userId))
+        .select(getEnrichedBookSelect(userId, req.headerLanguage))
         .from(books)
         .leftJoin(users, eq(books.userId, users.userId));
 
@@ -2293,7 +2296,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     const { identifier } = req.params;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
-    const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId);
+    const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId, req.headerLanguage);
     if (!enrichedBook) {
       return handleNotFoundError(res, "Book not found");
     }
@@ -2336,6 +2339,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
  */
 router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
+    const { headerLanguage } = req;
     const { identifier, pageId, prefetch, translate: shouldTranslate, credits } = req.params;
     const userId = req.userId!; // Always defined even for guests
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
@@ -2348,23 +2352,23 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
       pageId: pageId as string,
       bookIdentifier,
       skipVisit,
-      consumeCredits
+      consumeCredits,
+      language: headerLanguage
     });
 
     // Response already sent by `visitBookPage` internally
     if (!dbPage || !book) return;
 
     // Handle translation if Accept-Language header is provided and differs from book language
-    const acceptLanguage = req.headers['accept-language'] as string | undefined;
     const bookLanguage = book.language || 'en';
     
     // Return enriched page with only frontend-relevant fields
-    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, acceptLanguage, translate, sourceAction });
+    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, headerLanguage, translate, sourceAction });
     if (!page) return handleApiError(res, "Failed to get enriched page");
 
     // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
     const lastModified = dbPage.updatedAt;
-    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${acceptLanguage || 'en'}`;
+    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${headerLanguage || 'en'}`;
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes translation params)
@@ -2443,7 +2447,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
       return handleNotFoundError(res, "Page not found");
     }
 
-    const { dbPage, userPage, isGenerating, isDone } = validationResult;
+    const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
 
     // Always set SSE headers first for consistent response format
     res.setHeader('Content-Type', 'text/event-stream');
@@ -2475,6 +2479,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
     // Trigger background generation via GitHub workflow if not already in progress
     if (!isGenerating) {
       triggerCandidateGenerationWorkflow({
+        bookTitle: dbBook.title,
         bookId: dbPage.bookId,
         pageId: pageIdStr,
         userId,
@@ -2565,7 +2570,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       return handleNotFoundError(res, "Page not found");
     }
 
-    const { dbPage, userPage, isGenerating, isDone } = validationResult;
+    const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
 
     // Calculate completed/total from page actions (SSOT)
     const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
@@ -2629,6 +2634,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
     
     // Trigger workflow and wait for result to ensure it actually starts
     const workflowResult = await triggerCandidateGenerationWorkflow({
+      bookTitle: dbBook.title,
       bookId: dbPage.bookId,
       pageId: pageIdStr,
       userId,

@@ -126,56 +126,14 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
 }
 
 /**
- * Migrates data from a guest user to an authenticated user
- * Transfers all books, sessions, and other data from guest to authenticated user
+ * Guest data migration is now handled automatically by verifyNextAuthToken()
+ * in src/middleware/nextauth.ts, which calls migrateGuestToAuthUser() from
+ * src/services/user-controller.ts. This ensures migration happens for both
+ * OAuth (Google) and email/password logins without requiring explicit middleware.
+ * 
+ * The migration function is available as a service in user-controller.ts:
+ * - migrateGuestToAuthUser(guestId, authenticatedUserId)
  */
-export async function migrateGuestData(guestId: string, authenticatedUserId: string): Promise<void> {
-  // Migrate all books from guest to authenticated user
-  await dbWrite
-    .update(books)
-    .set({ userId: authenticatedUserId })
-    .where(eq(books.userId, guestId));
-
-  // Migrate all sessions from guest to authenticated user
-  await dbWrite
-    .update(userSessions)
-    .set({ userId: authenticatedUserId })
-    .where(eq(userSessions.userId, guestId));
-
-  // Delete guest user from database
-  await dbWrite.delete(users).where(eq(users.userId, guestId));
-}
-
-/**
- * Middleware to migrate guest data to authenticated user
- * Should be used on login/callback endpoints
- */
-export async function migrateGuestMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-  try {
-    const user = await verifyNextAuthToken(req);
-
-    if (user) {
-      const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
-
-      if (guestCookie && user.id !== guestCookie) {
-        // Migrate guest data to authenticated user
-        await migrateGuestData(guestCookie, user.id);
-
-        // Remove guest cookie
-        res.clearCookie(GUEST_COOKIE_NAME, {
-          path: '/',
-        });
-      }
-    }
-
-    next();
-  } catch (error) {
-    console.error('Guest migration middleware error:', error);
-    // Continue even if migration fails
-    next();
-  }
-}
-```
 
 ### 2. Reading Session Management
 
@@ -271,7 +229,7 @@ Uses `guestOrAuthMiddleware` to allow both guests and authenticated users to cre
 2. `guestOrAuthMiddleware` creates a guest user (if not exists) and sets `req.userId`
 3. Book is created with the guest user ID
 4. Guest receives book data and can immediately start reading
-5. When guest signs up, `migrateGuestData()` transfers all books to the new account
+5. When guest logs in (Google OAuth or email/password), `verifyNextAuthToken()` automatically migrates all books to the authenticated account
 
 **Database Schema:**
 ```sql
@@ -461,13 +419,16 @@ export default function BookReader({ bookId, initialPageId }: BookReaderProps) {
 
 ### 3. Account Creation with Automatic Migration
 
-**Note:** Data migration is handled automatically by the backend's `migrateGuestMiddleware` on login/signup. No manual migration API calls are needed from the frontend.
+**Note:** Data migration is handled automatically by `verifyNextAuthToken()` in `src/middleware/nextauth.ts` on login. No manual migration API calls are needed from the frontend.
 
 When a guest user signs up or logs in:
-1. The backend `migrateGuestMiddleware` detects the guest cookie
-2. Automatically transfers all books and sessions from guest to authenticated user
-3. Removes the guest cookie
-4. Guest user is deleted from database
+1. User logs in via Google OAuth or email/password
+2. NextAuth creates session cookie
+3. On next request, `verifyNextAuthToken()` verifies the session
+4. If first-time OAuth login: auto-creates user in database
+5. If guest cookie exists: automatically transfers all books and sessions from guest to authenticated user via `migrateGuestToAuthUser()`
+6. Guest user is deleted from database
+7. User now uses auth cookie (guest cookie remains but is ignored)
 
 ```typescript
 // components/AccountMigration.tsx
@@ -501,14 +462,14 @@ export default function AccountMigration() {
         throw new Error('Failed to create account');
       }
 
-      // 2. Sign in with new account (migration happens automatically via backend middleware)
+      // 2. Sign in with new account (migration happens automatically via verifyNextAuthToken)
       await signIn('credentials', {
         emailOrUsername: email,
         password,
         redirect: false,
       });
 
-      // 3. Redirect to library (all guest books and progress have been migrated)
+      // 3. Redirect to library (all guest books and progress have been migrated automatically)
       router.push('/library');
 
     } catch (error) {
@@ -567,7 +528,7 @@ Guest reads book → Sees "Reading as guest" banner → Can navigate pages → P
 ### 3. Account Creation Decision Point
 ```
 Guest reaches chapter end → Sees migration prompt → Can dismiss → Continues as guest
-                      → Can accept → Creates account → Automatic migration via backend middleware → Auto-signed in
+                      → Can accept → Creates account → Automatic migration via verifyNextAuthToken → Auto-signed in
 ```
 
 ### 4. Post-Migration
@@ -575,7 +536,7 @@ Guest reaches chapter end → Sees migration prompt → Can dismiss → Continue
 New user account → Full authenticated experience → All guest books and progress transferred → All features available
 ```
 
-**Note:** Migration is handled automatically by the backend's `migrateGuestMiddleware` on login/signup. No manual migration steps are required from the frontend.
+**Note:** Migration is handled automatically by `verifyNextAuthToken()` in `src/middleware/nextauth.ts` on login. No manual migration steps are required from the frontend.
 
 ## Best Practices
 
@@ -628,10 +589,12 @@ The guest user flow has been fully implemented with the following components:
 - ✅ Reading session endpoints supporting both guests and authenticated users
 - ✅ Book creation endpoints supporting guests with automatic migration
 - ✅ Book page access with optional authentication
-- ✅ Automatic data migration via `migrateGuestMiddleware` on login/signup
+- ✅ Automatic data migration via `verifyNextAuthToken()` on login (OAuth and email/password)
 - ✅ Guest cookie management with secure settings
+- ✅ OAuth user auto-creation service in `user-controller.ts`
+- ✅ Reusable guest migration service in `user-controller.ts`
 
-**Migration Mechanism:** All guest data (books, sessions, progress) automatically migrates to authenticated users when they sign up or log in, handled by the backend's `migrateGuestMiddleware`.
+**Migration Mechanism:** All guest data (books, sessions, progress) automatically migrates to authenticated users when they log in via Google OAuth or email/password. The migration is handled by `verifyNextAuthToken()` in `src/middleware/nextauth.ts`, which calls `migrateGuestToAuthUser()` from `src/services/user-controller.ts`. This ensures seamless migration for both authentication methods without requiring explicit middleware on routes.
 
 ## Conclusion
 

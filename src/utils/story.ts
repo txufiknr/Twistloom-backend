@@ -27,7 +27,6 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
     addPlotFlag: generation.addPlotFlag,
-    inventoryUpdates: generation.inventoryUpdates,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
     placeUpdates: generation.placeUpdates,
@@ -35,6 +34,7 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
     viableEnding: generation.viableEnding,
     isMajorEvent: generation.isMajorEvent,
     contextHistory: generation.contextHistory,
+    inventory: generation.inventory,
     injuries: generation.injuries,
   };
 }
@@ -144,7 +144,6 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     flagUpdates,
     traumaTagUpdates,
     addPlotFlag,
-    inventoryUpdates,
     characterUpdates,
     relationshipUpdates,
     placeUpdates,
@@ -152,6 +151,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     viableEnding,
     isMajorEvent,
     contextHistory,
+    inventory,
     injuries,
     psychologicalProfileUpdates,
     hiddenStateUpdates,
@@ -187,9 +187,6 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   // Apply plot flag updates
   processPlotFlagUpdates(newState, addPlotFlag);
 
-  // Apply inventory updates
-  processInventoryUpdates(newState, inventoryUpdates);
-
   // Apply character and relationship updates
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
 
@@ -199,10 +196,11 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   // Apply thread updates
   processThreadUpdates(newState, threadUpdates);
 
+  // Apply inventory updates
+  if (inventory && inventory.length > 0) newState.inventory = [...inventory];
+
   // Apply injury updates
-  if (injuries && injuries.length > 0) {
-    newState.injuries = [...injuries];
-  }
+  if (injuries && injuries.length > 0) newState.injuries = [...injuries];
 
   return newState;
 }
@@ -591,27 +589,6 @@ export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag
   // Validate plot flag type - default to "other" if invalid
   const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
   state.plotFlags.push({ ...addPlotFlag, type: validType });
-}
-
-/**
- * Processes inventory updates from AI-generated content
- * 
- * Handles both adding and removing inventory items based on the TagUpdates structure.
- * Inventory tracks items the character possesses for story interactions.
- * 
- * @param state - Current story state to update
- * @param updates - TagUpdates object with add and remove arrays
- * 
- * @example
- * ```typescript
- * processInventoryUpdates(state, {
- *   add: ["rusty key", "flashlight", "old photograph"],
- *   remove: ["broken item", "used up item"]
- * });
- * ```
- */
-export function processInventoryUpdates(state: StoryState, updates?: TagUpdates): void {
-  processTagUpdates(state.inventory, updates);
 }
 
 /**

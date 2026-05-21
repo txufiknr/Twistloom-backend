@@ -66,7 +66,6 @@ jobs:
           IMAGEKIT_API_KEY_PRIVATE: ${{ secrets.IMAGEKIT_API_KEY_PRIVATE }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
           # AI provider credentials
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GITHUB_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -75,5 +74,8 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          # GitHub token for next depth generations
+          GITHUB_WORKFLOW_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
           NODE_ENV: production
         timeout-minutes: 45  # Conservative timeout for AI generation

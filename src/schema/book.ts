@@ -1,5 +1,8 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse } from "../types/book.js";
+import type { CharacterMemory } from "../types/character.js";
+import type { PlaceMemory } from "../types/places.js";
+import type { PsychologicalFlags, StoryStateInitialGeneration } from "../types/story.js";
 
 /**
  * Common schema definition for BookCreationResponse type
@@ -9,15 +12,70 @@ import type { BookCreationResponse } from "../types/book.js";
  */
 export const BOOK_CREATION_SCHEMA_DEFINITION = {
   title: { type: 'string' },
+  alternativeTitles: { type: 'array', items: { type: 'string' } },
   totalPages: { type: 'number' },
   language: { type: 'string' },
   hook: { type: 'string' },
   summary: { type: 'string' },
   keywords: { type: 'array', items: { type: 'string' } },
   firstPage: { type: 'object' },
-  initialState: { type: 'object' },
-  initialPlace: { type: 'object' },
-  initialCharacters: { type: 'array', items: { type: 'object' } },
+  // initialState: { type: 'object' },
+  initialState: {
+    type: 'object',
+    properties: {
+      flags: {
+        type: 'object',
+        properties: {
+          trust: { type: 'string' },
+          fear: { type: 'string' },
+          guilt: { type: 'string' },
+          curiosity: { type: 'string' },
+        },
+        required: ['trust', 'fear', 'guilt', 'curiosity'] satisfies (keyof PsychologicalFlags)[],
+        additionalProperties: false
+      },
+      difficulty: { type: 'string' },
+      viableEnding: { type: 'object' },
+      traumaTags: { type: 'array', items: { type: 'string' } },
+      plotFlags: { type: 'array', items: { type: 'object' } },
+      isMajorEvent: { type: 'boolean' },
+      inventory: { type: 'array', items: { type: 'object' } },
+      injuries: { type: 'array', items: { type: 'object' } },
+    },
+    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof StoryStateInitialGeneration)[],
+    additionalProperties: false
+  },
+  // initialPlace: { type: 'object' },
+  initialPlace: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      type: { type: 'string' },
+      currentMood: { type: 'string' },
+      context: { type: 'string' },
+      familiarity: { type: 'number' },
+    },
+    required: ['name', 'type', 'currentMood', 'context', 'familiarity'] satisfies (keyof PlaceMemory)[],
+    additionalProperties: false
+  },
+  // initialCharacters: { type: 'array', items: { type: 'object' } },
+  initialCharacters: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        role: { type: 'string' },
+        gender: { type: 'string' },
+        status: { type: 'string' },
+        relationshipToMC: { type: 'string' },
+        bio: { type: 'string' },
+        visualDescription: { type: 'string' },
+      },
+      required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription'] satisfies (keyof CharacterMemory)[],
+      additionalProperties: false
+    }
+  },
   mainCharacter: { type: 'object' }
 } satisfies Record<keyof BookCreationResponse, AIJsonProperty>;
 

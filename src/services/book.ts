@@ -18,7 +18,7 @@ import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBPageTranslations, DBUpdateBook } from "../types/schema.js";
-import type { Book, BookStatus, EnrichedBookData } from "../types/book.js";
+import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
 import { getStoryStateFromPage } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
@@ -90,11 +90,11 @@ const publicBookStatsCache = new LRUCache<string, {
 /**
  * LRU cache for enriched page data
  * 
- * Cache key format: "page:{pageId}:{userId|null}:{translate}:{acceptLanguage|en}"
+ * Cache key format: "page:{pageId}:{userId|null}:{translate}:{headerLanguage|en}"
  * - pageId: Page identifier
  * - userId: Current user ID (or "null" for anonymous) - affects selectedActions
  * - translate: Whether translation is enabled
- * - acceptLanguage: Target language code (or "en" default) - affects translation
+ * - headerLanguage: Target language code (or "en" default) - affects translation
  * 
  * Only caches pages with no incomplete actions (all actions have destinations).
  * Pages with pending generation are not cached since they change frequently.
@@ -113,16 +113,16 @@ const enrichedPageCache = new LRUCache<string, EnrichedStoryPage>({
  * @param pageId - Page identifier
  * @param userId - Optional current user ID
  * @param translate - Whether translation is enabled
- * @param acceptLanguage - Optional target language code
+ * @param headerLanguage - Optional target language code
  * @returns Cache key string
  */
 function getEnrichedPageCacheKey(
   pageId: string,
   userId?: string | null,
   translate: boolean = false,
-  acceptLanguage?: string | null
+  headerLanguage?: string | null
 ): string {
-  return `page:${pageId}:${userId || 'null'}:${translate}:${acceptLanguage || 'en'}`;
+  return `page:${pageId}:${userId || 'null'}:${translate}:${headerLanguage || 'en'}`;
 }
 
 /**
@@ -346,38 +346,60 @@ export async function getBookPages(bookId: string): Promise<DBPage[]> {
 }
 
 /**
+ * Checks if a slug already exists in the database
+ * 
+ * @param slug - The slug to check
+ * @returns Promise resolving to true if slug exists, false otherwise
+ */
+async function slugExists(slug: string): Promise<boolean> {
+  const existing = await dbRead
+    .select({ slug: books.slug })
+    .from(books)
+    .where(eq(books.slug, slug))
+    .limit(1);
+  return existing.length > 0;
+}
+
+/**
  * Generates a unique slug for a book by checking existing slugs
  * 
- * Creates a slug from the title and ensures uniqueness by appending
- * a numeric suffix if the base slug already exists.
+ * Creates a slug from the title and ensures uniqueness by trying
+ * alternative titles or appending a numeric suffix if needed.
  * 
  * @param title - The book title to generate slug from
- * @returns Promise resolving to a unique slug string
+ * @param alternativeTitles - Optional array of alternative titles to try as fallback
+ * @returns Promise resolving to slug and the title that was used
  * 
  * @example
  * ```typescript
- * const slug = await generateUniqueSlug("The Amazing Adventure");
- * // Returns "amazing-adventure" or "amazing-adventure-2" if already taken
+ * const result = await generateUniqueSlug("The Amazing Adventure", ["Dead City"]);
+ * // If "amazing-adventure" exists, returns { slug: "dead-city", title: "Dead City" }
  * ```
  */
-async function generateUniqueSlug(title: string): Promise<string> {
+async function generateUniqueSlug(title: string, alternativeTitles?: string[]): Promise<BookSlugGenerationResult> {
   const RESERVED_SLUGS = new Set(['stats', 'explore']);
   const baseSlug = generateSlug(title);
 
   if (baseSlug) {
-    // Check if base slug already exists
-    const existing = await dbRead
-      .select({ slug: books.slug })
-      .from(books)
-      .where(eq(books.slug, baseSlug))
-      .limit(1);
-
-    // If base slug is available and not a reserved endpoint, use it
-    if (existing.length === 0 && !RESERVED_SLUGS.has(baseSlug)) {
-      return baseSlug;
+    // If base slug is available and not a reserved endpoint, use original title
+    if (!await slugExists(baseSlug) && !RESERVED_SLUGS.has(baseSlug)) {
+      return { slug: baseSlug, title };
     }
 
-    // Base slug exists or is reserved, try with numeric suffixes
+    // Base slug exists or is reserved, try alternative titles if provided
+    if (alternativeTitles && alternativeTitles.length > 0) {
+      for (const altTitle of alternativeTitles) {
+        const altSlug = generateSlug(altTitle);
+        if (!altSlug) continue;
+        if (RESERVED_SLUGS.has(altSlug)) continue;
+
+        if (!await slugExists(altSlug)) {
+          return { slug: altSlug, title: altTitle };
+        }
+      }
+    }
+
+    // All alternatives failed, try with numeric suffixes on original title
     let suffix = 2;
     let uniqueSlug = `${baseSlug}-${suffix}`;
 
@@ -389,14 +411,8 @@ async function generateUniqueSlug(title: string): Promise<string> {
         continue;
       }
 
-      const existingWithSuffix = await dbRead
-        .select({ slug: books.slug })
-        .from(books)
-        .where(eq(books.slug, uniqueSlug))
-        .limit(1);
-
-      if (existingWithSuffix.length === 0) {
-        return uniqueSlug;
+      if (!await slugExists(uniqueSlug)) {
+        return { slug: uniqueSlug, title };
       }
 
       suffix++;
@@ -412,7 +428,7 @@ async function generateUniqueSlug(title: string): Promise<string> {
   while (RESERVED_SLUGS.has(id)) {
     id = generateId().substring(0, 8);
   }
-  return id;
+  return { slug: id, title };
 }
 
 /**
@@ -427,16 +443,16 @@ async function generateUniqueSlug(title: string): Promise<string> {
  * @param status - Book status (active, archived, draft)
  * @returns Promise resolving to the inserted book record
  */
-export async function insertBook(book: DBNewBook, options: { client?: DBClient } = {}): Promise<DBBook> {
-  const { client = dbWrite } = options;
-  // Generate unique slug from title
-  const uniqueSlug = await generateUniqueSlug(book.title);
+export async function insertBook(book: DBNewBook, options: { client?: DBClient, alternativeTitles?: string[] } = {}): Promise<DBBook> {
+  const { client = dbWrite, alternativeTitles } = options;
+  // Generate unique slug from title (may use alternative title)
+  const { slug: uniqueSlug, title: chosenTitle } = await generateUniqueSlug(book.title, alternativeTitles);
   
   const newBookData: DBNewBook = {
     ...book,
     id: book.id ?? generateId(),
     slug: uniqueSlug,
-    title: sanitizeText(book.title),
+    title: sanitizeText(chosenTitle),
     hook: book.hook ? sanitizeText(book.hook) : null,
     summary: book.summary ? sanitizeText(book.summary) : null,
     status: 'active' satisfies BookStatus,
@@ -566,11 +582,13 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
  * 
  * @param identifier - Book slug or ID to retrieve
  * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
+ * @param language - Optional language filter
  * @returns Promise resolving to enriched book data or null if not found
  */
 export async function getEnrichedBook(
   identifier: string,
-  currentUserId?: string | null
+  currentUserId?: string | null,
+  language?: string | null
 ): Promise<EnrichedBookData | null> {
   const cacheKey = getEnrichedBookCacheKey(identifier, currentUserId);
   
@@ -587,7 +605,7 @@ export async function getEnrichedBook(
   }
 
   const result = await dbRead
-    .select(getEnrichedBookSelect(currentUserId || null))
+    .select(getEnrichedBookSelect(currentUserId, language))
     .from(books)
     .leftJoin(users, eq(books.userId, users.userId))
     .where(or(...conditions))
@@ -902,7 +920,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * **Caching Behavior:**
  * - Only caches pages with no incomplete actions (all actions have destinations)
  * - Pages with pending generation are not cached since they change frequently
- * - Cache key includes: pageId, userId, translate, acceptLanguage
+ * - Cache key includes: pageId, userId, translate, headerLanguage
  * - Cache TTL: 2 minutes to balance freshness with performance
  * 
  * **User-Specific Data:**
@@ -919,7 +937,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * @param options - Configuration options for enrichment
  * @param options.userId - Optional current user ID for user-specific selectedActions
  * @param options.bookLanguage - Book's language code (default: 'en')
- * @param options.acceptLanguage - Optional target language for translation
+ * @param options.headerLanguage - Optional target language for translation
  * @param options.translate - Whether to enable translation (default: false)
  * @param options.sourceAction - Source action that led to this page (required for pages > 1)
  * @returns Promise resolving to enriched page or null if mapping fails
@@ -933,7 +951,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * const translatedPage = await mapToEnrichedPage(dbPage, {
  *   userId: 'user123',
  *   bookLanguage: 'en',
- *   acceptLanguage: 'es',
+ *   headerLanguage: 'es',
  *   translate: true
  * });
  * 
@@ -947,18 +965,18 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
 export async function mapToEnrichedPage(dbPage: DBPage, options: {
   userId?: string,
   bookLanguage?: string,
-  acceptLanguage?: string,
+  headerLanguage?: string | null,
   translate?: boolean,
   sourceAction?: Action
 }): Promise<EnrichedStoryPage | null> {
-  const { userId, bookLanguage = 'en', acceptLanguage, translate = false, sourceAction } = options;
+  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction } = options;
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter(action => action.destination?.pageId);
   const hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, bookId } = dbPage;
 
   // Check cache first (only for pages with complete actions)
-  const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, acceptLanguage);
+  const cacheKey = getEnrichedPageCacheKey(pageId, userId, translate, headerLanguage);
   if (!hasIncompleteActions) {
     const cached = enrichedPageCache.get(cacheKey);
     if (cached) return cached;
@@ -972,7 +990,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
 
   // Handle translation if Accept-Language header is provided and differs from book language
   let translation: DBPageTranslations | undefined;
-  const targetLanguage = translate ? shouldTranslate(bookLanguage, acceptLanguage) : undefined;
+  const targetLanguage = translate ? shouldTranslate(bookLanguage, headerLanguage) : undefined;
 
   if (targetLanguage) {
     console.log(`[mapToEnrichedPage] 🌐 shouldTranslate into:`, targetLanguage);

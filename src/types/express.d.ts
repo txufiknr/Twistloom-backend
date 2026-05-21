@@ -27,6 +27,8 @@ declare module "express" {
     user?: AuthUser;
     /** Guest user authentication data */
     guestAuth?: GuestAuthResult;
+    /** Parsed language code from Accept-Language header (e.g., "en" from "en-US,en;q=0.9") */
+    headerLanguage?: string | null;
     file?: Express.Multer.File;
   }
 }

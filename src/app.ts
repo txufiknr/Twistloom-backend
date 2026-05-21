@@ -6,6 +6,7 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
+import { extractLocale } from "./middleware/locale.js";
 import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 
@@ -45,6 +46,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
+app.use(extractLocale); // Extract Accept-Language header for translation
 app.use(rateLimitByUser); // Global rate limiting (100 req/min per user)
 
 // app.options('*', cors());

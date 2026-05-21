@@ -1,4 +1,5 @@
 import type { Book } from "./book.js";
+import type { DBBook, DBPage } from "./schema.js";
 import type { Action, PersistedStoryPage, StoryState, UserStoryPage } from "./story.js";
 
 /**
@@ -36,8 +37,8 @@ export type GenerateCandidatePageParams = {
   currentPage: UserStoryPage;
   /** Optional current story state (avoids database lookup when provided) */
   currentState?: StoryState | null;
-  /** Optional book context (avoids session lookup when provided, e.g., for system-generated originals) */
-  currentBook?: Book | null;
+  /** Book context */
+  currentBook: Book;
   /** Whether candidate page should have new branchId */
   generateNewBranchId?: boolean;
 };
@@ -97,7 +98,7 @@ export interface GenerateCandidatesInParallelParams {
   /** Current story state */
   currentState?: StoryState | null;
   /** Current book context */
-  currentBook: Book | null;
+  currentBook: Book;
   /** Whether to generate new branch IDs for subsequent actions */
   initialGenerateNewBranchId: boolean;
   /** Timeout for each generation operation */
@@ -136,6 +137,33 @@ export interface GenerateCandidatesOptions {
   currentDepth?: number;
   /** Maximum depth to pre-generate */
   maxDepth?: number;
+}
+
+export interface CandidateGenerationPageValidation {
+  dbPage: DBPage;
+  dbBook: DBBook;
+  userPage: UserStoryPage;
+  isGenerating: boolean;
+  isDone: boolean;
+  totalPendingActions: number;
+}
+
+/**
+ * Result of candidate generation validation
+ */
+export interface CandidateGenerationValidation {
+  /** Whether generation should proceed */
+  canGenerate: boolean;
+  /** Reason why generation cannot proceed (if applicable) */
+  reason?: string;
+  /** Book context (resolved if available) */
+  book: Book | null;
+  /** Actions that need generation */
+  pendingActions: Action[];
+  /** Current depth for generation */
+  currentDepth: number;
+  /** Maximum depth for generation */
+  maxDepth: number;
 }
 
 export interface CandidateGenerationStatus {

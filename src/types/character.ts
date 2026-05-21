@@ -212,6 +212,13 @@ export type CharacterUpdates = {
   updatedCharacters?: CharacterUpdate[];
 };
 
+export type InventoryItem = {
+  name: string;
+  traits?: Record<string, string>; // color, length, state, etc
+  amount?: number;
+  where?: string;
+}
+
 /** Represents an injury sustained by a character */
 export type Injury = {
   /** The body part that was injured */

@@ -116,7 +116,7 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
     // Step 2: Get current page, story state, and book info in parallel
     const [currentPage, currentState, currentBook] = await Promise.all([
       getStoryPageById(userId, bookId, pageId),
-      getStoryStateWithBranch(userId, bookId, pageId),
+      getStoryStateWithBranch(bookId, pageId),
       getBook(bookId),
     ]);
 

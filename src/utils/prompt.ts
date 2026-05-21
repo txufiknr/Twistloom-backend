@@ -191,6 +191,7 @@ function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: str
 
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
+  "alternativeTitles": ["Alternative Title: Dead City", "..."],
   "totalPages": <number between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}>,
   "language": "<ISO 639-1 language code, e.g. 'en'>",
   "hook": "...",
@@ -241,7 +242,25 @@ const firstBookOutputFormat: string = `{
         "type": "One of: ${formatOneOf(plotFlagTypes)}"
       }
     ],
-    "isMajorEvent": <true or false>,
+    "inventory": [
+      {
+        "name": "...",
+        "traits": {"...": "..."},
+        "amount": <number>,
+        "where": "..."
+      }
+    ],
+    "injuries": [
+      {
+        "bodyPart": "...",
+        "description": "...",
+        "consequences": "...",
+        "pageAcquired": <number>,
+        "severity": <number between 0.0 and 1.0>,
+        "decayPerPage": <number between 0.0 and 1.0>
+      }
+    ],
+    "isMajorEvent": <true or false>
   },
   "initialPlace": {
     "name": "Location Name",
@@ -312,10 +331,6 @@ const nextPageOutputFormat: string = `{
   "charactersPresent": [],
   "keyEvents": [],
   "importantObjects": [],
-  "inventoryUpdates": {
-    "add": [],
-    "remove": []
-  },
   "traumaTagUpdates": {
     "add": [],
     "remove": []
@@ -325,6 +340,14 @@ const nextPageOutputFormat: string = `{
     "fact": "...",
     "type": "One of: ${formatOneOf(plotFlagTypes)}"
   },
+  "inventory": [
+    {
+      "name": "...",
+      "traits": {"...": "..."},
+      "amount": <number>,
+      "where": "..."
+    }
+  ],
   "injuries": [
     {
       "bodyPart": "...",
@@ -335,7 +358,7 @@ const nextPageOutputFormat: string = `{
       "decayPerPage": <number between 0.0 and 1.0>
     }
   ],
-  "isMajorEvent": false,
+  "isMajorEvent": <true or false>,
   "contextHistory": "...",
   "flagUpdates": {
     "trust": "One of: low | medium | high",
@@ -617,8 +640,8 @@ ${isEarlyPhase ? `  - Seed freely — early objects pay off later. Introduce the
 ${isMidPhase ? `  - Only include objects with clear narrative weight. No new red herrings.` : ''}
 ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unless absolutely necessary.` : ''}
 
-inventoryUpdates
-  - Items the MC brings to the scene, the amount, color, state, and where they are located specifically.
+inventory
+  - Items the MC brings to the scene. Can include the amount, traits, and where it located.
   - Limit it. Only include items that actually matters to the plot.
 
 injuries
@@ -1326,8 +1349,10 @@ function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
  * // Character with inventory and injuries
  * "Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
  * - Inventory:
- *   - black cellphone with 50% battery in right pants pocket
- *   - 5-meter brown rugged rope in backpack
+ *   - black cellphone (amount: 1, where: right pants pocket)
+ *     → traits: color: black
+ *   - 5-meter brown rugged rope (where: backpack)
+ *     → traits: color: brown, length: 5-meter
  * - Injuries:
  *   - Deep cut (left arm, severity: 0.7) - acquired: page 5
  *     → Consequence (high): Cannot lift heavy objects
@@ -1342,9 +1367,26 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
     let inventoryDetails: string | null = null;
     let injuryDetails: string | null = null;
     
-    // Format inventory items as indented list
+    // Format inventory items with detailed nested information
     if (state.inventory.length > 0) {
-      const inventoryList = state.inventory.map(item => `  - ${item}`);
+      const inventoryList = state.inventory.map(invItem => {
+        const parts = [];
+        parts.push(invItem.name);
+        
+        const details = [];
+        if (invItem.amount !== undefined) details.push(`amount: ${invItem.amount}`);
+        if (invItem.where) details.push(`where: ${invItem.where}`);
+        
+        let inventoryLine = `  - ${parts.join(' ')}`;
+        if (details.length > 0) {
+          inventoryLine += ` (${details.join(', ')})`;
+        }
+        if (invItem.traits && Object.keys(invItem.traits).length > 0) {
+          const traitEntries = Object.entries(invItem.traits).map(([key, value]) => `${key}: ${value}`);
+          inventoryLine += `\n    → traits: ${traitEntries.join(', ')}`;
+        }
+        return inventoryLine;
+      });
       inventoryDetails = `\n${inventoryList.join('\n')}`;
     }
     
@@ -2192,7 +2234,7 @@ Actions must be meaningfully distinct — vary between: reckless, cautious, emot
 
 function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string {
   return `Book Metadata:
-- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.
+- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic. Can include subtitle (e.g., "Book Title: The Subtitle").
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
@@ -2224,10 +2266,11 @@ Initial State:
 - Set flags based on opening scene — not defaults.
 - difficulty should reflect how hostile the world is to this MC at the start.
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme. If user mention anything about desired ending in theme input, respect it.
-- isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
-- inventory: what objects MC brings, the amount, color, state, and where.
+- isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
+- inventory: what items MC brings, can include the amount, traits, and where it located.
+- injuries: represents injuries sustained by the MC in the first page.
 
 Ending Archetypes:
 ${getEndingArchetypesText()}`;
@@ -2332,6 +2375,7 @@ export async function initializeBook(
     // STEP 4: FINALIZING
     const {
       title,
+      alternativeTitles,
       totalPages,
       hook,
       summary,
@@ -2393,7 +2437,7 @@ export async function initializeBook(
         mc,
         isOriginal,
       };
-      const dbBook = await insertBook(newBookData, { client });
+      const dbBook = await insertBook(newBookData, { client, alternativeTitles });
       book = mapBookFromDb(dbBook);
       bookId = book.id;
     }
@@ -2410,7 +2454,7 @@ export async function initializeBook(
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
-      ...generatedInitialState, // flags, difficulty, viableEnding
+      ...generatedInitialState, // flags, difficulty, viableEnding, traumaTags, plotFlags, isMajorEvent
       hiddenState: createInitialHiddenState(),
       characters: initialCharacters ? 
         Object.fromEntries(
@@ -2481,6 +2525,7 @@ export async function initializeBook(
         userId,
         pageId: firstUserPage.id,
         bookId: book.id,
+        bookTitle: book.title,
         context: 'initializeBook'
       }).catch(error => {
         console.error('[initializeBook] ❌ Failed to trigger GitHub workflow:', error);
@@ -2589,7 +2634,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   }
 
   // Ensure story state exists for the actioned page
-  const currentState: StoryState | null = providedState ? structuredClone(providedState) : await getStoryStateWithBranch(userId, actionedPage.bookId, actionedPage.id);
+  const currentState: StoryState | null = providedState ? structuredClone(providedState) : await getStoryStateWithBranch(actionedPage.bookId, actionedPage.id);
   if (!currentState) {
     throw new Error(`Failed to get story state for page ${actionedPage.id}`);
   }

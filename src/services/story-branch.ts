@@ -49,7 +49,6 @@ export function generateBranchId(): string {
  * - Provides comprehensive fallback mechanisms for data integrity
  * - Maintains branch path context and action history reconstruction
  * 
- * @param userId - User identifier for the story state
  * @param pageId - Page identifier for the story state
  * @param options - Branch traversal options for cache and validation control
  * @returns Promise resolving to story state or null
@@ -57,7 +56,7 @@ export function generateBranchId(): string {
  * @example
  * ```typescript
  * // Enhanced state retrieval with branch awareness
- * const state = await getStoryStateWithBranch("user123", "book456", "page789", {
+ * const state = await getStoryStateWithBranch("book456", "page789", {
  *   useCache: true,
  *   validatePath: true
  * });
@@ -68,27 +67,26 @@ export function generateBranchId(): string {
  * }
  * 
  * // Reconstruction with custom traversal depth
- * const state = await getStoryStateWithBranch("user123", "book456", "page789", {
+ * const state = await getStoryStateWithBranch("book456", "page789", {
  *   maxTraversalDepth: 10,
  *   useCache: false
  * });
  * ```
  */
 export async function getStoryStateWithBranch(
-  userId: string,
   bookId: string,
   pageId: string,
   options: TraversalOptions = {}
 ): Promise<StoryState | null> {
   try {
-    console.log(`[getStoryStateWithBranch] 🌳 Getting story state for:`, { userId, pageId, bookId });
+    console.log(`[getStoryStateWithBranch] 🌳 Getting story state for page:`, pageId);
 
     // First attempt: Get from database & cache
     const persistedState = await getStoryState(pageId);
     if (persistedState) return persistedState;
 
     // Second attempt: Reconstruct from branch path using advanced reconstruction
-    console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page ${pageId}`);
+    console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page:`, pageId);
     
     // Create dependencies for reconstruction with branch-aware page retrieval
     // Note: using dbWrite to avoid read replica stale
@@ -117,7 +115,8 @@ export async function getStoryStateWithBranch(
     const finalState: StoryState = { ...minimalState, ...reconstructedState };
 
     // Persist reconstructed story state to database if persistState is true
-    if (options.persistState) {
+    const { persistState = true } = options;
+    if (persistState) {
       console.log(`[getStoryStateWithBranch] 💾 Persisting reconstructed state for page ${pageId}`);
       void insertStoryState(bookId, pageId, finalState);
     }

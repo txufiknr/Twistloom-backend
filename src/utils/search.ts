@@ -606,6 +606,14 @@ export function calculateRelevance(
  * Creates SQL expression for relevance scoring in database query
  * Enables database-level sorting by relevance instead of in-memory sorting
  * 
+ * Scoring Strategy (normalized to 0-1 scale):
+ * - Title exact match: 0.35 (highest priority - exact title match)
+ * - Title contains: 0.20 (title is most important field)
+ * - Hook exact match: 0.15 (hook is the "elevator pitch")
+ * - Hook contains: 0.10
+ * - Keywords match: 0.12 (user-defined tags, highly relevant)
+ * - Summary contains: 0.08 (summary provides context)
+ * 
  * @param query - Search query
  * @param booksTable - Drizzle books table reference
  * @returns SQL expression for relevance calculation
@@ -619,25 +627,31 @@ export function createRelevanceExpression(
   const queryLower = query.toLowerCase();
   
   // Calculate relevance using CASE statements in SQL
+  // Uses word boundary matching for better precision
   return sql`
     CASE
-      WHEN ${booksTable.title} ILIKE ${'%' + queryLower + '%'} THEN 0.4
-      WHEN ${booksTable.title} ILIKE ${queryLower} THEN 0.6
+      WHEN LOWER(${booksTable.title}) = ${queryLower} THEN 0.35
+      WHEN ${booksTable.title} ILIKE ${'%' + queryLower + '%'} THEN 0.20
       ELSE 0
     END::real +
     CASE
-      WHEN ${booksTable.hook} ILIKE ${'%' + queryLower + '%'} THEN 0.25
-      ELSE 0
-    END::real +
-    CASE
-      WHEN ${booksTable.summary} ILIKE ${'%' + queryLower + '%'} THEN 0.2
+      WHEN LOWER(${booksTable.hook}) = ${queryLower} THEN 0.15
+      WHEN ${booksTable.hook} ILIKE ${'%' + queryLower + '%'} THEN 0.10
       ELSE 0
     END::real +
     CASE
       WHEN EXISTS (
         SELECT 1 FROM jsonb_array_elements_text(${booksTable.keywords}) as kw
+        WHERE LOWER(kw) = ${queryLower}
+      ) THEN 0.12
+      WHEN EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(${booksTable.keywords}) as kw
         WHERE kw ILIKE ${'%' + queryLower + '%'}
-      ) THEN 0.15
+      ) THEN 0.08
+      ELSE 0
+    END::real +
+    CASE
+      WHEN ${booksTable.summary} ILIKE ${'%' + queryLower + '%'} THEN 0.08
       ELSE 0
     END::real
   `;

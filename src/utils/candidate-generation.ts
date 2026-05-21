@@ -10,7 +10,7 @@ import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../con
 import { GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_DEFAULT_BRANCH } from '../config/env.js';
 import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationResult, CandidateGenerationStrategy, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
+import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -21,6 +21,7 @@ import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBacko
 import { generateNextPage } from './prompt.js';
 import { dispatchGitHubWorkflow } from './github-workflow.js';
 import { MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
+import { formatDuration } from './formatter.js';
 
 /**
  * Performance metrics for candidate generation
@@ -54,34 +55,26 @@ function logMetrics(metrics: Partial<GenerationMetrics>): void {
   globalMetrics.totalTimeouts += metrics.timeoutOccurrences ? 1 : 0;
   globalMetrics.totalLockContentions += metrics.lockContentions ? 1 : 0;
   
-  console.log(`[candidate-generation-metrics] 📊 Performance metrics:`, {
-    actionCount: metrics.actionCount,
-    lookupTime: metrics.lookupTime,
-    generationTime: metrics.generationTime,
-    successCount: metrics.successCount,
-    failureCount: metrics.failureCount,
-    timeoutOccurrences: metrics.timeoutOccurrences,
-    lockContentions: metrics.lockContentions,
-    totals: { ...globalMetrics }
+  console.group('[candidate-generation-metrics] 📊 Performance metrics');
+  
+  console.table({
+    'Actions': metrics.actionCount,
+    'Lookup Time': formatDuration(metrics.lookupTime || 0),
+    'Generation Time': formatDuration(metrics.generationTime || 0),
+    'Success': metrics.successCount,
+    'Failures': metrics.failureCount,
+    'Timeouts': metrics.timeoutOccurrences,
+    'Lock Contentions': metrics.lockContentions,
   });
-}
-
-/**
- * Result of candidate generation validation
- */
-export interface CandidateGenerationValidation {
-  /** Whether generation should proceed */
-  canGenerate: boolean;
-  /** Reason why generation cannot proceed (if applicable) */
-  reason?: string;
-  /** Book context (resolved if available) */
-  book: Book | null;
-  /** Actions that need generation */
-  pendingActions: Action[];
-  /** Current depth for generation */
-  currentDepth: number;
-  /** Maximum depth for generation */
-  maxDepth: number;
+  
+  console.table({
+    'Total Generations': globalMetrics.totalGenerations,
+    'Total Lookup Time': formatDuration(globalMetrics.totalLookups),
+    'Total Timeouts': globalMetrics.totalTimeouts,
+    'Total Lock Contentions': globalMetrics.totalLockContentions,
+  });
+  
+  console.groupEnd();
 }
 
 /**
@@ -386,22 +379,16 @@ export function calculateGenerationTimeout(
  * ```
  */
 export async function generateCandidatePage(params: GenerateCandidatePageParams): Promise<PersistedStoryPage | null> {
-  const { userId, action: actionCandidate, currentPage, currentState, generateNewBranchId } = params;
-  let { currentBook } = params;
+  const { userId, action: actionCandidate, currentBook, currentPage, currentState, generateNewBranchId } = params;
   
-  if (!currentPage) {
-    throw createNonRetryableError('currentPage is required');
+  // 1. Validate page context for candidates generation
+  if (!currentPage || !currentBook) {
+    throw createNonRetryableError('Missing: currentPage and currentBook are required');
   }
   
-  // 1. Check for invalid actions (will be removed)
+  // 2. Check for invalid actions (will be removed)
   if (!actionCandidate.text) {
     throw createNonRetryableError(`Invalid action: no text`, 'INVALID_ACTION');
-  }
-
-  // 2. Get book for current page if not provided
-  currentBook ??= await getBook(currentPage.bookId);
-  if (!currentBook) {
-    throw createNonRetryableError(`Book not found for page ${currentPage.id}`, 'BOOK_NOT_FOUND');
   }
 
   // 3. Match actionText against current page actions to get full Action object
@@ -411,7 +398,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   }
 
   const nextPageNumber = currentPage.page + 1;
-  console.log(`[generateCandidatePage] ℹ️ Should generate candidates for page ${nextPageNumber}`);
+  console.log(`[generateCandidatePage] ℹ️ Should generate candidates for "${currentBook.title}" page ${nextPageNumber}`);
 
   if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
     console.warn(`[generateCandidatePage] ⚠️ Unexpected page ${nextPageNumber} is already in plot flags`);
@@ -485,7 +472,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
   const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress } = params;
   const startTime = Date.now();
   const lookupStartTime = Date.now();
-  
+
   console.log(`[generateCandidatesInParallel] 🚀 Starting parallel generation for ${actions.length} actions at depth ${currentDepth}/${maxDepth}`);
   
   // Create generation promises for each action
@@ -525,13 +512,17 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
           shouldRetry: (error) => {
             try {
               lastError = error; // Capture the error
+              const errorMessage = getErrorMessage(error);
+              
               // Check if error is marked as non-retryable
+              // Also checks for wrapped non-retryable errors from retryWithUniqueConstraint
               const err = error as ErrorWithCustomProperties;
-              if (err.shouldRetry === false || err.code === 'INVALID_ACTION') {
-                console.warn(`[generateCandidatesInParallel] ⛔ Non-retryable error detected:`, getErrorMessage(error));
+              if (err.shouldRetry === false || err.code === 'INVALID_ACTION' || errorMessage.includes('Non-retryable error')) {
+                console.warn(`[generateCandidatesInParallel] 👋 Non-retryable error detected:`, errorMessage);
                 return false;
               }
-              console.warn(`[generateCandidatesInParallel] ❓ Should retry for this error?`, getErrorMessage(error));
+              
+              console.warn(`[generateCandidatesInParallel] ❓ Should retry for this error?`, errorMessage);
               return true;
             } catch {
               return true;
@@ -633,11 +624,13 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
             const nextDepth = currentDepth + 1;
             if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH) {
               // Immediate fire-and-forget for better UX
+              // No need for validation as this is a certain candidate generation for a valid new page
               triggerCandidateGenerationWorkflow({
                 userId,
                 pageId: candidatePage.id,
                 bookId: candidatePage.bookId,
-                context: `generateCandidatesInParallel-depth${nextDepth}`
+                bookTitle: currentBook.title,
+                context: `generateCandidatesInParallel-${nextDepth}`
               }).catch(error => {
                 console.error(`[generateCandidatesInParallel] ❌ Failed to trigger GitHub workflow for level ${nextDepth}:`, error);
               });
@@ -1127,14 +1120,22 @@ export function validateGitHubWorkflowConfig(): void {
  * ```
  */
 export async function triggerCandidateGenerationWorkflow(params: {
+  bookTitle: string;
   bookId: string;
   pageId: string;
   userId: string;
   context?: string;
 }): Promise<{ success: boolean; error?: string; alreadyInProgress?: boolean }> {
-  const { bookId, pageId, userId, context = 'triggerCandidateGenerationWorkflow' } = params;
+  const { bookTitle, bookId, pageId, userId, context = 'triggerCandidateGenerationWorkflow' } = params;
   
-  console.log(`[${context}] 🚀 Triggering GitHub workflow for page ${pageId}`);
+  // Get GitHub token from environment
+  const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
+  if (!githubToken) {
+    console.error(`[${context}] 💀 GITHUB_WORKFLOW_TOKEN not configured`);
+    return { success: false, error: 'GitHub workflow token not configured' };
+  }
+  
+  console.log(`[${context}] 👨‍💻 Triggering GitHub workflow for page ${pageId}`);
 
   try {
     // Check if generation is already in progress (idempotency check)
@@ -1156,17 +1157,6 @@ export async function triggerCandidateGenerationWorkflow(params: {
       .where(eq(pages.id, pageId));
     console.log(`[${context}] ⏰ Set isGeneratingStartedAt for page ${pageId}:`, isGeneratingStartedAt);
 
-    // Get GitHub token from environment
-    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
-    if (!githubToken) {
-      console.error(`[${context}] 💀 GITHUB_WORKFLOW_TOKEN not configured`);
-      // Reset isGeneratingStartedAt since we can't trigger the workflow
-      await dbWrite.update(pages)
-        .set({ isGeneratingStartedAt: null })
-        .where(eq(pages.id, pageId));
-      return { success: false, error: 'GitHub workflow token not configured' };
-    }
-
     // Trigger workflow via reusable utility
     const dispatchResult = await dispatchGitHubWorkflow(
       {
@@ -1178,6 +1168,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
       {
         workflowFile: 'retry-pending-generations.yml',
         inputs: {
+          book_title: bookTitle,
           book_id: bookId,
           page_id: pageId,
           triggered_by: userId

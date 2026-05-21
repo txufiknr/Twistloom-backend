@@ -49,6 +49,225 @@ This document describes the dual authentication architecture for Twistloom, supp
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Login Flow Diagrams
+
+### Google OAuth Login Flow (With Guest Migration)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Frontend                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. User clicks "Sign in with Google"                           │
+│     ↓                                                            │
+│  2. Frontend calls signIn('google')                             │
+│     ↓                                                            │
+│  3. NextAuth redirects to Google OAuth                           │
+│     ↓                                                            │
+│  4. User authorizes on Google                                    │
+│     ↓                                                            │
+│  5. Google redirects back with OAuth token                      │
+│     ↓                                                            │
+│  6. NextAuth creates session cookie (httpOnly, secure)           │
+│     ↓                                                            │
+│  7. Frontend redirects to app (session cookie set)               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                         Backend                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  8. User makes first authenticated request                       │
+│     ↓                                                            │
+│  9. verifyNextAuthToken() called                                │
+│     ↓                                                            │
+│  10. getSession() verifies NextAuth JWT cookie                   │
+│     ↓                                                            │
+│  11. Extract email, name, image from session                     │
+│     ↓                                                            │
+│  12. Check if user exists in database by email                  │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF USER EXISTS:                                     │       │
+│  │    → createOrUpdateOAuthUser() updates profile       │       │
+│  │    → Cache invalidated                               │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF USER DOESN'T EXIST (First-time login):          │       │
+│  │    → createOrUpdateOAuthUser() creates new user     │       │
+│  │    → Creates user_auth record                        │       │
+│  │    → Sets isGuest=false, isNewUser=true             │       │
+│  │    → Cache invalidated                               │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  13. Check for guest cookie (twistloom_guest_id)                │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF GUEST COOKIE EXISTS AND ≠ USER ID:              │       │
+│  │    → migrateGuestToAuthUser() called                │       │
+│  │    → Transfers books to authenticated user          │       │
+│  │    → Transfers sessions to authenticated user       │       │
+│  │    → Deletes guest user from database              │       │
+│  │    → Guest cookie remains (ignored)                │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  14. Return AuthUser { id, email, name }                        │
+│     ↓                                                            │
+│  15. Request proceeds with authenticated user                    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+Key Points:
+- Auto-creates user on first-time Google login
+- Updates profile data from Google on each login
+- Automatically migrates guest data if guest cookie exists
+- No manual migration API calls needed from frontend
+- Guest cookie remains but is ignored after migration
+```
+
+### Email/Password Login Flow (With Guest Migration)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Frontend                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. User enters email and password                               │
+│     ↓                                                            │
+│  2. Frontend calls signIn('credentials', {                       │
+│       emailOrUsername, password                                  │
+│     })                                                           │
+│     ↓                                                            │
+│  3. NextAuth Credentials Provider triggered                      │
+│     ↓                                                            │
+│  4. Provider calls POST /api/auth/verify-credentials            │
+│     ↓                                                            │
+│  5. Backend validates credentials (see below)                    │
+│     ↓                                                            │
+│  6. Backend returns user data if valid                          │
+│     ↓                                                            │
+│  7. NextAuth creates session cookie (httpOnly, secure)           │
+│     ↓                                                            │
+│  8. Frontend redirects to app (session cookie set)               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                         Backend                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  POST /api/auth/verify-credentials                  │       │
+│  │                                                       │       │
+│  │  1. Rate limiting check (IP-based, 5/min)           │       │
+│  │     ↓                                                │       │
+│  │  2. Find user by email or username                   │       │
+│  │     ↓                                                │       │
+│  │  3. Check account lockout status                     │       │
+│  │     ↓                                                │       │
+│  │  4. Verify password with bcrypt                       │       │
+│  │     ↓                                                │       │
+│  │  5. Reset failed login attempts on success           │       │
+│  │     ↓                                                │       │
+│  │  6. Return user data (userId, email, name, etc.)    │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  9. User makes first authenticated request                       │
+│     ↓                                                            │
+│  10. verifyNextAuthToken() called                               │
+│     ↓                                                            │
+│  11. getSession() verifies NextAuth JWT cookie                  │
+│     ↓                                                            │
+│  12. Extract email, name, image from session                     │
+│     ↓                                                            │
+│  13. Check if user exists in database by email                   │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF USER EXISTS:                                     │       │
+│  │    → createOrUpdateOAuthUser() updates profile       │       │
+│  │    → Cache invalidated                               │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  14. Check for guest cookie (twistloom_guest_id)                │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF GUEST COOKIE EXISTS AND ≠ USER ID:              │       │
+│  │    → migrateGuestToAuthUser() called                │       │
+│  │    → Transfers books to authenticated user          │       │
+│  │    → Transfers sessions to authenticated user       │       │
+│  │    → Deletes guest user from database              │       │
+│  │    → Guest cookie remains (ignored)                │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  15. Return AuthUser { id, email, name }                        │
+│     ↓                                                            │
+│  16. Request proceeds with authenticated user                    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+Key Points:
+- User must exist in database (created via signup endpoint)
+- Password verification with bcrypt
+- Account lockout protection (5 failed attempts)
+- Rate limiting to prevent brute force attacks
+- Automatically migrates guest data if guest cookie exists
+- No manual migration API calls needed from frontend
+- Guest cookie remains but is ignored after migration
+```
+
+### Guest User Flow (Before Login)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Frontend                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. User visits site (no session)                               │
+│     ↓                                                            │
+│  2. User makes request (e.g., create book)                       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│                         Backend                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  3. guestOrAuthMiddleware() called                              │
+│     ↓                                                            │
+│  4. verifyNextAuthToken() returns null (no session)              │
+│     ↓                                                            │
+│  5. Check for guest cookie (twistloom_guest_id)                 │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF GUEST COOKIE EXISTS:                           │       │
+│  │    → Reuse existing guestId                         │       │
+│  │    → Refresh cookie TTL (sliding expiry)            │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  ┌─────────────────────────────────────────────────────┐       │
+│  │  IF NO GUEST COOKIE:                               │       │
+│  │    → createGuestUser() generates new guestId       │       │
+│  │    → Insert user record with isGuest=true          │       │
+│  │    → Set guest cookie (30-day expiry)              │       │
+│  └─────────────────────────────────────────────────────┘       │
+│     ↓                                                            │
+│  6. Set req.guestAuth = { isAuthenticated: false, userId, isGuest: true }
+│     ↓                                                            │
+│  7. Request proceeds with guest user                            │
+│     ↓                                                            │
+│  8. Data (books, sessions) associated with guest userId        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+Key Points:
+- Guest users created automatically on first visit
+- Guest ID persists for 30 days via httpOnly cookie
+- Guest data associated with guest userId in database
+- Seamless transition to authenticated user on login
+```
+
 ## How NextAuth Connects to Backend Endpoints
 
 ### Login Flow (signIn)
@@ -263,37 +482,68 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
 
 **Data Migration on Login:**
 
-**File: `src/middleware/guest.ts` (backend)**
+**File: `src/middleware/nextauth.ts` (backend)**
 
-The backend implements `migrateGuestMiddleware` which:
+Guest data migration is now handled automatically by `verifyNextAuthToken()` which:
 
-1. Verifies NextAuth authentication
-2. Reads guest cookie from request
-3. Migrates guest data (books, sessions) to authenticated user
-4. Deletes guest user from database
-5. Removes guest cookie from response
+1. Verifies NextAuth session from cookie
+2. Auto-creates user if first-time OAuth login (Google)
+3. Updates user profile from OAuth provider data
+4. Migrates guest data (books, sessions) to authenticated user if guest cookie exists
+5. Calls `migrateGuestToAuthUser()` from `src/services/user-controller.ts`
 
 ```typescript
-export async function migrateGuestMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const user = await verifyNextAuthToken(req);
+// In verifyNextAuthToken():
+// Check if user exists in database
+let userId = await getUserId(email);
 
-  if (user) {
-    const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+if (!userId) {
+  // First-time OAuth login - create user in database
+  userId = await createOrUpdateOAuthUser(email, name, image);
+} else {
+  // Existing user - update profile data from OAuth provider
+  await createOrUpdateOAuthUser(email, name, image);
+}
 
-    if (guestCookie && user.id !== guestCookie) {
-      // Migrate guest data to authenticated user
-      await migrateGuestData(guestCookie, user.id);
-
-      // Remove guest cookie
-      res.clearCookie(GUEST_COOKIE_NAME, {
-        path: '/',
-      });
-    }
-  }
-
-  next();
+// Migrate guest data if guest cookie exists
+const guestCookie = req.cookies?.['twistloom_guest_id'];
+if (guestCookie && guestCookie !== userId) {
+  await migrateGuestToAuthUser(guestCookie, userId);
 }
 ```
+
+**File: `src/services/user-controller.ts` (backend)**
+
+Provides reusable service functions for user management:
+
+- `createOrUpdateOAuthUser()` - Creates or updates user from OAuth provider data
+- `migrateGuestToAuthUser()` - Migrates guest data to authenticated user and deletes guest
+
+**Data Migration Details:**
+
+The `migrateGuestToAuthUser()` function ensures no orphaned data by migrating all guest-related data before deleting the guest user:
+
+**Tables migrated (guests can have data in):**
+- `books` - Guest-created books
+- `userSessions` - Guest reading sessions
+- `userPageProgress` - Guest page progress tracking
+- `userActivityLogs` - Guest activity logs
+
+**Tables not migrated (disabled for guests):**
+- `userAuth` - Only for authenticated users
+- `userLikes` - Disabled for guests
+- `userFavorites` - Disabled for guests
+- `userComments` - Disabled for guests
+- `userFollows` - Disabled for guests
+- `transactions` - Guests can't make payments
+- `userNotifications` - Disabled for guests
+- `user_checkins` - Disabled for guests
+
+**Migration approach:**
+- Discard the guest user row (delete it)
+- Append/migrate all guest data to the authenticated user
+- This ensures no orphaned data and no data loss
+- Foreign key constraints are properly handled by migrating dependent data before deletion
 
 ### Guest Flow
 
@@ -310,12 +560,13 @@ export async function migrateGuestMiddleware(req: Request, res: Response, next: 
    - Story is owned by guest user
 
 3. **User logs in**
-   - Frontend calls NextAuth signIn()
-   - Backend verifies credentials
-   - Backend migrates guest data to authenticated user
-   - Backend deletes guest user from DB
-   - Backend removes guest cookie
-   - User now uses auth cookie
+   - Frontend calls NextAuth signIn() (Google OAuth or email/password)
+   - NextAuth creates session cookie
+   - On next request, `verifyNextAuthToken()` verifies session
+   - If first-time OAuth login: auto-creates user in database
+   - If guest cookie exists: migrates guest data to authenticated user
+   - Guest user deleted from database
+   - User now uses auth cookie (guest cookie remains but is ignored)
 
 ### Guest Cookie Configuration
 

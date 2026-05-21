@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
-import type { StoryMC, StoryMCCandidate } from "../types/character.js";
+import type { InventoryItem, StoryMC, StoryMCCandidate } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -130,7 +130,7 @@ export const storyStates = pgTable(
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
     traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     plotFlags: jsonb("plot_flags").$type<PlotFlag[]>().notNull().default(sql`'[]'::jsonb`), // Narrative flags and hints
-    inventory: jsonb("inventory").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Items and resources
+    inventory: jsonb("inventory").$type<InventoryItem[]>().notNull().default(sql`'[]'::jsonb`), // Items and resources
     psychologicalProfile: jsonb("psychological_profile").$type<PsychologicalProfile>().notNull(), // PsychologicalProfile structure
     hiddenState: jsonb("hidden_state").$type<HiddenState>().notNull(), // Hidden narrative state structure
     memoryIntegrity: text("memory_integrity").$type<MemoryIntegrity>().notNull().default("stable"), // "stable" | "fragmented" | "corrupted"
@@ -315,6 +315,8 @@ export const books = pgTable(
     index("books_status_idx").on(t.status),
     // Index for language filtering
     index("books_language_idx").on(t.language),
+    // Unique index for slug lookups (optimizes book retrieval by slug)
+    index("books_slug_idx").on(t.slug),
     // GIN index for keywords JSONB array (enables efficient array operations)
     index("books_keywords_gin_idx").using("gin", t.keywords),
     // GIN index for title with pg_trgm (enables efficient ILIKE search with leading wildcards)

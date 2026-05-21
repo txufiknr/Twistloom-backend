@@ -155,6 +155,8 @@ router.post('/verify-credentials', async (req, res) => {
     await resetFailedLoginAttempts(userData.userId);
 
     // Return user data for NextAuth (exclude passwordHash)
+    // Note: Guest data migration is handled automatically by verifyNextAuthToken
+    // on subsequent requests after NextAuth creates the session
     res.json({
       userId: userData.userId,
       email: userData.email,
@@ -163,7 +165,7 @@ router.post('/verify-credentials', async (req, res) => {
       image: userData.image,
     });
   } catch (error) {
-    console.error('Credential verification error:', error);
+    console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
     handleApiError(res, 'Failed to verify credentials', error, 500);
   }
 });

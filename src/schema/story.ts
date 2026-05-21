@@ -22,23 +22,14 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   flagUpdates: { type: 'object' },
   traumaTagUpdates: { type: 'object' },
   addPlotFlag: { type: 'object' },
-  inventoryUpdates: { type: 'object' },
   characterUpdates: { type: 'object' },
   relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
-  // viableEnding: {
-  //   type: 'object',
-  //   properties: {
-  //     text: { type: 'string' },
-  //     type: { type: 'string' }
-  //   },
-  //   required: ['text', 'type'],
-  //   additionalProperties: false
-  // },
   isMajorEvent: { type: 'boolean' },
   contextHistory: { type: 'string' },
+  inventory: { type: 'array', items: { type: 'object' } },
   injuries: { type: 'array', items: { type: 'object' } }
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 

@@ -1,6 +1,6 @@
 import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
-import type { StoryPage, StoryState } from "./story.js";
+import type { StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
 import type { DBBookTranslations, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -123,7 +123,7 @@ export interface EnrichedBookData {
   lastPage?: string | null;
   firstPageId: string;
   firstPageText: string;
-  translation?: DBBookTranslations
+  translation: DBBookTranslations | null
 }
 
 /**
@@ -135,6 +135,7 @@ export interface EnrichedBookData {
 export type BookCreationResponse = {
   /** Book title (catchy, mysterious) */
   title: string;
+  alternativeTitles: string[];
   /** Total number of pages in the book */
   totalPages: number;
   /** Language code (e.g. 'en') */
@@ -149,8 +150,8 @@ export type BookCreationResponse = {
   mainCharacter: StoryMC;
   /** First story page content */
   firstPage: StoryPage;
-  /** Initial ending for the story */
-  initialState: Pick<StoryState, 'flags' | 'difficulty' | 'viableEnding'>;
+  /** Initial state for the story */
+  initialState: StoryStateInitialGeneration;
   /** Initial place memory setup */
   initialPlace: {
     name: string;
@@ -239,3 +240,13 @@ export type BookPageVisit = {
   visitorPercentage: number;
   readerUserId?: string;
 }
+
+/**
+ * Result of slug generation with the chosen title
+ */
+export type BookSlugGenerationResult = {
+  /** The generated unique slug */
+  slug: string;
+  /** The title that was used to generate the slug (may be alternative) */
+  title: string;
+};

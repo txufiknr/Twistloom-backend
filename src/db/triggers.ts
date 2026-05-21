@@ -75,15 +75,16 @@ async function ensureUserSessionTrigger(): Promise<void> {
 }
 
 /**
- * Creates trigger to update book read count based on unique users in user_sessions
+ * Creates trigger to update book read count and page 1 visit count based on unique users in user_sessions
  * 
  * This trigger fires AFTER INSERT OR UPDATE on user_sessions table:
  * 1. When a user starts or updates a session for a book
  * 2. Updates read_count to match unique users who have read this book
- * 3. Ensures denormalized count stays synchronized
+ * 3. Updates page 1's visit_count to match book's read_count (every reader visits page 1)
+ * 4. Ensures denormalized counts stay synchronized
  * 
  * Note: This counts unique users (distinct user_id), not total page visits
- * Moved from user_page_progress to user_sessions to capture page 1 visits
+ * Page 1 visit count is consolidated with book read count since every reader visits page 1
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
@@ -95,7 +96,10 @@ async function ensureBookReadCountTrigger(): Promise<void> {
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_book_read_count()
       RETURNS TRIGGER AS $$
+      DECLARE
+        v_page_1_id UUID;
       BEGIN
+        -- Update book read count
         UPDATE books
         SET read_count = (
           SELECT COUNT(DISTINCT user_id)
@@ -105,6 +109,25 @@ async function ensureBookReadCountTrigger(): Promise<void> {
             trending_score = trending_score + 0.5, -- Incremental update for hybrid approach
             updated_at = NOW()
         WHERE id = NEW.book_id;
+        
+        -- Update page 1's visit_count to match book's read_count
+        -- Every book reader visits page 1, so visit_count = read_count
+        SELECT id INTO v_page_1_id
+        FROM pages
+        WHERE book_id = NEW.book_id AND page = 1
+        LIMIT 1;
+        
+        IF v_page_1_id IS NOT NULL THEN
+          UPDATE pages
+          SET visit_count = (
+            SELECT COUNT(DISTINCT user_id)
+            FROM user_sessions
+            WHERE book_id = NEW.book_id
+          ),
+              updated_at = NOW()
+          WHERE id = v_page_1_id;
+        END IF;
+        
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
@@ -248,14 +271,15 @@ async function ensureBookBranchesIncrementTrigger(): Promise<void> {
 }
 
 /**
- * Creates trigger to update page visit count based on unique users in user_sessions
+ * Creates trigger to update page visit count based on unique users in user_page_progress
  * 
- * This trigger fires AFTER INSERT OR UPDATE on user_sessions table:
- * 1. When a user's session is updated to point to a new page (page_id changes)
- * 2. Updates visit_count to match unique users who have visited this page
+ * This trigger fires AFTER INSERT OR UPDATE on user_page_progress table:
+ * 1. When a user progresses to a new page (pages > 1)
+ * 2. Updates visit_count for both actionedPageId and nextPageId to count unique users
  * 3. Ensures denormalized count stays synchronized for fast reads
  * 
- * Note: This counts unique users (distinct user_id), not total page visits
+ * Note: This counts unique users (distinct user_id) from user_page_progress
+ * Page 1 visit count is handled by book read count trigger (every reader visits page 1)
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
@@ -268,18 +292,30 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION increment_page_visit_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- Update visit_count to count unique users who have visited this page
-        -- This captures ALL page visits including page 1
-        IF NEW.page_id IS NOT NULL AND (TG_OP = 'INSERT' OR NEW.page_id IS DISTINCT FROM OLD.page_id) THEN
+        -- Update visit_count for actionedPageId (page where action was taken)
+        IF NEW.actioned_page_id IS NOT NULL THEN
           UPDATE pages
           SET visit_count = (
             SELECT COUNT(DISTINCT user_id)
-            FROM user_sessions
-            WHERE page_id = NEW.page_id
+            FROM user_page_progress
+            WHERE actioned_page_id = NEW.actioned_page_id
           ),
               updated_at = NOW()
-          WHERE id = NEW.page_id;
+          WHERE id = NEW.actioned_page_id;
         END IF;
+        
+        -- Update visit_count for nextPageId (destination page)
+        IF NEW.next_page_id IS NOT NULL THEN
+          UPDATE pages
+          SET visit_count = (
+            SELECT COUNT(DISTINCT user_id)
+            FROM user_page_progress
+            WHERE next_page_id = NEW.next_page_id
+          ),
+              updated_at = NOW()
+          WHERE id = NEW.next_page_id;
+        END IF;
+        
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
@@ -293,10 +329,10 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
       DROP TRIGGER IF EXISTS user_page_progress_visit_trigger ON user_page_progress;
     `);
     
-    // Create the trigger on user_sessions
+    // Create the trigger on user_page_progress
     await dbWrite.execute(`
-      CREATE TRIGGER user_sessions_visit_trigger
-        AFTER INSERT OR UPDATE ON user_sessions
+      CREATE TRIGGER user_page_progress_visit_trigger
+        AFTER INSERT OR UPDATE ON user_page_progress
         FOR EACH ROW
         EXECUTE FUNCTION increment_page_visit_count();
     `);
@@ -601,7 +637,7 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
         NEW.pending_generation_count = (
           SELECT COUNT(*)
           FROM jsonb_array_elements(NEW.actions) AS action
-          WHERE (action->>'destination'->>'pageId') IS NULL
+          WHERE (action->'destination'->>'pageId') IS NULL
         );
         RETURN NEW;
       END;

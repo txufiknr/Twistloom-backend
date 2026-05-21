@@ -219,7 +219,7 @@ function isValidLanguageCode(languageCode: string): boolean {
  * Checks if translation is needed based on language codes
  * 
  * @param bookLanguage - Source language code
- * @param acceptLanguage - Accept-Language header value
+ * @param headerLanguage - Accept-Language header value
  * @returns Target language code if translation needed, undefined otherwise
  * 
  * @example
@@ -233,14 +233,13 @@ function isValidLanguageCode(languageCode: string): boolean {
  */
 export function shouldTranslate(
   bookLanguage: string,
-  acceptLanguage: string | undefined
+  headerLanguage?: string | null
 ): string | undefined {
-  if (!acceptLanguage || !bookLanguage) {
-    return undefined;
-  }
+  // Early exit: source or target language are not provided
+  if (!headerLanguage || !bookLanguage) return undefined;
 
   // Extract primary language code (e.g., "en-US" -> "en")
-  const targetLanguage = acceptLanguage.split('-')[0].toLowerCase();
+  const targetLanguage = headerLanguage.split('-')[0].toLowerCase();
 
   // Validate language codes
   if (!isValidLanguageCode(targetLanguage) || !isValidLanguageCode(bookLanguage)) {

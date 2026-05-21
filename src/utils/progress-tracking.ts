@@ -72,7 +72,7 @@ export async function storeActionProgressEvent(
         },
       });
 
-    console.log(`[storeActionProgressEvent] 📊 DATABASE - Stored event for page ${pageId}, action "${event.action}":`, event.status);
+    console.log(`[storeActionProgressEvent] 📊 Stored '${event.status}' event for action "${event.action}" from page ${pageId}`);
   } catch (error) {
     console.error(`[storeActionProgressEvent] ❌ Failed to store progress event:`, error);
     throw error;

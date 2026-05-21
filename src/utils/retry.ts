@@ -350,11 +350,12 @@ export async function retryWithUniqueConstraint<T, D = any>(
         // Add retry context to non-unique constraint errors
         const errorMessage = getErrorMessage(error);
         console.error(`[retryWithUniqueConstraint] ❌ Non-retryable error (attempt ${attempt + 1}/${maxRetries + 1}):`, errorMessage);
-        console.error(`[retryWithUniqueConstraint] Full error object:`, error);
-        const contextError = new Error(`Non-retryable error in retryWithUniqueConstraint (attempt ${attempt + 1}/${maxRetries + 1}): ${errorMessage}`);
-        (contextError as ErrorWithCustomProperties).cause = error;
-        (contextError as ErrorWithCustomProperties).retryAttempt = attempt + 1;
-        (contextError as ErrorWithCustomProperties).maxRetries = maxRetries + 1;
+        console.error(`[retryWithUniqueConstraint] 🔍 Full error object:`, error);
+        
+        const contextError = createNonRetryableError(`Non-retryable error in retryWithUniqueConstraint (attempt ${attempt + 1}/${maxRetries + 1}): ${errorMessage}`);
+        contextError.cause = error;
+        contextError.retryAttempt = attempt + 1;
+        contextError.maxRetries = maxRetries + 1;
         throw contextError;
       }
 

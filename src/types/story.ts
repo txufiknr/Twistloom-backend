@@ -1,7 +1,7 @@
 import type { DBClient } from "../db/client.js";
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, RelationshipUpdate } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, InventoryItem, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
 import type { DBNewPage, DBPage, DBPageTranslations, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
@@ -633,8 +633,8 @@ export type StateDelta = {
   traumaTagUpdates?: TagUpdates;
   /** Updates to plot flags (add) for story progression */
   addPlotFlag?: PlotFlag;
-  /** Updates to inventory items (add/remove) for character */
-  inventoryUpdates?: TagUpdates;
+  // /** Updates to inventory items (add/remove) for character */
+  // inventoryUpdates?: TagUpdates;
   /** Updates to characters (new and existing) with changes */
   characterUpdates?: CharacterUpdates;
   /** Updates to character relationships and dynamics */
@@ -649,6 +649,8 @@ export type StateDelta = {
   isMajorEvent?: boolean;
   /** Updated AI-summarized context of the entire story */
   contextHistory?: string;
+  /** Object in MC's possession */
+  inventory?: InventoryItem[];
   /** Represents injuries sustained by the MC */
   injuries?: Injury[];
 
@@ -672,7 +674,7 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
     /** Current story phase classification */
     phase: StoryPhase;
     /** Collection of items and resources present in the world at the current page */
-    inventory: string[];
+    inventory: InventoryItem[];
     /** Represents injuries sustained by the MC */
     injuries: Injury[];
     /** AI-summarized context of the story until this page */
@@ -848,7 +850,7 @@ export type StoryState = {
    * Stores information about items and resources that are available
    * in the world at the current page and their potential impact on the story.
    */
-  inventory: string[];
+  inventory: InventoryItem[];
 
   /** Represents injuries sustained by the MC */
   injuries: Injury[];
@@ -906,6 +908,16 @@ export type StoryStateInfo = {
   /** Number of places remaining can be added */
   placesSlot: number;
 }
+
+export type StoryStateInitialGeneration = Partial<Pick<StoryState,
+  'flags' |
+  'difficulty' |
+  'viableEnding' |
+  'traumaTags' |
+  'plotFlags' |
+  'isMajorEvent' |
+  'inventory' |
+  'injuries'>>;
 
 export const storyPhases = {
   EARLY: `Priority: mystery seeding, unreliability introduction, character grounding.

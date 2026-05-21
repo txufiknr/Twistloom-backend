@@ -90,6 +90,7 @@ export async function retryPendingGenerations(): Promise<string[]> {
       ))
       .orderBy(
         desc(mostRecentSession.lastActiveAt), // Prioritize books with most recent active session
+        desc(books.readCount), // Then prioritize books with highest read count
         desc(books.trendingScore), // Then prioritize books with highest trending scores
         desc(pages.visitCount), // Then prioritize pages with most visits
         asc(pages.page), // Then prioritize pages with smaller page numbers
