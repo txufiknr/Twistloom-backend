@@ -43,11 +43,29 @@ res.cookie(GUEST_COOKIE_NAME, guestId, {
 | Feature | Guest Users | Authenticated Users |
 |----------|--------------|-------------------|
 | **Read Books** | ✅ Full access | ✅ Full access |
-| **Create Books** | ✅ Full access (data migrates on signup) | ✅ Full access |
+| **Create Books** | ❌ Requires authentication | ✅ Full access (consumes credits) |
 | **Reading Sessions** | ✅ Session-based tracking | ✅ User-based tracking |
-| **Progress Saving** | ✅ Per session | ✅ Persistent |
-| **Bookmarks/Favorites** | ❌ Requires signup | ✅ Full access |
-| **Comments** | ❌ Requires signup | ✅ Full access |
+| **Progress Saving** | ✅ Per session (migrates on signup) | ✅ Persistent |
+| **Bookmarks/Favorites** | ❌ Requires authentication | ✅ Full access |
+| **Comments** | ❌ Requires authentication | ✅ Full access |
+| **Likes** | ❌ Requires authentication | ✅ Full access |
+| **Social Features** | ❌ Requires authentication | ✅ Full access |
+
+**IMPORTANT: Guest User Capabilities**
+
+Guest users can only perform:
+- **Read operations**: Browse books, view content
+- **Limited write operations** (require persistence):
+  - `user_sessions`: Track reading sessions for books
+  - `user_page_progress`: Track reading progress (page choices, branch navigation)
+
+**Guest users CANNOT perform (requires authentication):**
+- Book creation: Requires authentication and consumes credits
+- Likes: Requires authentication
+- Comments: Requires authentication
+- Favorites: Requires authentication
+- Social features (follows, etc.): Require authentication
+- Payments/transactions: Require authentication
 
 ## Backend Implementation
 
@@ -192,7 +210,7 @@ CREATE TABLE user_sessions (
 
 **Endpoint:** `POST /api/books`
 
-Uses `guestOrAuthMiddleware` to allow both guests and authenticated users to create books. Guest-created books are associated with a temporary guest user ID and migrate to the authenticated user on signup.
+**IMPORTANT:** Book creation requires authentication. Guest users cannot create books.
 
 **Request Body:**
 ```json
@@ -213,7 +231,7 @@ Uses `guestOrAuthMiddleware` to allow both guests and authenticated users to cre
   "book": {
     "id": "book123",
     "title": "The Whispering Halls",
-    "userId": "guest456", // Guest user ID
+    "userId": "user456", // Authenticated user ID
     "status": "active"
   },
   "firstPage": {
@@ -224,12 +242,18 @@ Uses `guestOrAuthMiddleware` to allow both guests and authenticated users to cre
 }
 ```
 
-**Guest Book Creation Flow:**
-1. Guest submits book creation request without authentication
-2. `guestOrAuthMiddleware` creates a guest user (if not exists) and sets `req.userId`
-3. Book is created with the guest user ID
-4. Guest receives book data and can immediately start reading
-5. When guest logs in (Google OAuth or email/password), `verifyNextAuthToken()` automatically migrates all books to the authenticated account
+**Error Response (401 Unauthorized):**
+```json
+{
+  "error": "Authentication required for book creation"
+}
+```
+
+**Book Creation Flow:**
+1. User must be authenticated (via Google OAuth or email/password)
+2. `requireAuth` middleware verifies session
+3. Book is created with the authenticated user ID
+4. Credits are consumed from user's account
 
 **Database Schema:**
 ```sql
@@ -247,11 +271,11 @@ CREATE TABLE users (
 -- Index for efficient guest user queries
 CREATE INDEX users_is_guest_idx ON users(is_guest);
 
--- books table stores both guest and user books
--- userId references users.id (guest users are valid users in the users table)
+-- books table stores user books only (guests cannot create books)
+-- userId references users.id (only authenticated users)
 CREATE TABLE books (
   id UUID PRIMARY KEY,
-  user_id UUID REFERENCES users(id), -- Can be guest user ID
+  user_id UUID REFERENCES users(id), -- Authenticated user ID only
   title TEXT,
   status TEXT DEFAULT 'active',
   created_at TIMESTAMP DEFAULT NOW()

@@ -19,15 +19,18 @@ import { users } from '../db/schema.js';
 import { verifyNextAuthToken } from './nextauth.js';
 import { generateId, isValidUuid } from '../utils/uuid.js';
 import { getFromCache, setCache } from '../services/cache.js';
+import { ENABLE_LAZY_GUEST_CREATION, TEMP_SESSION_CONFIG, GUEST_CONFIG } from '../config/auth.js';
+import { createTemporarySession, getTemporarySession, updateTemporarySession, migrateTemporarySessionToGuest } from '../services/temporary-session.js';
+import { migrateSessionDataToUser } from '../services/session-data-association.js';
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const GUEST_COOKIE_NAME = 'twistloom_guest_id';
-const GUEST_COOKIE_TTL_MS = 60 * 60 * 24 * 30 * 1000; // 30 days in ms
-const GUEST_IP_CACHE_TTL_SEC = 300; // 5 minutes - reuse recent guests from same IP
-const MAX_GUEST_CREATION_RETRIES = 3;
+const GUEST_COOKIE_NAME = GUEST_CONFIG.COOKIE_NAME;
+const GUEST_COOKIE_TTL_MS = GUEST_CONFIG.COOKIE_TTL_MS;
+const GUEST_IP_CACHE_TTL_SEC = GUEST_CONFIG.IP_CACHE_TTL_SEC;
+const MAX_GUEST_CREATION_RETRIES = GUEST_CONFIG.MAX_CREATION_RETRIES;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 /**
@@ -47,6 +50,13 @@ const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const GUEST_COOKIE_OPTIONS: CookieOptions = IS_PRODUCTION
   ? { httpOnly: true, secure: true, sameSite: 'none', maxAge: GUEST_COOKIE_TTL_MS, path: '/' }
   : { httpOnly: true, secure: false, sameSite: 'lax', maxAge: GUEST_COOKIE_TTL_MS, path: '/' };
+
+/**
+ * Temporary session cookie options
+ */
+const TEMP_SESSION_COOKIE_OPTIONS: CookieOptions = IS_PRODUCTION
+  ? { httpOnly: true, secure: true, sameSite: 'none', maxAge: TEMP_SESSION_CONFIG.COOKIE_TTL_MS, path: '/' }
+  : { httpOnly: true, secure: false, sameSite: 'lax', maxAge: TEMP_SESSION_CONFIG.COOKIE_TTL_MS, path: '/' };
 
 // ---------------------------------------------------------------------------
 // Guest user creation
@@ -201,9 +211,50 @@ async function getOrCreateGuestUser(req: Request): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Determines if a request requires guest user creation (persistence)
+ * 
+ * @param req - Express request object
+ * @returns True if request requires persistence
+ */
+function requiresPersistence(req: Request): boolean {
+  const method = req.method;
+  const path = req.path;
+  
+  // Write operations that require guest user
+  const writeMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
+  if (writeMethods.includes(method)) {
+    // Exclude auth endpoints that don't require persistence
+    const excludedPaths = [
+      '/api/auth/login',
+      '/api/auth/signup',
+      '/api/auth/verify-credentials',
+      '/api/auth/forgot-password',
+      '/api/auth/reset-password',
+      '/api/auth/verify-email',
+      '/api/auth/resend-verification',
+      '/api/auth/logout',
+    ];
+    
+    return !excludedPaths.some(excluded => path.startsWith(excluded));
+  }
+  
+  // Specific endpoints that require persistence even for GET
+  const persistenceRequiredPaths = [
+    '/api/user/checkin', // Check-in requires user record
+  ];
+  
+  return persistenceRequiredPaths.some(required => path.startsWith(required));
+}
+
+/**
  * Middleware that handles both authenticated and guest users
  * Tries NextAuth authentication first, falls back to guest cookie
  * Creates new guest user if neither exists
+ * 
+ * When ENABLE_LAZY_GUEST_CREATION is enabled:
+ * - Uses temporary sessions for read-only operations
+ * - Only creates guest users for write operations
+ * - Automatically migrates temporary sessions to guests on first write
  * 
  * @param req - Express request object
  * @param res - Express response object
@@ -232,20 +283,112 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
       return;
     }
 
-    // Resolve guest ID from cookie or create new one with deduplication
-    const guestId = await resolveGuestId(req.cookies?.[GUEST_COOKIE_NAME]) ?? await getOrCreateGuestUser(req);
-
-    // Always refresh TTL on each request (sliding expiry)
-    res.cookie(GUEST_COOKIE_NAME, guestId, GUEST_COOKIE_OPTIONS);
-
-    req.guestAuth = { isAuthenticated: false, userId: guestId, isGuest: true };
-    req.userId = guestId; // Set req.userId for rate limiting and route handlers
-
-    next();
+    // Check if lazy guest creation is enabled
+    if (ENABLE_LAZY_GUEST_CREATION) {
+      await handleLazyGuestCreation(req, res, next);
+    } else {
+      await handleTraditionalGuestCreation(req, res, next);
+    }
   } catch (error) {
     console.error('[guest] ❌ Guest middleware error:', error);
     next(error); // Propagate — don't forward null userId to route handlers
   }
+}
+
+/**
+ * Handles lazy guest creation with temporary sessions
+ * 
+ * @param req - Express request object
+ * @param res - Express response object
+ * @param next - Express next middleware function
+ */
+async function handleLazyGuestCreation(req: Request, res: Response, next: NextFunction): Promise<void> {
+  // Check for existing guest cookie
+  const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
+  const guestId = await resolveGuestId(guestCookie);
+
+  if (guestId) {
+    // Existing guest user
+    req.guestAuth = { isAuthenticated: false, userId: guestId, isGuest: true };
+    req.userId = guestId;
+    res.cookie(GUEST_COOKIE_NAME, guestId, GUEST_COOKIE_OPTIONS);
+    next();
+    return;
+  }
+
+  // Check for temporary session cookie
+  const tempSessionCookie = req.cookies?.[TEMP_SESSION_CONFIG.COOKIE_NAME];
+  const tempSession = tempSessionCookie ? await getTemporarySession(tempSessionCookie) : null;
+
+  if (tempSession) {
+    // Update temporary session activity
+    await updateTemporarySession(tempSession.sessionId);
+    
+    // Check if this request requires persistence
+    if (requiresPersistence(req)) {
+      // Migrate to guest user
+      const guestUserId = await getOrCreateGuestUser(req);
+      await migrateTemporarySessionToGuest(tempSession.sessionId, guestUserId);
+      await migrateSessionDataToUser(tempSession.sessionId, guestUserId);
+      
+      // Set guest cookie and clear temp session cookie
+      res.cookie(GUEST_COOKIE_NAME, guestUserId, GUEST_COOKIE_OPTIONS);
+      res.clearCookie(TEMP_SESSION_CONFIG.COOKIE_NAME);
+      
+      req.guestAuth = { isAuthenticated: false, userId: guestUserId, isGuest: true };
+      req.userId = guestUserId;
+    } else {
+      // Continue with temporary session
+      req.guestAuth = { isAuthenticated: false, userId: tempSession.sessionId, isGuest: false, isTempSession: true };
+      req.userId = tempSession.sessionId;
+      req.tempSessionId = tempSession.sessionId;
+      res.cookie(TEMP_SESSION_CONFIG.COOKIE_NAME, tempSession.sessionId, TEMP_SESSION_COOKIE_OPTIONS);
+    }
+    
+    next();
+    return;
+  }
+
+  // No existing session - create temporary session or guest user
+  if (requiresPersistence(req)) {
+    // Directly create guest user for write operations
+    const guestUserId = await getOrCreateGuestUser(req);
+    req.guestAuth = { isAuthenticated: false, userId: guestUserId, isGuest: true };
+    req.userId = guestUserId;
+    res.cookie(GUEST_COOKIE_NAME, guestUserId, GUEST_COOKIE_OPTIONS);
+  } else {
+    // Create temporary session for read-only operations
+    const ipAddress = req.ip || req.socket.remoteAddress || 'unknown';
+    const userAgent = req.get('user-agent') || 'unknown';
+    const sessionId = await createTemporarySession(ipAddress, userAgent);
+    
+    req.guestAuth = { isAuthenticated: false, userId: sessionId, isGuest: false, isTempSession: true };
+    req.userId = sessionId;
+    req.tempSessionId = sessionId;
+    res.cookie(TEMP_SESSION_CONFIG.COOKIE_NAME, sessionId, TEMP_SESSION_COOKIE_OPTIONS);
+  }
+  
+  next();
+}
+
+/**
+ * Handles traditional guest creation (always creates guest user)
+ * 
+ * @param req - Express request object
+ * @param res - Express response object
+ * @param next - Express next middleware function
+ */
+async function handleTraditionalGuestCreation(req: Request, res: Response, next: NextFunction): Promise<void> {
+  // Resolve guest ID from cookie or create new one with deduplication
+  const guestId = await resolveGuestId(req.cookies?.[GUEST_COOKIE_NAME]) ?? await getOrCreateGuestUser(req);
+
+  // Always refresh TTL on each request (sliding expiry)
+  res.cookie(GUEST_COOKIE_NAME, guestId, GUEST_COOKIE_OPTIONS);
+
+  req.guestAuth = { isAuthenticated: false, userId: guestId, isGuest: true };
+  req.userId = guestId; // Set req.userId for rate limiting and route handlers
+
+  next();
 }
 
 // ---------------------------------------------------------------------------

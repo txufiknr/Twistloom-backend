@@ -523,13 +523,29 @@ Provides reusable service functions for user management:
 
 The `migrateGuestToAuthUser()` function ensures no orphaned data by migrating all guest-related data before deleting the guest user:
 
+**IMPORTANT: Guest User Capabilities**
+
+Guest users can only perform:
+- **Read operations**: Browse books, view content
+- **Limited write operations** (require persistence):
+  - `user_sessions`: Track reading sessions for books
+  - `user_page_progress`: Track reading progress (page choices, branch navigation)
+
+**Guest users CANNOT perform (requires authentication):**
+- Book creation: Requires authentication and consumes credits
+- Likes: Requires authentication
+- Comments: Requires authentication
+- Favorites: Requires authentication
+- Social features (follows, etc.): Require authentication
+- Payments/transactions: Require authentication
+
 **Tables migrated (guests can have data in):**
-- `books` - Guest-created books
 - `userSessions` - Guest reading sessions
 - `userPageProgress` - Guest page progress tracking
 - `userActivityLogs` - Guest activity logs
 
 **Tables not migrated (disabled for guests):**
+- `books` - Book creation requires authentication
 - `userAuth` - Only for authenticated users
 - `userLikes` - Disabled for guests
 - `userFavorites` - Disabled for guests
