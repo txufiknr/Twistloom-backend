@@ -106,6 +106,20 @@ export const BOOK_TRANSLATION_SCHEMA_DEFINITION = {
 export const BOOK_TRANSLATION_REQUIRED_FIELDS = ['title', 'hook', 'summary', 'keywords'] satisfies Array<keyof BookTranslation>;
 
 /**
+ * Schema definition for bulk book translation
+ */
+export const BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION = {
+  translations: { type: 'array', items: {
+    type: 'object',
+    properties: { bookId: { type: 'string' }, ...BOOK_TRANSLATION_SCHEMA_DEFINITION },
+    required: ['title', 'hook', 'summary', 'keywords'] satisfies (keyof BookTranslation)[],
+    additionalProperties: false
+  } }
+} satisfies Record<keyof { translations: BookTranslation[] }, AIJsonProperty>;
+
+export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies Array<keyof { translations: BookTranslation[] }>;
+
+/**
  * Schema definition for PageTranslation type
  */
 export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
@@ -117,3 +131,17 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
 } satisfies Record<keyof PageTranslation, AIJsonProperty>;
 
 export const PAGE_TRANSLATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof PageTranslation>;
+
+/**
+ * Schema definition for bulk page translation
+ */
+export const BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION = {
+  translations: { type: 'array', items: {
+    type: 'object',
+    properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION },
+    required: ['text', 'place', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslation)[],
+    additionalProperties: false
+  } }
+} satisfies Record<keyof { translations: PageTranslation[] }, AIJsonProperty>;
+
+export const BULK_PAGE_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies Array<keyof { translations: PageTranslation[] }>;

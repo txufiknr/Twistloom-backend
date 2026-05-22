@@ -946,7 +946,7 @@ export const bookTranslations = pgTable(
     summary: text("summary"), // Translated book summary
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Translated keywords
     providerType: text("provider_type").$type<'ai' | 'translator'>(), // AI or translator
-    providerName: text("provider_name"),
+    providerName: text("provider_name"), // Provider and model name
     createdAt,
     updatedAt,
   },

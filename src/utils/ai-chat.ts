@@ -1,7 +1,7 @@
-import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIModelSelection, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_WRITING, TIER_S_PROVIDERS } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -840,11 +840,10 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
           // Call second AI prompt to score, evaluate, and outputs corrected result
           const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
             ...options,
-
-            // AI configurations for scoring and evaluation, excludes TIER_S_PROVIDERS
-            modelSelection: Object.fromEntries(
-              Object.entries(AI_CHAT_MODELS_WRITING).filter(([provider]) => !TIER_S_PROVIDERS.includes(provider as AIChatProvider))
-            ) satisfies AIModelSelection,
+            modelSelection: AI_CHAT_MODELS_EVALUATION,
+            // modelSelection: Object.fromEntries(
+            //   Object.entries(AI_CHAT_MODELS_WRITING).filter(([provider]) => !TIER_S_PROVIDERS.includes(provider as AIChatProvider))
+            // ) satisfies AIModelSelection,
             config,
             systemPrompt,
             context: `${context}-evaluation`,

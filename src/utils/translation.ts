@@ -21,6 +21,8 @@
  * ```
  */
 
+import { LANGUAGE_NAMES } from "../config/translation.js";
+
 /**
  * Translates text using LibreTranslate API
  * 
@@ -137,4 +139,25 @@ export async function translateTexts({
   }
 
   return data.translatedText;
+}
+
+/**
+ * Formats a language code into a human-readable label
+ * 
+ * @param languageCode - ISO 639-1 language code (e.g., 'id', 'es', 'fr')
+ * @returns Formatted language label (e.g., "Indonesian (id)" or "id" if unknown)
+ * 
+ * @example
+ * ```typescript
+ * formatLanguage('id'); // "Indonesian (id)"
+ * formatLanguage('es'); // "Spanish (es)"
+ * formatLanguage('xx'); // "xx"
+ * ```
+ */
+export function formatLanguage(languageCode: string): string {
+  const languageName = LANGUAGE_NAMES[languageCode];
+  if (languageName) {
+    return `${languageName} (${languageCode})`;
+  }
+  return languageCode;
 }

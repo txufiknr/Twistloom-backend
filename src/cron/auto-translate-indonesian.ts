@@ -14,123 +14,122 @@ import { dbWrite } from "../db/client.js";
 import { books, pages, bookTranslations, pageTranslations } from "../db/schema.js";
 import { eq, and, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
-import { translateBook, translatePage } from "../utils/prompt.js";
-import { MAX_BOOKS_PER_TRANSLATION_RUN, MAX_PAGES_PER_TRANSLATION_RUN } from "../config/translation.js";
+import { translateBooksBulk, translatePagesBulk } from "../utils/prompt-translation.js";
+import { MAX_BOOKS_PER_TRANSLATION_RUN, MAX_PAGES_PER_TRANSLATION_RUN, BOOKS_PER_BULK_TRANSLATION, PAGES_PER_BULK_TRANSLATION } from "../config/translation.js";
 import type { DBBook, DBPage } from "../types/schema.js";
 
 const TARGET_LANGUAGE = 'id'; // Indonesian (ISO 639-1)
-const PROVIDER_TYPE = 'ai';
 
 /**
- * Translates a book to Indonesian
+ * Translates books to Indonesian in bulk
  */
-async function translateBookToIndonesian(book: DBBook): Promise<void> {
+async function translateBooksToIndonesianBulk(books: DBBook[]): Promise<void> {
+  if (books.length === 0) return;
+
   try {
-    console.log(`[auto-translate-id] 📚 Translating book ${book.id} to Indonesian...`);
+    console.log(`[auto-translate-id] 📚 Translating ${books.length} books to Indonesian in bulk...`);
 
-    const { provider, result: translation } = await translateBook(
-      {
-        title: book.title,
-        hook: book.hook || '',
-        summary: book.summary || '',
-        keywords: book.keywords || [],
-        language: book.language || 'en',
-      },
-      TARGET_LANGUAGE
-    );
+    const booksWithIds = books.map(book => ({
+      id: book.id,
+      title: book.title,
+      hook: book.hook || '',
+      summary: book.summary || '',
+      keywords: book.keywords || [],
+      language: book.language || 'en',
+    }));
 
-    if (!translation) {
-      console.warn(`[auto-translate-id] ⚠️ Book translation failed, will retry in next cron job`);
-      return;
-    }
+    const { provider, model, translations } = await translateBooksBulk(booksWithIds, TARGET_LANGUAGE);
+    const providerName = `${provider}${model ? ` (${model})` : ''}`;
 
-    // Insert or update translation
-    await dbWrite
-      .insert(bookTranslations)
-      .values({
-        bookId: book.id,
-        language: TARGET_LANGUAGE,
-        title: translation.title,
-        hook: translation.hook,
-        summary: translation.summary,
-        keywords: translation.keywords,
-        providerType: PROVIDER_TYPE,
-        providerName: provider,
-      })
-      .onConflictDoUpdate({
-        target: [bookTranslations.bookId, bookTranslations.language],
-        set: {
+    // Insert or update translations in bulk
+    for (const translation of translations) {
+      await dbWrite
+        .insert(bookTranslations)
+        .values({
+          bookId: translation.bookId,
+          language: TARGET_LANGUAGE,
           title: translation.title,
           hook: translation.hook,
           summary: translation.summary,
           keywords: translation.keywords,
-          providerType: PROVIDER_TYPE,
-          providerName: provider,
-          updatedAt: new Date(),
-        },
-      });
+          providerType: 'ai',
+          providerName,
+        })
+        .onConflictDoUpdate({
+          target: [bookTranslations.bookId, bookTranslations.language],
+          set: {
+            title: translation.title,
+            hook: translation.hook,
+            summary: translation.summary,
+            keywords: translation.keywords,
+            providerType: 'ai',
+            providerName,
+            updatedAt: new Date(),
+          },
+        });
+    }
 
-    console.log(`[auto-translate-id] ✅ Book ${book.id} translated to Indonesian`);
+    console.log(`[auto-translate-id] ✅ Translated ${translations.length} books to Indonesian`);
   } catch (error) {
-    console.error(`[auto-translate-id] ❌ Failed to translate book ${book.id}:`, getErrorMessage(error));
+    console.error(`[auto-translate-id] ❌ Failed to translate books in bulk:`, getErrorMessage(error));
     throw error;
   }
 }
 
 /**
- * Translates a page to Indonesian
+ * Translates pages to Indonesian in bulk
  */
-async function translatePageToIndonesian(page: DBPage): Promise<void> {
+async function translatePagesToIndonesianBulk(pages: DBPage[]): Promise<void> {
+  if (pages.length === 0) return;
+
   try {
-    console.log(`[auto-translate-id] 📄 Translating page ${page.id} to Indonesian...`);
+    console.log(`[auto-translate-id] 📄 Translating ${pages.length} pages to Indonesian in bulk...`);
 
-    const { provider, result: translation } = await translatePage(
-      {
-        text: page.text,
-        place: page.place || '',
-        keyEvents: page.keyEvents || [],
-        importantObjects: page.importantObjects || [],
-        actions: page.actions || [],
-      },
-      TARGET_LANGUAGE
-    );
+    const pagesWithIds = pages.map(page => ({
+      id: page.id,
+      text: page.text,
+      place: page.place || '',
+      keyEvents: page.keyEvents || [],
+      importantObjects: page.importantObjects || [],
+      actions: page.actions || [],
+    }));
 
-    if (!translation) {
-      console.warn(`[auto-translate-id] ⚠️ Book translation failed, will retry in next cron job`);
-      return;
-    }
+    const { provider, model, translations } = await translatePagesBulk(pagesWithIds, TARGET_LANGUAGE);
+    const providerName = `${provider}${model ? ` (${model})` : ''}`;
 
-    // Insert or update translation (translation.actions is already in ActionTranslation format)
-    await dbWrite
-      .insert(pageTranslations)
-      .values({
-        pageId: page.id,
-        language: TARGET_LANGUAGE,
-        text: translation.text,
-        place: translation.place,
-        keyEvents: translation.keyEvents,
-        importantObjects: translation.importantObjects,
-        actions: translation.actions,
-        providerType: PROVIDER_TYPE,
-        providerName: provider,
-      })
-      .onConflictDoUpdate({
-        target: [pageTranslations.pageId, pageTranslations.language],
-        set: {
+    // Insert or update translations in bulk
+    for (const translation of translations) {
+      await dbWrite
+        .insert(pageTranslations)
+        .values({
+          pageId: translation.pageId,
+          language: TARGET_LANGUAGE,
           text: translation.text,
           place: translation.place,
           keyEvents: translation.keyEvents,
           importantObjects: translation.importantObjects,
           actions: translation.actions,
-          providerType: PROVIDER_TYPE,
-          providerName: provider,
-          updatedAt: new Date(),
-        },
-      });
+          providerType: 'ai',
+          providerName,
+        })
+        .onConflictDoUpdate({
+          target: [pageTranslations.pageId, pageTranslations.language],
+          set: {
+            text: translation.text,
+            place: translation.place,
+            keyEvents: translation.keyEvents,
+            importantObjects: translation.importantObjects,
+            actions: translation.actions,
+            providerType: 'ai',
+            providerName,
+            updatedAt: new Date(),
+          },
+        });
+    }
 
-    console.log(`[auto-translate-id] ✅ Page ${page.id} translated to Indonesian`);
+    console.log(`[auto-translate-id] ✅ Translated ${translations.length} pages to Indonesian`);
   } catch (error) {
-    console.error(`[auto-translate-id] ❌ Failed to translate page ${page.id}:`, getErrorMessage(error));
+    console.error(`[auto-translate-id] ❌ Failed to translate pages in bulk:`, getErrorMessage(error));
     throw error;
   }
 }
@@ -166,7 +165,7 @@ async function findBooksNeedingTranslation(): Promise<DBBook[]> {
           SELECT 1 FROM book_translations
           WHERE book_translations.book_id = books.id
           AND book_translations.language = ${TARGET_LANGUAGE}
-          AND book_translations.provider_type != ${PROVIDER_TYPE}
+          AND book_translations.provider_type != 'ai'
         )`
       )
     )
@@ -204,7 +203,7 @@ async function findPagesNeedingTranslation(): Promise<DBPage[]> {
         SELECT 1 FROM page_translations
         WHERE page_translations.page_id = pages.id
         AND page_translations.language = ${TARGET_LANGUAGE}
-        AND page_translations.provider_type != ${PROVIDER_TYPE}
+        AND page_translations.provider_type != 'ai'
       )`
     )
     .limit(MAX_PAGES_PER_TRANSLATION_RUN);
@@ -228,14 +227,15 @@ export async function autoTranslateIndonesian(): Promise<void> {
     const booksToTranslate = await findBooksNeedingTranslation();
     console.log(`[auto-translate-id] 📚 Found ${booksToTranslate.length} books needing Indonesian translation`);
 
-    // Translate books
+    // Translate books in bulk chunks
     let booksTranslated = 0;
-    for (const book of booksToTranslate) {
+    for (let i = 0; i < booksToTranslate.length; i += BOOKS_PER_BULK_TRANSLATION) {
+      const chunk = booksToTranslate.slice(i, i + BOOKS_PER_BULK_TRANSLATION);
       try {
-        await translateBookToIndonesian(book);
-        booksTranslated++;
+        await translateBooksToIndonesianBulk(chunk);
+        booksTranslated += chunk.length;
       } catch {
-        console.log(`[auto-translate-id] ⏩ Skipping book ${book.id} due to error`);
+        console.log(`[auto-translate-id] ⏩ Skipping book batch ${i / BOOKS_PER_BULK_TRANSLATION + 1} due to error`);
       }
     }
 
@@ -243,14 +243,15 @@ export async function autoTranslateIndonesian(): Promise<void> {
     const pagesToTranslate = await findPagesNeedingTranslation();
     console.log(`[auto-translate-id] 📄 Found ${pagesToTranslate.length} pages needing Indonesian translation`);
 
-    // Translate pages
+    // Translate pages in bulk chunks
     let pagesTranslated = 0;
-    for (const page of pagesToTranslate) {
+    for (let i = 0; i < pagesToTranslate.length; i += PAGES_PER_BULK_TRANSLATION) {
+      const chunk = pagesToTranslate.slice(i, i + PAGES_PER_BULK_TRANSLATION);
       try {
-        await translatePageToIndonesian(page);
-        pagesTranslated++;
+        await translatePagesToIndonesianBulk(chunk);
+        pagesTranslated += chunk.length;
       } catch {
-        console.log(`[auto-translate-id] ⏩ Skipping page ${page.id} due to error`);
+        console.log(`[auto-translate-id] ⏩ Skipping page batch ${i / PAGES_PER_BULK_TRANSLATION + 1} due to error`);
       }
     }
 

@@ -1,5 +1,5 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
@@ -13,10 +13,10 @@ import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
-import type { DBNewBook, DBPage } from "../types/schema.js";
-import type { ActionTranslation, Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { DBNewBook } from "../types/schema.js";
+import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, InitializeBookResult, BookTranslation, PageTranslation } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { books } from "../db/schema.js";
@@ -27,7 +27,7 @@ import { logUserActivity } from "../services/user.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
 import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
-import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION, BOOK_TRANSLATION_REQUIRED_FIELDS, BOOK_TRANSLATION_SCHEMA_DEFINITION, PAGE_TRANSLATION_REQUIRED_FIELDS, PAGE_TRANSLATION_SCHEMA_DEFINITION } from "../schema/book.js";
+import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
 import { threadPriorities, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
@@ -2954,6 +2954,7 @@ export async function generateBookCreationPromptText(params: GenerateBookCreatio
   const { systemPrompt, userPrompt } = getBookCreationPrompts();
 
   const response = await aiPrompt(userPrompt, {
+    modelSelection: AI_CHAT_MODELS_THEME,
     systemPrompt,
     context: 'book-creation-prompt',
     logPrompts,
@@ -2961,207 +2962,6 @@ export async function generateBookCreationPromptText(params: GenerateBookCreatio
   });
 
   return response.output || "";
-}
-
-// ============================================================================
-// BOOK TRANSLATION
-// ============================================================================
-
-const bookTranslationOutputFormat: string = `{
-  "title": "Translated book title",
-  "hook": "Translated hook text",
-  "summary": "Translated summary",
-  "keywords": ["translated-keyword-1", "translated-keyword-2", "..."]
-}`;
-
-/**
- * Creates field instructions for book translation
- */
-function buildBookTranslationFieldInstructions(targetLanguage: string): string {
-  return `
-FIELD INSTRUCTIONS:
-- title: Translate the book title to ${targetLanguage}. Keep it catchy and mysterious.
-- hook: Translate the hook to ${targetLanguage}. Maintain the intrigue and psychological tension.
-- summary: Translate the summary to ${targetLanguage}. Keep it ${SUMMARY_LENGTH}, preserving the psychological thriller atmosphere.
-- keywords: Translate keywords to ${targetLanguage}. Provide ${KEYWORDS_COUNT} relevant tags in the target language.
-
-TRANSLATION GUIDELINES:
-- Maintain the psychological thriller tone and atmosphere
-- Preserve the mystery and intrigue of the original text
-- Use natural, idiomatic language in the target language
-- Keep the same level of intensity and suspense
-- Ensure cultural appropriateness for the target language
-`;
-}
-
-/**
- * Translates book metadata to target language using AI
- * 
- * @param book - Book data to translate
- * @param targetLanguage - Target language code (ISO 639-1, e.g., 'es', 'fr', 'de')
- * @returns Promise resolving to translated book metadata
- * 
- * @example
- * ```typescript
- * const translation = await translateBook(book, 'es');
- * console.log('Spanish title:', translation.title);
- * ```
- */
-export async function translateBook(
-  book: Pick<Book, 'title' | 'hook' | 'summary' | 'keywords' | 'language'>,
-  targetLanguage: string
-): Promise<AIResponse<BookTranslation>> {
-  const prompt = `TASK: Translate the following book metadata from "${book.language || 'en'}" to "${targetLanguage}":
-
-Title: ${book.title}
-Hook: ${book.hook}
-Summary: ${book.summary}
-Keywords: ${book.keywords?.join(', ') || 'none'}
-
-Provide the translation in JSON format.`;
-
-  const response = await executePromptForJSON<BookTranslation>({
-    prompt,
-    configs: {
-      schema: BOOK_TRANSLATION_SCHEMA_DEFINITION,
-      requiredFields: BOOK_TRANSLATION_REQUIRED_FIELDS,
-      fallbackField: 'title',
-      baseOptions: {
-        config: AI_CHAT_CONFIG_DEFAULT,
-        modelSelection: AI_CHAT_MODELS_WRITING,
-        context: 'book-translation',
-        logPrompts: true,
-      }
-    } satisfies AIPromptForJson<BookTranslation>,
-    jsonStructure: bookTranslationOutputFormat,
-    fieldInstructions: buildBookTranslationFieldInstructions(targetLanguage),
-  });
-
-  if (!response.result) {
-    const errorCode = response.finishReason || 'UNKNOWN';
-    const provider = response.provider || 'unknown';
-    throw new Error(`Failed to translate book: ${errorCode} (${provider})`);
-  }
-
-  return response;
-}
-
-// ============================================================================
-// PAGE TRANSLATION
-// ============================================================================
-
-const pageTranslationOutputFormat: string = `{
-  "text": "Translated page text",
-  "place": "Translated place name",
-  "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
-  "importantObjects": ["translated-object-1", "translated-object-2", "..."],
-  "actions": [
-    {
-      "originalText": "Original action text (keep unchanged)",
-      "text": "Translated action text"
-    }
-  ]
-}`;
-
-/**
- * Creates field instructions for page translation
- */
-function buildPageTranslationFieldInstructions(targetLanguage: string): string {
-  return `
-FIELD INSTRUCTIONS:
-- text: Translate the page narrative to ${targetLanguage}. Maintain first-person POV and psychological thriller atmosphere.
-- place: Translate the place name to ${targetLanguage}. Keep it atmospheric and descriptive.
-- keyEvents: Translate key events to ${targetLanguage}. Preserve the sequence and importance.
-- importantObjects: Translate important objects to ${targetLanguage}. Keep them relevant to the story.
-- actions: Translate action texts to ${targetLanguage}.
-
-TRANSLATION GUIDELINES:
-- Maintain the first-person central (MC = narrator) POV throughout
-- Preserve the psychological tension and horror elements
-- Use natural, idiomatic language in the target language
-- Keep the same emotional tone (fear, dread, suspense, etc.)
-- Ensure action choices remain meaningful and intriguing
-`;
-}
-
-/**
- * Translates page content to target language using AI
- * 
- * @param page - Page data to translate
- * @param targetLanguage - Target language code (ISO 639-1, e.g., 'es', 'fr', 'de')
- * @returns Promise resolving to translated page content
- * 
- * @example
- * ```typescript
- * const translation = await translatePage(page, 'es');
- * console.log('Spanish text:', translation.text);
- * ```
- */
-export async function translatePage(
-  page: Pick<DBPage, 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>,
-  targetLanguage: string
-): Promise<AIResponse<PageTranslation>> {
-  // Build actions list for the prompt
-  const actionsList = (page.actions || []).map(a => a.text).join('; ');
-
-  const prompt = `TASK: Translate the following page content to ${targetLanguage}:
-
-Text:
-"""
-${page.text}
-"""
-
-Place: ${page.place}
-Key Events: ${page.keyEvents?.join(', ') || 'none'}
-Important Objects: ${page.importantObjects?.join(', ') || 'none'}
-Actions: ${actionsList || 'none'}
-
-Provide the translation in JSON format. For actions, include both the original text (unchanged) and the translated text.`;
-
-  const response = await executePromptForJSON<PageTranslation>({
-    prompt,
-    configs: {
-      schema: PAGE_TRANSLATION_SCHEMA_DEFINITION,
-      requiredFields: PAGE_TRANSLATION_REQUIRED_FIELDS,
-      fallbackField: 'text',
-      baseOptions: {
-        config: AI_CHAT_CONFIG_DEFAULT,
-        modelSelection: AI_CHAT_MODELS_WRITING,
-        context: 'page-translation',
-        logPrompts: true,
-      }
-    } satisfies AIPromptForJson<PageTranslation>,
-    jsonStructure: pageTranslationOutputFormat,
-    fieldInstructions: buildPageTranslationFieldInstructions(targetLanguage),
-  });
-
-  if (!response.result) {
-    const errorCode = response.finishReason || 'UNKNOWN';
-    const provider = response.provider || 'unknown';
-    throw new Error(`Failed to translate page: ${errorCode} (${provider})`);
-  }
-
-  // Ensure actions have originalText matching the original actions
-  const originalActions = page.actions || [];
-  const translatedActions = response.result.actions || [];
-  
-  // Map translated actions back to original actions by matching text
-  const finalActions: ActionTranslation[] = originalActions.map(originalAction => {
-    const translatedAction = translatedActions.find(
-      ta => ta.originalText === originalAction.text
-    );
-    return {
-      originalText: originalAction.text,
-      text: translatedAction?.text || originalAction.text,
-    };
-  });
-
-  const result: PageTranslation = {
-    ...response.result,
-    actions: finalActions,
-  };
-
-  return { ...response, result };
 }
 
 /**

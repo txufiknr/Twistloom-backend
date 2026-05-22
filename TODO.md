@@ -1,4 +1,3 @@
-[x] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')
 [ ] Page 1 selected actions masih none
 [ ] Originals: Mc name predefine casts aja, jangan AI
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
@@ -12,7 +11,11 @@
 [ ] userLogins schema (userId, userAgent) -> database sessions (Drizzle adapter)
 [ ] Implement belief
 [ ] Implement corruption curve
+[ ] AI_MAX_PROMPT_LENGTH belum dipake
 
+[x] cron trasnlate langsung 5 book per request
+[x] generate theme ake openai aja
+[x] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')
 [x] trigger read_count masih ngaco, visit_count udah bener 1
 [x] inventory buat kayak injury, jangan string array
 [x] add inventory, injuries di type StoryStateInitialGeneration (tambah juga di evaluator prompt: instruction & format)

@@ -3,7 +3,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { usage } from '../db/schema.js';
 import { getTodayDate } from './time.js';
 import { dbRead, dbWrite } from '../db/client.js';
-import { AI_RATE_LIMITS, RATE_LIMIT_SAFETY_BUFFER_PERCENT } from "../config/ai-clients.js";
+import { AI_RATE_LIMITS, AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT } from "../config/ai-clients.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import { delay } from "./time.js";
 
@@ -12,7 +12,7 @@ import { delay } from "./time.js";
  */
 const getRateLimitConfig = (provider: AIChatProvider) => {
   const actualRpm = AI_RATE_LIMITS[provider].rpm;
-  const safetyBuffer = RATE_LIMIT_SAFETY_BUFFER_PERCENT / 100;
+  const safetyBuffer = AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT / 100;
   const bufferedRpm = Math.floor(actualRpm * (1 - safetyBuffer));
   const delayMs = Math.floor(60000 / bufferedRpm); // Convert RPM to milliseconds between calls
   

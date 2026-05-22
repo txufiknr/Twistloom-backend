@@ -45,7 +45,7 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, { rpm: number; rpd: number }
  * Safety buffer percentage for rate limiting
  * Applied to actual RPM to prevent hitting limits
  */
-export const RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
+export const AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
 
 /**
  * Maximum total prompt length including system prompt + user prompt (in characters)
@@ -55,10 +55,14 @@ export const RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * - Gemini/Groq/GitHub/Mistral: Hard error (400 Bad Request)
  * - Cohere: Silent truncation from the end (DANGEROUS - instructions may be lost)
  * 
- * Always validate prompt length before sending:
+ * Note:
+ * - Token-to-character conversion: ~4 characters per token (English text average)
+ * - Always validate prompt length before sending
+ * 
+ * @example
  * ```typescript
- * const totalLength = systemPrompt.length + articleText.length + instructions.length;
- * if (totalLength > MAX_PROMPT_LENGTH[provider]) {
+ * const totalLength = systemPrompt.length + userPrompt.length;
+ * if (totalLength > AI_MAX_PROMPT_LENGTH[provider]) {
  *   // Switch to provider with larger context OR truncate article
  * }
  * ```
@@ -75,9 +79,6 @@ export const RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * | GitHub Models | gpt-4o                     | 128K       | ~120K tokens | ~480,000        | ~460,000     |
  * | Mistral       | mistral-large-latest       | 256K       | ~250K tokens | ~1,000,000      | ~980,000     |
  * 
- * Token-to-character conversion: ~4 characters per token (English text average)
- * Max Article Chars = Max Input Chars - System Prompt Buffer (~20,000 chars)
- * 
  * @see https://ai.google.dev/gemini-api/docs/models/gemini#gemini-2.5-flash
  * @see https://ai.google.dev/gemini-api/docs/models/gemini#model-variations
  * @see https://docs.cohere.com/docs/models#command-r-08-2024
@@ -88,7 +89,7 @@ export const RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * @see https://github.com/marketplace/models
  * @see https://docs.mistral.ai/getting-started/models/
  */
-export const MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
+export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   gemini: 3_600_000,     // Full 1M token context (~4M chars, use 3.6M safe)
   cohere: 500_000,       // Full 128K token context (~512K chars, use 500K safe)
   groq: 480_000,         // Full 128K token context (~512K chars, use 480K safe)
@@ -98,22 +99,22 @@ export const MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   mistral: 1_000_000,    // 256K token context (~1,024K chars, use 1M safe)
 };
 
-export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
-  /**
-   * GitHub Models inference (OpenAI-compatible). Primary model first; mini as fallback.
-   * @see https://github.com/marketplace/models
-   */
-  gemini: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
-  github: ['openai/gpt-4o', 'openai/gpt-4o-mini'],
-  mistral: ['mistral-large-latest'],
-  cohere: [
-    /** 35B parameter model for complex text with nuanced understanding and better quality */
-    'command-r-08-2024',
-    /** 7B parameter model for fast, cost-effective processing of straightforward tasks */
-    'command-r7b-12-2024'
-  ]
-}
+/**
+ * GitHub Models inference (OpenAI-compatible). Primary model first; mini as fallback.
+ * @see https://github.com/marketplace/models
+ */
+export const AI_CHAT_MODELS_OPENAI: AIModelSelection = {
+  github: ['openai/gpt-4o', 'openai/gpt-4o-mini']
+};
 
+// Creative story writing (largest and creative models)
+export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
+  gemini: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+  ...AI_CHAT_MODELS_OPENAI,
+  mistral: ['mistral-large-latest'],
+};
+
+// Summarizing story context (small but creative)
 export const AI_CHAT_MODELS_SUMMARIZING: AIModelSelection = {
   /**
    * Gemini Generative AI models (2026)
@@ -128,15 +129,32 @@ export const AI_CHAT_MODELS_SUMMARIZING: AIModelSelection = {
    */
   gemini: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash-8b', 'gemini-1.5-flash'],
   mistral: ['mistral-medium-latest', 'mistral-small-latest'],
-  cohere: [
-    /** 35B parameter model for complex text with nuanced understanding and better quality */
-    'command-r-08-2024',
-    /** 7B parameter model for fast, cost-effective processing of straightforward tasks */
-    'command-r7b-12-2024'
-  ],
+  /** 
+   * Cohere models:
+   * - command-r-08-2024: 35B parameter model for complex text with nuanced understanding and better quality
+   * - command-r7b-12-2024: 7B parameter model for fast, cost-effective processing of straightforward tasks
+   */
+  cohere: ['command-r-08-2024', 'command-r7b-12-2024'],
   groq: ['llama-3.3-70b-versatile'],
   cerebras: ['llama-3.3-70b', 'llama-3.1-70b', 'llama3.1-8b'],
   nvidia: ['meta/llama-3.3-70b', 'mistralai/mistral-large', 'mistralai/mistral-7b-instruct'],
-}
+};
+
+// Story book and page generation result scoring and evaluation (largest high-quality models)
+export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
+  mistral: ['mistral-large-latest'],
+  ...AI_CHAT_MODELS_OPENAI
+};
+
+// Story book and page translation (largest high-quality models)
+export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
+  ...AI_CHAT_MODELS_EVALUATION
+};
+
+// Generating story theme idea (small but creative)
+export const AI_CHAT_MODELS_THEME: AIModelSelection = {
+  ...AI_CHAT_MODELS_OPENAI,
+  ...AI_CHAT_MODELS_SUMMARIZING
+};
 
 export const TIER_S_PROVIDERS: AIChatProvider[] = ['github', 'gemini'];

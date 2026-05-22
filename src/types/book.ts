@@ -5,6 +5,7 @@ import type { DBBookTranslations, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
+import type { AIResponse } from "./ai-chat.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
@@ -262,6 +263,10 @@ export type BookTranslation = {
   keywords: string[];
 }
 
+export type BookTranslationWithID = BookTranslation & { bookId: string };
+export type BookTranslationBulk = { translations: BookTranslationWithID[] };
+export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<BookTranslationBulk>, 'provider' | 'model'>;
+
 /**
  * Page translation structure for AI generation
  */
@@ -272,3 +277,7 @@ export type PageTranslation = {
   importantObjects: string[];
   actions: ActionTranslation[];
 }
+
+export type PageTranslationWithID = PageTranslation & { pageId: string };
+export type PageTranslationBulk = { translations: PageTranslationWithID[] };
+export type PageTranslationBulkResponse = PageTranslationBulk & Pick<AIResponse<PageTranslationBulk>, 'provider' | 'model'>;
