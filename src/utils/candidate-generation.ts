@@ -5,7 +5,7 @@
  * and asynchronous candidate generation functions to eliminate code duplication.
  */
 
-import { getBook, getPageFromDB, getStoryPageById, mapToUserStoryPage } from '../services/book.js';
+import { getBook, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import { GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_DEFAULT_BRANCH } from '../config/env.js';
 import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
@@ -398,7 +398,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   }
 
   const nextPageNumber = currentPage.page + 1;
-  console.log(`[generateCandidatePage] ℹ️ Should generate candidates for "${currentBook.title}" page ${nextPageNumber}`);
+  console.log(`[generateCandidatePage] 📖 Should generate candidates for "${currentBook.title}" page ${nextPageNumber}`);
 
   if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
     console.warn(`[generateCandidatePage] ⚠️ Unexpected page ${nextPageNumber} is already in plot flags`);
@@ -599,61 +599,88 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
   });
 
   // Fire-and-forget deeper level generation for successfully generated candidates
-  if (currentDepth < maxDepth) {
-    const successfulResults = generationResults.filter(r => r.success && r.candidatePage);
-    
-    if (successfulResults.length > 0) {
-      console.log(`[generateCandidatesInParallel] 🚀 Starting fire-and-forget generation for depth ${currentDepth + 1}/${maxDepth} with ${successfulResults.length} candidates`);
-      
-      // Process deeper levels in background without waiting
-      void Promise.allSettled(
-        successfulResults.map(async (result) => {
-          try {
-            const candidatePage = result.candidatePage!;
-            
-            // Validate required fields
-            if (!candidatePage.id || !candidatePage.bookId || !candidatePage.branchId) {
-              console.error(`[generateCandidatesInParallel] ❌ Invalid candidate page missing required fields:`, {
-                id: candidatePage.id,
-                bookId: candidatePage.bookId,
-                branchId: candidatePage.branchId
-              });
-              return;
-            }
-            
-            const nextDepth = currentDepth + 1;
-            if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH) {
-              // Immediate fire-and-forget for better UX
-              // No need for validation as this is a certain candidate generation for a valid new page
-              triggerCandidateGenerationWorkflow({
-                userId,
-                pageId: candidatePage.id,
-                bookId: candidatePage.bookId,
-                bookTitle: currentBook.title,
-                context: `generateCandidatesInParallel-${nextDepth}`
-              }).catch(error => {
-                console.error(`[generateCandidatesInParallel] ❌ Failed to trigger GitHub workflow for level ${nextDepth}:`, error);
-              });
-              console.log(`[generateCandidatesInParallel] 🚀 Triggered immediate background generation for level ${nextDepth}`);
-            } else {
-              console.log(`[generateCandidatesInParallel] ⏳ No need to do anything for level ${nextDepth}, let GitHub Workflow done the hourly job`);
-              // No need to do anything, let GitHub Workflow done the hourly job
-            }
-          } catch (error) {
-            console.error(`[generateCandidatesInParallel] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
-          }
-        })
-      ).then(results => {
-        // Log any rejected promises for monitoring
-        const rejectedCount = results.filter(r => r.status === 'rejected').length;
-        if (rejectedCount > 0) {
-          console.warn(`[generateCandidatesInParallel] ⚠️ ${rejectedCount} background generation operations failed at depth ${currentDepth + 1}`);
-        }
-      });
-    }
+  const successfulResults = generationResults.filter(r => r.success && r.candidatePage);
+  if (successfulResults.length > 0) {
+    const successfulCandidatePages = successfulResults.map(r => r.candidatePage!);
+    triggerDeeperLevelGeneration(
+      successfulCandidatePages,
+      currentDepth,
+      maxDepth,
+      userId,
+      currentBook,
+      'generateCandidatesInParallel'
+    );
   }
 
   return generationResults;
+}
+
+/**
+ * Triggers fire-and-forget background generation for deeper levels
+ * 
+ * @param candidatePages - Successfully generated candidate pages to trigger next-level generation for
+ * @param currentDepth - Current depth level
+ * @param maxDepth - Maximum depth to pre-generate
+ * @param userId - User ID for workflow triggering
+ * @param currentBook - Current book context
+ * @param context - Context string for logging
+ */
+function triggerDeeperLevelGeneration(
+  candidatePages: PersistedStoryPage[],
+  currentDepth: number,
+  maxDepth: number,
+  userId: string,
+  currentBook: Book,
+  context: string
+): void {
+  if (currentDepth >= maxDepth || candidatePages.length === 0) return;
+
+  console.log(`[${context}] 🚀 Starting fire-and-forget generation for depth ${currentDepth + 1}/${maxDepth} with ${candidatePages.length} candidates`);
+  
+  // Process deeper levels in background without waiting
+  void Promise.allSettled(
+    candidatePages.map(async (candidatePage) => {
+      try {
+        // Validate required fields
+        if (!candidatePage.id || !candidatePage.bookId || !candidatePage.branchId) {
+          console.error(`[${context}] ❌ Invalid candidate page missing required fields:`, {
+            id: candidatePage.id,
+            bookId: candidatePage.bookId,
+            branchId: candidatePage.branchId
+          });
+          return;
+        }
+        
+        const nextDepth = currentDepth + 1;
+        // Only trigger if page number < 10 to prevent too many concurrent workflows
+        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && candidatePage.page < 10) {
+          // Immediate fire-and-forget for better UX
+          // No need for validation as this is a certain candidate generation for a valid new page
+          triggerCandidateGenerationWorkflow({
+            userId,
+            pageId: candidatePage.id,
+            bookId: candidatePage.bookId,
+            bookTitle: currentBook.title,
+            maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH - currentDepth,
+            context: `${context}-${nextDepth}`
+          }).catch(error => {
+            console.error(`[${context}] ❌ Failed to trigger GitHub workflow for level ${nextDepth}:`, error);
+          });
+          console.log(`[${context}] 🚀 Triggered immediate background generation for level ${nextDepth} (page ${candidatePage.page})`);
+        } else {
+          console.log(`[${context}] ✅ Done, let GitHub Workflow continue via the hourly job (page ${candidatePage.page} >= 10 or depth limit reached)`);
+        }
+      } catch (error) {
+        console.error(`[${context}] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
+      }
+    })
+  ).then(results => {
+    // Log any rejected promises for monitoring
+    const rejectedCount = results.filter(r => r.status === 'rejected').length;
+    if (rejectedCount > 0) {
+      console.warn(`[${context}] ⚠️ ${rejectedCount} background generation operations failed at depth ${currentDepth + 1}`);
+    }
+  });
 }
 
 /**
@@ -976,6 +1003,37 @@ export async function ensureCandidatesForPageWithStrategy(
           onActionProgress(action, 'failed', undefined, lastError);
         }
       }
+
+      // Fire-and-forget deeper level generation for successfully generated candidates (same as parallel version)
+      if (currentDepth < maxDepth) {
+        const successfulCandidatePages: PersistedStoryPage[] = [];
+        
+        // Collect successfully generated candidate pages from updated actions
+        for (const action of updatedDBActions) {
+          if (action.destination?.pageId) {
+            // The candidate page is already in the action's destination
+            // We need to fetch the full page data or use what we have
+            // For simplicity, we'll trigger based on the pageId we have
+            const candidatePageId = action.destination.pageId;
+            const candidatePage = await getPageFromDB(candidatePageId);
+            if (candidatePage) {
+              // Convert DB page to PersistedStoryPage (handle null -> undefined for mood)
+              successfulCandidatePages.push(mapToPersistedStoryPage(candidatePage));
+            }
+          }
+        }
+        
+        if (successfulCandidatePages.length > 0) {
+          triggerDeeperLevelGeneration(
+            successfulCandidatePages,
+            currentDepth,
+            maxDepth,
+            userId,
+            currentBook,
+            'ensureCandidatesForPageWithStrategy'
+          );
+        }
+      }
     }
 
     // Filter out removed actions and rebuild action index map before DB operations
@@ -1124,9 +1182,10 @@ export async function triggerCandidateGenerationWorkflow(params: {
   bookId: string;
   pageId: string;
   userId: string;
+  maxDepth: number;
   context?: string;
 }): Promise<{ success: boolean; error?: string; alreadyInProgress?: boolean }> {
-  const { bookTitle, bookId, pageId, userId, context = 'triggerCandidateGenerationWorkflow' } = params;
+  const { bookTitle, bookId, pageId, userId, maxDepth, context = 'triggerCandidateGenerationWorkflow' } = params;
   
   // Get GitHub token from environment
   const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
@@ -1171,7 +1230,8 @@ export async function triggerCandidateGenerationWorkflow(params: {
           book_title: bookTitle,
           book_id: bookId,
           page_id: pageId,
-          triggered_by: userId
+          triggered_by: userId,
+          max_depth: maxDepth,
         }
       },
       {

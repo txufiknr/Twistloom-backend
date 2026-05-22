@@ -4,7 +4,7 @@ import { storyStates, userSessions, userPageProgress, pages } from "../db/schema
 import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryState as getCachedStoryState, setStoryState as setCachedStoryState } from "./story-state-cache.js";
-import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, mapToUserStoryPage } from "./book.js";
+import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToUserStoryPage } from "./book.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
@@ -288,6 +288,8 @@ async function markPageVisitedWithClient(params: {
   bookId: string,
   pageId: string,
   pageNumber: number,
+  branchId: string,
+  totalPages: number | null,
   visitCount: number,
   stats: Pick<EnrichedBookData, 'stats'>['stats'],
   actionedPageId?: string,
@@ -299,6 +301,8 @@ async function markPageVisitedWithClient(params: {
     bookId,
     pageId,
     pageNumber,
+    branchId,
+    totalPages,
     visitCount,
     stats,
     actionedPageId,
@@ -341,6 +345,14 @@ async function markPageVisitedWithClient(params: {
 
   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
 
+  // Insert completion record if user reached the last page
+  if (totalPages && pageNumber === totalPages) {
+    const completion = await insertUserCompletedBook(userId, bookId, pageId, branchId, client);
+    if (completion) {
+      console.log(`[markPageVisited] 🎉 User ${userId} completed book ${bookId} (page ${pageNumber}/${totalPages})`);
+    }
+  }
+
   return { session, nthVisit, visitorPercentage, readerUserId: userId };
 }
 
@@ -375,8 +387,8 @@ async function markPageVisitedWithClient(params: {
  */
 export async function markPageVisited(params: {
   userId: string,
-  book: Pick<EnrichedBookData, 'id' | 'stats'>,
-  visitedPage: Pick<DBPage, 'id' | 'page' | 'visitCount'>,
+  book: Pick<EnrichedBookData, 'id' | 'totalPages' | 'stats'>,
+  visitedPage: Pick<DBPage, 'id' | 'page' | 'branchId' | 'visitCount'>,
   actionedPageId?: string, // omit for page 1
   action?: Action // omit for page 1
   shouldConsumeCredits?: boolean // whether to consume credits for choosing a different action (only applicable for page 2 onwards)
@@ -392,8 +404,8 @@ export async function markPageVisited(params: {
 
   console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action, shouldConsumeCredits });
 
-  const { id: bookId, stats } = book;
-  const { id: pageId, page: pageNumber, visitCount } = visitedPage;
+  const { id: bookId, totalPages, stats } = book;
+  const { id: pageId, page: pageNumber, branchId, visitCount } = visitedPage;
 
   if (action && action.destination.pageId !== pageId) {
     throw new Error(`action.destination.pageId and pageId mismatch`);
@@ -418,6 +430,8 @@ export async function markPageVisited(params: {
             bookId,
             pageId,
             pageNumber,
+            branchId,
+            totalPages,
             visitCount,
             stats,
             actionedPageId,
@@ -440,6 +454,8 @@ export async function markPageVisited(params: {
         bookId,
         pageId,
         pageNumber,
+        branchId,
+        totalPages,
         visitCount,
         stats,
         actionedPageId,

@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { pages, books, users, userPageProgress, userSessions } from "../db/schema.js";
+import { pages, books, users, userPageProgress, userSessions, userCompletedBooks } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -1618,75 +1618,51 @@ export async function getUserRecentBooks(userId: string, limit: number = 10, off
   }
 }
 
-// /**
-//  * Triggers a fire-and-forget retry of failed candidate page generations
-//  * 
-//  * This function initiates a retry of candidate generation for pages with incomplete actions
-//  * when users visit them. Uses deduplication to prevent rapid retries within a time window.
-//  * 
-//  * @param userId - User ID initiating the retry
-//  * @param page - Page data with actions
-//  * @param userChosenAction - Optional user's chosen action for this page
-//  * 
-//  * Behavior:
-//  * - Checks if actions are missing destinations (unless hasIncompleteActions is provided)
-//  * - Uses deduplication to prevent multiple retries within the time window
-//  * - Initiates retry asynchronously (fire-and-forget)
-//  * - Logs errors but doesn't block the response
-//  * 
-//  * Deduplication:
-//  * - Uses time-based keys to prevent retries within the deduplication window
-//  * - Keys are automatically cleaned up after expiration
-//  * - Safe for concurrent requests
-//  * 
-//  * Performance:
-//  * - If hasIncompleteActions is true, skips enrichment check for efficiency
-//  * - If hasIncompleteActions is undefined, performs enrichment check
-//  * 
-//  * Example:
-//  * ```typescript
-//  * // With pre-checked incomplete actions (efficient)
-//  * await triggerCandidateGenerationRetry(userId, page, userChosenAction, true);
-//  * 
-//  * // Let helper check (less efficient but simpler)
-//  * await triggerCandidateGenerationRetry(userId, page, userChosenAction);
-//  * ```
-//  */
-// export async function triggerCandidateGenerationRetry(
-//   userId: string,
-//   page: DBPage,
-//   selectedActions?: Action[],
-// ): Promise<void> {
-//   // Check for incomplete actions if not provided
-//   const allActions = page.actions || [];
-//   const visibleActions = allActions.filter((action: Action) => action.destination?.pageId);
-//   const hasIncompleteActions = visibleActions.length < allActions.length;
+/**
+ * Inserts a record into userCompletedBooks table when a user completes a book
+ * 
+ * @param userId - User ID who completed the book
+ * @param bookId - Book ID that was completed
+ * @param pageId - Page ID that the user completed (last page)
+ * @param branchId - Branch ID that the user completed
+ * @param client - Optional database client (defaults to dbWrite)
+ * @returns Promise resolving to the inserted record or null if already exists
+ * 
+ * @example
+ * ```typescript
+ * const completion = await insertUserCompletedBook('user123', 'book456', 'page789', 'branch789');
+ * console.log('Book completed at:', completion?.completedAt);
+ * ```
+ */
+export async function insertUserCompletedBook(
+  userId: string,
+  bookId: string,
+  pageId: string,
+  branchId: string,
+  client: DBClient = dbWrite
+): Promise<{ id: string; completedAt: Date } | null> {
+  try {
+    // Use ON CONFLICT DO NOTHING to handle duplicate completions gracefully
+    const result = await client
+      .insert(userCompletedBooks)
+      .values({
+        userId,
+        bookId,
+        pageId,
+        branchId,
+        completedAt: new Date(),
+      })
+      .onConflictDoNothing({
+        target: [userCompletedBooks.userId, userCompletedBooks.bookId],
+      })
+      .returning({
+        id: userCompletedBooks.id,
+        completedAt: userCompletedBooks.completedAt,
+      });
 
-//   // Skip if all actions have destinations
-//   if (!hasIncompleteActions) return;
-
-//   // Generate deduplication key based on page ID and time window (default 1 minute)
-//   const timeWindow = Math.floor(Date.now() / 60000);
-//   const retryKey = `retry:candidate:${page.id}:${timeWindow}`;
-
-//   // Check if retry should proceed (deduplication)
-//   if (!shouldProceedWithRetry(retryKey, 60000)) {
-//     return;
-//   }
-
-//   // Fire-and-forget retry
-//   void (async () => {
-//     try {
-//       const { ensureCandidatesForPageWithStrategy } = await import("../utils/candidate-generation.js");
-//       const userPage = await mapToUserStoryPage(page, userId, selectedActions);
-//       await ensureCandidatesForPageWithStrategy({
-//         strategy: 'cron',
-//         userId,
-//         page: userPage,
-//         currentState: await getStoryState(page.id, { dbPage: page, maxTraversalDepth: 1 })
-//       });
-//     } catch (error) {
-//       console.error(`[triggerCandidateGenerationRetry] ❌ Failed for page ${page.id}:`, getErrorMessage(error));
-//     }
-//   })();
-// }
+    return result[0] || null;
+  } catch (error) {
+    console.error('[insertUserCompletedBook] ❌ Failed to insert completion record:', getErrorMessage(error));
+    return null;
+  }
+}

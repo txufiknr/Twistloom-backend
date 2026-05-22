@@ -661,6 +661,41 @@ export const userSessions = pgTable(
 );
 
 /**
+ * Create user completed books table
+ * @summary Track books that users have completed (reached the last page)
+ * @example
+ * {
+ *   "user_id": "user123",
+ *   "book_id": "book456",
+ *   "branch_id": "branch789",
+ *   "completed_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userCompletedBooks = pgTable(
+  "user_completed_books",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    pageId: pageId("cascade"), // Track which page the user completed (last page)
+    branchId: uuid("branch_id").notNull(), // Track which branch the user completed
+    completedAt: timestamp("completed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Unique constraint on (userId, bookId) to ensure one completion record per user+book
+    unique("user_completed_books_user_book_unique").on(t.userId, t.bookId),
+    // Index for user's completed books
+    index("user_completed_books_user_idx").on(t.userId, t.completedAt.desc()),
+    // Index for book's completions
+    index("user_completed_books_book_idx").on(t.bookId),
+    // Index for branch-specific queries
+    index("user_completed_books_branch_idx").on(t.branchId),
+    // Index for page-specific queries
+    index("user_completed_books_page_idx").on(t.pageId),
+  ]
+);
+
+/**
  * Create user activity logs table
  * @summary Track user activities for analytics and engagement monitoring
  * @example

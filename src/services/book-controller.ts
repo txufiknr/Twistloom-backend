@@ -111,6 +111,13 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
+    isCompleted: currentUserId
+      ? sql<boolean>`EXISTS (
+          SELECT 1 
+          FROM user_completed_books 
+          WHERE user_id = ${currentUserId} AND book_id = books.id
+        )`
+      : sql<boolean>`false`,
     // Last read tracking (optional fields for user session data) - combined lateral join for better performance
     lastReadAt: currentUserId
       ? sql<Date | null>`(
@@ -412,7 +419,8 @@ export function buildAgeRangeFilterCondition(minAge?: number, maxAge?: number) {
   }
 
   // Filter by books.mc->age field (JSONB)
-  return sql`${books.mc}->>'age'::int BETWEEN ${minAge} AND ${maxAge}`;
+  // Parentheses required to cast the extracted value, not the key string
+  return sql`(${books.mc}->>'age')::int BETWEEN ${minAge} AND ${maxAge}`;
 }
 
 /**

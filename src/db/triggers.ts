@@ -414,14 +414,14 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
 }
 
 /**
- * Creates trigger to update book complete count when users reach the last page
+ * Creates trigger to update book complete count when users complete books
  * 
- * This trigger fires AFTER INSERT OR UPDATE on user_page_progress table:
- * 1. When a user progresses to a page that is the last page of the book
- * 2. Updates complete_count to match unique users who reached the last page
+ * This trigger fires AFTER INSERT on user_completed_books table:
+ * 1. When a user completes a book (reaches the last page)
+ * 2. Updates complete_count to match unique users who completed the book
  * 3. Ensures denormalized count stays synchronized
  * 
- * Note: Counts unique users (DISTINCT user_id) who reached the last page
+ * Note: Counts unique users (DISTINCT user_id) who completed the book
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
@@ -429,46 +429,21 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
  */
 async function ensureBookCompleteCountTrigger(): Promise<void> {
   try {
-    // Create the trigger function
+    // Create the trigger function for user_completed_books
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_book_complete_count()
       RETURNS TRIGGER AS $$
-      DECLARE
-        v_book_id UUID;
-        v_total_pages INTEGER;
       BEGIN
-        v_book_id := COALESCE(NEW.book_id, OLD.book_id);
+        UPDATE books
+        SET complete_count = (
+          SELECT COUNT(DISTINCT user_id)
+          FROM user_completed_books
+          WHERE book_id = NEW.book_id
+        ),
+            updated_at = NOW()
+        WHERE id = NEW.book_id;
         
-        -- Get total pages for this book
-        SELECT total_pages INTO v_total_pages
-        FROM books
-        WHERE id = v_book_id;
-        
-        -- Check if the actioned page is the last page
-        IF EXISTS (
-          SELECT 1
-          FROM pages
-          WHERE book_id = v_book_id
-            AND page = v_total_pages
-            AND id = COALESCE(NEW.actioned_page_id, OLD.actioned_page_id)
-        ) THEN
-          UPDATE books
-          SET complete_count = (
-            SELECT COUNT(DISTINCT user_id)
-            FROM user_page_progress
-            WHERE book_id = v_book_id
-              AND actioned_page_id IN (
-                SELECT id
-                FROM pages
-                WHERE book_id = v_book_id
-                  AND page = v_total_pages
-              )
-          ),
-              updated_at = NOW()
-          WHERE id = v_book_id;
-        END IF;
-        
-        RETURN COALESCE(NEW, OLD);
+        RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
     `);
@@ -477,11 +452,14 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_page_progress_complete_trigger ON user_page_progress;
     `);
-    
-    // Create the trigger
     await dbWrite.execute(`
-      CREATE TRIGGER user_page_progress_complete_trigger
-        AFTER INSERT OR UPDATE ON user_page_progress
+      DROP TRIGGER IF EXISTS user_completed_books_complete_trigger ON user_completed_books;
+    `);
+    
+    // Create the trigger on user_completed_books
+    await dbWrite.execute(`
+      CREATE TRIGGER user_completed_books_complete_trigger
+        AFTER INSERT ON user_completed_books
         FOR EACH ROW
         EXECUTE FUNCTION update_book_complete_count();
     `);

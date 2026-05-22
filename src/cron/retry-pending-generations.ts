@@ -260,7 +260,7 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
 /**
  * Processes a specific page for manual trigger
  */
-async function processSpecificPage(bookId: string, pageId: string, triggeredBy?: string): Promise<string | null> {
+async function processSpecificPage(bookId: string, pageId: string, triggeredBy?: string, maxDepth?: number): Promise<string | null> {
   const startedAt = Date.now();
 
   try {
@@ -287,7 +287,8 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
       dbPage,
       pageForGeneration,
       false, // Always generate for manual trigger
-      'processSpecificPage'
+      'processSpecificPage',
+      maxDepth
     );
 
     const durationMs = Date.now() - startedAt;
@@ -314,7 +315,8 @@ async function processPageGeneration(
   dbPage: DBPage,
   pageForGeneration: UserStoryPage,
   hasNoPendingActions: boolean,
-  context: string
+  context: string,
+  maxDepth?: number
 ): Promise<{ updatedPage: UserStoryPage; successCount: number; pendingAfter: number }> {
   const startedAt = Date.now();
   const pageId = pageForGeneration.id;
@@ -343,6 +345,7 @@ async function processPageGeneration(
       strategy: 'cron',
       userId: systemUserId,
       page: pageForGeneration,
+      options: maxDepth !== undefined ? { maxDepth } : undefined
     });
 
     // Count actions without complete destination after regeneration
@@ -468,12 +471,14 @@ async function main(): Promise<void> {
     const triggeredBookId = process.env.TRIGGERED_BOOK_ID?.trim();
     const triggeredPageId = process.env.TRIGGERED_PAGE_ID?.trim();
     const triggeredByUser = process.env.TRIGGERED_BY_USER?.trim();
+    const triggeredMaxDepthStr = process.env.TRIGGERED_MAX_DEPTH?.trim();
+    const triggeredMaxDepth = triggeredMaxDepthStr ? parseInt(triggeredMaxDepthStr, 10) : undefined;
     
     let processedPageIds: string[] = [];
     
     if (triggeredBookId && triggeredPageId) {
       console.log(`[retry-pending-generations] 🎯 On-demand trigger detected`);
-      const processedPageId = await processSpecificPage(triggeredBookId, triggeredPageId, triggeredByUser);
+      const processedPageId = await processSpecificPage(triggeredBookId, triggeredPageId, triggeredByUser, triggeredMaxDepth);
       if (processedPageId) processedPageIds.push(processedPageId);
     } else {
       console.log(`[retry-pending-generations] 🔄 Scheduled batch processing`);

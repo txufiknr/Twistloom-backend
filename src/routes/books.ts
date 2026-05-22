@@ -75,6 +75,7 @@ import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
 import { triggerCandidateGenerationWorkflow } from "../utils/candidate-generation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
+import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 
 const router = Router();
 
@@ -2483,6 +2484,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
         bookId: dbPage.bookId,
         pageId: pageIdStr,
         userId,
+        maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
         context: 'GET /candidates'
       }).catch(error => {
         console.error(`[GET /candidates] ❌ Failed to trigger GitHub workflow:`, error);
@@ -2638,6 +2640,7 @@ router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, asyn
       bookId: dbPage.bookId,
       pageId: pageIdStr,
       userId,
+      maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
       context: 'GET /candidates/status',
     });
 

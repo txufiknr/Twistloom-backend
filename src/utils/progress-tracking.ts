@@ -45,6 +45,9 @@ export async function storeActionProgressEvent(
   pageId: string,
   event: ActionProgressEvent
 ): Promise<void> {
+  // Early exit: No need to store invalid action progress event
+  if (!event.action) return;
+
   try {
     // Determine timestamps based on status
     const startedAt = event.status === 'started' ? new Date(event.timestamp) : undefined;

@@ -8,20 +8,20 @@ import type { Gender, KnownGender } from "./user.js";
  * profile enables personalized narrative manipulation and adaptive storytelling
  * based on character behavior patterns.
  * 
- * @interface StoryMCCandidate
+ * @interface StoryMC
  */
-export type StoryMCCandidate = {
+export interface StoryMC {
   /** Character's display name used throughout the narrative */
-  name?: string;
+  name: string;
   /** Character's age in years, influences perspective and experiences */
-  age?: number;
+  age: number;
   /** Character's gender, affects narrative voice and social dynamics */
-  gender?: KnownGender;
+  gender: KnownGender;
   /** Character's bio */
-  bio?: string;
-};
+  bio: string;
+}
 
-export type StoryMC = Required<StoryMCCandidate>;
+export type StoryMCCandidate = Partial<StoryMC>;
 
 // ============================================================================
 // NARRATIVE CHARACTER MEMORY SYSTEM

@@ -21,7 +21,7 @@ export interface WorkflowDispatchParams {
   /** Git reference (branch/tag) to run workflow on (defaults to repo default branch) */
   ref?: string;
   /** Workflow inputs (key-value pairs) */
-  inputs?: Record<string, string>;
+  inputs?: Record<string, unknown>;
 }
 
 /**

@@ -114,11 +114,12 @@ export interface EnrichedBookData {
   isOriginal: boolean;
   createdAt: Date;
   updatedAt: Date;
-  mc: Record<string, unknown>;
+  mc: StoryMC;
   author: User | null;
   stats: BookStats;
   isLiked: boolean;
   isRead: boolean;
+  isCompleted: boolean;
   lastReadAt?: Date | null;
   lastPage?: string | null;
   firstPageId: string;
