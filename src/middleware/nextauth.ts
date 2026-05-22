@@ -65,6 +65,14 @@ const userIdCache = new LRUCache<string, string>({
 });
 
 /**
+ * In-flight request cache to prevent concurrent session verification
+ * for the same email address
+ * 
+ * Maps email -> Promise<AuthUser | null>
+ */
+const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
+
+/**
  * Verifies NextAuth session token from request cookies using @auth/express
  * 
  * This function uses @auth/express's getSession() to verify Auth.js session cookies.
@@ -131,37 +139,69 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
       return null;
     }
 
-    // Check if user exists in database
-    let userId = await getUserId(email);
-    
-    if (!userId) {
-      // First-time OAuth login - create user in database
-      console.log('[verifyNextAuthToken] 🆕 First-time OAuth login, creating user:', email);
-      userId = await createOrUpdateOAuthUser(email, name, image);
-      
-      // Invalidate cache for the new user
-      userIdCache.delete(email);
-    } else {
-      // Existing user - update profile data from OAuth provider
-      console.log('[verifyNextAuthToken] 🔄 Updating existing user profile from OAuth:', email);
-      await createOrUpdateOAuthUser(email, name, image);
-      
-      // Invalidate cache to ensure fresh data
-      userIdCache.delete(email);
+    // Check if there's already an in-flight request for this email
+    // This prevents race conditions when multiple requests come in simultaneously after login
+    const existingRequest = inFlightRequests.get(email);
+    if (existingRequest) {
+      console.log('[verifyNextAuthToken] ⏳ Waiting for in-flight request for:', email);
+      return existingRequest;
     }
 
-    // Migrate guest data if guest cookie exists
-    const guestCookie = req.cookies?.['twistloom_guest_id'];
-    if (guestCookie && guestCookie !== userId) {
-      console.log('[verifyNextAuthToken] 🔄 Migrating guest data:', guestCookie, '->', userId);
-      await migrateGuestToAuthUser(guestCookie, userId);
-    }
+    // Create the verification promise
+    const verificationPromise = (async () => {
+      try {
+        // Check if user exists in database
+        let userId = await getUserId(email);
+        
+        if (!userId) {
+          // First-time OAuth login - create user in database
+          console.log('[verifyNextAuthToken] 🆕 First-time OAuth login, creating user:', email);
+          userId = await createOrUpdateOAuthUser(email, name, image);
+          
+          // Invalidate cache for the new user
+          userIdCache.delete(email);
+        } else {
+          // Existing user - update profile data from OAuth provider asynchronously
+          // This prevents blocking concurrent requests during profile updates
+          console.log('[verifyNextAuthToken] 🔄 Updating existing user profile from OAuth:', email);
+          createOrUpdateOAuthUser(email, name, image)
+            .then(() => {
+              // Invalidate cache to ensure fresh data after update completes
+              userIdCache.delete(email);
+            })
+            .catch((error) => {
+              console.error('[verifyNextAuthToken] ❌ Failed to update user profile:', error);
+            });
+          
+          // Invalidate cache immediately to prevent stale data
+          userIdCache.delete(email);
+        }
 
-    return {
-      id: userId,
-      email,
-      name,
-    };
+        // Migrate guest data if guest cookie exists (async, non-blocking)
+        const guestCookie = req.cookies?.['twistloom_guest_id'];
+        if (guestCookie && guestCookie !== userId) {
+          console.log('[verifyNextAuthToken] 🔄 Migrating guest data:', guestCookie, '->', userId);
+          migrateGuestToAuthUser(guestCookie, userId)
+            .catch((error) => {
+              console.error('[verifyNextAuthToken] ❌ Failed to migrate guest data:', error);
+            });
+        }
+
+        return {
+          id: userId,
+          email,
+          name,
+        };
+      } finally {
+        // Clean up the in-flight request cache
+        inFlightRequests.delete(email);
+      }
+    })();
+
+    // Store the promise in the cache
+    inFlightRequests.set(email, verificationPromise);
+
+    return verificationPromise;
   } catch (error) {
     console.error('[verifyNextAuthToken] ❌ Session verification error:', error);
     return null;
