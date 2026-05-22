@@ -43,16 +43,21 @@ const __filename = fileURLToPath(import.meta.url);
 async function dropAllTriggers(): Promise<void> {
   try {
     await dbWrite.execute(sql`
-      DO $$ 
-      DECLARE 
+      DO $$
+      DECLARE
         r RECORD;
-      BEGIN 
+      BEGIN
         FOR r IN (
-          SELECT trigger_name, event_object_table 
-          FROM information_schema.triggers 
-          WHERE trigger_schema = 'public'
+          SELECT
+            t.tgname AS trigger_name,
+            c.relname AS table_name
+          FROM pg_trigger t
+          JOIN pg_class c ON t.tgrelid = c.oid
+          JOIN pg_namespace n ON c.relnamespace = n.oid
+          WHERE n.nspname = 'public'
+          AND NOT t.tgisinternal
         ) LOOP
-          EXECUTE 'DROP TRIGGER ' || quote_ident(r.trigger_name) || ' ON ' || quote_ident(r.event_object_table);
+          EXECUTE 'DROP TRIGGER IF EXISTS ' || quote_ident(r.trigger_name) || ' ON ' || quote_ident(r.table_name) || ' CASCADE';
         END LOOP;
       END $$;
     `);

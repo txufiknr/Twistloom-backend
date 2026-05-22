@@ -1213,7 +1213,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
     return { success: false, error: 'GitHub workflow token not configured' };
   }
   
-  console.log(`[${context}] 👨‍💻 Triggering GitHub workflow for page ${pageId}`);
+  console.log(`[${context}] 👨‍💻 Triggering GitHub workflow for page ${pageId} with maxDepth:`, maxDepth);
 
   try {
     // Check if generation is already in progress (idempotency check)
@@ -1250,7 +1250,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
           book_id: bookId,
           page_id: pageId,
           triggered_by: userId,
-          max_depth: maxDepth,
+          ...(maxDepth !== undefined ? { max_depth: String(maxDepth) } : {}),
         }
       },
       {
