@@ -1,6 +1,6 @@
 import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
-import type { StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
+import type { ActionTranslation, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
 import type { DBBookTranslations, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -251,3 +251,24 @@ export type BookSlugGenerationResult = {
   /** The title that was used to generate the slug (may be alternative) */
   title: string;
 };
+
+/**
+ * Book translation structure for AI generation
+ */
+export type BookTranslation = {
+  title: string;
+  hook: string;
+  summary: string;
+  keywords: string[];
+}
+
+/**
+ * Page translation structure for AI generation
+ */
+export type PageTranslation = {
+  text: string;
+  place: string;
+  keyEvents: string[];
+  importantObjects: string[];
+  actions: ActionTranslation[];
+}

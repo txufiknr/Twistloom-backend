@@ -19,10 +19,11 @@
 import { dbRead, dbWrite } from "../db/client.js";
 import { pageTranslations } from "../db/schema.js";
 import { getErrorMessage } from "../utils/error.js";
-import { translateTexts } from "./translate.js";
 import { eq, and } from "drizzle-orm";
 import { LRUCache } from "lru-cache";
 import type { DBPage, DBPageTranslations } from "../types/schema.js";
+import type { ActionTranslation } from "../types/story.js";
+import { translateTexts } from "../utils/translation.js";
 
 // Global translation cache instance using lru-cache package
 const translationCache = new LRUCache<string, DBPageTranslations>({
@@ -161,9 +162,9 @@ export async function getPageTranslation({
     const translatedImportantObjects = importantObjectsStartIndex !== undefined
       ? translatedTexts.slice(importantObjectsStartIndex, importantObjectsStartIndex + (page.importantObjects?.length || 0))
       : [];
-    const translatedActions = actionsStartIndex !== undefined
+    const translatedActions: ActionTranslation[] = actionsStartIndex !== undefined
       ? page.actions!.map((action, i) => ({
-          ...action,
+          originalText: action.text,
           text: translatedTexts[actionsStartIndex! + i]
         }))
       : [];

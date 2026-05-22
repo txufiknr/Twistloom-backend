@@ -705,6 +705,12 @@ export type Action = {
 };
 
 export type ActionHistory = Action & { page: number }
+export type ActionTranslation = {
+  /** Original action text (serves as unique identifier) */
+  originalText: string;
+  /** Translated action text */
+  text: string;
+};
 
 export type TagUpdates = {
   add?: string[];

@@ -22,6 +22,7 @@ import { generateNextPage } from './prompt.js';
 import { dispatchGitHubWorkflow } from './github-workflow.js';
 import { MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
 import { formatDuration } from './formatter.js';
+import { delay } from './time.js';
 
 /**
  * Performance metrics for candidate generation
@@ -504,8 +505,17 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
           maxRetries: MAX_BRANCHING_RETRIES,
           baseDelayMs: 1000,
           maxDelayMs: 4000,
-          onRetry: (attempt, error) => {
+          onRetry: async (attempt, error) => {
             lastError = error; // Capture the error for later analysis
+            const errorMessage = getErrorMessage(error);
+            
+            // Add extra delay for rate limit errors
+            if (errorMessage.includes('QUOTA_EXCEEDED') || errorMessage.includes('RATE_LIMITED') || errorMessage.includes('429')) {
+              console.warn(`[generateCandidatesInParallel] ⏸️ Rate limit error detected, adding 5 second delay before retry ${attempt}/${MAX_BRANCHING_RETRIES}:`, errorMessage);
+              await delay(5000);
+              console.log(`[generateCandidatesInParallel] ▶️ Retrying after rate limit delay`);
+            }
+            
             console.error(`[generateCandidatesInParallel] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
           },
           // Stop retrying if error is non-retryable (e.g. validation errors)
@@ -950,8 +960,17 @@ export async function ensureCandidatesForPageWithStrategy(
             maxRetries: MAX_BRANCHING_RETRIES,
             baseDelayMs: 1000,
             maxDelayMs: 4000,
-            onRetry: (attempt, error) => {
+            onRetry: async (attempt, error) => {
               lastError = error; // Capture the error for later analysis
+              const errorMessage = getErrorMessage(error);
+              
+              // Add extra delay for rate limit errors
+              if (errorMessage.includes('QUOTA_EXCEEDED') || errorMessage.includes('RATE_LIMITED') || errorMessage.includes('429')) {
+                console.warn(`[ensureCandidatesForPageWithStrategy] ⏸️ Rate limit error detected, adding 5 second delay before retry ${attempt}/${MAX_BRANCHING_RETRIES}:`, errorMessage);
+                await delay(5000);
+                console.log(`[ensureCandidatesForPageWithStrategy] ▶️ Retrying after rate limit delay`);
+              }
+              
               console.error(`[ensureCandidatesForPageWithStrategy] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
             },
             // Stop retrying if error is non-retryable (e.g. validation errors)

@@ -1,35 +1,13 @@
-name: Actions Candidate Generations
+name: Daily Indonesian Translation
 
 on:
   schedule:
-    - cron: '0 */2 * * *' # Every 2 hours
+    - cron: '0 3 * * *'   # Daily at 3 AM UTC (after trending scores update)
   workflow_dispatch:      # Allow manual triggering
-    inputs:
-      book_title:
-        description: 'Title of the book to retry generation for'
-        required: false
-        type: string
-      book_id:
-        description: 'ID of the book to retry generation for'
-        required: false
-        type: string
-      page_id:
-        description: 'ID of the specific page to retry generation for'
-        required: false
-        type: string
-      triggered_by:
-        description: 'User ID who triggered the workflow'
-        required: false
-        type: string
-      max_depth:
-        description: 'Maximum depth to pre-generate candidates'
-        required: false
-        type: number
 
 jobs:
-  retry-pending-generations:
-    # If input is provided, results in "Candidate Generations for {book_title}". Otherwise, results in "Routine Candidate Generations".
-    name: ${{ inputs.book_title != '' && format('Candidate Generations for {0}', inputs.book_title) || 'Routine Candidate Generations' }}
+  auto-translate-indonesian:
+    name: Auto-Translate to Indonesian
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -77,15 +55,15 @@ jobs:
         
       # Ensure compiled file exists before running
       - name: Verify build
-        run: test -f dist/cron/retry-pending-generations.js
+        run: test -f dist/cron/auto-translate-indonesian.js
         
-      # Execute retry pending generations cron job
-      - name: Run retry pending generations job
-        run: node dist/cron/retry-pending-generations.js
+      # Execute auto-translation cron job
+      - name: Run auto-translate-indonesian job
+        run: node dist/cron/auto-translate-indonesian.js
         env:
+          NODE_ENV: production
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
-          IMAGEKIT_API_KEY_PRIVATE: ${{ secrets.IMAGEKIT_API_KEY_PRIVATE }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           # AI provider credentials
@@ -96,13 +74,4 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          # Workflow inputs (if triggered manually)
-          TRIGGERED_BOOK_ID: ${{ github.event.inputs.book_id || '' }}
-          TRIGGERED_PAGE_ID: ${{ github.event.inputs.page_id || '' }}
-          TRIGGERED_BY_USER: ${{ github.event.inputs.triggered_by || '' }}
-          TRIGGERED_MAX_DEPTH: ${{ github.event.inputs.max_depth || '' }}
-          # GitHub token for next depth generations
-          GITHUB_WORKFLOW_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
-          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
-          NODE_ENV: production
-        timeout-minutes: 30  # Allow more time for AI generation retries
+        timeout-minutes: 30  # Conservative timeout for AI translation

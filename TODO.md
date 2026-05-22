@@ -1,7 +1,4 @@
-[@] /api/payments/create-checkout-session 401 unauthorized
-[@] Reader reach kok 0%
-[@] Investigate: Kenapa on-demand github workflow nggak ke trigger
-[ ] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')
+[x] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')
 [ ] Page 1 selected actions masih none
 [ ] Originals: Mc name predefine casts aja, jangan AI
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
@@ -30,18 +27,10 @@
 [x] Depth level 2 kalau page number < 10 aja
 [x] enriched book perlu `isCompleted` (ga cuma `isRead`)?
 
-Quota exceeded harusnya ngga retry atau throttle dulu
-https://github.com/txufiknr/Twistloom-backend/actions/runs/26226478243/job/77174783518
-[gemini] 💥 Model gemini-3-flash-preview failed, trying next model: QUOTA_EXCEEDED
-[RateLimiter] Throttling gemini - waiting 4420ms
-[cohere] ❌ All models failed: RATE_LIMITED
-[generateCandidatesInParallel] ❓ Should retry for this error? Failed to generate story page candidate
-
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594
 
 [cohere] 💥 Model command-r-08-2024 failed, trying next model: INVALID_SCHEMA
-[RateLimiter] Throttling cohere - waiting 615ms
 [cohere] ❌ All models failed: INVALID_SCHEMA
 
 by book creator:

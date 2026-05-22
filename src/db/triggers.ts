@@ -22,6 +22,48 @@ import type { DBUser } from "../types/schema.js";
 const __filename = fileURLToPath(import.meta.url);
 
 /**
+ * Drops all existing database triggers in the public schema
+ * 
+ * This function removes all triggers from the database to ensure a clean state
+ * before recreating them. It iterates through all triggers in the public schema
+ * and drops them using dynamic SQL execution.
+ * 
+ * @returns Promise that resolves when all triggers are dropped
+ * 
+ * Behavior:
+ * - Queries information_schema.triggers for all triggers in public schema
+ * - Dynamically constructs and executes DROP TRIGGER statements
+ * - Uses quote_ident() to safely escape trigger and table names
+ * - Logs success or error details
+ * 
+ * Idempotency:
+ * - Safe to run even if no triggers exist
+ * - Handles cases where triggers might have already been dropped
+ */
+async function dropAllTriggers(): Promise<void> {
+  try {
+    await dbWrite.execute(sql`
+      DO $$ 
+      DECLARE 
+        r RECORD;
+      BEGIN 
+        FOR r IN (
+          SELECT trigger_name, event_object_table 
+          FROM information_schema.triggers 
+          WHERE trigger_schema = 'public'
+        ) LOOP
+          EXECUTE 'DROP TRIGGER ' || quote_ident(r.trigger_name) || ' ON ' || quote_ident(r.event_object_table);
+        END LOOP;
+      END $$;
+    `);
+    console.log("✅ Successfully deleted all existing triggers.");
+  } catch (error) {
+    console.error("❌ Error dropping triggers:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates database trigger for user session exclusivity
  * 
  * This trigger ensures only one active session per user:
@@ -678,6 +720,9 @@ export async function ensureTriggers(): Promise<void> {
   console.log("\nCreating database triggers...");
 
   try {
+    // Drop all existing triggers first to ensure clean state
+    await dropAllTriggers();
+
     // Create user session exclusivity trigger
     await ensureUserSessionTrigger();
 

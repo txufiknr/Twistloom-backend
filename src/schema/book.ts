@@ -1,5 +1,5 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
-import type { BookCreationResponse } from "../types/book.js";
+import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import type { CharacterMemory } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { PsychologicalFlags, StoryStateInitialGeneration } from "../types/story.js";
@@ -92,3 +92,28 @@ export const BOOK_CREATION_REQUIRED_FIELDS = [
   'initialCharacters',
   'mainCharacter'
 ] satisfies Array<keyof BookCreationResponse>;
+
+/**
+ * Schema definition for BookTranslation type
+ */
+export const BOOK_TRANSLATION_SCHEMA_DEFINITION = {
+  title: { type: 'string' },
+  hook: { type: 'string' },
+  summary: { type: 'string' },
+  keywords: { type: 'array', items: { type: 'string' } }
+} satisfies Record<keyof BookTranslation, AIJsonProperty>;
+
+export const BOOK_TRANSLATION_REQUIRED_FIELDS = ['title', 'hook', 'summary', 'keywords'] satisfies Array<keyof BookTranslation>;
+
+/**
+ * Schema definition for PageTranslation type
+ */
+export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
+  text: { type: 'string' },
+  place: { type: 'string' },
+  keyEvents: { type: 'array', items: { type: 'string' } },
+  importantObjects: { type: 'array', items: { type: 'string' } },
+  actions: { type: 'array', items: { type: 'object' } }
+} satisfies Record<keyof PageTranslation, AIJsonProperty>;
+
+export const PAGE_TRANSLATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof PageTranslation>;
