@@ -100,10 +100,11 @@ export const BOOK_TRANSLATION_SCHEMA_DEFINITION = {
   title: { type: 'string' },
   hook: { type: 'string' },
   summary: { type: 'string' },
-  keywords: { type: 'array', items: { type: 'string' } }
+  keywords: { type: 'array', items: { type: 'string' } },
+  mc: { type: 'object' }
 } satisfies Record<keyof BookTranslation, AIJsonProperty>;
 
-export const BOOK_TRANSLATION_REQUIRED_FIELDS = ['title', 'hook', 'summary', 'keywords'] satisfies Array<keyof BookTranslation>;
+export const BOOK_TRANSLATION_REQUIRED_FIELDS = ['title', 'hook', 'summary', 'keywords', 'mc'] satisfies Array<keyof BookTranslation>;
 
 /**
  * Schema definition for bulk book translation
@@ -112,7 +113,7 @@ export const BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
     properties: { bookId: { type: 'string' }, ...BOOK_TRANSLATION_SCHEMA_DEFINITION },
-    required: ['title', 'hook', 'summary', 'keywords'] satisfies (keyof BookTranslation)[],
+    required: ['title', 'hook', 'summary', 'keywords', 'mc'] satisfies (keyof BookTranslation)[],
     additionalProperties: false
   } }
 } satisfies Record<keyof { translations: BookTranslation[] }, AIJsonProperty>;

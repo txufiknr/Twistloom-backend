@@ -22,6 +22,7 @@ export interface StoryMC {
 }
 
 export type StoryMCCandidate = Partial<StoryMC>;
+export type StoryMCTranslation = Pick<StoryMC, 'bio'>;
 
 // ============================================================================
 // NARRATIVE CHARACTER MEMORY SYSTEM

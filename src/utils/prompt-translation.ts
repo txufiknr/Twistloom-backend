@@ -17,7 +17,10 @@ const bookTranslationOutputFormat: string = `{
   "title": "Translated book title",
   "hook": "Translated hook text",
   "summary": "Translated summary",
-  "keywords": ["translated-keyword-1", "translated-keyword-2", "..."]
+  "keywords": ["translated-keyword-1", "translated-keyword-2", "..."],
+  "mc": {
+    "bio": "Translated bio"
+  }
 }`;
 
 const bulkBookTranslationOutputFormat: string = `{
@@ -27,14 +30,20 @@ const bulkBookTranslationOutputFormat: string = `{
       "title": "Translated book title",
       "hook": "Translated hook text",
       "summary": "Translated summary",
-      "keywords": ["translated-keyword-1", "translated-keyword-2", "..."]
+      "keywords": ["translated-keyword-1", "translated-keyword-2", "..."],
+      "mc": {
+        "bio": "Translated bio"
+      }
     },
     {
       "bookId": "book-uuid-2",
       "title": "Translated book title",
       "hook": "Translated hook text",
       "summary": "Translated summary",
-      "keywords": ["translated-keyword-1", "translated-keyword-2", "..."]
+      "keywords": ["translated-keyword-1", "translated-keyword-2", "..."],
+      "mc": {
+        "bio": "Translated bio"
+      }
     }
   ]
 }`;
@@ -48,14 +57,14 @@ FIELD INSTRUCTIONS:
 - hook: Translate the hook. Maintain the intrigue and psychological tension.
 - summary: Translate the summary. Keep it ${SUMMARY_LENGTH}, preserving the psychological thriller atmosphere.
 - keywords: Translate keywords. Provide ${KEYWORDS_COUNT} relevant tags in the target language.
+- mc.bio: Translate main character's bio.
 
 TRANSLATION GUIDELINES:
 - Maintain the psychological thriller tone and atmosphere
 - Preserve the mystery and intrigue of the original text
 - Use natural, idiomatic language in the target language
 - Keep the same level of intensity and suspense
-- Ensure cultural appropriateness for the target language
-`;
+- Ensure cultural appropriateness for the target language`;
 
 /**
  * Translates book metadata to target language using AI
@@ -71,7 +80,7 @@ TRANSLATION GUIDELINES:
  * ```
  */
 export async function translateBook(
-  book: Pick<Book, 'title' | 'hook' | 'summary' | 'keywords' | 'language'>,
+  book: Pick<Book, 'title' | 'hook' | 'summary' | 'keywords' | 'mc' | 'language'>,
   targetLanguage: string
 ): Promise<AIResponse<BookTranslation>> {
   const sourceLanguage = book.language || 'en';
@@ -81,6 +90,7 @@ Title: ${book.title}
 Hook: ${book.hook}
 Summary: ${book.summary}
 Keywords: ${book.keywords?.join(', ') || 'none'}
+MC Bio: ${book.mc.bio}
 
 Provide the translation in JSON format.`;
 

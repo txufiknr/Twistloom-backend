@@ -12,6 +12,7 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
+[ ] research ip/mac address for guest user deduplication
 
 [x] cron trasnlate langsung 5 book per request
 [x] generate theme ake openai aja
@@ -24,7 +25,6 @@
 [x] Originals prevent duplicate title
 [x] Github workflow Dynamic job name (book title)
 [x] Non retryable error kok dipertanyakan? 
-
 [x] book explore: filter by age range error
 [x] Workflow add input max depth buat prevent infinite loop
 [x] Depth level 2 kalau page number < 10 aja

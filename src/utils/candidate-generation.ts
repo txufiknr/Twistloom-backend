@@ -20,7 +20,7 @@ import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPage } from './prompt.js';
 import { dispatchGitHubWorkflow } from './github-workflow.js';
-import { MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
+import { ALLOW_DEEPER_LEVEL_UNTIL_PAGE, MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
 import { formatDuration } from './formatter.js';
 import { delay } from './time.js';
 
@@ -663,7 +663,7 @@ function triggerDeeperLevelGeneration(
         
         const nextDepth = currentDepth + 1;
         // Only trigger if page number < 10 to prevent too many concurrent workflows
-        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && candidatePage.page < 10) {
+        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && candidatePage.page <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE) {
           // Immediate fire-and-forget for better UX
           // No need for validation as this is a certain candidate generation for a valid new page
           triggerCandidateGenerationWorkflow({

@@ -1,4 +1,4 @@
-import type { CharacterMemory, StoryMC, StoryMCCandidate } from "./character.js";
+import type { CharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
 import type { ActionTranslation, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
 import type { DBBookTranslations, DBUserSession } from "./schema.js";
@@ -261,6 +261,7 @@ export type BookTranslation = {
   hook: string;
   summary: string;
   keywords: string[];
+  mc: StoryMCTranslation;
 }
 
 export type BookTranslationWithID = BookTranslation & { bookId: string };

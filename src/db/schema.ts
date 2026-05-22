@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
-import type { InventoryItem, StoryMC, StoryMCCandidate } from "../types/character.js";
+import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -945,6 +945,7 @@ export const bookTranslations = pgTable(
     hook: text("hook"), // Translated book hook
     summary: text("summary"), // Translated book summary
     keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Translated keywords
+    mc: jsonb("mc").$type<StoryMCTranslation>().notNull().default(sql`'{}'::jsonb`), // Translated main character info
     providerType: text("provider_type").$type<'ai' | 'translator'>(), // AI or translator
     providerName: text("provider_name"), // Provider and model name
     createdAt,
