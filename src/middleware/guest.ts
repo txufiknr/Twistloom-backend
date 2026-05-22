@@ -26,6 +26,7 @@ import { getFromCache, setCache } from '../services/cache.js';
 
 const GUEST_COOKIE_NAME = 'twistloom_guest_id';
 const GUEST_COOKIE_TTL_MS = 60 * 60 * 24 * 30 * 1000; // 30 days in ms
+const GUEST_IP_CACHE_TTL_SEC = 300; // 5 minutes - reuse recent guests from same IP
 const MAX_GUEST_CREATION_RETRIES = 3;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
@@ -50,6 +51,12 @@ const GUEST_COOKIE_OPTIONS: CookieOptions = IS_PRODUCTION
 // ---------------------------------------------------------------------------
 // Guest user creation
 // ---------------------------------------------------------------------------
+
+/**
+ * In-flight request cache to prevent concurrent guest creation
+ * Maps client identifier (IP + user agent) -> Promise<guestId>
+ */
+const inFlightGuestCreations = new Map<string, Promise<string>>();
 
 /**
  * Creates a new guest user in the database with race condition protection
@@ -78,6 +85,107 @@ async function createGuestUser(retryCount = 0): Promise<string> {
   }
 
   return guestId;
+}
+
+/**
+ * Gets client identifier based on IP and user agent
+ * Used for deduplication of concurrent guest creation requests
+ * 
+ * @param req - Express request object
+ * @returns Client identifier string
+ */
+function getClientId(req: Request): string {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const userAgent = req.get('user-agent') || 'unknown';
+  return `${ip}:${userAgent}`;
+}
+
+/**
+ * Finds a recently created guest user by IP address
+ * Uses Redis cache to reduce duplicate guest creation from concurrent requests
+ * 
+ * @param ip - Client IP address
+ * @returns Guest ID if found within cache TTL, null otherwise
+ */
+async function findRecentGuestByIP(ip: string): Promise<string | null> {
+  const cacheKey = `guest:recent:${ip}`;
+  const cached = await getFromCache<string>(cacheKey);
+  
+  if (cached.hit && cached.data) {
+    return cached.data;
+  }
+  
+  return null;
+}
+
+/**
+ * Caches a guest user ID by IP address for short-term reuse
+ * 
+ * @param ip - Client IP address
+ * @param guestId - Guest user ID to cache
+ */
+async function cacheGuestByIP(ip: string, guestId: string): Promise<void> {
+  const cacheKey = `guest:recent:${ip}`;
+  await setCache(cacheKey, guestId, GUEST_IP_CACHE_TTL_SEC);
+}
+
+/**
+ * Gets or creates a guest user with deduplication
+ * Prevents race conditions from concurrent requests by:
+ * 1. Checking in-flight request cache
+ * 2. Checking short-term IP-based cache
+ * 3. Creating new guest only if needed
+ * 
+ * @param req - Express request object
+ * @returns Guest user ID
+ */
+async function getOrCreateGuestUser(req: Request): Promise<string> {
+  const clientId = getClientId(req);
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  
+  // Check if there's already an in-flight creation for this client
+  const existing = inFlightGuestCreations.get(clientId);
+  if (existing) {
+    console.log('[guest] ⏳ Waiting for in-flight guest creation:', clientId);
+    return existing;
+  }
+  
+  // Check short-term IP cache for recent guest
+  const recentGuest = await findRecentGuestByIP(ip);
+  if (recentGuest) {
+    console.log('[guest] ♻️ Reusing recent guest from IP cache:', recentGuest);
+    return recentGuest;
+  }
+  
+  // Create new guest user
+  const creationPromise = (async () => {
+    try {
+      const guestId = await createGuestUser();
+      
+      // Cache by IP for short-term reuse
+      await cacheGuestByIP(ip, guestId);
+      
+      // Log creation with context for monitoring
+      console.log('[guest] 🆕 Created new guest user:', {
+        guestId,
+        ip,
+        userAgent: req.get('user-agent'),
+        referer: req.get('referer'),
+        isPrefetch: req.query.prefetch === 'true',
+        timestamp: new Date().toISOString(),
+      });
+      
+      return guestId;
+    } finally {
+      // Clean up in-flight cache
+      inFlightGuestCreations.delete(clientId);
+    }
+  })();
+  
+  // Store in in-flight cache
+  inFlightGuestCreations.set(clientId, creationPromise);
+  
+  return creationPromise;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +232,8 @@ export async function guestOrAuthMiddleware(req: Request, res: Response, next: N
       return;
     }
 
-    // Resolve guest ID from cookie
-    const guestId = await resolveGuestId(req.cookies?.[GUEST_COOKIE_NAME]) ?? await createGuestUser();
+    // Resolve guest ID from cookie or create new one with deduplication
+    const guestId = await resolveGuestId(req.cookies?.[GUEST_COOKIE_NAME]) ?? await getOrCreateGuestUser(req);
 
     // Always refresh TTL on each request (sliding expiry)
     res.cookie(GUEST_COOKIE_NAME, guestId, GUEST_COOKIE_OPTIONS);
