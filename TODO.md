@@ -6,10 +6,11 @@
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
 
-[ ] subscribe "upgrade VIP" modal, VIP benefits:
-    - VIP badge
-    - triple check-in bonus (2 buttons: regular claim 1x and VIP claim 2x)
-    - +50 credits every month (on activation & renewal)
+1. perfect, can you update the @SUBSCRIPTION_HYBRID_MODEL_ROADMAP.md docs for what have been implemented and which not yet, and give guidance what frontend (Next.js) project should do (if not there yet)?
+
+2. can you also update @PAYMENTS_API_DOCUMENTATION.md API spec docs accordingly?
+
+3. can you include this @vip-expiration.ts cron into @cleanup.ts?
 
 [ ] enhance book explore:
 - fuzzy search/Levenshtein (typo) // does postgresql has this built-in?

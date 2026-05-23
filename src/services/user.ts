@@ -21,6 +21,7 @@ import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
 import type { DBNewUserActivityLog } from "../types/schema.js";
 import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
+import { VIP_BENEFITS } from "../config/subscription.js";
 
 /**
  * Cleans up orphaned user records
@@ -343,23 +344,34 @@ export async function checkCanCheckIn(userId: string): Promise<{
  * Uses a database transaction to prevent race conditions where multiple
  * concurrent requests could both pass the check and award credits twice.
  * 
+ * Supports dual claim system:
+ * - Regular claim: +5 credits (days 1-6), +20 credits (day 7) - available to all users
+ * - VIP 2x claim: +10 credits (days 1-6), +40 credits (day 7) - only available to VIP users
+ * - Total for VIP: +15 (days 1-6), +60 (day 7) when both buttons are clicked
+ * 
  * @param userId - The user ID performing check-in
+ * @param claimType - Type of claim: 'regular' or 'vip_2x'
  * @returns Promise resolving to check-in result with credits awarded
  * 
  * @example
  * ```typescript
- * const result = await performDailyCheckIn('user123');
+ * // Regular claim
+ * const result = await performDailyCheckIn('user123', 'regular');
  * console.log(`Awarded ${result.creditsAwarded} credits`);
+ * 
+ * // VIP 2x claim (only for VIP users)
+ * const vipResult = await performDailyCheckIn('user123', 'vip_2x');
+ * console.log(`Awarded ${vipResult.creditsAwarded} credits`);
  * ```
  */
-export async function performDailyCheckIn(userId: string): Promise<CheckinPostResponse> {
+export async function performDailyCheckIn(userId: string, claimType: 'regular' | 'vip_2x' = 'regular'): Promise<CheckinPostResponse> {
   const todayUTC = getCurrentUTCDay();
   
   try {
     return await dbWrite.transaction(async (tx) => {
-      // Check if user has already checked in today within the transaction
+      // Check if user has already checked in today with this claim type
       const existingCheckIn = await tx
-        .select({ id: userCheckins.id })
+        .select({ id: userCheckins.id, creditsClaimed: userCheckins.creditsClaimed })
         .from(userCheckins)
         .where(and(
           eq(userCheckins.userId, userId),
@@ -367,16 +379,38 @@ export async function performDailyCheckIn(userId: string): Promise<CheckinPostRe
         ))
         .limit(1);
       
-      if (existingCheckIn.length > 0) {
-        console.warn(`[checkin] ⚠️ User ${userId} attempted to check in again today`);
-        return {
-          success: false,
-          creditsAwarded: 0,
-          currentStreak: 0,
-          totalCreditsClaimed: 0,
-          checkInDate: todayUTC,
-          message: "Already checked in today",
-        } satisfies CheckinPostResponse;
+      // For VIP 2x claim, check if user has VIP status
+      if (claimType === 'vip_2x') {
+        const user = await tx
+          .select({ tier: users.tier, vipExpiresAt: users.vipExpiresAt })
+          .from(users)
+          .where(eq(users.userId, userId))
+          .limit(1);
+        
+        if (user.length === 0 || user[0].tier !== 'vip') {
+          console.warn(`[checkin] ⚠️ User ${userId} attempted VIP 2x claim without VIP status`);
+          return {
+            success: false,
+            creditsAwarded: 0,
+            currentStreak: 0,
+            totalCreditsClaimed: 0,
+            checkInDate: todayUTC,
+            message: "VIP 2x claim is only available to VIP subscribers",
+          } satisfies CheckinPostResponse;
+        }
+        
+        // Check if VIP subscription has expired
+        if (user[0].vipExpiresAt && new Date(user[0].vipExpiresAt) < new Date()) {
+          console.warn(`[checkin] ⚠️ User ${userId} attempted VIP 2x claim with expired subscription`);
+          return {
+            success: false,
+            creditsAwarded: 0,
+            currentStreak: 0,
+            totalCreditsClaimed: 0,
+            checkInDate: todayUTC,
+            message: "VIP subscription has expired",
+          } satisfies CheckinPostResponse;
+        }
       }
 
       // Compute consecutive streak up to yesterday (for awarding)
@@ -398,23 +432,39 @@ export async function performDailyCheckIn(userId: string): Promise<CheckinPostRe
       }
 
       const nextIndex = Math.min(prevStreak + 1, DAILY_CHECKIN_DAYS);
-      // Flat per-day bonus: days 1-6 => DAILY_CHECKIN_BONUS each, day 7 => DAILY_CHECKIN_BIG_BONUS
-      const creditsToAward = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+      // Base bonus: days 1-6 => DAILY_CHECKIN_BONUS each, day 7 => DAILY_CHECKIN_BIG_BONUS
+      const baseCredits = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+      
+      // Apply multiplier based on claim type
+      const multiplier = claimType === 'vip_2x' ? VIP_BENEFITS.checkInMultiplier : 1;
+      const creditsToAward = baseCredits * multiplier;
 
-      // Create check-in record with total credits claimed (base + bonus)
-      await tx.insert(userCheckins).values({
-        userId,
-        checkInDate: todayUTC,
-        creditsClaimed: creditsToAward,
-      });
+      // Create or update check-in record
+      if (existingCheckIn.length > 0) {
+        // Add to existing check-in (dual claim system)
+        await tx
+          .update(userCheckins)
+          .set({ 
+            creditsClaimed: existingCheckIn[0].creditsClaimed + creditsToAward,
+            updatedAt: new Date(),
+          })
+          .where(eq(userCheckins.id, existingCheckIn[0].id));
+      } else {
+        // Create new check-in record
+        await tx.insert(userCheckins).values({
+          userId,
+          checkInDate: todayUTC,
+          creditsClaimed: creditsToAward,
+        });
+      }
 
       // Import credits service to add credits (prevent circular deps)
       const { addCredits } = await import("./credits.js");
 
-      // Add credits to user (include bonus in transaction context)
+      // Add credits to user
       await addCredits(userId, creditsToAward, {
-        context: "daily_checkin",
-        metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward },
+        context: claimType === 'vip_2x' ? "daily_checkin_vip_2x" : "daily_checkin",
+        metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward, claimType },
       });
 
       // Compute new totals for response
@@ -426,14 +476,14 @@ export async function performDailyCheckIn(userId: string): Promise<CheckinPostRe
 
       const totalCreditsClaimed = totals[0]?.totalCreditsClaimed || 0;
 
-      console.log(`[checkin] 🎁 User ${userId} checked in and claimed ${creditsToAward} credits!`);
+      console.log(`[checkin] 🎁 User ${userId} checked in (${claimType}) and claimed ${creditsToAward} credits!`);
       return {
         success: true,
         creditsAwarded: creditsToAward,
         currentStreak: prevStreak + 1,
         totalCreditsClaimed,
         checkInDate: todayUTC,
-        message: `Successfully claimed ${creditsToAward} daily credits`,
+        message: `Successfully claimed ${creditsToAward} ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits`,
       } satisfies CheckinPostResponse;
     });
   } catch (error) {

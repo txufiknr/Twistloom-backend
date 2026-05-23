@@ -14,6 +14,7 @@ import { generateId } from "../utils/uuid.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
+import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
 /** Pre-defined columns */
@@ -191,6 +192,8 @@ export const users = pgTable(
     tier: text("tier").$type<UserTier>(),
     isGuest: boolean("is_guest").notNull().default(false), // Distinguishes guest users from authenticated users
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
+    subscriptionId: uuid("subscription_id"),
+    vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),
     lastActive,
     createdAt,
     updatedAt,
@@ -202,6 +205,8 @@ export const users = pgTable(
     index("users_created_at_idx").on(t.createdAt),
     // Index for guest user queries and cleanup
     index("users_is_guest_idx").on(t.isGuest),
+    // Index for VIP expiration queries
+    index("users_vip_expires_idx").on(t.vipExpiresAt).where(sql`${t.vipExpiresAt} IS NOT NULL`),
   ]
 );
 
@@ -1107,5 +1112,85 @@ export const userCheckins = pgTable(
     index("user_checkins_date_idx").on(t.checkInDate),
     // Index for cleanup (old check-ins)
     index("user_checkins_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
+ * Subscriptions table
+ * @summary Track active user subscriptions and their status
+ * @example
+ * {
+ *   "id": "sub123",
+ *   "user_id": "user456",
+ *   "stripe_subscription_id": "sub_1234567890",
+ *   "stripe_customer_id": "cus_1234567890",
+ *   "stripe_price_id": "price_1234567890",
+ *   "status": "active",
+ *   "current_period_start": "2023-01-01T00:00:00.000Z",
+ *   "current_period_end": "2023-02-01T00:00:00.000Z",
+ *   "cancel_at_period_end": false,
+ *   "canceled_at": null,
+ *   "metadata": {},
+ *   "created_at": "2023-01-01T00:00:00.000Z",
+ *   "updated_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull(),
+    stripeSubscriptionId: text("stripe_subscription_id").unique().notNull(),
+    stripeCustomerId: text("stripe_customer_id").notNull(),
+    stripePriceId: text("stripe_price_id").notNull(),
+    status: text("status").$type<SubscriptionStatus>().notNull(),
+    currentPeriodStart: timestamp("current_period_start", { withTimezone: true }).notNull(),
+    currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }).notNull(),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    metadata: jsonb("metadata"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("subscriptions_user_idx").on(t.userId),
+    index("subscriptions_status_idx").on(t.status),
+    index("subscriptions_period_end_idx").on(t.currentPeriodEnd),
+    unique("subscriptions_stripe_subscription_unique").on(t.stripeSubscriptionId),
+  ]
+);
+
+/**
+ * Subscription transactions table
+ * @summary Track subscription-related credit allocations separately from regular transactions
+ * @example
+ * {
+ *   "id": "subtxn123",
+ *   "subscription_id": "sub456",
+ *   "user_id": "user789",
+ *   "type": "activation",
+ *   "credits_allocated": 50,
+ *   "stripe_invoice_id": "in_1234567890",
+ *   "stripe_event_id": "evt_1234567890",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const subscriptionTransactions = pgTable(
+  "subscription_transactions",
+  {
+    id: id(),
+    subscriptionId: uuid("subscription_id").references(() => subscriptions.id, { onDelete: "cascade" }).notNull(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }).notNull(),
+    type: text("type").$type<SubscriptionTransactionType>().notNull(),
+    creditsAllocated: integer("credits_allocated").notNull(),
+    stripeInvoiceId: text("stripe_invoice_id").unique(),
+    stripeEventId: text("stripe_event_id").unique(),
+    createdAt,
+  },
+  (t) => [
+    index("subscription_transactions_subscription_idx").on(t.subscriptionId),
+    index("subscription_transactions_user_idx").on(t.userId),
+    index("subscription_transactions_type_idx").on(t.type),
+    unique("subscription_transactions_invoice_unique").on(t.stripeInvoiceId),
   ]
 );

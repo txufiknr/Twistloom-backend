@@ -1,4 +1,4 @@
-name: Daily Cleanup
+name: Daily Cleanup & Subscription Check
 
 on:
   schedule:
