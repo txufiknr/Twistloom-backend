@@ -2,7 +2,6 @@
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Stripe switch to live
 [ ] book explore: search jaccard (by book keywords & title), need change to cursor pagination?
-[ ] GET /user/recommendations: you might like (based on liked books)
 [ ] userSettings schema (interests, email notification settings)
 [ ] userLogins schema (userId, userAgent) -> database sessions (Drizzle adapter)
 [ ] Implement belief

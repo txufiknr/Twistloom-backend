@@ -216,7 +216,9 @@ export const bookSortOptions = [
   'newest', 
   'trending',
   'top-picks',
-  'originals'
+  'originals',
+  'reads', // Continue reading
+  'recommendations', // You might like
 ] as const;
 
 export type BookSortOption = typeof bookSortOptions[number];

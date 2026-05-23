@@ -1034,6 +1034,8 @@ router.get("/", requireAuth, async (req: Request, res: Response) => {
 /**
  * GET /api/books/recent
  * 
+ * @deprecated Use GET /api/books/explore?sortBy=reads instead
+ * 
  * Retrieves user's recent books for "Continue reading" section.
  * Returns books with reading progress status (in_progress or completed).
  * Supports pagination for large reading histories.
@@ -1083,6 +1085,9 @@ router.get("/recent", requireAuth, async (req: Request, res: Response) => {
 
     const { books: recentBooks, totalCount } = await getUserRecentBooks(userId, limit, offset);
     const pagination = calculatePaginationMeta(page, limit, totalCount);
+
+    // Add deprecation warning header
+    res.set('X-Deprecation', 'Use GET /api/books/explore?sortBy=reads instead');
 
     res.json(createPaginatedResponse(recentBooks, pagination, 'books'));
   } catch (error) {
@@ -1315,12 +1320,16 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @query search - Search query for title, hook, summary, keywords
  * @query language - Filter by language code (e.g., "en", "es")
  * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
- * @query sortBy - Field to sort by (default: updatedAt)
+ * @query sortBy - Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations
  * @query sortOrder - Sort direction (default: desc)
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
  * @query gender - Filter by main character gender (male/female)
  * @returns Paginated list of published books
+ * 
+ * @remarks
+ * - reads: Shows books the user has read, sorted by lastReadAt (requires authentication)
+ * - recommendations: Recommends books based on user likes (requires authentication)
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
@@ -1384,8 +1393,8 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       : 'newest';
 
     // Cache page 1 without search, tags, language, ageRange, gender, and time filters
-    // Trending uses shorter TTL (5 min) due to incremental updates, newest uses longer TTL (30 min)
-    const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender;
+    // Note: reads and recommendations are user-specific and should not be cached
+    const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'recommendations';
     const cacheKey = bookSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
     const cacheTTL = bookSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
 
@@ -1410,7 +1419,8 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
         lastUpdated,
         minAge,
         maxAge,
-        gender: sanitizedGender
+        gender: sanitizedGender,
+        currentUserId: userId // Pass userId for user-specific sorting (reads, recommendations)
       });
 
       const totalCountResult = await countQuery;

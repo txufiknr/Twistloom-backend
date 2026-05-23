@@ -515,9 +515,11 @@ export function buildBookQuery<T>(
     maxAge?: number;
     /** Gender filter */
     gender?: string;
+    /** Current user ID for user-specific sorting (reads, recommendations) */
+    currentUserId?: string | null;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, currentUserId } = params;
   
   // Build filter conditions using shared helpers
   const timeCondition = buildTimeFilterCondition(lastUpdated);
@@ -555,7 +557,7 @@ export function buildBookQuery<T>(
   
   // Apply primary sorting: book-specific sorting (acts as category filter)
   if (bookSortBy) {
-    query = applyBookSorting(query, bookSortBy);
+    query = applyBookSorting(query, bookSortBy, currentUserId);
   }
   
   // Apply orderBy for search relevance
@@ -600,7 +602,8 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Applies book-specific sorting to a query based on sort option
  * 
  * @param query - Drizzle query builder
- * @param sortBy - Sort option (popular, newest, trending, top-picks, originals)
+ * @param sortBy - Sort option (popular, newest, trending, top-picks, originals, reads, recommendations)
+ * @param currentUserId - Optional current user ID for user-specific sorting (reads, recommendations)
  * @returns Modified query builder with sorting applied
  * 
  * Behavior:
@@ -609,6 +612,8 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
  * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
  * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+ * - reads: Filters to books user has read (from userSessions), sorts by lastReadAt (most recent first)
+ * - recommendations: Recommends books based on user likes (similar books to what user liked)
  * 
  * @remarks
  * Uses `any` type for query parameter because Drizzle ORM query builder types
@@ -616,7 +621,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Type safety is maintained through the actual database operations and SQL generation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
+function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null): any {
   switch (sortBy) {
     case 'popular': {
       // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
@@ -646,6 +651,46 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest'): any {
         .where(eq(books.isOriginal, true))
         .where(sql`${books.image} IS NOT NULL`)
         .orderBy(desc(books.createdAt));
+    }
+
+    case 'reads': {
+      // Filter to books the user has read (from userSessions)
+      // Sort by lastReadAt (most recent first)
+      // Requires authentication
+      if (!currentUserId) {
+        // If no user provided, return empty result (should be handled by requireAuth middleware)
+        return query.where(sql`1=0`);
+      }
+      return query
+        .where(sql`EXISTS (
+          SELECT 1 FROM user_sessions 
+          WHERE user_id = ${currentUserId} AND book_id = books.id
+        )`)
+        .orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
+    }
+
+    case 'recommendations': {
+      // Recommend books based on user likes
+      // Get books similar to what the user has liked using keyword similarity
+      // Requires authentication
+      if (!currentUserId) {
+        // If no user provided, return empty result (should be handled by requireAuth middleware)
+        return query.where(sql`1=0`);
+      }
+      
+      // Get user's liked books' keywords for similarity calculation
+      // Recommend books that have keyword overlap with user's liked books
+      return query
+        .where(sql`EXISTS (
+          SELECT 1 
+          FROM user_likes ul
+          INNER JOIN books liked_books ON ul.target_id = liked_books.id
+          WHERE ul.user_id = ${currentUserId} 
+            AND ul.target_type = 'book' 
+            AND liked_books.id != books.id
+            AND books.keywords && liked_books.keywords
+        )`)
+        .orderBy(desc(books.trendingScore)); // Sort by trending as fallback for recommendations
     }
 
     case 'newest':
