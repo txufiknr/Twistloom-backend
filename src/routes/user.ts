@@ -24,6 +24,7 @@
  * - POST /user/favorites - Add book to favorites
  * - DELETE /user/favorites - Remove book from favorites
  * - GET /user/favorites - Get user favorites
+ * - GET /user/collections - Get user collection names
  * - POST /user/comments - Create comment
  * - PUT /user/comments/:commentId - Update comment
  * - DELETE /user/comments/:commentId - Delete comment
@@ -1122,6 +1123,64 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve favorites", error);
+  }
+});
+
+/**
+ * GET /user/collections
+ * 
+ * Get all collection names for the authenticated user's favorite books.
+ * Returns a list of distinct collection names used to organize favorites.
+ * 
+ * @route GET /user/collections
+ * @description Get user collection names
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @returns {Object} Collections response
+ * @returns {boolean} success - Operation status
+ * @returns {Array} data - Array of collection names
+ * 
+ * @example
+ * // Request
+ * GET /user/collections
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "data": [
+ *     "Thriller",
+ *     "Mystery",
+ *     "To Read Later",
+ *     "Favorites"
+ *   ]
+ * }
+ */
+router.get("/collections", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    // Get distinct collection names for the user
+    const collections = await dbRead
+      .selectDistinct({ collection: userFavorites.collection })
+      .from(userFavorites)
+      .where(and(
+        eq(userFavorites.userId, userId),
+        sql`${userFavorites.collection} IS NOT NULL`
+      ))
+      .orderBy(userFavorites.collection);
+
+    const collectionNames = collections.map((c: { collection: string | null }) => c.collection).filter((c: string | null): c is string => c !== null);
+
+    res.json({
+      collections: collectionNames,
+    });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve collections", error);
   }
 });
 

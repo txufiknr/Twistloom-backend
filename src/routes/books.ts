@@ -1590,18 +1590,23 @@ router.get("/stats", optionalAuth, async (req: Request, res: Response) => {
  * 
  * Likes a book for the authenticated user.
  * Increments the book's likes count and records the like in user_likes table.
+ * Optionally adds the book to favorites with a collection name if provided.
  * 
  * @param id - Book ID to like
+ * @body {string} [collection] - Optional collection name to add book to favorites
  * @returns Success message with updated like status
  * 
  * @example
  * POST /api/books/book123/like
+ * Body: { "collection": "Thriller" }
  * 
  * Response (200):
  * {
  *   "message": "Book liked successfully",
  *   "liked": true,
- *   "likesCount": 42
+ *   "likesCount": 42,
+ *   "favorited": true,
+ *   "collection": "Thriller"
  * }
  * 
  * Response (409 - already liked):
@@ -1615,6 +1620,7 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.userId!;
+    const { collection } = req.body;
 
     // Use transaction for atomic like operation
     const result = await dbWrite.transaction(async (tx) => {
@@ -1669,14 +1675,57 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
         .where(eq(books.id, id as string))
         .returning({ likesCount: books.likesCount });
 
+      // Add to favorites if collection is provided
+      let favorited = false;
+      if (collection) {
+        // Check if already in favorites (upsert logic)
+        const existingFavorite = await tx
+          .select()
+          .from(userFavorites)
+          .where(and(
+            eq(userFavorites.userId, userId),
+            eq(userFavorites.bookId, id as string)
+          ))
+          .limit(1);
+
+        if (existingFavorite.length === 0) {
+          await tx
+            .insert(userFavorites)
+            .values({
+              userId,
+              bookId: id as string,
+              collection,
+              createdAt: new Date(),
+            });
+          favorited = true;
+        } else {
+          // Update collection if already favorited
+          await tx
+            .update(userFavorites)
+            .set({ collection })
+            .where(and(
+              eq(userFavorites.userId, userId),
+              eq(userFavorites.bookId, id as string)
+            ));
+          favorited = true;
+        }
+      }
+
       return {
         alreadyLiked: false,
-        likesCount: updatedBook[0]?.likesCount
+        likesCount: updatedBook[0]?.likesCount,
+        favorited,
+        collection: favorited ? collection : null
       };
     });
 
     // Invalidate explore cache after successful transaction
     await invalidateExploreCache();
+
+    // Invalidate user profile cache if book was added to favorites (savedBooksCount changed)
+    if (result.favorited) {
+      await invalidateUserProfileCache(userId);
+    }
 
     if (result.alreadyLiked) {
       return res.status(409).json({
@@ -1689,7 +1738,11 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
     res.json({
       message: "Book liked successfully",
       liked: true,
-      likesCount: result.likesCount!
+      likesCount: result.likesCount!,
+      ...(result.favorited && {
+        favorited: true,
+        collection: result.collection
+      })
     });
   } catch (error) {
     if (getErrorMessage(error) === 'BOOK_NOT_FOUND') {
@@ -2351,7 +2404,8 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
 router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const { headerLanguage } = req;
-    const { identifier, pageId, prefetch, translate: shouldTranslate, credits } = req.params;
+    const { identifier, pageId } = req.params;
+    const { prefetch, translate: shouldTranslate, credits } = req.query;
     const userId = req.userId!; // Always defined even for guests
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
     const skipVisit = prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation

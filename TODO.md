@@ -1,12 +1,32 @@
 [ ] Page 1 selected actions masih none
-[ ] Candidate pregeneration prioritize yang existing pagesnya dikit
 [ ] Stripe switch to live
-[ ] book explore: search jaccard (by book keywords & title), need change to cursor pagination?
 [ ] userSettings schema (interests, email notification settings)
 [ ] userLogins schema (userId, userAgent) -> database sessions (Drizzle adapter)
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
+
+Backend Requirement:
+
+Your backend needs to implement the /auth/google-one-tap endpoint:
+
+```http
+POST /auth/google-one-tap
+Body: { idToken: string }
+Response: { userId, email, name, username, image }
+```
+
+The endpoint should verify the Google ID token (or trust frontend verification), find/create the user in the database, and return the user object for NextAuth session creation.
+
+[ ] subscribe "upgrade VIP" modal, VIP benefits:
+    - VIP badge
+    - triple check-in bonus (2 buttons: regular claim 1x and VIP claim 2x)
+    - +50 credits every month (on activation & renewal)
+
+[ ] enhance book explore:
+- fuzzy search/Levenshtein (typo) // does postgresql has this built-in?
+- search jaccard similarity (by book keywords & title)
+- need change to cursor pagination?
 
 [x] Translate prompt: keep text styling using asterisks (if any/detect)
 [x] cron trasnlate langsung 5 book per request
