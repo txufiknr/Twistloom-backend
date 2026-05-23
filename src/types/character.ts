@@ -215,7 +215,7 @@ export type CharacterUpdates = {
 
 export type InventoryItem = {
   name: string;
-  traits?: Record<string, string>; // color, length, state, etc
+  traits?: Record<string, string>; // color, length, state, rules, etc
   amount?: number;
   where?: string;
 }

@@ -12,7 +12,7 @@
  * - OAuth user creation and guest data migration
  */
 
-import { users, books, userSessions, userPageProgress, userAuth, userActivityLogs } from '../db/schema.js';
+import { users, userSessions, userPageProgress, userAuth, userActivityLogs } from '../db/schema.js';
 import { sql, eq, and } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
@@ -180,9 +180,13 @@ export async function createOrUpdateOAuthUser(
 /**
  * Migrates data from a guest user to an authenticated user
  * 
- * Transfers all books, sessions, page progress, and other data from guest to authenticated user,
+ * Transfers all sessions, page progress, and activity logs from guest to authenticated user,
  * then deletes the guest user from the database. This is called when a guest user
  * logs in via OAuth or email/password.
+ * 
+ * This is the FINAL migration step in the lazy guest creation flow:
+ * Step 1: Temporary Session → Guest User (session-data-association.ts)
+ * Step 2: Guest User → Authenticated User (this function)
  * 
  * This ensures no orphaned data remains in the database and no data is lost during migration.
  * All foreign key relationships are properly handled before deleting the guest user.
@@ -217,11 +221,9 @@ export async function migrateGuestToAuthUser(
   // Migrate all user data from guest to authenticated user
   // Order matters: migrate dependent data before deleting the user
   // Tables that guests can have data in:
-  // - books (guests can create books)
   // - userSessions (guests can have reading sessions)
   // - userPageProgress (guests can have page progress)
   // - userActivityLogs (guests can have activity logs)
-  await dbWrite.update(books).set({ userId: authenticatedUserId }).where(eq(books.userId, guestId));
   await dbWrite.update(userSessions).set({ userId: authenticatedUserId }).where(eq(userSessions.userId, guestId));
   await dbWrite.update(userPageProgress).set({ userId: authenticatedUserId }).where(eq(userPageProgress.userId, guestId));
   await dbWrite.update(userActivityLogs).set({ userId: authenticatedUserId }).where(eq(userActivityLogs.userId, guestId));

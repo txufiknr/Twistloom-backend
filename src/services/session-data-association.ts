@@ -17,6 +17,25 @@
  * - likes: Requires authentication
  * - comments: Requires authentication
  * - All other social features: Require authentication
+ * 
+ * 
+ * Migration Flow (Two-Step Process):
+ * 
+ * Step 1: Temporary Session → Guest User (session-data-association.ts)
+ * - When a temporary session is promoted to a guest user (first write operation)
+ * - `migrateSessionDataToUser()` migrates data from temporary session to guest user
+ * - Uses `sessionDataAssociations` table to track associations
+ * - Guest user is created/updated with the migrated data
+ * 
+ * Step 2: Guest User → Authenticated User (user-controller.ts)
+ * - When a guest user logs in (OAuth or email/password)
+ * - `migrateGuestToAuthUser()` migrates all data from guest to authenticated user
+ * - Directly updates tables: userSessions, userPageProgress, userActivityLogs
+ * - Guest user is deleted from database
+ * 
+ * These two services are NOT redundant - they serve different migration stages:
+ * - session-data-association.ts: Temporary session → Guest user (intermediate migration)
+ * - user-controller.ts: Guest user → Authenticated user (final migration)
  */
 
 import { dbRead, dbWrite } from '../db/client.js';
@@ -31,13 +50,25 @@ import type { SessionEntityType } from '../types/session.js';
 /**
  * Associates data with a temporary session
  * 
- * @param entityType - Type of entity (book, user_session, etc.)
- * @param entityId - ID of the entity
- * @param sessionId - Temporary session ID
+ * This function creates a record in the sessionDataAssociations table to track
+ * which entities (e.g., user_sessions, user_page_progress) belong to a temporary session.
+ * This enables migration of data from temporary sessions to guest users when the session
+ * is promoted to a guest user on the first write operation.
+ * 
+ * The association is stored with the sessionId and can later be migrated to a userId
+ * when the temporary session is promoted to a guest user.
+ * 
+ * @param entityType - Type of entity (e.g., 'user_session', 'user_page_progress')
+ * @param entityId - ID of the entity to associate with the session
+ * @param sessionId - Temporary session ID from the in-memory LRU cache
  * 
  * @example
  * ```typescript
- * await associateDataWithSession('book', 'book123', 'session456');
+ * // Associate a reading session with a temporary session
+ * await associateDataWithSession('user_session', 'session123', 'temp-session-456');
+ * 
+ * // Associate page progress with a temporary session
+ * await associateDataWithSession('user_page_progress', 'progress789', 'temp-session-456');
  * ```
  */
 export async function associateDataWithSession(
@@ -58,17 +89,31 @@ export async function associateDataWithSession(
 }
 
 /**
- * Migrates all data from temporary session to guest user
+ * Migrates all data from a temporary session to a guest user
  * 
- * Updates the actual entity to point to the guest user and updates
- * the association record with migration timestamp.
+ * This function is called when a temporary session is promoted to a guest user
+ * (typically on the first write operation). It performs the following steps:
  * 
- * @param sessionId - Temporary session ID
- * @param guestUserId - Guest user ID
+ * 1. Queries the sessionDataAssociations table for all entities associated with the sessionId
+ * 2. For each entity, calls migrateEntityToUser() to update the actual entity's userId field
+ * 3. Updates the association record with the guestUserId and migration timestamp
+ * 
+ * Only unmigrated associations (where userId is null) are processed to prevent
+ * duplicate migrations. The migration is idempotent - calling it multiple times
+ * with the same sessionId will not cause issues.
+ * 
+ * This is Step 1 of the two-step migration flow:
+ * - Step 1: Temporary Session → Guest User (this function)
+ * - Step 2: Guest User → Authenticated User (migrateGuestToAuthUser in user-controller.ts)
+ * 
+ * @param sessionId - Temporary session ID to migrate data from
+ * @param guestUserId - Guest user ID to migrate data to
  * 
  * @example
  * ```typescript
- * await migrateSessionDataToUser('session456', 'guest789');
+ * // Promote temporary session to guest user on first write
+ * const guestUserId = await getOrCreateGuestUser(req);
+ * await migrateSessionDataToUser('temp-session-123', guestUserId);
  * ```
  */
 export async function migrateSessionDataToUser(
@@ -113,9 +158,31 @@ export async function migrateSessionDataToUser(
 /**
  * Migrates a specific entity to a user
  * 
- * @param entityType - Type of entity
- * @param entityId - ID of the entity
- * @param userId - User ID to migrate to
+ * This is a helper function that updates the userId field of a specific entity
+ * (e.g., user_session, user_page_progress) to point to a new user. It is called
+ * by migrateSessionDataToUser() for each entity associated with a temporary session.
+ * 
+ * The function uses dynamic imports to avoid circular dependencies with the schema file.
+ * It handles the following entity types:
+ * 
+ * - 'user_session': Updates the userId field in the userSessions table
+ * - 'user_page_progress': Updates the userId field in the userPageProgress table
+ * 
+ * Unknown entity types are logged as warnings but do not throw errors, allowing
+ * the migration to continue for other entities.
+ * 
+ * @param entityType - Type of entity to migrate (e.g., 'user_session', 'user_page_progress')
+ * @param entityId - ID of the entity to migrate
+ * @param userId - User ID to migrate the entity to (guest user or authenticated user)
+ * 
+ * @example
+ * ```typescript
+ * // Migrate a reading session to a guest user
+ * await migrateEntityToUser('user_session', 'session-123', 'guest-456');
+ * 
+ * // Migrate page progress to a guest user
+ * await migrateEntityToUser('user_page_progress', 'progress-789', 'guest-456');
+ * ```
  */
 async function migrateEntityToUser(
   entityType: SessionEntityType,
@@ -151,15 +218,26 @@ async function migrateEntityToUser(
 }
 
 /**
- * Gets all data associated with a session
+ * Gets all data associated with a temporary session
  * 
- * @param sessionId - Temporary session ID
- * @returns List of associated entities
+ * Queries the sessionDataAssociations table to retrieve all entities that are
+ * associated with a given temporary session ID. This is useful for debugging,
+ * logging, or understanding what data will be migrated when a session is promoted
+ * to a guest user.
+ * 
+ * The returned array includes both migrated and unmigrated associations.
+ * To check if an association has been migrated, verify the userId field in the
+ * association record (null = unmigrated, set = migrated).
+ * 
+ * @param sessionId - Temporary session ID to query
+ * @returns Array of associated entities with entityType and entityId
  * 
  * @example
  * ```typescript
- * const entities = await getSessionData('session456');
+ * // Check what data is associated with a temporary session
+ * const entities = await getSessionData('temp-session-123');
  * console.log('Associated entities:', entities);
+ * // Output: [{ entityType: 'user_session', entityId: 'session-456' }, ...]
  * ```
  */
 export async function getSessionData(
@@ -176,13 +254,25 @@ export async function getSessionData(
 /**
  * Gets all data associated with a user
  * 
- * @param userId - User ID
- * @returns List of associated entities
+ * Queries the sessionDataAssociations table to retrieve all entities that have
+ * been migrated to a specific user ID. This is useful for:
+ * 
+ * - Debugging migration issues
+ * - Tracking what data belongs to a guest user
+ * - Verifying that all expected data was migrated from a temporary session
+ * 
+ * Only associations where the userId field is set are returned. This function
+ * does not return associations that are still linked to temporary sessions.
+ * 
+ * @param userId - User ID (guest user or authenticated user) to query
+ * @returns Array of associated entities with entityType and entityId
  * 
  * @example
  * ```typescript
- * const entities = await getUserData('user123');
+ * // Check what data belongs to a guest user
+ * const entities = await getUserData('guest-user-123');
  * console.log('User entities:', entities);
+ * // Output: [{ entityType: 'user_session', entityId: 'session-456' }, ...]
  * ```
  */
 export async function getUserData(
@@ -199,13 +289,24 @@ export async function getUserData(
 /**
  * Cleans up orphaned association records
  * 
- * Removes associations where both sessionId and userId are null
- * (shouldn't happen in normal operation, but cleanup for safety)
+ * Removes association records where both sessionId and userId are null.
+ * This is a safety cleanup function that should not normally find any records
+ * to delete, as associations should always have either a sessionId (linked to
+ * a temporary session) or a userId (migrated to a user).
  * 
- * @returns Number of records cleaned up
+ * Orphaned associations could occur due to:
+ * - Database corruption or inconsistencies
+ * - Failed migrations that left partial state
+ * - Manual database modifications
+ * 
+ * This function is called by the daily cleanup cron job to ensure database
+ * hygiene. It logs the number of records cleaned up for monitoring purposes.
+ * 
+ * @returns Number of orphaned association records deleted
  * 
  * @example
  * ```typescript
+ * // Clean up orphaned associations (called by cron job)
  * const cleanedCount = await cleanupOrphanedAssociations();
  * console.log(`Cleaned up ${cleanedCount} orphaned associations`);
  * ```

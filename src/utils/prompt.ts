@@ -1701,7 +1701,8 @@ function formatCurrentSituationForPrompt(page: ActionedStoryPage): string {
   
   // Add important objects if any
   if (importantObjects.length > 0) {
-    situation.push(`Important objects: ${importantObjects.join(', ')}`);
+    // situation.push(`Important objects: ${importantObjects.join(', ')}`);
+    situation.push(`Important objects:\n${importantObjects.map(obj => `  · ${obj}`).join('\n')}`);
   }
   
   // Add key events if any

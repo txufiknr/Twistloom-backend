@@ -227,7 +227,7 @@ export const temporarySessions = pgTable(
   "temporary_sessions",
   {
     sessionId: uuid("session_id").primaryKey(),
-    userId: text("user_id").references(() => users.userId, { onDelete: 'cascade' }), // Migrated to guest user
+    userId: uuid("user_id").references(() => users.userId, { onDelete: 'cascade' }), // Migrated to guest user
     ipAddress: text("ip_address"), // For deduplication and analytics
     userAgent: text("user_agent"), // For fingerprinting
     firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).defaultNow().notNull(),
@@ -263,9 +263,9 @@ export const sessionDataAssociations = pgTable(
   {
     id: id(),
     entityType: text("entity_type").$type<SessionEntityType>().notNull(), // 'book', 'user_session', 'user_page_progress', etc.
-    entityId: text("entity_id").notNull(), // The actual entity ID
-    sessionId: text("session_id"), // Temporary session ID (before migration)
-    userId: text("user_id").references(() => users.userId, { onDelete: 'cascade' }), // Guest user ID (after migration)
+    entityId: uuid("entity_id").notNull(), // The actual entity ID (UUID)
+    sessionId: uuid("session_id").references(() => temporarySessions.sessionId, { onDelete: 'cascade' }), // Temporary session ID (before migration)
+    userId: uuid("user_id").references(() => users.userId, { onDelete: 'cascade' }), // Guest user ID (after migration)
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     migratedAt: timestamp("migrated_at", { withTimezone: true }), // When data was migrated to user
   },
@@ -346,8 +346,8 @@ export const books = pgTable(
   "books",
   {
     id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "set null" }),
-    slug: text("slug").unique(), // SEO-friendly URL identifier (null if not implemented)
+    userId: userId().references(() => users.userId, { onDelete: "set null" }), // Preserve books when users are deleted
+    slug: text("slug").unique(), // SEO-friendly URL identifier
     title: text("title").notNull(),
     totalPages: integer("total_pages").notNull().default(BOOK_MIN_PAGES),
     language: text("language"),
@@ -564,7 +564,7 @@ export const usage = pgTable(
 export const userLikes = pgTable(
   "user_likes",
   {
-    userId: userId(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }), // Cascade delete when user is deleted
     targetType: text("target_type").$type<LikeTargetType>().notNull(), // "book" | "comment" | "user"
     targetId: uuid("target_id").notNull(), // ID of the liked item
     createdAt,
@@ -597,7 +597,7 @@ export const userLikes = pgTable(
 export const userFavorites = pgTable(
   "user_favorites",
   {
-    userId: userId(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }), // Cascade delete when user is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
     collection: text("collection"),
     createdAt,
@@ -635,7 +635,7 @@ export const userComments = pgTable(
   "user_comments",
   {
     id: id(),
-    userId: userId(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }), // Cascade delete when user is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
     pageId: uuid("page_id").references(() => pages.id, { onDelete: "cascade" }), // Delete if page is deleted
     parentCommentId: uuid("parent_comment_id"), // For threaded comments
@@ -713,7 +713,7 @@ export const userSessions = pgTable(
   "user_sessions",
   {
     id: id(),
-    userId: userId(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }), // Cascade delete when user is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
     pageId: pageId("set null"), // Reset to page 1 when page is deleted, but if possible, should revert this into previous page (from userPageProgress)
     previousPageId: uuid("previous_page_id"), // For navigation history

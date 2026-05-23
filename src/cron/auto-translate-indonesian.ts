@@ -17,6 +17,8 @@ import { getErrorMessage } from "../utils/error.js";
 import { translateBooksBulk, translatePagesBulk } from "../utils/prompt-translation.js";
 import { MAX_BOOKS_PER_TRANSLATION_RUN, MAX_PAGES_PER_TRANSLATION_RUN, BOOKS_PER_BULK_TRANSLATION, PAGES_PER_BULK_TRANSLATION } from "../config/translation.js";
 import type { DBBook, DBPage } from "../types/schema.js";
+import type { BookToTranslate, PageToTranslate } from "../types/book.js";
+import { mapBookFromDb, mapToPersistedStoryPage } from "../services/book.js";
 
 const TARGET_LANGUAGE = 'id'; // Indonesian (ISO 639-1)
 
@@ -29,14 +31,7 @@ async function translateBooksToIndonesianBulk(books: DBBook[]): Promise<void> {
   try {
     console.log(`[auto-translate-id] 📚 Translating ${books.length} books to Indonesian in bulk...`);
 
-    const booksWithIds = books.map(book => ({
-      id: book.id,
-      title: book.title,
-      hook: book.hook || '',
-      summary: book.summary || '',
-      keywords: book.keywords || [],
-      language: book.language || 'en',
-    }));
+    const booksWithIds: BookToTranslate[] = books.map(mapBookFromDb);
 
     const { provider, model, translations } = await translateBooksBulk(booksWithIds, TARGET_LANGUAGE);
     const providerName = `${provider}${model ? ` (${model})` : ''}`;
@@ -85,15 +80,7 @@ async function translatePagesToIndonesianBulk(pages: DBPage[]): Promise<void> {
   try {
     console.log(`[auto-translate-id] 📄 Translating ${pages.length} pages to Indonesian in bulk...`);
 
-    const pagesWithIds = pages.map(page => ({
-      id: page.id,
-      text: page.text,
-      place: page.place || '',
-      keyEvents: page.keyEvents || [],
-      importantObjects: page.importantObjects || [],
-      actions: page.actions || [],
-    }));
-
+    const pagesWithIds: PageToTranslate[] = pages.map(mapToPersistedStoryPage);
     const { provider, model, translations } = await translatePagesBulk(pagesWithIds, TARGET_LANGUAGE);
     const providerName = `${provider}${model ? ` (${model})` : ''}`;
 

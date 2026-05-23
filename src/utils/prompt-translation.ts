@@ -2,9 +2,8 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_TRANSLATION, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIDocument, AIPromptForJson, AIResponse } from "../types/ai-chat.js";
 import { SUMMARY_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
-import type { DBPage } from "../types/schema.js";
 import type { ActionTranslation } from "../types/story.js";
-import type { Book, BookTranslation, PageTranslation, PageTranslationBulk, PageTranslationBulkResponse, BookTranslationBulkResponse, BookTranslationBulk } from "../types/book.js";
+import type { BookTranslation, PageTranslation, PageTranslationBulk, PageTranslationBulkResponse, BookTranslationBulkResponse, BookTranslationBulk, PageToTranslate, BookToTranslate } from "../types/book.js";
 import { BOOK_TRANSLATION_REQUIRED_FIELDS, BOOK_TRANSLATION_SCHEMA_DEFINITION, BULK_BOOK_TRANSLATION_REQUIRED_FIELDS, BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION, PAGE_TRANSLATION_REQUIRED_FIELDS, PAGE_TRANSLATION_SCHEMA_DEFINITION, BULK_PAGE_TRANSLATION_REQUIRED_FIELDS, BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { executePromptForJSON } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
@@ -52,7 +51,6 @@ const bulkBookTranslationOutputFormat: string = `{
  * Creates field instructions for book translation
  */
 const bookTranslationFieldInstructions: string = `
-FIELD INSTRUCTIONS:
 - title: Translate the book title. Keep it catchy and mysterious.
 - hook: Translate the hook. Maintain the intrigue and psychological tension.
 - summary: Translate the summary. Keep it ${SUMMARY_LENGTH}, preserving the psychological thriller atmosphere.
@@ -80,20 +78,11 @@ TRANSLATION GUIDELINES:
  * ```
  */
 export async function translateBook(
-  book: Pick<Book, 'title' | 'hook' | 'summary' | 'keywords' | 'mc' | 'language'>,
+  book: BookToTranslate,
   targetLanguage: string
 ): Promise<AIResponse<BookTranslation>> {
   const sourceLanguage = book.language || 'en';
-  const prompt = `TASK: Translate the following book metadata from ${formatLanguage(sourceLanguage)} to ${formatLanguage(targetLanguage)}:
-
-Title: ${book.title}
-Hook: ${book.hook}
-Summary: ${book.summary}
-Keywords: ${book.keywords?.join(', ') || 'none'}
-MC Bio: ${book.mc.bio}
-
-Provide the translation in JSON format.`;
-
+  const prompt = `TASK: Translate the following book metadata from ${formatLanguage(sourceLanguage)} to ${formatLanguage(targetLanguage)}.\n\n${formatBookPrompt(book)}`;
   const response = await executePromptForJSON<BookTranslation>({
     prompt,
     configs: {
@@ -134,24 +123,11 @@ Provide the translation in JSON format.`;
  * ```
  */
 export async function translateBooksBulk(
-  books: Array<{ id: string } & Pick<Book, 'title' | 'hook' | 'summary' | 'keywords' | 'language'>>,
+  books: BookToTranslate[],
   targetLanguage: string
 ): Promise<BookTranslationBulkResponse> {
-  // Format books as documents
-  const documents: AIDocument[] = books.map((book, index) => ({
-    title: `Book ${index + 1}: ${book.title}`,
-    snippet: `Book ID: ${book.id}
-Title: ${book.title}
-Hook: ${book.hook}
-Summary: ${book.summary}
-Keywords: ${book.keywords?.join(', ') || 'none'}
-Language: ${book.language || 'en'}`
-  }));
-
-  const prompt = `TASK: Translate ${documents.length} books provided in the documents to ${formatLanguage(targetLanguage)}.
-
-Output the translations in JSON format with the bookId to match each translation to its source book.`;
-
+  const documents: AIDocument[] = books.map(formatBookDocument);
+  const prompt = `TASK: Translate ${documents.length} books provided in the documents to ${formatLanguage(targetLanguage)}.`;
   const response = await executePromptForJSON<BookTranslationBulk>({
     prompt,
     configs: {
@@ -167,7 +143,7 @@ Output the translations in JSON format with the bookId to match each translation
       }
     } satisfies AIPromptForJson<BookTranslationBulk>,
     jsonStructure: bulkBookTranslationOutputFormat,
-    fieldInstructions: bookTranslationFieldInstructions,
+    fieldInstructions: `- bookId: Don't change. Should match to its source book.${bookTranslationFieldInstructions}`,
   });
 
   if (!response.result) {
@@ -231,21 +207,22 @@ const bulkPageTranslationOutputFormat: string = `{
 /**
  * Creates field instructions for page translation
  */
-const pageTranslationFieldInstructions: string = `
-FIELD INSTRUCTIONS:
-- text: Translate the page narrative. Maintain first-person POV and psychological thriller atmosphere.
+const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk: boolean = false): string => {
+  const asteriskInstruction = hasAsterisks ? 'Keep text styling using asterisks (if any).' : '';
+  return `${isBulk ? `- pageId: Don't change. Should match to its source page.` : ''}
+- text: Translate the page narrative. ${asteriskInstruction}
 - place: Translate the place name. Keep it atmospheric and descriptive.
 - keyEvents: Translate key events. Preserve the sequence and importance.
 - importantObjects: Translate important objects. Keep them relevant to the story.
-- actions: Translate action texts.
+- actions: Include both the original text (unchanged) and the translated text.
 
 TRANSLATION GUIDELINES:
-- Maintain the first-person central (MC = narrator) POV throughout
-- Preserve the psychological tension and horror elements
+- Maintain first-person central (MC = narrator) POV throughout
+- Preserve psychological thriller atmosphere, tension, and horror elements
 - Use natural, idiomatic language in the target language
 - Keep the same emotional tone (fear, dread, suspense, etc.)
-- Ensure action choices remain meaningful and intriguing
-`;
+- Ensure action choices remain meaningful and intriguing`;
+};
 
 /**
  * Translates page content to target language using AI
@@ -261,23 +238,11 @@ TRANSLATION GUIDELINES:
  * ```
  */
 export async function translatePage(
-  page: Pick<DBPage, 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>,
+  page: PageToTranslate,
   targetLanguage: string
 ): Promise<AIResponse<PageTranslation>> {
-  const prompt = `TASK: Translate the following page content to ${formatLanguage(targetLanguage)}:
-
-Text:
-"""
-${page.text}
-"""
-
-Place: ${page.place}
-Key Events: ${page.keyEvents?.join(', ') || 'none'}
-Important Objects: ${page.importantObjects?.join(', ') || 'none'}
-Actions: ${page.actions?.map(a => a.text)?.join('; ') || 'none'}
-
-Provide the translation in JSON format. For actions, include both the original text (unchanged) and the translated text.`;
-
+  const prompt = `TASK: Translate the following page content to ${formatLanguage(targetLanguage)}.\n\n${formatPagePrompt(page)}`;
+  const hasAsterisks = page.text.includes('*');
   const response = await executePromptForJSON<PageTranslation>({
     prompt,
     configs: {
@@ -292,7 +257,7 @@ Provide the translation in JSON format. For actions, include both the original t
       }
     } satisfies AIPromptForJson<PageTranslation>,
     jsonStructure: pageTranslationOutputFormat,
-    fieldInstructions: pageTranslationFieldInstructions,
+    fieldInstructions: buildPageTranslationFieldInstructions(hasAsterisks),
   });
 
   if (!response.result) {
@@ -338,27 +303,14 @@ Provide the translation in JSON format. For actions, include both the original t
  * ```
  */
 export async function translatePagesBulk(
-  pages: Array<{ id: string } & Pick<DBPage, 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>>,
+  pages: PageToTranslate[],
   targetLanguage: string
 ): Promise<PageTranslationBulkResponse> {
   // Format pages as documents
-  const documents: AIDocument[] = pages.map((page, index) => ({
-    title: `Page ${index + 1}: ${page.place || 'Unknown Location'}`,
-    snippet: `Page ID: ${page.id}
-Text:
-"""
-${page.text}
-"""
-Place: ${page.place}
-Key Events: ${page.keyEvents?.join(', ') || 'none'}
-Important Objects: ${page.importantObjects?.join(', ') || 'none'}
-Actions: ${page.actions?.map(a => a.text)?.join('; ') || 'none'}`
-  }));
+  const documents: AIDocument[] = pages.map(formatPageDocument);
 
-  const prompt = `TASK: Translate ${documents.length} pages provided in the documents to ${formatLanguage(targetLanguage)}.
-
-Output translations in JSON format with the pageId to match each translation to its source page.`;
-
+  const prompt = `TASK: Translate ${documents.length} pages provided in the documents to ${formatLanguage(targetLanguage)}.`;
+  const hasAsterisks = pages.some(page => page.text.includes('*'));
   const response = await executePromptForJSON<PageTranslationBulk>({
     prompt,
     configs: {
@@ -374,7 +326,7 @@ Output translations in JSON format with the pageId to match each translation to 
       }
     } satisfies AIPromptForJson<PageTranslationBulk>,
     jsonStructure: bulkPageTranslationOutputFormat,
-    fieldInstructions: pageTranslationFieldInstructions,
+    fieldInstructions: buildPageTranslationFieldInstructions(hasAsterisks, true),
   });
 
   if (!response.result) {
@@ -410,4 +362,34 @@ Output translations in JSON format with the pageId to match each translation to 
 
   const { provider, model } = response;
   return { provider, model, translations: finalTranslations };
+}
+
+function formatPageDocument(page: PageToTranslate, index: number): AIDocument {
+  return {
+    title: `Page ${index + 1}: ${page.place || 'Unknown Location'}`,
+    snippet: `Page ID: ${page.id}\n${formatPagePrompt(page)}`
+  };
+}
+
+function formatBookDocument(book: BookToTranslate, index: number): AIDocument {
+  return {
+    title: `Book ${index + 1}: ${book.title}`,
+    snippet: `Book ID: ${book.id}\n${formatBookPrompt(book)}`
+  };
+}
+
+function formatPagePrompt(page: PageToTranslate): string {
+  return `Text:\n"""\n${page.text}\n"""
+Place: ${page.place || 'unknown'}
+Key Events: ${page.keyEvents?.join(', ') || 'none'}
+Important Objects: ${page.importantObjects?.join(', ') || 'none'}
+Actions: ${page.actions?.map(a => a.text)?.join('; ') || 'none'}`;
+}
+
+function formatBookPrompt(book: BookToTranslate): string {
+  return `Title: ${book.title}
+Hook: ${book.hook}
+Summary: ${book.summary}
+Keywords: ${book.keywords?.join(', ') || 'none'}
+Language: ${book.language || 'en'}`;
 }

@@ -1,19 +1,15 @@
 [ ] Page 1 selected actions masih none
-[ ] Originals: Mc name predefine casts aja, jangan AI
 [ ] Candidate pregeneration prioritize yang existing pagesnya dikit
-[ ] Important objects perlu disimpen di story state?
-[ ] Important objects perlu prop tambahan: trait (custom fields: color, battery-level), rules (custom string array), status (broken, missing)? 
 [ ] Stripe switch to live
-[ ] search jaccard, need change to cursor pagination?
-[ ] Enhanced search (jaccard by book keywords & title)
+[ ] book explore: search jaccard (by book keywords & title), need change to cursor pagination?
 [ ] GET /user/recommendations: you might like (based on liked books)
-[ ] userSettings schema (interests, text size, email notification settings)
+[ ] userSettings schema (interests, email notification settings)
 [ ] userLogins schema (userId, userAgent) -> database sessions (Drizzle adapter)
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
-[ ] research ip/mac address for guest user deduplication
 
+[x] Translate prompt: keep text styling using asterisks (if any/detect)
 [x] cron trasnlate langsung 5 book per request
 [x] generate theme ake openai aja
 [x] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')

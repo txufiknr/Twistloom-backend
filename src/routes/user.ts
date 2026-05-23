@@ -42,7 +42,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
-import { users, userSessions, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
+import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType, UserActivityType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
@@ -561,6 +561,13 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
  * - Reading sessions and history
  * - Device registrations
  * 
+ * The deletion uses database cascade deletes to automatically remove all related data:
+ * - userAuth, temporarySessions, sessionDataAssociations, userPageProgress
+ * - userFollows, userCompletedBooks, userActivityLogs, transactions
+ * - userNotifications, user_checkins, userLikes, userFavorites, userComments, userSessions
+ * 
+ * Books created by the user are preserved (userId set to null) to maintain content availability.
+ * 
  * @route DELETE /user
  * @description Delete user profile and all associated data
  * 
@@ -568,9 +575,8 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
  * @header X-Platform - Client platform (android/ios)
  * 
  * @returns {Object} Deletion response
- * @returns {boolean} success - Operation status
  * @returns {string} message - Confirmation message
- * @returns {Object} data - Summary of deleted records
+ * @returns {boolean} imageQueuedForDeletion - Whether profile image was queued for deletion
  * 
  * @example
  * // Request
@@ -578,18 +584,8 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
  * 
  * // Response
  * {
- *   "success": true,
  *   "message": "User account deleted successfully",
- *   "data": {
- *     "deletedRecords": {
- *       "userProfile": 1,
- *       "userFavorites": 8,
- *       "userLikes": 15,
- *       "userSessions": 42,
- *       "userComments": 5
- *     },
- *     "imageQueuedForDeletion": true
- *   }
+ *   "imageQueuedForDeletion": true
  * }
  */
 router.delete("/", requireAuth, async (req: Request, res: Response) => {
@@ -622,40 +618,26 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
         });
     }
 
-    // Execute all delete operations in parallel for efficiency
-    const [
-      deletedProfile,
-      deletedFavorites,
-      deletedLikes,
-      deletedSessions,
-      deletedComments
-    ] = await Promise.all([
-      dbWrite.delete(users).where(eq(users.userId, userId)).returning(),
-      dbWrite.delete(userFavorites).where(eq(userFavorites.userId, userId)).returning(),
-      dbWrite.delete(userLikes).where(eq(userLikes.userId, userId)).returning(),
-      dbWrite.delete(userSessions).where(eq(userSessions.userId, userId)).returning(),
-      dbWrite.delete(userComments).where(eq(userComments.userId, userId)).returning(),
-    ]);
+    // Delete user - cascade delete will handle all related tables automatically
+    // Tables with cascade delete on userId:
+    // - userAuth, temporarySessions, sessionDataAssociations, userPageProgress
+    // - userFollows, userCompletedBooks, userActivityLogs, transactions
+    // - userNotifications, user_checkins, userLikes, userFavorites, userComments, userSessions
+    await dbWrite
+      .delete(users)
+      .where(eq(users.userId, userId))
+      .returning();
 
     // Invalidate all relevant user cache entries
     await Promise.all([
       invalidateCachePattern(`user:${userId}%`),
+      invalidateUserProfileCache(userId),
     ]);
 
     res.json({
       message: "User account deleted successfully",
-      deletedRecords: {
-        userProfile: deletedProfile.length,
-        userFavorites: deletedFavorites.length,
-        userLikes: deletedLikes.length,
-        userSessions: deletedSessions.length,
-        userComments: deletedComments.length,
-      },
       imageQueuedForDeletion: !!userToDelete.imageId,
     });
-
-    // Invalidate user profile cache (Redis)
-    await invalidateUserProfileCache(userId);
 
   } catch (error) {
     handleApiError(res, "Failed to delete user account", error);

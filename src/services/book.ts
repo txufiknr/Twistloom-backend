@@ -1090,7 +1090,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     slug: dbBook.slug || undefined,
     title: dbBook.title,
     totalPages: dbBook.totalPages,
-    language: dbBook.language || '',
+    language: dbBook.language || 'en',
     hook: dbBook.hook || '',
     summary: dbBook.summary || '',
     image: dbBook.image || undefined,

@@ -1,6 +1,6 @@
 import type { CharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
-import type { ActionTranslation, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
 import type { DBBookTranslations, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -264,6 +264,7 @@ export type BookTranslation = {
   mc: StoryMCTranslation;
 }
 
+export type BookToTranslate = Pick<Book, 'id' | 'title' | 'hook' | 'summary' | 'keywords' | 'language'>;
 export type BookTranslationWithID = BookTranslation & { bookId: string };
 export type BookTranslationBulk = { translations: BookTranslationWithID[] };
 export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<BookTranslationBulk>, 'provider' | 'model'>;
@@ -279,6 +280,8 @@ export type PageTranslation = {
   actions: ActionTranslation[];
 }
 
+// export type PageToTranslate = Pick<DBPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
+export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
 export type PageTranslationWithID = PageTranslation & { pageId: string };
 export type PageTranslationBulk = { translations: PageTranslationWithID[] };
 export type PageTranslationBulkResponse = PageTranslationBulk & Pick<AIResponse<PageTranslationBulk>, 'provider' | 'model'>;
