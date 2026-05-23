@@ -33,9 +33,10 @@ This document outlines the comprehensive implementation plan for adding a monthl
 Users with active VIP subscriptions receive:
 
 1. **VIP Badge**: Visual indicator in user profile and comments
-2. **Triple Check-in Bonus**: 
-   - Standard: 5 credits (days 1-6), 20 credits (day 7)
-   - VIP: 15 credits (days 1-6), 60 credits (day 7)
+2. **Dual Check-in Bonus**: 
+   - Regular claim: +5 credits (days 1-6), +20 credits (day 7) - available to all users
+   - VIP 2x claim: +10 credits (days 1-6), +40 credits (day 7) - only available to VIP/subscribed users
+   - Total for VIP users: +15 credits (days 1-6), +60 credits (day 7) when both buttons are clicked
 3. **Monthly Credits**: +50 credits automatically added on subscription activation and each renewal
 
 ### Subscription Model
@@ -135,7 +136,7 @@ user_checkins (
 │  │ Credit Packs    │          │ VIP Subscription │              │
 │  │ - Observer      │          │ - $9.99/month   │              │
 │  │ - Investigator  │          │ - +50 credits   │              │
-│  │ - Mastermind    │          │ - 3x check-in   │              │
+│  │ - Mastermind    │          │ - 2x check-in   │              │
 │  └─────────────────┘          │ - VIP badge     │              │
 │                                └─────────────────┘              │
 └─────────────────────────────────────────────────────────────────┘
@@ -156,9 +157,9 @@ user_checkins (
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  Check-in System:                                               │
-│  - Check user tier (standard/vip)                               │
-│  - Apply multiplier (1x for standard, 3x for VIP)                │
-│  - Allocate credits                                             │
+│  - All users can claim regular bonus (+5/+20)                    │
+│  - VIP users can claim additional 2x bonus (+10/+40)             │
+│  - Total for VIP: +15 (days 1-6), +60 (day 7)                    │
 │                                                                 │
 │  Monthly Credit Allocation:                                     │
 │  - Cron job runs daily                                          │
@@ -207,9 +208,9 @@ user_checkins (
 ```
 1. User performs daily check-in
 2. Backend checks user tier
-3. If VIP: applies 3x multiplier to base bonus
-4. Allocates credits
-5. Records transaction
+3. Regular claim: allocates base bonus (+5/+20) for all users
+4. VIP 2x claim: allocates additional bonus (+10/+40) for VIP users only
+5. Records transaction for each claim
 ```
 
 ---
@@ -429,7 +430,7 @@ Create VIP subscription product in Stripe Dashboard:
 STRIPE_VIP_PRICE_ID=price_XXXXXXXXXXXXXXXX
 STRIPE_VIP_PRODUCT_ID=prod_XXXXXXXXXXXXXXXX
 VIP_MONTHLY_CREDITS=50
-VIP_CHECKIN_MULTIPLIER=3
+VIP_CHECKIN_MULTIPLIER=2
 ```
 
 ### Configuration File
@@ -448,7 +449,7 @@ export const VIP_SUBSCRIPTION: SubscriptionConfig = {
   priceId: process.env.STRIPE_VIP_PRICE_ID || "",
   productId: process.env.STRIPE_VIP_PRODUCT_ID || "",
   monthlyCredits: 50,
-  checkInMultiplier: 3,
+  checkInMultiplier: 2,
 };
 
 /**
@@ -456,7 +457,7 @@ export const VIP_SUBSCRIPTION: SubscriptionConfig = {
  */
 export const VIP_BENEFITS = {
   monthlyCredits: parseInt(process.env.VIP_MONTHLY_CREDITS || "50"),
-  checkInMultiplier: parseInt(process.env.VIP_CHECKIN_MULTIPLIER || "3"),
+  checkInMultiplier: parseInt(process.env.VIP_CHECKIN_MULTIPLIER || "2"),
 } as const;
 ```
 
@@ -498,8 +499,8 @@ Return available subscription plans.
  *       priceUSD: 9.99,
  *       priceId: "price_...",
  *       monthlyCredits: 50,
- *       checkInMultiplier: 3,
- *       benefits: ["VIP badge", "3x check-in bonus", "+50 monthly credits"]
+ *       checkInMultiplier: 2,
+ *       benefits: ["VIP badge", "2x check-in bonus", "+50 monthly credits"]
  *     }
  *   ]
  * }
@@ -974,28 +975,43 @@ export async function downgradeUserFromVip(userId: string): Promise<void> {
 
 ### Modified Check-in Logic
 
-Update `src/services/user.ts` to apply VIP multiplier:
+Update `src/services/user.ts` to support dual claim system:
 
 ```typescript
-// In performDailyCheckIn function
+// Add new parameter to performDailyCheckIn function
+export async function performDailyCheckIn(
+  userId: string,
+  options: { claimType: 'regular' | 'vip_2x' } = { claimType: 'regular' }
+) {
+  // ... existing validation logic ...
 
-// Get user tier to apply VIP multiplier
-const userResult = await tx
-  .select({ tier: users.tier })
-  .from(users)
-  .where(eq(users.userId, userId))
-  .limit(1);
+  // Get user tier
+  const userResult = await tx
+    .select({ tier: users.tier })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
 
-const isVip = userResult.length > 0 && userResult[0].tier === 'vip';
+  const isVip = userResult.length > 0 && userResult[0].tier === 'vip';
 
-// Apply VIP multiplier if user is VIP
-const baseBonus = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
-const creditsToAward = isVip ? baseBonus * VIP_BENEFITS.checkInMultiplier : baseBonus;
+  // Validate claim type
+  if (options.claimType === 'vip_2x' && !isVip) {
+    throw new Error("VIP 2x claim is only available to VIP subscribers");
+  }
 
-// Rest of the logic remains the same...
+  // Calculate base bonus
+  const baseBonus = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+  
+  // Apply multiplier based on claim type
+  const creditsToAward = options.claimType === 'vip_2x' 
+    ? baseBonus * VIP_BENEFITS.checkInMultiplier 
+    : baseBonus;
+
+  // Rest of the logic remains the same...
+}
 ```
 
-Also update `getCheckInStatus` to include VIP status in response:
+Also update `getCheckInStatus` to include VIP status and both claim amounts in response:
 
 ```typescript
 // In getCheckInStatus function
@@ -1008,18 +1024,21 @@ const userResult = await dbRead
 
 const isVip = userResult.length > 0 && userResult[0].tier === 'vip';
 
-// Calculate next claim amount with VIP multiplier
-let nextClaimAmount = 0;
+// Calculate next claim amounts
+let regularClaimAmount = 0;
+let vipClaimAmount = 0;
 if (canCheckInStatus.canCheckIn) {
   const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
   const baseAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
-  nextClaimAmount = isVip ? baseAmount * VIP_BENEFITS.checkInMultiplier : baseAmount;
+  regularClaimAmount = baseAmount;
+  vipClaimAmount = baseAmount * VIP_BENEFITS.checkInMultiplier;
 }
 
 return {
   // ... existing fields
   isVip,
-  nextClaimAmount,
+  regularClaimAmount,
+  vipClaimAmount: isVip ? vipClaimAmount : 0,
 };
 ```
 
@@ -1359,7 +1378,7 @@ export function SubscriptionCard({ plan, currentSubscription }: SubscriptionCard
         </li>
         <li className="flex items-center">
           <span className="text-green-500 mr-2">✓</span>
-          {plan.checkInMultiplier}x daily check-in bonus
+          {plan.checkInMultiplier}x daily check-in bonus (separate claim button)
         </li>
         <li className="flex items-center">
           <span className="text-green-500 mr-2">✓</span>
@@ -1419,10 +1438,22 @@ export function CheckInButton() {
   return (
     <div>
       {checkInStatus?.canCheckIn ? (
-        <button onClick={handleCheckIn}>
-          Claim {checkInStatus.nextClaimAmount} Credits
-          {isVip && <span className="text-purple-600 ml-2">(VIP 3x Bonus!)</span>}
-        </button>
+        <div className="flex gap-2">
+          {/* Regular claim button - available to all users */}
+          <button onClick={() => handleCheckIn('regular')}>
+            Claim {checkInStatus.regularClaimAmount} Credits
+          </button>
+          
+          {/* VIP 2x claim button - only available to VIP users */}
+          {isVip && (
+            <button 
+              onClick={() => handleCheckIn('vip_2x')}
+              className="bg-purple-600 text-white"
+            >
+              Claim {checkInStatus.vipClaimAmount} Credits (VIP 2x Bonus!)
+            </button>
+          )}
+        </div>
       ) : (
         <p>Already checked in today</p>
       )}

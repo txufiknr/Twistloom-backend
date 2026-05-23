@@ -6,18 +6,6 @@
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
 
-Backend Requirement:
-
-Your backend needs to implement the /auth/google-one-tap endpoint:
-
-```http
-POST /auth/google-one-tap
-Body: { idToken: string }
-Response: { userId, email, name, username, image }
-```
-
-The endpoint should verify the Google ID token (or trust frontend verification), find/create the user in the database, and return the user object for NextAuth session creation.
-
 [ ] subscribe "upgrade VIP" modal, VIP benefits:
     - VIP badge
     - triple check-in bonus (2 buttons: regular claim 1x and VIP claim 2x)

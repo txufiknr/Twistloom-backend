@@ -18,6 +18,7 @@
  */
 
 import { Router } from 'express';
+import { OAuth2Client } from 'google-auth-library';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, userAuth } from '../db/schema.js';
 import { eq, or } from 'drizzle-orm';
@@ -30,8 +31,13 @@ import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from 
 import { handleApiError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
+import { createOrUpdateOAuthUser, migrateGuestToAuthUser } from '../services/user-controller.js';
+import { resolveGuestId } from '../middleware/guest.js';
 
 const router = Router();
+
+// Google OAuth client for token verification
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 /**
  * POST /api/auth/verify-credentials
@@ -627,6 +633,139 @@ router.post('/logout', async (req, res) => {
     res.json({ message: 'Logged out successfully' });
   } catch (error) {
     handleApiError(res, 'Failed to logout', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/google-one-tap
+ *
+ * Verifies Google ID token from Google One Tap Sign-In and creates/updates user.
+ *
+ * This endpoint is used by the NextAuth Credentials provider for Google One Tap authentication.
+ * The frontend sends a Google ID token, which the backend verifies and uses to create or update
+ * the user account. Guest data migration is automatically handled if a guest cookie exists.
+ *
+ * Request Body:
+ * {
+ *   idToken: string;  // Google ID token from GIS One Tap
+ * }
+ *
+ * Response (Success - 200):
+ * {
+ *   userId: string;   // User ID for NextAuth session
+ *   email: string;    // User email
+ *   name: string;     // User display name
+ *   username: string; // User username (null for OAuth-only users)
+ *   image?: string;   // Profile image URL from Google
+ * }
+ *
+ * Response (Error - 400): Invalid token
+ * Response (Error - 401): Token verification failed
+ * Response (Error - 500): Server error
+ *
+ * Security:
+ * - Verifies Google ID token signature and audience
+ * - Extracts user info from verified token payload
+ * - Creates user_auth record for new users
+ * - Migrates guest data if guest cookie exists
+ * - Rate limited to prevent abuse
+ *
+ * Guest Migration:
+ * If a guest cookie exists, the endpoint automatically migrates all guest data
+ * (sessions, page progress, activity logs) to the authenticated user before
+ * deleting the guest user account.
+ *
+ * @example
+ * // NextAuth Credentials provider usage
+ * Credentials({
+ *   id: 'googleonetap',
+ *   name: 'Google One Tap',
+ *   credentials: {
+ *     credential: { label: 'Credential', type: 'text' },
+ *   },
+ *   async authorize(credentials) {
+ *     const res = await fetch(`${process.env.BACKEND_URL}/api/auth/google-one-tap`, {
+ *       method: 'POST',
+ *       headers: { 'Content-Type': 'application/json' },
+ *       body: JSON.stringify({ idToken: credentials.credential }),
+ *     });
+ *
+ *     if (!res.ok) return null;
+ *
+ *     const user = await res.json();
+ *     return user;
+ *   }
+ * })
+ */
+router.post('/google-one-tap', async (req, res) => {
+  try {
+    // Rate limiting based on IP address
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) {
+      return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+    }
+
+    const { idToken } = req.body;
+
+    // Validate input
+    if (!idToken) {
+      return res.status(400).json({ error: 'ID token is required' });
+    }
+
+    // Verify Google ID token
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(401).json({ error: 'Invalid token payload' });
+    }
+
+    const { email, name, picture: image } = payload;
+
+    // Create or update user from OAuth data
+    const userId = await createOrUpdateOAuthUser(email, name, image);
+
+    // Handle guest data migration if guest cookie exists
+    const guestCookie = req.cookies?.[process.env.GUEST_COOKIE_NAME || 'twistloom_guest_id'];
+    const guestId = await resolveGuestId(guestCookie);
+
+    if (guestId && guestId !== userId) {
+      // Migrate guest data to authenticated user
+      await migrateGuestToAuthUser(guestId, userId);
+      console.log(`[google-one-tap] 🔄 Migrated guest ${guestId} to user ${userId}`);
+    }
+
+    // Fetch user data for NextAuth session
+    const user = await dbRead
+      .select({
+        userId: users.userId,
+        email: users.email,
+        name: users.name,
+        username: users.username,
+        image: users.image,
+      })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (user.length === 0) {
+      return res.status(500).json({ error: 'Failed to retrieve user data' });
+    }
+
+    // Return user data for NextAuth session
+    res.json({
+      userId: user[0].userId,
+      email: user[0].email,
+      name: user[0].name,
+      username: user[0].username,
+      image: user[0].image,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/google-one-tap] ❌ Google One Tap error:', error);
+    handleApiError(res, 'Failed to authenticate with Google One Tap', error, 500);
   }
 });
 

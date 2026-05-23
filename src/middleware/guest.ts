@@ -411,7 +411,7 @@ async function handleTraditionalGuestCreation(req: Request, res: Response, next:
  * - dbLookup false: the guestId if valid, null if invalid.
  * - dbLookup true: the guestId if valid, null if invalid, missing or stale.
  */
-async function resolveGuestId(cookieValue: string | undefined, dbLookup: boolean = false): Promise<string | null> {
+export async function resolveGuestId(cookieValue: string | undefined, dbLookup: boolean = false): Promise<string | null> {
   if (!cookieValue) return null;
 
   // Format-only validation (no db & Redis)
