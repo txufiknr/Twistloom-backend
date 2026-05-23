@@ -110,6 +110,16 @@ const router = Router();
  */
 router.get("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
   try {
+    // Check if this is a temporary session (lazy guest creation)
+    const isTempSession = req.guestAuth?.isTempSession || !!req.tempSessionId;
+    
+    if (isTempSession) {
+      // Temporary session - return null user profile (not logged in state)
+      // This allows frontend to handle the "not logged in" state gracefully
+      res.set('Cache-Control', 'private, max-age=60, stale-while-revalidate=30');
+      return res.json({ user: null });
+    }
+
     const userId = req.userId!;
     const cacheKey = CACHE_KEYS.USER_PROFILE(userId);
     

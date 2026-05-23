@@ -661,6 +661,219 @@ export async function runDailyCleanup(): Promise<void> {
 }
 ```
 
+## Frontend Behavior & Expectations
+
+### User States
+
+The frontend must handle three distinct user states:
+
+| State | Description | Backend Response | Frontend Behavior |
+|-------|-------------|------------------|-------------------|
+| **Authenticated** | User logged in via NextAuth | Full user profile with all data | Show full UI, enable all features |
+| **Guest User** | User performed write action (created book, etc.) | Guest user profile with `isGuest: true` | Show limited UI, enable basic features |
+| **Temporary Session** | User browsing without any action | `{ user: null }` from GET /user | Show public-only UI, hide user-specific features |
+
+### API Response Handling
+
+#### GET /api/user Response
+
+The frontend should handle the following response patterns:
+
+```typescript
+// Response for authenticated users
+{
+  "user": {
+    "id": "user123",
+    "username": "john-doe",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "bio": "...",
+    "image": "https://...",
+    "credits": 100,
+    "isGuest": false,
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z",
+    "stats": {
+      "booksCount": 10,
+      "readsCount": 50,
+      "likedBooksCount": 5,
+      "savedBooksCount": 3,
+      "followersCount": 20,
+      "likesReceived": 100
+    }
+  }
+}
+
+// Response for guest users (after first write action)
+{
+  "user": {
+    "id": "guest456",
+    "username": null,
+    "name": null,
+    "email": null,
+    "bio": null,
+    "image": null,
+    "credits": 0,
+    "isGuest": true,
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z",
+    "stats": {
+      "booksCount": 1,
+      "readsCount": 0,
+      "likedBooksCount": 0,
+      "savedBooksCount": 0,
+      "followersCount": 0,
+      "likesReceived": 0
+    }
+  }
+}
+
+// Response for temporary sessions (no user data)
+{
+  "user": null
+}
+```
+
+### Frontend Implementation Guidelines
+
+#### 1. User State Detection
+
+```typescript
+// Determine user state from API response
+function getUserState(userResponse: { user: UserProfile | null }): UserState {
+  if (!userResponse.user) {
+    return 'temporary-session';
+  }
+  
+  if (userResponse.user.isGuest) {
+    return 'guest';
+  }
+  
+  return 'authenticated';
+}
+```
+
+#### 2. Conditional UI Rendering
+
+```typescript
+// Example: Show different UI based on user state
+function UserProfile({ user }: { user: UserProfile | null }) {
+  if (!user) {
+    // Temporary session - show login prompt
+    return <LoginPrompt />;
+  }
+  
+  if (user.isGuest) {
+    // Guest user - show limited profile with upgrade prompt
+    return (
+      <GuestProfile 
+        user={user}
+        onUpgrade={() => router.push('/auth/signup')}
+      />
+    );
+  }
+  
+  // Authenticated user - show full profile
+  return <FullProfile user={user} />;
+}
+```
+
+#### 3. Feature Access Control
+
+```typescript
+// Control feature access based on user state
+const canCreateBook = (userState: UserState) => {
+  return userState !== 'temporary-session';
+};
+
+const canLikeBooks = (userState: UserState) => {
+  return userState !== 'temporary-session';
+};
+
+const canViewProfile = (userState: UserState) => {
+  return userState === 'authenticated';
+};
+```
+
+#### 4. Session Transition Handling
+
+When a temporary session performs a write action (e.g., creates a book), the backend automatically migrates them to a guest user. The frontend should:
+
+1. **Refetch user profile** after successful write operations
+2. **Update UI state** to reflect the new guest user status
+3. **Show upgrade prompt** to encourage account creation
+
+```typescript
+// Example: Handle book creation with session migration
+async function handleCreateBook(bookData: BookData) {
+  const response = await fetch('/api/books', {
+    method: 'POST',
+    body: JSON.stringify(bookData),
+  });
+  
+  if (response.ok) {
+    // Backend may have migrated temporary session to guest user
+    // Refetch user profile to get updated state
+    await refetchUserProfile();
+    
+    // Show success message with upgrade prompt
+    showUpgradePrompt();
+  }
+}
+```
+
+#### 5. Error Handling
+
+The frontend should handle 404 errors gracefully:
+
+```typescript
+// GET /api/user should never return 404 for temporary sessions
+// If it does, treat as temporary session state
+async function fetchUserProfile() {
+  try {
+    const response = await fetch('/api/user');
+    if (response.status === 404) {
+      // Fallback: treat as temporary session
+      return { user: null };
+    }
+    return await response.json();
+  } catch (error) {
+    // Handle network errors
+    return { user: null };
+  }
+}
+```
+
+### UI/UX Considerations
+
+#### Homepage Behavior
+
+- **Temporary sessions**: Show public content, hide user-specific features (likes, saved books, profile)
+- **Guest users**: Show public content + their own books, prompt to sign up for full features
+- **Authenticated users**: Show full personalized experience
+
+#### Navigation
+
+- **Login/Signup buttons**: Always visible for temporary sessions and guest users
+- **Profile link**: Hidden for temporary sessions, shows guest profile for guests, full profile for authenticated
+- **Settings link**: Hidden for temporary sessions and guest users
+
+#### Onboarding Flow
+
+When a temporary session migrates to a guest user (first write action):
+
+1. Show success message for the action performed
+2. Display "Account created" notification
+3. Prompt to complete profile (name, email, password)
+4. Offer to continue as guest or sign up immediately
+
+### Performance Considerations
+
+- **Disable prefetch** for guest users to prevent unnecessary API calls
+- **Cache user profile** to avoid repeated calls
+- **Use request deduplication** to prevent concurrent duplicate requests
+- **Batch API calls** when possible to reduce round trips
+
 ## Frontend Changes
 
 ### 1. Disable Prefetch for Guest Users
