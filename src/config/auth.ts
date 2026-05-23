@@ -16,7 +16,8 @@
  * 
  * @default false (disabled by default, enable after testing)
  */
-export const ENABLE_LAZY_GUEST_CREATION = process.env.ENABLE_LAZY_GUEST_CREATION === 'true';
+// export const ENABLE_LAZY_GUEST_CREATION = process.env.ENABLE_LAZY_GUEST_CREATION === 'true';
+export const ENABLE_LAZY_GUEST_CREATION = true;
 
 /**
  * Temporary session configuration for lazy guest creation

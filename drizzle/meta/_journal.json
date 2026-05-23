@@ -127,6 +127,13 @@
       "when": 1779450567124,
       "tag": "0017_complex_valkyrie",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1779495845455,
+      "tag": "0018_loose_boom_boom",
+      "breakpoints": true
     }
   ]
 }
