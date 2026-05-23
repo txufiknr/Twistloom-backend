@@ -2,7 +2,7 @@ name: Daily Cleanup & Subscription Check
 
 on:
   schedule:
-    - cron: '0 4 * * *'   # Daily at 4:00 UTC (after data modification jobs complete)
+    - cron: '0 0 * * *'   # Daily at midnight UTC
   workflow_dispatch:      # Allow manual triggering
 
 jobs:

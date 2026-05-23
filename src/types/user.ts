@@ -86,4 +86,7 @@ export interface CheckinStatusResponse {
   currentStreak: number;
   nextClaimAmount: number;
   recentCheckIns: CheckinRecord[];
+  isVip: boolean;
+  regularClaimAmount: number;
+  vipClaimAmount: number;
 }

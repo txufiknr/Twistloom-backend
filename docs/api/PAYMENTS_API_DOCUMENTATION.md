@@ -20,21 +20,27 @@ The Payments API provides endpoints for Stripe checkout sessions, credit purchas
 1. [Type Definitions](#type-definitions)
 2. [Credit Packs](#credit-packs)
    - [Get Available Credit Packs](#get-paymentcredit-packs)
-3. [Checkout Sessions](#checkout-sessions)
+3. [Subscription Plans](#subscription-plans)
+   - [Get Subscription Plans](#get-paymentssubscription-plans)
+   - [Create Subscription Session](#post-paymentscreate-subscription-session)
+   - [Get Subscription Status](#get-paymentssubscription)
+   - [Cancel Subscription](#post-paymentssubscriptioncancel)
+   - [Open Customer Portal](#get-paymentssubscriptionportal)
+4. [Checkout Sessions](#checkout-sessions)
    - [Create Checkout Session](#post-paymentscreate-checkout-session)
-4. [Webhooks](#webhooks)
+5. [Webhooks](#webhooks)
    - [Handle Stripe Webhook](#post-paymentsstripewebhook)
-5. [Credit Management](#credit-management)
+6. [Credit Management](#credit-management)
    - [Consume Credits](#post-paymentsconsume-credits)
-6. [Transaction History](#transaction-history)
+7. [Transaction History](#transaction-history)
    - [Get Transaction History](#get-paymentstransactions)
-7. [Error Handling](#error-handling)
-8. [HTTP Headers](#http-headers)
-9. [Rate Limiting](#rate-limiting)
-10. [Authentication](#authentication)
-11. [Database Schema](#database-schema)
-12. [Testing](#testing)
-13. [Changelog](#changelog)
+8. [Error Handling](#error-handling)
+9. [HTTP Headers](#http-headers)
+10. [Rate Limiting](#rate-limiting)
+11. [Authentication](#authentication)
+12. [Database Schema](#database-schema)
+13. [Testing](#testing)
+14. [Changelog](#changelog)
 
 ---
 
@@ -120,6 +126,38 @@ interface PaginationMeta {
 }
 ```
 
+### SubscriptionPlan
+
+Subscription plan configuration for VIP membership.
+
+```typescript
+interface SubscriptionPlan {
+  id: string;                // Unique identifier for the plan
+  name: string;              // Display name shown to users
+  description: string;       // Detailed description of the plan
+  priceUSD: number;          // Monthly price in USD
+  priceId: string;           // Stripe Price ID for checkout
+  productId: string;         // Stripe Product ID for reference
+  monthlyCredits: number;    // Monthly credits allocated
+  checkInMultiplier: number; // Multiplier for daily check-in bonus
+  benefits: string[];        // Array of benefit descriptions
+}
+```
+
+### SubscriptionStatus
+
+User's current subscription status.
+
+```typescript
+interface SubscriptionStatus {
+  id: string;                // Subscription ID
+  status: "active" | "canceled" | "past_due" | "unpaid" | "trialing" | null;
+  currentPeriodEnd: string;   // End of current billing period (ISO 8601)
+  cancelAtPeriodEnd: boolean; // Whether subscription cancels at period end
+  monthlyCredits: number;    // Monthly credits allocated
+}
+```
+
 ---
 
 ## Credit Packs
@@ -168,6 +206,190 @@ Returns the list of available credit packs for purchase. This endpoint allows th
 - Returns safe data only (no sensitive configuration)
 - Includes all credit packs configured in the system
 - Pricing is public information, no authentication required
+
+---
+
+## Subscription Plans
+
+### GET /payments/subscription-plans
+
+Returns the list of available subscription plans for purchase. This endpoint allows the frontend to fetch the current subscription configuration without hardcoding it.
+
+**Authentication:** None (public pricing information)
+
+**Response (200 OK):**
+```json
+{
+  "plans": [
+    {
+      "id": "vip_monthly",
+      "name": "Twistloom VIP",
+      "description": "Monthly VIP membership with exclusive benefits",
+      "priceUSD": 9.99,
+      "priceId": "price_1234567890",
+      "productId": "prod_1234567890",
+      "monthlyCredits": 50,
+      "checkInMultiplier": 2,
+      "benefits": [
+        "VIP badge",
+        "2x check-in bonus",
+        "+50 monthly credits"
+      ]
+    }
+  ]
+}
+```
+
+**Behavior:**
+- Returns safe data only (no sensitive configuration)
+- Includes all subscription plans configured in the system
+- Pricing is public information, no authentication required
+
+---
+
+### POST /payments/create-subscription-session
+
+Creates a Stripe checkout session for VIP subscription. The user is redirected to Stripe's secure checkout page to complete the subscription.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
+```json
+{
+  "planId": "vip_monthly",
+  "successUrl": "https://app.twistloom.com/dashboard?subscription=success",
+  "cancelUrl": "https://app.twistloom.com/pricing?subscription=canceled"
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "url": "https://checkout.stripe.com/pay/cs_1234567890"
+}
+```
+
+**Error Responses:**
+- **400 Bad Request**: Invalid plan ID or user already has active subscription
+- **401 Unauthorized**: Authentication required
+- **500 Internal Server Error**: Stripe API error
+
+**Behavior:**
+- Validates planId against available subscription plans
+- Checks if user already has an active subscription
+- Creates or retrieves Stripe customer ID
+- Creates Stripe checkout session in subscription mode
+- Redirects user to Stripe checkout
+- Webhook handles subscription activation and credit allocation
+
+---
+
+### GET /payments/subscription
+
+Returns the authenticated user's current subscription status.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (200 OK):**
+```json
+{
+  "subscription": {
+    "id": "sub_1234567890",
+    "status": "active",
+    "currentPeriodEnd": "2026-06-23T00:00:00.000Z",
+    "cancelAtPeriodEnd": false,
+    "monthlyCredits": 50
+  }
+}
+```
+
+**Response (200 OK) - No Subscription:**
+```json
+{
+  "subscription": null
+}
+```
+
+**Error Responses:**
+- **401 Unauthorized**: Authentication required
+- **500 Internal Server Error**: Database error
+
+**Behavior:**
+- Returns user's current subscription if active
+- Returns null if no subscription exists
+- Includes monthly credits amount for display
+
+---
+
+### POST /payments/subscription/cancel
+
+Cancels the authenticated user's subscription at the end of the current billing period. The user retains VIP benefits until the period ends.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Subscription will be canceled at period end"
+}
+```
+
+**Error Responses:**
+- **404 Not Found**: No active subscription found
+- **401 Unauthorized**: Authentication required
+- **500 Internal Server Error**: Stripe API error
+
+**Behavior:**
+- Updates Stripe subscription to cancel at period end
+- Updates database to reflect cancellation status
+- User retains VIP benefits until current period ends
+- Cron job handles actual tier downgrade after expiration
+
+---
+
+### GET /payments/subscription/portal
+
+Creates a Stripe Customer Portal session for subscription management. This allows users to manage their subscription (update payment method, cancel immediately, etc.) through Stripe's hosted portal.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Query Parameters:**
+- `returnUrl` (optional): URL to redirect to after portal session
+
+**Response (200 OK):**
+```json
+{
+  "url": "https://billing.stripe.com/session/1234567890"
+}
+```
+
+**Error Responses:**
+- **404 Not Found**: No subscription found
+- **401 Unauthorized**: Authentication required
+- **500 Internal Server Error**: Stripe API error
+
+**Behavior:**
+- Creates Stripe Customer Portal session
+- Redirects user to Stripe's hosted management portal
+- User can update payment method, cancel immediately, etc.
+- Returns to specified returnUrl after portal session
 
 ---
 
@@ -246,6 +468,11 @@ Handles Stripe webhook events for payment confirmation and other Stripe events. 
 - **checkout.session.completed**: Successful payment - credits are awarded
 - **payment_intent.succeeded**: Payment confirmation
 - **payment_intent.payment_failed**: Payment failure
+- **customer.subscription.created**: New subscription created
+- **customer.subscription.updated**: Subscription updated
+- **customer.subscription.deleted**: Subscription canceled
+- **invoice.payment_succeeded**: Invoice paid - monthly credits allocated
+- **invoice.payment_failed**: Invoice payment failed
 
 **Behavior:**
 - Verifies Stripe signature for security
@@ -480,8 +707,12 @@ Different endpoints have different rate limits to prevent abuse:
 
 **Authenticated endpoints:**
 - `POST /payments/create-checkout-session`: 10 requests per minute per user
+- `POST /payments/create-subscription-session`: 10 requests per minute per user
 - `POST /payments/consume-credits`: 60 requests per minute per user
 - `GET /payments/transactions`: 30 requests per minute per user
+- `GET /payments/subscription`: 30 requests per minute per user
+- `POST /payments/subscription/cancel`: 10 requests per minute per user
+- `GET /payments/subscription/portal`: 30 requests per minute per user
 
 **Webhook endpoint:**
 - `POST /payments/stripe/webhook`: 1000 requests per minute per IP (Stripe only)
@@ -502,11 +733,16 @@ Most endpoints require authentication via NextAuth JWT cookies:
 
 **Authentication Required:**
 - `POST /payments/create-checkout-session`
+- `POST /payments/create-subscription-session`
 - `POST /payments/consume-credits`
 - `GET /payments/transactions`
+- `GET /payments/subscription`
+- `POST /payments/subscription/cancel`
+- `GET /payments/subscription/portal`
 
 **Public Endpoints:**
 - `GET /payments/credit-packs` (pricing information)
+- `GET /payments/subscription-plans` (pricing information)
 - `POST /payments/stripe/webhook` (Stripe signature verification)
 
 ---
@@ -585,6 +821,17 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 ---
 
 ## Changelog
+
+### v1.2.0 (2026-05-23)
+- Added subscription management endpoints for VIP membership
+- Implemented GET /payments/subscription-plans for fetching subscription plans
+- Implemented POST /payments/create-subscription-session for subscription checkout
+- Implemented GET /payments/subscription for fetching user subscription status
+- Implemented POST /payments/subscription/cancel for canceling subscriptions
+- Implemented GET /payments/subscription/portal for Stripe Customer Portal access
+- Added subscription webhook handlers (customer.subscription.*, invoice.payment_*)
+- Added SubscriptionPlan and SubscriptionStatus type definitions
+- Updated webhook documentation to include subscription events
 
 ### v1.1.0 (2026-05-06)
 - Enhanced credit consumption with idempotency key support

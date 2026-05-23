@@ -17,16 +17,17 @@ export async function runDailyCleanup(): Promise<void> {
   const { processQueuedImageDeletions } = await import("../services/image.js");
   const { cleanupExpiredTemporarySessions } = await import("../services/temporary-session.js");
   const { cleanupOrphanedAssociations } = await import("../services/session-data-association.js");
-  
+  const { runVipExpirationCheck } = await import("./vip-expiration.js");
+
   const startedAt = Date.now();
-  
+
   try {
     console.log("[cleanup] 🧹 Starting daily cleanup...");
-    
+
     // Cleanup queued ImageKit deletions (idempotent operation)
     console.log("[cleanup] 🖼️ Cleaning up queued ImageKit deletions...");
     const imageCleanupStats = await processQueuedImageDeletions(100); // Process up to 100 images per run
-    
+
     // Log results for monitoring (safe to run multiple times)
     if (imageCleanupStats.processed > 0) {
       console.log(`[cleanup] 🖼️ Processed ${imageCleanupStats.processed} ImageKit deletions: ${imageCleanupStats.successful} successful, ${imageCleanupStats.failed} failed`);
@@ -41,11 +42,16 @@ export async function runDailyCleanup(): Promise<void> {
     console.log("[cleanup] 🗑️ Cleaning up expired temporary sessions...");
     const sessionCleanupCount = await cleanupExpiredTemporarySessions();
     console.log(`[cleanup] ✨ Cleaned up ${sessionCleanupCount} expired temporary sessions`);
-    
+
     // Cleanup orphaned session data associations
     console.log("[cleanup] 🗑️ Cleaning up orphaned session data associations...");
     const associationCleanupCount = await cleanupOrphanedAssociations();
     console.log(`[cleanup] ✨ Cleaned up ${associationCleanupCount} orphaned associations`);
+
+    // Check for expired VIP subscriptions and downgrade users
+    console.log("[cleanup] 👑 Checking for expired VIP subscriptions...");
+    await runVipExpirationCheck();
+    console.log("[cleanup] ✨ VIP expiration check completed");
 
     const durationMs = Date.now() - startedAt;
     console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {

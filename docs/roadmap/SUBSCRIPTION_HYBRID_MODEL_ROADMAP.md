@@ -7,6 +7,46 @@ This document outlines the comprehensive implementation plan for adding a monthl
 **Current State**: One-time credit pack purchases only (Observer, Investigator, Mastermind)
 **Target State**: Hybrid model with monthly VIP subscription + one-time credit packs
 
+## Implementation Status
+
+**Last Updated**: May 23, 2026
+
+### Backend Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Database Schema Changes | ✅ Complete | subscriptions, subscriptionTransactions tables added; users table updated with subscriptionId and vipExpiresAt |
+| Type Definitions | ✅ Complete | SubscriptionStatus, SubscriptionTransactionType, SubscriptionConfig defined in src/types/subscription.ts |
+| Configuration | ✅ Complete | VIP_SUBSCRIPTION and VIP_BENEFITS in src/config/subscription.ts |
+| Subscription Service | ✅ Complete | All lifecycle functions implemented in src/services/subscription.ts |
+| API Endpoints | ✅ Complete | All 5 subscription endpoints implemented in src/routes/payments.ts |
+| Webhook Handlers | ✅ Complete | All 5 subscription webhook handlers implemented |
+| Check-in Logic Modifications | ✅ Complete | Dual claim system with VIP 2x multiplier implemented |
+| VIP Expiration Cron Job | ✅ Complete | src/cron/vip-expiration.ts implemented |
+| GitHub Workflow | ❌ Not Implemented | No vip-expiration.yml workflow found |
+| Package.json Scripts | ❌ Not Implemented | No dev:cron:vip-expiration or start:cron:vip-expiration scripts |
+| Check-in Status VIP Fields | ⚠️ Partial | isVip, regularClaimAmount, vipClaimAmount not yet added to response |
+
+### Frontend Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| API Integration Functions | ❌ Not Implemented | Frontend needs to implement subscription API calls |
+| Subscription Pricing Card | ❌ Not Implemented | UI component for displaying VIP subscription |
+| VIP Badge Component | ❌ Not Implemented | UI component for displaying VIP status |
+| Updated Check-in Component | ❌ Not Implemented | Dual claim buttons for regular and VIP 2x |
+| User Profile Updates | ❌ Not Implemented | VIP badge and subscription status display |
+| Subscription Management UI | ❌ Not Implemented | Customer portal integration and cancel UI |
+
+### Summary
+
+**Backend Progress**: ~85% Complete
+- Core functionality fully implemented
+- Missing: GitHub workflow for cron job, package.json scripts, and check-in status VIP fields
+
+**Frontend Progress**: 0% Complete
+- All frontend components need to be implemented
+
 ---
 
 ## Table of Contents
@@ -223,6 +263,8 @@ user_checkins (
 
 Track active user subscriptions and their status.
 
+**Status**: ✅ **IMPLEMENTED** in `src/db/schema.ts` (lines 1138-1161)
+
 ```sql
 CREATE TABLE subscriptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -279,6 +321,8 @@ export const subscriptions = pgTable(
 
 Track subscription-related credit allocations separately from regular transactions.
 
+**Status**: ✅ **IMPLEMENTED** in `src/db/schema.ts` (lines 1178-1196)
+
 ```sql
 CREATE TABLE subscription_transactions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -326,6 +370,8 @@ export const subscriptionTransactions = pgTable(
 #### Users Table Updates
 
 Add subscription-related fields to users table.
+
+**Status**: ✅ **IMPLEMENTED** in `src/db/schema.ts` (lines 195-196, 209)
 
 ```sql
 -- Add columns to existing users table
@@ -437,6 +483,8 @@ VIP_CHECKIN_MULTIPLIER=2
 
 Update `src/config/credits.ts`:
 
+**Status**: ✅ **IMPLEMENTED** in `src/config/subscription.ts`
+
 ```typescript
 /**
  * VIP Subscription Configuration
@@ -483,12 +531,14 @@ Handle additional webhook events for subscriptions:
 
 Return available subscription plans.
 
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 1151-1161)
+
 ```typescript
 /**
  * GET /payments/subscription-plans
- * 
+ *
  * Returns available subscription plans for purchase.
- * 
+ *
  * Response (200 OK):
  * {
  *   plans: [
@@ -516,19 +566,21 @@ router.get("/subscription-plans", async (req: Request, res: Response) => {
 
 Create Stripe checkout session for subscription.
 
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 1180-1254)
+
 ```typescript
 /**
  * POST /payments/create-subscription-session
- * 
+ *
  * Creates a Stripe checkout session for VIP subscription.
- * 
+ *
  * Request Body:
  * {
  *   planId: string; // "vip_monthly"
  *   successUrl?: string;
  *   cancelUrl?: string;
  * }
- * 
+ *
  * Response (201 Created):
  * {
  *   url: string; // Stripe checkout URL
@@ -554,8 +606,8 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
     .limit(1);
 
   if (existingSubscription.length > 0) {
-    return res.status(400).json({ 
-      error: "User already has an active subscription" 
+    return res.status(400).json({
+      error: "User already has an active subscription"
     });
   }
 
@@ -569,7 +621,7 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
       metadata: { userId }
     });
     customerId = customer.id;
-    
+
     // Update user with stripeCustomerId
     await dbWrite
       .update(users)
@@ -603,12 +655,14 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
 
 Get user's current subscription status.
 
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 1272-1299)
+
 ```typescript
 /**
  * GET /payments/subscription
- * 
+ *
  * Returns user's current subscription status.
- * 
+ *
  * Response (200 OK):
  * {
  *   subscription: {
@@ -650,12 +704,14 @@ router.get("/subscription", requireAuth, async (req: Request, res: Response) => 
 
 Cancel user's subscription (cancel at period end).
 
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 1312-1349)
+
 ```typescript
 /**
  * POST /payments/subscription/cancel
- * 
+ *
  * Cancels user's subscription at the end of the current billing period.
- * 
+ *
  * Response (200 OK):
  * {
  *   success: true,
@@ -679,7 +735,7 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
   }
 
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-  
+
   // Cancel subscription at period end
   await stripe.subscriptions.update(subscription[0].stripeSubscriptionId, {
     cancel_at_period_end: true,
@@ -702,12 +758,14 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
 
 Create Stripe Customer Portal session for subscription management.
 
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 1361-1387)
+
 ```typescript
 /**
  * GET /payments/subscription/portal
- * 
+ *
  * Creates a Stripe Customer Portal session for subscription management.
- * 
+ *
  * Response (200 OK):
  * {
  *   url: string; // Stripe Customer Portal URL
@@ -728,7 +786,7 @@ router.get("/subscription/portal", requireAuth, async (req: Request, res: Respon
   }
 
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-  
+
   const session = await stripe.billingPortal.sessions.create({
     customer: subscription[0].stripeCustomerId,
     return_url: returnUrl,
@@ -743,6 +801,8 @@ router.get("/subscription/portal", requireAuth, async (req: Request, res: Respon
 #### Update Webhook Handler
 
 Extend `POST /payments/stripe/webhook` to handle subscription events.
+
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 699-709)
 
 ```typescript
 // Add to existing webhook handler in src/routes/payments.ts
@@ -768,10 +828,12 @@ if (event.type === "customer.subscription.created") {
 
 Create new service file `src/services/subscription.ts`:
 
+**Status**: ✅ **IMPLEMENTED** in `src/services/subscription.ts`
+
 ```typescript
 /**
  * Subscription Service Module
- * 
+ *
  * Handles subscription lifecycle, credit allocation, and tier management.
  */
 
@@ -807,7 +869,7 @@ export async function createSubscription(params: {
 
     // Set user tier to VIP
     await tx.update(users)
-      .set({ 
+      .set({
         tier: 'vip',
         subscriptionId: subscription.id,
         vipExpiresAt: params.currentPeriodEnd,
@@ -949,11 +1011,11 @@ export async function hasActiveVipSubscription(userId: string): Promise<boolean>
   if (user.length === 0) return false;
 
   const userData = user[0];
-  
+
   // Check if user is VIP and subscription hasn't expired
   if (userData.tier !== 'vip') return false;
   if (!userData.vipExpiresAt) return false;
-  
+
   return new Date(userData.vipExpiresAt) > new Date();
 }
 
@@ -963,7 +1025,7 @@ export async function hasActiveVipSubscription(userId: string): Promise<boolean>
 export async function downgradeUserFromVip(userId: string): Promise<void> {
   await dbWrite.transaction(async (tx) => {
     await tx.update(users)
-      .set({ 
+      .set({
         tier: 'standard',
         vipExpiresAt: null,
         subscriptionId: null,
@@ -976,6 +1038,8 @@ export async function downgradeUserFromVip(userId: string): Promise<void> {
 ### Modified Check-in Logic
 
 Update `src/services/user.ts` to support dual claim system:
+
+**Status**: ✅ **IMPLEMENTED** in `src/services/user.ts` (lines 367-493)
 
 ```typescript
 // Add new parameter to performDailyCheckIn function
@@ -1001,10 +1065,10 @@ export async function performDailyCheckIn(
 
   // Calculate base bonus
   const baseBonus = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
-  
+
   // Apply multiplier based on claim type
-  const creditsToAward = options.claimType === 'vip_2x' 
-    ? baseBonus * VIP_BENEFITS.checkInMultiplier 
+  const creditsToAward = options.claimType === 'vip_2x'
+    ? baseBonus * VIP_BENEFITS.checkInMultiplier
     : baseBonus;
 
   // Rest of the logic remains the same...
@@ -1012,6 +1076,8 @@ export async function performDailyCheckIn(
 ```
 
 Also update `getCheckInStatus` to include VIP status and both claim amounts in response:
+
+**Status**: ⚠️ **PARTIALLY IMPLEMENTED** - VIP fields not yet added to response
 
 ```typescript
 // In getCheckInStatus function
@@ -1166,10 +1232,12 @@ Create a cron job to check for expired VIP subscriptions and downgrade users.
 
 **File**: `src/cron/check-vip-expiration.ts`
 
+**Status**: ✅ **IMPLEMENTED** in `src/cron/vip-expiration.ts`
+
 ```typescript
 /**
  * VIP Expiration Check Cron Job
- * 
+ *
  * Runs daily to check for expired VIP subscriptions and downgrade users to standard tier.
  * This ensures users only receive VIP benefits while their subscription is active.
  */
@@ -1232,6 +1300,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 ```
 
 **Add to package.json scripts:**
+
+**Status**: ❌ **NOT IMPLEMENTED** - Scripts need to be added to package.json
+
 ```json
 {
   "scripts": {
@@ -1246,6 +1317,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 ### GitHub Workflow
 
 Create `.github/workflows/vip-expiration.yml`:
+
+**Status**: ❌ **NOT IMPLEMENTED** - Workflow file needs to be created
 
 ```yaml
 name: VIP Expiration Check
@@ -1285,6 +1358,8 @@ jobs:
 
 ## Frontend Integration
 
+**Status**: ❌ **NOT IMPLEMENTED** - All frontend components need to be implemented
+
 ### API Integration
 
 #### 1. Fetch Subscription Plans
@@ -1302,7 +1377,7 @@ const { plans } = await response.json();
 const response = await fetch('/api/payments/create-subscription-session', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ 
+  body: JSON.stringify({
     planId: 'vip_monthly',
     successUrl: window.location.href + '?subscription=success',
     cancelUrl: window.location.href + '?subscription=canceled'
@@ -1343,6 +1418,8 @@ window.location.href = url;
 
 #### Subscription Pricing Card
 
+**Status**: ❌ **NOT IMPLEMENTED**
+
 ```typescript
 // src/components/SubscriptionCard.tsx
 interface SubscriptionCardProps {
@@ -1363,9 +1440,9 @@ export function SubscriptionCard({ plan, currentSubscription }: SubscriptionCard
           </span>
         )}
       </div>
-      
+
       <p className="text-gray-600 mb-4">{plan.description}</p>
-      
+
       <div className="mb-4">
         <span className="text-3xl font-bold">${plan.priceUSD}</span>
         <span className="text-gray-500">/month</span>
@@ -1408,6 +1485,8 @@ export function SubscriptionCard({ plan, currentSubscription }: SubscriptionCard
 
 #### VIP Badge Component
 
+**Status**: ❌ **NOT IMPLEMENTED**
+
 ```typescript
 // src/components/VIPBadge.tsx
 interface VIPBadgeProps {
@@ -1428,6 +1507,8 @@ export function VIPBadge({ isVip }: VIPBadgeProps) {
 
 #### Updated Check-in Component
 
+**Status**: ❌ **NOT IMPLEMENTED**
+
 ```typescript
 // src/components/CheckInButton.tsx
 export function CheckInButton() {
@@ -1443,10 +1524,10 @@ export function CheckInButton() {
           <button onClick={() => handleCheckIn('regular')}>
             Claim {checkInStatus.regularClaimAmount} Credits
           </button>
-          
+
           {/* VIP 2x claim button - only available to VIP users */}
           {isVip && (
-            <button 
+            <button
               onClick={() => handleCheckIn('vip_2x')}
               className="bg-purple-600 text-white"
             >
@@ -1466,6 +1547,8 @@ export function CheckInButton() {
 
 Add VIP badge and subscription status to user profile:
 
+**Status**: ❌ **NOT IMPLEMENTED**
+
 ```typescript
 // src/app/user/[username]/page.tsx
 export default function UserProfile({ params }: { params: { username: string } }) {
@@ -1477,7 +1560,7 @@ export default function UserProfile({ params }: { params: { username: string } }
         <h1>{user.name}</h1>
         <VIPBadge isVip={user.tier === 'vip'} />
       </div>
-      
+
       {user.subscription && (
         <div className="mt-4 p-4 bg-purple-50 rounded">
           <h3>VIP Member</h3>
@@ -1489,6 +1572,400 @@ export default function UserProfile({ params }: { params: { username: string } }
   );
 }
 ```
+
+---
+
+## Frontend Implementation Guide
+
+### Prerequisites
+
+Before implementing the frontend, ensure the following backend components are complete:
+
+1. ✅ Database schema changes (subscriptions, subscription_transactions tables)
+2. ✅ Subscription service and API endpoints
+3. ✅ Webhook handlers for Stripe events
+4. ✅ VIP expiration cron job
+5. ⚠️ Check-in status VIP fields (needs to be added to response)
+6. ❌ GitHub workflow for VIP expiration cron job
+7. ❌ Package.json scripts for VIP expiration cron job
+
+### Implementation Steps
+
+#### Step 1: Add VIP Fields to Check-in Status Response
+
+**Backend Task**: Update `src/services/user.ts` `getCheckInStatus` function to include VIP-specific fields.
+
+```typescript
+// In getCheckInStatus function (src/services/user.ts)
+
+// Get user tier
+const userResult = await dbRead
+  .select({ tier: users.tier })
+  .from(users)
+  .where(eq(users.userId, userId))
+  .limit(1);
+
+const isVip = userResult.length > 0 && userResult[0].tier === 'vip';
+
+// Calculate next claim amounts
+let regularClaimAmount = 0;
+let vipClaimAmount = 0;
+if (canCheckInStatus.canCheckIn) {
+  const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
+  const baseAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+  regularClaimAmount = baseAmount;
+  vipClaimAmount = baseAmount * VIP_BENEFITS.checkInMultiplier;
+}
+
+return {
+  // ... existing fields
+  isVip,
+  regularClaimAmount,
+  vipClaimAmount: isVip ? vipClaimAmount : 0,
+};
+```
+
+#### Step 2: Create Subscription API Integration Functions
+
+Create a new file `src/lib/api/subscription.ts`:
+
+```typescript
+// src/lib/api/subscription.ts
+
+export async function fetchSubscriptionPlans() {
+  const response = await fetch('/api/payments/subscription-plans');
+  if (!response.ok) throw new Error('Failed to fetch subscription plans');
+  return response.json();
+}
+
+export async function createSubscriptionSession(planId: string, options?: {
+  successUrl?: string;
+  cancelUrl?: string;
+}) {
+  const response = await fetch('/api/payments/create-subscription-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      planId,
+      successUrl: options?.successUrl,
+      cancelUrl: options?.cancelUrl,
+    }),
+  });
+  if (!response.ok) throw new Error('Failed to create subscription session');
+  return response.json();
+}
+
+export async function fetchSubscriptionStatus() {
+  const response = await fetch('/api/payments/subscription');
+  if (!response.ok) throw new Error('Failed to fetch subscription status');
+  return response.json();
+}
+
+export async function cancelSubscription() {
+  const response = await fetch('/api/payments/subscription/cancel', {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error('Failed to cancel subscription');
+  return response.json();
+}
+
+export async function openCustomerPortal(returnUrl?: string) {
+  const response = await fetch(`/api/payments/subscription/portal?returnUrl=${returnUrl || '/dashboard'}`);
+  if (!response.ok) throw new Error('Failed to open customer portal');
+  return response.json();
+}
+```
+
+#### Step 3: Create Subscription Pricing Card Component
+
+Create `src/components/SubscriptionCard.tsx`:
+
+```typescript
+'use client';
+
+import { useState } from 'react';
+import { createSubscriptionSession, openCustomerPortal } from '@/lib/api/subscription';
+
+interface SubscriptionCardProps {
+  plan: {
+    id: string;
+    name: string;
+    description: string;
+    priceUSD: number;
+    monthlyCredits: number;
+    checkInMultiplier: number;
+  };
+  currentSubscription?: {
+    status: string;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+  } | null;
+}
+
+export function SubscriptionCard({ plan, currentSubscription }: SubscriptionCardProps) {
+  const [isLoading, setIsLoading] = useState(false);
+  const isSubscribed = currentSubscription?.status === 'active';
+
+  const handleSubscribe = async () => {
+    setIsLoading(true);
+    try {
+      const { url } = await createSubscriptionSession(plan.id, {
+        successUrl: window.location.href + '?subscription=success',
+        cancelUrl: window.location.href + '?subscription=canceled',
+      });
+      window.location.href = url;
+    } catch (error) {
+      console.error('Failed to subscribe:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleManage = async () => {
+    setIsLoading(true);
+    try {
+      const { url } = await openCustomerPortal(window.location.href);
+      window.location.href = url;
+    } catch (error) {
+      console.error('Failed to open portal:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="border rounded-lg p-6 bg-gradient-to-br from-purple-50 to-blue-50">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-xl font-bold">{plan.name}</h3>
+        {isSubscribed && (
+          <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-sm">
+            Active
+          </span>
+        )}
+      </div>
+
+      <p className="text-gray-600 mb-4">{plan.description}</p>
+
+      <div className="mb-4">
+        <span className="text-3xl font-bold">${plan.priceUSD}</span>
+        <span className="text-gray-500">/month</span>
+      </div>
+
+      <ul className="space-y-2 mb-6">
+        <li className="flex items-center">
+          <span className="text-green-500 mr-2">✓</span>
+          VIP badge on profile
+        </li>
+        <li className="flex items-center">
+          <span className="text-green-500 mr-2">✓</span>
+          {plan.checkInMultiplier}x daily check-in bonus (separate claim button)
+        </li>
+        <li className="flex items-center">
+          <span className="text-green-500 mr-2">✓</span>
+          +{plan.monthlyCredits} credits monthly
+        </li>
+      </ul>
+
+      {!isSubscribed ? (
+        <button
+          onClick={handleSubscribe}
+          disabled={isLoading}
+          className="w-full bg-purple-600 text-white py-2 rounded hover:bg-purple-700 transition disabled:opacity-50"
+        >
+          {isLoading ? 'Processing...' : 'Subscribe Now'}
+        </button>
+      ) : (
+        <button
+          onClick={handleManage}
+          disabled={isLoading}
+          className="w-full bg-gray-200 text-gray-800 py-2 rounded hover:bg-gray-300 transition disabled:opacity-50"
+        >
+          {isLoading ? 'Loading...' : 'Manage Subscription'}
+        </button>
+      )}
+    </div>
+  );
+}
+```
+
+#### Step 4: Create VIP Badge Component
+
+Create `src/components/VIPBadge.tsx`:
+
+```typescript
+'use client';
+
+interface VIPBadgeProps {
+  isVip: boolean;
+}
+
+export function VIPBadge({ isVip }: VIPBadgeProps) {
+  if (!isVip) return null;
+
+  return (
+    <span className="inline-flex items-center px-2 py-1 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-bold">
+      👑 VIP
+    </span>
+  );
+}
+```
+
+#### Step 5: Update Check-in Component
+
+Update `src/components/CheckInButton.tsx` to support dual claim system:
+
+```typescript
+'use client';
+
+import { useState } from 'react';
+
+export function CheckInButton() {
+  const [isLoading, setIsLoading] = useState(false);
+  const { data: user } = useUser();
+  const { data: checkInStatus, refetch } = useCheckInStatus();
+  const isVip = user?.tier === 'vip';
+
+  const handleCheckIn = async (claimType: 'regular' | 'vip_2x') => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/user/checkin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claimType }),
+      });
+      if (!response.ok) throw new Error('Failed to check in');
+      await refetch();
+    } catch (error) {
+      console.error('Failed to check in:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      {checkInStatus?.canCheckIn ? (
+        <div className="flex gap-2">
+          {/* Regular claim button - available to all users */}
+          <button
+            onClick={() => handleCheckIn('regular')}
+            disabled={isLoading}
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50"
+          >
+            Claim {checkInStatus.regularClaimAmount} Credits
+          </button>
+
+          {/* VIP 2x claim button - only available to VIP users */}
+          {isVip && (
+            <button
+              onClick={() => handleCheckIn('vip_2x')}
+              disabled={isLoading}
+              className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition disabled:opacity-50"
+            >
+              Claim {checkInStatus.vipClaimAmount} Credits (VIP 2x Bonus!)
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="text-gray-600">Already checked in today</p>
+      )}
+    </div>
+  );
+}
+```
+
+#### Step 6: Update User Profile Page
+
+Update user profile to show VIP badge and subscription status:
+
+```typescript
+// src/app/user/[username]/page.tsx
+import { VIPBadge } from '@/components/VIPBadge';
+
+export default function UserProfile({ params }: { params: { username: string } }) {
+  const { data: user } = useUser(params.username);
+  const { data: subscription } = useSubscriptionStatus();
+
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <h1 className="text-2xl font-bold">{user.name}</h1>
+        <VIPBadge isVip={user.tier === 'vip'} />
+      </div>
+
+      {subscription && (
+        <div className="mt-4 p-4 bg-purple-50 rounded-lg">
+          <h3 className="font-bold text-purple-900">VIP Member</h3>
+          <p className="text-sm text-purple-700">Status: {subscription.status}</p>
+          <p className="text-sm text-purple-700">
+            Renews: {new Date(subscription.currentPeriodEnd).toLocaleDateString()}
+          </p>
+          {subscription.cancelAtPeriodEnd && (
+            <p className="text-sm text-red-600 mt-2">
+              Cancels at end of billing period
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+#### Step 7: Add Subscription Management to Dashboard
+
+Add subscription management section to dashboard:
+
+```typescript
+// src/app/dashboard/page.tsx
+import { SubscriptionCard } from '@/components/SubscriptionCard';
+import { fetchSubscriptionPlans, fetchSubscriptionStatus } from '@/lib/api/subscription';
+
+export default async function Dashboard() {
+  const [plans] = await Promise.all([fetchSubscriptionPlans()]);
+  const { subscription } = await fetchSubscriptionStatus();
+
+  return (
+    <div>
+      <h1 className="text-3xl font-bold mb-6">Dashboard</h1>
+
+      {/* Subscription Section */}
+      <section className="mb-8">
+        <h2 className="text-2xl font-bold mb-4">VIP Subscription</h2>
+        {plans.plans.map((plan) => (
+          <SubscriptionCard
+            key={plan.id}
+            plan={plan}
+            currentSubscription={subscription}
+          />
+        ))}
+      </section>
+
+      {/* Rest of dashboard content */}
+    </div>
+  );
+}
+```
+
+### Environment Variables
+
+Ensure the following environment variables are configured in your Next.js project:
+
+```env
+NEXT_PUBLIC_API_URL=https://your-backend-url.com
+```
+
+### Testing Checklist
+
+- [ ] Subscription plans display correctly
+- [ ] Subscription checkout flow works end-to-end
+- [ ] Webhook events are processed correctly
+- [ ] VIP badge appears on user profiles
+- [ ] Dual check-in buttons work for VIP users
+- [ ] Subscription status displays correctly
+- [ ] Cancel subscription flow works
+- [ ] Customer portal integration works
+- [ ] VIP expiration cron job runs successfully
 
 ---
 

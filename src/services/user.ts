@@ -509,11 +509,20 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
   try {
     // Check if user can check-in today
     const canCheckInStatus = await checkCanCheckIn(userId);
-    
+
+    // Get user tier for VIP status
+    const userResult = await dbRead
+      .select({ tier: users.tier })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    const isVip = userResult.length > 0 && userResult[0].tier === 'vip';
+
     // Get check-in history (last 30 days)
     const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000));
     const cutoffDate = thirtyDaysAgo.toISOString().split('T')[0];
-    
+
     const checkInHistory = await dbRead
       .select({
         checkInDate: userCheckins.checkInDate,
@@ -527,7 +536,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       ))
       .orderBy(desc(userCheckins.checkInDate))
       .limit(30);
-    
+
     // Get total check-ins and credits claimed
     const totals = await dbRead
       .select({
@@ -537,7 +546,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       .from(userCheckins)
       .where(eq(userCheckins.userId, userId))
       .limit(1);
-    
+
     // Compute current consecutive streak (include today if present)
     const dateSet = new Set(checkInHistory.map(c => c.checkInDate));
     const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
@@ -559,9 +568,14 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     }
 
     let nextClaimAmount = 0;
+    let regularClaimAmount = 0;
+    let vipClaimAmount = 0;
     if (canCheckInStatus.canCheckIn) {
       const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
-      nextClaimAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+      const baseAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+      nextClaimAmount = baseAmount;
+      regularClaimAmount = baseAmount;
+      vipClaimAmount = baseAmount * VIP_BENEFITS.checkInMultiplier;
     }
 
     return {
@@ -572,6 +586,9 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       currentStreak: streak,
       nextClaimAmount,
       recentCheckIns: checkInHistory,
+      isVip,
+      regularClaimAmount,
+      vipClaimAmount: isVip ? vipClaimAmount : 0,
     } satisfies CheckinStatusResponse;
   } catch (error) {
     console.error("[user] ❌ Failed to get check-in status:", getErrorMessage(error));

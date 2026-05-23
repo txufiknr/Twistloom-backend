@@ -12,7 +12,7 @@
  */
 import { dbWrite } from "../db/client.js";
 import { books, pages, bookTranslations, pageTranslations } from "../db/schema.js";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, ne } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { translateBooksBulk, translatePagesBulk } from "../utils/prompt-translation.js";
 import { MAX_BOOKS_PER_TRANSLATION_RUN, MAX_PAGES_PER_TRANSLATION_RUN, BOOKS_PER_BULK_TRANSLATION, PAGES_PER_BULK_TRANSLATION } from "../config/translation.js";
@@ -133,6 +133,7 @@ async function findBooksNeedingTranslation(): Promise<DBBook[]> {
     .where(
       and(
         eq(books.status, 'active'),
+        ne(books.language, 'id'),
         sql`NOT EXISTS (
           SELECT 1 FROM book_translations
           WHERE book_translations.book_id = books.id
@@ -148,6 +149,7 @@ async function findBooksNeedingTranslation(): Promise<DBBook[]> {
     .where(
       and(
         eq(books.status, 'active'),
+        ne(books.language, 'id'),
         sql`EXISTS (
           SELECT 1 FROM book_translations
           WHERE book_translations.book_id = books.id

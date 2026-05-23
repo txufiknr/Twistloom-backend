@@ -6,33 +6,18 @@
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
 
-1. perfect, can you update the @SUBSCRIPTION_HYBRID_MODEL_ROADMAP.md docs for what have been implemented and which not yet, and give guidance what frontend (Next.js) project should do (if not there yet)?
-
-2. can you also update @PAYMENTS_API_DOCUMENTATION.md API spec docs accordingly?
-
-3. can you include this @vip-expiration.ts cron into @cleanup.ts?
-
 [ ] enhance book explore:
 - fuzzy search/Levenshtein (typo) // does postgresql has this built-in?
 - search jaccard similarity (by book keywords & title)
 - need change to cursor pagination?
 
-[x] Translate prompt: keep text styling using asterisks (if any/detect)
-[x] cron trasnlate langsung 5 book per request
-[x] generate theme ake openai aja
-[x] cron: auto translate book & page ke indo ('id') using AI (where `providerType` not 'ai')
 [x] trigger read_count masih ngaco, visit_count udah bener 1
-[x] inventory buat kayak injury, jangan string array
-[x] add inventory, injuries di type StoryStateInitialGeneration (tambah juga di evaluator prompt: instruction & format)
 [x] visitor percentage page 1 should always 100%
 [x] docs: stripe VIP subscription
 [x] Originals prevent duplicate title
 [x] Github workflow Dynamic job name (book title)
 [x] Non retryable error kok dipertanyakan? 
 [x] book explore: filter by age range error
-[x] Workflow add input max depth buat prevent infinite loop
-[x] Depth level 2 kalau page number < 10 aja
-[x] enriched book perlu `isCompleted` (ga cuma `isRead`)?
 
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594
