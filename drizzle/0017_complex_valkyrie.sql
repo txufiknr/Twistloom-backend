@@ -1,1 +1,0 @@
-ALTER TABLE "book_translations" ADD COLUMN "mc" jsonb DEFAULT '{}'::jsonb NOT NULL;
