@@ -134,6 +134,13 @@
       "when": 1779495845455,
       "tag": "0018_loose_boom_boom",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1779523857380,
+      "tag": "0019_chemical_sentry",
+      "breakpoints": true
     }
   ]
 }
