@@ -1,12 +1,16 @@
 /**
  * Subscription status for VIP subscriptions
+ * Matches Stripe's Subscription.Status type for type safety
  */
 export type SubscriptionStatus = 
   | 'active' 
   | 'past_due' 
   | 'canceled' 
   | 'unpaid' 
-  | 'trialing';
+  | 'trialing'
+  | 'incomplete'
+  | 'incomplete_expired'
+  | 'paused';
 
 /**
  * Subscription transaction type for tracking subscription-related credit allocations

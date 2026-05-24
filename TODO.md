@@ -5,7 +5,6 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
-[ ] db reset total
 
 [ ] API routes:
 - GET page gausah update userpageprogress/visit count kalau last selected actionnya sama

@@ -40,6 +40,23 @@ import type { SubscriptionStatus } from "../types/subscription.js";
 import { VIP_BENEFITS, VIP_SUBSCRIPTION } from "../config/subscription.js";
 
 /**
+ * Extended Stripe Subscription interface with properties that exist in the API
+ * but are missing from the TypeScript definition
+ */
+interface StripeSubscriptionWithPeriods extends Stripe.Subscription {
+  current_period_start: number;
+  current_period_end: number;
+}
+
+/**
+ * Extended Stripe Invoice interface with properties that exist in the API
+ * but are missing from the TypeScript definition
+ */
+interface StripeInvoiceWithSubscription extends Stripe.Invoice {
+  subscription?: string;
+}
+
+/**
  * Helper function to handle insufficient credits errors consistently
  * Optimized to reduce database load by using simple error response
  */
@@ -64,7 +81,7 @@ const router = Router();
  * Handles customer.subscription.created webhook event
  */
 async function handleSubscriptionCreated(event: Stripe.Event) {
-  const subscription = event.data.object as Stripe.Subscription;
+  const subscription = event.data.object as StripeSubscriptionWithPeriods;
   const userId = subscription.metadata?.userId;
 
   if (!userId) {
@@ -79,8 +96,8 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
     stripeSubscriptionId: subscription.id,
     stripeCustomerId: subscription.customer as string,
     stripePriceId: priceId,
-    currentPeriodStart: new Date((subscription as any).current_period_start * 1000),
-    currentPeriodEnd: new Date((subscription as any).current_period_end * 1000),
+    currentPeriodStart: new Date(subscription.current_period_start * 1000),
+    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
   });
 
   console.log(`[subscription] ✅ Created subscription for user ${userId}`);
@@ -90,13 +107,12 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
  * Handles customer.subscription.updated webhook event
  */
 async function handleSubscriptionUpdated(event: Stripe.Event) {
-  const subscription = event.data.object as Stripe.Subscription;
+  const subscription = event.data.object as StripeSubscriptionWithPeriods;
 
-  // TODO: proper type
   await updateSubscription({
     stripeSubscriptionId: subscription.id,
     status: subscription.status as SubscriptionStatus,
-    currentPeriodEnd: new Date((subscription as any).current_period_end * 1000),
+    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
   });
 
@@ -121,8 +137,8 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
  * Handles invoice.payment_succeeded webhook event
  */
 async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
-  const invoice = event.data.object as Stripe.Invoice;
-  const subscriptionId = (invoice as any).subscription as string;
+  const invoice = event.data.object as StripeInvoiceWithSubscription;
+  const subscriptionId = invoice.subscription;
   const invoiceId = invoice.id;
 
   if (!subscriptionId) {
@@ -154,8 +170,8 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
  * Handles invoice.payment_failed webhook event
  */
 async function handleInvoicePaymentFailed(event: Stripe.Event) {
-  const invoice = event.data.object as Stripe.Invoice;
-  const subscriptionId = (invoice as any).subscription as string;
+  const invoice = event.data.object as StripeInvoiceWithSubscription;
+  const subscriptionId = invoice.subscription;
 
   if (!subscriptionId) return;
 
@@ -163,7 +179,7 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   await updateSubscription({
     stripeSubscriptionId: subscriptionId,
     status: 'past_due',
-    currentPeriodEnd: new Date((invoice as any).period_end * 1000),
+    currentPeriodEnd: new Date(invoice.period_end * 1000),
   });
 
   console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
