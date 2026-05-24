@@ -182,7 +182,7 @@ export const users = pgTable(
     username: text("username").unique("users_username_unique"), // Unique constraint for login
     email: text("email").unique("users_email_unique"), // Unique constraint for login
     passwordHash: text("password_hash"), // Hashed password for email/password authentication
-    stripeCustomerID: text("stripe_customer_id").unique("users_stripe_customer_id_unique"),
+    stripeCustomerId: text("stripe_customer_id").unique("users_stripe_customer_id_unique"),
     credits: integer("credits").notNull().default(FIRST_TIME_CREDITS),
     penName: text("pen_name"),
     bio: text("bio"), // User bio/description

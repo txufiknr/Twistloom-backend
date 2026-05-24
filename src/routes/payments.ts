@@ -35,13 +35,15 @@ import { getErrorMessage, handleApiError } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
 import { consumeCredits, getCreditCost } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
-import { createSubscription, updateSubscription, renewSubscription, cancelSubscription } from "../services/subscription.js";
-import type { SubscriptionStatus } from "../types/subscription.js";
+import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, hasActiveVipSubscription } from "../services/subscription.js";
 import { VIP_BENEFITS, VIP_SUBSCRIPTION } from "../config/subscription.js";
 
 /**
  * Extended Stripe Subscription interface with properties that exist in the API
  * but are missing from the TypeScript definition
+ * 
+ * These properties are returned by Stripe's API but not included in the TypeScript definitions,
+ * so we extend the interface to include them for type safety.
  */
 interface StripeSubscriptionWithPeriods extends Stripe.Subscription {
   current_period_start: number;
@@ -51,9 +53,34 @@ interface StripeSubscriptionWithPeriods extends Stripe.Subscription {
 /**
  * Extended Stripe Invoice interface with properties that exist in the API
  * but are missing from the TypeScript definition
+ * 
+ * The subscription property exists in the API but is nested under parent.subscription_details
+ * in the TypeScript definition, so we extend the interface for direct access.
  */
 interface StripeInvoiceWithSubscription extends Stripe.Invoice {
   subscription?: string;
+}
+
+/**
+ * Type guard to validate Stripe subscription object has required period properties
+ * 
+ * @param obj - Object to validate
+ * @returns True if object is a valid subscription with period properties
+ */
+function isSubscriptionWithPeriods(obj: any): obj is StripeSubscriptionWithPeriods {
+  return obj && 
+         typeof obj.current_period_start === 'number' && 
+         typeof obj.current_period_end === 'number';
+}
+
+/**
+ * Type guard to validate Stripe invoice object has subscription property
+ * 
+ * @param obj - Object to validate
+ * @returns True if object is a valid invoice with subscription property
+ */
+function isInvoiceWithSubscription(obj: any): obj is StripeInvoiceWithSubscription {
+  return obj && typeof obj.subscription === 'string';
 }
 
 /**
@@ -81,7 +108,14 @@ const router = Router();
  * Handles customer.subscription.created webhook event
  */
 async function handleSubscriptionCreated(event: Stripe.Event) {
-  const subscription = event.data.object as StripeSubscriptionWithPeriods;
+  const subscription = event.data.object;
+  
+  // Validate subscription has required properties
+  if (!isSubscriptionWithPeriods(subscription)) {
+    console.error("[subscription] ❌ Invalid subscription object: missing period properties");
+    return;
+  }
+  
   const userId = subscription.metadata?.userId;
 
   if (!userId) {
@@ -107,11 +141,17 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
  * Handles customer.subscription.updated webhook event
  */
 async function handleSubscriptionUpdated(event: Stripe.Event) {
-  const subscription = event.data.object as StripeSubscriptionWithPeriods;
+  const subscription = event.data.object;
+  
+  // Validate subscription has required properties
+  if (!isSubscriptionWithPeriods(subscription)) {
+    console.error("[subscription] ❌ Invalid subscription object: missing period properties");
+    return;
+  }
 
   await updateSubscription({
     stripeSubscriptionId: subscription.id,
-    status: subscription.status as SubscriptionStatus,
+    status: subscription.status,
     currentPeriodEnd: new Date(subscription.current_period_end * 1000),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
   });
@@ -137,7 +177,14 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
  * Handles invoice.payment_succeeded webhook event
  */
 async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
-  const invoice = event.data.object as StripeInvoiceWithSubscription;
+  const invoice = event.data.object;
+  
+  // Validate invoice has subscription property
+  if (!isInvoiceWithSubscription(invoice)) {
+    console.error("[subscription] ❌ Invalid invoice object: missing subscription property");
+    return;
+  }
+  
   const subscriptionId = invoice.subscription;
   const invoiceId = invoice.id;
 
@@ -170,16 +217,35 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
  * Handles invoice.payment_failed webhook event
  */
 async function handleInvoicePaymentFailed(event: Stripe.Event) {
-  const invoice = event.data.object as StripeInvoiceWithSubscription;
+  const invoice = event.data.object;
+  
+  // Validate invoice has subscription property
+  if (!isInvoiceWithSubscription(invoice)) {
+    console.error("[subscription] ❌ Invalid invoice object: missing subscription property");
+    return;
+  }
+  
   const subscriptionId = invoice.subscription;
 
   if (!subscriptionId) return;
+
+  // Fetch subscription to get correct period end
+  const subscription = await dbRead
+    .select({ currentPeriodEnd: subscriptions.currentPeriodEnd })
+    .from(subscriptions)
+    .where(eq(subscriptions.stripeSubscriptionId, subscriptionId))
+    .limit(1);
+
+  if (subscription.length === 0) {
+    console.error("[subscription] ❌ Subscription not found for invoice payment failed");
+    return;
+  }
 
   // Update subscription status to past_due
   await updateSubscription({
     stripeSubscriptionId: subscriptionId,
     status: 'past_due',
-    currentPeriodEnd: new Date(invoice.period_end * 1000),
+    currentPeriodEnd: new Date(subscription[0].currentPeriodEnd),
   });
 
   console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
@@ -416,6 +482,257 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     res.json({ url: session.url });
   } catch (error) {
     handleApiError(res, "Failed to create checkout session", error);
+  }
+});
+
+/**
+ * POST /payments/create-subscription-checkout
+ * 
+ * Creates a Stripe checkout session for VIP subscription.
+ * 
+ * Request Body:
+ * {
+ *   returnUrl?: string; // Optional current page URL for refresh-less UX
+ *   successPath?: string; // Optional custom success path (default: "/dashboard?subscription=success")
+ *   cancelPath?: string; // Optional custom cancel path (default: "/pricing")
+ * }
+ * 
+ * Response:
+ * {
+ *   url: string; // Stripe checkout URL to redirect user to
+ * }
+ * 
+ * Error Response:
+ * {
+ *   error: string; // Error message
+ * }
+ * 
+ * Security:
+ * - Requires authentication
+ * - Rate limited: 1 session per 10 seconds per user
+ * - Validates URLs to prevent open redirects
+ * - Uses idempotency key to prevent duplicate sessions
+ * - Checks for existing active subscription before creating new one
+ * 
+ * @example
+ * ```typescript
+ * // Basic usage
+ * const res = await fetch('/api/payments/create-subscription-checkout', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({}),
+ * });
+ * const { url } = await res.json();
+ * window.location.href = url;
+ * 
+ * // With custom return URL
+ * const currentUrl = window.location.href;
+ * const res = await fetch('/api/payments/create-subscription-checkout', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ returnUrl: currentUrl }),
+ * });
+ * ```
+ * 
+ * @future-enhancements
+ * - Add subscription cancellation endpoint for immediate cancellation
+ * - Add subscription update payment method endpoint
+ * - Implement subscription pause/resume functionality
+ * - Add subscription upgrade/downgrade endpoint for plan changes
+ * - Add proration preview for plan changes
+ */
+router.post("/create-subscription-checkout", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { successPath, cancelPath, returnUrl } = req.body;
+
+    // Get user from middleware
+    const user = req.user!;
+    const userId = user.id;
+
+    // Check if user already has active subscription
+    const hasActiveSub = await hasActiveVipSubscription(userId);
+    if (hasActiveSub) {
+      return res.status(400).json({ 
+        error: "You already have an active VIP subscription" 
+      });
+    }
+
+    // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
+    const rateLimitResult = await checkRateLimit(`subscription-checkout-${userId}`, {
+      maxRequests: 1,
+      windowSeconds: 10,
+    });
+    if (!rateLimitResult.allowed) {
+      return res.status(429).json({
+        error: "Too many checkout session attempts. Please wait a few seconds before trying again."
+      });
+    }
+
+    // Validate and construct URLs (security: prevent open redirects)
+    const baseUrl = process.env.FRONTEND_URL;
+    if (!baseUrl) {
+      return res.status(500).json({ error: "Frontend URL not configured" });
+    }
+
+    // For refresh-less UX: use returnUrl to return user to same page
+    let successUrl: string;
+    let cancelUrl: string;
+
+    if (returnUrl) {
+      const baseUrlObj = new URL(returnUrl, baseUrl);
+      baseUrlObj.searchParams.set('subscription', 'success');
+      successUrl = baseUrlObj.toString();
+      
+      const cancelUrlObj = new URL(returnUrl, baseUrl);
+      cancelUrlObj.searchParams.set('subscription', 'cancel');
+      cancelUrl = cancelUrlObj.toString();
+    } else {
+      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
+      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+    }
+
+    // Initialize Stripe
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+    // Validate VIP subscription configuration
+    if (!VIP_SUBSCRIPTION.priceId) {
+      return res.status(500).json({ error: "VIP subscription not configured" });
+    }
+
+    // Create or retrieve Stripe customer
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        metadata: { userId },
+      });
+      customerId = customer.id;
+      
+      // Update user with Stripe customer ID
+      await dbWrite.update(users)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(users.userId, userId));
+    }
+
+    // Create Stripe checkout session with idempotency key
+    const idempotencyKey = `subscription-checkout-${userId}-${Date.now()}`;
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "subscription",
+      customer: customerId,
+      line_items: [
+        {
+          price: VIP_SUBSCRIPTION.priceId,
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        userId,
+        subscriptionType: 'vip',
+      },
+      client_reference_id: userId,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      subscription_data: {
+        metadata: {
+          userId,
+        },
+      },
+    }, {
+      idempotencyKey,
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    handleApiError(res, "Failed to create subscription checkout session", error);
+  }
+});
+
+/**
+ * GET /payments/subscription
+ * 
+ * Returns the user's VIP subscription status and details.
+ * 
+ * Response (Success - 200):
+ * {
+ *   hasActiveSubscription: boolean;
+ *   subscription?: {
+ *     id: string;
+ *     status: string;
+ *     currentPeriodStart: string;
+ *     currentPeriodEnd: string;
+ *     cancelAtPeriodEnd: boolean;
+ *   };
+ *   vipExpiresAt?: string;
+ * }
+ * 
+ * Security:
+ * - Requires authentication
+ * 
+ * @example
+ * ```typescript
+ * const res = await fetch('/api/payments/subscription');
+ * const data = await res.json();
+ * if (data.hasActiveSubscription) {
+ *   console.log('VIP expires:', data.vipExpiresAt);
+ * }
+ * ```
+ * 
+ * @future-enhancements
+ * - Add subscription history endpoint to show past subscriptions
+ * - Add proration preview for plan changes
+ * - Add usage analytics for subscription benefits
+ */
+router.get("/subscription", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    // Check if user has active VIP subscription
+    const hasActiveSub = await hasActiveVipSubscription(userId);
+
+    if (!hasActiveSub) {
+      return res.json({
+        hasActiveSubscription: false,
+      });
+    }
+
+    // Get subscription details
+    const subscription = await dbRead
+      .select({
+        id: subscriptions.id,
+        stripeSubscriptionId: subscriptions.stripeSubscriptionId,
+        status: subscriptions.status,
+        currentPeriodStart: subscriptions.currentPeriodStart,
+        currentPeriodEnd: subscriptions.currentPeriodEnd,
+        cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+        vipExpiresAt: users.vipExpiresAt,
+      })
+      .from(subscriptions)
+      .innerJoin(users, eq(subscriptions.userId, users.userId))
+      .where(eq(subscriptions.userId, userId))
+      .limit(1);
+
+    if (subscription.length === 0) {
+      return res.json({
+        hasActiveSubscription: false,
+      });
+    }
+
+    const sub = subscription[0];
+    res.json({
+      hasActiveSubscription: true,
+      subscription: {
+        id: sub.id,
+        stripeSubscriptionId: sub.stripeSubscriptionId,
+        status: sub.status,
+        currentPeriodStart: sub.currentPeriodStart.toISOString(),
+        currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
+        cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+      },
+      vipExpiresAt: sub.vipExpiresAt?.toISOString(),
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to fetch subscription details", error);
   }
 });
 
@@ -1224,12 +1541,12 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
     
     // Get user from database to check for existing stripeCustomerId
     const userRecord = await dbRead
-      .select({ stripeCustomerID: users.stripeCustomerID })
+      .select({ stripeCustomerId: users.stripeCustomerId })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
     
-    let customerId = userRecord[0]?.stripeCustomerID;
+    let customerId = userRecord[0]?.stripeCustomerId;
 
     if (!customerId) {
       const customer = await stripe.customers.create({
@@ -1241,7 +1558,7 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
       // Update user with stripeCustomerId
       await dbWrite
         .update(users)
-        .set({ stripeCustomerID: customerId })
+        .set({ stripeCustomerId: customerId })
         .where(eq(users.userId, userId));
     }
 
@@ -1378,6 +1695,12 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
  * {
  *   url: string; // Stripe Customer Portal URL
  * }
+ * 
+ * @future-enhancements
+ * - Configure portal features to limit user actions
+ * - Add subscription update endpoint for programmatic changes
+ * - Add webhook retry logic for failed deliveries
+ * - Use Stripe's expand parameter to reduce API calls
  */
 router.get("/subscription/portal", requireAuth, async (req: Request, res: Response) => {
   try {

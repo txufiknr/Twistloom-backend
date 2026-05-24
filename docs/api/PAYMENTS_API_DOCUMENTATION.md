@@ -211,43 +211,7 @@ Returns the list of available credit packs for purchase. This endpoint allows th
 
 ## Subscription Plans
 
-### GET /payments/subscription-plans
-
-Returns the list of available subscription plans for purchase. This endpoint allows the frontend to fetch the current subscription configuration without hardcoding it.
-
-**Authentication:** None (public pricing information)
-
-**Response (200 OK):**
-```json
-{
-  "plans": [
-    {
-      "id": "vip_monthly",
-      "name": "Twistloom VIP",
-      "description": "Monthly VIP membership with exclusive benefits",
-      "priceUSD": 9.99,
-      "priceId": "price_1234567890",
-      "productId": "prod_1234567890",
-      "monthlyCredits": 50,
-      "checkInMultiplier": 2,
-      "benefits": [
-        "VIP badge",
-        "2x check-in bonus",
-        "+50 monthly credits"
-      ]
-    }
-  ]
-}
-```
-
-**Behavior:**
-- Returns safe data only (no sensitive configuration)
-- Includes all subscription plans configured in the system
-- Pricing is public information, no authentication required
-
----
-
-### POST /payments/create-subscription-session
+### POST /payments/create-subscription-checkout
 
 Creates a Stripe checkout session for VIP subscription. The user is redirected to Stripe's secure checkout page to complete the subscription.
 
@@ -260,13 +224,13 @@ Creates a Stripe checkout session for VIP subscription. The user is redirected t
 **Request Body:**
 ```json
 {
-  "planId": "vip_monthly",
-  "successUrl": "https://app.twistloom.com/dashboard?subscription=success",
-  "cancelUrl": "https://app.twistloom.com/pricing?subscription=canceled"
+  "returnUrl": "https://app.twistloom.com/dashboard",
+  "successPath": "/dashboard?subscription=success",
+  "cancelPath": "/pricing"
 }
 ```
 
-**Response (201 Created):**
+**Response (200 OK):**
 ```json
 {
   "url": "https://checkout.stripe.com/pay/cs_1234567890"
@@ -274,17 +238,24 @@ Creates a Stripe checkout session for VIP subscription. The user is redirected t
 ```
 
 **Error Responses:**
-- **400 Bad Request**: Invalid plan ID or user already has active subscription
+- **400 Bad Request**: User already has active subscription
 - **401 Unauthorized**: Authentication required
-- **500 Internal Server Error**: Stripe API error
+- **429 Too Many Requests**: Rate limit exceeded (1 request per 10 seconds per user)
+- **500 Internal Server Error**: Stripe API error or VIP subscription not configured
 
 **Behavior:**
-- Validates planId against available subscription plans
 - Checks if user already has an active subscription
 - Creates or retrieves Stripe customer ID
 - Creates Stripe checkout session in subscription mode
-- Redirects user to Stripe checkout
+- Supports refresh-less UX with returnUrl parameter
+- Rate limited to prevent duplicate session creation
+- Uses idempotency key to prevent duplicate sessions
 - Webhook handles subscription activation and credit allocation
+
+**Optional Enhancements:**
+- Add subscription cancellation endpoint for immediate cancellation
+- Add subscription update payment method endpoint
+- Implement subscription pause/resume functionality
 
 ---
 
@@ -298,23 +269,26 @@ Returns the authenticated user's current subscription status.
 - `X-App-Version`: Application version (for analytics)
 - `X-Platform`: Client platform (android/ios)
 
-**Response (200 OK):**
+**Response (200 OK) - Active Subscription:**
 ```json
 {
+  "hasActiveSubscription": true,
   "subscription": {
     "id": "sub_1234567890",
+    "stripeSubscriptionId": "sub_1234567890",
     "status": "active",
+    "currentPeriodStart": "2026-05-23T00:00:00.000Z",
     "currentPeriodEnd": "2026-06-23T00:00:00.000Z",
-    "cancelAtPeriodEnd": false,
-    "monthlyCredits": 50
-  }
+    "cancelAtPeriodEnd": false
+  },
+  "vipExpiresAt": "2026-06-23T00:00:00.000Z"
 }
 ```
 
 **Response (200 OK) - No Subscription:**
 ```json
 {
-  "subscription": null
+  "hasActiveSubscription": false
 }
 ```
 
@@ -323,40 +297,14 @@ Returns the authenticated user's current subscription status.
 - **500 Internal Server Error**: Database error
 
 **Behavior:**
-- Returns user's current subscription if active
+- Checks if user has active VIP subscription
+- Returns subscription details if active
+- Returns VIP expiration date
 - Returns null if no subscription exists
-- Includes monthly credits amount for display
 
----
-
-### POST /payments/subscription/cancel
-
-Cancels the authenticated user's subscription at the end of the current billing period. The user retains VIP benefits until the period ends.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Subscription will be canceled at period end"
-}
-```
-
-**Error Responses:**
-- **404 Not Found**: No active subscription found
-- **401 Unauthorized**: Authentication required
-- **500 Internal Server Error**: Stripe API error
-
-**Behavior:**
-- Updates Stripe subscription to cancel at period end
-- Updates database to reflect cancellation status
-- User retains VIP benefits until current period ends
-- Cron job handles actual tier downgrade after expiration
+**Optional Enhancements:**
+- Add subscription history endpoint to show past subscriptions
+- Add proration preview for plan changes
 
 ---
 
@@ -371,7 +319,7 @@ Creates a Stripe Customer Portal session for subscription management. This allow
 - `X-Platform`: Client platform (android/ios)
 
 **Query Parameters:**
-- `returnUrl` (optional): URL to redirect to after portal session
+- `returnUrl` (optional): URL to redirect to after portal session (default: dashboard)
 
 **Response (200 OK):**
 ```json
@@ -390,6 +338,10 @@ Creates a Stripe Customer Portal session for subscription management. This allow
 - Redirects user to Stripe's hosted management portal
 - User can update payment method, cancel immediately, etc.
 - Returns to specified returnUrl after portal session
+
+**Optional Enhancements:**
+- Configure portal features to limit user actions
+- Add subscription update endpoint for programmatic changes
 
 ---
 
@@ -822,6 +774,19 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 
 ## Changelog
 
+### v1.3.0 (2026-05-24)
+- Fixed Stripe customer ID naming inconsistency across database tables
+- Changed subscriptions table from `stripeCustomerId` to `stripeCustomerId` for consistency
+- Added `stripeCustomerId` to AuthUser type for type safety
+- Added runtime validation type guards for Stripe webhook handlers
+- Fixed invoice.payment_failed handler to use correct subscription period end
+- Replaced hardcoded status strings with typed values in subscription service
+- Added POST /payments/create-subscription-checkout endpoint for VIP subscriptions
+- Added GET /payments/subscription endpoint for subscription status retrieval
+- Updated subscription documentation with current endpoint signatures
+- Added @future-enhancements JSDoc comments to subscription endpoints
+- Improved type safety by using Stripe.Subscription.Status instead of custom type
+
 ### v1.2.0 (2026-05-23)
 - Added subscription management endpoints for VIP membership
 - Implemented GET /payments/subscription-plans for fetching subscription plans
@@ -867,6 +832,264 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 - **Idempotency**: Prevent double charging with idempotency keys
 - **Rate Limiting**: Protection against abuse with Redis-based rate limiting
 - **Activity Logging**: Complete audit trail for security and analytics
+
+---
+
+## Future Enhancements
+
+This section outlines planned enhancements for the subscription and payments system. These are optional improvements that can be implemented based on business needs and priorities.
+
+### Subscription Management Enhancements
+
+#### 1. Subscription Cancellation Endpoint
+**Priority:** High  
+**Description:** Add an endpoint for immediate subscription cancellation (not just cancel at period end)
+
+```typescript
+POST /payments/subscription/cancel-immediately
+```
+
+**Benefits:**
+- Users can cancel immediately without waiting for period end
+- Pro-rated refunds can be processed
+- Better user control over subscription
+
+**Implementation Considerations:**
+- Handle proration calculations
+- Process refunds via Stripe API
+- Update VIP tier immediately
+- Send cancellation notification
+
+---
+
+#### 2. Subscription Update Payment Method
+**Priority:** Medium  
+**Description:** Add endpoint to update subscription payment method without using Customer Portal
+
+```typescript
+POST /payments/subscription/update-payment-method
+{
+  "paymentMethodId": "pm_1234567890"
+}
+```
+
+**Benefits:**
+- Custom UI for payment method updates
+- Better integration with app design
+- Can add payment method validation
+
+**Implementation Considerations:**
+- Validate payment method before updating
+- Handle 3D Secure authentication
+- Update Stripe subscription directly
+- Send confirmation notification
+
+---
+
+#### 3. Subscription Pause/Resume
+**Priority:** Medium  
+**Description:** Implement subscription pause/resume functionality for temporary breaks
+
+```typescript
+POST /payments/subscription/pause
+{
+  "resumeAt": "2026-07-01" // Optional resume date
+}
+
+POST /payments/subscription/resume
+```
+
+**Benefits:**
+- Users can pause subscription temporarily
+- Retain customers who need breaks
+- Flexible subscription management
+
+**Implementation Considerations:**
+- Use Stripe's pause_collection feature
+- Handle billing during pause period
+- Resume notifications
+- Credit allocation during pause
+
+---
+
+#### 4. Subscription Upgrade/Downgrade
+**Priority:** High  
+**Description:** Add endpoint for changing subscription plans with proration
+
+```typescript
+POST /payments/subscription/change-plan
+{
+  "newPriceId": "price_new_plan",
+  "prorationBehavior": "create_prorations" | "none"
+}
+```
+
+**Benefits:**
+- Users can upgrade/downgrade plans
+- Pro-rated billing adjustments
+- Flexible plan options
+
+**Implementation Considerations:**
+- Calculate proration amounts
+- Handle immediate charges for upgrades
+- Credit adjustments for downgrades
+- Plan change notifications
+
+---
+
+#### 5. Proration Preview
+**Priority:** Medium  
+**Description:** Add endpoint to preview proration costs before plan changes
+
+```typescript
+GET /payments/subscription/proration-preview?newPriceId=price_new_plan
+```
+
+**Benefits:**
+- Users see costs before changing plans
+- Transparent billing
+- Better user experience
+
+**Implementation Considerations:**
+- Use Stripe's invoice preview API
+- Display proration breakdown
+- Show effective dates
+- Handle tax calculations
+
+---
+
+### Webhook Enhancements
+
+#### 6. Webhook Retry Logic
+**Priority:** High  
+**Description:** Implement automatic retry logic for failed webhook deliveries
+
+**Benefits:**
+- Improved reliability
+- Automatic recovery from transient failures
+- Better data consistency
+
+**Implementation Considerations:**
+- Exponential backoff strategy
+- Maximum retry attempts
+- Dead letter queue for permanent failures
+- Monitoring and alerting
+
+---
+
+#### 7. Webhook Delivery Monitoring
+**Priority:** Medium  
+**Description:** Add monitoring dashboard for webhook delivery status
+
+**Benefits:**
+- Visibility into webhook processing
+- Troubleshooting failed deliveries
+- Performance monitoring
+
+**Implementation Considerations:**
+- Track delivery status in database
+- Success/failure metrics
+- Retry attempt tracking
+- Error aggregation
+
+---
+
+### API Optimization
+
+#### 8. Stripe Expand Parameter
+**Priority:** Low  
+**Description:** Use Stripe's expand parameter to reduce API calls
+
+**Benefits:**
+- Fewer API requests
+- Faster response times
+- Reduced latency
+
+**Implementation Considerations:**
+- Expand subscription items in webhook handlers
+- Expand customer details
+- Batch related data fetches
+- Cache expanded responses
+
+---
+
+### Analytics & Reporting
+
+#### 9. Subscription History Endpoint
+**Priority:** Medium  
+**Description:** Add endpoint to retrieve user's subscription history
+
+```typescript
+GET /payments/subscription/history
+```
+
+**Benefits:**
+- Users can see past subscriptions
+- Audit trail for compliance
+- Analytics on subscription patterns
+
+**Implementation Considerations:**
+- Include status changes
+- Show billing periods
+- Display cancellation reasons
+- Pagination for large histories
+
+---
+
+#### 10. Usage Analytics
+**Priority:** Low  
+**Description:** Add analytics for subscription benefit usage
+
+**Benefits:**
+- Track VIP feature usage
+- Measure subscription value
+- Inform product decisions
+
+**Implementation Considerations:**
+- Track credit usage patterns
+- Monitor check-in bonus usage
+- Feature adoption metrics
+- ROI calculations
+
+---
+
+### Security Enhancements
+
+#### 11. Customer Portal Configuration
+**Priority:** Medium  
+**Description:** Configure Stripe Customer Portal to limit user actions
+
+**Benefits:**
+- Prevent unwanted subscription changes
+- Control user permissions
+- Enforce business rules
+
+**Implementation Considerations:**
+- Disable immediate cancellation
+- Limit plan changes
+- Control payment method updates
+- Custom portal features
+
+---
+
+### Priority Summary
+
+**High Priority (Implement Soon):**
+1. Subscription cancellation endpoint
+2. Subscription upgrade/downgrade
+3. Webhook retry logic
+
+**Medium Priority (Implement When Needed):**
+1. Subscription update payment method
+2. Subscription pause/resume
+3. Proration preview
+4. Webhook delivery monitoring
+5. Subscription history endpoint
+6. Customer portal configuration
+
+**Low Priority (Nice to Have):**
+1. Stripe expand parameter optimization
+2. Usage analytics
 
 ---
 

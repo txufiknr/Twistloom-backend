@@ -1,16 +1,4 @@
-/**
- * Subscription status for VIP subscriptions
- * Matches Stripe's Subscription.Status type for type safety
- */
-export type SubscriptionStatus = 
-  | 'active' 
-  | 'past_due' 
-  | 'canceled' 
-  | 'unpaid' 
-  | 'trialing'
-  | 'incomplete'
-  | 'incomplete_expired'
-  | 'paused';
+import type Stripe from 'stripe';
 
 /**
  * Subscription transaction type for tracking subscription-related credit allocations
@@ -19,6 +7,12 @@ export type SubscriptionTransactionType =
   | 'activation' 
   | 'renewal' 
   | 'cancellation';
+
+/**
+ * Re-export Stripe's Subscription.Status for convenience
+ * Use Stripe.Subscription.Status directly for type safety
+ */
+export type SubscriptionStatus = Stripe.Subscription.Status;
 
 /**
  * Subscription configuration for VIP plans

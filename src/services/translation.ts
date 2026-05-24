@@ -82,8 +82,7 @@ export async function getPageTranslation({
   bookLanguage,
   targetLanguage
 }: GetPageTranslationParams): Promise<PageTranslationResult> {
-  // TODO: I've refactored this function to accept whole DBPage object instead of just text
-  // can you continue complete the implementation to translate all necessary texts (text, place, keyEvents, importantObjects, actions) optimally & efficiently?
+  // can you ensure the logic for translate all necessary texts (text, place, keyEvents, importantObjects, actions) are optimal & efficient?
 
   // Create cache key with safer separator
   const cacheKey = `${page.id}|${targetLanguage}`;

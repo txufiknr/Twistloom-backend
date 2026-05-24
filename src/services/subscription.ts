@@ -33,6 +33,7 @@ import { eq } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
+import type Stripe from 'stripe';
 
 /**
  * Creates a new subscription record and allocates initial credits
@@ -75,7 +76,7 @@ export async function createSubscription(params: {
       stripeSubscriptionId: params.stripeSubscriptionId,
       stripeCustomerId: params.stripeCustomerId,
       stripePriceId: params.stripePriceId,
-      status: 'active',
+      status: 'active' satisfies Stripe.Subscription.Status,
       currentPeriodStart: params.currentPeriodStart,
       currentPeriodEnd: params.currentPeriodEnd,
     }).returning();
@@ -185,7 +186,7 @@ export async function renewSubscription(params: {
     await tx.update(subscriptions)
       .set({
         currentPeriodEnd: params.currentPeriodEnd,
-        status: 'active',
+        status: 'active' satisfies Stripe.Subscription.Status,
         updatedAt: new Date(),
       })
       .where(eq(subscriptions.id, subscription.id));
@@ -251,7 +252,7 @@ export async function cancelSubscription(params: {
     // Update subscription status
     await tx.update(subscriptions)
       .set({
-        status: 'canceled',
+        status: 'canceled' satisfies Stripe.Subscription.Status,
         canceledAt: params.canceledAt,
         updatedAt: new Date(),
       })
