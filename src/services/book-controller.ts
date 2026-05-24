@@ -736,7 +736,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  */
 export async function visitBookPage(
   res: Response,
-  params: { userId: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean, consumeCredits?: boolean, language?: string | null }
+  params: { userId?: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean, consumeCredits?: boolean, language?: string | null }
 ): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage, sourceAction?: Action }> {
   const { userId, pageId, bookIdentifier, skipVisit = false, consumeCredits = false, language } = params;
   console.log(`[visit] 👓 Visited pageId:`, pageId, `(skipVisit = ${skipVisit})`);
@@ -761,7 +761,7 @@ export async function visitBookPage(
   }
 
   // No user visit track for prefetch (not actual navigation)
-  if (skipVisit) return { dbPage, book };
+  if (skipVisit || !userId) return { dbPage, book };
 
   // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
