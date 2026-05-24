@@ -12,13 +12,13 @@
  */
 
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { pages, books, users, userPageProgress, userSessions, userCompletedBooks } from "../db/schema.js";
+import { pages, books, users, userPageProgress, userCompletedBooks } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBPageTranslations, DBUpdateBook } from "../types/schema.js";
-import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData } from "../types/book.js";
+import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, PublicStats } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
 import { getStoryStateFromPage } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
@@ -78,11 +78,7 @@ const bookCache = new LRUCache<string, Book>({
  * TTL: 3 minutes to balance freshness with performance
  * Max size: 1 entry (single global stats object)
  */
-const publicBookStatsCache = new LRUCache<string, {
-  storiesCreated: number;
-  branchesExplored: number;
-  pagesCrafted: number;
-}>({
+const publicBookStatsCache = new LRUCache<string, PublicStats>({
   max: 1,
   ttl: 2 * 60 * 1000, // 2 minutes
 });
@@ -1324,10 +1320,11 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
  * - storiesCreated: Total number of books created
  * - branchesExplored: Total number of unique branches across all books (pre-calculated)
  * - pagesCrafted: Total number of pages created
+ * - shadowsWeaved: Total number of users who have joined the platform
  * 
  * Results are cached for 3 minutes to reduce database load.
  * 
- * @returns Promise resolving to object containing the three stats
+ * @returns Promise resolving to object containing the four stats
  * 
  * @example
  * ```typescript
@@ -1335,13 +1332,10 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
  * console.log(`Stories: ${stats.storiesCreated}`);
  * console.log(`Branches: ${stats.branchesExplored}`);
  * console.log(`Pages: ${stats.pagesCrafted}`);
+ * console.log(`Shadows: ${stats.shadowsWeaved}`);
  * ```
  */
-export async function getPublicBookStats(): Promise<{
-  storiesCreated: number;
-  branchesExplored: number;
-  pagesCrafted: number;
-}> {
+export async function getPublicBookStats(): Promise<PublicStats> {
   const cacheKey = 'public:book:stats';
   
   // Try to get from cache first
@@ -1351,29 +1345,39 @@ export async function getPublicBookStats(): Promise<{
   }
 
   try {
-    // Get total number of books (stories created) using SQL COUNT(*)
-    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
-    // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
-    const booksCount = await dbRead
-      .select({ count: sql<number>`count(*)::int` })
-      .from(books);
+    // Execute all four queries in parallel for faster response time
+    // These queries are independent and can run concurrently
+    const [booksCount, branchesCount, pagesCount, usersCount] = await Promise.all([
+      // Get total number of books (stories created) using SQL COUNT(*)
+      // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+      // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
+      dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(books),
 
-    // Get total number of unique branches using SUM of pre-calculated branchesCount
-    // Using SUM of denormalized column is much faster than COUNT(DISTINCT branch_id) on pages table
-    const branchesCount = await dbRead
-      .select({ count: sql<number>`COALESCE(SUM(branches_count), 0)::int` })
-      .from(books);
+      // Get total number of unique branches using SUM of pre-calculated branchesCount
+      // Using SUM of denormalized column is much faster than COUNT(DISTINCT branch_id) on pages table
+      dbRead
+        .select({ count: sql<number>`COALESCE(SUM(branches_count), 0)::int` })
+        .from(books),
 
-    // Get total number of pages using SQL COUNT(*)
-    // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
-    const pagesCount = await dbRead
-      .select({ count: sql<number>`count(*)::int` })
-      .from(pages);
+      // Get total number of pages using SQL COUNT(*)
+      // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
+      dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(pages),
 
-    const stats = {
+      // Get total number of users using SQL COUNT(*)
+      dbRead
+        .select({ count: sql<number>`count(*)::int` })
+        .from(users),
+    ]);
+
+    const stats: PublicStats = {
       storiesCreated: booksCount[0].count,
       branchesExplored: branchesCount[0].count,
       pagesCrafted: pagesCount[0].count,
+      shadowsWeaved: usersCount[0].count,
     };
 
     // Store in cache
@@ -1526,95 +1530,6 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
   } catch (error) {
     console.error('[getPopularTags] Failed to fetch popular tags:', getErrorMessage(error));
     return [];
-  }
-}
-
-/**
- * Retrieves user's recent books with reading status for "Continue reading" section
- * 
- * Joins userSessions with books and pages to get the most recently read books.
- * Calculates reading status based on current page vs total pages.
- * 
- * @param userId - User identifier to fetch recent books for
- * @param limit - Maximum number of recent books to return (default: 10)
- * @param offset - Number of books to skip for pagination (default: 0)
- * @returns Promise resolving to object with recent books array and total count
- * 
- * @example
- * ```typescript
- * const { books, totalCount } = await getUserRecentBooks('user123', 5, 0);
- * // Returns:
- * // {
- * //   books: [
- * //     {
- * //       bookId: 'book456',
- * //       title: 'The Haunting',
- * //       totalPages: 50,
- * //       currentPage: 25,
- * //       status: 'in_progress',
- * //       updatedAt: '2023-01-01T00:00:00.000Z',
- * //       ...
- * //     },
- * //     {
- * //       bookId: 'book789',
- * //       title: 'The Mystery',
- * //       totalPages: 30,
- * //       currentPage: 30,
- * //       status: 'completed',
- * //       updatedAt: '2023-01-02T00:00:00.000Z',
- * //       ...
- * //     }
- * //   ],
- * //   totalCount: 15
- * // }
- * ```
- */
-export async function getUserRecentBooks(userId: string, limit: number = 10, offset: number = 0) {
-  try {
-    // Get total count first
-    const countResult = await dbRead
-      .select({ count: sql<number>`count(*)::int` })
-      .from(userSessions)
-      .innerJoin(books, eq(userSessions.bookId, books.id))
-      .where(eq(userSessions.userId, userId));
-
-    const totalCount = countResult[0]?.count || 0;
-
-    // Get paginated results
-    const result = await dbRead
-      .select({
-        id: books.id,
-        title: books.title,
-        hook: books.hook,
-        summary: books.summary,
-        image: books.image,
-        totalPages: books.totalPages,
-        currentPage: pages.page,
-        currentPageId: userSessions.pageId,
-        sessionUpdatedAt: userSessions.updatedAt,
-        bookUpdatedAt: books.updatedAt,
-        mc: books.mc,
-        keywords: books.keywords,
-        status: books.status,
-      })
-      .from(userSessions)
-      .innerJoin(books, eq(userSessions.bookId, books.id))
-      .innerJoin(pages, eq(userSessions.pageId, pages.id))
-      .where(eq(userSessions.userId, userId))
-      .orderBy(desc(userSessions.updatedAt))
-      .limit(limit)
-      .offset(offset);
-
-    // Calculate reading status for each book
-    const recentBooks = result.map((row) => ({
-      ...row,
-      readingStatus: row.currentPage >= row.totalPages ? 'completed' : 'in_progress',
-    }));
-
-    return { books: recentBooks, totalCount };
-  } catch (error) {
-    console.error('[getUserRecentBooks] ❌ Failed to fetch recent books:', getErrorMessage(error));
-    return { books: [], totalCount: 0 };
   }
 }
 

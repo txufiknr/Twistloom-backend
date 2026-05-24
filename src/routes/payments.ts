@@ -25,7 +25,7 @@ import { Router } from "express";
 import Stripe from "stripe";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
-import { requireAuth } from "../middleware/nextauth.js";
+import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { checkRateLimitByIP } from "../middleware/rate-limit.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications, subscriptions } from "../db/schema.js";
@@ -1269,9 +1269,14 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
  *   } | null
  * }
  */
-router.get("/subscription", requireAuth, async (req: Request, res: Response) => {
+router.get("/subscription", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.user!.id;
+    const userId = req.userId;
+    
+    // Return null response for unauthenticated users (handles auth timing race conditions)
+    if (!userId) {
+      return res.json({ subscription: null });
+    }
 
     const subscription = await dbRead
       .select()

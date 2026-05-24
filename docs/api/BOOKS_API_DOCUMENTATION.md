@@ -6,7 +6,7 @@ The Books API provides endpoints for managing psychological thriller books, incl
 
 **Base URL:** `/api/books`
 
-**Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Guest users can access read-only endpoints and create books (guest data migrates on login).
+**Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Unauthenticated users can access read-only endpoints.
 
 **Response Pattern:**
 - GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ book: {...} }`, `{ books: [...] }`)
@@ -229,11 +229,14 @@ Book sorting options for explore endpoint.
 
 ```typescript
 type BookSortingOptions = 
-  | 'popular'     // Sorts by branchesCount (pre-calculated branchesCount maintained by database triggers)
-  | 'newest'       // Sorts by createdAt timestamp (latest books)
-  | 'trending'     // Sorts by pre-calculated trendingScore (hybrid: cron-based with time decay + incremental updates on likes/favorites)
-  | 'top-picks'    // Sorts by latest topPick timestamp (only books marked as editor's picks)
-  | 'originals';   // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+  | 'popular'       // Sorts by branchesCount (pre-calculated branchesCount maintained by database triggers)
+  | 'newest'         // Sorts by createdAt timestamp (latest books)
+  | 'trending'       // Sorts by pre-calculated trendingScore (hybrid: cron-based with time decay + incremental updates on likes/favorites)
+  | 'top-picks'      // Sorts by latest topPick timestamp (only books marked as editor's picks)
+  | 'originals'     // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+  | 'reads'         // Shows books the user has read, sorted by lastReadAt (requires authentication)
+  | 'recommendations' // Recommends books based on user likes (requires authentication)
+  | 'creations';    // Shows user's own created books (requires authentication)
 ```
 
 ---
@@ -245,17 +248,16 @@ type BookSortingOptions =
 3. [Book Management](#book-management)
    - [Create Book](#post-apibooks)
    - [Create Book with SSE](#post-apibooksstream)
-   - [Get User's Books](#get-apibooks)
-   - [Get Book by ID](#get-apibooksidentifier)
-   - [Get Similar Books](#get-apibooksidsimilar)
+   - [Create Book Async](#post-apibooksasync)
+   - [Get Book Creation Status](#get-apibooksbookidstatus)
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
-4. [Book Reading](#book-reading)
    - [Get Book by Identifier](#get-apibooksidentifier)
+   - [Get Similar Books](#get-apibooksidsimilar)
+4. [Book Reading](#book-reading)
    - [Get Specific Page](#get-apibooksidentifierpageid)
-   - [Mark Page Visited](#post-apibooksidentifierpageidvisit)
-   - [Generate Candidates](#post-apibooksidentifierpageidcandidates)
-   - [Start Reading Session](#post-apibooksidsessions)
+   - [Generate Candidates (SSE)](#get-apibooksidentifierpageidcandidates)
+   - [Get Candidate Generation Status](#get-apibooksidentifierpageidcandidatesstatus)
 5. [Social Interactions](#social-interactions)
    - [Like Book](#post-apibooksidlike)
    - [Unlike Book](#delete-apibooksidlike)
@@ -272,6 +274,7 @@ type BookSortingOptions =
 8. [Utilities](#utilities)
    - [Generate Book Prompt](#get-apibooksprompt)
    - [Insert Book (Test)](#post-apibooksinsert)
+   - [Workflow Webhook (Internal)](#post-apibooksworkflow-webhook)
 9. [Error Handling](#error-handling)
 10. [HTTP Headers](#http-headers)
 11. [Caching Strategy](#caching-strategy)
@@ -485,465 +488,6 @@ data: {"error":"Theme validation failed"}
 
 ---
 
-### GET /api/books
-
-Retrieves all books for the authenticated user. Returns paginated list with metadata and reading progress. Supports enhanced search, language filtering, time-based filtering, and sorting.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Query Parameters:**
-- `page` (number, optional): Page number for pagination (default: 1)
-- `limit` (number, optional): Number of books per page (default: 10)
-- `search` (string, optional): Search query for title, hook, summary, keywords
-- `language` (string, optional): Filter by language code (e.g., "en", "es")
-- `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
-- `fuzzy` (boolean, optional): Enable fuzzy matching for typo tolerance (default: true)
-- `sortBy` (string, optional): **Book-specific sort option** - popular|newest|trending|top-picks|originals (default: newest)
-- `sortOrder` (string, optional): Sort direction for generic fallback sorting (asc|desc, default: desc)
-- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year (default: anytime)
-
-**Enhanced Search Features:**
-- Searches across title, hook, summary, and keywords (JSONB array)
-- Language filter for internationalization
-- Tags filter with OR logic for multiple tags
-- Time-based filtering by last update date
-- Fuzzy matching toggle for typo tolerance
-- **Two-level sorting hierarchy:**
-  * **Primary:** Book-specific sorting (popular, trending, top-picks, originals, newest)
-  * **Secondary:** Relevance scoring for search results (title: 40%, hook: 25%, summary: 20%, keywords: 15%)
-- Results sorted by relevance when search is enabled, otherwise by book-specific sort
-
-**Response (200 OK):**
-```json
-{
-  "books": [
-    {
-      "id": "book123",
-      "title": "The Whispering Halls",
-      "hook": "Sarah never believed in ghosts until she found the diary",
-      "summary": "A psychological thriller about a librarian...",
-      "image": "https://example.com/cover.jpg",
-      "status": "active",
-      "totalPages": 120,
-      "language": "en",
-      "keywords": ["thriller", "mystery", "haunted"],
-      "mc": {
-        "name": "Sarah",
-        "age": 28,
-        "gender": "female"
-      },
-      "firstPageId": "page456",
-      "author": {
-        "id": "user456",
-        "name": "John Doe",
-        "username": "johndoe",
-        "image": "https://example.com/avatar.jpg"
-      },
-      "stats": {
-        "likesCount": 42,
-        "readCount": 156,
-        "completeCount": 23,
-        "commentsCount": 25,
-        "branchesCount": 12
-      },
-      "isLiked": true,
-      "isRead": true,
-      "lastReadAt": "2023-01-15T10:30:00.000Z",
-      "lastPage": "page789",
-      "relevanceScore": 0.85,
-      "createdAt": "2023-01-01T00:00:00.000Z",
-      "updatedAt": "2023-01-15T10:30:00.000Z"
-    }
-  ],
-  "pagination": {
-    "page": 1,
-    "limit": 10,
-    "totalCount": 42,
-    "totalPages": 5,
-    "hasNext": true,
-    "hasPrevious": false
-  }
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: Invalid search query (too short, too long, or contains invalid characters)
-- `400 Bad Request`: Invalid lastUpdated value (must be: anytime, today, this-week, this-month, or this-year)
-
-**Examples:**
-```
-# Search for thriller books
-GET /api/books?search=thriller
-
-# Filter by English language
-GET /api/books?language=en
-
-# Filter by books updated this week
-GET /api/books?lastUpdated=this-week
-
-# Filter by tags
-GET /api/books?tags=thriller,mystery
-
-# Combined search with all filters
-GET /api/books?search=mystery&language=en&lastUpdated=this-month&tags=thriller&fuzzy=true
-
-# Disable fuzzy matching (exact matches only)
-GET /api/books?search=thriller&fuzzy=false
-```
-
----
-
-### PUT /api/books/:id
-
-Updates book information including title, hook, summary, keywords, and cover image. Supports partial updates - only provided fields will be modified. Handles multiple image upload sources: URL, base64, or multipart file.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Path Parameters:**
-- `id` (string, required): Book ID
-
-**Request Body:**
-```json
-{
-  "title": "Updated Title",
-  "hook": "Updated hook text",
-  "summary": "Updated summary",
-  "keywords": ["mystery", "thriller"],
-  "imageUrl": "https://example.com/new-cover.jpg"
-}
-```
-
-**Or multipart/form-data:**
-- `imageFile` (file, optional): Cover image file
-- `title` (string, optional): Updated title
-- `hook` (string, optional): Updated hook
-- `summary` (string, optional): Updated summary
-- `keywords` (string, optional): JSON array of keywords
-- `imageUrl` (string, optional): Cover image URL
-
-**Response (200 OK):**
-```json
-{
-  "book": {
-    "id": "book123",
-    "title": "Updated Title",
-    "hook": "Updated hook text",
-    "summary": "Updated summary",
-    "keywords": ["mystery", "thriller"],
-    "image": "https://example.com/new-cover.jpg",
-    "updatedAt": "2023-01-15T11:00:00.000Z"
-  },
-  "imageUploaded": true,
-  "oldImageQueuedForDeletion": true,
-  "uploadSource": "url"
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: Invalid image upload
-- `403 Forbidden`: Not the book owner
-- `404 Not Found`: Book not found
-
----
-
-### DELETE /api/books/:id
-
-Deletes a book and all its associated data (pages, sessions, story states). If the book has an imageId, queues it for deletion in the deletedImages table.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Path Parameters:**
-- `id` (string, required): Book ID
-
-**Response (200 OK):**
-```json
-{
-  "message": "Book deleted successfully",
-  "bookId": "book123",
-  "imageQueuedForDeletion": true
-}
-```
-
-**Error Responses:**
-- `403 Forbidden`: Not the book owner
-- `404 Not Found`: Book not found
-
----
-
-## Book Reading
-
-### GET /api/books/:identifier/:pageId
-
-Retrieves a specific page within a book. Accepts both slug and UUID v7 as identifier. Returns only actions with complete destinations (both branchId and pageId required). Automatically retries failed candidate generations for incomplete actions. Supports translation via Accept-Language header.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Path Parameters:**
-- `identifier` (string, required): Book slug or UUID v7
-- `pageId` (string, required): Page ID
-
-**Request Headers:**
-- `Accept-Language` (string, optional): Desired language code (e.g., "en", "es", "fr")
-
-**Response (200 OK):**
-```json
-{
-  "page": {
-    "id": "page456",
-    "page": 1,
-    "bookId": "book123",
-    "branchId": "main",
-    "parentId": null,
-    "text": "The library was silent except for the rain...",
-    "mood": "eerie",
-    "place": "library",
-    "timeOfDay": "night",
-    "charactersPresent": [],
-    "keyEvents": [],
-    "importantObjects": [],
-    "actions": [
-      {
-        "text": "Investigate the noise",
-        "type": "explore",
-        "hint": {
-          "text": "Something waits in the shadows",
-          "type": "dark_discovery"
-        },
-        "destination": {
-          "branchId": "main",
-          "pageId": "page789"
-        },
-        "nextPageNumber": 2,
-        "isUserChosen": false
-      }
-    ],
-    "selectedAction": {
-      "text": "Investigate the noise",
-      "type": "explore",
-      "hint": {
-        "text": "Something waits in the shadows",
-        "type": "dark_discovery"
-      }
-    },
-    "originalActionsCount": 5,
-    "translatedText": "La biblioteca estaba en silencio excepto por la lluvia...",
-    "createdAt": "2023-01-01T00:00:00.000Z",
-    "updatedAt": "2023-01-01T00:00:00.000Z"
-  },
-  "book": {
-    "id": "book123",
-    "title": "The Whispering Halls",
-    "slug": "whispering-halls",
-    "totalPages": 120
-  }
-}
-```
-
-**Behavior:**
-- Filters out actions without complete destinations (both branchId and pageId required)
-- Enriches actions with nextPageNumber for frontend URL building
-- Marks user's previously chosen action with isUserChosen: true
-- Includes selectedAction field showing user's chosen action for this page
-- Includes originalActionsCount showing total actions before filtering
-- Translates page text if Accept-Language header differs from book language (cached for performance)
-- Automatically retries failed candidate generations for incomplete actions (fire-and-forget)
-- Excludes backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount, stateDelta
-
-**Error Responses:**
-- `404 Not Found`: Book or page not found
-
----
-
-### POST /api/books/:identifier/:pageId/visit
-
-Marks a page as visited by updating user session and page progress. This is called when a user navigates to a page (not during pre-generation). The frontend should call this endpoint after the user lands on a page to track reading progress.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Path Parameters:**
-- `identifier` (string, required): Book slug or UUID v7
-- `pageId` (string, required): Page ID
-
-**Request Body:**
-```json
-{
-  "action": {
-    "text": "Investigate the noise",
-    "type": "explore",
-    "hint": {
-      "text": "Something waits in the shadows",
-      "type": "dark_discovery"
-    }
-  },
-  "previousPageId": "page456"
-}
-```
-
-**Parameters:**
-- `action` (object, required): The action chosen to reach this page
-  - `text` (string): Action text
-  - `type` (string): Action type (explore, escape, social, risk, ignore, attack, deceive, protect, create, heal, dialogue, custom, other)
-  - `hint` (object): Consequence hint
-- `previousPageId` (string, required): The previous page ID (for navigation history)
-
-**Response (200 OK):**
-```json
-{
-  "pageId": "page789",
-  "branchId": "main",
-  "page": 5
-}
-```
-
-**Behavior:**
-- Validates that the action exists on the previous page
-- Prevents users from selecting alternate branches on revisited pages (except for premium users)
-- Validates user's action choice to prevent multiple selections on the same page
-- Updates user session and page progress tracking
-
-**Error Responses:**
-- `400 Bad Request`: Missing action or previousPageId
-- `404 Not Found`: Book or page not found
-
-**Note:**
-- Page generation happens automatically via pre-generation when books are created or pages are generated
-- This endpoint only tracks user navigation and progress, not page generation
-- Candidate pages are pre-generated in the background for immediate navigation
-
----
-
-### GET /api/books/:identifier/:pageId/candidates
-
-Pre-generates candidate pages for all actions on a story page. This ensures that when users select actions, the corresponding destination pages are immediately available without waiting for AI generation.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Path Parameters:**
-- `identifier` (string, required): Book slug or UUID v7
-- `pageId` (string, required): Page ID for which to generate candidates
-
-**Response (200 OK):**
-
-This endpoint **always** uses Server-Sent Events (SSE) for consistent response format:
-
-```http
-Content-Type: text/event-stream
-Cache-Control: no-cache
-Connection: keep-alive
-```
-
-**SSE Events:**
-
-**1. Initial Progress Event:**
-Sent immediately when the endpoint is called.
-
-```http
-event: progress
-data: {"status": "waiting", "message": "Candidate generation started..."}
-```
-
-Or if generation is already in progress:
-
-```http
-event: progress
-data: {"status": "waiting", "message": "Candidate generation in progress..."}
-```
-
-**2. Periodic Progress Events:**
-Sent every 10 seconds during polling with elapsed time.
-
-```http
-event: progress
-data: {"status": "waiting", "message": "Still generating... (10s elapsed)"}
-```
-
-**3. Per-Action Progress Events:**
-Sent when individual actions are completed (if progress event storage is enabled).
-
-```http
-event: action_progress
-data: {
-  "action": "Open the door",
-  "status": "completed",
-  "completed": 2,
-  "total": 3,
-  "progress": 66,
-  "timestamp": "2023-01-01T00:00:00.000Z"
-}
-```
-
-**4. Complete Event:**
-Sent when generation finishes with updated page data.
-
-```http
-event: complete
-data: {
-  "id": "page456",
-  "page": 5,
-  "text": "The hallway stretched endlessly before me...",
-  "mood": "eerie",
-  "place": "hallway",
-  "timeOfDay": "night",
-  "actions": [
-    {
-      "text": "Open the door",
-      "type": "explore",
-      "hint": {
-        "text": "Something waits behind",
-        "type": "dark_discovery"
-      },
-      "destination": {
-        "branchId": "branch789",
-        "pageId": "page790"
-      }
-    }
-  ],
-  "createdAt": "2023-01-01T00:00:00.000Z"
-}
-```
-
-**5. Timeout Event:**
-Sent after 5 minutes if generation hasn't completed.
-
-```http
-event: timeout
-data: {
-  "id": "page456",
-  "page": 5,
-  "text": "...",
-  "warning": "Generation timeout, returning current state"
-}
-```
-
-**6. Error Event:**
-Sent if page is deleted during polling or other error occurs.
-
-```http
-event: error
-data: {"error": "Page not found during polling"}
-```
-
-**Behavior:**
-- Validates that page belongs to the specified book
-- Always sets SSE headers first for consistent response format
-- Checks `isGeneratingStartedAt` timestamp to detect in-progress generation (non-null means in-progress)
-- If `isGeneratingStartedAt` is set: Uses SSE to poll for completion
-- If `isGeneratingStartedAt` is null: Triggers background generation via `triggerBackgroundGeneration`, then polls for completion
-- If no actions need generation: Sends SSE complete event immediately with current page
-- Skips last page (no candidates needed for final page)
-- Uses distributed lock to prevent concurrent processing
-- Retries failed generations up to 3 times with exponential backoff
-- Removes invalid actions (e.g., validation errors) from the page
-- Returns updated page with pre-generated candidate destinations via SSE
-- **Single operation guarantee**: Only one generation operation runs per (bookId + pageId) combination
-
-**Error Responses:**
-- `400 Bad Request`: Invalid UUID format
-- `404 Not Found`: Book or page not found
-- `500 Internal Server Error`: Candidate generation failed
-
----
-
 ### GET /api/books/:identifier
 
 Retrieves a book by slug or UUID v7 identifier. Returns complete book information including metadata, author details, and engagement statistics.
@@ -1014,48 +558,169 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
 
 ---
 
-### POST /api/books/:id/sessions
+### PUT /api/books/:id
 
-Creates or updates a reading session for a book. Tracks reading progress and manages active sessions.
+Updates book information and cover image. Supports partial updates and multiple image upload methods (URL, base64, or multipart file).
 
-**Authentication:** Optional (via `guestOrAuthMiddleware`)
+**Authentication:** Required (via `requireAuth`)
 
 **Path Parameters:**
 - `id` (string, required): Book ID
 
-**Request Body:**
+**Request Body (JSON):**
 ```json
 {
-  "pageId": "page456" // Optional - if not provided, auto-finds page 1
+  "title": "Updated Title",
+  "hook": "Updated hook text",
+  "summary": "Updated summary",
+  "keywords": ["thriller", "mystery"],
+  "imageUrl": "https://example.com/new-cover.jpg"
 }
 ```
 
-**Parameters:**
-- `pageId` (string, optional): Current page ID in reading session. If not provided, automatically finds and uses page 1 of the book.
+**Or multipart/form-data:**
+- `imageFile` (file, optional): Cover image file
+- `title` (string, optional): Updated title
+- `hook` (string, optional): Updated hook
+- `summary` (string, optional): Updated summary
+- `keywords` (string, optional): Comma-separated keywords
+- `imageUrl` (string, optional): Cover image URL
 
-**Response (201 Created):**
+**Response (200 OK):**
 ```json
 {
-  "session": {
-    "id": "session789",
-    "userId": "user456",
-    "bookId": "book123",
-    "pageId": "page456",
-    "previousPageId": null,
-    "status": "active",
-    "createdAt": "2023-01-01T00:00:00.000Z",
-    "updatedAt": "2023-01-01T00:00:00.000Z"
-  },
   "book": {
     "id": "book123",
-    "title": "The Whispering Halls"
-  }
+    "title": "Updated Title",
+    "hook": "Updated hook text",
+    "summary": "Updated summary",
+    "keywords": ["thriller", "mystery"],
+    "image": "https://ik.imagekit.io/abc123/cover.jpg",
+    "updatedAt": "2023-01-15T12:00:00.000Z"
+  },
+  "imageUploaded": true,
+  "uploadSource": "file",
+  "oldImageQueuedForDeletion": true
 }
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Invalid pageId format
-- `404 Not Found`: Book not found, or book has no pages
+- `400 Bad Request`: Invalid image upload
+- `403 Forbidden`: Not the book author
+- `404 Not Found`: Book not found
+
+---
+
+### DELETE /api/books/:id
+
+Deletes a book and queues its cover image for deletion. Only the book author can delete their own books.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+
+**Response (200 OK):**
+```json
+{
+  "message": "Book deleted successfully",
+  "imageQueuedForDeletion": true
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not the book author
+- `404 Not Found`: Book not found
+
+---
+
+### POST /api/books/async
+
+Creates a new book asynchronously using GitHub Actions workflow. Returns bookId immediately to bypass Vercel's 5-minute timeout. Frontend should poll GET /api/books/:bookId/status for updates.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Credit Consumption:**
+- Requires 5 credits to create a story (configurable via `CREDIT_COSTS.STORY_GENERATION`)
+- Credits are deducted transactionally before book creation
+- Returns 402 Payment Required if insufficient credits
+- Credits are refunded if workflow trigger fails
+
+**Request Body:** Same as `POST /api/books`
+
+**Response (200 OK):**
+```json
+{
+  "bookId": "01912345-6789-1234-5678-123456789012",
+  "message": "Book creation started. Poll /api/books/:bookId/status for updates."
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid theme, missing required fields, theme validation failed
+- `401 Unauthorized`: Authentication required
+- `402 Payment Required`: Insufficient credits
+- `500 Internal Server Error`: Failed to trigger workflow
+
+---
+
+### GET /api/books/:bookId/status
+
+Polls for book creation status when using async book creation. Used by frontend to check progress of GitHub Actions workflow.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `bookId` (string, required): Book ID (UUID v7)
+
+**Response (200 OK) - In Progress:**
+```json
+{
+  "bookId": "01912345-6789-1234-5678-123456789012",
+  "status": "draft",
+  "generationStatus": "in_progress",
+  "generationStep": "generating",
+  "generationStepDescription": "AI generation in progress: generating",
+  "createdAt": "2026-05-12T10:00:00.000Z",
+  "updatedAt": "2026-05-12T10:02:30.000Z",
+  "generationStartedAt": "2026-05-12T10:00:05.000Z",
+  "generationCompletedAt": null
+}
+```
+
+**Response (200 OK) - Complete:**
+```json
+{
+  "bookId": "01912345-6789-1234-5678-123456789012",
+  "status": "active",
+  "generationStatus": "completed",
+  "generationStep": "completed",
+  "generationStepDescription": "Book generation completed",
+  "createdAt": "2026-05-12T10:00:00.000Z",
+  "updatedAt": "2026-05-12T10:05:00.000Z",
+  "generationStartedAt": "2026-05-12T10:00:05.000Z",
+  "generationCompletedAt": "2026-05-12T10:05:00.000Z"
+}
+```
+
+**Response (200 OK) - Failed:**
+```json
+{
+  "bookId": "01912345-6789-1234-5678-123456789012",
+  "status": "draft",
+  "generationStatus": "failed",
+  "generationStep": null,
+  "generationStepDescription": "Book generation failed",
+  "error": "AI generation failed: timeout",
+  "createdAt": "2026-05-12T10:00:00.000Z",
+  "updatedAt": "2026-05-12T10:10:00.000Z"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid book ID format
+- `403 Forbidden`: You can only view status for your own books
+- `404 Not Found`: Book not found
 
 ---
 
@@ -1136,6 +801,167 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
 
 **Error Responses:**
 - `404 Not Found`: Book not found
+
+---
+
+## Book Reading
+
+### GET /api/books/:identifier/:pageId
+
+Retrieves a specific page by book identifier (slug or UUID) and page ID. Supports translation via Accept-Language header. Requires authentication.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Page ID
+
+**Headers:**
+- `Accept-Language` (string, optional): Desired language code (e.g., "en", "es", "fr")
+
+**Response (200 OK):**
+```json
+{
+  "page": {
+    "id": "page456",
+    "page": 5,
+    "text": "The library was silent except for the rain...",
+    "mood": "eerie",
+    "place": "library",
+    "timeOfDay": "night",
+    "charactersPresent": ["Sarah"],
+    "keyEvents": ["found diary"],
+    "importantObjects": ["diary"],
+    "actions": [
+      {
+        "text": "Investigate the noise",
+        "type": "explore",
+        "hint": {
+          "text": "Something waits in the shadows",
+          "type": "dark_discovery"
+        },
+        "destination": {
+          "branchId": "branch123",
+          "pageId": "page789"
+        },
+        "nextPageNumber": 6,
+        "isUserChosen": false
+      }
+    ],
+    "originalActionsCount": 3,
+    "translatedText": "La biblioteca estaba en silencio excepto por la lluvia...",
+    "aiProvider": "gemini",
+    "aiModel": "gemini-2.5-flash",
+    "createdAt": "2023-01-01T00:00:00.000Z"
+  },
+  "book": {
+    "id": "book123",
+    "title": "The Whispering Halls",
+    "totalPages": 120,
+    "language": "en"
+  },
+  "selectedAction": {
+    "text": "Investigate the noise",
+    "type": "explore",
+    "destination": {"branchId": "branch123", "pageId": "page789"}
+  }
+}
+```
+
+**Behavior:**
+- Returns page with actions that have complete destinations (both branchId and pageId)
+- Filters out actions without destinations
+- Includes user's previously chosen action if they've visited this page
+- Supports translation via Accept-Language header (cached for performance)
+- Returns originalActionsCount to show total actions before filtering
+
+**Error Responses:**
+- `404 Not Found`: Book or page not found
+
+---
+
+### GET /api/books/:identifier/:pageId/candidates
+
+Pre-generates candidate pages for all actions on a specific page using Server-Sent Events (SSE). Provides real-time progress updates for each candidate generation.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Page ID
+
+**SSE Events:**
+```
+event: start
+data: {"type":"start","totalActions":3}
+
+event: action_start
+data: {"type":"action_start","actionIndex":0,"actionText":"Investigate the noise"}
+
+event: action_complete
+data: {"type":"action_complete","actionIndex":0,"pageId":"page789"}
+
+event: complete
+data: {"type":"complete","generatedPages":[{"pageId":"page789","actionIndex":0},...]}
+
+event: error
+data: {"type":"error","message":"Generation failed"}
+```
+
+**Response:** SSE stream (text/event-stream)
+
+**Behavior:**
+- Checks if generation is already in progress and resets if stuck (exceeded MAX_GENERATION_DURATION_MS)
+- Generates candidate pages for all actions without existing pageId destinations
+- Polls database for completion status every 2 seconds
+- Sends progress events for each action generation
+- Returns complete event with all generated page IDs
+
+**Error Responses:**
+- `400 Bad Request`: Invalid pageId format
+- `404 Not Found`: Page not found
+
+---
+
+### GET /api/books/:identifier/:pageId/candidates/status
+
+Polls the status of candidate page generation for a specific page. Used by frontend to check if candidate generation is complete.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Page ID
+
+**Response (200 OK):**
+```json
+{
+  "isGenerating": false,
+  "isDone": true,
+  "totalPendingActions": 0,
+  "lastUpdated": "2024-01-01T00:00:10Z"
+}
+```
+
+**Response (200 OK) - In Progress:**
+```json
+{
+  "isGenerating": true,
+  "isDone": false,
+  "totalPendingActions": 2,
+  "lastUpdated": "2024-01-01T00:00:05Z"
+}
+```
+
+**Behavior:**
+- Checks if generation is stuck and resets if needed
+- Returns current generation status
+- Counts total pending actions (actions without pageId destinations)
+- Returns last updated timestamp
+
+**Error Responses:**
+- `400 Bad Request`: Invalid pageId format
+- `404 Not Found`: Page not found
 
 ---
 
@@ -1380,7 +1206,7 @@ Deletes a comment. Only the comment author can delete their own comments.
 
 ### GET /api/books/explore
 
-Retrieves all published books for exploration. Supports both guest and authenticated users. Includes search, tags filtering, sorting, and pagination capabilities. Uses shared filter and query building logic with GET /api/books for consistency.
+Retrieves books for exploration or user's own creations. Supports both authenticated and unauthenticated users. Includes search, filtering, and pagination capabilities.
 
 **Authentication:** Optional (via `optionalAuth`)
 
@@ -1390,10 +1216,9 @@ Retrieves all published books for exploration. Supports both guest and authentic
 - `search` (string, optional): Search query for title, hook, summary, keywords
 - `language` (string, optional): Filter by language code (e.g., "en", "es")
 - `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
-- `fuzzy` (boolean, optional): Enable fuzzy matching for typo tolerance (default: true)
-- `sortBy` (string, optional): **Book-specific sort option** - popular|newest|trending|top-picks|originals (default: newest)
-- `sortOrder` (string, optional): Sort direction for generic fallback sorting (asc|desc, default: desc)
-- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year (default: anytime)
+- `ageRange` (string, optional): Filter by main character age range (format: n-m, e.g. 18-30)
+- `sortBy` (string, optional): Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations
+- `sortOrder` (string, optional): Sort direction (default: desc)`n- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
 
 **Shared Implementation:**
 - Uses same filter building helpers as GET /api/books (buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
@@ -1518,6 +1343,37 @@ data: {"type":"chunk","content":"Story about your best friend disappearing...","
 event: end
 data: {"type":"end","provider":"gemini","model":"gemini-2.5-flash"}
 ```
+
+---
+
+### POST /api/books/workflow-webhook
+
+Internal webhook for GitHub Actions workflow to notify completion/failure of async book creation. Secured by `INTERNAL_SECRET` header.
+
+**Authentication:** Internal (via `x-internal-secret` header)
+
+**Headers:**
+- `x-internal-secret` (string, required): Internal secret for webhook authentication
+
+**Request Body:**
+```json
+{
+  "bookId": "01912345-6789-1234-5678-123456789012",
+  "status": "completed",
+  "error": null,
+  "step": "completed"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "ok": true
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Invalid or missing internal secret
 
 ---
 

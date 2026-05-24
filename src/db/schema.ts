@@ -4,7 +4,7 @@ import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
-import type { SessionEntityType, SessionStatus } from "../types/session.js";
+import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag, ActionTranslation } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
@@ -190,7 +190,6 @@ export const users = pgTable(
     image, // Profile image ImageKit URL
     imageId, // ImageKit file ID for deletion
     tier: text("tier").$type<UserTier>(),
-    isGuest: boolean("is_guest").notNull().default(false), // Distinguishes guest users from authenticated users
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     subscriptionId: uuid("subscription_id"),
     vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),
@@ -203,81 +202,8 @@ export const users = pgTable(
     index("users_gender_idx").on(t.gender),
     // Index for user creation trends
     index("users_created_at_idx").on(t.createdAt),
-    // Index for guest user queries and cleanup
-    index("users_is_guest_idx").on(t.isGuest),
     // Index for VIP expiration queries
     index("users_vip_expires_idx").on(t.vipExpiresAt).where(sql`${t.vipExpiresAt} IS NOT NULL`),
-  ]
-);
-
-/**
- * Create temporary session tracking table
- * @summary Tracks ephemeral sessions before guest user creation
- * Sessions are stored in LRU cache for fast access and in database for persistence.
- * This table serves as a backup and audit trail for session migration.
- * @example
- * {
- *   "session_id": "session123",
- *   "user_id": "user456", // Migrated to guest user (null if not migrated)
- *   "ip_address": "192.168.1.1",
- *   "user_agent": "Mozilla/5.0...",
- *   "first_seen_at": "2023-01-01T00:00:00.000Z",
- *   "last_seen_at": "2023-01-01T01:00:00.000Z",
- *   "migrated_at": "2023-01-01T00:30:00.000Z", // When session was migrated to guest user
- *   "page_views": 5,
- *   "metadata": { "referrer": "https://google.com" }
- * }
- */
-export const temporarySessions = pgTable(
-  "temporary_sessions",
-  {
-    sessionId: uuid("session_id").primaryKey(),
-    userId: uuid("user_id").references(() => users.userId, { onDelete: 'cascade' }), // Migrated to guest user
-    ipAddress: text("ip_address"), // For deduplication and analytics
-    userAgent: text("user_agent"), // For fingerprinting
-    firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).defaultNow().notNull(),
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
-    migratedAt: timestamp("migrated_at", { withTimezone: true }), // When session was migrated to guest user
-    pageViews: integer("page_views").notNull().default(0), // Track engagement
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`), // Flexible metadata
-  },
-  (t) => [
-    index("temporary_sessions_ip_idx").on(t.ipAddress),
-    index("temporary_sessions_last_seen_idx").on(t.lastSeenAt),
-    index("temporary_sessions_user_id_idx").on(t.userId), // For migration queries
-  ]
-);
-
-/**
- * Create session data association table
- * @summary Associates temporary data with sessions or guest users
- * Enables seamless migration from temporary sessions to guest users.
- * @example
- * {
- *   "id": "assoc123",
- *   "entity_type": "book",
- *   "entity_id": "book456",
- *   "session_id": "session789", // Temporary session ID (before migration)
- *   "user_id": "user456", // Guest user ID (after migration)
- *   "created_at": "2023-01-01T00:00:00.000Z",
- *   "migrated_at": "2023-01-01T00:30:00.000Z"
- * }
- */
-export const sessionDataAssociations = pgTable(
-  "session_data_associations",
-  {
-    id: id(),
-    entityType: text("entity_type").$type<SessionEntityType>().notNull(), // 'book', 'user_session', 'user_page_progress', etc.
-    entityId: uuid("entity_id").notNull(), // The actual entity ID (UUID)
-    sessionId: uuid("session_id").references(() => temporarySessions.sessionId, { onDelete: 'cascade' }), // Temporary session ID (before migration)
-    userId: uuid("user_id").references(() => users.userId, { onDelete: 'cascade' }), // Guest user ID (after migration)
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    migratedAt: timestamp("migrated_at", { withTimezone: true }), // When data was migrated to user
-  },
-  (t) => [
-    index("session_data_associations_session_idx").on(t.sessionId),
-    index("session_data_associations_user_idx").on(t.userId),
-    index("session_data_associations_entity_idx").on(t.entityType, t.entityId),
   ]
 );
 

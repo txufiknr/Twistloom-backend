@@ -9,11 +9,11 @@
  * - Optimized subqueries for book/read/like/favorite counts
  * - Reusable select builder for consistency across routes
  * - Performance considerations with indexed columns
- * - OAuth user creation and guest data migration
+ * - OAuth user creation
  */
 
-import { users, userSessions, userPageProgress, userAuth, userActivityLogs } from '../db/schema.js';
-import { sql, eq, and } from 'drizzle-orm';
+import { users, userAuth } from '../db/schema.js';
+import { sql, eq } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
 
@@ -53,7 +53,6 @@ export function getEnrichedUserSelect() {
     gender: users.gender,
     image: users.image,
     credits: users.credits,
-    isGuest: users.isGuest,
     lastActive: users.lastActive,
     createdAt: users.createdAt,
     updatedAt: users.updatedAt,
@@ -154,7 +153,6 @@ export async function createOrUpdateOAuthUser(
       email,
       name: name || null,
       image: image || null,
-      isGuest: false,
       isNewUser: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -171,75 +169,4 @@ export async function createOrUpdateOAuthUser(
 
   console.log(`[user-controller] ✅ Created new OAuth user: ${newUser[0].userId}`);
   return newUser[0].userId;
-}
-
-// ---------------------------------------------------------------------------
-// Guest Data Migration
-// ---------------------------------------------------------------------------
-
-/**
- * Migrates data from a guest user to an authenticated user
- * 
- * Transfers all sessions, page progress, and activity logs from guest to authenticated user,
- * then deletes the guest user from the database. This is called when a guest user
- * logs in via OAuth or email/password.
- * 
- * This is the FINAL migration step in the lazy guest creation flow:
- * Step 1: Temporary Session → Guest User (session-data-association.ts)
- * Step 2: Guest User → Authenticated User (this function)
- * 
- * This ensures no orphaned data remains in the database and no data is lost during migration.
- * All foreign key relationships are properly handled before deleting the guest user.
- * 
- * @param guestId - The guest user ID to migrate from
- * @param authenticatedUserId - The authenticated user ID to migrate to
- * 
- * @example
- * ```typescript
- * // Migrate guest data after Google login
- * await migrateGuestToAuthUser('guest-uuid-123', 'auth-user-uuid-456');
- * ```
- */
-export async function migrateGuestToAuthUser(
-  guestId: string,
-  authenticatedUserId: string
-): Promise<void> {
-  // Verify guest user exists before migration
-  const guestUser = await dbRead
-    .select({ userId: users.userId })
-    .from(users)
-    .where(and(eq(users.userId, guestId), eq(users.isGuest, true)))
-    .limit(1);
-
-  if (!guestUser.length) {
-    console.warn(`[user-controller] ⚠️ Guest user ${guestId} not found, skipping migration`);
-    return;
-  }
-
-  console.log(`[user-controller] 🔄 Migrating guest ${guestId} to user ${authenticatedUserId}`);
-
-  // Migrate all user data from guest to authenticated user
-  // Order matters: migrate dependent data before deleting the user
-  // Tables that guests can have data in:
-  // - userSessions (guests can have reading sessions)
-  // - userPageProgress (guests can have page progress)
-  // - userActivityLogs (guests can have activity logs)
-  await dbWrite.update(userSessions).set({ userId: authenticatedUserId }).where(eq(userSessions.userId, guestId));
-  await dbWrite.update(userPageProgress).set({ userId: authenticatedUserId }).where(eq(userPageProgress.userId, guestId));
-  await dbWrite.update(userActivityLogs).set({ userId: authenticatedUserId }).where(eq(userActivityLogs.userId, guestId));
-
-  // Delete guest user from database
-  // This is safe now because all dependent data has been migrated
-  // Tables that guests don't have data in (disabled for guests):
-  // - userAuth (only for authenticated users)
-  // - userLikes (disabled for guests)
-  // - userFavorites (disabled for guests)
-  // - userComments (disabled for guests)
-  // - userFollows (disabled for guests)
-  // - transactions (guests can't make payments)
-  // - userNotifications (disabled for guests)
-  // - user_checkins (disabled for guests)
-  await dbWrite.delete(users).where(eq(users.userId, guestId));
-
-  console.log(`[user-controller] ✅ Migration complete: guest ${guestId} deleted`);
 }

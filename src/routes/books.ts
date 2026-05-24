@@ -17,7 +17,6 @@
  * - POST /api/books - Create new psychological thriller books (requires auth + credits)
  * - POST /api/books/stream - Create new psychological thriller books with streaming (requires auth + credits)
  * - GET /api/books - Retrieve user's book library (requires auth)
- * - GET /api/books/recent - Retrieve user's recent books for "Continue reading" section (requires auth)
  * - GET /api/books/explore - Explore published books with search and pagination (optional auth)
  * - PUT /api/books/:id - Update book information and cover image (requires auth)
  * - GET /api/books/:identifier - Retrieve specific book by slug or id
@@ -44,7 +43,6 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { guestOrAuthMiddleware } from "../middleware/guest.js";
 import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
@@ -55,7 +53,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, getUserRecentBooks } from "../services/book.js";
+import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
@@ -181,10 +179,7 @@ async function validateAndRetrievePageForGeneration(
  * Accepts theme and main character candidate, initializes story with AI.
  * Returns complete book information with first page and initial state.
  *
- * **Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
- * - Guest users can create books without signup
- * - Guest-created books are associated with a temporary guest user ID
- * - When guest signs up, all their books migrate to their authenticated account via `migrateGuestData()`
+ * **Authentication:** Required (via `requireAuth`)
  *
  * @param theme - Story theme (e.g., "abandoned asylum", "haunted mansion") - Required
  * @param mcCandidate.name - Character's display name - Optional
@@ -348,10 +343,7 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
  * Creates a new psychological thriller book with AI-generated content using SSE.
  * Provides real-time progress updates for each step in the book creation process.
  *
- * **Authentication:** Guest or Authenticated (via `guestOrAuthMiddleware`)
- * - Guest users can create books without signup
- * - Guest-created books are associated with a temporary guest user ID
- * - When guest signs up, all their books migrate to their authenticated account via `migrateGuestData()`
+ * **Authentication:** Required (via `requireAuth`)
  *
  * Accepts theme and main character candidate in request body.
  * Emits SSE events for theme validation, book initialization, AI generation,
@@ -893,209 +885,6 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
- * GET /api/books
- * 
- * Retrieves all books for the authenticated user.
- * Returns paginated list with metadata and reading progress.
- * Supports search, language filtering, sorting, and time-based filtering.
- * 
- * **Enhanced Search Features:**
-* Searches across title, hook, summary, and keywords
-* Language filter (ISO 639-1 codes: en, es, fr, etc.)
-* Tags filter (comma-separated, OR logic)
-* Relevance scoring for search results (title: 40%, hook: 25%, summary: 20%, keywords: 15%)
-* Time-based filtering by last update date
-* **Two-level sorting hierarchy:**
-  * **Primary:** Book-specific sorting (popular, trending, top-picks, originals, newest)
-  * **Secondary:** Relevance scoring (when searching) or generic column sorting
- * 
- * @query page - Page number for pagination (default: 1)
- * @query limit - Number of books per page (default: 10)
- * @query search - Search query for title, hook, summary, keywords
- * @query language - Filter by language code (e.g., "en", "es")
- * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
- * @query sortBy - Field to sort by (default: updatedAt)
- * @query sortOrder - Sort direction (default: desc)
- * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
- * @returns Paginated list of user's books with progress
- * 
- * @todo
- * - do we need to migrate offset pagination into cursor pagination to support post-query sorting?
- * - follow `BOOK_SEARCH_ENHANCEMENT_ROADMAP.md` roadmap docs
- * 
- * @example
- * // Search for thriller books
- * GET /api/books?search=thriller
- * 
- * // Filter by English language
- * GET /api/books?language=en
- * 
- * // Filter by books updated this week
- * GET /api/books?lastUpdated=this-week
- * 
- * // Filter by tags
- * GET /api/books?tags=thriller,mystery
- * 
- * // Combined search with all filters
- * GET /api/books?search=mystery&language=en&lastUpdated=this-month&tags=thriller
- */
-router.get("/", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags } = extractPaginationParams(req);
-    const userId = req.userId!;
-    
-    // Extract tags from query parameter (comma-separated)
-    const tagsParam = tags as string;
-    const tagsArray = tagsParam ? tagsParam.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0) : [];
-    
-    // Validate search query if provided
-    let sanitizedSearch: string | undefined;
-    if (search) {
-      const validation = validateSearchQuery(search);
-      if (!validation.isValid) {
-        return res.status(400).json({
-          error: validation.error
-        });
-      }
-      sanitizedSearch = validation.sanitized;
-    }
-
-    // Validate language code if provided
-    if (language) {
-      const langValidation = validateLanguageCode(language);
-      if (!langValidation.isValid) {
-        return res.status(400).json({
-          error: langValidation.error
-        });
-      }
-    }
-
-    // Validate lastUpdated filter if provided
-    if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
-      return res.status(400).json({
-        error: `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`
-      });
-    }
-    
-    // Validate and normalize sortBy parameter
-    const bookSortBy: BookSortOption = isValidBookSortOption(sortBy || '')
-      ? (sortBy as BookSortOption)
-      : 'newest';
-
-    // Skip caching for search queries (dynamic)
-    const shouldCache = !search && !language && !lastUpdated && tagsArray.length === 0;
-    const cacheKey = lastUpdated
-      ? `books:user:${userId}:page:${page}:lastUpdated:${lastUpdated}`
-      : CACHE_KEYS.USER_BOOKS(userId, page);
-
-    // Fetch function for cache
-    const fetchBooks = async () => {
-      // Build base query with enriched fields (lastReadAt and lastPage are now included in getEnrichedBookSelect)
-      const baseQuery = dbRead
-        .select(getEnrichedBookSelect(userId, req.headerLanguage))
-        .from(books)
-        .leftJoin(users, eq(books.userId, users.userId));
-
-      // Build comprehensive query using shared helper
-      const { query, countQuery } = buildBookQuery<typeof baseQuery>({
-        baseQuery,
-        baseCondition: eq(books.userId, userId),
-        search: sanitizedSearch,
-        bookSortBy, // Primary: book-specific sorting
-        genericSortBy: sortBy, // Secondary: generic fallback (when no search)
-        sortOrder,
-        tags: tagsArray,
-        language,
-        lastUpdated
-      });
-
-      const countResult = await countQuery;
-      const totalCount = typeof countResult[0]?.count === 'number' ? countResult[0]?.count : 0;
-
-      // Apply pagination
-      const offset = (page - 1) * limit;
-      const userBooks: EnrichedBookData[] = await query.limit(limit).offset(offset);
-      const pagination = calculatePaginationMeta(page, limit, totalCount);
-
-      return createPaginatedResponse(userBooks, pagination, 'books');
-    };
-    
-    // Use cache if applicable, otherwise fetch directly
-    const result = shouldCache
-      ? await withCache(cacheKey, fetchBooks, CACHE_TTL.PER_USER_BOOKS)
-      : await fetchBooks();
-    
-    res.json(result);
-  } catch (error) {
-    handleApiError(res, "Failed to retrieve books", error);
-  }
-});
-
-/**
- * GET /api/books/recent
- * 
- * @deprecated Use GET /api/books/explore?sortBy=reads instead
- * 
- * Retrieves user's recent books for "Continue reading" section.
- * Returns books with reading progress status (in_progress or completed).
- * Supports pagination for large reading histories.
- * 
- * @query page - Page number for pagination (default: 1)
- * @query limit - Number of books per page (default: 10)
- * @returns Paginated array of recent books with reading status
- * 
- * @example
- * GET /api/books/recent?page=1&limit=5
- * 
- * Response (200):
- * {
- *   "data": [
- *     {
- *       "bookId": "book456",
- *       "title": "The Haunting",
- *       "hook": "A mysterious ghost haunts an old mansion...",
- *       "summary": "A psychological thriller about...",
- *       "image": "https://example.com/cover.jpg",
- *       "totalPages": 50,
- *       "currentPage": 25,
- *       "currentPageId": "page789",
- *       "sessionUpdatedAt": "2023-01-01T00:00:00.000Z",
- *       "bookUpdatedAt": "2023-01-01T00:00:00.000Z",
- *       "mc": { "name": "Sarah", "age": 28, "gender": "female" },
- *       "keywords": ["thriller", "mystery"],
- *       "status": "active",
- *       "readingStatus": "in_progress"
- *     }
- *   ],
- *   "pagination": {
- *     "currentPage": 1,
- *     "itemsPerPage": 5,
- *     "totalItems": 15,
- *     "totalPages": 3,
- *     "hasNext": true,
- *     "hasPrev": false
- *   }
- * }
- */
-router.get("/recent", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
-    const userId = req.userId!;
-    const offset = (page - 1) * limit;
-
-    const { books: recentBooks, totalCount } = await getUserRecentBooks(userId, limit, offset);
-    const pagination = calculatePaginationMeta(page, limit, totalCount);
-
-    // Add deprecation warning header
-    res.set('X-Deprecation', 'Use GET /api/books/explore?sortBy=reads instead');
-
-    res.json(createPaginatedResponse(recentBooks, pagination, 'books'));
-  } catch (error) {
-    handleApiError(res, "Failed to retrieve recent books", error);
-  }
-});
-
-/**
  * PUT /api/books/:id
  * 
  * Updates book information including title, hook, summary, keywords, and cover image.
@@ -1311,8 +1100,8 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
 /**
  * GET /api/books/explore
  * 
- * Retrieves all published books for exploration.
- * Supports both guest and authenticated users.
+ * Retrieves books for exploration or user's own creations.
+ * Supports both authenticated and unauthenticated users.
  * Includes search, filtering, and pagination capabilities.
  * 
  * @query page - Page number for pagination (default: 1)
@@ -1320,16 +1109,18 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @query search - Search query for title, hook, summary, keywords
  * @query language - Filter by language code (e.g., "en", "es")
  * @query tags - Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
- * @query sortBy - Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations
+ * @query sortBy - Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations
  * @query sortOrder - Sort direction (default: desc)
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
  * @query gender - Filter by main character gender (male/female)
- * @returns Paginated list of published books
+ * @returns Paginated list of books
  * 
  * @remarks
+ * - creations: Shows user's own created books (requires authentication)
  * - reads: Shows books the user has read, sorted by lastReadAt (requires authentication)
  * - recommendations: Recommends books based on user likes (requires authentication)
+ * - All other options: Show published books (optional authentication)
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
@@ -1392,10 +1183,25 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       ? (sortBy as BookSortOption)
       : 'newest';
 
-    // Cache page 1 without search, tags, language, ageRange, gender, and time filters
-    // Note: reads and recommendations are user-specific and should not be cached
-    const shouldCache = page === 1 && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'recommendations';
-    const cacheKey = bookSortBy === 'trending' ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING : CACHE_KEYS.EXPLORE_PAGE_1;
+    // Check if authentication is required for this sort option
+    const requiresAuth = bookSortBy === 'creations' || bookSortBy === 'reads' || bookSortBy === 'recommendations';
+    if (requiresAuth && !userId) {
+      return res.status(401).json({ error: 'Authentication required for this sort option' });
+    }
+
+    // Determine base condition based on sort option
+    const isCreations = bookSortBy === 'creations';
+    const baseCondition = isCreations
+      ? eq(books.userId, userId!) // User's own books (userId is guaranteed to be non-null when isCreations is true)
+      : eq(books.status, 'active'); // Published books
+
+    // Cache strategy: don't cache user-specific queries
+    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'recommendations';
+    const cacheKey = isCreations
+      ? `books:creations:${userId}:page:${page}`
+      : bookSortBy === 'trending'
+      ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING
+      : CACHE_KEYS.EXPLORE_PAGE_1;
     const cacheTTL = bookSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
 
     // Fetch function for cache
@@ -1409,7 +1215,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       // Build comprehensive query using shared helper
       const { query, countQuery } = buildBookQuery<typeof baseQuery>({
         baseQuery,
-        baseCondition: eq(books.status, 'active'),
+        baseCondition,
         search: sanitizedSearch,
         bookSortBy, // Primary: book-specific sorting
         genericSortBy: sortBy, // Secondary: generic fallback (when no search)
@@ -1562,9 +1368,9 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
  * 
  * Retrieves public book statistics.
  * Returns aggregate statistics about all books in the platform.
- * Accessible to both authenticated and guest users.
+ * Accessible to both authenticated and unauthenticated users.
  * 
- * @returns Object containing storiesCreated, branchesExplored, and pagesCrafted
+ * @returns Object containing storiesCreated, branchesExplored, pagesCrafted, and shadowsWeaved
  * 
  * @example
  * GET /api/books/stats
@@ -1573,7 +1379,8 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
  * {
  *   "storiesCreated": 1234,
  *   "branchesExplored": 5678,
- *   "pagesCrafted": 9012
+ *   "pagesCrafted": 9012,
+ *   "shadowsWeaved": 345
  * }
  */
 router.get("/stats", optionalAuth, async (req: Request, res: Response) => {
@@ -2401,7 +2208,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
  * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
  * @returns Page with actions and book metadata
  */
-router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Response) => {
   try {
     const { headerLanguage } = req;
     const { identifier, pageId } = req.params;
@@ -2464,7 +2271,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
  * This ensures that when users select actions, the corresponding destination pages
  * are immediately available without waiting for AI generation.
  * 
- * **Authentication:** Guest or authenticated (via `guestOrAuthMiddleware`)
+ * **Authentication:** Required (via `requireAuth`)
  * 
  * **Response Format:** Always uses Server-Sent Events (SSE)
  * 
@@ -2493,7 +2300,7 @@ router.get("/:identifier/:pageId", guestOrAuthMiddleware, async (req: Request, r
  * event: complete
  * data: {"id": "page456", "page": 5, "text": "...", "actions": [...]}
  */
-router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, res: Response) => {
   try {
     const { identifier, pageId } = req.params;
     const userId = req.userId!;
@@ -2588,7 +2395,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
  * Returns current generation status without SSE overhead.
  * Designed for short-lived polling requests (no timeout risk).
  * 
- * **Authentication:** Required (via `guestOrAuthMiddleware`)
+ * **Authentication:** Required (via `requireAuth`)
  * 
  * Response:
  * {
@@ -2617,7 +2424,7 @@ router.get("/:identifier/:pageId/candidates", guestOrAuthMiddleware, async (req:
  *   "lastUpdated": "2024-01-01T00:00:10Z"
  * }
  */
-router.get("/:identifier/:pageId/candidates/status", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates/status", requireAuth, async (req: Request, res: Response) => {
   try {
     const { identifier, pageId } = req.params;
     const userId = req.userId!;

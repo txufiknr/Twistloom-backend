@@ -8,39 +8,14 @@
  * - Uses @auth/express's getSession() to verify Auth.js session cookies
  * - Automatically handles Auth.js v5's proprietary JWE encryption
  * - Provides both required and optional auth middleware
- * - Compatible with guest user flow
  * 
- * Summary
- * Implemented Option 1 (Next.js Rewrites) to solve the 401 authentication issue:
+ * Implemented Next.js Rewrites to solve the 401 authentication issue:
+ * With the rewrites, the browser sees requests going to twistloom-web.vercel.app/api/backend/...
+ * instead of twistloom-backend.vercel.app/api/..., so it sends the NextAuth cookies automatically.
+ * The backend receives the cookies and verifies them using the same AUTH_SECRET as NextAuth via @auth/express.
  * 
- * Changes Made:
- * Frontend (next.config.ts):
- * - Added Next.js rewrites to proxy backend API requests through /api/backend/:path*
- * - Requests to /api/backend/payments/create-checkout-session will be rewritten to https://twistloom-backend.vercel.app/api/payments/create-checkout-session
- * - This makes the browser send NextAuth cookies automatically since requests appear to stay on the same domain
- * 
- * Backend (nextauth.ts):
- * - Switched from jose to @auth/express for session verification
- * - Updated verifyNextAuthToken to use @auth/express's getSession function
- * - Removed manual JWT decryption/verification logic (now handled by @auth/express)
- * - Removed jose dependency
- * 
- * Why @auth/express instead of jose:
- * Auth.js tokens use JWE (JSON Web Encryption) with proprietary encryption structure.
- * @auth/express abstracts away HKDF key derivation, decryption algorithms, and cookie parsing.
- * It's the official and recommended way to verify Auth.js sessions in Express backends.
- * 
- * Next Steps:
- * 1. Update frontend API calls - Change your frontend fetch calls from:
- * fetch('https://twistloom-backend.vercel.app/api/payments/create-checkout-session', ...)
- * To:
- * fetch('/api/backend/payments/create-checkout-session', ...)
- * 
- * 2. Set environment variable (optional) - Add NEXT_PUBLIC_BACKEND_URL to your frontend .env if you want to override the default backend URL
- * 3. Test the authentication - Try accessing the protected endpoint after signing in with Google. The NextAuth cookies should now be sent automatically.
- * 
- * Why This Works:
- * With the rewrites, the browser sees requests going to twistloom-web.vercel.app/api/backend/... instead of twistloom-backend.vercel.app/api/..., so it sends the NextAuth cookies automatically. The backend receives the cookies and verifies them using the same AUTH_SECRET as NextAuth via @auth/express.
+ * Note: Guest user functionality has been completely removed.
+ * The system now only supports authenticated or unauthenticated users.
  */
 
 import type { Request, Response, NextFunction } from 'express';
@@ -51,7 +26,7 @@ import { dbRead } from '../db/client.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
-import { createOrUpdateOAuthUser, migrateGuestToAuthUser } from '../services/user-controller.js';
+import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 
 /**
  * LRU cache for email -> userId mappings
@@ -86,7 +61,6 @@ const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
  * - AUTH_SECRET must be shared between Next.js frontend and Express backend
  * - No need for manual cookie parsing or JWT decryption - @auth/express handles it
  * - Auto-creates users for first-time OAuth login (Google)
- * - Migrates guest data to authenticated user on login
  * 
  * @param req - Express request object
  * @returns User data if token is valid, null otherwise
@@ -177,16 +151,6 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
           userIdCache.delete(email);
         }
 
-        // Migrate guest data if guest cookie exists (async, non-blocking)
-        const guestCookie = req.cookies?.['twistloom_guest_id'];
-        if (guestCookie && guestCookie !== userId) {
-          console.log('[verifyNextAuthToken] 🔄 Migrating guest data:', guestCookie, '->', userId);
-          migrateGuestToAuthUser(guestCookie, userId)
-            .catch((error) => {
-              console.error('[verifyNextAuthToken] ❌ Failed to migrate guest data:', error);
-            });
-        }
-
         return {
           id: userId,
           email,
@@ -241,7 +205,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 /**
  * Middleware to optionally verify NextAuth authentication
  * Attaches user data to req.user if token is valid, but allows request to proceed
- * Useful for endpoints that work for both authenticated and guest users
+ * Useful for endpoints that work for both authenticated and unauthenticated users
  * 
  * @param req - Express request object
  * @param res - Express response object
@@ -253,7 +217,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
  *   if (req.user) {
  *     res.json({ message: `Hello ${req.user.name}` });
  *   } else {
- *     res.json({ message: 'Hello guest' });
+ *     res.json({ message: 'Hello anonymous user' });
  *   }
  * });
  * ```

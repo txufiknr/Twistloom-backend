@@ -33,6 +33,7 @@ The Users API provides endpoints for managing user profiles, social interactions
    - [Add Book to Favorites](#post-userfavorites)
    - [Remove Book from Favorites](#delete-userfavorites)
    - [Get User Favorites](#get-userfavorites)
+   - [Get User Collections](#get-usercollections)
 5. [Comments](#comments)
    - [Create Comment](#post-usercomments)
    - [Update Comment](#put-usercommentscommentid)
@@ -603,6 +604,34 @@ Get all favorite books for the authenticated user.
   ]
 }
 ```
+
+---
+
+### GET /user/collections
+
+Get all collection names for the authenticated user's favorite books. Returns distinct collection names from user favorites.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (200 OK):**
+```json
+{
+  "collections": [
+    "To Read Later",
+    "Favorites",
+    "Psychological Thrillers"
+  ]
+}
+```
+
+**Behavior:**
+- Returns distinct collection names from user_favorites table
+- Filters out null collection values
+- Sorted alphabetically by collection name
 
 ---
 

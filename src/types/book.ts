@@ -219,6 +219,7 @@ export const bookSortOptions = [
   'originals',
   'reads', // Continue reading
   'recommendations', // You might like
+  'creations', // User's created books
 ] as const;
 
 export type BookSortOption = typeof bookSortOptions[number];
@@ -287,3 +288,15 @@ export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' |
 export type PageTranslationWithID = PageTranslation & { pageId: string };
 export type PageTranslationBulk = { translations: PageTranslationWithID[] };
 export type PageTranslationBulkResponse = PageTranslationBulk & Pick<AIResponse<PageTranslationBulk>, 'provider' | 'model'>;
+
+
+/**
+ * Public statistics about the platform, with a creative thriller-themed twist
+ */
+export type PublicStats = {
+  storiesCreated: number;
+  branchesExplored: number;
+  pagesCrafted: number;
+  /** The number of shadows that have joined the platform, each with their own tale to spin */
+  shadowsWeaved: number;
+};

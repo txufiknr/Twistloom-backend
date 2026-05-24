@@ -31,8 +31,7 @@ import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from 
 import { handleApiError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
-import { createOrUpdateOAuthUser, migrateGuestToAuthUser } from '../services/user-controller.js';
-import { resolveGuestId } from '../middleware/guest.js';
+import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 
 const router = Router();
 
@@ -161,8 +160,6 @@ router.post('/verify-credentials', async (req, res) => {
     await resetFailedLoginAttempts(userData.userId);
 
     // Return user data for NextAuth (exclude passwordHash)
-    // Note: Guest data migration is handled automatically by verifyNextAuthToken
-    // on subsequent requests after NextAuth creates the session
     res.json({
       userId: userData.userId,
       email: userData.email,
@@ -643,7 +640,7 @@ router.post('/logout', async (req, res) => {
  *
  * This endpoint is used by the NextAuth Credentials provider for Google One Tap authentication.
  * The frontend sends a Google ID token, which the backend verifies and uses to create or update
- * the user account. Guest data migration is automatically handled if a guest cookie exists.
+ * the user account.
  *
  * Request Body:
  * {
@@ -667,13 +664,7 @@ router.post('/logout', async (req, res) => {
  * - Verifies Google ID token signature and audience
  * - Extracts user info from verified token payload
  * - Creates user_auth record for new users
- * - Migrates guest data if guest cookie exists
  * - Rate limited to prevent abuse
- *
- * Guest Migration:
- * If a guest cookie exists, the endpoint automatically migrates all guest data
- * (sessions, page progress, activity logs) to the authenticated user before
- * deleting the guest user account.
  *
  * @example
  * // NextAuth Credentials provider usage
@@ -727,16 +718,6 @@ router.post('/google-one-tap', async (req, res) => {
 
     // Create or update user from OAuth data
     const userId = await createOrUpdateOAuthUser(email, name, image);
-
-    // Handle guest data migration if guest cookie exists
-    const guestCookie = req.cookies?.[process.env.GUEST_COOKIE_NAME || 'twistloom_guest_id'];
-    const guestId = await resolveGuestId(guestCookie);
-
-    if (guestId && guestId !== userId) {
-      // Migrate guest data to authenticated user
-      await migrateGuestToAuthUser(guestId, userId);
-      console.log(`[google-one-tap] 🔄 Migrated guest ${guestId} to user ${userId}`);
-    }
 
     // Fetch user data for NextAuth session
     const user = await dbRead

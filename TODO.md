@@ -5,12 +5,10 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] AI_MAX_PROMPT_LENGTH belum dipake
+[ ] db reset total
 
 [ ] API routes:
-- GET /api/backend/user/checkin/status implement 304 (etag & last modified)
 - GET page gausah update userpageprogress/visit count kalau last selected actionnya sama
-- GET https://localhost:3002/api/backend/user/books?page=1&limit=48 404 (Not Found)
-- GET https://localhost:3002/api/backend/user/activities?page=1&limit=50 404 (Not Found)
 
 [ ] enhance book explore:
 - fuzzy search/Levenshtein (typo) // does postgresql has this built-in?

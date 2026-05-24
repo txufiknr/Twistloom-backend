@@ -56,7 +56,7 @@ import { getEnrichedUserSelect } from "../services/user-controller.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 import { imageUpload, uploadUserProfile } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
-import { guestOrAuthMiddleware } from "../middleware/guest.js";
+import { optionalAuth } from "../middleware/nextauth.js";
 
 const router = Router();
 
@@ -108,19 +108,16 @@ const router = Router();
  *   }
  * }
  */
-router.get("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
+router.get("/", optionalAuth, async (req: Request, res: Response) => {
   try {
-    // Check if this is a temporary session (lazy guest creation)
-    const isTempSession = req.guestAuth?.isTempSession || !!req.tempSessionId;
+    const userId = req.userId;
     
-    if (isTempSession) {
-      // Temporary session - return null user profile (not logged in state)
-      // This allows frontend to handle the "not logged in" state gracefully
+    // If no userId (unauthenticated), return null user profile
+    if (!userId) {
       res.set('Cache-Control', 'private, max-age=60, stale-while-revalidate=30');
       return res.json({ user: null });
     }
-
-    const userId = req.userId!;
+    
     const cacheKey = CACHE_KEYS.USER_PROFILE(userId);
     
     // Fetch function for cache
@@ -146,7 +143,6 @@ router.get("/", guestOrAuthMiddleware, async (req: Request, res: Response) => {
         bio: userData.bio,
         image: userData.image,
         credits: userData.credits,
-        isGuest: userData.isGuest,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {
@@ -273,7 +269,6 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         name: userData.name,
         bio: userData.bio,
         image: userData.image,
-        isGuest: userData.isGuest,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {
@@ -631,9 +626,9 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
 
     // Delete user - cascade delete will handle all related tables automatically
     // Tables with cascade delete on userId:
-    // - userAuth, temporarySessions, sessionDataAssociations, userPageProgress
+    // - userAuth, userPageProgress
     // - userFollows, userCompletedBooks, userActivityLogs, transactions
-    // - userNotifications, user_checkins, userLikes, userFavorites, userComments, userSessions
+    // - userNotifications, userCheckins, userLikes, userFavorites, userComments, userSessions
     await dbWrite
       .delete(users)
       .where(eq(users.userId, userId))
@@ -2135,9 +2130,22 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
  *   ]
  * }
  */
-router.get("/checkin/status", requireAuth, async (req: Request, res: Response) => {
+router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.userId!;
+    const userId = req.userId;
+    
+    // Return null response for unauthenticated users (handles auth timing race conditions)
+    if (!userId) {
+      return res.json({
+        eligible: false,
+        lastCheckIn: null,
+        streak: 0,
+        totalCheckIns: 0,
+        creditsClaimed: 0,
+        recentCheckIns: [],
+      });
+    }
+    
     const status = await getCheckInStatus(userId);
     res.json(status);
 

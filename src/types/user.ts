@@ -46,7 +46,6 @@ export interface User {
   image?: string | null;
   stats?: UserStats;
   tier?: UserTier;
-  isGuest?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
