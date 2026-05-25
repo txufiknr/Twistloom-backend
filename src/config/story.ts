@@ -74,30 +74,6 @@ export const MAX_PLACE_MOOD_HISTORY = 5;
  */
 export const MAX_PLACE_EVENTS = 8;
 
-// /**
-//  * Maximum number of known characters to store per place
-//  * 
-//  * This maintains a manageable list of characters encountered
-//  * at each location for narrative consistency.
-//  */
-// export const MAX_KNOWN_CHARACTERS = 5;
-
-// /**
-//  * Maximum number of active places to maintain in memory
-//  * 
-//  * This prevents memory bloat by limiting the number of places
-//  * tracked simultaneously, archiving least relevant ones.
-//  */
-// export const MAX_ACTIVE_PLACES = 10;
-
-// /**
-//  * Maximum number of relevant places to show in AI context
-//  * 
-//  * This limits the number of places provided to the AI to prevent
-//  * overwhelming it with too much context while maintaining variety.
-//  */
-// export const MAX_RELEVANT_PLACES = 8;
-
 /**
  * Maximum number of character-place relations per character
  * 
@@ -121,7 +97,7 @@ export const MAX_ACTION_HISTORY = 5;
  * These constants control the strategic retention of story states
  * for optimal performance and storage efficiency in the delta/snapshot system.
  */
-export const SNAPSHOT_INTERVAL = 10; // Every 10 pages
+export const SNAPSHOT_INTERVAL = 10; // Keep snapshot every 10 pages
 export const MIN_PAGES_FOR_MIDDLE = 20; // Only keep middle if book is substantial
 
 // ============================================================================

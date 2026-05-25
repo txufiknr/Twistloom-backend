@@ -22,7 +22,7 @@
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { requireAuth } from "../middleware/nextauth.js";
-import { handleApiError } from "../utils/error.js";
+import { handleApiError, handleValidationError } from "../utils/error.js";
 // import { getUserBookSnapshots, getLatestMajorCheckpoint, deleteAllSnapshots, getSnapshotStatistics } from "../services/snapshots.bak.js";
 import { reconstructStoryState } from "../utils/branch-traversal.js";
 import { getBookFromDB, getPageFromDB } from "../services/book.js";
@@ -104,9 +104,7 @@ router.get("/books/:bookId/reconstruction/:pageId", requireAuth, async (req: Req
     const { bookId, pageId } = req.params;
 
     if (!bookId || !pageId) {
-      return res.status(400).json({ 
-        error: "Missing required fields: bookId and pageId are required" 
-      });
+      return handleValidationError(res, "Missing required fields: bookId and pageId are required");
     }
 
     // Ensure params are strings (Express params can be string arrays)

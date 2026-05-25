@@ -46,7 +46,7 @@ import { requireAuth } from "../middleware/nextauth.js";
 import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType, UserActivityType } from "../types/user.js";
-import { getErrorMessage, handleApiError, handleNotFoundError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity } from "../services/user.js";
@@ -1162,9 +1162,12 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
  *   ]
  * }
  */
-router.get("/collections", requireAuth, async (req: Request, res: Response) => {
+router.get("/collections", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.userId!;
+    const userId = req.userId;
+
+    // Return empty response for unauthenticated users (handles auth timing race conditions)
+    if (!userId) return res.json({ collections: [] });
 
     // Get distinct collection names for the user
     const collections = await dbRead
@@ -1238,18 +1241,10 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
     const userId = req.userId!;
     const { bookId, parentCommentId, content } = req.body;
 
-    if (!bookId) {
-      return res.status(400).json({
-        success: false,
-        error: "Book ID is required",
-      });
-    }
+    if (!bookId) return handleValidationError(res, "Book ID is required");
 
     if (!content || content.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Comment content is required",
-      });
+      return handleValidationError(res, "Comment content is required");
     }
 
     // Prepare comment data
@@ -1340,10 +1335,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
     const { content } = req.body;
 
     if (!content || content.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Comment content is required",
-      });
+      return handleValidationError(res, "Comment content is required");
     }
 
     // Check if comment exists and belongs to user
@@ -1358,10 +1350,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
     }
 
     if (existingComment[0].userId !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: "You can only edit your own comments",
-      });
+      return handleForbiddenError(res, "You can only edit your own comments");
     }
 
     // Update comment
@@ -1429,10 +1418,7 @@ router.delete("/comments/:commentId", requireAuth, async (req: Request, res: Res
     }
 
     if (existingComment[0].userId !== userId) {
-      return res.status(403).json({
-        success: false,
-        error: "You can only delete your own comments",
-      });
+      return handleForbiddenError(res, "You can only delete your own comments");
     }
 
     // Delete comment
@@ -1573,10 +1559,7 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
     const followingIdStr = Array.isArray(followingId) ? followingId[0] : followingId;
 
     if (userId === followingIdStr) {
-      return res.status(400).json({
-        success: false,
-        error: "You cannot follow yourself",
-      });
+      return handleValidationError(res, "You cannot follow yourself");
     }
 
     // Check if user exists

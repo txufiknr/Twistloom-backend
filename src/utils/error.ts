@@ -103,9 +103,10 @@ export function handleApiError(
 export function handleValidationError(
   res: Response,
   message: string,
-  error?: unknown
+  error?: unknown,
+  statusCode?: number
 ): void {
-  handleApiError(res, message, error, 400);
+  handleApiError(res, message, error, statusCode ?? 400);
 }
 
 /**

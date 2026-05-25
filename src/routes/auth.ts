@@ -28,10 +28,11 @@ import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from
 import { createPasswordResetToken, resetPassword, verifyPasswordResetToken } from '../utils/password-reset.js';
 import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
-import { handleApiError } from '../utils/error.js';
+import { handleApiError, handleUnauthorizedError, handleValidationError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
+import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 
 const router = Router();
 
@@ -100,7 +101,7 @@ router.post('/verify-credentials', async (req, res) => {
 
     // Validate input
     if (!emailOrUsername || !password) {
-      return res.status(400).json({ error: 'Email/username and password are required' });
+      return handleValidationError(res, 'Email/username and password are required');
     }
 
     // Find user by email or username
@@ -123,7 +124,7 @@ router.post('/verify-credentials', async (req, res) => {
       .limit(1);
 
     if (user.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return handleUnauthorizedError(res, 'Invalid credentials');
     }
 
     const userData = user[0];
@@ -145,7 +146,7 @@ router.post('/verify-credentials', async (req, res) => {
 
     // Check if user has password (OAuth-only users won't have passwordHash)
     if (!userData.passwordHash) {
-      return res.status(401).json({ error: 'This account uses OAuth login. Please sign in with Google.' });
+      return handleUnauthorizedError(res, 'This account uses OAuth login. Please sign in with Google.');
     }
 
     // Verify password
@@ -153,7 +154,7 @@ router.post('/verify-credentials', async (req, res) => {
 
     if (!isValid) {
       await recordFailedLogin(userData.userId);
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return handleUnauthorizedError(res, 'Invalid credentials');
     }
 
     // Reset failed login attempts on successful login
@@ -230,20 +231,25 @@ router.post('/signup', async (req, res) => {
 
     // Validate input
     if (!email || !username || !password || !gender) {
-      return res.status(400).json({ error: 'Email, username, password, and gender are required' });
+      return handleValidationError(res, 'Email, username, password, and gender are required');
     }
 
     if (!agreedToTerms) {
-      return res.status(400).json({ error: 'You must agree to the terms' });
+      return handleValidationError(res, 'You must agree to the terms');
     }
 
     // Validate password strength
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
-      return res.status(400).json({ 
+      return res.status(422).json({ 
         error: 'Password does not meet security requirements',
         details: passwordValidation.errors 
       });
+    }
+
+    // Block temporary/disposable email addresses
+    if (isTemporaryEmail(email)) {
+      return handleValidationError(res, 'Temporary or disposable email addresses are not allowed.', undefined, 422);
     }
 
     // Check if email or username already exists
@@ -299,7 +305,7 @@ router.post('/signup', async (req, res) => {
       emailSent: emailActuallySent,
     });
   } catch (error) {
-    console.error('Signup error:', error);
+    console.error('[auth] 👤 Sign up error:', error);
     handleApiError(res, 'Failed to create account', error, 500);
   }
 });
@@ -353,7 +359,7 @@ router.post('/forgot-password', async (req, res) => {
 
     // Validate input
     if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+      return handleValidationError(res, 'Email is required');
     }
 
     // Create password reset token (returns null if email doesn't exist)
@@ -420,13 +426,13 @@ router.post('/reset-password', async (req, res) => {
     const { token, password } = req.body;
 
     if (!token || !password) {
-      return res.status(400).json({ error: 'Token and password are required' });
+      return handleValidationError(res, 'Token and password are required');
     }
 
     // Validate password strength
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
-      return res.status(400).json({ 
+      return res.status(422).json({ 
         error: 'Password does not meet security requirements',
         details: passwordValidation.errors 
       });
@@ -435,14 +441,14 @@ router.post('/reset-password', async (req, res) => {
     // Verify token exists before password validation (prevents token enumeration)
     const userId = await verifyPasswordResetToken(token);
     if (!userId) {
-      return res.status(400).json({ error: 'Invalid or expired reset token' });
+      return handleValidationError(res, 'Invalid or expired reset token');
     }
 
     // Reset password
     const success = await resetPassword(token, password);
 
     if (!success) {
-      return res.status(400).json({ error: 'Failed to reset password' });
+      return handleValidationError(res, 'Failed to reset password');
     }
 
     res.json({ message: 'Password reset successfully' });
@@ -492,13 +498,13 @@ router.post('/verify-email', async (req, res) => {
     const { token } = req.body;
 
     if (!token) {
-      return res.status(400).json({ error: 'Token is required' });
+      return handleValidationError(res, 'Token is required');
     }
 
     const userId = await verifyEmailToken(token);
 
     if (!userId) {
-      return res.status(400).json({ error: 'Invalid or expired verification token' });
+      return handleValidationError(res, 'Invalid or expired verification token');
     }
 
     res.json({ message: 'Email verified successfully' });
@@ -548,7 +554,7 @@ router.post('/resend-verification', async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+      return handleValidationError(res, 'Email is required');
     }
 
     // Find user by email
@@ -700,7 +706,7 @@ router.post('/google-one-tap', async (req, res) => {
 
     // Validate input
     if (!idToken) {
-      return res.status(400).json({ error: 'ID token is required' });
+      return handleValidationError(res, 'ID token is required');
     }
 
     // Verify Google ID token
@@ -711,7 +717,7 @@ router.post('/google-one-tap', async (req, res) => {
 
     const payload = ticket.getPayload();
     if (!payload || !payload.email) {
-      return res.status(401).json({ error: 'Invalid token payload' });
+      return handleUnauthorizedError(res, 'Invalid token payload');
     }
 
     const { email, name, picture: image } = payload;
@@ -733,7 +739,7 @@ router.post('/google-one-tap', async (req, res) => {
       .limit(1);
 
     if (user.length === 0) {
-      return res.status(500).json({ error: 'Failed to retrieve user data' });
+      return handleApiError(res, 'Failed to retrieve user data');
     }
 
     // Return user data for NextAuth session
@@ -746,7 +752,7 @@ router.post('/google-one-tap', async (req, res) => {
     });
   } catch (error) {
     console.error('[POST /api/auth/google-one-tap] ❌ Google One Tap error:', error);
-    handleApiError(res, 'Failed to authenticate with Google One Tap', error, 500);
+    handleApiError(res, 'Failed to authenticate with Google One Tap', error);
   }
 });
 

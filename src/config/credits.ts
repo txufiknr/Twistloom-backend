@@ -5,9 +5,7 @@
  * Defines the available credit pack options for purchase in the Twistloom application.
  * Each credit pack represents a different tier of story interaction capabilities.
  * 
- * ## Stripe Integration
- * 
- * ### Products & Prices Setup
+ * Products & Prices Setup:
  * 1. Go to: https://dashboard.stripe.com/acct_1TSpFoFmDKrMqBDf/test/products
  * 2. Create products with the following structure:
  *    - Name: Use the `title` field from each pack
@@ -15,42 +13,18 @@
  *    - Price: Use the `priceUSD` field (in USD)
  * 3. Copy the generated `priceId` and `productId` to the configuration below
  * 
- * ## Credit Pack Tiers
- * 
- * ### Observer (50 credits - $2.99)
- * Perfect for first-time readers who want to explore branching paths
- * - ~10-12 story choices
- * - Basic story interaction
- * - Introduction to the Twistloom experience
- * 
- * ### Investigator (150 credits - $7.99) 🔥 Most Popular
- * For readers who want to dig deeper into the mystery
- * - ~30-40 story choices
- * - Influence key decisions
- * - Unlock hidden paths
- * - Recommended for most users
- * 
- * ### Mastermind (500 credits - $19.99) 💎 Best Value
- * For power users who want complete control
- * - ~120+ story choices
- * - Craft custom actions
- * - Explore alternate endings
- * - Full narrative control
- * 
- * ## Usage Guidelines
- * 
- * ### Adding New Credit Packs
+ * Adding New Credit Packs:
  * 1. Create corresponding Stripe product and price
  * 2. Add new pack to the `CREDIT_PACKS` array
  * 3. Update environment variables if needed
  * 4. Test checkout flow end-to-end
  * 
- * ### Modifying Existing Packs
+ * Modifying Existing Packs:
  * - Update Stripe product first, then update configuration
  * - Price changes require new Stripe price creation
  * - Credit amounts can be adjusted without Stripe changes
  * 
- * ### API Integration
+ * API Integration:
  * - Frontend fetches packs via `GET /api/payments/credit-packs`
  * - Backend validates pack existence in checkout session
  * - Webhook maps priceId to credits for allocation
@@ -82,6 +56,8 @@ export const CREDIT_COSTS = {
   UNLOCK_ALTERNATE_ENDING: 10, // TODO: use
 } as const;
 
+export type CreditCostKey = keyof typeof CREDIT_COSTS;
+
 /** Credits bonus for first-time users */
 export const FIRST_TIME_CREDITS = 50;
 
@@ -89,22 +65,16 @@ export const FIRST_TIME_CREDITS = 50;
  * Daily check-in rewards
  * @overview Defines free credits awarded for daily user check-ins
  */
-// Big 20 credits bonus on 7th consecutive day
-export const DAILY_CHECKIN_DAYS = 7;
-// Flat 5 credits bonus on day 1-6
-export const DAILY_CHECKIN_BONUS = 5;
-// Bonus applied on the 7th consecutive day
-export const DAILY_CHECKIN_BIG_BONUS = 20;
-
-export type CreditCostKey = keyof typeof CREDIT_COSTS;
+export const DAILY_CHECKIN_DAYS = 7; // Big 20 credits bonus on 7th consecutive day
+export const DAILY_CHECKIN_BONUS = 5; // Flat 5 credits bonus on day 1-6
+export const DAILY_CHECKIN_BIG_BONUS = 20; // Bonus applied on the 7th consecutive day
 
 export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",
     title: "Observer Package",
     tagline: "You watch… but rarely interfere.",
-    description:
-      "Perfect for first-time readers. Explore branching paths and test how your decisions shape the story.",
+    description: "Perfect for first-time readers. Explore branching paths and test how your decisions shape the story.",
     credits: 50,
     priceUSD: 2.99,
     priceId: "price_1TSq8CFmDKrMqBDfv8hHK8hi", // Stripe Price ID
@@ -116,8 +86,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     id: "investigator",
     title: "Investigator Package",
     tagline: "You follow the clues. Carefully.",
-    description:
-      "Dig deeper into the mystery. Enough credits to influence key decisions and unlock hidden paths.",
+    description: "Dig deeper into the mystery. Enough credits to influence key decisions and unlock hidden paths.",
     credits: 150,
     priceUSD: 7.99,
     priceId: "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
@@ -129,8 +98,7 @@ export const CREDIT_PACKS: CreditPack[] = [
     id: "mastermind",
     title: "Mastermind Package",
     tagline: "You don't follow the story. You control it.",
-    description:
-      "Take full control of the narrative. Craft custom actions, explore alternate endings, and bend the story to your will.",
+    description: "Take full control of the narrative. Craft custom actions, explore alternate endings, and bend the story to your will.",
     credits: 500,
     priceUSD: 19.99,
     priceId: "price_1TSqEpFmDKrMqBDfhrwd9wOn",

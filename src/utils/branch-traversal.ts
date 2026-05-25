@@ -52,7 +52,7 @@
 import { dbRead } from "../db/client.js";
 import { pages } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_MIN_PAGES, BOOK_MAX_PAGES } from "../config/story.js";
+import { SNAPSHOT_INTERVAL, MIN_PAGES_FOR_MIDDLE, BOOK_MIN_PAGES } from "../config/story.js";
 import type { DBPage, DBStoryState } from "../types/schema.js";
 import type { PersistedStoryPage, StoryState, StateReconstructionResult, BranchStats, TraversalOptions, BranchPath, StateReconstructionDeps, StateCacheEntry } from "../types/story.js";
 import { branchCache, stateCache, BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
@@ -76,7 +76,8 @@ import {
   GET_STORY_STATE_KEY_PREFIX,
   GET_BRANCH_PATH_KEY_PREFIX,
   GET_PAGE_BY_ID_KEY_PREFIX,
-  GET_BOOK_KEY_PREFIX} from "../config/branch-traversal.js";
+  GET_BOOK_KEY_PREFIX,
+  MAX_TRAVERSAL_DEPTH} from "../config/branch-traversal.js";
 import { retryOperation, withCircuitBreaker, createReliabilityMeasurement, completeReliabilityMeasurement } from "./reliability.js";
 // import { getUserBookSnapshots } from "../services/snapshots.bak.js";
 
@@ -89,20 +90,6 @@ export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE
 import { getErrorMessage } from "./error.js";
 import { getPageFromDB, mapToPersistedStoryPage } from "../services/book.js";
 import { applyStateDelta, createEmptyStoryState } from "./story.js";
-
-// Re-export for backward compatibility
-// export { shouldCreateSnapshot, createStateSnapshot, createStateDelta, applyStateDelta };
-
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
-
-/** Maximum traversal depth to prevent infinite loops */
-export const MAX_TRAVERSAL_DEPTH = BOOK_MAX_PAGES;
-
-/** Snapshot creation intervals */
-export const SNAPSHOT_INTERVAL_PAGES = 5; // Create snapshot every 5 pages
-export const MAJOR_EVENT_SNAPSHOT_INTERVAL = 10; // For major events
 
 /**
  * Gets cached branch path if valid

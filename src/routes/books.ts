@@ -44,7 +44,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
@@ -1184,9 +1184,9 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       : 'newest';
 
     // Check if authentication is required for this sort option
-    const requiresAuth = bookSortBy === 'creations' || bookSortBy === 'reads' || bookSortBy === 'recommendations';
+    const requiresAuth = ['creations', 'reads', 'recommendations'].includes(bookSortBy);
     if (requiresAuth && !userId) {
-      return res.status(401).json({ error: 'Authentication required for this sort option' });
+      return handleUnauthorizedError(res, `Authentication required for book ${bookSortBy}`);
     }
 
     // Determine base condition based on sort option

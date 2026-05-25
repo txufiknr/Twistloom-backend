@@ -11,11 +11,15 @@
  * Should be run once per day via cron job, but safe to run repeatedly
  */
 import { getErrorMessage } from "../utils/error.js";
+import { ACTIVITY_LOG_RETENTION_MONTHS } from "../config/purge.js";
 
 export async function runDailyCleanup(): Promise<void> {
   // Lazy imports in cron for better memory usage and startup time
   const { processQueuedImageDeletions } = await import("../services/image.js");
   const { runVipExpirationCheck } = await import("./vip-expiration.js");
+  const { dbWrite } = await import("../db/client.js");
+  const { userActivityLogs } = await import("../db/schema.js");
+  const { lt } = await import("drizzle-orm");
 
   const startedAt = Date.now();
 
@@ -41,9 +45,22 @@ export async function runDailyCleanup(): Promise<void> {
     await runVipExpirationCheck();
     console.log("[cleanup] ✨ VIP expiration check completed");
 
+    // Cleanup old activity logs (idempotent operation)
+    console.log(`[cleanup] 📊 Cleaning up activity logs older than ${ACTIVITY_LOG_RETENTION_MONTHS} months...`);
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - ACTIVITY_LOG_RETENTION_MONTHS);
+    
+    const deletedLogs = await dbWrite
+      .delete(userActivityLogs)
+      .where(lt(userActivityLogs.createdAt, cutoffDate))
+      .returning({ id: userActivityLogs.id });
+    
+    console.log(`[cleanup] 📊 Deleted ${deletedLogs.length} activity logs older than ${ACTIVITY_LOG_RETENTION_MONTHS} months`);
+
     const durationMs = Date.now() - startedAt;
     console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {
       images: imageCleanupStats.processed,
+      activityLogs: deletedLogs.length,
     });
   } catch (error) {
     console.error("[cleanup] ❌ Daily cleanup failed:", getErrorMessage(error));

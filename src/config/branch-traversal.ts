@@ -5,6 +5,15 @@
  * retry logic, circuit breaker settings, and performance tuning.
  */
 
+import { BOOK_MAX_PAGES } from "./story.js";
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+/** Maximum traversal depth to prevent infinite loops */
+export const MAX_TRAVERSAL_DEPTH = BOOK_MAX_PAGES;
+
 // ============================================================================
 // CIRCUIT BREAKER CONFIGURATION
 // ============================================================================
@@ -33,11 +42,11 @@ export const GET_BOOK_CIRCUIT_THRESHOLD = 3;
 /** Timeout in milliseconds for getBook circuit breaker */
 export const GET_BOOK_CIRCUIT_TIMEOUT = 30000;
 
-/** Number of failures before opening circuit for getDelta operations */
-export const GET_DELTA_CIRCUIT_THRESHOLD = 5;
+// /** Number of failures before opening circuit for getDelta operations */
+// export const GET_DELTA_CIRCUIT_THRESHOLD = 5;
 
-/** Timeout in milliseconds for getDelta circuit breaker */
-export const GET_DELTA_CIRCUIT_TIMEOUT = 30000;
+// /** Timeout in milliseconds for getDelta circuit breaker */
+// export const GET_DELTA_CIRCUIT_TIMEOUT = 30000;
 
 // ============================================================================
 // RETRY CONFIGURATION
@@ -99,52 +108,52 @@ export const GET_PAGE_BY_ID_KEY_PREFIX = 'getPageById';
 /** Circuit breaker key prefix for getBook operations */
 export const GET_BOOK_KEY_PREFIX = 'getBook';
 
-/** Circuit breaker key prefix for getDelta operations */
-export const GET_DELTA_KEY_PREFIX = 'getDelta';
+// /** Circuit breaker key prefix for getDelta operations */
+// export const GET_DELTA_KEY_PREFIX = 'getDelta';
 
-/** Circuit breaker key prefix for createDelta operations */
-export const CREATE_DELTA_KEY_PREFIX = 'createDelta';
+// /** Circuit breaker key prefix for createDelta operations */
+// export const CREATE_DELTA_KEY_PREFIX = 'createDelta';
 
-/** Circuit breaker key prefix for getStateSnapshot operations */
-export const GET_SNAPSHOT_KEY_PREFIX = 'getStateSnapshot';
+// /** Circuit breaker key prefix for getStateSnapshot operations */
+// export const GET_SNAPSHOT_KEY_PREFIX = 'getStateSnapshot';
 
-/** Circuit breaker key prefix for createStateSnapshot operations */
-export const CREATE_SNAPSHOT_KEY_PREFIX = 'createStateSnapshot';
+// /** Circuit breaker key prefix for createStateSnapshot operations */
+// export const CREATE_SNAPSHOT_KEY_PREFIX = 'createStateSnapshot';
 
 // ============================================================================
 // DELTA SERVICE CONFIGURATION
 // ============================================================================
 
-/** Number of failures before opening circuit for delta creation operations */
-export const CREATE_DELTA_CIRCUIT_THRESHOLD = DEFAULT_CIRCUIT_THRESHOLD;
+// /** Number of failures before opening circuit for delta creation operations */
+// export const CREATE_DELTA_CIRCUIT_THRESHOLD = DEFAULT_CIRCUIT_THRESHOLD;
 
-/** Timeout in milliseconds for delta creation circuit breaker */
-export const CREATE_DELTA_CIRCUIT_TIMEOUT = 15000; // Keep shorter timeout for write operations
+// /** Timeout in milliseconds for delta creation circuit breaker */
+// export const CREATE_DELTA_CIRCUIT_TIMEOUT = 15000; // Keep shorter timeout for write operations
 
-/** Maximum number of retry attempts for delta operations */
-export const DELTA_MAX_RETRIES = DEFAULT_MAX_RETRIES;
+// /** Maximum number of retry attempts for delta operations */
+// export const DELTA_MAX_RETRIES = DEFAULT_MAX_RETRIES;
 
-/** Base delay in milliseconds for delta retry operations */
-export const DELTA_BASE_DELAY = DEFAULT_BASE_DELAY;
+// /** Base delay in milliseconds for delta retry operations */
+// export const DELTA_BASE_DELAY = DEFAULT_BASE_DELAY;
 
 // ============================================================================
 // SNAPSHOT SERVICE CONFIGURATION
 // ============================================================================
 
-/** Number of failures before opening circuit for snapshot retrieval operations */
-export const GET_SNAPSHOT_CIRCUIT_THRESHOLD = DEFAULT_CIRCUIT_THRESHOLD;
+// /** Number of failures before opening circuit for snapshot retrieval operations */
+// export const GET_SNAPSHOT_CIRCUIT_THRESHOLD = DEFAULT_CIRCUIT_THRESHOLD;
 
-/** Timeout in milliseconds for snapshot retrieval circuit breaker */
-export const GET_SNAPSHOT_CIRCUIT_TIMEOUT = DEFAULT_CIRCUIT_TIMEOUT;
+// /** Timeout in milliseconds for snapshot retrieval circuit breaker */
+// export const GET_SNAPSHOT_CIRCUIT_TIMEOUT = DEFAULT_CIRCUIT_TIMEOUT;
 
-/** Number of failures before opening circuit for snapshot creation operations */
-export const CREATE_SNAPSHOT_CIRCUIT_THRESHOLD = DEFAULT_CIRCUIT_THRESHOLD;
+// /** Number of failures before opening circuit for snapshot creation operations */
+// export const CREATE_SNAPSHOT_CIRCUIT_THRESHOLD = DEFAULT_CIRCUIT_THRESHOLD;
 
-/** Timeout in milliseconds for snapshot creation circuit breaker */
-export const CREATE_SNAPSHOT_CIRCUIT_TIMEOUT = 20000; // Keep shorter timeout for write operations
+// /** Timeout in milliseconds for snapshot creation circuit breaker */
+// export const CREATE_SNAPSHOT_CIRCUIT_TIMEOUT = 20000; // Keep shorter timeout for write operations
 
-/** Maximum number of retry attempts for snapshot operations */
-export const SNAPSHOT_MAX_RETRIES = DEFAULT_MAX_RETRIES;
+// /** Maximum number of retry attempts for snapshot operations */
+// export const SNAPSHOT_MAX_RETRIES = DEFAULT_MAX_RETRIES;
 
-/** Base delay in milliseconds for snapshot retry operations */
-export const SNAPSHOT_BASE_DELAY = DEFAULT_BASE_DELAY;
+// /** Base delay in milliseconds for snapshot retry operations */
+// export const SNAPSHOT_BASE_DELAY = DEFAULT_BASE_DELAY;

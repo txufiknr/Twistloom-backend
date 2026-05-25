@@ -274,19 +274,21 @@ export interface ThemeValidationError {
     /** User-friendly error message */
     message: string;
     /** Detailed validation error information */
-    details: {
-      /** Category of the validation failure */
-      category: ThemeValidationCategory;
-      /** List of detected blacklist words */
-      detectedWords: string[];
-      /** List of detected suspicious patterns */
-      detectedPatterns: string[];
-      /** AI-generated explanation of the violation */
-      aiExplanation?: string;
-      /** AI confidence score (0.0 to 1.0) */
-      aiConfidence?: number;
-      /** Suggestion for how to fix the issue */
-      suggestion?: string;
-    };
-  };
+    details: ThemeValidationErrorDetails;
+  }
+}
+
+export interface ThemeValidationErrorDetails {
+  /** Category of the validation failure */
+  category: ThemeValidationCategory;
+  /** List of detected blacklist words */
+  detectedWords: string[];
+  /** List of detected suspicious patterns */
+  detectedPatterns: string[];
+  /** AI-generated explanation of the violation */
+  detectedItems?: AIDetectedItem[];
+  /** AI confidence score (0.0 to 1.0) */
+  aiConfidence?: number;
+  /** Suggestion for how to fix the issue */
+  suggestion?: string;
 }

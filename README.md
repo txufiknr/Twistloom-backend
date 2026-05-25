@@ -59,7 +59,7 @@ A sophisticated psychological thriller branching story engine backend that deliv
 - **Trauma System**: Psychological stress tracking with dynamic difficulty progression
 
 ### **Asynchronous Candidate Generation**
-- **GitHub Workflow Processing**: Hourly GitHub Actions for reliable async task processing
+- **GitHub Workflow Processing**: Daily or on-demand GitHub Actions for reliable async task processing
 - **Timeout Prevention**: Eliminates Vercel 5-minute timeout limitations through scheduled background processing
 - **Strategy Pattern**: Deployment-aware generation (vercel/github-action/cron) with optimized timeouts
 - **Distributed Locking**: Prevents concurrent generation on same page with automatic cleanup
@@ -67,6 +67,7 @@ A sophisticated psychological thriller branching story engine backend that deliv
 - **Progress Tracking**: Real-time SSE events for generation progress monitoring
 - **Retry Logic**: Automatic retry with exponential backoff for failed generations
 - **Multi-Level Generation**: Fire-and-forget deeper level pre-generation for instant user experience
+- **Database-driven**: Direct database-driven pending generation tracking (no job queue)
 
 ### **Advanced AI Systems**
 - **Multi-Provider Support**: Fallback across multiple AI providers for reliability and performance
@@ -315,13 +316,69 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 
 ## 🏛️ API Architecture
 
-### **Story Management**
+### **Authentication API** (`/api/auth`)
+- `POST /api/auth/verify-credentials` - Verify email/username and password for NextAuth
+- `POST /api/auth/signup` - Register new user accounts
+- `POST /api/auth/forgot-password` - Initiate password reset flow
+- `POST /api/auth/reset-password` - Complete password reset with token
+- `POST /api/auth/verify-email` - Verify user email address
+- `POST /api/auth/resend-verification` - Resend email verification code
+- `POST /api/auth/logout` - Terminate user session
+
+### **Books API** (`/api/books`)
 - `POST /api/books` - Create new psychological thriller books
-- `GET /api/books` - Retrieve user's book library
-- `POST /api/books/:id/pages` - Generate new story pages
-- `GET /api/books/:id/pages/:pageId` - Retrieve specific pages
-- `POST /api/books/:id/sessions` - Manage reading sessions
+- `GET /api/books` - Retrieve book library with filtering and pagination
+- `GET /api/books/:identifier` - Get specific book by ID or slug
+- `PUT /api/books/:id` - Update book metadata
+- `DELETE /api/books/:id` - Delete a book
+- `POST /api/books/:id/pages` - Generate new story pages with AI
+- `GET /api/books/:id/pages/:pageId` - Retrieve specific story page
 - `GET /api/books/:identifier/:pageId/candidates` - Get candidate pages with SSE progress tracking
+- `POST /api/books/:id/like` - Like/unlike a book
+- `POST /api/books/:id/favorite` - Add/remove book from favorites
+- `POST /api/books/:id/comments` - Create comments on books
+- `PUT /api/books/:id/comments/:commentId` - Update comments
+- `DELETE /api/books/:id/comments/:commentId` - Delete comments
+- `GET /api/books/trending` - Get trending books
+- `GET /api/books/discover` - Discover new books with filters
+
+### **Users API** (`/user` and `/users`)
+- `GET /user` - Get authenticated user profile
+- `POST /user` - Create/replace user profile
+- `PUT /user` - Update user profile
+- `DELETE /user` - Delete user profile
+- `GET /users/:identifier` - Get public user profile by ID or username
+- `POST /user/likes` - Like targets (books, comments)
+- `DELETE /user/likes` - Unlike targets
+- `GET /user/likes` - Get user's likes
+- `POST /user/favorites` - Add books to favorites
+- `DELETE /user/favorites` - Remove books from favorites
+- `GET /user/favorites` - Get user's favorites
+- `GET /user/collections` - Get user's book collections
+- `POST /user/comments` - Create comments
+- `PUT /user/comments/:commentId` - Update comments
+- `DELETE /user/comments/:commentId` - Delete comments
+- `GET /user/comments` - Get user's comments
+- `POST /users/:id/follow` - Follow a user
+- `DELETE /users/:id/follow` - Unfollow a user
+- `GET /users/:id/followers` - Get user's followers
+- `GET /users/:id/following` - Get user's following
+- `GET /user/followers` - Get authenticated user's followers
+- `GET /user/following` - Get authenticated user's following
+- `GET /user/checkin/status` - Get daily check-in status
+- `POST /user/checkin` - Perform daily check-in for credits
+
+### **Payments API** (`/payments`)
+- `GET /payments/credit-packs` - Get available credit packs
+- `GET /payments/subscription-plans` - Get subscription plans
+- `POST /payments/create-subscription-session` - Create Stripe subscription session
+- `GET /payments/subscription` - Get subscription status
+- `POST /payments/subscription/cancel` - Cancel subscription
+- `GET /payments/subscription/portal` - Open Stripe customer portal
+- `POST /payments/create-checkout-session` - Create Stripe checkout session
+- `POST /payments/stripe/webhook` - Handle Stripe webhook events
+- `POST /payments/consume-credits` - Consume credits for actions
+- `GET /payments/transactions` - Get transaction history
 
 ### **Character System**
 - Dynamic character generation from user candidates
@@ -341,22 +398,70 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 ## 🔧 Configuration
 
 ### **Story Settings**
-- `MAX_WORDS_PER_PAGE`: 60 words per page limit
-- `MAX_CHARACTERS`: 5 active characters limit
-- `BOOK_MAX_PAGES`: 150 pages per book
+- `BOOK_MIN_PAGES`: 80 minimum pages per book
+- `BOOK_MAX_PAGES`: 200 maximum pages per book
+- `MIN_CHARS_PER_PAGE`: 200 minimum characters per page
+- `MAX_WORDS_PER_PAGE`: 120 words per page limit
 - `MAX_WORDS_SUMMARIZED_CONTEXT`: 300 words context limit
+- `MAX_CHARACTERS`: 6 active characters limit
+- `MIN_CHARACTER_AGE`: 13 minimum character age
+- `MAX_CHARACTER_AGE`: 25 maximum character age
+- `MAX_PLACES`: 6 maximum places per story
+- `MAX_ACTIVE_THREADS`: 5 maximum active narrative threads
+- `MAX_THREADS_PER_PAGE`: 2 maximum threads per page
+- `MIN_ACTION_CHOICES`: 1 minimum action choices
+- `MAX_ACTION_CHOICES`: 3 maximum action choices
+- `MAX_ACTION_CHOICES_FIRST_PAGE`: 2 maximum choices on first page
+- `MAX_BRANCHING_RETRIES`: 3 maximum branching retry attempts
+- `MAX_BRANCHING_PREGENERATION_DEPTH`: 2 maximum pre-generation depth
+- `MAX_BRANCHING_PREGENERATION_LIMIT`: 3 maximum pre-generated candidates
+- `MAX_TRAUMA_TAGS`: 5 maximum trauma tags per story
+- `MAX_DOMINANT_TRAITS`: 3 maximum dominant traits per character
+- `MAX_PAST_INTERACTIONS`: 5 maximum past interactions per character
+- `MAX_PLACE_MOOD_HISTORY`: 5 maximum mood history entries per place
+- `MAX_PLACE_EVENTS`: 8 maximum event tags per place
+- `MAX_CHARACTER_PLACES`: 5 maximum character-place relations
+- `MAX_PAGE_HISTORY`: 3 maximum past pages for context
+- `MAX_ACTION_HISTORY`: 5 maximum action history entries
+- `SNAPSHOT_INTERVAL`: 10 pages between snapshots
 
 ### **Branch Traversal Settings**
-- `MAX_TRAVERSAL_DEPTH`: Maximum depth for branch exploration
-- `SNAPSHOT_INTERVAL_PAGES`: Create snapshots every N pages
-- `CACHE_TTL_SECONDS`: Time-to-live for cached states
-- `MAX_CACHE_SIZE`: Maximum number of cached states
+- `MAX_TRAVERSAL_DEPTH`: Maximum depth for branch exploration (200 pages)
+- `GET_STORY_STATE_CIRCUIT_THRESHOLD`: 3 failures before circuit opens
+- `GET_STORY_STATE_CIRCUIT_TIMEOUT`: 30000ms timeout for state operations
+- `GET_BRANCH_PATH_CIRCUIT_THRESHOLD`: 5 failures before circuit opens
+- `GET_BRANCH_PATH_CIRCUIT_TIMEOUT`: 60000ms timeout for branch operations
+- `GET_PAGE_BY_ID_CIRCUIT_THRESHOLD`: 3 failures before circuit opens
+- `GET_PAGE_BY_ID_CIRCUIT_TIMEOUT`: 30000ms timeout for page operations
+- `GET_BOOK_CIRCUIT_THRESHOLD`: 3 failures before circuit opens
+- `GET_BOOK_CIRCUIT_TIMEOUT`: 30000ms timeout for book operations
+- `BRANCH_PATH_MAX_RETRIES`: 3 maximum retry attempts for branch path
+- `BRANCH_PATH_BASE_DELAY`: 1000ms base delay for branch path retries
+- `SNAPSHOT_SELECTION_MAX_RETRIES`: 2 maximum retry attempts for snapshot selection
+- `SNAPSHOT_SELECTION_BASE_DELAY`: 500ms base delay for snapshot retries
+- `DELTA_APPLICATION_MAX_RETRIES`: 2 maximum retry attempts for delta application
+- `DELTA_APPLICATION_BASE_DELAY`: 200ms base delay for delta retries
+- `RECONSTRUCTION_MAX_RETRIES`: 2 maximum retry attempts for reconstruction
+- `RECONSTRUCTION_BASE_DELAY`: 2000ms base delay for reconstruction retries
+
+### **Candidate Generation Settings**
+- `MAX_GENERATION_DURATION_MS`: 30 minutes maximum generation duration
+- `MAX_GENERATION_PARALLEL_DURATION_MS`: 13 minutes for cron jobs
+- `MAX_PENDING_BOOK_COVER_PER_RUN`: 0 (disabled to reduce cost)
+- `ALLOW_DEEPER_LEVEL_UNTIL_PAGE`: 3 pages allowing deeper pre-generation
 
 ### **AI Configuration**
-- Multi-provider model selection
+- `DEFAULT_MAX_OUTPUT_TOKEN`: 3000 maximum output tokens
+- `NVIDIA_REQUEST_TIMEOUT_MS`: 60000ms NVIDIA API timeout
+- `DEFAULT_TEMPERATURE`: 0.7 default temperature (0.6-0.85 range)
+- `DEFAULT_TOP_P`: 0.9 nucleus sampling parameter
+- `DEFAULT_TOP_K`: 40 top-k sampling parameter
+- `DEFAULT_STOP_SEQUENCES`: Triple newline stop sequences
+- Multi-provider model selection (GitHub, Gemini, Mistral, Cohere, Groq, Cerebras, NVIDIA)
 - Configurable temperature and output limits
 - Rate limiting and caching strategies
 - Fallback and error handling
+- Specialized configs for summarization and human-style writing
 
 ## 🚀 Getting Started
 
@@ -465,29 +570,119 @@ pnpm db:test --env-file=.env.local
 ```
 src/
 ├── config/          # Configuration files and AI client setup
+│   ├── ai-chat.ts           # AI chat configuration
+│   ├── ai-clients.ts        # AI provider model selection
+│   ├── ai-images.ts         # AI image generation config
+│   ├── auth.ts              # Authentication configuration
+│   ├── branch-traversal.ts  # Branch traversal algorithm config
+│   ├── cache.ts             # Cache configuration
+│   ├── candidate-generation.ts # Candidate generation config
+│   ├── characters.ts        # Character system config
+│   ├── constants.ts         # Application constants
+│   ├── credits.ts           # Credits system config
+│   ├── emails/              # Email templates
+│   ├── env.ts               # Environment variables
+│   ├── errors.ts            # Error configuration
+│   ├── image.ts             # Image configuration
+│   ├── pagination.ts        # Pagination config
+│   ├── purge.ts             # Cache purge config
+│   ├── redis.ts             # Redis configuration
+│   ├── story.ts             # Story settings
+│   ├── subscription.ts      # Subscription config
+│   ├── theme-validation.ts  # Theme validation config
+│   └── translation.ts       # Translation config
 ├── cron/            # Scheduled job handlers
-│   ├── process-candidate-jobs/ # Async candidate generation
-│   ├── cleanup.ts   # Database cleanup jobs
-│   ├── retry-pending-generations.ts # Failed job retry logic
-│   └── ...
-├── db/              # Database schema and migrations  
-├── lib/             # Core library functions
-│   ├── pgboss.ts    # Job queue management
-│   └── ...
-├── services/         # Business logic and data access
-│   ├── snapshots.ts # State snapshot management
-│   ├── deltas.ts    # State delta creation and application
-│   ├── story-branch.ts # Branch-aware story functions
-│   └── ...
-├── utils/            # Utility functions and AI prompts
-│   ├── branch-traversal.ts # Core Branch Traversal Algorithm
-│   ├── delta-helpers.ts    # Delta creation utilities
-│   ├── candidate-generation.ts # Synchronous candidate generation
-│   ├── candidate-generation-async.ts # Async job queue generation
-│   ├── prompt.ts    # AI prompt engineering
-│   └── ...
-├── types/            # TypeScript type definitions
-└── routes/            # API endpoint handlers
+│   ├── auto-translate-indonesian.ts # Auto-translation cron
+│   ├── cleanup.ts           # Database cleanup jobs
+│   ├── generate-originals.ts # Original book generation
+│   ├── on-demand-book-creation.ts # On-demand book creation
+│   ├── retry-pending-generations.ts # Failed generation retry
+│   ├── update-trending-scores.ts # Trending score updates
+│   └── vip-expiration.ts    # VIP subscription expiration
+├── db/              # Database schema and migrations
+│   ├── client.ts            # Database client
+│   ├── extensions.ts        # Database extensions
+│   ├── reset.ts             # Database reset utilities
+│   ├── schema.ts            # Database schema
+│   └── triggers.ts          # Database triggers
+├── middleware/      # Express middleware
+│   ├── locale.ts            # Locale middleware
+│   ├── nextauth.ts          # NextAuth middleware
+│   └── rate-limit.ts        # Rate limiting middleware
+├── routes/          # API endpoint handlers
+│   ├── admin.ts             # Admin routes
+│   ├── auth.ts              # Authentication routes
+│   ├── books.ts             # Books API routes
+│   ├── index.ts             # Route index
+│   ├── payments.ts          # Payments API routes
+│   └── user.ts              # User API routes
+├── schema/          # Schema definitions
+│   ├── book.ts              # Book schema
+│   └── story.ts             # Story schema
+├── services/        # Business logic and data access
+│   ├── book-controller.ts   # Book controller logic
+│   ├── book-creation.ts     # Book creation logic
+│   ├── book.ts              # Book service
+│   ├── cache.ts             # Cache service
+│   ├── credits.ts           # Credits service
+│   ├── image.ts             # Image service
+│   ├── performance-monitoring.ts # Performance monitoring
+│   ├── story-branch.ts      # Branch-aware story functions
+│   ├── story-state-cache.ts # Story state caching
+│   ├── story.ts             # Story service
+│   ├── subscription.ts      # Subscription service
+│   ├── translation.ts       # Translation service
+│   ├── user-controller.ts   # User controller logic
+│   └── user.ts              # User service
+├── utils/           # Utility functions and AI prompts
+│   ├── account-lockout.ts   # Account lockout utilities
+│   ├── ai-chat-stream.ts    # AI streaming functions
+│   ├── ai-chat.ts           # AI chat functions
+│   ├── ai-clients.ts        # AI client utilities
+│   ├── ai-image.ts          # AI image generation
+│   ├── ai-limiters.ts       # AI rate limiting
+│   ├── ai-logger.ts         # AI logging
+│   ├── books.ts             # Book utilities
+│   ├── branch-traversal.ts  # Core Branch Traversal Algorithm
+│   ├── cache.ts             # Cache utilities
+│   ├── candidate-generation.ts # Candidate generation
+│   ├── characters.ts        # Character utilities
+│   ├── debounce.ts          # Debounce utilities
+│   ├── distributed-lock.ts  # Distributed locking
+│   ├── email-verification.ts # Email verification
+│   ├── email.ts             # Email utilities
+│   ├── env.ts               # Environment utilities
+│   ├── error.ts             # Error handling
+│   ├── formatter.ts         # Text formatting
+│   ├── github-workflow.ts   # GitHub workflow dispatch
+│   ├── graceful-shutdown.ts # Graceful shutdown
+│   ├── narrative-style.ts   # Narrative style utilities
+│   ├── pagination.ts        # Pagination utilities
+│   ├── parser.ts            # AI response parsing
+│   ├── password-reset.ts    # Password reset utilities
+│   ├── password-validation.ts # Password validation
+│   ├── password.ts          # Password utilities
+│   ├── places-strategy.ts   # Place strategy utilities
+│   ├── places.ts            # Place utilities
+│   ├── player-profile.ts    # Player profile utilities
+│   ├── progress-tracking.ts # Progress tracking
+│   ├── prompt-translation.ts # Prompt translation
+│   ├── prompt.ts            # AI prompt engineering
+│   ├── quote.ts             # Quote utilities
+│   ├── redis.ts             # Redis utilities
+│   ├── reliability.ts       # Reliability utilities
+│   ├── retry.ts             # Retry logic
+│   ├── search.ts            # Search utilities
+│   ├── sse.ts               # Server-Sent Events
+│   ├── story.ts             # Story utilities
+│   ├── text-processing.ts   # Text processing
+│   ├── text-similarity.ts   # Text similarity
+│   ├── theme-validation.ts  # Theme validation
+│   ├── time.ts              # Time utilities
+│   ├── translation.ts       # Translation utilities
+│   └── uuid.ts              # UUID utilities
+├── app.ts           # Express app configuration
+└── server.ts        # Server entry point
 ```
 
 ### **Key Modules**
@@ -497,11 +692,20 @@ src/
 - **Database Layer**: Type-safe data persistence
 - **API Layer**: RESTful endpoint implementation
 - **Branch Traversal Algorithm**: Advanced state reconstruction system
-- **Snapshot & Delta Services**: High-performance state management
-- **Delta Helper Utilities**: DRY-compliant delta creation functions
-- **Async Candidate Generation**: GitHub Actions-based scheduled processing
-- **Job Queue Management**: Database-driven pending generation tracking
+- **Story State Cache**: High-performance state management
+- **Story Branch Service**: Branch-aware story functions
+- **Candidate Generation**: Synchronous and async candidate generation
+- **GitHub Workflow Dispatch**: Daily or on-demand GitHub Actions processing
+- **Distributed Locking**: Prevents concurrent generation on same page
 - **Strategy Pattern**: Deployment-aware generation with timeout optimization
+- **Performance Monitoring**: System performance tracking and metrics
+- **Translation Service**: Multi-language support and auto-translation
+- **Credits System**: Credit consumption and management
+- **Subscription Service**: VIP subscription management
+- **Image Service**: Image upload and management
+- **Authentication**: NextAuth v5 integration with email/password and Google OAuth
+- **Rate Limiting**: Request throttling and abuse prevention
+- **Email System**: Email verification, password reset, and notifications
 
 ---
 

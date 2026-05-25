@@ -22,7 +22,7 @@
 import { sql, and, or, eq, desc } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
 import type { Response } from "express";
-import type { ThemeValidationCategory, ThemeValidationResult } from "../types/theme-validation.js";
+import type { AIDetectedItem, ThemeValidationCategory, ThemeValidationError, ThemeValidationErrorDetails, ThemeValidationResult } from "../types/theme-validation.js";
 import type { BookPageVisit, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
@@ -213,7 +213,7 @@ export function handleThemeValidationError(
   let category: ThemeValidationCategory = 'OTHER';
   let detectedWords: string[] = [];
   let detectedPatterns: string[] = [];
-  let aiExplanation: string | undefined;
+  let detectedItems: AIDetectedItem[] = [];
   let suggestion: string | undefined;
   let message = 'Your story theme is invalid.';
 
@@ -242,10 +242,8 @@ export function handleThemeValidationError(
   let aiConfidence: number | undefined;
   if (validationResult.aiResult) {
     category = validationResult.aiResult.category as ThemeValidationCategory;
-    aiExplanation = validationResult.aiResult.detectedItems
-      .map(item => item.reason)
-      .join('; ');
-    suggestion = validationResult.aiResult.suggestion || undefined;
+    detectedItems = validationResult.aiResult.detectedItems;
+    suggestion = validationResult.aiResult.suggestion;
     aiConfidence = validationResult.aiResult.confidence;
     message = validationResult.aiResult.category === 'INAPPROPRIATE_CONTENT'
       ? 'Your story theme contains inappropriate content.'
@@ -254,31 +252,27 @@ export function handleThemeValidationError(
       : 'Your story theme violates content policies.';
   }
 
+  const details: ThemeValidationErrorDetails = {
+    category,
+    detectedWords,
+    detectedPatterns,
+    detectedItems,
+    aiConfidence,
+    suggestion,
+  };
+
   // Build error response matching spec
-  const errorResponse = {
+  const errorResponse: ThemeValidationError = {
     error: {
       type: 'VALIDATION_ERROR' as const,
       code: 'THEME_INVALID' as const,
       message,
-      details: {
-        category,
-        detectedWords,
-        detectedPatterns,
-        aiExplanation,
-        aiConfidence,
-        suggestion,
-      },
+      details,
     },
   };
 
   // Log validation failure for monitoring
-  console.error('[Theme Validation] Failed:', {
-    category,
-    detectedWords,
-    detectedPatterns,
-    aiExplanation,
-    aiConfidence,
-  });
+  console.error('[validation] 🙅‍♀️ Invalid theme:', details);
 
   return res.status(statusCode).json(errorResponse);
 }
