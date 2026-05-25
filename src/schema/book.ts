@@ -1,8 +1,8 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
-import type { CharacterMemory } from "../types/character.js";
+import type { CharacterMemory, StoryMC, StoryMCTranslation } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
-import type { PsychologicalFlags, StoryStateInitialGeneration } from "../types/story.js";
+import type { Action, ActionHint, ActionTranslation, PsychologicalFlags, StoryPage, StoryStateInitialGeneration } from "../types/story.js";
 
 /**
  * Common schema definition for BookCreationResponse type
@@ -18,8 +18,38 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
   hook: { type: 'string' },
   summary: { type: 'string' },
   keywords: { type: 'array', items: { type: 'string' } },
-  firstPage: { type: 'object' },
-  // initialState: { type: 'object' },
+  firstPage: {
+    type: 'object',
+    properties: {
+      text: { type: 'string' },
+      mood: { type: 'string' },
+      place: { type: 'string' },
+      timeOfDay: { type: 'string' },
+      charactersPresent: { type: 'array', items: { type: 'string' } },
+      keyEvents: { type: 'array', items: { type: 'string' } },
+      importantObjects: { type: 'array', items: { type: 'string' } },
+      actions: { type: 'array', items: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          type: { type: 'string' },
+          hint: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              type: { type: 'string' },
+            },
+            required: ['text', 'type'] satisfies (keyof ActionHint)[],
+            additionalProperties: false
+          },
+        },
+        required: ['text', 'type', 'hint'] satisfies (keyof Action)[],
+        additionalProperties: false
+      } },
+    },
+    required: ['text'] satisfies (keyof StoryPage)[],
+    additionalProperties: false
+  },
   initialState: {
     type: 'object',
     properties: {
@@ -45,7 +75,6 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
     required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof StoryStateInitialGeneration)[],
     additionalProperties: false
   },
-  // initialPlace: { type: 'object' },
   initialPlace: {
     type: 'object',
     properties: {
@@ -58,7 +87,6 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
     required: ['name', 'type', 'currentMood', 'context', 'familiarity'] satisfies (keyof PlaceMemory)[],
     additionalProperties: false
   },
-  // initialCharacters: { type: 'array', items: { type: 'object' } },
   initialCharacters: {
     type: 'array',
     items: {
@@ -76,12 +104,22 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       additionalProperties: false
     }
   },
-  mainCharacter: { type: 'object' }
+  mainCharacter: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      age: { type: 'number' },
+      gender: { type: 'string' },
+      bio: { type: 'string' },
+    },
+    required: ['name', 'age', 'gender', 'bio'] satisfies (keyof StoryMC)[],
+    additionalProperties: false
+  }
 } satisfies Record<keyof BookCreationResponse, AIJsonProperty>;
 
 export const BOOK_CREATION_REQUIRED_FIELDS = [
   'title',
-  'totalPages', 
+  'totalPages',
   'language',
   'hook',
   'summary',
@@ -101,7 +139,14 @@ export const BOOK_TRANSLATION_SCHEMA_DEFINITION = {
   hook: { type: 'string' },
   summary: { type: 'string' },
   keywords: { type: 'array', items: { type: 'string' } },
-  mc: { type: 'object' }
+  mc: {
+    type: 'object',
+    properties: {
+      bio: { type: 'string' },
+    },
+    required: ['bio'] satisfies (keyof StoryMCTranslation)[],
+    additionalProperties: false
+  }
 } satisfies Record<keyof BookTranslation, AIJsonProperty>;
 
 export const BOOK_TRANSLATION_REQUIRED_FIELDS = ['title', 'hook', 'summary', 'keywords', 'mc'] satisfies Array<keyof BookTranslation>;
@@ -128,7 +173,15 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   place: { type: 'string' },
   keyEvents: { type: 'array', items: { type: 'string' } },
   importantObjects: { type: 'array', items: { type: 'string' } },
-  actions: { type: 'array', items: { type: 'object' } }
+  actions: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      originalText: { type: 'string' },
+      text: { type: 'string' },
+    },
+    required: ['originalText', 'text'] satisfies (keyof ActionTranslation)[],
+    additionalProperties: false
+  } }
 } satisfies Record<keyof PageTranslation, AIJsonProperty>;
 
 export const PAGE_TRANSLATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof PageTranslation>;

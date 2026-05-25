@@ -1107,11 +1107,11 @@ SCORING RUBRIC:
    - Psychological flags reflect what actually happens on page 1 — not generic defaults
    - Difficulty appropriate to how hostile the world is to this specific MC
    - viableEnding specific to this MC and theme — not a genre archetype template
-   - totalPages within bounds and proportional to theme complexity
+   - totalPages within bounds, not multiples of 10, and proportional to theme complexity
    Deduct points for:
    - Flags set to default values (trust: medium, fear: low, curiosity: high) without scene justification
    - viableEnding that could apply to any psychological thriller
-   - totalPages at exact multiple of 10 regardless of theme scope
+   - totalPages are multiples of 10 regardless of theme complexity
 
 6. METADATA QUALITY (0-10) — Threshold: 7
    Award points for:
@@ -2242,7 +2242,7 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
-- TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
+- TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
 
 Main Character (MC):
 ${mcCandidate?.name ? `- MC's name is ${mcCandidate.name}.` : `- If MC's name provided in theme input, strictly use it.
