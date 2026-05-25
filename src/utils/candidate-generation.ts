@@ -1086,7 +1086,7 @@ export async function ensureCandidatesForPageWithStrategy(
     if (!shouldUpdate) return currentPage;
 
     // Persist the updated actions, clear the generating timestamp and update pending count atomically.
-    const updatedPage = await dbWrite
+    const [updatedPage] = await dbWrite
       .update(pages)
       .set({
         actions: updatedDBActions,
@@ -1098,8 +1098,7 @@ export async function ensureCandidatesForPageWithStrategy(
       .returning();
 
     console.log(`[ensureCandidatesForPageWithStrategy] 🔓 Cleared isGeneratingStartedAt for page ${page.id}`);
-    const dbPage = updatedPage[0] || null;
-    return dbPage ? await mapToUserStoryPage(dbPage, userId) : null;
+    return updatedPage ? await mapToUserStoryPage(updatedPage, userId) : null;
   }, Math.floor(MAX_GENERATION_DURATION_MS / 1000));
 
   // If lock succeeded, return its result

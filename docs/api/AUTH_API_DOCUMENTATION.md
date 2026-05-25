@@ -28,7 +28,12 @@ The Authentication API provides endpoints for user registration, credential veri
    - [Verify Email](#post-apiauthverify-email)
    - [Resend Verification](#post-apiauthresend-verification)
 5. [Session Management](#session-management)
+   - [Get Active Sessions](#get-apiauthsessions)
+   - [Logout from All Devices](#post-apiauthlogout-all)
+   - [Logout from Specific Session](#post-apiauthlogout-session)
    - [Logout](#post-apiauthlogout)
+6. [Google Authentication](#google-authentication)
+   - [Google One Tap](#post-apiauthgoogle-one-tap)
 
 ---
 
@@ -413,6 +418,163 @@ curl -X POST http://localhost:3000/api/auth/resend-verification \
 
 ## Session Management
 
+### GET /api/auth/sessions
+
+Gets all active sessions for the authenticated user. Returns session information including device details, last activity, and creation time.
+
+**Authentication:** Required (uses NextAuth JWT cookie via requireAuth middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Headers:**
+```
+Cookie: next-auth.session-token=...
+```
+
+**Response (200 OK):**
+```json
+{
+  "sessions": [
+    {
+      "id": "session-uuid",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+      "ipAddress": "192.168.1.1",
+      "deviceName": "Chrome on Windows (Desktop)",
+      "lastActiveAt": "2023-01-01T12:00:00.000Z",
+      "createdAt": "2023-01-01T10:00:00.000Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Invalid or missing authentication token
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Requires authentication via requireAuth middleware
+- Returns only sessions belonging to the authenticated user
+- Uses LRU cache for session verification (reduces database queries)
+
+**Database Operations:**
+1. Queries `auth_sessions` table for user's sessions
+2. Orders by `lastActiveAt` descending (most recent first)
+3. Returns session metadata (device name, IP, user agent)
+
+**Example:**
+```bash
+curl -X GET http://localhost:3000/api/auth/sessions \
+  -H "Cookie: next-auth.session-token=..."
+```
+
+---
+
+### POST /api/auth/logout-all
+
+Logs out from all other devices (excluding the current session). Invalidates all sessions except the one making the request.
+
+**Authentication:** Required (uses NextAuth JWT cookie via requireAuth middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Headers:**
+```
+Cookie: next-auth.session-token=...
+```
+
+**Request Body:** None (uses current session ID from JWT token)
+
+**Response (200 OK):**
+```json
+{
+  "message": "Logged out from 3 other device(s)",
+  "deletedCount": 3
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: No session ID found in JWT token
+- `401 Unauthorized`: Invalid or missing authentication token
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Requires authentication via requireAuth middleware
+- Excludes current session from deletion (user stays logged in)
+- Only affects sessions belonging to the authenticated user
+- Invalidates LRU cache entries for deleted sessions
+
+**Database Operations:**
+1. Extracts current session ID from JWT token
+2. Deletes all sessions for user except current session
+3. Invalidates cache entries for deleted sessions
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/api/auth/logout-all \
+  -H "Cookie: next-auth.session-token=..."
+```
+
+---
+
+### POST /api/auth/logout-session
+
+Logs out from a specific session by session ID. Allows selective logout of individual devices.
+
+**Authentication:** Required (uses NextAuth JWT cookie via requireAuth middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Headers:**
+```
+Cookie: next-auth.session-token=...
+Content-Type: application/json
+```
+
+**Request Body:**
+```json
+{
+  "sessionId": "session-uuid"  // The session ID to delete
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Logged out from device",
+  "deletedCount": 1
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: sessionId is required
+- `401 Unauthorized`: Invalid or missing authentication token
+- `404 Not Found`: Session not found or doesn't belong to user
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Requires authentication via requireAuth middleware
+- Only allows deleting sessions belonging to the authenticated user
+- Prevents deletion of other users' sessions
+- Invalidates LRU cache entry for deleted session
+
+**Database Operations:**
+1. Validates session belongs to authenticated user
+2. Deletes session from `auth_sessions` table
+3. Invalidates cache entry for deleted session
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/api/auth/logout-session \
+  -H "Cookie: next-auth.session-token=..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "session-uuid"
+  }'
+```
+
+---
+
 ### POST /api/auth/logout
 
 Logs out the current user by clearing the NextAuth session. Currently a placeholder for future extensibility.
@@ -450,6 +612,91 @@ curl -X POST http://localhost:3000/api/auth/logout
 
 ---
 
+## Google Authentication
+
+### POST /api/auth/google-one-tap
+
+Verifies Google ID token from Google One Tap Sign-In and creates/updates user account. This endpoint is used by the NextAuth Credentials provider for Google One Tap authentication.
+
+**Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** IP-based rate limiting to prevent abuse
+
+**Request Body:**
+```json
+{
+  "idToken": "string"  // Google ID token from GIS One Tap
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "userId": "user-uuid",
+  "email": "user@example.com",
+  "name": "John Doe",
+  "username": "johndoe",
+  "image": "https://lh3.googleusercontent.com/abc123/photo.jpg"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: ID token is required
+- `401 Unauthorized`: Token verification failed or invalid payload
+- `429 Too Many Requests`: Rate limit exceeded
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Verifies Google ID token signature and audience
+- Extracts user info from verified token payload
+- Creates `user_auth` record for new users
+- IP-based rate limiting to prevent abuse
+- Uses Google OAuth2Client for token verification
+
+**Database Operations:**
+1. Verifies Google ID token signature and audience
+2. Extracts user info (email, name, picture) from token
+3. Creates or updates user account via `createOrUpdateOAuthUser()`
+4. Fetches complete user data for NextAuth session
+
+**Environment Variables Required:**
+- `GOOGLE_CLIENT_ID`: Google OAuth client ID
+
+**NextAuth Integration:**
+```typescript
+// NextAuth Credentials provider usage
+Credentials({
+  id: 'googleonetap',
+  name: 'Google One Tap',
+  credentials: {
+    credential: { label: 'Credential', type: 'text' },
+  },
+  async authorize(credentials) {
+    const res = await fetch(`${process.env.BACKEND_URL}/api/auth/google-one-tap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: credentials.credential }),
+    });
+    
+    if (!res.ok) return null;
+    
+    const user = await res.json();
+    return user;
+  }
+})
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/api/auth/google-one-tap \
+  -H "Content-Type: application/json" \
+  -d '{
+    "idToken": "google-id-token-here"
+  }'
+```
+
+---
+
 ## Security Architecture
 
 ### Database Schema
@@ -458,6 +705,7 @@ curl -X POST http://localhost:3000/api/auth/logout
 - `userId` (UUID, primary key)
 - `email`, `username` (unique)
 - `passwordHash` (bcrypt, nullable for OAuth-only users)
+- `tokenVersion` (integer, default 0) - Session version for JWT revocation
 - Profile fields: `name`, `gender`, `bio`, `image`, etc.
 
 **user_auth table:** Stores authentication state (separated for GDPR compliance)
@@ -469,6 +717,21 @@ curl -X POST http://localhost:3000/api/auth/logout
 - `emailVerified` (timestamp, nullable)
 - `emailVerificationToken` (text, unique, nullable)
 - `emailVerificationExpires` (timestamp, nullable)
+
+**auth_sessions table:** Stores active device sessions for selective logout
+- `id` (UUID, primary key) - Unique session ID embedded in JWT
+- `userId` (UUID, references users.userId, on delete cascade)
+- `userAgent` (text, nullable) - User agent string
+- `ipAddress` (text, nullable) - IP address
+- `deviceName` (text, nullable) - Derived device name (e.g., "Chrome on Windows")
+- `lastActiveAt` (timestamp, default now) - Last activity timestamp
+- `createdAt` (timestamp, default now) - Session creation time
+- `updatedAt` (timestamp, default now) - Last update time
+
+**Indexes:**
+- `auth_sessions_user_idx` on `userId` for user session queries
+- `auth_sessions_id_idx` on `id` for session ID lookups (JWT verification)
+- `auth_sessions_last_active_idx` on `lastActiveAt` for cleanup of inactive sessions
 
 ### Security Features
 

@@ -33,6 +33,9 @@ import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
+import { requireAuth } from '../middleware/nextauth.js';
+import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices } from '../services/session-manager.js';
+import type { Request, Response } from "express";
 
 const router = Router();
 
@@ -753,6 +756,159 @@ router.post('/google-one-tap', async (req, res) => {
   } catch (error) {
     console.error('[POST /api/auth/google-one-tap] ❌ Google One Tap error:', error);
     handleApiError(res, 'Failed to authenticate with Google One Tap', error);
+  }
+});
+
+/**
+ * GET /api/auth/sessions
+ * 
+ * Get all active sessions for the authenticated user.
+ * 
+ * Response (Success - 200):
+ * {
+ *   sessions: Array<{
+ *     id: string;
+ *     userAgent: string | null;
+ *     ipAddress: string | null;
+ *     deviceName: string;
+ *     lastActiveAt: string;
+ *     createdAt: string;
+ *   }>;
+ *   count: number;
+ * }
+ * 
+ * Response (Error - 401): Unauthorized
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Requires authentication via requireAuth middleware
+ * - Returns only sessions belonging to the authenticated user
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/sessions');
+ * const data = await res.json();
+ * console.log(`User has ${data.count} active sessions`);
+ */
+router.get('/sessions', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const sessions = await getUserSessions(userId);
+
+    res.json({
+      sessions,
+      count: sessions.length,
+    });
+  } catch (error) {
+    console.error('[GET /api/auth/sessions] ❌ Error fetching sessions:', error);
+    handleApiError(res, 'Failed to fetch sessions', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/logout-all
+ * 
+ * Logout from all other devices (exclude current session).
+ * 
+ * Request Body: None (uses current session from JWT)
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Logged out from X other device(s)";
+ *   deletedCount: number;
+ * }
+ * 
+ * Response (Error - 400): No session ID found
+ * Response (Error - 401): Unauthorized
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Requires authentication via requireAuth middleware
+ * - Excludes current session from deletion
+ * - Only affects sessions belonging to the authenticated user
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/logout-all', { method: 'POST' });
+ * const data = await res.json();
+ * console.log(data.message);
+ */
+router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const currentSessionId = req.user?.sessionId; // From JWT token
+
+    if (!currentSessionId) {
+      return res.status(400).json({ error: 'No session ID found' });
+    }
+
+    const deletedCount = await logoutFromAllOtherDevices(userId, currentSessionId);
+
+    res.json({
+      message: `Logged out from ${deletedCount} other device(s)`,
+      deletedCount,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/logout-all] ❌ Error logging out from all devices:', error);
+    handleApiError(res, 'Failed to logout from all devices', error, 500);
+  }
+});
+
+/**
+ * POST /api/auth/logout-session
+ * 
+ * Logout from a specific session.
+ * 
+ * Request Body:
+ * {
+ *   sessionId: string;  // The session ID to delete
+ * }
+ * 
+ * Response (Success - 200):
+ * {
+ *   message: "Logged out from device";
+ *   deletedCount: number;
+ * }
+ * 
+ * Response (Error - 400): sessionId is required
+ * Response (Error - 401): Unauthorized
+ * Response (Error - 404): Session not found
+ * Response (Error - 500): Server error
+ * 
+ * Security:
+ * - Requires authentication via requireAuth middleware
+ * - Only allows deleting sessions belonging to the authenticated user
+ * 
+ * @example
+ * // Frontend usage
+ * const res = await fetch('/api/auth/logout-session', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ sessionId: 'session123' }),
+ * });
+ */
+router.post('/logout-session', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    const deletedCount = await logoutFromSpecificDevice(userId, sessionId);
+
+    if (deletedCount === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.json({
+      message: 'Logged out from device',
+      deletedCount,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/logout-session] ❌ Error logging out from session:', error);
+    handleApiError(res, 'Failed to logout from session', error, 500);
   }
 });
 

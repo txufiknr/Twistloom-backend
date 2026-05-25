@@ -19,7 +19,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { getSession } from '@auth/express';
+import { getSession, type User } from '@auth/express';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
 import { dbRead } from '../db/client.js';
@@ -27,6 +27,7 @@ import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
+import { updateSessionMetadata } from '../services/session-manager.js';
 
 /**
  * LRU cache for email -> userId mappings
@@ -61,6 +62,7 @@ const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
  * - AUTH_SECRET must be shared between Next.js frontend and Express backend
  * - No need for manual cookie parsing or JWT decryption - @auth/express handles it
  * - Auto-creates users for first-time OAuth login (Google)
+ * - Updates session metadata (user agent, IP address) on each request
  * 
  * @param req - Express request object
  * @returns User data if token is valid, null otherwise
@@ -107,6 +109,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     const email = session.user.email as string | undefined;
     const name = session.user.name as string | undefined;
     const image = session.user.image as string | undefined;
+    const sessionId = (session.user as User & { sessionId?: string }).sessionId as string | undefined;
 
     if (!email || typeof email !== 'string') {
       console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid email');
@@ -151,10 +154,23 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
           userIdCache.delete(email);
         }
 
+        // Update session metadata if sessionId is available
+        if (sessionId) {
+          try {
+            const userAgent = req.headers['user-agent'] || null;
+            const ipAddress = req.ip || req.socket.remoteAddress || null;
+            await updateSessionMetadata(sessionId, userAgent, ipAddress);
+          } catch (error) {
+            // Don't fail the request if metadata update fails
+            console.error('[verifyNextAuthToken] ❌ Failed to update session metadata:', error);
+          }
+        }
+
         return {
           id: userId,
           email,
           name,
+          sessionId,
         };
       } finally {
         // Clean up the in-flight request cache

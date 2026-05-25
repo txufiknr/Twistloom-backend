@@ -163,7 +163,7 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
  */
 export async function setActiveSession(params: SetActiveSessionParams): Promise<DBUserSession | null> {
   const { userId, bookId, pageId, previousPageId, client = dbWrite } = params;
-  const result = await client
+  const [result] = await client
     .insert(userSessions)
     .values({
       userId,
@@ -193,7 +193,7 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
   });
   
   console.log(`[setActiveSession] 🌟 Session activated:`, { userId, bookId, pageId, previousPageId });
-  return result[0] || null;
+  return result;
 }
 
 /**
@@ -556,13 +556,11 @@ export async function getStoryStateFromDB(
   if (cachedState) return cachedState;
   
   const { client = dbRead } = options;
-  const result = await client
+  const [storyState] = await client
     .select()
     .from(storyStates)
     .where(eq(storyStates.pageId, pageId))
     .limit(1);
-  
-  const storyState = result[0] || null;
   
   // Cache the story state if found
   if (storyState) {
@@ -768,7 +766,7 @@ export async function insertUserPageProgress(data: DBNewUserPageProgress & { cli
       throw new Error("Action destination pageId does not match nextPageId");
     }
 
-    const newPageProgress = await client
+    const [newPageProgress] = await client
       .insert(userPageProgress)
       .values(data)
       .onConflictDoUpdate({
@@ -779,7 +777,7 @@ export async function insertUserPageProgress(data: DBNewUserPageProgress & { cli
       })
       .returning();
 
-    return newPageProgress[0] || null;
+    return newPageProgress;
   } catch (error) {
     console.error(`[insertUserPageProgress] ❌ Failed to insert user page progress:`, getErrorMessage(error));
     return null;

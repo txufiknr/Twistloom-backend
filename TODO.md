@@ -1,10 +1,8 @@
 [ ] Page 1 selected actions masih none
 [ ] Stripe switch to live
 [ ] userSettings schema (interests, email notification settings)
-[ ] userLogins schema (userId, userAgent) -> database sessions (Drizzle adapter)
 [ ] Implement belief
 [ ] Implement corruption curve
-[ ] AI_MAX_PROMPT_LENGTH belum dipake
 
 [ ] API routes:
 - GET page gausah update userpageprogress/visit count kalau last selected actionnya sama

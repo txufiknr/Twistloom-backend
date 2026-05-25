@@ -533,7 +533,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
     }
 
     // Perform partial update
-    const result = await dbWrite
+    const [updatedUser] = await dbWrite
       .update(users)
       .set({
         ...updateData,
@@ -543,7 +543,7 @@ router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Reques
       .returning();
 
     res.json({
-      user: result[0],
+      user: updatedUser,
       imageUploaded: !!newImageUrl,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
       oldImageQueuedForDeletion: oldImageIdQueued,
@@ -599,7 +599,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
     const userId = req.userId!;
 
     // Get user information including imageId before deletion
-    const existingUser = await dbRead
+    const [userToDelete] = await dbRead
       .select({ 
         userId: users.userId,
         imageId: users.imageId
@@ -608,11 +608,9 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
       .where(eq(users.userId, userId))
       .limit(1);
 
-    if (existingUser.length === 0) {
+    if (!userToDelete) {
       return handleNotFoundError(res, "User profile not found");
     }
-
-    const userToDelete = existingUser[0];
 
     // Queue image for deletion if imageId exists
     if (userToDelete.imageId) {
@@ -726,7 +724,7 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     // If row is null, like already existed - fetch it
-    const result = row ? [row] : await dbRead
+    const [like] = row ? [row] : await dbRead
       .select()
       .from(userLikes)
       .where(and(
@@ -737,7 +735,7 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     res.status(201).json({
-      like: result[0] || null,
+      like,
     });
 
     // Log user activity
@@ -975,7 +973,7 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       .returning();
 
     // If row is null, the favorite already existed - fetch it
-    const result = row ? [row] : await dbRead
+    const [favorite] = row ? [row] : await dbRead
       .select()
       .from(userFavorites)
       .where(and(
@@ -985,7 +983,7 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       .limit(1);
 
     res.status(201).json({
-      favorite: result[0],
+      favorite,
     });
 
     // Log user activity
@@ -1354,7 +1352,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
     }
 
     // Update comment
-    const result = await dbWrite
+    const [comment] = await dbWrite
       .update(userComments)
       .set({
         content: content.trim(),
@@ -1367,7 +1365,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
       .returning();
 
     res.json({
-      comment: result[0],
+      comment,
     });
   } catch (error) {
     handleApiError(res, "Failed to update comment", error);
@@ -1584,7 +1582,7 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       .returning();
 
     // If row is null, follow already existed - fetch it
-    const result = row ? [row] : await dbRead
+    const [follow] = row ? [row] : await dbRead
       .select()
       .from(userFollows)
       .where(and(
@@ -1594,7 +1592,7 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       .limit(1);
 
     res.status(201).json({
-      follow: result[0] || null,
+      follow,
     });
 
     // Log user activity

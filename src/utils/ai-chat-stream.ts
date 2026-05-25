@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIDocument, AIPromptOptions, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
 import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -128,7 +128,15 @@ export async function aiStreamSSE(
           }
           
           const models = modelSelection[provider];
-          if (!models || models.length === 0) continue;
+          if (!models || models.length === 0) continue; // Skip to next provider
+
+          // Validate prompt length against provider's maximum limit
+          const totalPromptLength = systemPrompt.length + prompt.length;
+          const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
+          if (totalPromptLength > maxPromptLength) {
+            console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
+            continue;
+          }
           
           console.log(`[${provider}] 🧠 Starting SSE streaming task (${models.length} models)...`);
           

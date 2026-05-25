@@ -480,13 +480,13 @@ export async function getBookFromDB(bookId: string, options: {
 } = {}): Promise<DBBook | null> {
   const { client = dbRead } = options;
 
-  const result = await client
+  const [result] = await client
     .select()
     .from(books)
     .where(eq(books.id, bookId))
     .limit(1);
 
-  return result[0] || null;
+  return result;
 }
 
 /**
@@ -721,12 +721,13 @@ export async function getPageFromDB(pageId: string, options: {
       whereConditions.push(eq(pages.bookId, bookId));
     }
 
-    const result = await client
+    const [result] = await client
       .select()
       .from(pages)
       .where(and(...whereConditions))
       .limit(1);
-    return result[0] || null;
+
+    return result;
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error(`[getPageFromDB] ❌ Failed to get page ${pageId}:`, errorMessage);
@@ -1163,13 +1164,13 @@ export async function getBookInitialState(book: Book): Promise<StoryState | null
 }
 
 export async function getFirstPage(bookId: string): Promise<DBPage | null> {
-  const firstPage = await dbRead
+  const [firstPage] = await dbRead
     .select()
     .from(pages)
     .where(and(eq(pages.bookId, bookId), eq(pages.page, 1)))
     .limit(1);
   
-  return firstPage[0] || null;
+  return firstPage;
 }
 
 /**
@@ -1557,10 +1558,9 @@ export async function insertUserCompletedBook(
   client: DBClient = dbWrite
 ): Promise<{ id: string; completedAt: Date } | null> {
   try {
-    // Use ON CONFLICT DO NOTHING to handle duplicate completions gracefully
-    const result = await client
-      .insert(userCompletedBooks)
-      .values({
+    const [result] = await client
+    .insert(userCompletedBooks)
+    .values({
         userId,
         bookId,
         pageId,
@@ -1568,14 +1568,14 @@ export async function insertUserCompletedBook(
         completedAt: new Date(),
       })
       .onConflictDoNothing({
-        target: [userCompletedBooks.userId, userCompletedBooks.bookId],
+        target: [userCompletedBooks.userId, userCompletedBooks.bookId, userCompletedBooks.pageId],
       })
       .returning({
         id: userCompletedBooks.id,
         completedAt: userCompletedBooks.completedAt,
       });
 
-    return result[0] || null;
+    return result;
   } catch (error) {
     console.error('[insertUserCompletedBook] ❌ Failed to insert completion record:', getErrorMessage(error));
     return null;

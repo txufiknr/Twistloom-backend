@@ -785,7 +785,6 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 - Added GET /payments/subscription endpoint for subscription status retrieval
 - Updated subscription documentation with current endpoint signatures
 - Added @future-enhancements JSDoc comments to subscription endpoints
-- Improved type safety by using Stripe.Subscription.Status instead of custom type
 
 ### v1.2.0 (2026-05-23)
 - Added subscription management endpoints for VIP membership

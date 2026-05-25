@@ -8,6 +8,7 @@ export interface AuthUser {
   email: string;
   name?: string;
   stripeCustomerId?: string;
+  sessionId?: string; // Session ID for device tracking and selective logout
 }
 
 declare module "express" {

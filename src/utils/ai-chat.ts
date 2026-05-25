@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
-import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
+import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
 import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
@@ -747,19 +747,69 @@ export async function nvidiaPrompt(
 }
 
 /**
- * Tries GitHub Models first, then Gemini, Groq, and Cohere (non–summarization tasks; excludes Hugging Face).
- *
- * @param prompt - The prompt to send to AI
- * @param options - Optional configuration (e.g. exclude providers)
- * @returns AI response with provider and output, or empty `none` if all fail
- *
+ * Orchestrates AI providers and models with 2-level fallback to get the best AI result from a given prompt.
+ * 
+ * This function implements a sophisticated fallback strategy:
+ * - **Provider-level fallback**: Tries providers in priority order (as defined in modelSelection)
+ * - **Model-level fallback**: Within each provider, tries models in order until one succeeds
+ * - **Prompt length validation**: Skips providers that cannot handle the total prompt length (system + user)
+ * - **Rate limiting**: Applies per-provider throttling to respect API limits
+ * - **Evaluation phase**: Optionally runs a second AI prompt to score, evaluate, and correct the output
+ * 
+ * ## Configuration Options
+ * - `modelSelection`: Priority-ordered map of providers and their models (default: AI_CHAT_MODELS_WRITING)
+ * - `config`: Generation parameters (temperature, maxTokens, etc.) (default: AI_CHAT_CONFIG_DEFAULT)
+ * - `outputAsJson`: Whether to parse output as JSON object
+ * - `outputJsonStructure`: JSON schema definition for structured output
+ * - `outputJsonRequired`: Required fields in JSON output
+ * - `outputJsonFallbackField`: Fallback field if JSON parsing fails
+ * - `systemPrompt`: System prompt to guide AI behavior (default: PROMPT_SYSTEM)
+ * - `documents`: Additional context documents for RAG-style prompting
+ * - `context`: Logging context for debugging
+ * - `logPrompts`: Whether to log full prompts (only on first iteration)
+ * - `logEvaluationResult`: Whether to log evaluation phase results
+ * 
+ * ## Evaluation Phase
+ * When `evaluatorPrompt` is provided, the function:
+ * 1. Generates initial output using the primary prompt
+ * 2. Calls a second AI prompt (using AI_CHAT_MODELS_EVALUATION) to evaluate the output
+ * 3. The evaluator scores the output, applies corrections, and returns improved result
+ * 4. Returns the evaluated output with metadata (scores, action flags, integrity flags)
+ * 
+ * ## Progress Callbacks
+ * - `onProgress`: Emits SSE events for generation lifecycle (ai_generation_start, ai_generation_complete, ai_evaluation_start, ai_evaluation_complete)
+ * - `onGenerationProgress`: Emits story generation steps for UI updates
+ * 
+ * ## Prompt Length Validation
+ * Calculates total prompt length (systemPrompt + prompt) and skips providers that cannot handle it.
+ * Each provider has a maximum character limit defined in AI_MAX_PROMPT_LENGTH:
+ * - Gemini: 3,600,000 chars (~900K tokens)
+ * - Mistral: 1,000,000 chars (~250K tokens)
+ * - Cohere/Groq/Cerebras/NVIDIA/GitHub: 480,000-500,000 chars (~120K tokens)
+ * 
+ * @param prompt - The user prompt to send to AI
+ * @param options - Optional configuration for generation behavior
+ * @param evaluatorPrompt - Optional second prompt for evaluation phase (scores and corrects output)
+ * @param onProgress - Optional callback for SSE progress events
+ * @param onGenerationProgress - Optional callback for story generation step updates
+ * @returns AI response with provider, model, output, and optional parsed result, or empty `none` if all fail
+ * 
  * @example
  * ```typescript
- * const response = await aiPrompt('Summarize this article about Islamic finance');
- * if (response) {
- *   console.log(`Provider: ${response.provider}, Model: ${response.model}`);
- *   console.log(`Summary: ${response.output}`);
+ * // Basic usage
+ * const response = await aiPrompt<StoryPage>('Generate a story about...');
+ * if (response.provider !== 'none') {
+ *   console.log('Provider:', response.provider, 'Model:', response.model);
+ *   console.log('Story:', response.output.text);
  * }
+ * 
+ * // JSON output with schema
+ * const structured = await aiPrompt<StoryData>('Generate a story about...', {
+ *   outputAsJson: true,
+ *   outputJsonStructure: STORY_SCHEMA_DEFINITION,
+ *   outputJsonRequired: ['title', 'content'],
+ *   outputJsonFallbackField: 'title'
+ * });
  * ```
  */
 export async function aiPrompt<T extends Record<string, unknown> | string = string>(
@@ -798,6 +848,15 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     try {
       const models = modelSelection[provider];
       if (!models || models.length === 0) continue; // Skip to next provider
+
+      // Validate prompt length against provider's maximum limit
+      const totalPromptLength = systemPrompt.length + prompt.length;
+      const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
+      if (totalPromptLength > maxPromptLength) {
+        console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
+        continue;
+      }
+
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
       
       // Only log prompts on the very first iteration
