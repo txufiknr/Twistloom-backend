@@ -11,6 +11,17 @@ CREATE TABLE "action_progress" (
 	CONSTRAINT "action_progress_page_action_unique" UNIQUE("page_id","action_text")
 );
 --> statement-breakpoint
+CREATE TABLE "auth_sessions" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"user_id" uuid NOT NULL,
+	"user_agent" text,
+	"ip_address" text,
+	"device_name" text,
+	"last_active_at" timestamp with time zone DEFAULT now(),
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "book_generations" (
 	"book_id" uuid PRIMARY KEY NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -342,6 +353,7 @@ CREATE TABLE "users" (
 	"is_new_user" boolean DEFAULT true NOT NULL,
 	"subscription_id" uuid,
 	"vip_expires_at" timestamp with time zone,
+	"token_version" integer DEFAULT 0 NOT NULL,
 	"last_active" timestamp with time zone DEFAULT now() NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -364,6 +376,7 @@ CREATE TABLE "webhook_deliveries" (
 );
 --> statement-breakpoint
 ALTER TABLE "action_progress" ADD CONSTRAINT "action_progress_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "book_generations" ADD CONSTRAINT "book_generations_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "book_translations" ADD CONSTRAINT "book_translations_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "books" ADD CONSTRAINT "books_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -397,6 +410,9 @@ ALTER TABLE "user_sessions" ADD CONSTRAINT "user_sessions_page_id_pages_id_fk" F
 CREATE INDEX "action_progress_page_idx" ON "action_progress" USING btree ("page_id");--> statement-breakpoint
 CREATE INDEX "action_progress_status_idx" ON "action_progress" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "action_progress_active_idx" ON "action_progress" USING btree ("status") WHERE "action_progress"."status" = 'started';--> statement-breakpoint
+CREATE INDEX "auth_sessions_user_idx" ON "auth_sessions" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "auth_sessions_id_idx" ON "auth_sessions" USING btree ("id");--> statement-breakpoint
+CREATE INDEX "auth_sessions_last_active_idx" ON "auth_sessions" USING btree ("last_active_at");--> statement-breakpoint
 CREATE INDEX "book_generations_book_idx" ON "book_generations" USING btree ("book_id");--> statement-breakpoint
 CREATE INDEX "book_generations_user_idx" ON "book_generations" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "book_generations_status_idx" ON "book_generations" USING btree ("generation_status");--> statement-breakpoint

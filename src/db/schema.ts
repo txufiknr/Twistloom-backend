@@ -193,6 +193,7 @@ export const users = pgTable(
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     subscriptionId: uuid("subscription_id"),
     vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),
+    tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
     lastActive,
     createdAt,
     updatedAt,
@@ -249,6 +250,43 @@ export const userAuth = pgTable(
     index("user_auth_password_reset_token_idx").on(t.passwordResetToken).where(sql`${t.passwordResetToken} IS NOT NULL`),
     // Index for email verification queries
     index("user_auth_email_verification_token_idx").on(t.emailVerificationToken).where(sql`${t.emailVerificationToken} IS NOT NULL`),
+  ]
+);
+
+/**
+ * Create auth sessions table for per-device logout
+ * @summary Track every active device login with unique session IDs for selective logout
+ * @example
+ * {
+ *   "id": "session123", // Unique ID for this device session (embedded in JWT)
+ *   "user_id": "user456",
+ *   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)...",
+ *   "ip_address": "192.168.1.1",
+ *   "device_name": "Chrome on Windows",
+ *   "last_active_at": "2024-01-15T10:30:00.000Z",
+ *   "created_at": "2024-01-01T00:00:00.000Z",
+ *   "updated_at": "2024-01-15T10:30:00.000Z"
+ * }
+ */
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    id: id(), // Unique ID for this device session (embedded in JWT payload)
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    userAgent: text("user_agent"),
+    ipAddress: text("ip_address"),
+    deviceName: text("device_name"),
+    lastActiveAt: timestamp("last_active_at", { withTimezone: true }).defaultNow(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for user session queries
+    index("auth_sessions_user_idx").on(t.userId),
+    // Index for session ID lookups (used in JWT verification)
+    index("auth_sessions_id_idx").on(t.id),
+    // Index for cleanup (inactive sessions)
+    index("auth_sessions_last_active_idx").on(t.lastActiveAt),
   ]
 );
 

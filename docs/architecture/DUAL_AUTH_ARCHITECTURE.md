@@ -44,14 +44,14 @@ This document describes the dual authentication architecture for Twistloom, supp
 │              Backend (Session Verification)                 │
 ├─────────────────────────────────────────────────────────────┤
 │  verifyNextAuthToken() - Verifies JWT from cookie            │
-│  requireAuth / optionalAuth - Middleware for routes         │
-│  guest middleware - Handles unauthenticated users            │
+│  requireAuth - Middleware for protected routes              │
+│  optionalAuth - Middleware for public routes                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Login Flow Diagrams
 
-### Google OAuth Login Flow (With Guest Migration)
+### Google OAuth Login Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -98,36 +98,22 @@ This document describes the dual authentication architecture for Twistloom, supp
 │  │  IF USER DOESN'T EXIST (First-time login):          │       │
 │  │    → createOrUpdateOAuthUser() creates new user     │       │
 │  │    → Creates user_auth record                        │       │
-│  │    → Sets isGuest=false, isNewUser=true             │       │
+│  │    → Sets isNewUser=true                             │       │
 │  │    → Cache invalidated                               │       │
 │  └─────────────────────────────────────────────────────┘       │
 │     ↓                                                            │
-│  13. Check for guest cookie (twistloom_guest_id)                │
+│  13. Return AuthUser { id, email, name }                        │
 │     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF GUEST COOKIE EXISTS AND ≠ USER ID:              │       │
-│  │    → migrateGuestToAuthUser() called                │       │
-│  │    → Transfers books to authenticated user          │       │
-│  │    → Transfers sessions to authenticated user       │       │
-│  │    → Deletes guest user from database              │       │
-│  │    → Guest cookie remains (ignored)                │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  14. Return AuthUser { id, email, name }                        │
-│     ↓                                                            │
-│  15. Request proceeds with authenticated user                    │
+│  14. Request proceeds with authenticated user                    │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 
 Key Points:
 - Auto-creates user on first-time Google login
 - Updates profile data from Google on each login
-- Automatically migrates guest data if guest cookie exists
-- No manual migration API calls needed from frontend
-- Guest cookie remains but is ignored after migration
 ```
 
-### Email/Password Login Flow (With Guest Migration)
+### Email/Password Login Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -190,20 +176,9 @@ Key Points:
 │  │    → Cache invalidated                               │       │
 │  └─────────────────────────────────────────────────────┘       │
 │     ↓                                                            │
-│  14. Check for guest cookie (twistloom_guest_id)                │
+│  14. Return AuthUser { id, email, name }                        │
 │     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF GUEST COOKIE EXISTS AND ≠ USER ID:              │       │
-│  │    → migrateGuestToAuthUser() called                │       │
-│  │    → Transfers books to authenticated user          │       │
-│  │    → Transfers sessions to authenticated user       │       │
-│  │    → Deletes guest user from database              │       │
-│  │    → Guest cookie remains (ignored)                │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  15. Return AuthUser { id, email, name }                        │
-│     ↓                                                            │
-│  16. Request proceeds with authenticated user                    │
+│  15. Request proceeds with authenticated user                    │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -212,60 +187,6 @@ Key Points:
 - Password verification with bcrypt
 - Account lockout protection (5 failed attempts)
 - Rate limiting to prevent brute force attacks
-- Automatically migrates guest data if guest cookie exists
-- No manual migration API calls needed from frontend
-- Guest cookie remains but is ignored after migration
-```
-
-### Guest User Flow (Before Login)
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. User visits site (no session)                               │
-│     ↓                                                            │
-│  2. User makes request (e.g., create book)                       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                         Backend                                 │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  3. guestOrAuthMiddleware() called                              │
-│     ↓                                                            │
-│  4. verifyNextAuthToken() returns null (no session)              │
-│     ↓                                                            │
-│  5. Check for guest cookie (twistloom_guest_id)                 │
-│     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF GUEST COOKIE EXISTS:                           │       │
-│  │    → Reuse existing guestId                         │       │
-│  │    → Refresh cookie TTL (sliding expiry)            │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  ┌─────────────────────────────────────────────────────┐       │
-│  │  IF NO GUEST COOKIE:                               │       │
-│  │    → createGuestUser() generates new guestId       │       │
-│  │    → Insert user record with isGuest=true          │       │
-│  │    → Set guest cookie (30-day expiry)              │       │
-│  └─────────────────────────────────────────────────────┘       │
-│     ↓                                                            │
-│  6. Set req.guestAuth = { isAuthenticated: false, userId, isGuest: true }
-│     ↓                                                            │
-│  7. Request proceeds with guest user                            │
-│     ↓                                                            │
-│  8. Data (books, sessions) associated with guest userId        │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-
-Key Points:
-- Guest users created automatically on first visit
-- Guest ID persists for 30 days via httpOnly cookie
-- Guest data associated with guest userId in database
-- Seamless transition to authenticated user on login
 ```
 
 ## How NextAuth Connects to Backend Endpoints
@@ -350,7 +271,7 @@ Key Points:
 3. **Backend receives no session cookie:**
    - On next request, browser doesn't send session cookie
    - Backend middleware detects no valid session
-   - `req.userId` is not set (guest user flow applies)
+   - `req.userId` is not set (unauthenticated)
 
 **Optional backend cleanup (POST /api/auth/logout):**
 
@@ -375,307 +296,7 @@ Currently this is a placeholder since NextAuth handles all session management cl
 2. **Backend Simplicity**: Backend only needs to verify JWT cookies (already implemented)
 3. **Security**: NextAuth handles CSRF, session management, and security best practices
 4. **Flexibility**: Users can choose their preferred login method
-5. **Guest Support**: Seamless guest user flow with data migration on login
-6. **Credit System**: Book creation requires authentication and consumes credits (prevents abuse)
-
-## Guest Mode Architecture
-
-### Overview
-
-Guest mode allows unauthenticated users to interact with the application (e.g., generate stories) without creating an account. Guest data is associated with a persistent guest userId and migrated to the authenticated user upon login.
-
-### Architecture
-
-**Backend-Only Cookie Management:**
-
-The backend handles all guest identification and cookie management for security:
-
-- **Cookie Name**: `twistloom_guest_id`
-- **Cookie Type**: httpOnly (JavaScript cannot read it)
-- **Expiry**: 30 days
-- **Security**: httpOnly prevents XSS attacks from stealing guest identity
-- **Persistence**: Same userId across browser restarts, page refreshes, navigation
-
-**Frontend Implementation:**
-
-**File: `src/lib/hooks/useGuest.ts` (frontend)**
-
-The frontend does NOT manage guest cookies. It only checks authentication status:
-
-```typescript
-export function useGuest() {
-  const { data: session, status } = useSession();
-
-  return {
-    isGuest: !session, // Guest if no session
-    isAuthenticated: !!session, // Authenticated if has session
-    isLoading: status === 'loading',
-    user: session?.user || null,
-  };
-}
-```
-
-**Why Frontend Doesn't Manage Guest Cookies:**
-- Backend sets guest cookie as `httpOnly: true` for security
-- JavaScript cannot read httpOnly cookies
-- Frontend only needs to know if user is authenticated (via NextAuth session)
-- Backend handles all guest identification and data association
-
-### Backend Implementation
-
-**File: `src/middleware/guest.ts` (backend)**
-
-The backend implements `guestOrAuthMiddleware` which:
-
-1. Tries NextAuth authentication first
-2. Falls back to guest cookie for unauthenticated users
-3. Creates new guest user if cookie doesn't exist
-4. Sets httpOnly guest cookie in response
-5. Provides `req.guestAuth` object with user info
-
-```typescript
-export async function guestOrAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-  // Try NextAuth authentication first
-  const user = await verifyNextAuthToken(req);
-
-  if (user) {
-    // Authenticated user
-    req.guestAuth = {
-      isAuthenticated: true,
-      userId: user.id,
-      isGuest: false,
-      user,
-    };
-    req.user = user;
-    next();
-    return;
-  }
-
-  // Guest user - check for guest cookie
-  const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
-  let guestId = guestCookie;
-
-  if (!guestId) {
-    // Create new guest user
-    guestId = await createGuestUser();
-
-    // Set guest cookie in response
-    res.cookie(GUEST_COOKIE_NAME, guestId, {
-      httpOnly: true, // Prevent XSS attacks
-      secure: IS_PRODUCTION,
-      sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-      path: '/',
-    });
-  }
-
-  req.guestAuth = {
-    isAuthenticated: false,
-    userId: guestId,
-    isGuest: true,
-  };
-  req.userId = guestId; // Set req.userId for rate limiting and route handlers
-
-  next();
-}
-```
-
-**Data Migration on Login:**
-
-**File: `src/middleware/nextauth.ts` (backend)**
-
-Guest data migration is now handled automatically by `verifyNextAuthToken()` which:
-
-1. Verifies NextAuth session from cookie
-2. Auto-creates user if first-time OAuth login (Google)
-3. Updates user profile from OAuth provider data
-4. Migrates guest data (books, sessions) to authenticated user if guest cookie exists
-5. Calls `migrateGuestToAuthUser()` from `src/services/user-controller.ts`
-
-```typescript
-// In verifyNextAuthToken():
-// Check if user exists in database
-let userId = await getUserId(email);
-
-if (!userId) {
-  // First-time OAuth login - create user in database
-  userId = await createOrUpdateOAuthUser(email, name, image);
-} else {
-  // Existing user - update profile data from OAuth provider
-  await createOrUpdateOAuthUser(email, name, image);
-}
-
-// Migrate guest data if guest cookie exists
-const guestCookie = req.cookies?.['twistloom_guest_id'];
-if (guestCookie && guestCookie !== userId) {
-  await migrateGuestToAuthUser(guestCookie, userId);
-}
-```
-
-**File: `src/services/user-controller.ts` (backend)**
-
-Provides reusable service functions for user management:
-
-- `createOrUpdateOAuthUser()` - Creates or updates user from OAuth provider data
-- `migrateGuestToAuthUser()` - Migrates guest data to authenticated user and deletes guest
-
-**Data Migration Details:**
-
-The `migrateGuestToAuthUser()` function ensures no orphaned data by migrating all guest-related data before deleting the guest user:
-
-**IMPORTANT: Guest User Capabilities**
-
-Guest users can only perform:
-- **Read operations**: Browse books, view content
-- **Limited write operations** (require persistence):
-  - `user_sessions`: Track reading sessions for books
-  - `user_page_progress`: Track reading progress (page choices, branch navigation)
-
-**Guest users CANNOT perform (requires authentication):**
-- Book creation: Requires authentication and consumes credits
-- Likes: Requires authentication
-- Comments: Requires authentication
-- Favorites: Requires authentication
-- Social features (follows, etc.): Require authentication
-- Payments/transactions: Require authentication
-
-**Tables migrated (guests can have data in):**
-- `userSessions` - Guest reading sessions
-- `userPageProgress` - Guest page progress tracking
-- `userActivityLogs` - Guest activity logs
-
-**Tables not migrated (disabled for guests):**
-- `books` - Book creation requires authentication
-- `userAuth` - Only for authenticated users
-- `userLikes` - Disabled for guests
-- `userFavorites` - Disabled for guests
-- `userComments` - Disabled for guests
-- `userFollows` - Disabled for guests
-- `transactions` - Guests can't make payments
-- `userNotifications` - Disabled for guests
-- `user_checkins` - Disabled for guests
-
-**Migration approach:**
-- Discard the guest user row (delete it)
-- Append/migrate all guest data to the authenticated user
-- This ensures no orphaned data and no data loss
-- Foreign key constraints are properly handled by migrating dependent data before deletion
-
-### Guest Flow
-
-1. **User visits site (unauthenticated)**
-   - Backend receives request with no auth cookie
-   - Backend creates guest user in DB (using `generateId()`)
-   - Backend sets httpOnly guest cookie (`twistloom_guest_id`, 30-day expiry)
-   - Frontend shows guest UI (no NextAuth session)
-
-2. **User generates story**
-   - Frontend sends request to backend
-   - Backend receives guest cookie (`twistloom_guest_id`)
-   - Backend associates story with guest user in DB
-   - Story is owned by guest user
-
-3. **User logs in**
-   - Frontend calls NextAuth signIn() (Google OAuth or email/password)
-   - NextAuth creates session cookie
-   - On next request, `verifyNextAuthToken()` verifies session
-   - If first-time OAuth login: auto-creates user in database
-   - If guest cookie exists: migrates guest data to authenticated user
-   - Guest user deleted from database
-   - User now uses auth cookie (guest cookie remains but is ignored)
-
-### Guest Cookie Configuration
-
-**Backend:**
-- Name: `twistloom_guest_id`
-- Value: UUID v7 string (from `generateId()`)
-- Expiry: 30 days (2,592,000 seconds)
-- Path: `/`
-- httpOnly: `true` (JavaScript cannot read it)
-- secure: `true` in production
-- sameSite: `'none'` if cross-origin, `'lax` if same-domain
-
-**Frontend:**
-- Does NOT manage guest cookie
-- Does NOT read guest cookie (cannot read httpOnly cookies)
-- Only checks NextAuth session status
-
-### Cookie Persistence Mechanism
-
-**How `twistloom_guest_id` Remains the Same Per Device:**
-
-The guest cookie persists across browser restarts and page refreshes due to standard HTTP cookie behavior:
-
-1. **Browser Cookie Storage**: HTTP cookies with an expiry (`maxAge`) are automatically stored in the browser's cookie database and sent with every request to the matching domain/path until they expire or are explicitly cleared. This is fundamental browser behavior that works across:
-   - Page refreshes
-   - Browser restarts
-   - Tab closures/reopenings
-   - Navigation within the same domain
-
-2. **Cookie Configuration** (from `src/middleware/guest.ts`):
-   ```typescript
-   res.cookie(GUEST_COOKIE_NAME, guestId, {
-     httpOnly: true,
-     secure: IS_PRODUCTION,
-     sameSite: (IS_PRODUCTION && isCrossOrigin) ? 'none' : 'lax',
-     maxAge: 60 * 60 * 24 * 30 * 1000, // 30 days in milliseconds
-     path: '/',
-   });
-   ```
-   - `maxAge: 30 days` - Browser stores cookie for 30 days from creation
-   - `path: '/'` - Cookie sent for all paths on the domain
-   - Browser handles all persistence automatically
-
-3. **Backend Reuse Logic** (from `src/middleware/guest.ts`):
-   ```typescript
-   const guestCookie = req.cookies?.[GUEST_COOKIE_NAME];
-   let guestId = guestCookie;
-   
-   if (!guestId) {
-     // Only create new guest if cookie doesn't exist
-     guestId = await createGuestUser();
-     res.cookie(GUEST_COOKIE_NAME, guestId, {...});
-   }
-   ```
-   - Backend checks for existing cookie first on every request
-   - Only generates new guestId if cookie is missing (first visit or expired)
-   - Reuses existing guestId from cookie on all subsequent requests
-
-**Result**: The same `twistloom_guest_id` value is used for all requests from the same browser/device for 30 days, ensuring consistent guest identity across sessions.
-
-### Security Considerations
-
-1. **httpOnly Cookie**: Guest cookie is httpOnly (JavaScript cannot read it)
-   - Prevents XSS attacks from stealing guest identity
-   - Backend manages all guest identification
-   - Frontend only needs authentication status
-
-2. **UUID Uniqueness**: Backend uses `generateId()` (UUID v7) for uniqueness
-
-3. **Data Migration**: Backend ensures atomic migration to prevent data loss
-
-4. **Cookie Expiry**: 30-day expiry balances persistence with security
-
-### Testing
-
-**Test Guest Cookie Persistence:**
-```bash
-# 1. Visit site as guest
-# 2. Check browser cookies (should see twistloom_guest_id)
-# 3. Refresh page
-# 4. Verify same guest userId (backend logs)
-# 5. Close browser, reopen
-# 6. Verify same guest userId (if within 30 days)
-```
-
-**Test Guest Data Migration:**
-```bash
-# 1. Generate story as guest
-# 2. Note story ID
-# 3. Log in with credentials
-# 4. Verify story is now owned by authenticated user
-# 5. Verify guest cookie is removed
-```
+5. **Credit System**: Book creation requires authentication and consumes credits (prevents abuse)
 
 ## Backend Implementation
 
@@ -1232,7 +853,6 @@ done
 - [ ] Update environment variables
 - [ ] Test both login methods (Google + Email/Password)
 - [ ] Test session persistence
-- [ ] Test guest user migration (if applicable)
 
 ## References
 

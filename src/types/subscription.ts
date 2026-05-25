@@ -1,5 +1,3 @@
-import type Stripe from 'stripe';
-
 /**
  * Subscription transaction type for tracking subscription-related credit allocations
  */
@@ -9,10 +7,20 @@ export type SubscriptionTransactionType =
   | 'cancellation';
 
 /**
- * Re-export Stripe's Subscription.Status for convenience
- * Use Stripe.Subscription.Status directly for type safety
+ * Subscription status for VIP subscriptions
+ * Matches Stripe's Subscription.Status type for type safety
+ * Not using Stripe.Subscription.Status directly as TypeScript couldn't properly serialize for the build.
  */
-export type SubscriptionStatus = Stripe.Subscription.Status;
+export type SubscriptionStatus = 
+  | 'active'
+  | 'past_due'
+  | 'canceled'
+  | 'unpaid'
+  | 'incomplete'
+  | 'incomplete_expired'
+  | 'trialing'
+  | 'all'
+  | 'paused';
 
 /**
  * Subscription configuration for VIP plans
