@@ -31,7 +31,7 @@ by book creator:
 
 paid:
 [ ] custom action prompt (max 50 chars, prevent sql inject, etc)
-[ ] re-select other action in previous page
+[x] re-select other action in previous page
 [ ] generate cover image with AI (puter)
 [ ] generate page image with AI (puter)
 [ ] see hint for an action

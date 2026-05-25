@@ -11,7 +11,7 @@ import { parseAISafely } from "./parser.js";
 import type Groq from 'groq-sdk';
 import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
 import { type GenerateContentConfig, Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
-import type { V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "cohere-ai/api";
+import type { ResponseFormatV2, V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "cohere-ai/api";
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
@@ -470,19 +470,15 @@ export async function coherePrompt(
         p: config.topP,
         k: config.topK,
         stopSequences: config.stopSequences,
-        responseFormat: outputAsJson ? (outputJsonStructure ? {
+        responseFormat: outputAsJson ? {
           type: "json_object",
-          jsonSchema: {
-            name: context ?? "output-format",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: outputJsonStructure,
-              required: outputJsonRequired,
-              additionalProperties: false
-            }
-          }
-        } : { type: 'json_object' }) : undefined,
+          jsonSchema: outputJsonStructure ? {
+            type: "object",
+            properties: outputJsonStructure,
+            required: outputJsonRequired,
+            additionalProperties: false
+          } : undefined
+        } satisfies ResponseFormatV2 : undefined,
       } satisfies V2ChatRequest);
     },
     (response) => {

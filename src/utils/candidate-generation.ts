@@ -644,8 +644,10 @@ function triggerDeeperLevelGeneration(
   context: string
 ): void {
   if (currentDepth >= maxDepth || candidatePages.length === 0) return;
+  const { id: bookId, title: bookTitle } = currentBook;
+  const nextDepth = currentDepth + 1;
 
-  console.log(`[${context}] 🚀 Starting fire-and-forget generation for depth ${currentDepth + 1}/${maxDepth} with ${candidatePages.length} candidates`);
+  console.log(`[${context}] 👩‍🚀 Starting deeper level generation for "${bookTitle}" with ${candidatePages.length} candidate pages`);
   
   // Process deeper levels in background without waiting
   void Promise.allSettled(
@@ -661,27 +663,27 @@ function triggerDeeperLevelGeneration(
           return;
         }
         
-        const nextDepth = currentDepth + 1;
-        // Only trigger if page number < 10 to prevent too many concurrent workflows
-        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && candidatePage.page <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE) {
-          // Immediate fire-and-forget for better UX
+        const { id: pageId, page: pageNumber } = candidatePage;
+        const jobDetails = { bookTitle, depth: `${nextDepth}/${maxDepth}`, pageId, pageNumber };
+
+        // Only trigger if page number <= allowed to prevent too many concurrent workflows
+        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE) {
           // No need for validation as this is a certain candidate generation for a valid new page
           triggerCandidateGenerationWorkflow({
             userId,
-            pageId: candidatePage.id,
-            bookId: candidatePage.bookId,
-            bookTitle: currentBook.title,
-            maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH - currentDepth,
+            pageId,
+            bookId,
+            bookTitle,
+            maxDepth: maxDepth - currentDepth,
             context: `${context}-${nextDepth}`
           }).catch(error => {
-            console.error(`[${context}] ❌ Failed to trigger GitHub workflow for level ${nextDepth}:`, error);
+            console.error(`[${context}] ❌ Failed to trigger GitHub workflow for:`, { ...jobDetails, error });
           });
-          console.log(`[${context}] 🚀 Triggered immediate background generation for level ${nextDepth} (page ${candidatePage.page})`);
         } else {
-          console.log(`[${context}] ✅ Done, let GitHub Workflow continue via the hourly job (page ${candidatePage.page} >= 10 or depth limit reached)`);
+          console.log(`[${context}] ⏩ Skipped, let GitHub Workflow do it via the hourly job:`, jobDetails);
         }
       } catch (error) {
-        console.error(`[${context}] ❌ Background generation failed for depth ${currentDepth + 1}:`, getErrorMessage(error));
+        console.error(`[${context}] ❌ Background generation failed for depth ${nextDepth}:`, getErrorMessage(error));
       }
     })
   ).then(results => {
@@ -1212,7 +1214,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
     return { success: false, error: 'GitHub workflow token not configured' };
   }
   
-  console.log(`[${context}] 👨‍💻 Triggering GitHub workflow for page ${pageId} with maxDepth:`, maxDepth);
+  console.log(`[${context}] 🚀 Triggering GitHub workflow for "${bookTitle}" page ${pageId} with maxDepth:`, maxDepth);
 
   try {
     // Check if generation is already in progress (idempotency check)
