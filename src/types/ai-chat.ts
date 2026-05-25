@@ -108,6 +108,8 @@ export type AIJsonProperty = {
   properties?: Record<string, AIJsonProperty>;
   required?: string[];
   additionalProperties?: boolean;
+  enum?: string[];
+  description?: string;
 };
 
 /**

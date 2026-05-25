@@ -112,6 +112,7 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   gemini: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
   ...AI_CHAT_MODELS_OPENAI,
   mistral: ['mistral-large-latest'],
+  cohere: ['command-r-08-2024', 'command-r7b-12-2024'],
 };
 
 // Summarizing story context (small but creative)

@@ -455,7 +455,7 @@ export async function coherePrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { documents, config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { documents, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
       return await getCohereClient().chat({
         model,
         messages: [

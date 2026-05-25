@@ -2240,9 +2240,13 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
  *   ]
  * }
  */
-router.get("/activity-logs", requireAuth, async (req: Request, res: Response) => {
+router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.userId!;
+    const userId = req.userId;
+    if (!userId) {
+      return res.json({ logs: [] });
+    }
+
     const { activityType, targetType, limit = "50", offset = "0" } = req.query;
 
     // Build base query conditions

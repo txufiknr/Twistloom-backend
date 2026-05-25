@@ -229,6 +229,7 @@ export type ActionHint = {
 }
 
 export type FlagLevel = 'low' | 'medium' | 'high';
+export const flagLevels: FlagLevel[] = ['low', 'medium', 'high'];
 
 export type TrustLevel = FlagLevel;
 export type FearLevel = FlagLevel;
@@ -459,7 +460,8 @@ export type MemoryIntegrity = "stable" | "fragmented" | "corrupted";
  * Determines the intensity of psychological elements,
  * frequency of twists, and reliability of narration.
  */
-export type Difficulty = "low" | "medium" | "high" | "nightmare";
+export const difficulties = ["low", "medium", "high", "nightmare"];
+export type Difficulty = typeof difficulties[number];
 
 /**
  * Available psychological archetypes for MC behavior patterns

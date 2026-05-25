@@ -192,14 +192,14 @@ function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: str
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
   "alternativeTitles": ["Alternative Title: Dead City", "..."],
-  "totalPages": <number between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}>,
+  "totalPages": <integer between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}>,
   "language": "<ISO 639-1 language code, e.g. 'en'>",
   "hook": "...",
   "summary": "...",
   "keywords": ["mood-tag", "theme-tag", "..."],
   "mainCharacter": {
     "name": "Full Name",
-    "age": <number between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
+    "age": <integer between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
     "gender": "One of: ${formatOneOf(genders)}",
     "bio": "Trait-forward description. Include at least one psychological vulnerability."
   },
@@ -246,7 +246,7 @@ const firstBookOutputFormat: string = `{
       {
         "name": "...",
         "traits": {"...": "..."},
-        "amount": <number>,
+        "amount": <integer>,
         "where": "..."
       }
     ],
@@ -1141,7 +1141,7 @@ Flag any action that fails — include in issues.
 JSON INTEGRITY CHECKS (flag any violation):
 - age is a number, not a range string
 - familiarity is a decimal between 0.0 and 1.0
-- totalPages is within MIN-MAX bounds
+- totalPages is within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds
 - No trailing commas
 - All mandatory fields present and populated
 - charactersPresent names exist in initialCharacters
@@ -1405,7 +1405,7 @@ function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string
         let injuryLine = `  - ${parts.join(' ')}`;
         if (injury.consequences) {
           const injurySeverity = getInjurySeverityLabel(injury);
-          injuryLine += `\n    → Consequence (${injurySeverity}): ${injury.consequences}`;
+          injuryLine += `\n    → Consequences (${injurySeverity}): ${injury.consequences}`;
         }
         return injuryLine;
       });

@@ -44,7 +44,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
@@ -1186,7 +1186,9 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     // Check if authentication is required for this sort option
     const requiresAuth = ['creations', 'reads', 'recommendations'].includes(bookSortBy);
     if (requiresAuth && !userId) {
-      return handleUnauthorizedError(res, `Authentication required for book ${bookSortBy}`);
+      const emptyBooks: EnrichedBookData[] = [];
+      const pagination = calculatePaginationMeta(page, limit, 0);
+      return res.json(createPaginatedResponse(emptyBooks, pagination, 'books'));
     }
 
     // Determine base condition based on sort option

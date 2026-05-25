@@ -2,7 +2,10 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import type { CharacterMemory, StoryMC, StoryMCTranslation } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
-import type { Action, ActionHint, ActionTranslation, PsychologicalFlags, StoryPage, StoryStateInitialGeneration } from "../types/story.js";
+import type { Ending, EndingType, PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, StoryPage, StoryStateInitialGeneration, TrustLevel } from "../types/story.js";
+import { difficulties, endingTypes, flagLevels, plotFlagTypes } from "../types/story.js";
+import { genders, type KnownGender } from "../types/user.js";
+import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_ACTION_SCHEMA } from "./story.js";
 
 /**
  * Common schema definition for BookCreationResponse type
@@ -13,7 +16,7 @@ import type { Action, ActionHint, ActionTranslation, PsychologicalFlags, StoryPa
 export const BOOK_CREATION_SCHEMA_DEFINITION = {
   title: { type: 'string' },
   alternativeTitles: { type: 'array', items: { type: 'string' } },
-  totalPages: { type: 'number' },
+  totalPages: { type: 'integer' },
   language: { type: 'string' },
   hook: { type: 'string' },
   summary: { type: 'string' },
@@ -28,24 +31,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       charactersPresent: { type: 'array', items: { type: 'string' } },
       keyEvents: { type: 'array', items: { type: 'string' } },
       importantObjects: { type: 'array', items: { type: 'string' } },
-      actions: { type: 'array', items: {
-        type: 'object',
-        properties: {
-          text: { type: 'string' },
-          type: { type: 'string' },
-          hint: {
-            type: 'object',
-            properties: {
-              text: { type: 'string' },
-              type: { type: 'string' },
-            },
-            required: ['text', 'type'] satisfies (keyof ActionHint)[],
-            additionalProperties: false
-          },
-        },
-        required: ['text', 'type', 'hint'] satisfies (keyof Action)[],
-        additionalProperties: false
-      } },
+      actions: STORY_ACTION_SCHEMA,
     },
     required: ['text'] satisfies (keyof StoryPage)[],
     additionalProperties: false
@@ -56,21 +42,38 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       flags: {
         type: 'object',
         properties: {
-          trust: { type: 'string' },
-          fear: { type: 'string' },
-          guilt: { type: 'string' },
-          curiosity: { type: 'string' },
+          trust: { type: 'string', enum: [...flagLevels] satisfies TrustLevel[] },
+          fear: { type: 'string', enum: [...flagLevels] satisfies FearLevel[] },
+          guilt: { type: 'string', enum: [...flagLevels] satisfies GuiltLevel[] },
+          curiosity: { type: 'string', enum: [...flagLevels] satisfies CuriosityLevel[] },
         },
         required: ['trust', 'fear', 'guilt', 'curiosity'] satisfies (keyof PsychologicalFlags)[],
         additionalProperties: false
       },
-      difficulty: { type: 'string' },
-      viableEnding: { type: 'object' },
+      difficulty: { type: 'string', enum: [...difficulties] },
+      viableEnding: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          type: { type: 'string', enum: Object.keys(endingTypes) satisfies EndingType[] },
+        },
+        required: ['text', 'type'] satisfies (keyof Ending)[],
+        additionalProperties: false
+      },
       traumaTags: { type: 'array', items: { type: 'string' } },
-      plotFlags: { type: 'array', items: { type: 'object' } },
+      plotFlags: { type: 'array', items: {
+        type: 'object',
+        properties: {
+          page: { type: 'integer' },
+          fact: { type: 'string' },
+          type: { type: 'string', enum: [...plotFlagTypes] satisfies PlotFlagType[] },
+        },
+        required: ['page', 'fact', 'type'] satisfies (keyof PlotFlag)[],
+        additionalProperties: false
+      } },
       isMajorEvent: { type: 'boolean' },
-      inventory: { type: 'array', items: { type: 'object' } },
-      injuries: { type: 'array', items: { type: 'object' } },
+      inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },
+      injuries: { type: 'array', items: INJURY_SCHEMA },
     },
     required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof StoryStateInitialGeneration)[],
     additionalProperties: false
@@ -94,7 +97,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       properties: {
         name: { type: 'string' },
         role: { type: 'string' },
-        gender: { type: 'string' },
+        gender: { type: "string", enum: [...genders] },
         status: { type: 'string' },
         relationshipToMC: { type: 'string' },
         bio: { type: 'string' },
@@ -108,8 +111,8 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
     type: 'object',
     properties: {
       name: { type: 'string' },
-      age: { type: 'number' },
-      gender: { type: 'string' },
+      age: { type: 'integer' },
+      gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
       bio: { type: 'string' },
     },
     required: ['name', 'age', 'gender', 'bio'] satisfies (keyof StoryMC)[],
