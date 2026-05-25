@@ -773,6 +773,7 @@ export async function insertUserPageProgress(data: DBNewUserPageProgress & { cli
         target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.actionedPageId],
         set: {
           action: data.action,
+          updatedAt: new Date(),
         }
       })
       .returning();

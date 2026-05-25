@@ -1,11 +1,11 @@
 [ ] Page 1 selected actions masih none
 [ ] Stripe switch to live
-[ ] userSettings schema (interests, email notification settings)
 [ ] Implement belief
 [ ] Implement corruption curve
 
-[ ] API routes:
-- GET page gausah update userpageprogress/visit count kalau last selected actionnya sama
+[ ] userSettings schema
+- interests: string[]
+- email notification settings
 
 [ ] enhance book explore:
 - fuzzy search/Levenshtein (typo) // does postgresql has this built-in?

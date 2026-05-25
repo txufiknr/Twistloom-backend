@@ -683,9 +683,14 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
  * - Add proration preview for plan changes
  * - Add usage analytics for subscription benefits
  */
-router.get("/subscription", requireAuth, async (req: Request, res: Response) => {
+router.get("/subscription", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.user!.id;
+    const userId = req.userId;
+    if (!userId) {
+      return res.json({
+        hasActiveSubscription: false,
+      });
+    }
 
     // Check if user has active VIP subscription
     const hasActiveSub = await hasActiveVipSubscription(userId);

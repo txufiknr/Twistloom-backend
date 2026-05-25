@@ -2648,20 +2648,21 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const expectedPageNumber = actionedPage.page + 1;
   const expectedPreviousPagesLength = actionedPage.page - 1;
   const advancedState = await advanceStoryState(currentState, actionedPage);
-  // const isLastPage = expectedPageNumber === book.totalPages;
+  const isLastPage = expectedPageNumber === book.totalPages;
+
+  console.log(`[generateNextPage] 💭 Preparing idea for ${isLastPage ? 'last' : 'next'} page ${expectedPageNumber} of ${book.totalPages}...`);
 
   // 1. Create personalized prompt with character, story context, and previous action
-  const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
-  console.log(`[generateNextPage] 🧩 actionedPage.page:`, actionedPage.page);
-  console.log(`[generateNextPage] 🧩 advancedState.page:`, advancedState.page);
   if (advancedState.page !== expectedPageNumber) {
     // Provided story state might mismatch, but still respect what provided
     console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${advancedState.page} from advancedState`);
     advancedState.page = expectedPageNumber;
   }
-
-  console.log(`[generateNextPage] 🧩 previousPages.length:`, previousPages.length);
-  console.log(`[generateNextPage] 🧩 Match?:`, previousPages.length === expectedPreviousPagesLength ? '✅' : '❌');
+  
+  const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
+  if (previousPages.length !== expectedPreviousPagesLength) {
+    console.log(`[generateNextPage] ⚠️ Previous page count mismatch, should be ${expectedPreviousPagesLength} but we got ${previousPages.length}`);
+  }
 
   const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages };
   const prompt = buildNextPagePrompt(promptParams);
@@ -2706,7 +2707,6 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
   // 6. Apply current AI turn's updates to advanced story state
   const stateDelta = extractStateDelta(generatedStoryPage);
-  console.log(`[reconstructStoryState] 🧩 Applying state delta from generated page ${expectedPageNumber}`);
   const newState = applyStateDelta(advancedState, stateDelta);
   if (newState.page !== expectedPageNumber) {
     // Provided story state might mismatch, but still respect what provided
