@@ -173,6 +173,7 @@ Return JSON with:
   - context: brief context of where it was found
   - reason: explanation of why it's a violation
 - suggestion: string (how to fix the issue, or empty string if valid)
+- comment: string (a complimentary comment about the theme idea using creative & thriller-themed wording in the SAME LANGUAGE as the input theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
 
 If the theme is valid and safe, return:
 {
@@ -180,7 +181,8 @@ If the theme is valid and safe, return:
   "category": "NONE",
   "confidence": 1.0,
   "detectedItems": [],
-  "suggestion": ""
+  "suggestion": "",
+  "comment": "A thrilling concept that promises suspense and intrigue..."
 }`;
 }
 
@@ -195,7 +197,8 @@ const THEME_VALIDATION_SCHEMA = {
   category: { type: 'string' },
   confidence: { type: 'number' },
   detectedItems: { type: 'array', items: { type: 'object' } },
-  suggestion: { type: 'string' }
+  suggestion: { type: 'string' },
+  comment: { type: 'string' }
 } as const;
 
 /**
@@ -245,6 +248,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
         confidence: 0.0,
         detectedItems: [],
         suggestion: '',
+        comment: '',
       };
     }
 
@@ -258,6 +262,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
       confidence: 0.0,
       detectedItems: [],
       suggestion: '',
+      comment: '',
     };
   }
 }

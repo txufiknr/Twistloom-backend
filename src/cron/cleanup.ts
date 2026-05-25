@@ -17,6 +17,7 @@ export async function runDailyCleanup(): Promise<void> {
   // Lazy imports in cron for better memory usage and startup time
   const { processQueuedImageDeletions } = await import("../services/image.js");
   const { runVipExpirationCheck } = await import("./vip-expiration.js");
+  const { cleanupPrompts } = await import("./cleanup-prompts.js");
   const { dbWrite } = await import("../db/client.js");
   const { userActivityLogs } = await import("../db/schema.js");
   const { lt } = await import("drizzle-orm");
@@ -56,6 +57,11 @@ export async function runDailyCleanup(): Promise<void> {
       .returning({ id: userActivityLogs.id });
     
     console.log(`[cleanup] 📊 Deleted ${deletedLogs.length} activity logs older than ${ACTIVITY_LOG_RETENTION_MONTHS} months`);
+
+    // Cleanup story prompts (expired, low-quality, over-used)
+    console.log("[cleanup] 🎨 Cleaning up story prompts...");
+    await cleanupPrompts();
+    console.log("[cleanup] ✨ Story prompt cleanup completed");
 
     const durationMs = Date.now() - startedAt;
     console.log(`[cleanup] ✅ Cleanup completed in ${durationMs}ms:`, {

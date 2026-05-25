@@ -48,6 +48,9 @@ import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundEr
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
+import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache, validatePromptQuality } from "../services/prompt-cache.js";
+import { streamCachedPrompt } from "../utils/prompt-stream.js";
+import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
@@ -810,17 +813,81 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
   });
 
   try {
-    // Get the stream from the service
-    const stream = await generateBookCreationPromptStream({signal: abortController.signal});
+    const userId = req.userId || null;
+    let promptContent: string | null = null;
+    let promptId: string | null = null;
 
-    // Stream chunks to client
-    for await (const chunk of stream) {
-      res.write(chunk);
+    // Check if cache should be used
+    if (PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
+      // Try to get fresh prompt from cache for authenticated users
+      if (userId) {
+        const cachedPrompt = await getFreshPromptForUser(userId);
+        if (cachedPrompt) {
+          promptContent = cachedPrompt.content;
+          promptId = cachedPrompt.id;
+        }
+      }
+      
+      if (promptContent) {
+        console.log('[GET /api/books/prompt] ✅ Serving from cache for user:', userId);
+      } else {
+        // If no user-specific prompt available, use weighted random selection
+        // For now, fallback to AI generation if cache miss
+        // TODO: could implement selectPromptByUsageWeight() here in future
+        console.log('[GET /api/books/prompt] 🍪 Cache miss, generating via AI');
+      }
     }
 
-    res.end();
+    // Generate via AI if cache not used or cache miss
+    if (!promptContent) {
+      const stream = await generateBookCreationPromptStream({signal: abortController.signal});
+      
+      // Collect the full content from the stream
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+        res.write(chunk);
+      }
+      
+      // Combine chunks to get full content
+      promptContent = Buffer.concat(chunks).toString('utf-8');
+      
+      // Validate and save to cache if quality is good
+      if (PROMPT_CACHE_CONFIG.enabled && userId) {
+        const qualityScore = validatePromptQuality(promptContent);
+        if (qualityScore >= PROMPT_CACHE_CONFIG.minQuality) {
+          try {
+            promptId = await savePromptToCache(promptContent, qualityScore);
+            console.log('[GET /api/books/prompt] ✅ Saved to cache with score:', qualityScore);
+          } catch (error) {
+            console.error('[GET /api/books/prompt] Failed to save to cache:', error);
+          }
+        }
+      }
+      
+      res.end();
+    } else {
+      // Stream from cache with simulated typing effect
+      const cacheStream = await streamCachedPrompt(promptContent);
+      
+      for await (const chunk of cacheStream) {
+        res.write(chunk);
+      }
+      
+      res.end();
+    }
+
+    // Track prompt view if user is authenticated and we have a prompt ID
+    if (userId && promptId) {
+      try {
+        await trackPromptView(userId, promptId);
+      } catch (error) {
+        console.error('[GET /api/books/prompt] Failed to track prompt view:', error);
+      }
+    }
+
   } catch (error) {
-    console.error('[GET /api/books/prompt] Error:', error);
+    console.error('[GET /api/books/prompt] ❌ Failed to generate story theme:', error);
     
     // Send SSE error event before closing
     if (!res.writableEnded) {
@@ -2426,10 +2493,14 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
  *   "lastUpdated": "2024-01-01T00:00:10Z"
  * }
  */
-router.get("/:identifier/:pageId/candidates/status", requireAuth, async (req: Request, res: Response) => {
+router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: Request, res: Response) => {
   try {
+    const userId = req.userId;
+    if (!userId) {
+      return handleForbiddenError(res, "Please sign in first to see progress status update.");
+    }
+
     const { identifier, pageId } = req.params;
-    const userId = req.userId!;
 
     // Handle array case for identifier and pageId
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;

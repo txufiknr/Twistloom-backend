@@ -147,6 +147,8 @@ export interface AIValidationResult {
   detectedItems: AIDetectedItem[];
   /** Suggestion for how to fix the issue */
   suggestion: string;
+  /** Complimentary comment about the theme idea using creative & thriller-themed wording in the same language as the input */
+  comment: string;
   /** Index signature to satisfy Record<string, unknown> constraint */
   [key: string]: unknown;
 }

@@ -1158,3 +1158,119 @@ export const subscriptionTransactions = pgTable(
     unique("subscription_transactions_invoice_unique").on(t.stripeInvoiceId),
   ]
 );
+
+/**
+ * Story prompts cache table
+ * @summary Cache AI-generated story themes for reuse across users
+ * 
+ * This table stores pre-generated story prompts to reduce AI generation costs.
+ * Prompts are served randomly to users while tracking their viewing history
+ * to ensure freshness (users don't see the same prompt twice).
+ * 
+ * Features:
+ * - Quality scoring for prompt validation
+ * - Usage tracking for rotation
+ * - Expiration-based freshness
+ * - User-specific freshness via history tracking
+ * 
+ * @example
+ * {
+ *   "id": "prompt123",
+ *   "content": "A psychological thriller about a disgraced investigative journalist who returns to her childhood hometown...",
+ *   "ai_provider": "gemini",
+ *   "ai_model": "gemini-2.5-flash",
+ *   "quality_score": 0.95,
+ *   "usage_count": 25,
+ *   "unique_user_count": 20,
+ *   "is_active": true,
+ *   "expires_at": "2026-08-25T00:00:00.000Z",
+ *   "last_served_at": "2026-05-25T10:30:00.000Z",
+ *   "created_at": "2026-05-25T00:00:00.000Z",
+ *   "updated_at": "2026-05-25T10:30:00.000Z"
+ * }
+ */
+export const storyPrompts = pgTable(
+  "story_prompts",
+  {
+    id: id(),
+    /** Full generated prompt text (stored atomically as creative text) */
+    content: text("content").notNull(),
+    /** AI provider used for generation */
+    aiProvider: text("ai_provider").$type<AIChatProvider>(),
+    /** AI model used for generation */
+    aiModel: text("ai_model"),
+    /** Quality score (0-1) based on validation */
+    qualityScore: real("quality_score").default(1.0),
+    /** Number of times this prompt has been served */
+    usageCount: integer("usage_count").notNull().default(0),
+    /** Number of unique users who have seen this prompt */
+    uniqueUserCount: integer("unique_user_count").notNull().default(0),
+    /** Whether this prompt is currently active for serving */
+    isActive: boolean("is_active").notNull().default(true),
+    /** Expiration date for freshness rotation */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Last served timestamp */
+    lastServedAt: timestamp("last_served_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    // Index for active prompts
+    index("story_prompts_active_idx").on(t.isActive).where(sql`${t.isActive} = true`),
+    // Index for expiration cleanup
+    index("story_prompts_expires_idx").on(t.expiresAt).where(sql`${t.expiresAt} IS NOT NULL`),
+    // Index for quality-based selection
+    index("story_prompts_quality_idx").on(t.qualityScore.desc()),
+    // Index for usage tracking
+    index("story_prompts_usage_idx").on(t.usageCount.desc()),
+    // Index for freshness (last served)
+    index("story_prompts_last_served_idx").on(t.lastServedAt),
+    // GIN index for content search (pg_trgm)
+    index("story_prompts_content_gin_idx").using("gin", sql`content gin_trgm_ops`),
+  ]
+);
+
+/**
+ * User prompt history table
+ * @summary Track which prompts each user has viewed to ensure freshness
+ * 
+ * This table tracks the viewing history of prompts per user to ensure
+ * users don't see the same prompt twice. It also tracks conversion
+ * (whether the user used the prompt to create a book).
+ * 
+ * @example
+ * {
+ *   "id": "history123",
+ *   "user_id": "user456",
+ *   "prompt_id": "prompt789",
+ *   "viewed_at": "2026-05-25T10:30:00.000Z",
+ *   "used_for_book": true,
+ *   "book_id": "book123",
+ *   "created_at": "2026-05-25T10:30:00.000Z"
+ * }
+ */
+export const userPromptHistory = pgTable(
+  "user_prompt_history",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    promptId: uuid("prompt_id").notNull().references(() => storyPrompts.id, { onDelete: "cascade" }),
+    /** Timestamp when user viewed this prompt */
+    viewedAt: timestamp("viewed_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Whether user used this prompt to create a book */
+    usedForBook: boolean("used_for_book").notNull().default(false),
+    /** Book ID if user created a book from this prompt */
+    bookId: uuid("book_id").references(() => books.id, { onDelete: "set null" }),
+    createdAt,
+  },
+  (t) => [
+    // Unique constraint to prevent duplicate views
+    unique("user_prompt_history_user_prompt_unique").on(t.userId, t.promptId),
+    // Index for user's prompt history
+    index("user_prompt_history_user_idx").on(t.userId, t.viewedAt.desc()),
+    // Index for prompt popularity
+    index("user_prompt_history_prompt_idx").on(t.promptId),
+    // Index for conversion tracking
+    index("user_prompt_history_used_idx").on(t.usedForBook),
+  ]
+);
