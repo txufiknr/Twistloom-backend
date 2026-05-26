@@ -8,8 +8,8 @@ export interface GitHubRepoConfig {
   repo: string;
   /** Default branch (e.g., 'main') */
   defaultBranch: string;
-  // /** GitHub personal access token with workflow permissions */
-  // token: string;
+  /** GitHub personal access token with workflow permissions */
+  token?: string;
 }
 
 /**

@@ -8,7 +8,7 @@ import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
-export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 export type StoryGenerationStep = 'theme_validation' | 'book_initialization' | 'ai_generation' | 'ai_evaluation' | 'finalizing' | 'complete';
 
 export type BookGenerationPayload = {

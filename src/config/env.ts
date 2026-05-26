@@ -17,5 +17,6 @@ export const GITHUB_DEFAULT_BRANCH = process.env.GITHUB_DEFAULT_BRANCH || "main"
 export const GITHUB_REPO_CONFIG: GitHubRepoConfig = {
   owner: GITHUB_REPO_OWNER,
   repo: GITHUB_REPO_NAME,
-  defaultBranch: GITHUB_DEFAULT_BRANCH
+  defaultBranch: GITHUB_DEFAULT_BRANCH,
+  token: process.env.GITHUB_WORKFLOW_TOKEN
 };

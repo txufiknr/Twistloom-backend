@@ -18,8 +18,8 @@ export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 
 export const MAX_BRANCHING_RETRIES = 3;
-export const MAX_BRANCHING_PREGENERATION_DEPTH = 2;
-export const MAX_BRANCHING_PREGENERATION_LIMIT = 3;
+export const MAX_BRANCHING_PREGENERATION_DEPTH = 2; // How deep to pre-generate deeper level page candidates
+export const MAX_BRANCHING_PREGENERATION_LIMIT = 3; // How many pages to process its actions at once
 export const MAX_TRAVERSAL_DEPTH_SHALLOW = 3;
 
 export const FREE_ACTION_SELECTION_UNTIL_PAGE = 1;

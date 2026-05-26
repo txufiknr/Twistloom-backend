@@ -43,7 +43,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints } from "../db/schema.js";
+import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -68,115 +68,20 @@ import { logUserActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
-import type { DBNewBook, DBNewBookGeneration, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { ActionProgressEvent, CandidateGenerationPageValidation, CandidateGenerationStatus } from "../types/candidate-generation.js";
+import type { DBNewBook, DBNewBookGeneration, DBUpdateBook } from "../types/schema.js";
+import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidate-generation.js";
 import { GITHUB_REPO_CONFIG } from "../config/env.js";
-import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
+import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent } from "../utils/sse.js";
 import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
-import { triggerCandidateGenerationWorkflow } from "../utils/candidate-generation.js";
-import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
+import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
+import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
-import { dispatchGitHubWorkflow } from "../utils/github-workflow.js";
+import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
 
 const router = Router();
-
-// SSE polling configuration
-const SSE_POLL_INTERVAL_MS = 2000; // 2s
-const SSE_MAX_ATTEMPTS = 150; // 5 minutes / 2s
-const SSE_PROGRESS_INTERVAL = 5; // every 5 polls => 10s
-
-// SSE polling config object for reuse
-const SSE_POLLING_CONFIG: SSEPollingConfig = {
-  pollIntervalMs: SSE_POLL_INTERVAL_MS,
-  maxAttempts: SSE_MAX_ATTEMPTS,
-  progressInterval: SSE_PROGRESS_INTERVAL,
-};
-
-/**
- * Checks if generation is stuck (exceeded maximum duration) and resets it
- * 
- * This handles edge cases where background generation crashes or server restarts,
- * leaving isGeneratingStartedAt set but no actual generation happening.
- * 
- * @param dbPage - Page from database
- * @param pageId - Page ID for logging
- * @returns Promise resolving to true if it's generating, false otherwise
- */
-async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
-  const isGenerating = !!dbPage.isGeneratingStartedAt;
-  const totalPendingActions = dbPage.pendingGenerationCount || dbPage.actions.filter(a => !a.destination?.pageId).length;
-  const isDone = totalPendingActions === 0;
-
-  if (!isGenerating) return { isGenerating: false, isDone, totalPendingActions };
-
-  const now = new Date();
-  const startedAt = new Date(dbPage.isGeneratingStartedAt!);
-  const elapsedMs = now.getTime() - startedAt.getTime();
-  const isStuck = elapsedMs > MAX_GENERATION_DURATION_MS;
-
-  if (isStuck || isDone) {
-    if (isStuck) {
-      console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
-    }
-    if (isDone) {
-      console.log(`[checkAndResetStuckGeneration] ✅ Generation done for page ${dbPage.id}, resetting isGeneratingStartedAt`);
-    }
-    
-    // Reset the timestamp in database
-    await dbWrite.update(pages)
-      .set({ isGeneratingStartedAt: null })
-      .where(eq(pages.id, dbPage.id));
-
-    // Refresh page after reset
-    dbPage.isGeneratingStartedAt = null;
-    return { isGenerating: false, isDone, totalPendingActions };
-  }
-
-  return { isGenerating: true, isDone, totalPendingActions };
-}
-
-/**
- * Common validation and page retrieval for candidate generation endpoints
- * 
- * Consolidates repeated validation logic across GET /candidates and GET /candidates/status.
- * Handles UUID validation, page lookup, stuck generation reset, and user page mapping.
- * 
- * @param identifier - Book slug or UUID v7
- * @param pageId - Page ID to validate and retrieve
- * @param userId - User ID for mapping page data
- * @returns Promise resolving to validated page data or null if validation fails
- * 
- * @throws ValidationError if pageId is invalid UUID
- * @throws NotFoundError if page not found
- */
-async function validateAndRetrievePageForGeneration(
-  identifier: string,
-  pageId: string,
-  userId: string
-): Promise<CandidateGenerationPageValidation | null> {
-  // Early validation
-  if (!isValidUuid(pageId)) return null;
-
-  // Get the page by book identifier from database
-  const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
-
-  const dbPage = await getPageFromDB(pageId, { bookIdentifier, client: dbWrite });
-  if (!dbPage) return null;
-
-  const dbBook = await getBookFromDB(dbPage.bookId);
-  if (!dbBook) return null;
-
-  // Check if generation is stuck and reset if needed
-  const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
-
-  // Map to user story page
-  const userPage = await mapToUserStoryPage(dbPage, userId);
-
-  return { dbBook, dbPage, userPage, isGenerating, isDone, totalPendingActions };
-}
 
 /**
  * POST /api/books
@@ -535,8 +440,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
 
     // STEP 4: CONSUME CREDITS IN TRANSACTION
     // Use unified transaction flow for atomic credit consumption
-    // Returns correlation ID for idempotent refunds
-    const { correlationId } = await executeWithCredits(
+    await executeWithCredits(
       userId,
       "STORY_GENERATION",
       async (tx) => {
@@ -553,60 +457,8 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
     );
 
     // STEP 6: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
-    // Use dispatchGitHubWorkflow utility for retry logic and proper error handling
-    dispatchGitHubWorkflow(
-      GITHUB_REPO_CONFIG,
-      {
-        workflowFile: 'on-demand-book-creation.yml',
-        inputs: { book_id: bookId }
-      },
-      {
-        context: 'POST /api/books/async',
-        maxRetries: 3,
-        baseDelayMs: 1000,
-        maxDelayMs: 4000
-      }
-    ).then(async (result) => {
-      if (!result.success) {
-        console.error('[POST /api/books/async] ❌ Failed to trigger workflow:', result.error);
-        
-        // Update book status to failed
-        void updateBookGenerationStatus({
-          bookId,
-          status: 'failed',
-          error: result.disabled ? 'GitHub workflow is disabled' : 'Failed to trigger GitHub workflow',
-        });
-        
-        // Refund credits idempotently using correlation ID
-        // This prevents duplicate refunds if the error handler runs multiple times
-        try {
-          await refundCredits(userId, "STORY_GENERATION", {
-            context: "book_creation_async_failed",
-            metadata: { bookId, theme: theme.trim(), disabled: result.disabled },
-            correlationId // Use correlation ID from executeWithCredits for idempotency
-          });
-          
-          // Mark book as refunded in bookGenerations table
-          await dbWrite.update(bookGenerations)
-            .set({ isRefunded: new Date() })
-            .where(eq(bookGenerations.bookId, bookId));
-          
-          console.log('[POST /api/books/async] ✅ Credits refunded due to workflow trigger failure');
-        } catch (refundError) {
-          // All retry attempts failed, log for manual review
-          console.error('[POST /api/books/async] ⚠️ All refund attempts failed, manual review required:', {
-            userId,
-            bookId,
-            correlationId,
-            theme: theme.trim(),
-            error: getErrorMessage(refundError)
-          });
-        }
-      }
-    }).catch((error) => {
-      // Unexpected error in the dispatch utility itself
-      console.error('[POST /api/books/async] ⚠️ Unexpected error in workflow dispatch:', error);
-    });
+    // Use shared function for DRY and consistency
+    triggerBookGenerationWorkflow(bookId, 'POST /api/books/async');
 
     // STEP 7: RETURN BOOK ID IMMEDIATELY
     res.json({
@@ -697,7 +549,7 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
     }
 
     // Fetch book and generation data from both tables
-    const bookData = await dbRead
+    const [data] = await dbRead
       .select({
         // From books table
         bookId: books.id,
@@ -711,21 +563,31 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
         generationError: bookGenerations.generationError,
         generationStartedAt: bookGenerations.generationStartedAt,
         generationCompletedAt: bookGenerations.generationCompletedAt,
+        isGeneratingStartedAt: bookGenerations.isGeneratingStartedAt,
+        isRefunded: bookGenerations.isRefunded,
+        createdAt: bookGenerations.createdAt,
       })
       .from(books)
       .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
       .where(eq(books.id, bookId))
       .limit(1);
 
-    if (!bookData.length) {
+    if (!data) {
       return handleNotFoundError(res, "Book not found");
     }
-
-    const data = bookData[0];
 
     // Verify user owns the book
     if (data.bookUserId !== userId) {
       return handleForbiddenError(res, "You can only view status for your own books");
+    }
+
+    // Check if generation is stale and trigger workflow if needed
+    const isStale = isGenerationStale(data);
+    if (isStale && !data.isRefunded && GITHUB_REPO_CONFIG.token) {
+      console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, triggering workflow`);
+      
+      // Trigger workflow unawaited using shared function
+      triggerBookGenerationWorkflow(bookId, 'GET /api/books/:bookId/status');
     }
 
     // Map generation status to current step description
@@ -765,6 +627,121 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
   } catch (error) {
     console.error('[GET /api/books/:bookId/status] Error:', error);
     handleApiError(res, "Failed to get book status", error);
+  }
+});
+
+/**
+ * POST /api/books/:bookId/cancel
+ * 
+ * Cancels a pending or failed book generation and refunds credits.
+ * Users can cancel book creation via the UI and get their credits back.
+ * 
+ * @route POST /api/books/:bookId/cancel
+ * @authentication Required
+ * @param bookId - Book ID (UUID v7)
+ * @returns Success response with refund confirmation
+ * 
+ * @example
+ * POST /api/books/01912345-6789-1234-5678-123456789012/cancel
+ * 
+ * Response (200):
+ * {
+ *   "success": true,
+ *   "message": "Book generation cancelled and credits refunded"
+ * }
+ * 
+ * Response (400) - Cannot cancel:
+ * {
+ *   "error": "Cannot cancel completed book"
+ * }
+ * 
+ * Response (400) - Already refunded:
+ * {
+ *   "error": "Book generation already refunded"
+ * }
+ */
+router.post("/:bookId/cancel", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { bookId } = req.params;
+    const userId = req.userId!;
+
+    // Validate bookId format
+    if (!isValidUuid(bookId)) {
+      return handleValidationError(res, "Invalid book ID format");
+    }
+
+    // Fetch book and generation data
+    const bookData = await dbRead
+      .select({
+        bookUserId: books.userId,
+        bookStatus: books.status,
+        generationStatus: bookGenerations.generationStatus,
+        isRefunded: bookGenerations.isRefunded,
+      })
+      .from(books)
+      .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    if (!bookData.length) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    const data = bookData[0];
+
+    // Verify user owns the book
+    if (data.bookUserId !== userId) {
+      return handleForbiddenError(res, "You can only cancel your own books");
+    }
+
+    // Check if book can be cancelled
+    if (data.bookStatus === 'active' || data.generationStatus === 'completed') {
+      return res.status(400).json({ error: "Cannot cancel completed book" });
+    }
+
+    // Check if already refunded
+    if (data.isRefunded) {
+      return res.status(400).json({ error: "Book generation already refunded" });
+    }
+
+    // Update book generation status to cancelled using shared function
+    await updateBookGenerationStatus({
+      bookId,
+      status: 'cancelled'
+    });
+
+    // Clear lock timestamp to allow retry if needed
+    await dbWrite
+      .update(bookGenerations)
+      .set({ isGeneratingStartedAt: null })
+      .where(eq(bookGenerations.bookId, bookId));
+
+    // Refund credits
+    try {
+      await refundCredits(userId, "STORY_GENERATION", {
+        context: "book_creation_cancelled",
+        metadata: { bookId }
+      });
+
+      // Mark book as refunded in bookGenerations table
+      await dbWrite
+        .update(bookGenerations)
+        .set({ isRefunded: new Date() })
+        .where(eq(bookGenerations.bookId, bookId));
+
+      console.log(`[POST /api/books/:bookId/cancel] ✅ Book ${bookId} cancelled and credits refunded for user ${userId}`);
+    } catch (refundError) {
+      console.error(`[POST /api/books/:bookId/cancel] ❌ Failed to refund credits for book ${bookId}:`, getErrorMessage(refundError));
+      return res.status(500).json({ error: "Failed to refund credits" });
+    }
+
+    res.json({
+      success: true,
+      message: "Book generation cancelled and credits refunded"
+    });
+  } catch (error) {
+    console.error('[POST /api/books/:bookId/cancel] Error:', error);
+    handleApiError(res, "Failed to cancel book generation", error);
   }
 });
 

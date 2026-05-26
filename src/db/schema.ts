@@ -404,10 +404,10 @@ export const bookGenerations = pgTable(
     generateCoverImage: boolean("generate_cover_image").notNull().default(false),
     generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),
     generationStep: text("generation_step").$type<StoryGenerationStep>(),
-    // generationProgress: integer("generation_progress").default(0), // 0-100
     generationError: text("generation_error"),
     generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
     generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
+    isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }),
     isRefunded: timestamp("is_refunded"),
     createdAt,
     updatedAt,
@@ -421,6 +421,8 @@ export const bookGenerations = pgTable(
     index("book_generations_status_idx").on(t.generationStatus),
     // Index for active generations
     index("book_generations_active_idx").on(t.generationStatus).where(sql`${t.generationStatus} = 'in_progress'`),
+    // Index for locking - find stale generations
+    index("book_generations_locking_idx").on(t.isGeneratingStartedAt),
   ]
 );
 

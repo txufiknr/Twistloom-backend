@@ -8,7 +8,6 @@
  * 
  * Core Functions:
  * - `retryPendingGenerations()`: Batch processing of pending generations with priority ordering
- * - `generateMissingOriginalBookCovers()`: Generates AI cover images for books without covers
  * - `processSpecificPage()`: Targeted processing for manual workflow triggers
  * - `processPageGeneration()`: Shared logic for both scheduled and manual processing
  * 
@@ -34,11 +33,10 @@
 import type { DBPage } from "../types/schema.js";
 import type { UserStoryPage } from "../types/story.js";
 import { MAX_BRANCHING_PREGENERATION_LIMIT } from "../config/story.js";
-import { MAX_GENERATION_DURATION_MS, MAX_PENDING_BOOK_COVER_PER_RUN } from "../config/candidate-generation.js";
+import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 import { requireEnv } from "../utils/env.js";
 import { getErrorMessage } from "../utils/error.js";
 import { delay } from "../utils/time.js";
-import { mapBookFromDb } from "../services/book.js";
 
 export async function retryPendingGenerations(): Promise<string[]> {
   const startedAt = Date.now();
@@ -165,94 +163,6 @@ export async function retryPendingGenerations(): Promise<string[]> {
     return processedPageIds;
   } catch (error) {
     console.error("[retryPendingGenerations] ❌ Retry job failed:", getErrorMessage(error));
-    throw error;
-  }
-}
-
-/**
- * Detects and generates missing cover images for original books
- * 
- * This function:
- * - Finds books where isOriginal: true and image: null
- * - Generates AI cover images for these books
- * - Updates books with new image URLs and IDs
- * 
- * Idempotency:
- * - Safe to run multiple times: only processes books without images
- * - Uses consistent query: WHERE is_original = true AND image IS NULL
- * - Atomic operations: updates book record after successful image generation
- * - No side effects: only adds missing images, doesn't modify existing data
- * 
- * Should be run periodically via cron job, but safe to run repeatedly
- */
-export async function generateMissingOriginalBookCovers(): Promise<void> {
-  const startedAt = Date.now();
-  
-  if (MAX_PENDING_BOOK_COVER_PER_RUN > 0) {
-    console.log("[generateMissingOriginalBookCovers] 🎨 Starting missing cover image generation...");
-  } else {
-    console.log("[generateMissingOriginalBookCovers] ⏩ Cover image generation is disabled");
-    return;
-  }
-
-  try {
-    
-    // Lazy imports for better memory usage and startup time
-    const { dbRead } = await import("../db/client.js");
-    const { books } = await import("../db/schema.js");
-    const { eq, and, isNull, desc, asc } = await import("drizzle-orm");
-    const { generateAndUpdateBookCoverImage } = await import("../services/book.js");
-    
-    // Query original books without cover images (limit to prevent overwhelming the system)
-    // Prioritize books with lowest branchesCount, then by highest trendingScore
-    const originalBooksWithoutCovers = await dbRead
-      .select()
-      .from(books)
-      .where(and(eq(books.isOriginal, true), isNull(books.image)))
-      .orderBy(asc(books.branchesCount), desc(books.trendingScore))
-      .limit(MAX_PENDING_BOOK_COVER_PER_RUN); // Process up to N books per run
-    
-    if (originalBooksWithoutCovers.length === 0) {
-      console.log("[generateMissingOriginalBookCovers] ⏩ No original books missing cover images");
-      return;
-    }
-    
-    console.log(`[generateMissingOriginalBookCovers] 👀 Found ${originalBooksWithoutCovers.length} original books missing cover images`);
-    let totalProcessed = 0;
-    let totalSuccess = 0;
-    let totalFailed = 0;
-    
-    for (const book of originalBooksWithoutCovers) {
-      try {
-        console.log(`[generateMissingOriginalBookCovers] 🧠 Generating cover for book "${book.title}" (ID: ${book.id})`);
-        
-        // Convert database result to Book type (convert null to undefined where needed)
-        const bookForGeneration = mapBookFromDb(book);
-        
-        // Generate and update cover image
-        await generateAndUpdateBookCoverImage(bookForGeneration);
-        console.log(`[generateMissingOriginalBookCovers] ✅ Successfully generated cover for book "${book.title}"`);
-        totalSuccess++;
-        totalProcessed++;
-        
-        // Small delay between books to prevent overwhelming AI API
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-      } catch (error) {
-        console.error(`[generateMissingOriginalBookCovers] ❌ Failed to generate cover for book ${book.id}:`, getErrorMessage(error));
-        totalFailed++;
-        // Continue with next book - don't fail entire batch
-      }
-    }
-    
-    const durationMs = Date.now() - startedAt;
-    console.log(`[generateMissingOriginalBookCovers] ✅ Missing cover generation completed in ${durationMs}ms:`, {
-      booksProcessed: totalProcessed,
-      coversGenerated: totalSuccess,
-      coversFailed: totalFailed
-    });
-  } catch (error) {
-    console.error("[generateMissingOriginalBookCovers] ❌ Missing cover generation job failed:", getErrorMessage(error));
     throw error;
   }
 }
@@ -483,8 +393,6 @@ async function main(): Promise<void> {
     } else {
       console.log(`[retry-pending-generations] 🔄 Scheduled batch processing`);
       processedPageIds = await retryPendingGenerations();
-      // Note: Automatic cover image AI generation is disabled to reduce cost and load, manual handcraft is encouraged
-      // await generateMissingOriginalBookCovers();
     }
     
     // Cleanup: Reset isGeneratingStartedAt to null for processed pages only
@@ -507,12 +415,12 @@ async function main(): Promise<void> {
  * Important for GitHub Actions correctness.
  */
 process.on("unhandledRejection", (reason) => {
-  console.error("[retry-pending-generations] Unhandled promise rejection", reason);
+  console.error("[retry-pending-generations] 💥 Unhandled promise rejection", reason);
   process.exit(1);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[retry-pending-generations] Uncaught exception", getErrorMessage(error));
+  console.error("[retry-pending-generations] 💥 Uncaught exception", getErrorMessage(error));
   process.exit(1);
 });
 

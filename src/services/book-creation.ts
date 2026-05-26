@@ -20,12 +20,16 @@ import { MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
 import { MAX_THEME_LENGTH } from '../config/theme-validation.js';
 import type { KnownGender } from '../types/user.js';
 import { handleInsufficientCreditsError } from '../routes/payments.js';
-import type { DBNewBookGeneration } from '../types/schema.js';
+import type { DBBookGeneration, DBNewBookGeneration } from '../types/schema.js';
 import { bookGenerations } from '../db/schema.js';
 import { dbWrite } from '../db/client.js';
 import { eq } from 'drizzle-orm';
 import { cleanupObject } from '../utils/parser.js';
 import { debounceAsync } from '../utils/debounce.js';
+import { dispatchGitHubWorkflow } from '../utils/github-workflow.js';
+import { GITHUB_REPO_CONFIG } from '../config/env.js';
+import { MAX_GENERATION_DURATION_MS, PENDING_TIMEOUT_MS } from '../config/book-creation.js';
+import { isValidUuid } from '../utils/uuid.js';
 
 /**
  * Book creation parameters
@@ -314,7 +318,7 @@ async function updateBookGenerationStatusCore(
   }
   
   const validStatuses = new Set<BookGenerationStatus>([
-    'pending', 'in_progress', 'completed', 'failed'
+    'pending', 'in_progress', 'completed', 'failed', 'cancelled'
   ]);
   if (status && !validStatuses.has(status)) {
     throw new BookCreationError('Invalid status', undefined, 400);
@@ -421,4 +425,102 @@ export async function updateBookGenerationStatus(payload: BookGenerationPayload)
     console.log(`[updateBookGenerationStatus] ❌ Failed to update generation status:`, error);
     throw error;
   }
+}
+
+/**
+ * Triggers GitHub workflow for book generation
+ * 
+ * Shared function to trigger the on-demand book creation workflow.
+ * Used by POST /api/books/async, GET /api/books/:bookId/status (stale detection),
+ * and the hourly cron job routine.
+ * 
+ * @param bookId - Book ID to trigger generation for
+ * @param context - Context for logging (e.g., 'POST /api/books/async')
+ * @returns Promise resolving when workflow is triggered (unawaited)
+ * 
+ * @example
+ * ```typescript
+ * // Trigger workflow for a specific book
+ * triggerBookGenerationWorkflow('book123', 'POST /api/books/async');
+ * ```
+ */
+export function triggerBookGenerationWorkflow(bookId: string, context: string): void {
+  // Validate bookId format before triggering workflow
+  if (!isValidUuid(bookId)) {
+    console.error(`[${context}] ❌ Invalid bookId format: ${bookId}`);
+    return;
+  }
+
+  dispatchGitHubWorkflow(
+    GITHUB_REPO_CONFIG,
+    {
+      workflowFile: 'on-demand-book-creation.yml',
+      inputs: { book_id: bookId }
+    },
+    {
+      context,
+      maxRetries: 3,
+      baseDelayMs: 1000,
+      maxDelayMs: 4000
+    }
+  ).then((result) => {
+    if (!result.success) {
+      console.error(`[${context}] ❌ Failed to trigger workflow for book ${bookId}:`, result.error);
+    }
+  }).catch((error) => {
+    console.error(`[${context}] ⚠️ Unexpected error triggering workflow for book ${bookId}:`, error);
+  });
+}
+
+/**
+ * Checks if a book generation is stale and should be retried
+ * 
+ * A generation is considered stale if:
+ * 1. Status is 'pending' and generationStartedAt is older than PENDING_TIMEOUT_MS (5 minutes)
+ *    - This means the workflow was never triggered or failed to trigger
+ * 2. Status is 'pending' and generationStartedAt is null but createdAt is older than PENDING_TIMEOUT_MS
+ *    - This handles edge case where book was created but workflow was never triggered
+ * 3. Status is 'in_progress' and isGeneratingStartedAt is older than MAX_GENERATION_DURATION_MS (30 minutes)
+ *    - This means the generation is stuck or crashed
+ * 
+ * @param params - Object containing generation status and timestamps
+ * @returns true if generation is stale and should be retried
+ * 
+ * @example
+ * ```typescript
+ * const isStale = isGenerationStale({
+ *   generationStatus: 'pending',
+ *   generationStartedAt: new Date('2026-05-26T09:00:00Z'),
+ *   isGeneratingStartedAt: null,
+ *   createdAt: new Date('2026-05-26T08:55:00Z')
+ * });
+ * ```
+ */
+export function isGenerationStale(
+  params: Pick<DBBookGeneration, 'generationStatus' | 'generationStartedAt' | 'isGeneratingStartedAt'> & { createdAt: Date | null }
+): boolean {
+  const { generationStatus, generationStartedAt, isGeneratingStartedAt, createdAt } = params;
+  const now = Date.now();
+
+  // Check if pending for too long (workflow never triggered or failed to trigger)
+  if (generationStatus === 'pending') {
+    if (generationStartedAt) {
+      const pendingDuration = now - new Date(generationStartedAt).getTime();
+      return pendingDuration > PENDING_TIMEOUT_MS;
+    }
+    // If generationStartedAt is null (workflow never triggered), check against createdAt
+    // This handles edge case where book was created but workflow was never triggered
+    if (createdAt) {
+      const totalPendingDuration = now - new Date(createdAt).getTime();
+      return totalPendingDuration > PENDING_TIMEOUT_MS;
+    }
+  }
+
+  // Check if in-progress for too long (generation stuck or crashed)
+  if (generationStatus === 'in_progress' && isGeneratingStartedAt) {
+    const inProgressDuration = now - new Date(isGeneratingStartedAt).getTime();
+    return inProgressDuration > MAX_GENERATION_DURATION_MS;
+  }
+
+  return false;
 }

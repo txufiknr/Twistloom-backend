@@ -90,10 +90,9 @@ export async function dispatchGitHubWorkflow(
   params: WorkflowDispatchParams,
   options: WorkflowDispatchOptions = {}
 ): Promise<WorkflowDispatchResult> {
-  const token = process.env.GITHUB_WORKFLOW_TOKEN;
+  const { owner, repo, defaultBranch, token } = config;
   if (!token) throw new Error('GitHub workflow token not configured');
 
-  const { owner, repo, defaultBranch } = config;
   const { workflowFile, ref = defaultBranch, inputs = {} } = params;
   const { context = 'dispatchGitHubWorkflow', maxRetries = 3, baseDelayMs = 1000, maxDelayMs = 4000 } = options;
 

@@ -5,12 +5,12 @@
  * and asynchronous candidate generation functions to eliminate code duplication.
  */
 
-import { getBook, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
+import { getBook, getBookFromDB, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
+import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationPageValidation, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -23,6 +23,8 @@ import { dispatchGitHubWorkflow } from './github-workflow.js';
 import { ALLOW_DEEPER_LEVEL_UNTIL_PAGE, MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
 import { formatDuration } from './formatter.js';
 import { delay } from './time.js';
+import { isValidUuid } from './uuid.js';
+import type { DBPage } from '../types/schema.js';
 
 /**
  * Performance metrics for candidate generation
@@ -1250,4 +1252,87 @@ export async function triggerCandidateGenerationWorkflow(params: {
     }
     return { success: false, error: errorMessage };
   }
+}
+
+/**
+ * Checks if generation is stuck (exceeded maximum duration) and resets it
+ * 
+ * This handles edge cases where background generation crashes or server restarts,
+ * leaving isGeneratingStartedAt set but no actual generation happening.
+ * 
+ * @param dbPage - Page from database
+ * @param pageId - Page ID for logging
+ * @returns Promise resolving to true if it's generating, false otherwise
+ */
+async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
+  const isGenerating = !!dbPage.isGeneratingStartedAt;
+  const totalPendingActions = dbPage.pendingGenerationCount || dbPage.actions.filter(a => !a.destination?.pageId).length;
+  const isDone = totalPendingActions === 0;
+
+  if (!isGenerating) return { isGenerating: false, isDone, totalPendingActions };
+
+  const now = new Date();
+  const startedAt = new Date(dbPage.isGeneratingStartedAt!);
+  const elapsedMs = now.getTime() - startedAt.getTime();
+  const isStuck = elapsedMs > MAX_GENERATION_DURATION_MS;
+
+  if (isStuck || isDone) {
+    if (isStuck) {
+      console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
+    }
+    if (isDone) {
+      console.log(`[checkAndResetStuckGeneration] ✅ Generation done for page ${dbPage.id}, resetting isGeneratingStartedAt`);
+    }
+    
+    // Reset the timestamp in database
+    await dbWrite.update(pages)
+      .set({ isGeneratingStartedAt: null })
+      .where(eq(pages.id, dbPage.id));
+
+    // Refresh page after reset
+    dbPage.isGeneratingStartedAt = null;
+    return { isGenerating: false, isDone, totalPendingActions };
+  }
+
+  return { isGenerating: true, isDone, totalPendingActions };
+}
+
+/**
+ * Common validation and page retrieval for candidate generation endpoints
+ * 
+ * Consolidates repeated validation logic across GET /candidates and GET /candidates/status.
+ * Handles UUID validation, page lookup, stuck generation reset, and user page mapping.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page ID to validate and retrieve
+ * @param userId - User ID for mapping page data
+ * @returns Promise resolving to validated page data or null if validation fails
+ * 
+ * @throws ValidationError if pageId is invalid UUID
+ * @throws NotFoundError if page not found
+ */
+export async function validateAndRetrievePageForGeneration(
+  identifier: string,
+  pageId: string,
+  userId: string
+): Promise<CandidateGenerationPageValidation | null> {
+  // Early validation
+  if (!isValidUuid(pageId)) return null;
+
+  // Get the page by book identifier from database
+  const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+
+  const dbPage = await getPageFromDB(pageId, { bookIdentifier, client: dbWrite });
+  if (!dbPage) return null;
+
+  const dbBook = await getBookFromDB(dbPage.bookId);
+  if (!dbBook) return null;
+
+  // Check if generation is stuck and reset if needed
+  const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
+
+  // Map to user story page
+  const userPage = await mapToUserStoryPage(dbPage, userId);
+
+  return { dbBook, dbPage, userPage, isGenerating, isDone, totalPendingActions };
 }
