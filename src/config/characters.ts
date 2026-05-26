@@ -47,7 +47,7 @@ export const CHARACTER_NAMES = {
     'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Mira', 'Charlotte', 'Amelia',
     'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella', 'Anya',
     'Madison', 'Scarlett', 'Victoria', 'Aria', 'Grace', 'Chloe', 'Camila', 'Penelope',
-    'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Luna', 'Aubrey', 'Ellie', 'Ellen', 'Eleanor',
+    'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Aubrey', 'Ellie', 'Ellen', 'Eleanor',
     'Stella', 'Natalie', 'Zoe', 'Leah', 'Hazel', 'Violet', 'Aurora', 'Savannah', 'Liliana',
     'Audrey', 'Brooklyn', 'Bella', 'Claire', 'Skylar', 'Lucy', 'Paisley', 'Everly',
     'Anna', 'Caroline', 'Nova', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya',
@@ -77,12 +77,12 @@ export const CHARACTER_NAMES = {
     'Valkyrie', 'Amazon', 'Siren', 'Nymph', 'Muse', 'Fury', 'Grave', 'Destiny',
     'Echo', 'Nyx', 'Selene', 'Aurora', 'Eos', 'Hemera', 'Thalia', 'Calliope',
     'Kaia', 'Nyla', 'Zara', 'Lyra', 'Veda', 'Sia', 'Kora', 'Mila', 'Nia',
-    'Aaliyah', 'Amara', 'Anaya', 'Aziza', 'Bria', 'Cia', 'Dara', 'Elina', 'Fara',
-    'Zuri', 'Nia', 'Amara', 'Zola', 'Kendi', 'Makena', 'Nala', 'Zara', 'Yara'
+    'Aaliyah', 'Anaya', 'Aziza', 'Bria', 'Cia', 'Dara', 'Elina', 'Fara',
+    'Zuri', 'Nia', 'Zola', 'Kendi', 'Makena', 'Nala', 'Zara', 'Yara'
   ],
 
   femaleLastNames: [
-    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance', 'Blackwood', 'Petrova',
+    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance', 'Blackwood', 'Petrova', 'Hart',
     'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
     'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow', 'Voss',
     'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',
@@ -111,3 +111,5 @@ export const CHARACTER_NAMES = {
     'August', 'Sage', 'Wren', 'Linden', 'Indigo', 'Marlowe', 'Rowan', 'Robin', 'Taylor', 'Morgan'
   ]
 }
+
+export const blacklistedNames: string[] = ['Elara', 'Elias'];

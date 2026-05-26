@@ -9,9 +9,8 @@ import type { StoryMCCandidate } from '../types/character.js';
 import type { BookGenerationPayload, BookGenerationStatus, StoryGenerationStep, InitializeBookResult } from '../types/book.js';
 import type { ProgressCallback } from '../types/sse.js';
 import type { ThemeValidationResult } from '../types/theme-validation.js';
-import { validateTheme } from '../utils/theme-validation.js';
+import { handleThemeValidationError, validateTheme } from '../utils/theme-validation.js';
 import { formatOneOf, initializeBook } from '../utils/prompt.js';
-import { handleThemeValidationError } from './book-controller.js';
 import type { Request, Response } from "express";
 import { getErrorMessage, handleApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
@@ -59,7 +58,7 @@ export async function createBookValidate(
   mcCandidate: StoryMCCandidate | undefined,
   generateCoverImage: boolean | undefined,
   onProgress?: ProgressCallback
-): Promise<void> {
+): Promise<ThemeValidationResult> {
   // STEP 1: VALIDATING THEME
   // Validate theme (required)
   if (typeof theme !== 'string' || !theme.trim()) {
@@ -128,6 +127,8 @@ export async function createBookValidate(
   if (!validationResult.isValid) {
     throw new BookCreationError('Theme validation failed', validationResult);
   }
+
+  return validationResult;
 }
 
 // /**

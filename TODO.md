@@ -2,6 +2,7 @@
 [ ] Stripe switch to live
 [ ] Implement belief
 [ ] Implement corruption curve
+[ ] tampilin AI comment di route books: /async & /status
 
 [ ] userSettings schema
 - interests: string[]
@@ -20,9 +21,6 @@
 
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594
-
-[cohere] 💥 Model command-r-08-2024 failed, trying next model: INVALID_SCHEMA
-[cohere] ❌ All models failed: INVALID_SCHEMA
 
 by book creator:
 [ ] soundtrack based on mood

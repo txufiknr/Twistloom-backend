@@ -36,6 +36,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import { stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
+import { blacklistedNames } from "../config/characters.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -719,6 +720,7 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
   - When introducing new characters, ensure to describe their visual appearance, incorporate naturally in the storytelling.
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
   - No two characters has the same name.
+  - Don't introduce character with name: ${formatOneOf(blacklistedNames)}.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
@@ -1489,21 +1491,15 @@ function formatActionChoices(actions: Action[]): string {
  * Provides clean, professional presentation of selected action with
  * proper hint processing and guidance for AI narrative direction.
  */
-function formatSelectedAction(selectedAction?: Action, allActions?: Action[]): string {
-  if (!selectedAction) {
-    return 'No action chosen. Continue story naturally toward viable ending plan.';
-  }
+function formatSelectedAction(page: Pick<ActionedStoryPage, 'selectedAction' | 'actions'>): string {
+  const { selectedAction, actions: allActions } = page;
+  if (!selectedAction) return 'No action chosen. Continue story naturally toward viable ending plan.';
 
   const isCustomAction = selectedAction.type === 'custom';
 
   // Find the index of selected action to get the letter
-  let selectedLetter = '';
-  if (allActions) {
-    const selectedIndex = allActions.findIndex(action => action.text === selectedAction.text);
-    if (selectedIndex >= 0) {
-      selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
-    }
-  }
+  const selectedIndex = allActions.findIndex(action => action.text === selectedAction.text);
+  const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
 
   return `${selectedLetter ? `${selectedLetter}.` : '•'} ${selectedAction.text} (type: ${selectedAction.type})
 
@@ -1685,7 +1681,7 @@ function formatThreadsPrompt(threads: StoryThread[], stateInfo: StoryStateInfo):
 ${formatActiveThreads(threads)}
 
 THREAD RULES:
-${formatThreadRules(threads, stateInfo)}`;
+${formatThreadRules(threads, stateInfo).trim()}`;
 }
 
 function formatEndingPrompt(state: StoryState): string {
@@ -1742,7 +1738,7 @@ function formatCurrentSituationForPrompt(page: ActionedStoryPage): string {
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
   const { book, advancedState: state, actionedPage: page, previousPages } = params;
   const { mc, summary } = book;
-  const { actions, selectedAction } = page;
+  const { actions } = page;
   const { contextHistory, plotFlags } = state;
   const stateInfo = getStoryStateInfo(state);
   const { phase, phaseGoal } = stateInfo;
@@ -1783,7 +1779,7 @@ Available choices:
 ${formatActionChoices(actions)}
 
 Selected:
-${formatSelectedAction(selectedAction, actions)}`;
+${formatSelectedAction(page)}`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
@@ -2285,6 +2281,7 @@ Initial Characters:
 - Include only side characters who meaningfully exist at story start.
 - At least one should have a relationship that can be corrupted.
 - Bio must include one trait that could become a source of threat or betrayal.
+- Don't introduce character with name (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).

@@ -21,7 +21,7 @@ import { IS_DEVELOPMENT } from "../config/env.js";
 export interface ErrorResponse {
   success: false;
   error: string;
-  details?: string;
+  details?: string | object;
 }
 
 /**

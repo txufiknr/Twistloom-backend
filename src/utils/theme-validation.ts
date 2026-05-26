@@ -15,8 +15,10 @@ import { AI_CHAT_CONFIG_DEFAULT } from '../config/ai-chat.js';
 import { AI_CHAT_MODELS_WRITING } from '../config/ai-clients.js';
 import { executePromptForJSON, formatOneOf } from './prompt.js';
 import { hasKeywords } from './text-processing.js';
-import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResult } from '../types/theme-validation.js';
+import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResult, ThemeValidationErrorDetails, ThemeValidationCategory } from '../types/theme-validation.js';
 import type { ProgressCallback } from '../types/sse.js';
+import type { Response } from "express";
+import type { ErrorResponse } from './error.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -174,6 +176,15 @@ Determine if this theme violates any content policies. Check for:
  */
 export async function validateThemeWithAI(theme: string): Promise<AIValidationResult> {
   const prompt = createThemeValidationPrompt(theme);
+  const failSafeResult: AIValidationResult = {
+    isViolating: false,
+    category: 'OTHER',
+    confidence: 0.0,
+    detectedItems: [],
+    suggestion: '',
+    comment: '',
+    language: 'en',
+  };
 
   try {
     const response = await executePromptForJSON<AIValidationResult>({
@@ -198,7 +209,17 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - context: brief context of where it was found
   - reason: explanation of why it's a violation
 - suggestion: string (how to fix the issue, or empty string if valid)
-- comment: string (1-paragraph, a complimentary comment about theme idea using creative & thriller-themed wording in the SAME LANGUAGE as the input theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)`,
+- comment: string (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
+- language: detected language code of theme input (ISO 639-1)
+
+Comment structure (only if validation passes):
+- Short (1-paragraph, 2-5 sentences)
+- Use creative & thriller-themed wording
+- Match the SAME LANGUAGE as the theme input
+- Express excitement and anticipation before generation
+
+Comment example (use your own wording):
+"What a compelling idea! A captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story book—will be ready for you very soon!"`,
       jsonStructure: `{
   "isViolating": <boolean>,
   "category": "One of: ${formatOneOf(THEME_VALIDATION_CATEGORIES)}",
@@ -212,7 +233,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
     }
   ],
   "suggestion": "...",
-  "comment": "..."
+  "comment": "...",
+  "language": "<ISO 639-1 language code>"
 }
   
 If the theme is valid and safe, return:
@@ -222,35 +244,22 @@ If the theme is valid and safe, return:
   "confidence": 1.0,
   "detectedItems": [],
   "suggestion": "",
-  "comment": "What a compelling idea! A captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and conceptualize the story theme—will be ready for you very soon!"
+  "comment": "Your 1-paragraph complimentary comment (follow comment structure & example)",
+  "language": "<ISO 639-1 language code>"
 }`,
     });
 
     if (!response.result) {
       console.error('[validateThemeWithAI] ❌ AI response result is undefined');
       // If AI fails, default to allowing the theme (fail-safe)
-      return {
-        isViolating: false,
-        category: 'OTHER',
-        confidence: 0.0,
-        detectedItems: [],
-        suggestion: '',
-        comment: '',
-      };
+      return failSafeResult;
     }
 
     return response.result;
   } catch (error) {
     console.error('[validateThemeWithAI] ❌ AI validation failed:', error);
     // If AI fails completely, default to allowing the theme (fail-safe)
-    return {
-      isViolating: false,
-      category: 'OTHER',
-      confidence: 0.0,
-      detectedItems: [],
-      suggestion: '',
-      comment: '',
-    };
+    return failSafeResult;
   }
 }
 
@@ -317,4 +326,83 @@ export async function validateTheme(
   // Both validations passed
   await onProgress?.({ type: 'theme_validation_complete', data: result });
   return result;
+}
+
+/**
+ * Handles theme validation errors with structured response format
+ * 
+ * Returns error response matching frontend specification for validation errors.
+ * Includes detected words, patterns, AI explanations, and suggestions.
+ * 
+ * @param res - Express response object
+ * @param validationResult - Validation result from theme validation
+ * @returns Express response with 400 status and structured error body
+ * 
+ * @example
+ * ```typescript
+ * const validationResult = await validateTheme(theme);
+ * if (!validationResult.isValid) {
+ *   return handleThemeValidationError(res, validationResult);
+ * }
+ * ```
+ */
+export function handleThemeValidationError(
+  res: Response,
+  validationResult: ThemeValidationResult,
+  statusCode: number = 400
+): Response {
+  const { heuristicResult, aiResult } = validationResult;
+  const { detectedItems = [], suggestion = '', confidence = 0 } = aiResult || {};
+  const { detectedWords = [], detectedPatterns = [] } = heuristicResult || {};
+
+  let category: ThemeValidationCategory = 'OTHER';
+  let message = 'Your story theme is invalid.';
+
+  // Extract information from heuristic result
+  if (heuristicResult) {
+    // Determine category from heuristic violations
+    if (detectedWords.length > 0) {
+      category = 'INAPPROPRIATE_CONTENT';
+      message = 'Your story theme contains inappropriate content.';
+    } else if (detectedPatterns.some(p => p.includes('Invalid POV'))) {
+      category = 'INVALID_THEME';
+      message = 'Your story theme contains invalid POV instructions.';
+    } else if (detectedPatterns.some(p => p.includes('Invalid theme format'))) {
+      category = 'INVALID_THEME';
+      message = 'Your story theme is not a valid story theme.';
+    } else if (detectedPatterns.length > 0) {
+      category = 'SUSPICIOUS_PATTERN';
+      message = 'Your story theme contains suspicious patterns.';
+    }
+  }
+
+  // Extract information from AI result (overrides heuristic if available)
+  if (aiResult && aiResult.isViolating) {
+    category = aiResult.category;
+    message = aiResult.category === 'INAPPROPRIATE_CONTENT'
+      ? 'Your story theme contains inappropriate content.'
+      : aiResult.category === 'INVALID_THEME'
+      ? 'Your story theme is invalid.'
+      : 'Your story theme violates content policies.';
+  }
+
+  const details: ThemeValidationErrorDetails = {
+    category,
+    detectedWords,
+    detectedPatterns,
+    detectedItems,
+    confidence,
+    suggestion,
+  };
+
+  // Build error response
+  const errorResponse: ErrorResponse = {
+    success: false,
+    error: message,
+    details,
+  };
+
+  // Log validation failure for monitoring
+  console.warn(`[handleThemeValidationError] 🙅‍♀️ ${message}`, details);
+  return res.status(statusCode).json(errorResponse);
 }

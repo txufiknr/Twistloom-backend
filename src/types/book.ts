@@ -28,11 +28,12 @@ export interface BookCreationStatus {
   generationStatus: BookGenerationStatus; // Generation tracking (pending, in_progress, completed, failed)
   generationStep: StoryGenerationStep;
   generationStepDescription?: string;
+  generationStartedAt?: Date | null;
+  generationCompletedAt?: Date | null;
+  aiComment: string | null;
   error?: string | null;
   createdAt: Date;
   updatedAt: Date;
-  generationStartedAt?: Date | null;
-  generationCompletedAt?: Date | null;
 }
 
 /**

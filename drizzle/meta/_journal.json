@@ -15,6 +15,13 @@
       "when": 1779766139969,
       "tag": "0001_fluffy_blonde_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779788872290,
+      "tag": "0002_typical_shinobi_shaw",
+      "breakpoints": true
     }
   ]
 }

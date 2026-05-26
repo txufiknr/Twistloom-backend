@@ -401,7 +401,8 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
     const userId = req.userId!;
 
     // STEP 1: VALIDATE THEME
-    await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
+    const { aiResult } = await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
+    const { comment: aiComment } = aiResult || {};
 
     // STEP 2: GENERATE BOOK ID
     const bookId = generateId();
@@ -432,6 +433,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       bookId,
       userId,
       theme,
+      aiComment,
       mcCandidate,
       generateCoverImage: generateCoverImage || false,
       generationStatus: 'pending',
@@ -565,6 +567,7 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
         generationCompletedAt: bookGenerations.generationCompletedAt,
         isGeneratingStartedAt: bookGenerations.isGeneratingStartedAt,
         isRefunded: bookGenerations.isRefunded,
+        aiComment: bookGenerations.aiComment,
         createdAt: bookGenerations.createdAt,
       })
       .from(books)
@@ -616,11 +619,12 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
       generationStatus: data.generationStatus || 'pending',
       generationStep: data.generationStep || 'theme_validation',
       generationStepDescription,
+      generationStartedAt: data.generationStartedAt,
+      generationCompletedAt: data.generationCompletedAt,
+      aiComment: data.aiComment,
       error: data.generationError,
       createdAt: data.bookCreatedAt,
       updatedAt: data.bookUpdatedAt,
-      generationStartedAt: data.generationStartedAt,
-      generationCompletedAt: data.generationCompletedAt,
     };
 
     res.json(status);

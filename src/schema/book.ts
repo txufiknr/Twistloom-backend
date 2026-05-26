@@ -14,7 +14,7 @@ import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_ACTION_SCHEMA, VIABLE_ENDIN
  * Matches the flat object pattern used in the codebase (see schema/story.ts)
  * instead of nested JSON Schema format.
  */
-export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER'];
+export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER', 'NONE'];
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
 export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonProperty } = {
   isViolating: { type: 'boolean' },
@@ -32,7 +32,8 @@ export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonP
     additionalProperties: false
   } },
   suggestion: { type: 'string' },
-  comment: { type: 'string' }
+  comment: { type: 'string' },
+  language: { type: 'string', description: 'Detected language code (ISO 639-1)' }
 };
 
 /**

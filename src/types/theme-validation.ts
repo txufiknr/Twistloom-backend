@@ -19,7 +19,8 @@ export type ThemeValidationCategory =
   | 'SUSPICIOUS_PATTERN'
   | 'INVALID_THEME'
   | 'POLICY_VIOLATION'
-  | 'OTHER';
+  | 'OTHER'
+  | 'NONE';
 
 /**
  * Heuristic validation result
@@ -57,7 +58,7 @@ export type ThemeValidationCategory =
  *   povViolation: true
  * };
  */
-export interface HeuristicValidationResult {
+export type HeuristicValidationResult = {
   /** Whether the theme passed heuristic validation */
   isValid: boolean;
   /** List of detected blacklist words */
@@ -93,7 +94,7 @@ export interface HeuristicValidationResult {
  * };
  */
 export type AIDetectedItemType = 'word' | 'pattern' | 'pov_instruction' | 'invalid_format' | 'other';
-export interface AIDetectedItem {
+export type AIDetectedItem = {
   /** Type of detected item */
   type: AIDetectedItemType;
   /** The actual detected text or pattern */
@@ -137,11 +138,11 @@ export interface AIDetectedItem {
  *   suggestion: 'Please avoid using real religious figures in your story theme.'
  * };
  */
-export interface AIValidationResult {
+export type AIValidationResult = {
   /** Whether the theme violates any content policies */
   isViolating: boolean;
-  /** Category of the violation (or NONE if valid) */
-  category: ThemeValidationCategory | 'NONE';
+  /** Category of the violation (NONE if valid) */
+  category: ThemeValidationCategory;
   /** Confidence score from 0.0 to 1.0 */
   confidence: number;
   /** List of detected items with details */
@@ -150,8 +151,10 @@ export interface AIValidationResult {
   suggestion: string;
   /** Complimentary comment about the theme idea using creative & thriller-themed wording in the same language as the input */
   comment: string;
-  /** Index signature to satisfy Record<string, unknown> constraint */
-  [key: string]: unknown;
+  /** Detected language code (ISO 639-1) */
+  language: string;
+  // /** Index signature to satisfy Record<string, unknown> constraint */
+  // [key: string]: unknown;
 }
 
 /**
@@ -252,46 +255,30 @@ export interface ThemeValidationResult {
  *
  * @example
  * // Error from AI validation (POV instruction)
- * const aiError: ThemeValidationError = {
- *   error: {
- *     type: 'VALIDATION_ERROR',
- *     code: 'THEME_INVALID',
- *     message: 'Your story theme contains invalid POV instructions.',
- *     details: {
- *       category: 'INVALID_THEME',
- *       detectedWords: [],
- *       detectedPatterns: ['Invalid POV instruction: third\\sperson'],
- *       aiExplanation: 'explicit non-1st person POV instruction',
- *       aiConfidence: 0.92,
- *       suggestion: 'Twistloom generates 1st person POV stories only. Remove POV instructions from your theme.'
- *     }
- *   }
+ * const details: ThemeValidationErrorDetails = {
+ *   category: 'INVALID_THEME',
+ *   detectedWords: [],
+ *   detectedPatterns: ['Invalid POV instruction: third\\sperson'],
+ *   aiExplanation: 'explicit non-1st person POV instruction',
+ *   aiConfidence: 0.92,
+ *   suggestion: 'Twistloom generates 1st person POV stories only. Remove POV instructions from your theme.'
  * };
  */
-export interface ThemeValidationError {
-  error: {
-    /** Error type identifier */
-    type: 'VALIDATION_ERROR';
-    /** Error code for theme validation */
-    code: 'THEME_INVALID';
-    /** User-friendly error message */
-    message: string;
-    /** Detailed validation error information */
-    details: ThemeValidationErrorDetails;
-  }
-}
+// export type ThemeValidationErrorDetails = {
+//   /** Category of the validation failure */
+//   category: ThemeValidationCategory;
+//   /** List of detected blacklist words */
+//   detectedWords: string[];
+//   /** List of detected suspicious patterns */
+//   detectedPatterns: string[];
+//   /** AI-generated explanation of the violation */
+//   detectedItems?: AIDetectedItem[];
+//   /** AI confidence score (0.0 to 1.0) */
+//   aiConfidence?: number;
+//   /** Suggestion for how to fix the issue */
+//   suggestion?: string;
+// }
 
-export interface ThemeValidationErrorDetails {
-  /** Category of the validation failure */
-  category: ThemeValidationCategory;
-  /** List of detected blacklist words */
-  detectedWords: string[];
-  /** List of detected suspicious patterns */
-  detectedPatterns: string[];
-  /** AI-generated explanation of the violation */
-  detectedItems?: AIDetectedItem[];
-  /** AI confidence score (0.0 to 1.0) */
-  aiConfidence?: number;
-  /** Suggestion for how to fix the issue */
-  suggestion?: string;
-}
+export type ThemeValidationErrorDetails =
+  Pick<AIValidationResult, 'category' | 'confidence' | 'detectedItems' | 'suggestion'> &
+  Pick<HeuristicValidationResult, 'detectedWords' | 'detectedPatterns'>;
