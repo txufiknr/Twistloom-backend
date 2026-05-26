@@ -2264,18 +2264,20 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
   try {
     const { headerLanguage } = req;
     const { identifier, pageId } = req.params;
-    const { prefetch, translate: shouldTranslate, credits } = req.query;
+    const { prefetch, translate: shouldTranslate, credits, actioning } = req.query;
     const userId = req.userId;
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
     const skipVisit = !userId || prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
     const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
     const consumeCredits = credits === 'true'; // Should consume credits
+    const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
 
     const { visitDetails, book, dbPage, sourceAction } = await visitBookPage(res, {
       userId,
       pageId: pageId as string,
       bookIdentifier,
       skipVisit,
+      takeAction,
       consumeCredits,
       language: headerLanguage
     });

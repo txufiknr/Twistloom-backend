@@ -28,7 +28,7 @@ import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import type { DBBookTranslations, DBPage } from "../types/schema.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
-import type { Action } from "../types/story.js";
+import type { Action, VisitBookPageParams } from "../types/story.js";
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
@@ -639,10 +639,10 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  */
 export async function visitBookPage(
   res: Response,
-  params: { userId?: string, pageId: string, bookIdentifier?: string, skipVisit?: boolean, consumeCredits?: boolean, language?: string | null }
+  params: VisitBookPageParams
 ): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage, sourceAction?: Action }> {
-  const { userId, pageId, bookIdentifier, skipVisit = false, consumeCredits = false, language } = params;
-  console.log(`[visit] 👓 Visited pageId:`, pageId, `(skipVisit = ${skipVisit})`);
+  const { userId, pageId, bookIdentifier, skipVisit = false, takeAction = false, consumeCredits = false, language } = params;
+  const isUserTakeAction = !!userId && takeAction && !skipVisit;
 
   // Get page
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
@@ -652,10 +652,8 @@ export async function visitBookPage(
     return {};
   }
 
-  const { page: pageNumber, bookId, parentId: parentPageId } = dbPage;
-  console.log(`[visit] 👓 Visited pageNumber:`, pageNumber);
-
   // Get book
+  const { page: pageNumber, bookId, parentId: parentPageId } = dbPage;
   const book = await getEnrichedBook(bookId, userId, language);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
@@ -663,8 +661,13 @@ export async function visitBookPage(
     return {};
   }
 
-  // No user visit track for prefetch (not actual navigation)
-  if (skipVisit || !userId) return { dbPage, book };
+  if (isUserTakeAction) {
+    console.log(`[visit] 🐑 User actually visited "${book.title}" page ${pageNumber}:`, pageId);
+  } else {
+    console.log(`[visit] 👓 Prefetching "${book.title}" page ${pageNumber}:`, pageId);
+    // No user visit track for prefetch (not actual navigation)
+    return { dbPage, book };
+  }
 
   // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
