@@ -43,7 +43,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations } from "../db/schema.js";
+import { books, pages, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -77,6 +77,8 @@ import type { StoryMC } from "../types/character.js";
 import { triggerCandidateGenerationWorkflow } from "../utils/candidate-generation.js";
 import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
+import { CREDIT_COSTS } from "../config/credits.js";
+import { CREDIT_ERRORS } from "../config/errors.js";
 
 const router = Router();
 
@@ -2611,6 +2613,145 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
 
   } catch (error) {
     handleApiError(res, "Failed to get candidate status", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/actions/hint
+ * 
+ * Purchases an action hint for a specific action on a page
+ * 
+ * Consumes 1 credit to reveal additional information about an action.
+ * Users can purchase hints for actions they haven't selected yet.
+ * 
+ * @route POST /api/books/:identifier/:pageId/actions/hint
+ * @authentication Required
+ * @param identifier - Book slug or ID
+ * @param pageId - Page ID
+ * @body actionText - Action text to purchase hint for
+ * @returns Success response with purchased hint info
+ * 
+ * @example
+ * POST /api/books/the-haunting/page123/actions/hint
+ * Body: { "actionText": "Investigate the noise" }
+ * 
+ * Response:
+ * {
+ *   "success": true,
+ *   "actionText": "Investigate the noise",
+ *   "alreadyPurchased": false
+ * }
+ */
+router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId: pageIdParam } = req.params;
+    const { actionText } = req.body;
+    const userId = req.userId!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    // Validate actionText parameter
+    if (!actionText || typeof actionText !== 'string') {
+      return handleValidationError(res, "actionText is required");
+    }
+
+    // Validate that the page exists and belongs to the book
+    const dbPage = await getPageFromDB(pageId);
+    if (!dbPage) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    // Verify the book identifier matches
+    const dbBook = await getBookFromDB(bookIdentifier);
+    if (!dbBook || dbBook.id !== dbPage.bookId) {
+      return handleNotFoundError(res, "Book not found or page does not belong to this book");
+    }
+
+    // Validate that the action exists on the page
+    const actionExists = dbPage.actions.some(action => action.text === actionText);
+    if (!actionExists) {
+      return handleValidationError(res, "Action not found on this page");
+    }
+
+    // Check if user already purchased this hint
+    const existingHint = await dbRead
+      .select()
+      .from(userActionHints)
+      .where(and(
+        eq(userActionHints.userId, userId),
+        eq(userActionHints.pageId, pageId),
+        eq(userActionHints.actionText, actionText)
+      ))
+      .limit(1);
+
+    if (existingHint.length > 0) {
+      return res.json({
+        success: true,
+        actionText,
+        alreadyPurchased: true,
+        message: "You have already purchased this hint"
+      });
+    }
+
+    // Consume credits and insert hint record in a single transaction
+    // Note: executeWithCredits handles automatic refund if the operation fails
+    await executeWithCredits(
+      userId,
+      "SHOW_ACTION_HINT",
+      async (tx) => {
+        // Insert the action hint record
+        await tx.insert(userActionHints).values({
+          userId,
+          pageId,
+          actionText,
+          createdAt: new Date()
+        });
+      },
+      {
+        context: "action_hint_purchase",
+        metadata: { bookId: dbBook.id, pageId, actionText }
+      }
+    );
+
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'credits_consumed',
+      targetType: 'action',
+      targetId: pageId,
+      metadata: { actionText, bookId: dbBook.id }
+    });
+
+    // // Get updated user credit balance
+    // const userResult = await dbRead
+    //   .select({ credits: users.credits })
+    //   .from(users)
+    //   .where(eq(users.userId, userId))
+    //   .limit(1);
+
+    // const creditsRemaining = userResult[0]?.credits || 0;
+
+    console.log(`[POST /actions/hint] ✅ User ${userId} purchased hint for action "${actionText}" on page ${pageId}`);
+
+    return res.json({
+      success: true,
+      actionText,
+      alreadyPurchased: false,
+      // creditsRemaining
+    });
+
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+    
+    // Handle insufficient credits error
+    if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+      return res.status(402).json({
+        error: "Insufficient credits",
+        message: `You need at least ${CREDIT_COSTS.SHOW_ACTION_HINT} credit to purchase an action hint`
+      });
+    }
+
+    handleApiError(res, "Failed to purchase action hint", error);
   }
 });
 

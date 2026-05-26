@@ -79,7 +79,7 @@ export async function consumeCredits(
   
   // Skip credit consumption for internal system user (cron jobs, etc.)
   if (isInternal) {
-    console.log(`[consumeCredits] ⚡ Skipping credit consumption for internal user: ${userId}`);
+    console.log(`[consumeCredits] ⏩ Skipping credit consumption for internal user: ${userId}`);
     // Return dummy transaction ID for consistency
     return {
       remainingCredits: 0,
@@ -497,7 +497,7 @@ export async function refundCreditsIdempotent(
  * ```typescript
  * await executeWithCredits(userId, "STORY_GENERATION", async (tx) => {
  *   // ❌ WRONG: Not using tx, operations are outside transaction
- *   await insertBook(bookData); 
+ *   await insertBook(bookData);
  *   await insertPage(pageData);
  * });
  * ```
@@ -520,6 +520,7 @@ export async function executeWithCredits<T>(
   const cost = CREDIT_COSTS[costKey];
   const correlationId = options.correlationId || generateId();
   
+  // Validate item cost
   if (cost <= 0) {
     throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
   }

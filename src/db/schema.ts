@@ -736,6 +736,39 @@ export const userCompletedBooks = pgTable(
 );
 
 /**
+ * Create user action hints table
+ * @summary Track action hints purchased by users for specific pages
+ * @example
+ * {
+ *   "id": "hint123",
+ *   "user_id": "user456",
+ *   "page_id": "page789",
+ *   "action_text": "Investigate the noise",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userActionHints = pgTable(
+  "user_action_hints",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    pageId: pageId("cascade"), // Delete if page is deleted
+    actionText: text("action_text").notNull(), // The action text for which hint was purchased
+    createdAt,
+  },
+  (t) => [
+    // Unique constraint on (userId, pageId, actionText) to prevent duplicate hint purchases
+    unique("user_action_hints_user_page_action_unique").on(t.userId, t.pageId, t.actionText),
+    // Index for user's purchased hints
+    index("user_action_hints_user_idx").on(t.userId),
+    // Index for page-specific hints
+    index("user_action_hints_page_idx").on(t.pageId),
+    // Index for recent hint purchases
+    index("user_action_hints_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
  * Create user activity logs table
  * @summary Track user activities for analytics and engagement monitoring
  * @example

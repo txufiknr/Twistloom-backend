@@ -679,6 +679,7 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   originalActionsCount: number, 
   translation?: DBPageTranslations,
   sourceAction?: Action,
+  shownActionHint: string[],
   context?: {
     /** Current story phase classification */
     phase: StoryPhase;

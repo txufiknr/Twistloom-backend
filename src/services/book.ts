@@ -12,12 +12,12 @@
  */
 
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { pages, books, users, userPageProgress, userCompletedBooks } from "../db/schema.js";
+import { pages, books, users, userPageProgress, userCompletedBooks, userActionHints } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
-import type { DBBook, DBNewBook, DBNewPage, DBPage, DBPageTranslations, DBUpdateBook } from "../types/schema.js";
+import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, PublicStats } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
 import { getStoryStateFromPage } from "./story.js";
@@ -979,32 +979,32 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
     if (cached) return cached;
   }
 
-  // Query user's chosen action for this page (if authenticated)
-  const selectedActions: Action[] = userId ? await getPageActionsFromDB(userId, bookId, pageId) : [];
-
-  // Get story state for context
-  const storyState = await getStoryStateFromPage(dbPage);
-
-  // Handle translation if Accept-Language header is provided and differs from book language
-  let translation: DBPageTranslations | undefined;
+  // Determine if translation is needed (synchronous check)
   const targetLanguage = translate ? shouldTranslate(bookLanguage, headerLanguage) : undefined;
 
-  if (targetLanguage) {
-    console.log(`[mapToEnrichedPage] 🌐 shouldTranslate into:`, targetLanguage);
-    const translationResult = await getPageTranslation({
+  // Parallelize independent database queries and API calls
+  const [selectedActions, storyState, translation, shownActionHint] = await Promise.all([
+    // Query user's chosen action for this page (if authenticated)
+    userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
+    
+    // Get story state for context
+    getStoryStateFromPage(dbPage),
+    
+    // Handle translation if needed
+    targetLanguage ? getPageTranslation({
       page: dbPage,
       bookLanguage,
       targetLanguage
-    });
+    }).then(result => result.translation) : Promise.resolve(undefined),
     
-    if (translationResult.translation) {
-      translation = translationResult.translation;
-      console.log(`[mapToEnrichedPage] ✅ Translation to ${targetLanguage} success: ${translation.text.slice(0, 25)}...`);
-    } else {
-      console.warn(`[mapToEnrichedPage] ⚠️ Translation failed:`, translationResult.error);
-    }
-    // Note: If translation failed, translationResult.error contains error info
-    // but we continue with original text (fallback behavior)
+    // Fetch user's purchased action hints for this page (if authenticated)
+    userId ? getUserActionHints(userId, dbPage.id) : Promise.resolve([])
+  ]);
+
+  if (targetLanguage && translation) {
+    console.log(`[mapToEnrichedPage] 🌐 Page translated to ${targetLanguage}: ${translation.text.slice(0, 25)}...`);
+  } else if (targetLanguage) {
+    console.warn(`[mapToEnrichedPage] ⚠️ Page translation failed`);
   }
 
   // Extract context from story state if available
@@ -1060,6 +1060,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
     selectedActions,
     sourceAction,
     translation,
+    shownActionHint,
     context,
   };
 
@@ -1069,6 +1070,40 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
   }
 
   return enrichedPage;
+}
+
+/**
+ * Fetches user's purchased action hints for a specific page
+ * 
+ * This function queries the database to find all action hints that the user
+ * has purchased for a specific page. These hints represent actions for which
+ * the user has paid 1 credit to reveal additional information.
+ * 
+ * @param userId - User ID to fetch hints for
+ * @param pageId - Page ID to fetch hints for
+ * @returns Array of action texts for which hints have been purchased
+ * 
+ * @example
+ * ```typescript
+ * const hints = await getUserActionHints('user123', 'page456');
+ * console.log('Purchased hints:', hints); // ['Investigate the noise', 'Run away']
+ * ```
+ */
+export async function getUserActionHints(userId: string, pageId: string): Promise<string[]> {
+  try {
+    const hints = await dbRead
+      .select({ actionText: userActionHints.actionText })
+      .from(userActionHints)
+      .where(and(
+        eq(userActionHints.userId, userId),
+        eq(userActionHints.pageId, pageId)
+      ));
+    
+    return hints.map(h => h.actionText);
+  } catch (error) {
+    console.error(`[getUserActionHints] ❌ Failed to fetch hints for user ${userId}, page ${pageId}:`, getErrorMessage(error));
+    return [];
+  }
 }
 
 /**

@@ -46,6 +46,9 @@ export const CREDIT_COSTS = {
   /** Cost to generate additional pages in an existing story */
   CHOOSE_OTHER_ACTION: 2,
   
+  /** Cost to show action hint */
+  SHOW_ACTION_HINT: 1,
+
   /** Cost to generate custom actions (future feature) */
   CUSTOM_ACTION: 5, // TODO: use
 
