@@ -8,8 +8,8 @@
 import app from "./app.js";
 import { PORT } from "./config/env.js";
 import { hasErrorCode } from "./utils/error.js";
+import { validateGitHubWorkflowConfig } from "./utils/github-workflow.js";
 import { registerGracefulShutdown } from "./utils/graceful-shutdown.js";
-import { validateGitHubWorkflowConfig } from "./utils/candidate-generation.js";
 import type http from "node:http";
 
 /* -------------------------------------------------- */

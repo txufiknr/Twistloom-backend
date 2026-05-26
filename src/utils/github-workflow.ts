@@ -5,9 +5,39 @@
  * Handles retry logic, error detection, and proper logging.
  */
 
+import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from '../config/env.js';
 import type { GitHubRepoConfig, WorkflowDispatchOptions, WorkflowDispatchParams, WorkflowDispatchResult } from '../types/github-workflow.js';
 import type { ErrorWithCustomProperties } from './retry.js';
 import { retryWithBackoff } from './retry.js';
+
+/**
+ * Validates GitHub workflow configuration at startup
+ * 
+ * This function checks if the required environment variables for GitHub workflow
+ * triggering are properly configured. It logs a warning if any are missing.
+ * 
+ * Should be called during application startup to fail fast if configuration is invalid.
+ */
+export function validateGitHubWorkflowConfig(): void {
+  const token = process.env.GITHUB_WORKFLOW_TOKEN;
+  const repoOwner = GITHUB_REPO_OWNER;
+  const repoName = GITHUB_REPO_NAME;
+  const branch = GITHUB_DEFAULT_BRANCH;
+
+  const missing: string[] = [];
+  if (!token) missing.push('GITHUB_WORKFLOW_TOKEN');
+  if (!repoOwner) missing.push('GITHUB_REPO_OWNER');
+  if (!repoName) missing.push('GITHUB_REPO_NAME');
+  if (!branch) missing.push('GITHUB_DEFAULT_BRANCH');
+
+  if (missing.length > 0) {
+    console.error('⚠️ GitHub workflow configuration incomplete. Missing environment variables:', missing.join(', '));
+    console.error('⚠️ On-demand candidate generation will not work without these variables.');
+    console.error('⚠️ Please set them in your environment or .env.local file.');
+  } else {
+    console.log('✅ GitHub workflow configuration validated successfully');
+  }
+}
 
 /**
  * Triggers a GitHub Actions workflow via REST API
@@ -60,7 +90,10 @@ export async function dispatchGitHubWorkflow(
   params: WorkflowDispatchParams,
   options: WorkflowDispatchOptions = {}
 ): Promise<WorkflowDispatchResult> {
-  const { owner, repo, defaultBranch, token } = config;
+  const token = process.env.GITHUB_WORKFLOW_TOKEN;
+  if (!token) throw new Error('GitHub workflow token not configured');
+
+  const { owner, repo, defaultBranch } = config;
   const { workflowFile, ref = defaultBranch, inputs = {} } = params;
   const { context = 'dispatchGitHubWorkflow', maxRetries = 3, baseDelayMs = 1000, maxDelayMs = 4000 } = options;
 

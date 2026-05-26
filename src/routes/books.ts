@@ -70,7 +70,7 @@ import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
 import type { DBNewBook, DBNewBookGeneration, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { ActionProgressEvent, CandidateGenerationPageValidation, CandidateGenerationStatus } from "../types/candidate-generation.js";
-import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from "../config/env.js";
+import { GITHUB_REPO_CONFIG } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent, type SSEPollingConfig } from "../utils/sse.js";
 import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
@@ -79,6 +79,7 @@ import { MAX_GENERATION_DURATION_MS } from "../config/candidate-generation.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
+import { dispatchGitHubWorkflow } from "../utils/github-workflow.js";
 
 const router = Router();
 
@@ -493,11 +494,6 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
-    const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
-
-    if (!githubToken) {
-      return handleApiError(res, "GitHub workflow token not configured");
-    }
 
     // STEP 1: VALIDATE THEME
     await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
@@ -557,55 +553,59 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
     );
 
     // STEP 6: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
-    fetch(`https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/actions/workflows/on-demand-book-creation.yml/dispatches`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `token ${githubToken}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'Twistloom-Backend'
+    // Use dispatchGitHubWorkflow utility for retry logic and proper error handling
+    dispatchGitHubWorkflow(
+      GITHUB_REPO_CONFIG,
+      {
+        workflowFile: 'on-demand-book-creation.yml',
+        inputs: { book_id: bookId }
       },
-      body: JSON.stringify({
-        ref: GITHUB_DEFAULT_BRANCH,
-        inputs: {
-          book_id: bookId,
-        }
-      })
-    }).catch(async (error) => {
-      console.error('[POST /api/books/async] ❌ Failed to trigger workflow:', error);
-      
-      // Update book status to failed
-      void updateBookGenerationStatus({
-        bookId,
-        status: 'failed',
-        error: 'Failed to trigger GitHub workflow',
-      });
-      
-      // Refund credits idempotently using correlation ID
-      // This prevents duplicate refunds if the error handler runs multiple times
-      try {
-        await refundCredits(userId, "STORY_GENERATION", {
-          context: "book_creation_async_failed",
-          metadata: { bookId, theme: theme.trim() },
-          correlationId // Use correlation ID from executeWithCredits for idempotency
-        });
-        
-        // Mark book as refunded in bookGenerations table
-        await dbWrite.update(bookGenerations)
-          .set({ isRefunded: new Date() })
-          .where(eq(bookGenerations.bookId, bookId));
-        
-        console.log('[POST /api/books/async] ✅ Credits refunded due to workflow trigger failure');
-      } catch (refundError) {
-        // All retry attempts failed, log for manual review
-        console.error('[POST /api/books/async] ⚠️ All refund attempts failed, manual review required:', {
-          userId,
-          bookId,
-          correlationId,
-          theme: theme.trim(),
-          error: getErrorMessage(refundError)
-        });
+      {
+        context: 'POST /api/books/async',
+        maxRetries: 3,
+        baseDelayMs: 1000,
+        maxDelayMs: 4000
       }
+    ).then(async (result) => {
+      if (!result.success) {
+        console.error('[POST /api/books/async] ❌ Failed to trigger workflow:', result.error);
+        
+        // Update book status to failed
+        void updateBookGenerationStatus({
+          bookId,
+          status: 'failed',
+          error: result.disabled ? 'GitHub workflow is disabled' : 'Failed to trigger GitHub workflow',
+        });
+        
+        // Refund credits idempotently using correlation ID
+        // This prevents duplicate refunds if the error handler runs multiple times
+        try {
+          await refundCredits(userId, "STORY_GENERATION", {
+            context: "book_creation_async_failed",
+            metadata: { bookId, theme: theme.trim(), disabled: result.disabled },
+            correlationId // Use correlation ID from executeWithCredits for idempotency
+          });
+          
+          // Mark book as refunded in bookGenerations table
+          await dbWrite.update(bookGenerations)
+            .set({ isRefunded: new Date() })
+            .where(eq(bookGenerations.bookId, bookId));
+          
+          console.log('[POST /api/books/async] ✅ Credits refunded due to workflow trigger failure');
+        } catch (refundError) {
+          // All retry attempts failed, log for manual review
+          console.error('[POST /api/books/async] ⚠️ All refund attempts failed, manual review required:', {
+            userId,
+            bookId,
+            correlationId,
+            theme: theme.trim(),
+            error: getErrorMessage(refundError)
+          });
+        }
+      }
+    }).catch((error) => {
+      // Unexpected error in the dispatch utility itself
+      console.error('[POST /api/books/async] ⚠️ Unexpected error in workflow dispatch:', error);
     });
 
     // STEP 7: RETURN BOOK ID IMMEDIATELY

@@ -14,8 +14,9 @@
 
 import { users, userAuth } from '../db/schema.js';
 import { sql, eq } from 'drizzle-orm';
-import { dbRead, dbWrite } from '../db/client.js';
+import { dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
+import { getUserIdByEmail } from './user.js';
 
 /**
  * Returns enriched user select object with engagement metrics
@@ -122,20 +123,15 @@ export async function createOrUpdateOAuthUser(
   image?: string
 ): Promise<string> {
   // Check if user already exists by email
-  const existing = await dbRead
-    .select({ userId: users.userId })
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
+  const userId = await getUserIdByEmail(email);
 
-  if (existing.length > 0) {
+  if (userId) {
     // User exists - update profile data from OAuth provider
-    const userId = existing[0].userId;
     await dbWrite
       .update(users)
       .set({
-        name: name || users.name,
-        image: image || users.image,
+        ...(name && { name }),
+        ...(image && { image }),
         lastActive: new Date(),
         updatedAt: new Date(),
       })

@@ -7,7 +7,7 @@
 
 import { getBook, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
-import { GITHUB_REPO_OWNER, GITHUB_REPO_NAME, GITHUB_DEFAULT_BRANCH } from '../config/env.js';
+import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
 import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
@@ -1119,35 +1119,6 @@ export async function ensureCandidatesForPageWithStrategy(
 }
 
 /**
- * Validates GitHub workflow configuration at startup
- * 
- * This function checks if the required environment variables for GitHub workflow
- * triggering are properly configured. It logs a warning if any are missing.
- * 
- * Should be called during application startup to fail fast if configuration is invalid.
- */
-export function validateGitHubWorkflowConfig(): void {
-  const token = process.env.GITHUB_WORKFLOW_TOKEN;
-  const repoOwner = GITHUB_REPO_OWNER;
-  const repoName = GITHUB_REPO_NAME;
-  const branch = GITHUB_DEFAULT_BRANCH;
-
-  const missing: string[] = [];
-  if (!token) missing.push('GITHUB_WORKFLOW_TOKEN');
-  if (!repoOwner) missing.push('GITHUB_REPO_OWNER');
-  if (!repoName) missing.push('GITHUB_REPO_NAME');
-  if (!branch) missing.push('GITHUB_DEFAULT_BRANCH');
-
-  if (missing.length > 0) {
-    console.error('⚠️ GitHub workflow configuration incomplete. Missing environment variables:', missing.join(', '));
-    console.error('⚠️ On-demand candidate generation will not work without these variables.');
-    console.error('⚠️ Please set them in your environment or .env.local file.');
-  } else {
-    console.log('✅ GitHub workflow configuration validated successfully');
-  }
-}
-
-/**
  * Triggers GitHub workflow for on-demand candidate generation
  * 
  * This function dispatches the retry-pending-generations workflow via GitHub REST API,
@@ -1208,13 +1179,6 @@ export async function triggerCandidateGenerationWorkflow(params: {
 }): Promise<{ success: boolean; error?: string; alreadyInProgress?: boolean }> {
   const { bookTitle, bookId, pageId, userId, maxDepth, context = 'triggerCandidateGenerationWorkflow' } = params;
   
-  // Get GitHub token from environment
-  const githubToken = process.env.GITHUB_WORKFLOW_TOKEN;
-  if (!githubToken) {
-    console.error(`[${context}] 💀 GITHUB_WORKFLOW_TOKEN not configured`);
-    return { success: false, error: 'GitHub workflow token not configured' };
-  }
-  
   console.log(`[${context}] 🚀 Triggered GitHub workflow for "${bookTitle}" page ${pageId} with maxDepth:`, maxDepth);
 
   try {
@@ -1239,12 +1203,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
 
     // Trigger workflow via reusable utility
     const dispatchResult = await dispatchGitHubWorkflow(
-      {
-        owner: GITHUB_REPO_OWNER,
-        repo: GITHUB_REPO_NAME,
-        defaultBranch: GITHUB_DEFAULT_BRANCH,
-        token: githubToken
-      },
+      GITHUB_REPO_CONFIG,
       {
         workflowFile: 'retry-pending-generations.yml',
         inputs: {

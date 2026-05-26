@@ -3,29 +3,6 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 
-`GET /api/user` error after successfully signed in with Google (Auth.js v5):
-[verifyNextAuthToken] ❌ Failed to update user profile: DrizzleQueryError: Failed query: update "users" set "name" = $1, "image" = $2, "last_active" = $3, "updated_at" = $4 where "users"."user_id" = $5
-params: Taufik Nur Rahmanda,https://lh3.googleusercontent.com/a/ACg8ocLdHE67YiJ1nP4efZrBmAkuHjrGblF-RpH35xLWT8ijJBwGKQmrIQ=s96-c,2026-05-25T09:12:24.556Z,2026-05-25T09:12:24.556Z,019e5db4-8ff1-767d-8a03-58356c042083
-    at NeonPreparedQuery.queryWithCache (file:///var/task/node_modules/drizzle-orm/pg-core/session.js:41:15)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async NeonPreparedQuery.execute (file:///var/task/node_modules/drizzle-orm/neon-serverless/session.js:105:14)
-    at async createOrUpdateOAuthUser (/vercel/path0/src/services/user-controller.ts:134:5) {
-  query: 'update "users" set "name" = $1, "image" = $2, "last_active" = $3, "updated_at" = $4 where "users"."user_id" = $5',
-  params: [
-    'Taufik Nur Rahmanda',
-    'https://lh3.googleusercontent.com/a/ACg8ocLdHE67YiJ1nP4efZrBmAkuHjrGblF-RpH35xLWT8ijJBwGKQmrIQ=s96-c',
-    '2026-05-25T09:12:24.556Z',
-    '2026-05-25T09:12:24.556Z',
-    '019e5db4-8ff1-767d-8a03-58356c042083'
-  ],
-  cause: ErrorEvent {
-    type: 'error',
-    defaultPrevented: false,
-    cancelable: false,
-    timeStamp: 248105.361196
-  }
-}
-
 [ ] userSettings schema
 - interests: string[]
 - email notification settings
