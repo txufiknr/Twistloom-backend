@@ -22,23 +22,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { getSession, type User } from '@auth/express';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
-import { dbRead } from '../db/client.js';
-import { users } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
-import { LRUCache } from 'lru-cache';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 import { updateSessionMetadata } from '../services/session-manager.js';
-
-/**
- * LRU cache for email -> userId mappings
- * 
- * Caches user ID lookups to reduce database query overhead.
- * Uses a maximum of 1000 entries with a 5-minute TTL.
- */
-const userIdCache = new LRUCache<string, string>({
-  max: 1000,
-  ttl: 5 * 60 * 1000, // 5 minutes
-});
+import { getUserIdByEmail, invalidateByEmail } from '../services/user.js';
 
 /**
  * In-flight request cache to prevent concurrent session verification
@@ -128,7 +114,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     const verificationPromise = (async () => {
       try {
         // Check if user exists in database
-        let userId = await getUserId(email);
+        let userId = await getUserIdByEmail(email);
         
         if (!userId) {
           // First-time OAuth login - create user in database
@@ -136,7 +122,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
           userId = await createOrUpdateOAuthUser(email, name, image);
           
           // Invalidate cache for the new user
-          userIdCache.delete(email);
+          invalidateByEmail(email);
         } else {
           // Existing user - update profile data from OAuth provider asynchronously
           // This prevents blocking concurrent requests during profile updates
@@ -144,14 +130,14 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
           createOrUpdateOAuthUser(email, name, image)
             .then(() => {
               // Invalidate cache to ensure fresh data after update completes
-              userIdCache.delete(email);
+              invalidateByEmail(email);
             })
             .catch((error) => {
               console.error('[verifyNextAuthToken] ❌ Failed to update user profile:', error);
             });
           
           // Invalidate cache immediately to prevent stale data
-          userIdCache.delete(email);
+          invalidateByEmail(email);
         }
 
         // Update session metadata if sessionId is available
@@ -245,52 +231,4 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
     req.userId = user.id; // Backward compatibility with existing routes
   }
   next();
-}
-
-/**
- * Retrieves user ID from database using email, with LRU caching
- * 
- * This function queries the database to find a user ID by email address.
- * Results are cached in an LRU cache to reduce database query overhead for
- * repeated lookups of the same email.
- * 
- * Cache behavior:
- * - Maximum 1000 entries
- * - 5-minute TTL per entry
- * - Cache hit: Returns cached ID immediately
- * - Cache miss: Queries database and caches result
- * 
- * @param email - User email address to look up
- * @returns User ID if found, null otherwise
- * 
- * @example
- * ```typescript
- * const userId = await getUserId('user@example.com');
- * if (userId) {
- *   console.log('User ID:', userId);
- * }
- * ```
- */
-async function getUserId(email: string): Promise<string | null> {
-  // Check cache first
-  const cachedId = userIdCache.get(email);
-  if (cachedId) {
-    return cachedId;
-  }
-
-  // Query database if not in cache
-  const user = await dbRead
-    .select({ id: users.userId })
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
-
-  if (user.length > 0) {
-    const userId = user[0].id;
-    // Cache the result
-    userIdCache.set(email, userId);
-    return userId;
-  }
-
-  return null;
 }

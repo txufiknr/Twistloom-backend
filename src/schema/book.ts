@@ -2,10 +2,38 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import type { CharacterMemory, StoryMC, StoryMCTranslation } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
-import type { Ending, EndingType, PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, StoryPage, StoryStateInitialGeneration, TrustLevel } from "../types/story.js";
-import { difficulties, endingTypes, flagLevels, plotFlagTypes } from "../types/story.js";
+import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, StoryPage, StoryStateInitialGeneration, TrustLevel } from "../types/story.js";
+import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
+import { difficulties, flagLevels, plotFlagTypes } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
-import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_ACTION_SCHEMA } from "./story.js";
+import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_ACTION_SCHEMA, VIABLE_ENDING_SCHEMA } from "./story.js";
+
+/**
+ * Schema definition for AI validation response
+ * 
+ * Matches the flat object pattern used in the codebase (see schema/story.ts)
+ * instead of nested JSON Schema format.
+ */
+export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER'];
+export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
+export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonProperty } = {
+  isViolating: { type: 'boolean' },
+  category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES },
+  confidence: { type: 'number' },
+  detectedItems: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: THEME_VALIDATION_DETECTED_ITEM_TYPES },
+      value: { type: 'string' },
+      context: { type: 'string' },
+      reason: { type: 'string' },
+    },
+    required: ['type', 'value', 'context', 'reason'] satisfies (keyof AIDetectedItem)[],
+    additionalProperties: false
+  } },
+  suggestion: { type: 'string' },
+  comment: { type: 'string' }
+};
 
 /**
  * Common schema definition for BookCreationResponse type
@@ -51,15 +79,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         additionalProperties: false
       },
       difficulty: { type: 'string', enum: [...difficulties] },
-      viableEnding: {
-        type: 'object',
-        properties: {
-          text: { type: 'string' },
-          type: { type: 'string', enum: Object.keys(endingTypes) satisfies EndingType[] },
-        },
-        required: ['text', 'type'] satisfies (keyof Ending)[],
-        additionalProperties: false
-      },
+      viableEnding: VIABLE_ENDING_SCHEMA,
       traumaTags: { type: 'array', items: { type: 'string' } },
       plotFlags: { type: 'array', items: {
         type: 'object',

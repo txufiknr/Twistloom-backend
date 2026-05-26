@@ -92,9 +92,10 @@ export interface HeuristicValidationResult {
  *   reason: 'explicit non-1st person POV instruction'
  * };
  */
+export type AIDetectedItemType = 'word' | 'pattern' | 'pov_instruction' | 'invalid_format' | 'other';
 export interface AIDetectedItem {
   /** Type of detected item */
-  type: 'word' | 'pattern' | 'pov_instruction' | 'invalid_format' | 'other';
+  type: AIDetectedItemType;
   /** The actual detected text or pattern */
   value: string;
   /** Context where the item was found */

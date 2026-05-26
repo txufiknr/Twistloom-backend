@@ -669,6 +669,7 @@ function triggerDeeperLevelGeneration(
         // Only trigger if page number <= allowed to prevent too many concurrent workflows
         if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE) {
           // No need for validation as this is a certain candidate generation for a valid new page
+          console.log(`[${context}] 📡 Triggering GitHub Workflow for "${bookTitle}" level ${nextDepth} (page ${pageNumber})`);
           triggerCandidateGenerationWorkflow({
             userId,
             pageId,
@@ -1214,7 +1215,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
     return { success: false, error: 'GitHub workflow token not configured' };
   }
   
-  console.log(`[${context}] 🚀 Triggering GitHub workflow for "${bookTitle}" page ${pageId} with maxDepth:`, maxDepth);
+  console.log(`[${context}] 🚀 Triggered GitHub workflow for "${bookTitle}" page ${pageId} with maxDepth:`, maxDepth);
 
   try {
     // Check if generation is already in progress (idempotency check)

@@ -2,9 +2,12 @@
 [ ] Stripe switch to live
 [ ] Implement belief
 [ ] Implement corruption curve
+[ ] Userbookcomplete tambah context summary
+[ ] Schema userActionHints (userId, pageId, actionText)
+[ ] GET page juga join userActionHints
+[ ] GET /api/books/truth-found-me/019e5e1e-dac1-75ac-9887-f3d3db721e21/candidates/status (401) 
 
-GET /api/user error
-
+`GET /api/user` error after successfully signed in with Google (Auth.js v5):
 [verifyNextAuthToken] ❌ Failed to update user profile: DrizzleQueryError: Failed query: update "users" set "name" = $1, "image" = $2, "last_active" = $3, "updated_at" = $4 where "users"."user_id" = $5
 params: Taufik Nur Rahmanda,https://lh3.googleusercontent.com/a/ACg8ocLdHE67YiJ1nP4efZrBmAkuHjrGblF-RpH35xLWT8ijJBwGKQmrIQ=s96-c,2026-05-25T09:12:24.556Z,2026-05-25T09:12:24.556Z,019e5db4-8ff1-767d-8a03-58356c042083
     at NeonPreparedQuery.queryWithCache (file:///var/task/node_modules/drizzle-orm/pg-core/session.js:41:15)

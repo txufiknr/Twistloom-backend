@@ -9,23 +9,13 @@
  * Aligns with frontend theme validation specification for consistency.
  */
 
-import {
-  THEME_BLACKLIST,
-  THEME_SUSPICIOUS_PATTERNS,
-  INVALID_POV_PATTERNS,
-  INVALID_THEME_PATTERNS,
-  MIN_THEME_LENGTH,
-  MAX_THEME_LENGTH,
-} from '../config/theme-validation.js';
-import type {
-  HeuristicValidationResult,
-  AIValidationResult,
-  ThemeValidationResult,
-} from '../types/theme-validation.js';
-import { executePromptForJSON } from './prompt.js';
+import { THEME_BLACKLIST, THEME_SUSPICIOUS_PATTERNS, INVALID_POV_PATTERNS, INVALID_THEME_PATTERNS, MIN_THEME_LENGTH, MAX_THEME_LENGTH } from '../config/theme-validation.js';
+import { THEME_VALIDATION_CATEGORIES, THEME_VALIDATION_DETECTED_ITEM_TYPES, THEME_VALIDATION_SCHEMA } from '../schema/book.js';
 import { AI_CHAT_CONFIG_DEFAULT } from '../config/ai-chat.js';
 import { AI_CHAT_MODELS_WRITING } from '../config/ai-clients.js';
+import { executePromptForJSON, formatOneOf } from './prompt.js';
 import { hasKeywords } from './text-processing.js';
+import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResult } from '../types/theme-validation.js';
 import type { ProgressCallback } from '../types/sse.js';
 
 /**
@@ -112,7 +102,7 @@ export function validateThemeHeuristic(theme: string): HeuristicValidationResult
  * @returns Formatted prompt for AI model
  */
 function createThemeValidationPrompt(theme: string): string {
-  return `Analyze this story theme for policy violations:
+  return `Analyze this story theme from user input for policy violations:
 """
 ${theme}
 """
@@ -161,45 +151,8 @@ Determine if this theme violates any content policies. Check for:
    - SQL injection attempts
    - HTML/JavaScript injection
    - Code execution attempts
-   - Shell commands
-
-Return JSON with:
-- isViolating: boolean (true if any violation detected)
-- category: "INAPPROPRIATE_CONTENT" | "SUSPICIOUS_PATTERN" | "INVALID_THEME" | "POLICY_VIOLATION" | "OTHER"
-- confidence: number (0.0 to 1.0)
-- detectedItems: array of objects with:
-  - type: "word" | "pattern" | "pov_instruction" | "invalid_format" | "other"
-  - value: the detected text
-  - context: brief context of where it was found
-  - reason: explanation of why it's a violation
-- suggestion: string (how to fix the issue, or empty string if valid)
-- comment: string (a complimentary comment about the theme idea using creative & thriller-themed wording in the SAME LANGUAGE as the input theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
-
-If the theme is valid and safe, return:
-{
-  "isViolating": false,
-  "category": "NONE",
-  "confidence": 1.0,
-  "detectedItems": [],
-  "suggestion": "",
-  "comment": "A thrilling concept that promises suspense and intrigue..."
-}`;
+   - Shell commands`;
 }
-
-/**
- * Schema definition for AI validation response
- * 
- * Matches the flat object pattern used in the codebase (see schema/story.ts)
- * instead of nested JSON Schema format.
- */
-const THEME_VALIDATION_SCHEMA = {
-  isViolating: { type: 'boolean' },
-  category: { type: 'string' },
-  confidence: { type: 'number' },
-  detectedItems: { type: 'array', items: { type: 'object' } },
-  suggestion: { type: 'string' },
-  comment: { type: 'string' }
-} as const;
 
 /**
  * Performs AI validation on theme input
@@ -236,11 +189,45 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           logPrompts: true,
         },
       },
-      jsonStructure: JSON.stringify(THEME_VALIDATION_SCHEMA, null, 2),
+      fieldInstructions: `- isViolating: boolean (true if any violation detected)
+- category: ${formatOneOf(THEME_VALIDATION_CATEGORIES, ' | ')}
+- confidence: number (0.0 to 1.0)
+- detectedItems: array of objects with:
+  - type: ${formatOneOf(THEME_VALIDATION_DETECTED_ITEM_TYPES, ' | ')}
+  - value: the detected text
+  - context: brief context of where it was found
+  - reason: explanation of why it's a violation
+- suggestion: string (how to fix the issue, or empty string if valid)
+- comment: string (1-paragraph, a complimentary comment about theme idea using creative & thriller-themed wording in the SAME LANGUAGE as the input theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)`,
+      jsonStructure: `{
+  "isViolating": <boolean>,
+  "category": "One of: ${formatOneOf(THEME_VALIDATION_CATEGORIES)}",
+  "confidence": <number between 0.0 and 1.0>,
+  "detectedItems": [
+    {
+      "type": "One of: ${formatOneOf(THEME_VALIDATION_DETECTED_ITEM_TYPES)}",
+      "value": "...",
+      "context": "...",
+      "reason": "..."
+    }
+  ],
+  "suggestion": "...",
+  "comment": "..."
+}
+  
+If the theme is valid and safe, return:
+{
+  "isViolating": false,
+  "category": "NONE",
+  "confidence": 1.0,
+  "detectedItems": [],
+  "suggestion": "",
+  "comment": "What a compelling idea! A captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and conceptualize the story theme—will be ready for you very soon!"
+}`,
     });
 
     if (!response.result) {
-      console.error('[validateThemeWithAI] AI response result is undefined');
+      console.error('[validateThemeWithAI] ❌ AI response result is undefined');
       // If AI fails, default to allowing the theme (fail-safe)
       return {
         isViolating: false,
@@ -254,7 +241,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 
     return response.result;
   } catch (error) {
-    console.error('[validateThemeWithAI] AI validation failed:', error);
+    console.error('[validateThemeWithAI] ❌ AI validation failed:', error);
     // If AI fails completely, default to allowing the theme (fail-safe)
     return {
       isViolating: false,

@@ -304,6 +304,13 @@ export type Ending = {
   text?: string;
   /** Type of the ending (optional). */
   type?: EndingType;
+  /** Outline hint for the ending (optional). */
+  outline?: StoryOutline[];
+}
+
+export type StoryOutline = {
+  text: string;
+  isDone: boolean;
 }
 
 /**

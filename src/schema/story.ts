@@ -1,6 +1,7 @@
 import type { AIJsonEvaluation, AIJsonProperty } from "../types/ai-chat.js";
 import type { Injury, InventoryItem } from "../types/character.js";
-import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel } from "../types/story.js";
+import { endingTypes } from "../types/story.js";
+import type { StoryOutline, Action, ActionHint, Archetype, Ending, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel } from "../types/story.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
@@ -47,6 +48,25 @@ export const INJURY_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
+export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: {
+    text: { type: 'string' },
+    type: { type: 'string', enum: Object.keys(endingTypes) as EndingType[] },
+    outline: { type: 'array', items: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        isDone: { type: 'boolean' },
+      },
+      required: ['text', 'isDone'] satisfies (keyof StoryOutline)[],
+      additionalProperties: false
+    } },
+  },
+  required: ['text', 'type'] satisfies (keyof Ending)[],
+  additionalProperties: false
+};
+
 /**
  * Common schema definition for StoryGeneration type
  * 
@@ -81,6 +101,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
+  // viableEnding: VIABLE_ENDING_SCHEMA,
   isMajorEvent: { type: 'boolean' },
   contextHistory: { type: 'string' },
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },

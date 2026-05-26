@@ -35,7 +35,9 @@ import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
 import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices } from '../services/session-manager.js';
+import { getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { Request, Response } from "express";
+import type { DBUserForAuth } from '../types/schema.js';
 
 const router = Router();
 
@@ -108,29 +110,10 @@ router.post('/verify-credentials', async (req, res) => {
     }
 
     // Find user by email or username
-    const user = await dbRead
-      .select({
-        userId: users.userId,
-        email: users.email,
-        username: users.username,
-        name: users.name,
-        image: users.image,
-        passwordHash: users.passwordHash,
-      })
-      .from(users)
-      .where(
-        or(
-          eq(users.email, emailOrUsername),
-          eq(users.username, emailOrUsername)
-        )
-      )
-      .limit(1);
-
-    if (user.length === 0) {
+    const userData = await getUserForAuth(emailOrUsername);
+    if (!userData) {
       return handleUnauthorizedError(res, 'Invalid credentials');
     }
-
-    const userData = user[0];
 
     // Check if account is locked
     const lockoutStatus = await checkAccountLockout(userData.userId);
@@ -154,7 +137,6 @@ router.post('/verify-credentials', async (req, res) => {
 
     // Verify password
     const isValid = await verifyPassword(password, userData.passwordHash);
-
     if (!isValid) {
       await recordFailedLogin(userData.userId);
       return handleUnauthorizedError(res, 'Invalid credentials');
@@ -170,7 +152,7 @@ router.post('/verify-credentials', async (req, res) => {
       name: userData.name,
       username: userData.username,
       image: userData.image,
-    });
+    } satisfies Omit<DBUserForAuth, 'passwordHash'>);
   } catch (error) {
     console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
     handleApiError(res, 'Failed to verify credentials', error, 500);
@@ -561,20 +543,16 @@ router.post('/resend-verification', async (req, res) => {
     }
 
     // Find user by email
-    const user = await dbRead
-      .select({ userId: users.userId })
-      .from(users)
-      .where(eq(users.email, email))
-      .limit(1);
+    const userId = await getUserIdByEmail(email);
 
-    if (user.length === 0) {
+    if (!userId) {
       // Always return success (prevents email enumeration)
       res.json({ message: 'Verification email sent if account exists' });
       return;
     }
 
     // Check if email is already verified
-    const verified = await isEmailVerified(user[0].userId);
+    const verified = await isEmailVerified(userId);
     if (verified) {
       // Return success to prevent email enumeration
       res.json({ message: 'Verification email sent if account exists' });
@@ -582,7 +560,7 @@ router.post('/resend-verification', async (req, res) => {
     }
 
     // Create new verification token
-    const verificationToken = await createEmailVerificationToken(user[0].userId);
+    const verificationToken = await createEmailVerificationToken(userId);
 
     // Send verification email
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;

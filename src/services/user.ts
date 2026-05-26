@@ -13,15 +13,27 @@
 
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
-import { eq, and, gt, ne, sql, desc } from "drizzle-orm";
+import { eq, and, gt, ne, sql, desc, or } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { getErrorMessage } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
-import type { DBNewUserActivityLog } from "../types/schema.js";
+import type { DBNewUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
+import { LRUCache } from 'lru-cache';
+
+/**
+ * LRU cache for email -> userId mappings
+ * 
+ * Caches user ID lookups to reduce database query overhead.
+ * Uses a maximum of 1000 entries with a 5-minute TTL.
+ */
+const userIdCache = new LRUCache<string, string>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
 
 /**
  * Cleans up orphaned user records
@@ -247,6 +259,149 @@ export async function getActiveUsers(daysAgo: number = 30): Promise<string[]> {
     console.error("[user] ❌ Failed to get active users:", getErrorMessage(error));
     return [];
   }
+}
+
+/**
+ * Retrieves user ID from database using email address, with LRU caching
+ * 
+ * This function queries the database to find a user ID by email address.
+ * Results are cached in an LRU cache to reduce database query overhead for
+ * repeated lookups of the same email.
+ * 
+ * Cache behavior:
+ * - Maximum 1000 entries
+ * - 5-minute TTL per entry
+ * - Cache hit: Returns cached ID immediately
+ * - Cache miss: Queries database and caches result
+ * 
+ * Use this function for non-critical lookups where performance is important.
+ * For authentication operations, use getUserForAuth instead.
+ * 
+ * @param email - User email address to look up
+ * @returns User ID if found, null otherwise
+ * 
+ * @example
+ * ```typescript
+ * const userId = await getUserIdByEmail('user@example.com');
+ * if (userId) {
+ *   console.log('User ID:', userId);
+ * }
+ * ```
+ */
+export async function getUserIdByEmail(email: string): Promise<string | null> {
+  // Check cache first
+  const cachedId = userIdCache.get(email);
+  if (cachedId) return cachedId;
+
+  // Query database if not in cache
+  const [user] = await dbRead
+    .select({ userId: users.userId })
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+    
+  if (user) {
+    // Cache the result
+    userIdCache.set(email, user.userId);
+    return user.userId;
+  }
+
+  return null;
+}
+
+/**
+ * Retrieves user data for authentication by email or username
+ * 
+ * This function queries the database to find a user by either email address
+ * or username, returning all fields required for authentication including
+ * the password hash. This is used during login and authentication flows.
+ * 
+ * Security considerations:
+ * - NOT cached: Always queries database to ensure fresh authentication data
+ * - Password changes take effect immediately
+ * - Account deletions/bans prevent login immediately
+ * - Suitable for security-critical authentication operations
+ * 
+ * Performance: Uses indexed lookups on email and username columns for fast queries.
+ * 
+ * @param emailOrUsername - User email address or username to look up
+ * @returns User object with authentication data if found, null otherwise
+ * 
+ * @example
+ * ```typescript
+ * const user = await getUserForAuth('user@example.com');
+ * if (user) {
+ *   // Verify password hash
+ *   const isValid = await verifyPassword(password, user.passwordHash);
+ * }
+ * ```
+ * 
+ * @example
+ * ```typescript
+ * // Can also use username
+ * const user = await getUserForAuth('johndoe');
+ * if (user) {
+ *   console.log('Found user:', user.username);
+ * }
+ * ```
+ */
+export async function getUserForAuth(emailOrUsername: string): Promise<DBUserForAuth | null> {
+  // Find user by email or username
+  const [user] = await dbRead
+    .select({
+      userId: users.userId,
+      email: users.email,
+      username: users.username,
+      name: users.name,
+      image: users.image,
+      passwordHash: users.passwordHash,
+    })
+    .from(users)
+    .where(
+      or(
+        eq(users.email, emailOrUsername),
+        eq(users.username, emailOrUsername)
+      )
+    )
+    .limit(1);
+
+  return user;
+}
+
+/**
+ * Invalidates cached user ID for a specific email address
+ * 
+ * This function removes the cached user ID for the given email from
+ * the LRU cache, forcing the next getUserIdByEmail call to query the
+ * database again.
+ * 
+ * Use this when:
+ * - User email is changed
+ * - User account is deleted
+ * - User data needs to be refreshed immediately
+ * - Cache consistency is critical for an operation
+ * 
+ * Note: This only affects the getUserIdByEmail cache. The getUserForAuth
+ * function is not cached and does not require invalidation.
+ * 
+ * @param email - Email address to invalidate from cache
+ * 
+ * @example
+ * ```typescript
+ * // After updating user email
+ * await updateUserEmail(userId, 'newemail@example.com');
+ * invalidateByEmail('oldemail@example.com');
+ * ```
+ * 
+ * @example
+ * ```typescript
+ * // After deleting user account
+ * await deleteUserAccount(userId);
+ * invalidateByEmail('user@example.com');
+ * ```
+ */
+export function invalidateByEmail(email: string) {
+  userIdCache.delete(email);
 }
 
 /**

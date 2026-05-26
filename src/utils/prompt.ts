@@ -14,7 +14,7 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, Ending, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
@@ -232,7 +232,13 @@ const firstBookOutputFormat: string = `{
     "difficulty": "One of: low | medium | high | nightmare",
     "viableEnding": {
       "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
-      "type": "One of: ${formatOneOf(Object.keys(endingTypes))}"
+      "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
+      "outline": [
+        {
+          "text": "...",
+          "isDone": <boolean>
+        }
+      ]
     },
     "traumaTags": [],
     "plotFlags": [
@@ -531,7 +537,13 @@ const nextPageOutputFormat: string = `{
   },
   "viableEnding": {
     "text": "...",
-    "type": "One of: ${formatOneOf(Object.keys(endingTypes))}"
+    "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
+    "outline": [
+      {
+        "text": "...",
+        "isDone": <boolean>
+      }
+    ]
   }
 }`;
 
@@ -596,7 +608,7 @@ ${getActionRulesText({ isFinale })}`}`;
 
 function buildNextPageFieldInstructions(state: StoryState, selectedAction: Action): string {
   const { traumaTags } = state;
-  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot } = getStoryStateInfo(state);
+  const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot, phase } = getStoryStateInfo(state);
   const isDialogueAction = selectedAction.type === 'dialogue';
 
   return `text
@@ -783,8 +795,9 @@ ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 
 viableEnding
   - Don't output viableEnding if unchanged
-  - Only include if the story trajectory has meaningfully shifted and the previously planned ending no longer fits.
+  - Only output if story trajectory has meaningfully shifted and the previously planned ending no longer fits, or if outline should be updated.
   - text: ${VIABLE_ENDING_LENGTH}. Specific to this MC and theme — not a genre template.
+  - outline: A roadmap to reach the ending. 1-2 sentence per item. Align count with current ${phase} phase. Don't change what have been done, only adjust what haven't done.
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
 ${isMidPhase ? `  - Revise if a major twist has made the original ending implausible or redundant.` : ''}
 ${isLatePhase ? `  - Should be stable now. Revise only if a late revelation makes the ending genuinely unreachable.` : ''}
@@ -1444,10 +1457,11 @@ function getHintGuidanceForAI(hintType: ActionHintType): string {
 /**
  * Formats an array of strings for inclusion in prompts
  * @param items - Array of strings to format
- * @returns Formatted string with items quoted and joined by commas
+ * @param separator - Separator to use between items (default: ', ')
+ * @returns Formatted string with items quoted and joined by the separator
  */
-export function formatOneOf(items: string[] | readonly string[]): string {
-  return `'${items.join(`', '`)}'`;
+export function formatOneOf(items: string[] | readonly string[], separator: string = ', '): string {
+  return `'${items.join(`'${separator}'`)}'`;
 }
 
 /**
@@ -1649,9 +1663,21 @@ ${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} acti
 - Every main thread must resolve before finale`;
 }
 
-function formatEndingPlan(state: StoryState): string {
-  return `Type: ${state.viableEnding ? endingTypes[state.viableEnding.type as keyof typeof endingTypes] : '-'}
-Hint: ${state.viableEnding?.text ?? '-'}`;
+function formatEndingPlan(ending?: Ending): string {
+  if (!ending) return 'No ending plan yet.';
+
+  const { type, text, outline } = ending;
+  return [
+    `Type: ${endingTypes[type as keyof typeof endingTypes]}`,
+    `Hint: ${text}`,
+    outline && outline.length > 0 && `Outline:\n${formatOutline(outline)}`
+  ].filter(Boolean).join('\n');
+}
+
+function formatOutline(outline: StoryOutline[]): string {
+  return outline
+    .map(item => `- ${item.text} ${item.isDone ? '✅' : '⬜'}`)
+    .join('\n');
 }
 
 function formatThreadsPrompt(threads: StoryThread[], stateInfo: StoryStateInfo): string {
@@ -1664,7 +1690,7 @@ ${formatThreadRules(threads, stateInfo)}`;
 
 function formatEndingPrompt(state: StoryState): string {
   return `CURRENT ENDING PLAN:
-${formatEndingPlan(state)}
+${formatEndingPlan(state.viableEnding)}
 
 ENDING RULES:
 ${buildEndingRules(state)}`;
@@ -2650,7 +2676,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const advancedState = await advanceStoryState(currentState, actionedPage);
   const isLastPage = expectedPageNumber === book.totalPages;
 
-  console.log(`[generateNextPage] 💭 Preparing idea for ${isLastPage ? 'last' : 'next'} page ${expectedPageNumber} of ${book.totalPages}...`);
+  console.log(`[generateNextPage] 💭 Conceptualizing idea for ${isLastPage ? 'last' : 'next'} page ${expectedPageNumber} of ${book.totalPages}...`);
 
   // 1. Create personalized prompt with character, story context, and previous action
   if (advancedState.page !== expectedPageNumber) {
