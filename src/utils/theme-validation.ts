@@ -208,18 +208,17 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - value: the detected text
   - context: brief context of where it was found
   - reason: explanation of why it's a violation
-- suggestion: string (how to fix the issue, or empty string if valid)
-- comment: string (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
+- suggestion: 1-sentence (how to fix the issue, or empty string if theme is valid)
+- comment: max 250 chars (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
 - language: detected language code of theme input (ISO 639-1)
 
-Comment structure (only if validation passes):
-- Short (1-paragraph, 2-5 sentences)
+Comment structure (only if theme is valid):
 - Use creative & thriller-themed wording
 - Match the SAME LANGUAGE as the theme input
 - Express excitement and anticipation before generation
 
 Comment example (use your own wording):
-"What a compelling idea! A captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story book—will be ready for you very soon!"`,
+"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story book—will be ready for you very soon!"`,
       jsonStructure: `{
   "isViolating": <boolean>,
   "category": "One of: ${formatOneOf(THEME_VALIDATION_CATEGORIES)}",
@@ -244,7 +243,7 @@ If the theme is valid and safe, return:
   "confidence": 1.0,
   "detectedItems": [],
   "suggestion": "",
-  "comment": "Your 1-paragraph complimentary comment (follow comment structure & example)",
+  "comment": "Your complimentary comment (follow comment structure & example)",
   "language": "<ISO 639-1 language code>"
 }`,
     });

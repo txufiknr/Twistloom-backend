@@ -31,8 +31,8 @@ export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonP
     required: ['type', 'value', 'context', 'reason'] satisfies (keyof AIDetectedItem)[],
     additionalProperties: false
   } },
-  suggestion: { type: 'string' },
-  comment: { type: 'string' },
+  suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue, or empty string if theme is valid' },
+  comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
   language: { type: 'string', description: 'Detected language code (ISO 639-1)' }
 };
 
