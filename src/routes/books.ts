@@ -43,7 +43,7 @@ import type { Request, Response } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints } from "../db/schema.js";
+import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -2736,6 +2736,120 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
     }
 
     handleApiError(res, "Failed to purchase action hint", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/purchase
+ * 
+ * Purchases a paid book with credits
+ * 
+ * Consumes credits equal to the book's creditsPrice to unlock access to the book.
+ * Users can purchase books that have a creditsPrice set.
+ * 
+ * @route POST /api/books/:identifier/purchase
+ * @authentication Required
+ * @param identifier - Book slug or ID
+ * @returns Success response with purchased book info
+ * 
+ * @example
+ * POST /api/books/the-haunting/purchase
+ * 
+ * Response:
+ * {
+ *   "success": true,
+ *   "bookId": "book123",
+ *   "creditsPrice": 50,
+ *   "alreadyPurchased": false
+ * }
+ */
+router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+    const userId = req.userId!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    // Validate that the book exists
+    const dbBook = await getBookFromDB(bookIdentifier);
+    if (!dbBook) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Validate that the book has a creditsPrice (is a paid book)
+    if (!dbBook.creditsPrice || dbBook.creditsPrice <= 0) {
+      return handleValidationError(res, "This book is not available for purchase");
+    }
+
+    // Check if user already purchased this book
+    const existingPurchase = await dbRead
+      .select()
+      .from(userPurchasedBooks)
+      .where(and(
+        eq(userPurchasedBooks.userId, userId),
+        eq(userPurchasedBooks.bookId, dbBook.id)
+      ))
+      .limit(1);
+
+    if (existingPurchase.length > 0) {
+      return res.json({
+        success: true,
+        bookId: dbBook.id,
+        creditsPrice: dbBook.creditsPrice,
+        alreadyPurchased: true,
+        message: "You have already purchased this book"
+      });
+    }
+
+    // Consume credits and insert purchase record in a single transaction
+    // Note: executeWithCredits handles automatic refund if the operation fails
+    await executeWithCredits(
+      userId,
+      dbBook.creditsPrice!,
+      async (tx) => {
+        // Insert the book purchase record
+        await tx.insert(userPurchasedBooks).values({
+          userId,
+          bookId: dbBook.id,
+          creditsPrice: dbBook.creditsPrice!, // Non-null assertion: validated above
+          createdAt: new Date()
+        });
+      },
+      {
+        context: "book_purchase",
+        metadata: { bookId: dbBook.id, creditsPrice: dbBook.creditsPrice! },
+      }
+    );
+
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'credits_consumed',
+      targetType: 'book',
+      targetId: dbBook.id,
+      metadata: { creditsPrice: dbBook.creditsPrice }
+    });
+
+    console.log(`[POST /purchase] ✅ User ${userId} purchased book "${dbBook.title}" for ${dbBook.creditsPrice} credits`);
+
+    return res.json({
+      success: true,
+      bookId: dbBook.id,
+      creditsPrice: dbBook.creditsPrice,
+      alreadyPurchased: false,
+    });
+
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+    
+    // Handle insufficient credits error
+    if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+      return res.status(402).json({
+        error: "Insufficient credits",
+        message: "You need more credits to purchase this book"
+      });
+    }
+
+    handleApiError(res, "Failed to purchase book", error);
   }
 });
 

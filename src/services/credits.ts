@@ -513,11 +513,11 @@ export async function refundCreditsIdempotent(
  */
 export async function executeWithCredits<T>(
   userId: string,
-  costKey: CreditCostKey,
+  costKey: CreditCostKey | number,
   operation: (tx: DBTransaction) => Promise<T>,
   options: ConsumeCreditsOptions = {}
 ): Promise<ConsumeCreditsResult<T>> {
-  const cost = CREDIT_COSTS[costKey];
+  const cost = typeof costKey === 'number' ? costKey : CREDIT_COSTS[costKey];
   const correlationId = options.correlationId || generateId();
   
   // Validate item cost

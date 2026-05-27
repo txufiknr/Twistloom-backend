@@ -2199,6 +2199,154 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /user/referrer
+ * 
+ * Sets the referrer for the authenticated user by username.
+ * Only allowed for new users (isNewUser = true).
+ * After setting referrer, isNewUser is set to false to prevent multiple updates.
+ * 
+ * @route POST /user/referrer
+ * @description Set referrer by username
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @body {Object} Referrer data
+ * @body {string} username - Username of the referrer
+ * 
+ * @returns {Object} Referrer set response
+ * @returns {boolean} success - Operation status
+ * @returns {string} referrerId - ID of the referrer user
+ * @returns {string} message - Status message
+ * 
+ * @example
+ * // Request
+ * POST /user/referrer
+ * Body: {
+ *   "username": "john-doe"
+ * }
+ * 
+ * // Response (success)
+ * {
+ *   "success": true,
+ *   "referrerId": "user456",
+ *   "message": "Referrer set successfully"
+ * }
+ * 
+ * // Response (not new user)
+ * {
+ *   "success": false,
+ *   "error": "Referrer can only be set for new users"
+ * }
+ */
+router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { username } = req.body;
+
+    // Validate username parameter
+    if (!username || typeof username !== 'string') {
+      return handleValidationError(res, "Username is required");
+    }
+
+    // Check if user exists and isNewUser is true
+    const currentUser = await dbRead
+      .select({
+        userId: users.userId,
+        isNewUser: users.isNewUser,
+        referrerId: users.referrerId,
+      })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (currentUser.length === 0) {
+      return handleNotFoundError(res, "User not found");
+    }
+
+    const user = currentUser[0];
+
+    // Only allow if user is new
+    if (!user.isNewUser) {
+      return res.status(400).json({
+        success: false,
+        error: "Referrer can only be set for new users"
+      });
+    }
+
+    // Check if referrer is already set
+    if (user.referrerId) {
+      return res.status(400).json({
+        success: false,
+        error: "Referrer already set"
+      });
+    }
+
+    // Look up referrer by username
+    const referrer = await dbRead
+      .select({
+        userId: users.userId,
+        username: users.username,
+      })
+      .from(users)
+      .where(eq(users.username, username))
+      .limit(1);
+
+    if (referrer.length === 0) {
+      return handleNotFoundError(res, "Referrer user not found");
+    }
+
+    // Prevent self-referral
+    if (referrer[0].userId === userId) {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot refer yourself"
+      });
+    }
+
+    // Update user with referrerId and set isNewUser to false
+    await dbWrite
+      .update(users)
+      .set({
+        referrerId: referrer[0].userId,
+        isNewUser: false,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.userId, userId))
+      .returning();
+
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'referrer_set',
+      targetType: 'user',
+      targetId: referrer[0].userId,
+      metadata: { referrerUsername: username },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
+    // Invalidate user profile cache
+    await invalidateUserProfileCache(userId);
+
+    console.log(`[POST /referrer] ✅ User ${userId} set referrer to ${referrer[0].userId} (${username})`);
+
+    res.json({
+      success: true,
+      referrerId: referrer[0].userId,
+      message: "Referrer set successfully"
+    });
+
+    // Update user's last activity timestamp
+    await updateUserLastActivity(userId);
+  } catch (error) {
+    handleApiError(res, "Failed to set referrer", error);
+  }
+});
+
+/**
  * GET /user/activity-logs
  * 
  * Get activity logs for the authenticated user with optional filtering.

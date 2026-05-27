@@ -86,8 +86,6 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
         trustHost: true, // Trust the domain forwarding headers sent by hosting environments (like Vercel, AWS, or Docker) instead of strictly checking the origin domain.
         secret,
       });
-
-      
     } catch (getSessionError) {
       console.error('[verifyNextAuthToken] ❌ getSession error:', getSessionError);
       return null;

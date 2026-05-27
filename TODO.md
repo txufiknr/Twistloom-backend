@@ -4,6 +4,7 @@
 [ ] Implement corruption curve
 [x] GET /api/user/favorites (401)
 [ ] create generate-prompts.yml weekly github workflow
+[ ] schema userPurchasedBooks
 
 @src/routes/user.ts @src/db/schema.ts:178-211 can you add new POST route to input `referrerId`?
 so authenticated user can input username of who invites him/her

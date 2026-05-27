@@ -776,6 +776,39 @@ export const userActionHints = pgTable(
 );
 
 /**
+ * Create user purchased books table
+ * @summary Track books that users have purchased with credits
+ * @example
+ * {
+ *   "id": "purchase123",
+ *   "user_id": "user456",
+ *   "book_id": "book789",
+ *   "credits_price": 50,
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userPurchasedBooks = pgTable(
+  "user_purchased_books",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    bookId: bookId("cascade"), // Delete if book is deleted
+    creditsPrice: integer("credits_price").notNull(), // The price paid in credits at time of purchase
+    createdAt,
+  },
+  (t) => [
+    // Unique constraint on (userId, bookId) to prevent duplicate purchases
+    unique("user_purchased_books_user_book_unique").on(t.userId, t.bookId),
+    // Index for user's purchased books
+    index("user_purchased_books_user_idx").on(t.userId, t.createdAt.desc()),
+    // Index for book's purchases
+    index("user_purchased_books_book_idx").on(t.bookId),
+    // Index for recent purchases
+    index("user_purchased_books_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+/**
  * Create user activity logs table
  * @summary Track user activities for analytics and engagement monitoring
  * @example

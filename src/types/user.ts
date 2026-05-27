@@ -60,7 +60,8 @@ export type UserActivityType =
   'followed' |
   'credits_consumed' |
   'credits_added' |
-  'session_updated';
+  'session_updated' |
+  'referrer_set';
 
 export interface CheckinRecord {
   checkInDate: string; // YYYY-MM-DD
