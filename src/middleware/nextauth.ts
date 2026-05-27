@@ -84,7 +84,6 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
       session = await getSession(req, {
         providers: [], // Empty array since backend only verifies sessions, doesn't handle OAuth
         secret,
-        // session: { strategy: 'jwt' },
       });
     } catch (getSessionError) {
       console.error('[verifyNextAuthToken] ❌ getSession error:', getSessionError);

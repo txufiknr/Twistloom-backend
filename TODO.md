@@ -3,28 +3,17 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 [x] GET /api/user/favorites (401)
+[ ] create generate-prompts.yml weekly github workflow
 
-[ ] I use Auth.js v5 in my Next.js frontend and verifies with "@auth/express" in this backend project, after login for sometime (via Google), I still got 401 from backend (this project), log shows '[verifyNextAuthToken] ✨ No valid session found', please evaluate and ensure auth token verification should work as intended
+@src/routes/user.ts @src/db/schema.ts:178-211 can you add new POST route to input `referrerId`?
+so authenticated user can input username of who invites him/her
+only allow if current user's `isNewUser` is true 
+
+
 [ ] GET candidates/status meskipun no userId, tetep trigger generation workflow
-
-
-Kalau source action belum ada, insert dulu page progress parent page
-
-Add name:
-Elena
-Olivia
-Amelia
-Luna
-Lyra
-Aria
-Seraphina
-Lucien
-Katniss
-Hermione
-
-Nova
-Kael
-Orion
+[ ] Kalau source action belum ada, insert dulu page progress parent page
+[ ] paid book (vip with 500 followers)
+[ ] referral +10 credits per user
 
 [ ] userSettings schema
 - interests: string[]

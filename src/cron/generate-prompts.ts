@@ -8,6 +8,7 @@
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getActivePromptCount, savePromptToCache, validatePromptQuality, deactivateExpiredPrompts, deactivateLowQualityPrompts } from "../services/prompt-cache.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
+import { getErrorMessage } from "../utils/error.js";
 
 /**
  * Converts a readable stream to a string
@@ -47,7 +48,7 @@ export async function generateWeeklyPrompts() {
     const targetSize = PROMPT_CACHE_CONFIG.targetSize;
     
     if (activeCount >= targetSize) {
-      console.log(`[generateWeeklyPrompts] Cache size sufficient (${activeCount}/${targetSize}), skipping generation`);
+      console.log(`[generateWeeklyPrompts] 🍪 Cache size sufficient (${activeCount}/${targetSize}), skipping generation`);
       return;
     }
     
@@ -57,13 +58,13 @@ export async function generateWeeklyPrompts() {
       targetSize - activeCount
     );
     
-    console.log(`[generateWeeklyPrompts] Generating ${toGenerate} new prompts (current: ${activeCount}, target: ${targetSize})`);
+    console.log(`[generateWeeklyPrompts] 💭 Generating ${toGenerate} new prompts (current: ${activeCount}, target: ${targetSize})`);
     
     // Step 3: Generate prompts via AI
     const generatedPrompts: string[] = [];
     for (let i = 0; i < toGenerate; i++) {
       try {
-        console.log(`[generateWeeklyPrompts] Generating prompt ${i + 1}/${toGenerate}`);
+        console.log(`[generateWeeklyPrompts] ✒️ Generating prompt ${i + 1}/${toGenerate}`);
         const stream = await generateBookCreationPromptStream({ logPrompts: true });
         const content = await streamToString(stream);
         generatedPrompts.push(content);
@@ -91,38 +92,58 @@ export async function generateWeeklyPrompts() {
       }
     }
     
-    console.log(`[generateWeeklyPrompts] Saved ${savedCount}/${generatedPrompts.length} prompts`);
+    console.log(`[generateWeeklyPrompts] ✅ Saved ${savedCount}/${generatedPrompts.length} prompts`);
     
     // Step 5: Retire old prompts
     const expiredCount = await deactivateExpiredPrompts();
     if (expiredCount > 0) {
-      console.log(`[generateWeeklyPrompts] Deactivated ${expiredCount} expired prompts`);
+      console.log(`[generateWeeklyPrompts] 🗑️ Deactivated ${expiredCount} expired prompts`);
     }
     
     const lowQualityCount = await deactivateLowQualityPrompts();
     if (lowQualityCount > 0) {
-      console.log(`[generateWeeklyPrompts] Deactivated ${lowQualityCount} low-quality prompts`);
+      console.log(`[generateWeeklyPrompts] 🗑️ Deactivated ${lowQualityCount} low-quality prompts`);
     }
     
     // Step 6: Update statistics
     const finalCount = await getActivePromptCount();
-    console.log(`[generateWeeklyPrompts] ✅ Complete. Active prompts: ${finalCount} (added: ${savedCount})`);
+    console.log(`[generateWeeklyPrompts] ✅ Generation complete! Active prompts: ${finalCount} (added: ${savedCount})`);
     
   } catch (error) {
-    console.error('[generateWeeklyPrompts] ❌ Error:', error);
+    console.error('[generateWeeklyPrompts] ❌ Failed to generate prompts:', error);
     throw error;
   }
 }
 
-// Run if executed directly
-if (require.main === module) {
-  generateWeeklyPrompts()
-    .then(() => {
-      console.log('[generateWeeklyPrompts] ✅ Job completed successfully');
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error('[generateWeeklyPrompts] ❌ Job failed:', error);
-      process.exit(1);
-    });
+/**
+ * Main execution function for on-demand book creation cron job
+ */
+async function main(): Promise<void> {
+  const startedAt = Date.now();
+
+  try {
+    await generateWeeklyPrompts();
+    const durationMs = Date.now() - startedAt;
+    console.log(`[weekly-prompt] ✅ Completed in ${durationMs}ms`);
+    process.exit(0);
+  } catch (error) {
+    console.error('[weekly-prompt] ❌ Fatal error:', getErrorMessage(error));
+    process.exit(1);
+  }
 }
+
+/**
+ * Ensure unhandled async failures terminate the process.
+ * Important for GitHub Actions correctness.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[weekly-prompt] 💥 Unhandled promise rejection:', reason);
+  process.exit(1);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('[weekly-prompt] 💥 Uncaught exception:', getErrorMessage(error));
+  process.exit(1);
+});
+
+void main();

@@ -114,6 +114,7 @@ export interface EnrichedBookData {
   language: string | null;
   topPick: Date | null;
   isOriginal: boolean;
+  creditsPrice: number | null;
   createdAt: Date;
   updatedAt: Date;
   mc: StoryMC;

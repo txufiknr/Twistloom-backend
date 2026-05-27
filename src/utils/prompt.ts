@@ -2254,7 +2254,6 @@ function buildBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate |
 HARD RULES (apply to everything below):
 - Write in first-person ("I") POV only (MC = narrator).
 - Detect language from theme input${language ? ` (current detected: "${language}")` : '. Default to English ("en") if uncertain'}.
-- Use phoetic & novellic terms creativelly based on language.
 
 MAIN CHARACTER:
 ${getMainCharacterInfo(mcCandidate) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.

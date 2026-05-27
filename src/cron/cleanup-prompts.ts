@@ -110,16 +110,3 @@ export async function getCacheStatistics() {
     totalHistoryEntries: historyCount[0]?.count || 0,
   };
 }
-
-// Run if executed directly
-if (require.main === module) {
-  cleanupPrompts()
-    .then(() => {
-      console.log('[cleanupPrompts] ✅ Job completed successfully');
-      process.exit(0);
-    })
-    .catch((error) => {
-      console.error('[cleanupPrompts] ❌ Job failed:', error);
-      process.exit(1);
-    });
-}

@@ -192,6 +192,7 @@ export const users = pgTable(
     imageId, // ImageKit file ID for deletion
     tier: text("tier").$type<UserTier>(),
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
+    referrerId: uuid("referrer_id"),
     subscriptionId: uuid("subscription_id"),
     vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
@@ -336,6 +337,7 @@ export const books = pgTable(
     commentsCount: integer("comments_count").notNull().default(0), // Total parent comments (maintained by trigger)
     completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
+    creditsPrice: integer("credits_price"),
     createdAt,
     updatedAt,
   },

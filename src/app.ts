@@ -51,6 +51,10 @@ app.use(rateLimitByUser); // Global rate limiting (100 req/min per user)
 
 // app.options('*', cors());
 
+// Because your Express backend is hosted on Vercel (twistloom-backend.vercel.app), it sits behind a reverse proxy/load balancer. If Express thinks the connection isn't secure (HTTPS), Auth.js will automatically ignore the cookie for security reasons.
+// You must tell Express to trust the upstream proxy headers so it registers the incoming connection as secure HTTPS:
+app.set('trust proxy', 1); // Tells Express it is behind a secure proxy
+
 // Handle favicon requests to prevent 404 errors
 app.get("/favicon.png", (_, res) => {
   res.status(204).end(); // No Content response
