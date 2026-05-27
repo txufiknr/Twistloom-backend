@@ -45,6 +45,7 @@ import { eq, and, or, lt, isNull } from 'drizzle-orm';
 import { updateBookGenerationStatus, triggerBookGenerationWorkflow } from '../services/book-creation.js';
 import { MAX_GENERATION_DURATION_MS, HOURLY_RETRY_BATCH_SIZE, MAX_PENDING_BOOK_COVER_PER_RUN } from '../config/book-creation.js';
 import { mapBookFromDb } from '../services/book.js';
+import type { InitializeBookParams } from '../types/book.js';
 
 /**
  * Processes a single book generation
@@ -54,6 +55,13 @@ import { mapBookFromDb } from '../services/book.js';
  */
 async function processBookGeneration(bookId: string): Promise<void> {
   console.log('[book-creation] 💭 Prepare to write the book:', bookId);
+
+  const setLockTimestamp = async (isGeneratingStartedAt: Date | null) => {
+    await dbWrite
+      .update(bookGenerations)
+      .set({ isGeneratingStartedAt })
+      .where(eq(bookGenerations.bookId, bookId));
+  };
 
   try {
     // Check existing lock state BEFORE setting to prevent race condition
@@ -84,75 +92,64 @@ async function processBookGeneration(bookId: string): Promise<void> {
     }
 
     // Set lock timestamp to prevent duplicate processing
-    await dbWrite
-      .update(bookGenerations)
-      .set({ isGeneratingStartedAt: new Date() })
-      .where(eq(bookGenerations.bookId, bookId));
+    await setLockTimestamp(new Date());
 
     // Fetch book generation data from database
-    const generationData = await dbRead
+    const [generationData] = await dbRead
       .select({
         userId: bookGenerations.userId,
         theme: bookGenerations.theme,
         mcCandidate: bookGenerations.mcCandidate,
         generateCoverImage: bookGenerations.generateCoverImage,
+        language: bookGenerations.language,
+        aiComment: bookGenerations.aiComment,
       })
       .from(bookGenerations)
       .where(eq(bookGenerations.bookId, bookId))
       .limit(1);
 
-    if (!generationData.length) {
+    if (!generationData) {
       throw new Error(`Book generation record not found for bookId: ${bookId}`);
     }
 
-    const { userId, theme, mcCandidate, generateCoverImage } = generationData[0];
-
+    const { userId, theme, mcCandidate, generateCoverImage, aiComment, language } = generationData;
     if (!userId || !theme) {
       throw new Error(`Missing required fields in bookGenerations: userId=${userId}, theme=${theme}`);
     }
 
-    console.log('[book-creation] ✒️ Writing the book...', { 
-      bookId, 
-      userId, 
-      theme, 
+    const params: InitializeBookParams = {
+      bookId, // IMPORTANT: Pass bookId to update existing draft
+      userId,
+      theme,
+      language,
+      generateCoverImage,
       mcCandidate,
-      generateCoverImage 
-    });
+      aiComment,
+    };
+
+    console.log('[book-creation] ✒️ Writing the book...', params);
 
     // Update book generation step to 'initializing'
     void updateBookGenerationStatus({ bookId, step: 'book_initialization' });
 
     // Initialize book (this is the long-running AI generation)
     // Pass bookId to update existing draft instead of creating duplicate
-    const result = await initializeBook({
-      userId,
-      theme,
-      mcCandidate: mcCandidate || undefined,
-      generateCoverImage,
-      bookId, // IMPORTANT: Pass bookId to update existing draft
-    });
+    const result = await initializeBook(params);
 
-    console.log('[book-creation] ✅ Book initialized successfully:', result);
+    console.log('[book-creation] 📔 Book initialized successfully:', result);
 
     // Update book generation status (content already updated by initializeBook)
     void updateBookGenerationStatus({ bookId, step: 'complete' });
 
     // Clear lock timestamp
-    await dbWrite
-      .update(bookGenerations)
-      .set({ isGeneratingStartedAt: null })
-      .where(eq(bookGenerations.bookId, bookId));
+    await setLockTimestamp(null);
 
-    console.log('[book-creation] ✅ Book completed successfully');
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error('[book-creation] ❌ Book generation error:', errorMessage);
     
     // Clear lock timestamp on error
-    await dbWrite
-      .update(bookGenerations)
-      .set({ isGeneratingStartedAt: null })
-      .where(eq(bookGenerations.bookId, bookId));
+    await setLockTimestamp(null);
     
     void updateBookGenerationStatus({ bookId, status: 'failed', error: errorMessage });
     throw error;

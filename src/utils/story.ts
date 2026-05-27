@@ -285,7 +285,7 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ac
   const selectedIndex = allActions.findIndex(action => action.text === selectedAction.text);
   const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
 
-  console.log(`[advanceStoryState] ⚡ Advancing story state for page ${actionedPage.page} for selecting: ${selectedLetter}. ${selectedAction.text} (type: ${selectedAction.type})`);
+  console.log(`[advanceStoryState] ⚡ Advancing story state from page ${actionedPage.page} for selecting: ${selectedLetter}. ${selectedAction.text} (type: ${selectedAction.type})`);
   const updatedState = structuredClone(state);
 
   // Remove any existing entries with the same page number to avoid duplicates

@@ -298,32 +298,21 @@ export async function validateTheme(
   // 1. Heuristic validation (fast)
   const heuristicResult = validateThemeHeuristic(theme);
 
-  if (!heuristicResult.isValid) {
-    // Heuristic failed - return immediately with validation complete event
-    const result: ThemeValidationResult = {
-      isValid: false,
+  let result: ThemeValidationResult;
+  if (heuristicResult.isValid) {
+    // 2. AI validation (smart)
+    const aiResult = await validateThemeWithAI(theme);
+    result = {
+      isValid: !aiResult.isViolating,
       heuristicResult,
+      aiResult,
     };
-    await onProgress?.({ type: 'theme_validation_complete', data: result });
-    return result;
+  } else {
+    // Heuristic failed - return immediately with validation complete event
+    result = { isValid: false, heuristicResult };
   }
 
-  // 2. AI validation (smart)
-  const aiResult = await validateThemeWithAI(theme);
-
-  const result: ThemeValidationResult = {
-    isValid: !aiResult.isViolating,
-    heuristicResult,
-    aiResult,
-  };
-
-  if (aiResult.isViolating) {
-    // AI validation failed
-    await onProgress?.({ type: 'theme_validation_complete', data: result });
-    return result;
-  }
-
-  // Both validations passed
+  // Emit validation complete event
   await onProgress?.({ type: 'theme_validation_complete', data: result });
   return result;
 }

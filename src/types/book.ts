@@ -1,7 +1,7 @@
 import type { CharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { PlaceMood, PlaceType } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
-import type { DBBookTranslations, DBUserSession } from "./schema.js";
+import type { Action, ActionTranslation, PersistedStoryPage, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
+import type { DBBookTranslations, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
@@ -179,13 +179,15 @@ export type InitializeBookParams = {
   /** Book theme or topic for AI generation */
   theme: string;
   /** Optional main character candidate for personalization */
-  mcCandidate?: StoryMCCandidate;
+  mcCandidate?: StoryMCCandidate | null;
   /** Whether to generate a cover image for the book */
   generateCoverImage?: boolean;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal?: boolean;
   /** Complimentary comment from AI */
-  aiComment?: string;
+  aiComment?: string | null;
+  /** Detected language code (ISO 639-1) */
+  language?: string | null;
   /** Express request object for activity log */
   req?: Request;
   /** Optional: Update existing book by ID instead of inserting new (for async book creation) */
@@ -193,6 +195,8 @@ export type InitializeBookParams = {
   /** Optional: Database client / transaction to run all DB operations within (for atomicity) */
   tx?: DBTransaction;
 };
+
+export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string }
 
 /**
  * Return type for initializeBook function
@@ -208,7 +212,7 @@ export type CreateBookResponse = {
   /** Initial story state configuration */
   initialState: StoryState;
   /** Complimentary comment from AI */
-  aiComment?: string;
+  aiComment?: string | null;
 };
 
 /**
@@ -250,6 +254,23 @@ export type BookPageVisit = {
   visitorPercentage: number;
   readerUserId?: string;
 }
+
+export type VisitBookPageParams = {
+  userId?: string,
+  pageId: string,
+  bookIdentifier?: string,
+  skipVisit?: boolean,
+  takeAction?: boolean,
+  consumeCredits?: boolean,
+  language?: string | null,
+};
+
+export type VisitBookPageResult = {
+  visitDetails?: BookPageVisit,
+  book?: EnrichedBookData,
+  dbPage?: DBPage,
+  sourceAction?: Action // should be defined for page number > 1
+};
 
 /**
  * Result of slug generation with the chosen title

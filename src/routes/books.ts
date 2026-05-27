@@ -402,7 +402,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
 
     // STEP 1: VALIDATE THEME
     const { aiResult } = await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
-    const { comment: aiComment } = aiResult || {};
+    const { comment: aiComment, language } = aiResult || {};
 
     // STEP 2: GENERATE BOOK ID
     const bookId = generateId();
@@ -423,7 +423,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       hook: null,
       summary: null,
       keywords: [],
-      language: 'en',
+      language,
       totalPages: 0,
       mc,
       status: 'draft', // Will be updated to 'active' when complete
@@ -433,6 +433,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       bookId,
       userId,
       theme,
+      language,
       aiComment,
       mcCandidate,
       generateCoverImage: generateCoverImage || false,

@@ -1204,13 +1204,3 @@ export type StateReconstructionDeps = {
   /** Get story state by page ID (DB + cache fallback) */
   getStoryState?: (pageId: string) => Promise<StoryState | null>;
 };
-
-export type VisitBookPageParams = {
-  userId?: string,
-  pageId: string,
-  bookIdentifier?: string,
-  skipVisit?: boolean,
-  takeAction?: boolean,
-  consumeCredits?: boolean,
-  language?: string | null,
-};

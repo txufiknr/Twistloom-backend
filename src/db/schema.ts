@@ -402,6 +402,7 @@ export const bookGenerations = pgTable(
     userId: userId(),
     theme: text("theme"),
     aiComment: text("ai_comment"),
+    language: text("language"),
     mcCandidate: jsonb("mc_candidate").$type<StoryMCCandidate>(),
     generateCoverImage: boolean("generate_cover_image").notNull().default(false),
     generationStatus: text("generation_status").$type<BookGenerationStatus>().default('pending'),

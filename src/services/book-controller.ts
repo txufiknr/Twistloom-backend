@@ -21,17 +21,17 @@
 
 import { sql, and, or, eq, desc } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
-import type { Response } from "express";
-import type { BookPageVisit, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
-import type { DBBookTranslations, DBPage } from "../types/schema.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
-import type { Action, VisitBookPageParams } from "../types/story.js";
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
+import type { Response } from "express";
+import type { BookPageVisit, BookSortOption, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
+import type { DBBookTranslations } from "../types/schema.js";
+import type { Action } from "../types/story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -640,9 +640,9 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
 export async function visitBookPage(
   res: Response,
   params: VisitBookPageParams
-): Promise<{ visitDetails?: BookPageVisit, book?: EnrichedBookData, dbPage?: DBPage, sourceAction?: Action }> {
+): Promise<VisitBookPageResult> {
   const { userId, pageId, bookIdentifier, skipVisit = false, takeAction = false, consumeCredits = false, language } = params;
-  const isUserTakeAction = !!userId && takeAction && !skipVisit;
+  const isUserTakeAction = !!userId && !skipVisit && takeAction;
 
   // Get page
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
@@ -653,7 +653,7 @@ export async function visitBookPage(
   }
 
   // Get book
-  const { page: pageNumber, bookId, parentId: parentPageId } = dbPage;
+  const { page: pageNumber, bookId, parentId: parentPageId, branchId } = dbPage;
   const book = await getEnrichedBook(bookId, userId, language);
   if (!book) {
     console.error(`[visit] ❌ Book not found:`, bookId);
@@ -662,11 +662,20 @@ export async function visitBookPage(
   }
 
   if (isUserTakeAction) {
-    console.log(`[visit] 🐑 User actually visited "${book.title}" page ${pageNumber}:`, pageId);
+    console.log(`[visit] 🐑 User actually visited "${book.title}" page ${pageNumber}:`, { pageId, branchId });
   } else {
-    console.log(`[visit] 👓 Prefetching "${book.title}" page ${pageNumber}:`, pageId);
+    console.log(`[visit] 👓 Prefetching "${book.title}" page ${pageNumber}:`, { pageId, branchId });
+
     // No user visit track for prefetch (not actual navigation)
-    return { dbPage, book };
+    const nthVisit = dbPage.visitCount;
+    const totalBookReaders = book.stats.readCount;
+    const visitorPercentage = totalBookReaders === 0 ? 100 : Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
+    const visitDetails: BookPageVisit = {
+      nthVisit,
+      visitorPercentage,
+      readerUserId: userId
+    };
+    return { dbPage, book, visitDetails };
   }
 
   // Get parent page and selected action (if it's not page 1)

@@ -19,7 +19,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { getSession, type User } from '@auth/express';
+import { getSession, type Session, type User } from '@auth/express';
 import { handleUnauthorizedError } from '../utils/error.js';
 import type { AuthUser } from '../types/express.js';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
@@ -69,27 +69,39 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
       return null;
     }
 
+    // Debug: Log incoming cookies
+    const cookies = req.headers.cookie;
+    if (!cookies) {
+      console.log('[verifyNextAuthToken] ⚠️ No cookies in request headers');
+    } else {
+      console.log('[verifyNextAuthToken] 🍪 Cookies present:', cookies);
+    }
+
     // getSession automatically looks inside request headers for the Auth.js cookie
     // and handles decryption/verification using the shared AUTH_SECRET
-    const session = await getSession(req, {
-      providers: [], // Empty since Next.js frontend manages providers
-      secret,
-      session: { strategy: 'jwt' },
-    });
+    let session: Session | null = null;
+    try {
+      session = await getSession(req, {
+        providers: [], // Empty array since backend only verifies sessions, doesn't handle OAuth
+        secret,
+        // session: { strategy: 'jwt' },
+      });
+    } catch (getSessionError) {
+      console.error('[verifyNextAuthToken] ❌ getSession error:', getSessionError);
+      return null;
+    }
 
     if (!session?.user) {
       // Posibilities:
       // 1. The token expired: The maxAge of the Auth.js session cookie has passed.
       // 2. The token is invalid: The Express backend is using a different AUTH_SECRET than Next.js, meaning it cannot decrypt the cookie.
-      // 3. The cookie is missing: If you didn't set up the Next.js Rewrites proxy (or custom domains) discussed earlier, the browser stripped the cookie before it reached Express, leaving getSession() with nothing to parse.
+      // 3. The cookie is missing: If you didn't set up the Next.js Rewrites proxy (or custom domains), the browser stripped the cookie before it reached Express, leaving getSession() with nothing to parse.
       console.log('[verifyNextAuthToken] ✨ No valid session found');
-      // To make sure your user is kicked out of Next.js when Express rejects the token,
-      // you must handle the 401 response in your frontend network requests and
-      // trigger the Auth.js signOut() function.
+      console.log('[verifyNextAuthToken] 📊 Session object:', JSON.stringify(session, null, 2));
       return null;
     }
 
-    console.log('[verifyNextAuthToken] ✅ Session verified:', session.user);
+    console.log(`[verifyNextAuthToken] ✅ Session verified (expired: ${session.expires}):`, session.user);
 
     // Validate and extract user data from session
     const email = session.user.email as string | undefined;

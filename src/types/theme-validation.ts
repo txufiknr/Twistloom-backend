@@ -153,8 +153,6 @@ export type AIValidationResult = {
   comment: string;
   /** Detected language code (ISO 639-1) */
   language: string;
-  // /** Index signature to satisfy Record<string, unknown> constraint */
-  // [key: string]: unknown;
 }
 
 /**

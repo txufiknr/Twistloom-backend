@@ -1048,7 +1048,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
 
 function buildFirstBookEvaluatorPrompt(
   theme: string,
-  mcCandidate: StoryMCCandidate | undefined,
+  mcCandidate?: StoryMCCandidate | null,
 ): string {
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
@@ -1389,7 +1389,7 @@ function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
  *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18
  *     → Consequence (medium): Cannot run fast"
  */
-function getMainCharacterInfo(mc?: StoryMCCandidate, state?: StoryState): string | null {
+function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: StoryState): string | null {
   if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
   const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
   
@@ -2248,13 +2248,13 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * });
  * ```
  */
-function buildBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
+function buildBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate | null, language?: string | null): string {
   return `Create a psychological thriller story from this theme input from user:\n"""\n${theme.trim()}\n"""
 
 HARD RULES (apply to everything below):
 - Write in first-person ("I") POV only (MC = narrator).
-- Max ${MAX_WORDS_PER_PAGE} words per page.
-- Detect language from theme input. Default to English ("en") if uncertain.
+- Detect language from theme input${language ? ` (current detected: "${language}")` : '. Default to English ("en") if uncertain'}.
+- Use phoetic & novellic terms creativelly based on language.
 
 MAIN CHARACTER:
 ${getMainCharacterInfo(mcCandidate) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
@@ -2264,20 +2264,21 @@ STORY SETUP:
 - Establish unease immediately — not fear yet, but something subtly wrong.
 - Tension should feel personal to the MC, not generically atmospheric.
 - Anchor vulnerability to the MC's specific bio, not generic relatability.
-- The opening disturbance must be: present on page 1, unexplained, and impossible to fully dismiss.
+- The opening disturbance must be present, unexplained, and impossible to fully dismiss.
 
 FIRST PAGE RULES:
 - Open in the middle of a moment, not an introduction.
 - Something must feel wrong, contradictory, or slightly off by the end of the first paragraph.
 - End on tension, uncertainty, or a soft cliffhanger — never resolution.
 - Mood must reflect the disturbance, not the genre.
+- Max ${MAX_WORDS_PER_PAGE} words.
 
 BRANCHING ACTIONS:
 ${getActionRulesText({ limit: MAX_ACTION_CHOICES_FIRST_PAGE })}
 Actions must be meaningfully distinct — vary between: reckless, cautious, emotional, avoidant. No two actions should lead to the same implied consequence.`;
 }
 
-function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string {
+function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate | null): string {
   return `Book Metadata:
 - TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic. Can include subtitle (e.g., "Book Title: The Subtitle").
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
@@ -2287,7 +2288,7 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate): string
 
 Main Character (MC):
 ${mcCandidate?.name ? `- MC's name is ${mcCandidate.name}.` : `- If MC's name provided in theme input, strictly use it.
-- If not provided, generate unique (rare) name but appropriate and memorable name based on age and language context.`}
+- If not provided, use diverse, unusual (rare) name but appropriate and memorable name based on age and language context.`}
 - bio: infer from theme if provided, must include at least one psychological trait that will be used against them.
 
 Initial Place:
@@ -2300,7 +2301,7 @@ Initial Characters:
 - Include only side characters who meaningfully exist at story start.
 - At least one should have a relationship that can be corrupted.
 - Bio must include one trait that could become a source of threat or betrayal.
-- Don't introduce character with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
+- Don't introduce character (including MC) with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
@@ -2371,9 +2372,12 @@ export async function initializeBook(
     generateCoverImage = false,
     isOriginal = false,
     aiComment,
+    language: detectedLanguage,
     req,
     bookId: draftBookId,
   } = params;
+
+  // TODO: if language `en`, pre-define MC name idea via `generateRandomCharacter`
 
   // Helper to persist book generation progress to DB (fire-and-forget)
   async function onGenerationProgress(progress: StoryGenerationStep | BookGenerationProgress) {
@@ -2392,7 +2396,7 @@ export async function initializeBook(
     await onGenerationProgress('book_initialization');
 
     // 1. Create AI prompt for book creation
-    const prompt = buildBookCreationPrompt(theme, mcCandidate);
+    const prompt = buildBookCreationPrompt(theme, mcCandidate, detectedLanguage);
 
     // 2. Generate complete book setup using AI
     const response = await executePromptForJSON<BookCreationResponse>({
