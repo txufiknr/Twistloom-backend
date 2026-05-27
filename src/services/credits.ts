@@ -18,13 +18,14 @@
  */
 
 import { type DBTransaction, dbWrite } from "../db/client.js";
-import { users, transactions } from "../db/schema.js";
+import { users, transactions, userNotifications } from "../db/schema.js";
 import { CREDIT_COSTS, type CreditCostKey } from "../config/credits.js";
 import { generateId } from "../utils/uuid.js";
 import { eq, and, sql } from "drizzle-orm";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { logUserActivity } from "./user.js";
 import { retryWithBackoffOrNull } from "../utils/retry.js";
+import type { TransactionType } from "../types/credits.js";
 
 /**
  * Credit consumption options
@@ -573,4 +574,111 @@ export async function executeWithCredits<T>(
       throw operationError;
     }
   });
+}
+
+/**
+ * Award credits options
+ */
+interface AwardCreditsOptions {
+  /** Transaction type (purchase, reward, etc.) */
+  type: TransactionType;
+  /** Notification type for user notification */
+  notificationType: string;
+  /** Notification title */
+  notificationTitle: string;
+  /** Notification message */
+  notificationMessage: string;
+  /** Additional data for notification */
+  notificationData?: Record<string, unknown>;
+  /** Optional metadata for the transaction */
+  metadata?: Record<string, unknown>;
+  /** Optional transaction to use instead of creating a new one */
+  tx?: DBTransaction;
+}
+
+/**
+ * Awards credits to a user's account with transaction record and notification
+ * 
+ * @param userId - User ID to award credits to
+ * @param creditsAmount - Number of credits to award
+ * @param options - Additional options for the transaction and notification
+ * @returns Updated user credit balance
+ * 
+ * @example
+ * ```typescript
+ * const newBalance = await awardCredits("user123", 10, {
+ *   type: "reward",
+ *   notificationType: "referral_bonus",
+ *   notificationTitle: "Referral Bonus",
+ *   notificationMessage: "You received 10 credits for referring a friend",
+ *   metadata: { referrerId: "user456" }
+ * });
+ * ```
+ */
+export async function awardCredits(
+  userId: string,
+  creditsAmount: number,
+  options: AwardCreditsOptions
+): Promise<number> {
+  const {
+    type,
+    notificationType,
+    notificationTitle,
+    notificationMessage,
+    notificationData = {},
+    metadata = {},
+    tx: trx
+  } = options;
+
+  // Use provided transaction or create a new one
+  const executeAward = async (tx: DBTransaction) => {
+    // Update user credits
+    const updateResult = await tx
+      .update(users)
+      .set({ 
+        credits: sql`${users.credits} + ${creditsAmount}` 
+      })
+      .where(eq(users.userId, userId))
+      .returning({ credits: users.credits });
+
+    if (!updateResult || updateResult.length === 0) {
+      throw new Error("User not found");
+    }
+
+    const newBalance = updateResult[0].credits;
+
+    // Create transaction record
+    await tx.insert(transactions).values({
+      userId,
+      type,
+      credits: creditsAmount,
+      amountUsd: null,
+      context: notificationType,
+      metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+      createdAt: new Date()
+    });
+
+    // Create user notification
+    await tx.insert(userNotifications).values({
+      userId,
+      type: notificationType,
+      title: notificationTitle,
+      message: notificationMessage,
+      data: {
+        credits: creditsAmount,
+        ...notificationData
+      },
+      read: false,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    return newBalance;
+  };
+
+  if (trx) {
+    return executeAward(trx);
+  } else {
+    return dbWrite.transaction(async (tx) => executeAward(tx));
+  }
 }

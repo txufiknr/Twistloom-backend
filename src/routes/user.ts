@@ -50,6 +50,8 @@ import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundEr
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity } from "../services/user.js";
+import { awardCredits } from "../services/credits.js";
+import { REFERRAL_BONUS } from "../config/credits.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUserSelect } from "../services/user-controller.js";
@@ -2312,8 +2314,27 @@ router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
         isNewUser: false,
         updatedAt: new Date(),
       })
-      .where(eq(users.userId, userId))
-      .returning();
+      .where(eq(users.userId, userId));
+
+    // Award REFERRAL_BONUS to both referrer and current user
+    await Promise.all([
+      // Award bonus to referrer
+      awardCredits(referrer[0].userId, REFERRAL_BONUS, {
+        type: "reward",
+        notificationType: "referral_bonus",
+        notificationTitle: "Referral Bonus",
+        notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
+        metadata: { referredUserId: userId }
+      }),
+      // Award bonus to current user
+      awardCredits(userId, REFERRAL_BONUS, {
+        type: "reward",
+        notificationType: "referral_bonus",
+        notificationTitle: "Referral Bonus",
+        notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
+        metadata: { referrerId: referrer[0].userId }
+      })
+    ]);
 
     // Log user activity
     await logUserActivity({
@@ -2328,10 +2349,13 @@ router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
       appVersion: req.get('x-app-version'),
     });
 
-    // Invalidate user profile cache
-    await invalidateUserProfileCache(userId);
+    // Invalidate user profile cache for both users
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      invalidateUserProfileCache(referrer[0].userId)
+    ]);
 
-    console.log(`[POST /referrer] ✅ User ${userId} set referrer to ${referrer[0].userId} (${username})`);
+    console.log(`[POST /referrer] ✅ User ${userId} set referrer to ${referrer[0].userId} (${username}) - both awarded ${REFERRAL_BONUS} credits`);
 
     res.json({
       success: true,

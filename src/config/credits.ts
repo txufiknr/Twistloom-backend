@@ -72,6 +72,8 @@ export const DAILY_CHECKIN_DAYS = 7; // Big 20 credits bonus on 7th consecutive 
 export const DAILY_CHECKIN_BONUS = 5; // Flat 5 credits bonus on day 1-6
 export const DAILY_CHECKIN_BIG_BONUS = 20; // Bonus applied on the 7th consecutive day
 
+export const REFERRAL_BONUS = 10; // Bonus for both users
+
 export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",

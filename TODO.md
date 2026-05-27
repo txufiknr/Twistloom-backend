@@ -6,15 +6,9 @@
 [ ] create generate-prompts.yml weekly github workflow
 [ ] schema userPurchasedBooks
 
-@src/routes/user.ts @src/db/schema.ts:178-211 can you add new POST route to input `referrerId`?
-so authenticated user can input username of who invites him/her
-only allow if current user's `isNewUser` is true 
-
-
 [ ] GET candidates/status meskipun no userId, tetep trigger generation workflow
 [ ] Kalau source action belum ada, insert dulu page progress parent page
-[ ] paid book (vip with 500 followers)
-[ ] referral +10 credits per user
+[ ] paid book (vip with 500 followers, 30 days-old account, email verified)
 
 [ ] userSettings schema
 - interests: string[]

@@ -33,7 +33,7 @@ import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS } from "../config/credit
 import type { TransactionType } from "../types/credits.js";
 import { getErrorMessage, handleApiError } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
-import { consumeCredits, getCreditCost } from "../services/credits.js";
+import { consumeCredits, getCreditCost, awardCredits } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
 import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, hasActiveVipSubscription } from "../services/subscription.js";
 import { VIP_BENEFITS, VIP_SUBSCRIPTION } from "../config/subscription.js";
@@ -889,46 +889,28 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           return res.json({ received: true, duplicate: true });
         }
 
-        // Update user credits
-        const updateResult = await tx
-          .update(users)
-          .set({ 
-            credits: sql`${users.credits} + ${creditsAmount}` 
-          })
-          .where(eq(users.userId, userId))
-          .returning({ credits: users.credits });
-
-        if (!updateResult || updateResult.length === 0) {
-          console.error("[stripe] ❌ Failed to update user credits - user not found:", userId);
-          throw new Error("User not found");
-        }
-
-        // Create transaction record
-        await tx.insert(transactions).values({
-          userId,
+        // Award credits using the helper function (includes transaction record and notification)
+        const newBalance = await awardCredits(userId, creditsAmount, {
           type: "purchase",
-          credits: creditsAmount,
-          amountUsd,
-          paymentIntentId,
-          stripeEventId,
-        });
-
-        console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${updateResult[0].credits}) for payment ${session.id}`);
-        
-        // Create success notification for user
-        await tx.insert(userNotifications).values({
-          userId,
-          type: 'payment_success',
-          title: 'Payment Successful',
-          message: `Your purchase of ${creditsAmount} credits was successful`,
-          data: {
-            credits: creditsAmount,
+          notificationType: "payment_success",
+          notificationTitle: "Payment Successful",
+          notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
+          notificationData: {
             amount: amountUsd,
             paymentIntentId,
             packId,
           },
+          metadata: {
+            paymentIntentId,
+            stripeEventId,
+            amountUsd,
+            packId
+          },
+          tx
         });
-        
+
+        console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${newBalance}) for payment ${session.id}`);
+
         // Update webhook delivery status as success
         await dbWrite.update(webhookDeliveries)
           .set({ 
