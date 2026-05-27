@@ -888,57 +888,67 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       try {
         // Run evaluation phase if provided
         if (evaluatorPrompt) {
-          // STEP 3: EVALUATING
+          // STEP 3: EVALUATING (best-effort)
+          // Evaluation must not invalidate a successful generation. If evaluation fails,
+          // fall back to the original generated `result.output` below.
           await onProgress?.({ type: 'ai_evaluation_start' });
           await onGenerationProgress?.('ai_evaluation');
 
-          // Call second AI prompt to score, evaluate, and outputs corrected result
-          const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
-            ...options,
-            modelSelection: AI_CHAT_MODELS_EVALUATION,
-            // modelSelection: Object.fromEntries(
-            //   Object.entries(AI_CHAT_MODELS_WRITING).filter(([provider]) => !TIER_S_PROVIDERS.includes(provider as AIChatProvider))
-            // ) satisfies AIModelSelection,
-            config,
-            systemPrompt,
-            context: `${context}-evaluation`,
-            
-            // Pass generated raw output as document
-            documents: [
-              ...(documents || []),
-              {
-                title: 'GENERATED JSON (from previous AI)',
-                snippet: result.output,
+          const evaluationContext = `${context}-evaluation`;
+          try {
+            // Call second AI prompt to score, evaluate, and output corrected result
+            const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
+              ...options,
+              modelSelection: AI_CHAT_MODELS_EVALUATION,
+              config,
+              systemPrompt,
+              context: evaluationContext,
+
+              // Pass generated raw output as document
+              documents: [
+                ...(documents || []),
+                {
+                  title: 'GENERATED JSON (from previous AI)',
+                  snippet: result.output,
+                }
+              ],
+
+              // Evaluation output schema
+              outputAsJson: true,
+              outputJsonStructure: EVALUATION_SCHEMA_DEFINITION,
+              outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
+              outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
+
+              // CRITICAL: evaluation call should exclude the evaluatorPromptBuilder to prevent the recursive loop
+            }, undefined);
+
+            const { result: evaluationResult } = response;
+
+            // Emit evaluation complete event
+            await onProgress?.({ type: 'ai_evaluation_complete' });
+
+            if (evaluationResult) {
+              const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
+              if (logEvaluationResult) {
+                group(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore} → ${scoreAfter}):`, async () => {
+                  console.log("Score before:", scoreBefore);
+                  console.log("Score after:", scoreAfter);
+                  console.log("Action flags:", actionFlags);
+                  console.log("Integrity flags:", integrityFlags);
+                });
               }
-            ],
-
-            // Evaluation output schema
-            outputAsJson: true,
-            outputJsonStructure: EVALUATION_SCHEMA_DEFINITION,
-            outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
-            outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
-
-            // CRITICAL: evaluation call should exclude the evaluatorPromptBuilder to prevent the recursive loop
-          }, undefined);
-
-          const { result: evaluationResult } = response;
-
-          // Emit evaluation complete event if evaluatorPrompt was provided
-          await onProgress?.({ type: 'ai_evaluation_complete' });
-
-          if (evaluationResult) {
-            const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
-            if (logEvaluationResult) {
-              console.log("🕵️‍♂️ Evaluation result:");
-              console.log("Score before:", scoreBefore);
-              console.log("Score after:", scoreAfter);
-              console.log("Action flags:", actionFlags);
-              console.log("Integrity flags:", integrityFlags);
+              return {
+                ...result,
+                result: evaluationResult.output
+              } satisfies AIResponse<T>;
+            } else if (logEvaluationResult) {
+              console.log(`[${evaluationContext}] Evaluation returned no result — falling back to generation output`);
             }
-            return {
-              ...result,
-              result: evaluationResult.output
-            } satisfies AIResponse<T>;
+          } catch (evalError) {
+            console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, getErrorMessage(evalError));
+            // Ensure we still emit evaluation complete to keep progress lifecycle consistent
+            await onProgress?.({ type: 'ai_evaluation_complete' });
+            // continue to parsing original generated result
           }
         }
 

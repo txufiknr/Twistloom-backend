@@ -348,7 +348,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('[book-creation] 💥 Uncaught exception:', getErrorMessage(error));
+  console.error('[book-creation] 💥 Uncaught exception:', error);
   process.exit(1);
 });
 

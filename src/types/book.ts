@@ -47,6 +47,8 @@ export interface BookStats {
   branchesCount: number;
 }
 
+export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'name' | 'image'>;
+
 /**
  * Complete book data as stored in database
  * 
@@ -118,7 +120,7 @@ export interface EnrichedBookData {
   createdAt: Date;
   updatedAt: Date;
   mc: StoryMC;
-  author: User | null;
+  author: BookAuthor | null;
   stats: BookStats;
   isLiked: boolean;
   isRead: boolean;

@@ -338,12 +338,8 @@ async function markPageVisitedWithClient(params: {
     }
   }
 
-  // Calculate visit statistics using denormalized data
-  // nthVisit: visitCount + 1 (trigger will increment visitCount after this function completes)
-  // visitorPercentage: percentage of book readers who have visited this page (nthVisit / totalBookReaders)
-  const nthVisit = visitCount + 1;
-  const totalBookReaders = stats.readCount;
-  const visitorPercentage = totalBookReaders === 0 ? 100 : Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
+  // Calculate visit statistics using denormalized data (centralized helper)
+  const { nthVisit, visitorPercentage } = computeVisitStats({ rawVisitCount: visitCount, readerCount: stats.readCount, addOne: true });
 
   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
 
@@ -884,4 +880,19 @@ export async function getUserPage(pageId: string, userId: string, options: {
   
   // Map to UserStoryPage with selected action included
   return await mapToUserStoryPage(dbPage, userId, selectedActions);
+}
+
+export function computeVisitStats(params: {
+  rawVisitCount: number;
+  readerCount: number;
+  addOne?: boolean;
+}) {
+  const { rawVisitCount, readerCount, addOne = false } = params;
+
+  // Ensure minimum values of 1 to avoid division-by-zero and zero visitor numbering
+  const nthVisit = Math.max(1, rawVisitCount + (addOne ? 1 : 0));
+  const totalBookReaders = Math.max(1, readerCount);
+  const visitorPercentage = Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
+
+  return { nthVisit, visitorPercentage, totalBookReaders };
 }

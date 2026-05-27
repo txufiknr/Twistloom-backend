@@ -53,6 +53,7 @@ export function getEnrichedUserSelect() {
     bio: users.bio,
     gender: users.gender,
     image: users.image,
+    tier: users.tier,
     credits: users.credits,
     lastActive: users.lastActive,
     createdAt: users.createdAt,
@@ -89,6 +90,14 @@ export function getEnrichedUserSelect() {
       INNER JOIN user_likes ON books.id = user_likes.target_id
       WHERE books.user_id = users.user_id AND user_likes.target_type = 'book'
     ), 0)`,
+    accountDaysOld: sql<number>`COALESCE((NOW()::date - ${users.createdAt}::date), 0)`,
+    // Email verification comes from the user_auth table
+    emailVerified: sql<Date | null>`(
+      SELECT ua.email_verified
+      FROM user_auth ua
+      WHERE ua.user_id = users.user_id
+      LIMIT 1
+    )`,
   };
 }
 

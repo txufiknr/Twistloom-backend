@@ -26,10 +26,10 @@ import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
-import { markPageVisited } from "./story.js";
+import { computeVisitStats, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Response } from "express";
-import type { BookPageVisit, BookSortOption, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
+import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { DBBookTranslations } from "../types/schema.js";
 import type { Action } from "../types/story.js";
 
@@ -87,7 +87,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       username: users.username,
       name: users.penName || users.name,
       image: users.image,
-    },
+    } satisfies Record<keyof BookAuthor, unknown>,
     // Denormalized engagement metrics (O(1) performance, maintained by trigger)
     stats: {
       likesCount: books.likesCount,
@@ -95,7 +95,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       commentsCount: books.commentsCount,
       branchesCount: books.branchesCount,
       completeCount: books.completeCount,
-    },
+    } satisfies Record<keyof BookStats, unknown>,
     // User-specific flags (indexed by userId and targetId/bookId)
     isLiked: currentUserId 
       ? sql<boolean>`EXISTS (
@@ -675,14 +675,8 @@ export async function visitBookPage(
     console.log(`[visit] 👓 Prefetching "${book.title}" page ${pageNumber}:`, { pageId, branchId });
 
     // No user visit track for prefetch (not actual navigation)
-    const nthVisit = dbPage.visitCount;
-    const totalBookReaders = book.stats.readCount;
-    const visitorPercentage = totalBookReaders === 0 ? 100 : Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
-    const visitDetails: BookPageVisit = {
-      nthVisit,
-      visitorPercentage,
-      readerUserId: userId
-    };
+    const { nthVisit, visitorPercentage } = computeVisitStats({ rawVisitCount: dbPage.visitCount, readerCount: book.stats.readCount, addOne: false });
+    const visitDetails: BookPageVisit = { nthVisit, visitorPercentage, readerUserId: userId };
     return { dbPage, book, visitDetails };
   }
 

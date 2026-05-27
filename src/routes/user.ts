@@ -45,7 +45,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
-import type { LikeTargetType, UserActivityType } from "../types/user.js";
+import type { LikeTargetType, User, UserActivityType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -137,13 +137,14 @@ router.get("/", optionalAuth, async (req: Request, res: Response) => {
       }
 
       // Format response to match frontend expectations
-      const formattedUser = {
+      const formattedUser: User = {
         id: userData.userId,
         username: userData.username,
         name: userData.name,
         email: userData.email,
         bio: userData.bio,
         image: userData.image,
+        tier: userData.tier,
         credits: userData.credits,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
@@ -154,6 +155,8 @@ router.get("/", optionalAuth, async (req: Request, res: Response) => {
           savedBooksCount: userData.savedBooksCount,
           followersCount: userData.followersCount,
           likesReceived: userData.likesReceived,
+          accountDaysOld: userData.accountDaysOld,
+          emailVerified: userData.emailVerified,
         },
       };
 

@@ -33,21 +33,24 @@ export interface UserStats {
   savedBooksCount: number;
   followersCount: number;
   likesReceived: number;
+  accountDaysOld: number;
+  emailVerified: Date | null;
 }
 
 export type UserTier = 'standard' | 'vip';
 
 export interface User {
   id: string;
-  email?: string | null;
-  username?: string | null;
-  name?: string | null;
-  bio?: string | null;
-  image?: string | null;
-  stats?: UserStats;
-  tier?: UserTier;
-  createdAt?: string;
-  updatedAt?: string;
+  email: string | null;
+  username: string | null;
+  name: string | null;
+  bio: string | null;
+  image: string | null;
+  stats: UserStats;
+  tier: UserTier | null;
+  credits: number;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export type UserActivityType =

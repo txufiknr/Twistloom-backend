@@ -19,14 +19,13 @@
 [x] trigger read_count masih ngaco, visit_count udah bener 1
 [x] visitor percentage page 1 should always 100%
 [x] Github workflow Dynamic job name (book title)
-[x] Non retryable error kok dipertanyakan? 
-[x] book explore: filter by age range error
 
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594
 
 by book creator:
 [ ] soundtrack based on mood
+[ ] add character image
 [ ] add page image
 [ ] add voice or use noiz tts api
 

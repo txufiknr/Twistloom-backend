@@ -48,125 +48,120 @@ export async function retryPendingGenerations(): Promise<string[]> {
     console.log("[retryPendingGenerations] ⏩ Pending generation retry is disabled");
     return [];
   }
+    
+  // Lazy imports for better memory usage and startup time
+  const { dbRead, dbWrite } = await import("../db/client.js");
+  const { pages, books, userSessions } = await import("../db/schema.js");
+  const { eq, gt, lt, desc, asc, and, sql } = await import("drizzle-orm");
+  const { getPageFromDB } = await import("../services/book.js");
+  const { mapToUserStoryPage } = await import("../services/book.js");
   
-  try {
-    
-    // Lazy imports for better memory usage and startup time
-    const { dbRead, dbWrite } = await import("../db/client.js");
-    const { pages, books, userSessions } = await import("../db/schema.js");
-    const { eq, gt, lt, desc, asc, and, sql } = await import("drizzle-orm");
-    const { getPageFromDB } = await import("../services/book.js");
-    const { mapToUserStoryPage } = await import("../services/book.js");
-    
-    // Subquery to get the most recent active session for each book
-    const mostRecentSession = dbRead
-      .select({
-        bookId: userSessions.bookId,
-        lastActiveAt: sql`MAX(${userSessions.updatedAt})`.as('lastActiveAt')
-      })
-      .from(userSessions)
-      .where(eq(userSessions.status, 'active'))
-      .groupBy(userSessions.bookId)
-      .as('mostRecentSession');
-    
-    // Query pages with pending generations (limit to prevent overwhelming system, minimal fields needed)
-    console.log(`[retryPendingGenerations] 📋 Querying pages with pending generations...`);
-    const pagesWithPending = await dbRead
-      .selectDistinct({
-        id: pages.id,
-        pendingGenerationCount: pages.pendingGenerationCount,
-        trendingScore: books.trendingScore,
-        page: pages.page,
-        totalPages: books.totalPages,
-        lastActiveAt: mostRecentSession.lastActiveAt,
-      })
-      .from(pages)
-      .innerJoin(books, eq(pages.bookId, books.id))
-      .leftJoin(mostRecentSession, eq(books.id, mostRecentSession.bookId))
-      .where(and(
-        gt(pages.pendingGenerationCount, 0),
-        lt(pages.page, books.totalPages) // Exclude last page since it doesn't need candidates
-      ))
-      .orderBy(
-        desc(mostRecentSession.lastActiveAt), // Prioritize books with most recent active session
-        desc(books.trendingScore), // Then prioritize books with highest trending scores
-        desc(books.readCount), // Then prioritize books with highest read count
-        desc(pages.visitCount), // Then prioritize pages with most visits
-        asc(pages.page), // Then prioritize pages with smaller page numbers
-        asc(pages.pendingGenerationCount), // Then prioritize pages with fewer remaining pending candidate generation
-      )
-      .limit(MAX_BRANCHING_PREGENERATION_LIMIT); // Process up to N pages per run
-    
-    if (pagesWithPending.length === 0) {
-      console.log("[retryPendingGenerations] ✨ No pending generations to process");
-      return [];
-    }
-    
-    console.log(`[retryPendingGenerations] 📋 Found ${pagesWithPending.length} pages with pending generations`);
-    
-    let totalProcessed = 0;
-    let totalSuccess = 0;
-    let totalFailed = 0;
-    
-    // TODO: is it feasible to make it parallel?
-    for (const pageData of pagesWithPending) {
-      try {
-        console.log(`[retryPendingGenerations] 🔄 Processing page ${pageData.id} (pending: ${pageData.pendingGenerationCount})`);
-        
-        // Fetch fresh page data using `dbWrite` client
-        const dbPage = await getPageFromDB(pageData.id, { client: dbWrite });
-        if (!dbPage) {
-          console.warn(`[retryPendingGenerations] ⚠️ Page ${pageData.id} not found, skipping`);
-          continue;
-        }
-        
-        // Convert null fields to undefined for type compatibility
-        const systemUserId = requireEnv('SYSTEM_USER_ID');
-        const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
-        const pendingBefore = pageData.pendingGenerationCount || 0;
-        const hasNoPendingActions = pendingBefore === 0;
-
-        // Use shared page generation logic
-        const generationResult = await processPageGeneration(
-          dbPage,
-          pageForGeneration,
-          hasNoPendingActions,
-          'retryPendingGenerations'
-        );
-
-        if (generationResult.successCount > 0) {
-          totalSuccess += generationResult.successCount;
-          console.log(`[retryPendingGenerations] ✅ Page ${pageData.id}: ${generationResult.successCount} actions regenerated`);
-        } else {
-          totalFailed += pendingBefore;
-          console.log(`[retryPendingGenerations] ⚠️ Page ${pageData.id}: No actions regenerated`);
-        }
-        
-        totalProcessed++;
-        processedPageIds.push(pageData.id);
-        
-        // Small delay between pages to prevent overwhelming AI API
-        await delay(500);
-        
-      } catch (error) {
-        console.error(`[retryPendingGenerations] ❌ Failed to process page ${pageData.id}:`, getErrorMessage(error));
-        totalFailed++;
-        // Continue with next page - don't fail entire batch
-      }
-    }
-    
-    const durationMs = Date.now() - startedAt;
-    console.log(`[retryPendingGenerations] ✅ Retry completed in ${durationMs}ms:`, {
-      pagesProcessed: totalProcessed,
-      actionsRegenerated: totalSuccess,
-      actionsStillPending: totalFailed
-    });
-    return processedPageIds;
-  } catch (error) {
-    // console.error("[retryPendingGenerations] ❌ Retry job failed:", getErrorMessage(error));
-    console.error("[retryPendingGenerations] ❌ Retry job failed:", error);
-    throw error;
+  // Subquery to get the most recent active session for each book
+  const mostRecentSession = dbRead
+    .select({
+      bookId: userSessions.bookId,
+      lastActiveAt: sql`MAX(${userSessions.updatedAt})`.as('lastActiveAt')
+    })
+    .from(userSessions)
+    .where(eq(userSessions.status, 'active'))
+    .groupBy(userSessions.bookId)
+    .as('mostRecentSession');
+  
+  // Query pages with pending generations (limit to prevent overwhelming system, minimal fields needed)
+  console.log(`[retryPendingGenerations] 📋 Querying pages with pending generations...`);
+  const pagesWithPending = await dbRead
+    .selectDistinct({
+      id: pages.id,
+      pendingGenerationCount: pages.pendingGenerationCount,
+      trendingScore: books.trendingScore,
+      readCount: books.readCount,
+      page: pages.page,
+      visitCount: pages.visitCount,
+      totalPages: books.totalPages,
+      lastActiveAt: mostRecentSession.lastActiveAt,
+    })
+    .from(pages)
+    .innerJoin(books, eq(pages.bookId, books.id))
+    .leftJoin(mostRecentSession, eq(books.id, mostRecentSession.bookId))
+    .where(and(
+      gt(pages.pendingGenerationCount, 0),
+      lt(pages.page, books.totalPages) // Exclude last page since it doesn't need candidates
+    ))
+    .orderBy(
+      desc(mostRecentSession.lastActiveAt), // Prioritize books with most recent active session
+      desc(books.trendingScore), // Then prioritize books with highest trending scores
+      desc(books.readCount), // Then prioritize books with highest read count
+      desc(pages.visitCount), // Then prioritize pages with most visits
+      asc(pages.page), // Then prioritize pages with smaller page numbers
+      asc(pages.pendingGenerationCount), // Then prioritize pages with fewer remaining pending candidate generation
+    )
+    .limit(MAX_BRANCHING_PREGENERATION_LIMIT); // Process up to N pages per run
+  
+  if (pagesWithPending.length === 0) {
+    console.log("[retryPendingGenerations] ✨ No pending generations to process");
+    return [];
   }
+  
+  console.log(`[retryPendingGenerations] 📋 Found ${pagesWithPending.length} pages with pending generations`);
+  
+  let totalProcessed = 0;
+  let totalSuccess = 0;
+  let totalFailed = 0;
+  
+  // TODO: is it feasible to make it parallel?
+  for (const pageData of pagesWithPending) {
+    try {
+      console.log(`[retryPendingGenerations] 🔄 Processing page ${pageData.id} (pending: ${pageData.pendingGenerationCount})`);
+      
+      // Fetch fresh page data using `dbWrite` client
+      const dbPage = await getPageFromDB(pageData.id, { client: dbWrite });
+      if (!dbPage) {
+        console.warn(`[retryPendingGenerations] ⚠️ Page ${pageData.id} not found, skipping`);
+        continue;
+      }
+      
+      // Convert null fields to undefined for type compatibility
+      const systemUserId = requireEnv('SYSTEM_USER_ID');
+      const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
+      const pendingBefore = pageData.pendingGenerationCount || 0;
+      const hasNoPendingActions = pendingBefore === 0;
+
+      // Use shared page generation logic
+      const generationResult = await processPageGeneration(
+        dbPage,
+        pageForGeneration,
+        hasNoPendingActions,
+        'retryPendingGenerations'
+      );
+
+      if (generationResult.successCount > 0) {
+        totalSuccess += generationResult.successCount;
+        console.log(`[retryPendingGenerations] ✅ Page ${pageData.id}: ${generationResult.successCount} actions regenerated`);
+      } else {
+        totalFailed += pendingBefore;
+        console.log(`[retryPendingGenerations] ⚠️ Page ${pageData.id}: No actions regenerated`);
+      }
+      
+      totalProcessed++;
+      processedPageIds.push(pageData.id);
+      
+      // Small delay between pages to prevent overwhelming AI API
+      await delay(500);
+      
+    } catch (error) {
+      console.error(`[retryPendingGenerations] ❌ Failed to process page ${pageData.id}:`, getErrorMessage(error));
+      totalFailed++;
+      // Continue with next page - don't fail entire batch
+    }
+  }
+  
+  const durationMs = Date.now() - startedAt;
+  console.log(`[retryPendingGenerations] ✅ Retry completed in ${durationMs}ms:`, {
+    pagesProcessed: totalProcessed,
+    actionsRegenerated: totalSuccess,
+    actionsStillPending: totalFailed
+  });
+  return processedPageIds;
 }
 
 /**
@@ -407,7 +402,7 @@ async function main(): Promise<void> {
     console.log(`[retry-pending-generations] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error("[retry-pending-generations] ❌ Retry job failed:", getErrorMessage(error));
+    console.error("[retry-pending-generations] ❌ Retry job failed:", error);
     process.exit(1);
   }
 }
@@ -417,12 +412,12 @@ async function main(): Promise<void> {
  * Important for GitHub Actions correctness.
  */
 process.on("unhandledRejection", (reason) => {
-  console.error("[retry-pending-generations] 💥 Unhandled promise rejection", reason);
+  console.error("[retry-pending-generations] 💥 Unhandled promise rejection:", reason);
   process.exit(1);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[retry-pending-generations] 💥 Uncaught exception", getErrorMessage(error));
+  console.error("[retry-pending-generations] 💥 Uncaught exception:", error);
   process.exit(1);
 });
 
