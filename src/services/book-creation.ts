@@ -6,7 +6,7 @@
  */
 
 import type { StoryMCCandidate } from '../types/character.js';
-import type { BookGenerationPayload, BookGenerationStatus, StoryGenerationStep, InitializeBookResult } from '../types/book.js';
+import type { BookGenerationPayload, BookGenerationStatus, StoryGenerationStep, CreateBookResponse } from '../types/book.js';
 import type { ProgressCallback } from '../types/sse.js';
 import type { ThemeValidationResult } from '../types/theme-validation.js';
 import { handleThemeValidationError, validateTheme } from '../utils/theme-validation.js';
@@ -201,7 +201,7 @@ class BookCreationError extends Error {
 export async function createBookCore(
   params: BookCreationParams,
   onProgress?: ProgressCallback
-): Promise<InitializeBookResult> {
+): Promise<CreateBookResponse> {
   const { userId, theme, mcCandidate, generateCoverImage, isOriginal, context = "book_creation", req } = params;
 
   // STEP 1: Skip credit consumption for internal cron jobs
@@ -210,13 +210,13 @@ export async function createBookCore(
 
   try {
     // STEP 2: Validate book creation parameters (before credit consumption)
-    await createBookValidate(theme, mcCandidate, generateCoverImage, onProgress);
-
-    let result: InitializeBookResult;
+    const { aiResult } = await createBookValidate(theme, mcCandidate, generateCoverImage, onProgress);
+    const { comment: aiComment } = aiResult || {};
+    let result: CreateBookResponse;
 
     if (isInternal) {
       // Cron job or original story: initialize without credit consumption
-      result = await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal }, onProgress);
+      result = await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal, aiComment }, onProgress);
     } else {
       // User request: consume credits and initialize atomically
       // This ensures credits are refunded if initialization fails
@@ -224,13 +224,13 @@ export async function createBookCore(
       // initializeBook now supports transaction parameter for full atomicity
       // All DB operations (insertBook, insertStoryPage, insertStoryState) are executed
       // within the same transaction, ensuring credits are refunded if any operation fails.
-      const executeCreditsResult = await executeWithCredits<InitializeBookResult>(
+      const executeCreditsResult = await executeWithCredits<CreateBookResponse>(
         userId,
         "STORY_GENERATION",
         async (tx) => {
           // Initialize book within the transaction
           // All DB operations use tx for full atomicity
-          return await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal, req, tx }, onProgress);
+          return await initializeBook({ userId, theme, mcCandidate, generateCoverImage, isOriginal, aiComment, req, tx }, onProgress);
         },
         {
           context,

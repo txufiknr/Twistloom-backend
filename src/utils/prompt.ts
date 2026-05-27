@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -16,7 +16,7 @@ import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../type
 import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, Ending, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
-import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, InitializeBookResult } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { books } from "../db/schema.js";
@@ -267,7 +267,8 @@ const firstBookOutputFormat: string = `{
         "decayPerPage": <number between 0.0 and 1.0>
       }
     ],
-    "isMajorEvent": <true or false>
+    "isMajorEvent": <true or false>,
+    "futureNotes": ["..."]
   },
   "initialPlace": {
     "name": "Location Name",
@@ -367,6 +368,10 @@ const nextPageOutputFormat: string = `{
   ],
   "isMajorEvent": <true or false>,
   "contextHistory": "...",
+  "futureNoteUpdates": {
+    "add": [],
+    "remove": []
+  },
   "flagUpdates": {
     "trust": "One of: low | medium | high",
     "fear": "One of: low | medium | high",
@@ -608,7 +613,7 @@ ${getActionRulesText({ isFinale })}`}`;
 }
 
 function buildNextPageFieldInstructions(state: StoryState, selectedAction: Action): string {
-  const { traumaTags } = state;
+  const { traumaTags, futureNotes } = state;
   const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot, phase } = getStoryStateInfo(state);
   const isDialogueAction = selectedAction.type === 'dialogue';
 
@@ -670,10 +675,16 @@ injuries
 
 traumaTagUpdates
   - Short evocative phrases for experiences that will haunt the MC later.
-${traumaTags.length >= MAX_TRAUMA_TAGS ? `  - Maximum trauma tags reached. Can't add more.` : `  - Only add if something genuinely traumatic or psychologically significant occurs.`}
+${traumaTags.length < MAX_TRAUMA_TAGS ? `  - Only add if something genuinely traumatic or psychologically significant occurs.` : `  - Maximum trauma tags reached. Can't add more.`}
   - Remove when trauma is resolved.
 ${isEarlyPhase ? `  - Max 1 per page. Plant sparingly — early trauma tags shape everything downstream.` : `  - Max 2 per page. Omit if none.`}
 ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not new ones being added.` : ''}
+
+futureNoteUpdates
+${futureNotes.length < MAX_FUTURE_NOTES ? `  - Add any important notes for future AI turns which are not included in current turn` : ''}
+${futureNotes.length > 0 ? `  - Incorporate future notes in this turn if viable
+  - Remove which have been incorporated or not relevant anymore` : ''}
+  - Keep max ${MAX_FUTURE_NOTES} items
 
 isMajorEvent
   - true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
@@ -720,7 +731,7 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
   - When introducing new characters, ensure to describe their visual appearance, incorporate naturally in the storytelling.
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
   - No two characters has the same name.
-  - Don't introduce character with name: ${formatOneOf(blacklistedNames)}.
+  - Don't introduce character with these first/last names: ${formatOneOf(blacklistedNames)}.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
@@ -1485,6 +1496,11 @@ function formatActionChoices(actions: Action[]): string {
     .join('\n');
 }
 
+function formatFutureNotes(futureNotes: string[]): string {
+  if (futureNotes.length === 0) return 'none';
+  return `\n${futureNotes.map(n => `  - ${n}`).join('\n')}`;
+}
+
 /**
  * Formats selected action for AI prompt with enhanced formatting
  * 
@@ -1946,8 +1962,10 @@ ${getManipulationAffinitiesText(profile.manipulationAffinity)}`;
  * @returns Formatted string for prompt inclusion
  */
 function formatRouteContext(state: StoryState): string {
-  return `• Trauma tags: ${state.traumaTags.join(', ')}
-• Difficulty: ${state.difficulty}`;
+  const { traumaTags, difficulty, futureNotes } = state;
+  return `• Trauma tags: ${traumaTags.join(', ')}
+• Difficulty: ${difficulty}
+• Future notes: ${formatFutureNotes(futureNotes)}`;
 }
 
 // /**
@@ -2281,7 +2299,7 @@ Initial Characters:
 - Include only side characters who meaningfully exist at story start.
 - At least one should have a relationship that can be corrupted.
 - Bio must include one trait that could become a source of threat or betrayal.
-- Don't introduce character with name (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
+- Don't introduce character with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
@@ -2294,6 +2312,7 @@ Initial State:
 - difficulty should reflect how hostile the world is to this MC at the start.
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme. If user mention anything about desired ending in theme input, respect it.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
+- futureNotes: any important notes for future AI turns which are not included in current turn (initial state, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
 - plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
 - inventory: if any, what items MC brings, can include the amount, traits, and where it located.
@@ -2342,7 +2361,7 @@ ${getEndingArchetypesText()}`;
 export async function initializeBook(
   params: InitializeBookParams,
   onProgress?: ProgressCallback
-): Promise<InitializeBookResult> {
+): Promise<CreateBookResponse> {
   const client = params.tx ?? dbWrite;
   const {
     userId,
@@ -2350,6 +2369,7 @@ export async function initializeBook(
     mcCandidate,
     generateCoverImage = false,
     isOriginal = false,
+    aiComment,
     req,
     bookId: draftBookId,
   } = params;
@@ -2481,7 +2501,7 @@ export async function initializeBook(
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
-      ...generatedInitialState, // flags, difficulty, viableEnding, traumaTags, plotFlags, isMajorEvent
+      ...generatedInitialState,
       hiddenState: createInitialHiddenState(),
       characters: initialCharacters ? 
         Object.fromEntries(
@@ -2589,7 +2609,8 @@ export async function initializeBook(
       book,
       firstPage,
       initialState,
-    } satisfies InitializeBookResult;
+      aiComment
+    } satisfies CreateBookResponse;
 
   } catch (error) {
     console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error: getErrorMessage(error) });

@@ -13,7 +13,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { generateBookCreationPromptText } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
-import type { InitializeBookResult } from "../types/book.js";
+import type { CreateBookResponse } from "../types/book.js";
 import { requireEnv } from "../utils/env.js";
 
 export async function generateOriginalBook(): Promise<void> {
@@ -24,7 +24,7 @@ export async function generateOriginalBook(): Promise<void> {
 
     // Loop step 1-2: generate theme and try to create book; on failure regenerate theme and retry
     const MAX_ATTEMPTS = 3;
-    let result: InitializeBookResult | undefined;
+    let result: CreateBookResponse | undefined;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       // Step 1: Generate creative theme using AI (non-streaming for cron job)

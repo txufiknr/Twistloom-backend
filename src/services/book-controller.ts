@@ -629,7 +629,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  * - nthVisit: The visit number for this page (e.g., "you're the 100th visitor")
  * - visitorPercentage: Percentage of book readers who have visited this page
  * 
- * Example:
+ * @example
  * ```typescript
  * const { visitDetails, book, dbPage } = await visitBookPage(res, { userId, pageId, bookIdentifier });
  * if (visitDetails) {

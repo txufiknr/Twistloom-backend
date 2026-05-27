@@ -1105,9 +1105,11 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
  *   ]
  * }
  */
-router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
+router.get("/favorites", optionalAuth, async (req: Request, res: Response) => {
+  const userId = req.userId;
+  if (!userId) return res.json({ favorites: [] });
+
   try {
-    const userId = req.userId!;
     const { limit = "50", offset = "0" } = req.query;
 
     const favorites = await dbRead
@@ -1118,9 +1120,7 @@ router.get("/favorites", requireAuth, async (req: Request, res: Response) => {
       .limit(parseInt(limit as string))
       .offset(parseInt(offset as string));
 
-    res.json({
-      favorites,
-    });
+    res.json({ favorites, });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);

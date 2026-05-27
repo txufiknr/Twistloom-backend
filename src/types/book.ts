@@ -184,6 +184,8 @@ export type InitializeBookParams = {
   generateCoverImage?: boolean;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal?: boolean;
+  /** Complimentary comment from AI */
+  aiComment?: string;
   /** Express request object for activity log */
   req?: Request;
   /** Optional: Update existing book by ID instead of inserting new (for async book creation) */
@@ -198,13 +200,15 @@ export type InitializeBookParams = {
  * Defines the complete result structure returned after successfully
  * initializing a new book with all its components.
  */
-export type InitializeBookResult = {
+export type CreateBookResponse = {
   /** Complete book metadata and structure */
   book: Book;
   /** First generated story page */
   firstPage: StoryPage;
   /** Initial story state configuration */
   initialState: StoryState;
+  /** Complimentary comment from AI */
+  aiComment?: string;
 };
 
 /**

@@ -1,7 +1,7 @@
-import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
+import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration } from "../types/story.js";
 import type { Injury } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
@@ -26,6 +26,7 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
   return {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
+    futureNoteUpdates: generation.futureNoteUpdates,
     addPlotFlag: generation.addPlotFlag,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
@@ -36,7 +37,7 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
     contextHistory: generation.contextHistory,
     inventory: generation.inventory,
     injuries: generation.injuries,
-  };
+  } satisfies Record<keyof StateDeltaGeneration, unknown>;
 }
 
 /**
@@ -156,6 +157,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   const {
     flagUpdates,
     traumaTagUpdates,
+    futureNoteUpdates,
     addPlotFlag,
     characterUpdates,
     relationshipUpdates,
@@ -196,6 +198,9 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
 
   // Apply trauma tag updates
   processTraumaTagUpdates(newState, traumaTagUpdates);
+
+  // Apply future notes updates
+  processFutureNoteUpdates(newState, futureNoteUpdates);
 
   // Apply plot flag updates
   processPlotFlagUpdates(newState, addPlotFlag);
@@ -586,6 +591,10 @@ function processTagUpdates(targetArray: string[], updates?: TagUpdates, maxItems
  */
 export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates): void {
   processTagUpdates(state.traumaTags, updates, MAX_TRAUMA_TAGS);
+}
+
+export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates): void {
+  processTagUpdates(state.futureNotes, updates, MAX_FUTURE_NOTES);
 }
 
 /**

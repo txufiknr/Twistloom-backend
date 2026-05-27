@@ -130,6 +130,7 @@ export const storyStates = pgTable(
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
     traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    futureNotes: jsonb("future_notes").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     plotFlags: jsonb("plot_flags").$type<PlotFlag[]>().notNull().default(sql`'[]'::jsonb`), // Narrative flags and hints
     inventory: jsonb("inventory").$type<InventoryItem[]>().notNull().default(sql`'[]'::jsonb`), // Items and resources
     psychologicalProfile: jsonb("psychological_profile").$type<PsychologicalProfile>().notNull(), // PsychologicalProfile structure

@@ -42,6 +42,8 @@ export const KEYWORDS_COUNT = '3-5';
  */
 export const MAX_TRAUMA_TAGS = 5;
 
+export const MAX_FUTURE_NOTES = 10;
+
 /**
  * Maximum number of dominant traits for psychological profiles
  * 

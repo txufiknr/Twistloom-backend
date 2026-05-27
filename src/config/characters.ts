@@ -112,4 +112,4 @@ export const CHARACTER_NAMES = {
   ]
 }
 
-export const blacklistedNames: string[] = ['Elara', 'Elias'];
+export const blacklistedNames: string[] = ['Elara', 'Elias', 'Vance', 'Voss', 'Thorne', 'Julian', 'Silas'];

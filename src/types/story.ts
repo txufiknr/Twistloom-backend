@@ -640,10 +640,10 @@ export type StateDelta = {
   flagUpdates?: Partial<PsychologicalFlags>;
   /** Updates to trauma tags (add/remove) based on page events */
   traumaTagUpdates?: TagUpdates;
+  /** Updates to future notes (add/remove) based on story progression */
+  futureNoteUpdates?: TagUpdates;
   /** Updates to plot flags (add) for story progression */
   addPlotFlag?: PlotFlag;
-  // /** Updates to inventory items (add/remove) for character */
-  // inventoryUpdates?: TagUpdates;
   /** Updates to characters (new and existing) with changes */
   characterUpdates?: CharacterUpdates;
   /** Updates to character relationships and dynamics */
@@ -669,8 +669,9 @@ export type StateDelta = {
   difficulty?: Difficulty;
 };
 
+export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'>;
-export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
+export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & StateDeltaGeneration;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: Action[] };
@@ -870,6 +871,9 @@ export type StoryState = {
 
   /** Represents injuries sustained by the MC */
   injuries: Injury[];
+
+  /** Important notes for future AI turns */
+  futureNotes: string[];
 };
 
 /**
@@ -933,7 +937,8 @@ export type StoryStateInitialGeneration = Partial<Pick<StoryState,
   'plotFlags' |
   'isMajorEvent' |
   'inventory' |
-  'injuries'>>;
+  'injuries' |
+  'futureNotes'>>;
 
 export const storyPhases = {
   EARLY: `Priority: mystery seeding, unreliability introduction, character grounding.

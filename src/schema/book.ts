@@ -82,6 +82,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       difficulty: { type: 'string', enum: [...difficulties] },
       viableEnding: VIABLE_ENDING_SCHEMA,
       traumaTags: { type: 'array', items: { type: 'string' } },
+      futureNotes: { type: 'array', items: { type: 'string' } },
       plotFlags: { type: 'array', items: {
         type: 'object',
         properties: {
@@ -95,7 +96,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       isMajorEvent: { type: 'boolean' },
       inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INJURY_SCHEMA },
-    },
+    } satisfies Record<keyof StoryStateInitialGeneration, AIJsonProperty>,
     required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof StoryStateInitialGeneration)[],
     additionalProperties: false
   },

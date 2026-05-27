@@ -96,6 +96,15 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
     required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
     additionalProperties: false
   },
+  futureNoteUpdates: {
+    type: 'object',
+    properties: {
+      add:    { type: 'array', items: { type: 'string' } },
+      remove: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
+    additionalProperties: false
+  },
   characterUpdates: { type: 'object' },
   relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
@@ -142,8 +151,8 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   },
   threads: [],
   traumaTags: [],
+  futureNotes: [],
   plotFlags: [],
-  inventory: [],
   psychologicalProfile: PSYCHOLOGICAL_PROFILE_DEFAULTS,
   hiddenState: HIDDEN_STATE_DEFAULTS,
   memoryIntegrity: 'stable',
@@ -154,5 +163,6 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   actionsHistory: [],
   contextHistory: '',
   isMajorEvent: false,
+  inventory: [],
   injuries: [],
 };
