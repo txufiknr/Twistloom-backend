@@ -70,6 +70,7 @@ export async function retryPendingGenerations(): Promise<string[]> {
       .as('mostRecentSession');
     
     // Query pages with pending generations (limit to prevent overwhelming system, minimal fields needed)
+    console.log(`[retryPendingGenerations] 📋 Querying pages with pending generations...`);
     const pagesWithPending = await dbRead
       .selectDistinct({
         id: pages.id,
@@ -162,7 +163,8 @@ export async function retryPendingGenerations(): Promise<string[]> {
     });
     return processedPageIds;
   } catch (error) {
-    console.error("[retryPendingGenerations] ❌ Retry job failed:", getErrorMessage(error));
+    // console.error("[retryPendingGenerations] ❌ Retry job failed:", getErrorMessage(error));
+    console.error("[retryPendingGenerations] ❌ Retry job failed:", error);
     throw error;
   }
 }
