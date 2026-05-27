@@ -805,7 +805,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
     if (PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
       // Try to get fresh prompt from cache for authenticated users
       if (userId) {
-        const cachedPrompt = await getFreshPromptForUser(userId);
+        const cachedPrompt = await getFreshPromptForUser(userId, req.headerLanguage || 'en');
         if (cachedPrompt) {
           promptContent = cachedPrompt.content;
           promptId = cachedPrompt.id;
@@ -824,7 +824,11 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
 
     // Generate via AI if cache not used or cache miss
     if (!promptContent) {
-      const stream = await generateBookCreationPromptStream({signal: abortController.signal});
+      const stream = await generateBookCreationPromptStream({
+        signal: abortController.signal,
+        language: req.headerLanguage || 'en',
+        userId: userId || null,
+      });
       
       // Collect the full content from the stream
       const chunks: Uint8Array[] = [];
@@ -841,7 +845,13 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
         const qualityScore = validatePromptQuality(promptContent);
         if (qualityScore >= PROMPT_CACHE_CONFIG.minQuality) {
           try {
-            promptId = await savePromptToCache(promptContent, qualityScore);
+            // TODO: can we also get AI provider & model from `generateBookCreationPromptStream`?
+            promptId = await savePromptToCache({
+              content: promptContent,
+              qualityScore,
+              userId,
+              language: req.headerLanguage || 'en'
+            });
             console.log('[GET /api/books/prompt] ✅ Saved to cache with score:', qualityScore);
           } catch (error) {
             console.error('[GET /api/books/prompt] Failed to save to cache:', error);

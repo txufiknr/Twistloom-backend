@@ -1269,7 +1269,7 @@ export const storyPrompts = pgTable(
     /** Full generated prompt text (stored atomically as creative text) */
     content: text("content").notNull(),
     /** AI provider used for generation */
-    aiProvider: text("ai_provider").$type<AIChatProvider>(),
+    aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     /** AI model used for generation */
     aiModel: text("ai_model"),
     /** Quality score (0-1) based on validation */
@@ -1278,6 +1278,10 @@ export const storyPrompts = pgTable(
     usageCount: integer("usage_count").notNull().default(0),
     /** Number of unique users who have seen this prompt */
     uniqueUserCount: integer("unique_user_count").notNull().default(0),
+    /** Initiator user id (who requested / generated this prompt) */
+    userId: userId().references(() => users.userId, { onDelete: "set null" }),
+    /** Language code for which this prompt was generated (e.g. 'en') */
+    language: text("language").notNull().default('en'),
     /** Whether this prompt is currently active for serving */
     isActive: boolean("is_active").notNull().default(true),
     /** Expiration date for freshness rotation */
@@ -1298,6 +1302,10 @@ export const storyPrompts = pgTable(
     index("story_prompts_usage_idx").on(t.usageCount.desc()),
     // Index for freshness (last served)
     index("story_prompts_last_served_idx").on(t.lastServedAt),
+    // Index for language filtering
+    index("story_prompts_language_idx").on(t.language),
+    // Index for initiator lookup
+    index("story_prompts_initiator_idx").on(t.userId),
     // GIN index for content search (pg_trgm)
     index("story_prompts_content_gin_idx").using("gin", sql`content gin_trgm_ops`),
   ]

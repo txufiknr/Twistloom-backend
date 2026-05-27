@@ -4,6 +4,10 @@ import type { StoryState, ActionedStoryPage, UserStoryPage } from "./story.js";
 export type GenerateBookCreationPromptParams = {
   logPrompts?: boolean,
   signal?: AbortSignal;
+  /** Language code from Accept-Language header (e.g. 'en', 'es') */
+  language?: string | null,
+  /** Initiator user id who requested/generated this prompt */
+  userId?: string | null,
 };
 
 /**

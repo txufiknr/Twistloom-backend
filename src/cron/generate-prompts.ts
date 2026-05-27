@@ -5,29 +5,31 @@
  * Runs according to PROMPT_GENERATION_CRON schedule (default: Sunday 2:00 AM UTC).
  */
 
-import { generateBookCreationPromptStream } from "../utils/prompt.js";
+import { generateBookCreationPrompt } from "../utils/prompt.js";
+import { requireEnv } from "../utils/env.js";
 import { getActivePromptCount, savePromptToCache, validatePromptQuality, deactivateExpiredPrompts, deactivateLowQualityPrompts } from "../services/prompt-cache.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { getErrorMessage } from "../utils/error.js";
+import type { AIResponse } from "../types/ai-chat.js";
 
-/**
- * Converts a readable stream to a string
- * 
- * @param stream - ReadableStream to convert
- * @returns Promise resolving to the string content
- */
-async function streamToString(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  const reader = stream.getReader();
+// /**
+//  * Converts a readable stream to a string
+//  * 
+//  * @param stream - ReadableStream to convert
+//  * @returns Promise resolving to the string content
+//  */
+// async function streamToString(stream: ReadableStream<Uint8Array>): Promise<string> {
+//   const chunks: Uint8Array[] = [];
+//   const reader = stream.getReader();
   
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
+//   while (true) {
+//     const { done, value } = await reader.read();
+//     if (done) break;
+//     chunks.push(value);
+//   }
   
-  return Buffer.concat(chunks).toString('utf-8');
-}
+//   return Buffer.concat(chunks).toString('utf-8');
+// }
 
 /**
  * Cron job: Generate new story prompts weekly
@@ -57,18 +59,23 @@ export async function generateWeeklyPrompts() {
       PROMPT_CACHE_CONFIG.batchSize,
       targetSize - activeCount
     );
+
+    const systemUserId = requireEnv('SYSTEM_USER_ID');
     
     console.log(`[generateWeeklyPrompts] 💭 Generating ${toGenerate} new prompts (current: ${activeCount}, target: ${targetSize})`);
     
     // Step 3: Generate prompts via AI
-    const generatedPrompts: string[] = [];
+    const generatedPrompts: AIResponse<string>[] = [];
     for (let i = 0; i < toGenerate; i++) {
       try {
         console.log(`[generateWeeklyPrompts] ✒️ Generating prompt ${i + 1}/${toGenerate}`);
-        const stream = await generateBookCreationPromptStream({ logPrompts: true });
-        const content = await streamToString(stream);
-        generatedPrompts.push(content);
-        console.log(`[generateWeeklyPrompts] ✅ Generated prompt ${i + 1}/${toGenerate}`);
+        const response = await generateBookCreationPrompt({ logPrompts: true, language: 'en', userId: systemUserId });
+        if (response.output) {
+          generatedPrompts.push(response);
+          console.log(`[generateWeeklyPrompts] ✅ Generated prompt ${i + 1}/${toGenerate}`);
+        } else {
+          console.log(`[generateWeeklyPrompts] ⚠️ Generated prompt ${i + 1}/${toGenerate} has no content`);
+        }
       } catch (error) {
         console.error(`[generateWeeklyPrompts] ❌ Failed to generate prompt ${i + 1}/${toGenerate}:`, error);
       }
@@ -76,17 +83,25 @@ export async function generateWeeklyPrompts() {
     
     // Step 4: Validate and save
     let savedCount = 0;
-    for (const content of generatedPrompts) {
-      const qualityScore = validatePromptQuality(content);
+    for (const response of generatedPrompts) {
+      const qualityScore = validatePromptQuality(response.output);
       
       if (qualityScore >= PROMPT_CACHE_CONFIG.minQuality) {
-        try {
-          await savePromptToCache(content, qualityScore);
-          savedCount++;
-          console.log(`[generateWeeklyPrompts] ✅ Saved prompt with score ${qualityScore.toFixed(2)}`);
-        } catch (error) {
-          console.error('[generateWeeklyPrompts] ❌ Failed to save prompt to cache:', error);
-        }
+          try {
+            const { output: content, provider: aiProvider, model: aiModel } = response;
+            await savePromptToCache({
+              content,
+              userId: systemUserId,
+              qualityScore,
+              aiProvider,
+              aiModel,
+              language: 'en'
+            });
+            savedCount++;
+            console.log(`[generateWeeklyPrompts] ✅ Saved prompt with score ${qualityScore.toFixed(2)}`);
+          } catch (error) {
+            console.error('[generateWeeklyPrompts] ❌ Failed to save prompt to cache:', error);
+          }
       } else {
         console.log(`[generateWeeklyPrompts] ⚠️ Skipped prompt with low score ${qualityScore.toFixed(2)}`);
       }

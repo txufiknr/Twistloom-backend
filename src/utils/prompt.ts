@@ -37,6 +37,7 @@ import { stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
+import { formatLanguage } from "./translation.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2913,7 +2914,7 @@ Do NOT mention this checklist.` : '';
  * 
  * @returns Object containing systemPrompt and userPrompt for book creation
  */
-function getBookCreationPrompts(): { systemPrompt: string; userPrompt: string } {
+function getBookCreationPrompts(headerLanguage?: string | null): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
 
 Your task is to generate a compelling story prompt that includes:
@@ -2938,7 +2939,8 @@ MC: [Name], [Gender], [Age]
 
 Only the theme is required. All other fields are optional - include them only if they add value to the story concept.`;
 
-  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing.`;
+  const lang = formatLanguage(headerLanguage || 'en');
+  const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the prompt in the target language: ${lang}.`;
 
   return { systemPrompt, userPrompt };
 }
@@ -2971,10 +2973,13 @@ Only the theme is required. All other fields are optional - include them only if
  * ```
  */
 export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<ReadableStream<Uint8Array>> {
-  const { logPrompts = false, signal } = params;
-  const { systemPrompt, userPrompt } = getBookCreationPrompts();
+  const { logPrompts = false, signal, language = 'en' } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
+
+  // TODO: can we make this function also return AI provider & model?
 
   return aiStreamSSE(userPrompt, {
+    modelSelection: AI_CHAT_MODELS_THEME,
     systemPrompt,
     context: 'book-creation-prompt',
     logPrompts: logPrompts,
@@ -2993,13 +2998,13 @@ export async function generateBookCreationPromptStream(params: GenerateBookCreat
  * 
  * @example
  * ```typescript
- * const theme = await generateBookCreationPromptText();
+ * const theme = await generateBookCreationPrompt();
  * console.log(theme);
  * ```
  */
-export async function generateBookCreationPromptText(params: GenerateBookCreationPromptParams = {}): Promise<string> {
-  const { logPrompts = false } = params;
-  const { systemPrompt, userPrompt } = getBookCreationPrompts();
+export async function generateBookCreationPrompt(params: GenerateBookCreationPromptParams = {}): Promise<AIResponse<string>> {
+  const { logPrompts = false, language = 'en' } = params;
+  const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
 
   const response = await aiPrompt(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,
@@ -3009,7 +3014,7 @@ export async function generateBookCreationPromptText(params: GenerateBookCreatio
     config: {...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 1500}
   });
 
-  return response.output || "";
+  return response;
 }
 
 /**
@@ -3023,11 +3028,11 @@ export async function generateBookCreationPromptText(params: GenerateBookCreatio
  * 
  * @example
  * ```typescript
- * const theme = await generateBookCreationPrompt();
+ * const theme = await generateBookCreationPromptText();
  * console.log(theme);
  * ```
  */
-export async function generateBookCreationPrompt(params: GenerateBookCreationPromptParams = {}): Promise<string> {
+export async function generateBookCreationPromptText(params: GenerateBookCreationPromptParams = {}): Promise<string> {
   const stream = await generateBookCreationPromptStream(params);
   return parseSSEStreamContent(stream);
 }

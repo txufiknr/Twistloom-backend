@@ -110,21 +110,18 @@ export async function getLeastRecentlyViewedPrompt(userId: string): Promise<type
  * }
  * ```
  */
-export async function getFreshPromptForUser(userId: string): Promise<typeof storyPrompts.$inferSelect | null> {
+export async function getFreshPromptForUser(userId: string, language?: string | null): Promise<typeof storyPrompts.$inferSelect | null> {
   const viewedPromptIds = await getUserViewedPromptIds(userId);
   
   // Select from active prompts excluding viewed ones
+  const whereClauses = [eq(storyPrompts.isActive, true)];
+  if (viewedPromptIds.length > 0) whereClauses.push(sql`${storyPrompts.id} NOT IN ${viewedPromptIds}`);
+  if (language) whereClauses.push(eq(storyPrompts.language, language));
+
   const freshPrompt = await dbRead
     .select()
     .from(storyPrompts)
-    .where(
-      and(
-        eq(storyPrompts.isActive, true),
-        viewedPromptIds.length > 0 
-          ? sql`${storyPrompts.id} NOT IN ${viewedPromptIds}`
-          : undefined
-      )
-    )
+    .where(and(...whereClauses))
     .orderBy(sql`RANDOM()`)
     .limit(1);
   
@@ -249,20 +246,24 @@ export function calculateExpiration(qualityScore: number): Date {
  * console.log('Saved prompt:', promptId);
  * ```
  */
-export async function savePromptToCache(
+export async function savePromptToCache(params: {
   content: string,
+  userId: string,
   qualityScore?: number,
-  aiProvider?: AIChatProvider,
-  aiModel?: string
-): Promise<string> {
+  aiProvider?: AIChatProvider | 'none',
+  aiModel?: string,
+  language?: string | null,
+}): Promise<string> {
+  const { content, userId, qualityScore, aiProvider, aiModel, language } = params;
   const score = qualityScore ?? validatePromptQuality(content);
-  
   const result = await dbWrite
     .insert(storyPrompts)
     .values({
       content,
       aiProvider,
       aiModel,
+      userId,
+      language: language || 'en',
       qualityScore: score,
       expiresAt: calculateExpiration(score),
       isActive: true,

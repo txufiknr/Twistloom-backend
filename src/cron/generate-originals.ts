@@ -10,7 +10,7 @@
  * Should be run once per day via cron job
  */
 import { getErrorMessage } from "../utils/error.js";
-import { generateBookCreationPromptText } from "../utils/prompt.js";
+import { generateBookCreationPrompt } from "../utils/prompt.js";
 import { createBookCore } from "../services/book-creation.js";
 import { invalidateExploreCache } from "../services/cache.js";
 import type { CreateBookResponse } from "../types/book.js";
@@ -23,19 +23,20 @@ export async function generateOriginalBook(): Promise<void> {
     console.log("[generate-originals] 🎨 Starting Twistloom Original generation...");
 
     // Loop step 1-2: generate theme and try to create book; on failure regenerate theme and retry
+    const systemUserId = requireEnv('SYSTEM_USER_ID');
     const MAX_ATTEMPTS = 3;
     let result: CreateBookResponse | undefined;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       // Step 1: Generate creative theme using AI (non-streaming for cron job)
       console.log(`[generate-originals] 💭 Generating creative theme... (attempt ${attempt}/${MAX_ATTEMPTS})`);
-      const theme = await generateBookCreationPromptText();
-      console.log(`[generate-originals] 💭 Generated theme: "${theme.substring(0, 100)}${theme.length > 100 ? '...' : ''}"`);
+      const response = await generateBookCreationPrompt({ language: 'en', userId: systemUserId });
+      const { output: theme, provider, model } = response;
+      console.log(`[generate-originals] 💭 Generated theme with ${provider} (${model}): "${theme.substring(0, 100)}${theme.length > 100 ? '...' : ''}"`);
 
       // Step 2: Try creating the book with the generated theme
       console.log(`[generate-originals] 📔 Creating original book... (attempt ${attempt}/${MAX_ATTEMPTS})`);
       try {
-        const systemUserId = requireEnv('SYSTEM_USER_ID');
         result = await createBookCore({
           userId: systemUserId,
           theme,
