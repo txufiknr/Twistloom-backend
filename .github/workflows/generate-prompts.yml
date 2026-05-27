@@ -1,0 +1,79 @@
+name: Weekly Prompt Generation
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'   # Every Sunday at 2:00 AM UTC
+  workflow_dispatch:      # Allow manual triggering
+
+jobs:
+  generate-prompts:
+    name: Generate Weekly Prompts
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Setup package manager
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+          
+      # Setup Node.js runtime with caching
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          
+      # Get pnpm cache directory for optimization
+      - name: Get pnpm store directory
+        id: pnpm-store
+        shell: bash
+        run: |
+          echo "path=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+
+      # Cache pnpm packages to speed up future runs
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+            
+      # Install project dependencies
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+        
+      # Build TypeScript to JavaScript
+      - name: Build project
+        run: pnpm build
+        
+      # Ensure compiled file exists before running
+      - name: Verify build
+        run: test -f dist/cron/generate-prompts.js
+        
+      # Execute weekly prompt generation cron job
+      - name: Run generate-prompts job
+        run: node dist/cron/generate-prompts.js
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_READ_URL: ${{ secrets.DATABASE_READ_URL || secrets.DATABASE_URL }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          # AI provider credentials
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          # System user and environments
+          SYSTEM_USER_ID: ${{ secrets.SYSTEM_USER_ID }}
+          NODE_ENV: production
+        timeout-minutes: 30

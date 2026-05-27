@@ -118,6 +118,13 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
+    isPurchased: currentUserId
+      ? sql<boolean>`EXISTS (
+          SELECT 1 
+          FROM user_purchased_books 
+          WHERE user_id = ${currentUserId} AND book_id = books.id
+        )`
+      : sql<boolean>`false`,
     // Last read tracking (optional fields for user session data) - combined lateral join for better performance
     lastReadAt: currentUserId
       ? sql<Date | null>`(

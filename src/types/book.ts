@@ -123,6 +123,7 @@ export interface EnrichedBookData {
   isLiked: boolean;
   isRead: boolean;
   isCompleted: boolean;
+  isPurchased: boolean;
   lastReadAt?: Date | null;
   lastPage?: string | null;
   firstPageId: string;

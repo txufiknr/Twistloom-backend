@@ -2,9 +2,10 @@
 [ ] Stripe switch to live
 [ ] Implement belief
 [ ] Implement corruption curve
-[x] GET /api/user/favorites (401)
-[ ] create generate-prompts.yml weekly github workflow
-[ ] schema userPurchasedBooks
+
+@schema.ts#L1235-1304 can you add userId (initiator) and language based on accept-language header?
+@prompt.ts#L2946-2983 then make AI generate story theme prompt based on the headerLanguage (via @locale.ts)
+as for @generate-prompts.ts, always use "en" language and use SYSTEM_USER_ID from env as userId
 
 [ ] GET candidates/status meskipun no userId, tetep trigger generation workflow
 [ ] Kalau source action belum ada, insert dulu page progress parent page
