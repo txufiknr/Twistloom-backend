@@ -401,7 +401,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
   }
 
   const nextPageNumber = currentPage.page + 1;
-  console.log(`[generateCandidatePage] 📖 Should generate candidates for "${currentBook.title}" page ${nextPageNumber}`);
+  console.log(`[generateCandidatePage] 📖 Should generate page ${nextPageNumber} for "${currentBook.title}" for action:`, actionCandidate);
 
   if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
     console.warn(`[generateCandidatePage] ⚠️ Unexpected page ${nextPageNumber} is already in plot flags`);
@@ -665,8 +665,8 @@ function triggerDeeperLevelGeneration(
           return;
         }
         
-        const { id: pageId, page: pageNumber } = candidatePage;
-        const jobDetails = { bookTitle, depth: `${nextDepth}/${maxDepth}`, pageId, pageNumber };
+        const { id: pageId, page: pageNumber, branchId } = candidatePage;
+        const jobDetails = { bookTitle, depth: `${nextDepth}/${maxDepth}`, pageId, branchId, pageNumber };
 
         // Only trigger if page number <= allowed to prevent too many concurrent workflows
         if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE) {

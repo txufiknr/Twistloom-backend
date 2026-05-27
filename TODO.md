@@ -4,14 +4,8 @@
 [ ] Implement corruption curve
 [x] GET /api/user/favorites (401)
 
+[ ] I use Auth.js v5 in my Next.js frontend and verifies with "@auth/express" in this backend project, after login for sometime (via Google), I still got 401 from backend (this project), log shows '[verifyNextAuthToken] ✨ No valid session found', please evaluate and ensure auth token verification should work as intended
 [ ] GET candidates/status meskipun no userId, tetep trigger generation workflow
-
-export interface CreateBookResponse {
-  book: Book;
-  firstPage: Page | null;
-  initialState: InitialState | null;
-  aiComment: string | null;
-}
 
 Dobel
 [retryPendingGenerations] 📋 Found 3 pages with pending generations
@@ -20,14 +14,6 @@ Dobel
 [retryPendingGenerations] 🔄 Processing page 019e5fb7-7028-724a-92a2-28a03671db8f (pending: 3)
 [retryPendingGenerations] 🔄 Processing page 019e5fb7-7028-724a-92a2-28a03671db8f (pending: 3)
 
-Tambah branchId
-[generateCandidatePage] 📖 Should generate candidates for "Truth Found Me" page 5
-[generateCandidatesInParallel] ⏩ Skipped, let GitHub Workflow do it via the hourly job: {
-  bookTitle: 'Truth Found Me',
-  depth: '2/2',
-  pageId: '019e6642-f413-750f-8a47-875d7c140a66',
-  pageNumber: 5
-}
 
 Book creation: futureNotes: string[] (important notes that stated in theme input for future AI turns that not included in current turn: initial states, place, or characters)
 futureNotes : remove which done or not viable

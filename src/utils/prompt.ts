@@ -682,8 +682,8 @@ ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not 
 
 futureNoteUpdates
 ${futureNotes.length < MAX_FUTURE_NOTES ? `  - Add any important notes for future AI turns which are not included in current turn` : ''}
-${futureNotes.length > 0 ? `  - Incorporate future notes in this turn if viable
-  - Remove which have been incorporated or not relevant anymore` : ''}
+${futureNotes.length > 0 ? `  - Incorporate existing future notes in this turn if viable
+  - Remove which have been incorporated or irrelevant` : ''}
   - Keep max ${MAX_FUTURE_NOTES} items
 
 isMajorEvent
@@ -809,6 +809,7 @@ ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 viableEnding
   - Don't output viableEnding if unchanged
   - Only output if story trajectory has meaningfully shifted and the previously planned ending no longer fits, or if outline should be updated.
+${futureNotes.length > 0 ? `  - Ensure it supports or aligns with future notes` : ''}
   - text: ${VIABLE_ENDING_LENGTH}. Specific to this MC and theme — not a genre template.
   - outline: A roadmap to reach the ending. 1-2 sentence per item. Align count with current ${phase} phase. Don't change what have been done, only adjust what haven't done.
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
@@ -2240,14 +2241,14 @@ export function determineAIConfig(state: StoryState, selectedAction?: Action): A
  * 
  * Example:
  * ```typescript
- * const prompt = createBookCreationPrompt("haunted mansion mystery", {
+ * const prompt = buildBookCreationPrompt("haunted mansion mystery", {
  *   name: "Elena Stellaria",
  *   age: 20,
  *   gender: "female"
  * });
  * ```
  */
-function createBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
+function buildBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate): string {
   return `Create a psychological thriller story from this theme input from user:\n"""\n${theme.trim()}\n"""
 
 HARD RULES (apply to everything below):
@@ -2391,7 +2392,7 @@ export async function initializeBook(
     await onGenerationProgress('book_initialization');
 
     // 1. Create AI prompt for book creation
-    const prompt = createBookCreationPrompt(theme, mcCandidate);
+    const prompt = buildBookCreationPrompt(theme, mcCandidate);
 
     // 2. Generate complete book setup using AI
     const response = await executePromptForJSON<BookCreationResponse>({
