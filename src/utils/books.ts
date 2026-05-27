@@ -15,7 +15,7 @@ export function formatBookMetaForPrompt(book: Book): string {
   return `- Title: ${book.title}
 - Hook: ${book.hook}
 - Summary: ${book.summary}
-- Language: ${book.language || 'Not specified'}
+- Language: ${book.language}
 - Total Pages: ${book.totalPages}
 - Status: ${book.status}
 - Keywords: ${book.keywords.join(', ')}`;
@@ -29,7 +29,8 @@ export function formatBookMetaForPrompt(book: Book): string {
  * @returns {string} Formatted page text string
  */
 export function formatPageTextForPrompt(text: string): string {
-  return text.trim().replace(/\n\n/g, ' ¶ ').replace(/\n/g, ' ¶ ');
+  // return text.trim().replace(/\n\n/g, ' ¶ ').replace(/\n/g, ' ¶ ');
+  return text.split('\n').filter(t => t.trim()).join('\n');
 }
 
 /**

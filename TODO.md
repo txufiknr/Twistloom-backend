@@ -7,6 +7,15 @@
 [ ] I use Auth.js v5 in my Next.js frontend and verifies with "@auth/express" in this backend project, after login for sometime (via Google), I still got 401 from backend (this project), log shows '[verifyNextAuthToken] ✨ No valid session found', please evaluate and ensure auth token verification should work as intended
 [ ] GET candidates/status meskipun no userId, tetep trigger generation workflow
 
+@retry-pending-generations.ts#L41-168 please examine my cron job function
+I got 2 duplicate log for same ID:
+[retryPendingGenerations] 📋 Found 3 pages with pending generations
+[retryPendingGenerations] 🔄 Processing page 019e5fb6-5d67-7093-b55f-6dc137b130e6 (pending: 3)
+[retryPendingGenerations] 🔄 Processing page 019e5fb6-5d67-7093-b55f-6dc137b130e6 (pending: 3)
+
+can you evaluate and ensure it run once per pageId?
+
+
 Dobel
 [retryPendingGenerations] 📋 Found 3 pages with pending generations
 [retryPendingGenerations] 🔄 Processing page 019e5fb6-5d67-7093-b55f-6dc137b130e6 (pending: 3)

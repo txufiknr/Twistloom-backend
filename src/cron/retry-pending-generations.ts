@@ -71,7 +71,7 @@ export async function retryPendingGenerations(): Promise<string[]> {
     
     // Query pages with pending generations (limit to prevent overwhelming system, minimal fields needed)
     const pagesWithPending = await dbRead
-      .select({
+      .selectDistinct({
         id: pages.id,
         pendingGenerationCount: pages.pendingGenerationCount,
         trendingScore: books.trendingScore,

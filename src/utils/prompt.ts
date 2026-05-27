@@ -2693,9 +2693,8 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const expectedPageNumber = actionedPage.page + 1;
   const expectedPreviousPagesLength = actionedPage.page - 1;
   const advancedState = await advanceStoryState(currentState, actionedPage);
-  const isLastPage = expectedPageNumber === book.totalPages;
 
-  console.log(`[generateNextPage] 💭 Conceptualizing idea for ${isLastPage ? 'last' : 'next'} page ${expectedPageNumber} of ${book.totalPages}...`);
+  console.log(`[generateNextPage] 💭 Conceptualizing idea for "${book.title}" page ${expectedPageNumber} of ${book.totalPages}...`);
 
   // 1. Create personalized prompt with character, story context, and previous action
   if (advancedState.page !== expectedPageNumber) {
