@@ -31,7 +31,7 @@ import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from 
 import { handleApiError, handleUnauthorizedError, handleValidationError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
-import { createOrUpdateOAuthUser } from '../services/user-controller.js';
+import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
 import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices } from '../services/session-manager.js';
@@ -212,7 +212,7 @@ router.post('/signup', async (req, res) => {
       return res.status(429).json({ error: 'Too many requests. Please try again later.' });
     }
 
-    const { email, username, gender, password, receiveEmails: _receiveEmails, agreedToTerms } = req.body;
+    const { email, username, gender, password, receiveEmails: _receiveEmails, agreedToTerms, referrer } = req.body;
 
     // Validate input
     if (!email || !username || !password || !gender) {
@@ -254,7 +254,7 @@ router.post('/signup', async (req, res) => {
     // Use database transaction for atomic user and user_auth record creation
     const newUser = await dbWrite.transaction(async (tx) => {
       // Create user record
-      const userRecord = await tx.insert(users).values({
+      const [userRecord] = await tx.insert(users).values({
         userId: generateId(),
         email,
         username,
@@ -264,34 +264,35 @@ router.post('/signup', async (req, res) => {
 
       // Create user_auth record
       await tx.insert(userAuth).values({
-        userId: userRecord[0].userId,
+        userId: userRecord.userId,
       });
 
       return userRecord;
     });
 
     // Create email verification token
-    const verificationToken = await createEmailVerificationToken(newUser[0].userId);
+    const verificationToken = await createEmailVerificationToken(newUser.userId);
 
     // Send verification email (non-blocking - log error if fails)
-    let emailActuallySent = false;
-    try {
-      const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-      await sendVerificationEmail(email, verificationUrl);
-      emailActuallySent = true;
-    } catch (emailError) {
-      console.error('Failed to send verification email:', emailError);
-      // User is created, but email failed
+    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+    const verificationEmailSent = await sendVerificationEmail(email, verificationUrl);
+
+    // If a referrer username was provided at signup, attempt to set it.
+    let referralApplied = false;
+    if (referrer && typeof referrer === 'string') {
+      referralApplied = await setReferrerForNewUser(req, res, newUser.userId, referrer, { handleResponse: false });
     }
 
-    res.status(201).json({ 
-      userId: newUser[0].userId,
-      message: emailActuallySent ? 'Account created. Please check your email to verify your account.' : 'Account created. Verification email failed to send.',
-      emailSent: emailActuallySent,
+    res.status(201).json({
+      userId: newUser.userId,
+      message: verificationEmailSent ? 'Account created. Please check your email to verify your account.' : 'Account created. Verification email failed to send.',
+      verificationEmailSent,
+      referrer,
+      referralApplied,
     });
   } catch (error) {
-    console.error('[auth] 👤 Sign up error:', error);
-    handleApiError(res, 'Failed to create account', error, 500);
+    console.error('[signup] ❌ Sign up error:', error);
+    handleApiError(res, 'Failed to create account', error);
   }
 });
 
@@ -359,7 +360,7 @@ router.post('/forgot-password', async (req, res) => {
     // Always return success (prevents email enumeration)
     res.json({ message: 'Password reset email sent if account exists' });
   } catch (error) {
-    console.error('Forgot password error:', error);
+    console.error('[forgot] ❌ Forgot password error:', error);
     handleApiError(res, 'Failed to process request', error, 500);
   }
 });
@@ -438,7 +439,7 @@ router.post('/reset-password', async (req, res) => {
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
-    console.error('Reset password error:', error);
+    console.error('[reset] ❌ Reset password error:', error);
     handleApiError(res, 'Failed to reset password', error, 500);
   }
 });
@@ -494,7 +495,7 @@ router.post('/verify-email', async (req, res) => {
 
     res.json({ message: 'Email verified successfully' });
   } catch (error) {
-    console.error('Verify email error:', error);
+    console.error('[verifyEmail] ❌ Verify email error:', error);
     handleApiError(res, 'Failed to verify email', error, 500);
   }
 });
@@ -568,7 +569,7 @@ router.post('/resend-verification', async (req, res) => {
 
     res.json({ message: 'Verification email sent' });
   } catch (error) {
-    console.error('Resend verification error:', error);
+    console.error('[resendVerification] ❌ Resend verification error:', error);
     handleApiError(res, 'Failed to resend verification email', error, 500);
   }
 });

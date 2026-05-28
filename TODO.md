@@ -2,8 +2,8 @@
 [ ] Stripe switch to live
 [ ] Implement belief
 [ ] Implement corruption curve
-
-[ ] GET candidates/status meskipun no userId, tetep trigger generation workflow
+[x] POST /signup route pastiin accept `referrer`
+[x] GET /candidates/status meskipun no userId, tetep trigger generation workflow
 [ ] Kalau source action belum ada, insert dulu page progress parent page
 [ ] paid book (vip with 500 followers, 30 days-old account, email verified)
 
@@ -15,10 +15,6 @@
 - fuzzy search/Levenshtein (typo) // does postgresql has this built-in?
 - search jaccard similarity (by book keywords & title)
 - need change to cursor pagination?
-
-[x] trigger read_count masih ngaco, visit_count udah bener 1
-[x] visitor percentage page 1 should always 100%
-[x] Github workflow Dynamic job name (book title)
 
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594

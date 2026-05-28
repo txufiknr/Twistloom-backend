@@ -1314,7 +1314,7 @@ async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerat
 export async function validateAndRetrievePageForGeneration(
   identifier: string,
   pageId: string,
-  userId: string
+  userId?: string
 ): Promise<CandidateGenerationPageValidation | null> {
   // Early validation
   if (!isValidUuid(pageId)) return null;
@@ -1332,7 +1332,7 @@ export async function validateAndRetrievePageForGeneration(
   const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
 
   // Map to user story page
-  const userPage = await mapToUserStoryPage(dbPage, userId);
+  const userPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);
 
   return { dbBook, dbPage, userPage, isGenerating, isDone, totalPendingActions };
 }

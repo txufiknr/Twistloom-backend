@@ -142,7 +142,7 @@ export interface GenerateCandidatesOptions {
 export interface CandidateGenerationPageValidation {
   dbPage: DBPage;
   dbBook: DBBook;
-  userPage: UserStoryPage;
+  userPage: UserStoryPage | PersistedStoryPage;
   isGenerating: boolean;
   isDone: boolean;
   totalPendingActions: number;

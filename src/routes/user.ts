@@ -50,11 +50,9 @@ import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundEr
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity } from "../services/user.js";
-import { awardCredits } from "../services/credits.js";
-import { REFERRAL_BONUS } from "../config/credits.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
-import { getEnrichedUserSelect } from "../services/user-controller.js";
+import { getEnrichedUserSelect, setReferrerForNewUser } from "../services/user-controller.js";
 import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
 import { imageUpload, uploadUserProfile } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
@@ -268,12 +266,15 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
       }
 
       // Format response to match frontend expectations
-      const formattedUser = {
+      const formattedUser: User = {
         id: userData.userId,
         username: userData.username,
+        email: userData.email,
         name: userData.name,
         bio: userData.bio,
         image: userData.image,
+        tier: userData.tier,
+        credits: userData.credits,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {
@@ -283,6 +284,8 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
           savedBooksCount: userData.savedBooksCount,
           followersCount: userData.followersCount,
           likesReceived: userData.likesReceived,
+          accountDaysOld: userData.accountDaysOld,
+          emailVerified: userData.emailVerified,
         },
       };
 
@@ -2188,16 +2191,18 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
     const result = await performDailyCheckIn(userId);
     
     if (result.success) {
+      console.log(`[checkin] ✅ User ${userId} checked in and received ${result.creditsAwarded} credits`);
       res.status(201).json(result);
     } else {
+      console.log(`[checkin] ❌ User ${userId} failed to check in`);
       res.status(400).json(result);
     }
 
-    // Invalidate user profile cache (credits changed)
-    await invalidateUserProfileCache(userId);
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
+    // Invalidate user cache and update last activity
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      updateUserLastActivity(userId)
+    ]);
   } catch (error) {
     handleApiError(res, "Failed to perform daily check-in", error);
   }
@@ -2245,132 +2250,14 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
  * }
  */
 router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const { username } = req.body;
+  const userId = req.userId!;
+  const { username } = req.body;
 
-    // Validate username parameter
-    if (!username || typeof username !== 'string') {
-      return handleValidationError(res, "Username is required");
-    }
-
-    // Check if user exists and isNewUser is true
-    const currentUser = await dbRead
-      .select({
-        userId: users.userId,
-        isNewUser: users.isNewUser,
-        referrerId: users.referrerId,
-      })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
-
-    if (currentUser.length === 0) {
-      return handleNotFoundError(res, "User not found");
-    }
-
-    const user = currentUser[0];
-
-    // Only allow if user is new
-    if (!user.isNewUser) {
-      return res.status(400).json({
-        success: false,
-        error: "Referrer can only be set for new users"
-      });
-    }
-
-    // Check if referrer is already set
-    if (user.referrerId) {
-      return res.status(400).json({
-        success: false,
-        error: "Referrer already set"
-      });
-    }
-
-    // Look up referrer by username
-    const referrer = await dbRead
-      .select({
-        userId: users.userId,
-        username: users.username,
-      })
-      .from(users)
-      .where(eq(users.username, username))
-      .limit(1);
-
-    if (referrer.length === 0) {
-      return handleNotFoundError(res, "Referrer user not found");
-    }
-
-    // Prevent self-referral
-    if (referrer[0].userId === userId) {
-      return res.status(400).json({
-        success: false,
-        error: "Cannot refer yourself"
-      });
-    }
-
-    // Update user with referrerId and set isNewUser to false
-    await dbWrite
-      .update(users)
-      .set({
-        referrerId: referrer[0].userId,
-        isNewUser: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.userId, userId));
-
-    // Award REFERRAL_BONUS to both referrer and current user
-    await Promise.all([
-      // Award bonus to referrer
-      awardCredits(referrer[0].userId, REFERRAL_BONUS, {
-        type: "reward",
-        notificationType: "referral_bonus",
-        notificationTitle: "Referral Bonus",
-        notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
-        metadata: { referredUserId: userId }
-      }),
-      // Award bonus to current user
-      awardCredits(userId, REFERRAL_BONUS, {
-        type: "reward",
-        notificationType: "referral_bonus",
-        notificationTitle: "Referral Bonus",
-        notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
-        metadata: { referrerId: referrer[0].userId }
-      })
-    ]);
-
-    // Log user activity
-    await logUserActivity({
-      userId,
-      activityType: 'referrer_set',
-      targetType: 'user',
-      targetId: referrer[0].userId,
-      metadata: { referrerUsername: username },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
-
-    // Invalidate user profile cache for both users
-    await Promise.all([
-      invalidateUserProfileCache(userId),
-      invalidateUserProfileCache(referrer[0].userId)
-    ]);
-
-    console.log(`[POST /referrer] ✅ User ${userId} set referrer to ${referrer[0].userId} (${username}) - both awarded ${REFERRAL_BONUS} credits`);
-
-    res.json({
-      success: true,
-      referrerId: referrer[0].userId,
-      message: "Referrer set successfully"
-    });
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
-  } catch (error) {
-    handleApiError(res, "Failed to set referrer", error);
+  if (!username || typeof username !== 'string') {
+    return handleValidationError(res, "Username is required");
   }
+
+  await setReferrerForNewUser(req, res, userId, username);
 });
 
 /**

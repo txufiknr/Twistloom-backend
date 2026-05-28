@@ -14,9 +14,14 @@
 
 import { users, userAuth } from '../db/schema.js';
 import { sql, eq } from 'drizzle-orm';
-import { dbWrite } from '../db/client.js';
+import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
-import { getUserIdByEmail } from './user.js';
+import { getUserIdByEmail, logUserActivity, updateUserLastActivity } from './user.js';
+import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
+import { invalidateUserProfileCache } from './cache.js';
+import { REFERRAL_BONUS } from '../config/credits.js';
+import { awardCredits } from './credits.js';
+import type { Request, Response } from "express";
 
 /**
  * Returns enriched user select object with engagement metrics
@@ -174,4 +179,132 @@ export async function createOrUpdateOAuthUser(
 
   console.log(`[user-controller] ✅ Created new OAuth user: ${newUser[0].userId}`);
   return newUser[0].userId;
+}
+
+/**
+ * Sets a referrer for a newly created user (used at signup and by /user/referrer).
+ * Performs validation, updates the user record, awards referral credits to both
+ * parties, logs activity, invalidates caches, and updates last activity.
+ *
+ * Returns an object with `success` and either `referrerId` or `error`.
+ */
+export async function setReferrerForNewUser(
+  req: Request,
+  res: Response,
+  userId: string,
+  referrerUsername: string,
+  opts: {
+    client?: DBClient;
+    handleResponse?: boolean; // Whether to send API responses (default: true)
+  } = {}
+): Promise<boolean> {
+  const { client = dbWrite, handleResponse = true } = opts;
+
+  try {
+    // Ensure user exists and is new
+    const currentUser = await dbRead
+      .select({ userId: users.userId, isNewUser: users.isNewUser, referrerId: users.referrerId })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (currentUser.length === 0) {
+      if (handleResponse) {
+        handleNotFoundError(res, "User not found");
+      }
+      return false;
+    }
+
+    const user = currentUser[0];
+
+    if (!user.isNewUser) {
+      if (handleResponse) {
+        handleValidationError(res, "Referrer can only be set for new users");
+      }
+      return false;
+    }
+
+    if (user.referrerId) {
+      if (handleResponse) {
+        handleValidationError(res, "Referrer already set");
+      }
+      return false;
+    }
+
+    // Find referrer by username
+    const [referrer] = await dbRead
+      .select({ userId: users.userId, username: users.username })
+      .from(users)
+      .where(eq(users.username, referrerUsername))
+      .limit(1);
+
+    if (!referrer) {
+      if (handleResponse) {
+        handleNotFoundError(res, "Referrer user not found");
+      }
+      return false;
+    }
+
+    if (referrer.userId === userId) {
+      if (handleResponse) {
+        handleValidationError(res, "Cannot refer yourself");
+      }
+      return false;
+    }
+
+    // Update user to record referrer
+    await client
+      .update(users)
+      .set({ referrerId: referrer.userId, isNewUser: false, updatedAt: new Date() })
+      .where(eq(users.userId, userId));
+
+    // Award referral bonus to both users
+    await Promise.all([
+      awardCredits(referrer.userId, REFERRAL_BONUS, {
+        type: 'reward',
+        notificationType: 'referral_bonus',
+        notificationTitle: 'Referral Bonus',
+        notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
+        metadata: { referredUserId: userId }
+      }),
+      awardCredits(userId, REFERRAL_BONUS, {
+        type: 'reward',
+        notificationType: 'referral_bonus',
+        notificationTitle: 'Referral Bonus',
+        notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
+        metadata: { referrerId: referrer.userId }
+      })
+    ]);
+
+    // Log activity
+    await logUserActivity({
+      userId,
+      activityType: 'referrer_set',
+      targetType: 'user',
+      targetId: referrer.userId,
+      metadata: { referrerUsername },
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent'),
+      platform: req.get('x-platform'),
+      appVersion: req.get('x-app-version'),
+    });
+
+    // Invalidate caches for both users
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      invalidateUserProfileCache(referrer.userId)
+    ]);
+
+    // Update last activity
+    await updateUserLastActivity(userId);
+
+    console.log(`[user] ✅ Applied referrer for ${userId} -> ${referrerUsername}`);
+    return true;
+  } catch (error) {
+    console.error('[user] ❌ Failed to apply referrer:', error);
+    if (handleResponse) {
+      handleApiError(res, "Failed to apply referrer", error);
+    }
+    return false;
+  }
 }

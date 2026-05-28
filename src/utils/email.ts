@@ -64,7 +64,7 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string): P
  * await sendVerificationEmail('user@example.com', 'https://app.com/verify-email?token=abc123');
  * ```
  */
-export async function sendVerificationEmail(email: string, verificationUrl: string): Promise<void> {
+export async function sendVerificationEmail(email: string, verificationUrl: string): Promise<boolean> {
   try {
     await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
@@ -72,9 +72,11 @@ export async function sendVerificationEmail(email: string, verificationUrl: stri
       subject: `Verify Your ${APP_NAME} Email`,
       html: getVerificationTemplate(APP_NAME, verificationUrl),
     });
+    console.log('[sendVerificationEmail] ✅ Verification email sent successfully to:', email);
+    return true;
   } catch (error) {
-    console.error('Failed to send verification email:', error);
-    throw new Error('Failed to send verification email', { cause: error });
+    console.error('[sendVerificationEmail] ❌ Failed to send verification email:', error);
+    return false;
   }
 }
 

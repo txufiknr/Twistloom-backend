@@ -80,6 +80,7 @@ import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
+import { requireEnv } from "../utils/env.js";
 
 const router = Router();
 
@@ -2491,11 +2492,7 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
  */
 router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.userId;
-    if (!userId) {
-      return handleForbiddenError(res, "Please sign in first to see progress status update.");
-    }
-
+    const { userId } = req;
     const { identifier, pageId } = req.params;
 
     // Handle array case for identifier and pageId
@@ -2513,12 +2510,13 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
     }
 
     const { dbBook, dbPage, userPage, isGenerating, isDone } = validationResult;
+    const { actions, updatedAt } = userPage;
 
     // Calculate completed/total from page actions (SSOT)
-    const actionsWithDestinations = userPage.actions.filter(a => a.destination?.pageId);
+    const actionsWithDestinations = actions.filter(a => a.destination?.pageId);
     const completedActions = actionsWithDestinations.length;
-    const totalActions = userPage.actions.length;
-    const progressEventFallback = userPage.actions.map((action) => {
+    const totalActions = actions.length;
+    const progressEventFallback = actions.map((action) => {
       const hasDestination = !!action.destination?.pageId;
       return {
         action: action.text,
@@ -2562,24 +2560,24 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
 
       return res.json({
         isGenerating: false,
-        completedActions: userPage.actions.length,
-        totalActions: userPage.actions.length,
-        actions: userPage.actions,
+        completedActions: actions.length,
+        totalActions: actions.length,
+        actions,
         actionProgress: progressEventFallback,
         startedAt: undefined,
-        lastUpdated: userPage.updatedAt.toISOString(),
+        lastUpdated: updatedAt.toISOString(),
       } satisfies CandidateGenerationStatus);
     }
     
     // Actions incomplete, trigger background generation via GitHub workflow
-    console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: ${completedActions}/${userPage.actions.length} actions completed`);
+    console.log(`[GET /candidates/status] ⏳ Generation incomplete for page ${pageIdStr}: ${completedActions}/${actions.length} actions completed`);
     
     // Trigger workflow and wait for result to ensure it actually starts
     const workflowResult = await triggerCandidateGenerationWorkflow({
       bookTitle: dbBook.title,
       bookId: dbPage.bookId,
       pageId: pageIdStr,
-      userId,
+      userId: userId ?? requireEnv("SYSTEM_USER_ID"), // Use system user ID for unauthenticated requests
       maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
       context: 'GET /candidates/status',
     });
