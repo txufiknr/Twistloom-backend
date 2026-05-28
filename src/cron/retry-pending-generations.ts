@@ -127,12 +127,12 @@ export async function retryPendingGenerations(): Promise<string[]> {
       const hasNoPendingActions = pendingBefore === 0;
 
       // Use shared page generation logic
-      const generationResult = await processPageGeneration(
+      const generationResult = await processPageGeneration({
         dbPage,
         pageForGeneration,
         hasNoPendingActions,
-        'retryPendingGenerations'
-      );
+        context: 'routine',
+      });
 
       if (generationResult.successCount > 0) {
         totalSuccess += generationResult.successCount;
@@ -190,13 +190,14 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     const pendingBefore = dbPage.pendingGenerationCount || 0;
 
     // Force candidate generation for manual trigger (always generate, even if no pending actions)
-    const generationResult = await processPageGeneration(
+    const generationResult = await processPageGeneration({
       dbPage,
       pageForGeneration,
-      false, // Always generate for manual trigger
-      'processSpecificPage',
-      maxDepth
-    );
+      hasNoPendingActions: false, // Always generate for manual trigger
+      context: 'on-demand',
+      maxDepth,
+      allowDeeperLevel: true // Allow deeper level pre-generation for single specific page
+    });
 
     const durationMs = Date.now() - startedAt;
 
@@ -218,15 +219,22 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
 /**
  * Common page generation logic for both scheduled and manual processing
  */
-async function processPageGeneration(
+async function processPageGeneration(params: {
   dbPage: DBPage,
   pageForGeneration: UserStoryPage,
   hasNoPendingActions: boolean,
-  context: string,
-  maxDepth?: number
-): Promise<{ updatedPage: UserStoryPage; successCount: number; pendingAfter: number }> {
+  context: 'routine' | 'on-demand',
+  maxDepth?: number,
+  allowDeeperLevel?: boolean
+}): Promise<{ updatedPage: UserStoryPage; successCount: number; pendingAfter: number }> {
+  const { dbPage, pageForGeneration, context, maxDepth } = params;
+  let { hasNoPendingActions, allowDeeperLevel } = params;
+
   const startedAt = Date.now();
   const pageId = pageForGeneration.id;
+
+  // Use optimized deeper level generation, avoid set true for exponential multi-page generation
+  if (context === 'routine') allowDeeperLevel = false;
 
   try {
     // Dynamic imports for this function scope
@@ -252,7 +260,10 @@ async function processPageGeneration(
       strategy: 'cron',
       userId: systemUserId,
       page: pageForGeneration,
-      options: maxDepth !== undefined ? { maxDepth } : undefined
+      options: {
+        maxDepth,
+        allowDeeperLevel
+      }
     });
 
     // Count actions without complete destination after regeneration

@@ -109,6 +109,8 @@ export interface GenerateCandidatesInParallelParams {
   maxDepth: number;
   /** Optional progress callback for per-action real-time tracking */
   onProgress?: ActionProgressCallback;
+  /** Whether to allow generating deeper levels beyond currentDepth */
+  allowDeeperLevel?: boolean;
 }
 
 /** Parameters for generating candidates with a specific strategy */
@@ -137,6 +139,8 @@ export interface GenerateCandidatesOptions {
   currentDepth?: number;
   /** Maximum depth to pre-generate */
   maxDepth?: number;
+  /** Whether to allow generating deeper levels beyond currentDepth */
+  allowDeeperLevel?: boolean;
 }
 
 export interface CandidateGenerationPageValidation {

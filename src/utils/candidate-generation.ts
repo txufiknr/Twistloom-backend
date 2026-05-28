@@ -472,7 +472,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
  * @returns Array of generation results in the same order as input actions
  */
 async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
-  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress } = params;
+  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress, allowDeeperLevel } = params;
   const startTime = Date.now();
   const lookupStartTime = Date.now();
 
@@ -620,7 +620,8 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
       maxDepth,
       userId,
       currentBook,
-      'generateCandidatesInParallel'
+      'generateCandidatesInParallel',
+      allowDeeperLevel
     );
   }
 
@@ -643,7 +644,8 @@ function triggerDeeperLevelGeneration(
   maxDepth: number,
   userId: string,
   currentBook: Book,
-  context: string
+  context: string,
+  allowDeeperLevel: boolean = false
 ): void {
   if (currentDepth >= maxDepth || candidatePages.length === 0) return;
   const { id: bookId, title: bookTitle } = currentBook;
@@ -669,7 +671,7 @@ function triggerDeeperLevelGeneration(
         const jobDetails = { bookTitle, depth: `${nextDepth}/${maxDepth}`, pageId, branchId, pageNumber };
 
         // Only trigger if page number <= allowed to prevent too many concurrent workflows
-        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE) {
+        if (nextDepth <= MAX_BRANCHING_PREGENERATION_DEPTH && (allowDeeperLevel || pageNumber <= ALLOW_DEEPER_LEVEL_UNTIL_PAGE)) {
           // No need for validation as this is a certain candidate generation for a valid new page
           console.log(`[${context}] 📡 Triggering GitHub Workflow for "${bookTitle}" level ${nextDepth} (page ${pageNumber})`);
           triggerCandidateGenerationWorkflow({
@@ -716,7 +718,7 @@ export async function ensureCandidatesForPageWithStrategy(
   params: GenerateCandidatesWithStrategyParams
 ): Promise<UserStoryPage> {
   const { strategy: context, userId, page, currentState, currentBook: providedBook, options = {} } = params;
-  const { timeoutMs: customTimeoutMs, onProgress } = options;
+  const { timeoutMs: customTimeoutMs, onProgress, allowDeeperLevel = false } = options;
 
   // Wrap onProgress callback to store progress in database
   const onActionProgress: ActionProgressCallback = async (
@@ -925,7 +927,8 @@ export async function ensureCandidatesForPageWithStrategy(
         timeoutMs,
         currentDepth,
         maxDepth,
-        onProgress: onActionProgress
+        onProgress: onActionProgress,
+        allowDeeperLevel
       });
       
       // Process parallel results using helper functions
@@ -1054,7 +1057,8 @@ export async function ensureCandidatesForPageWithStrategy(
             maxDepth,
             userId,
             currentBook,
-            'ensureCandidatesForPageWithStrategy'
+            'ensureCandidatesForPageWithStrategy',
+            allowDeeperLevel
           );
         }
       }
