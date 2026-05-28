@@ -105,12 +105,15 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
     required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
     additionalProperties: false
   },
+
+  // TODO: object schema
   characterUpdates: { type: 'object' },
   relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
   // viableEnding: VIABLE_ENDING_SCHEMA,
+
   isMajorEvent: { type: 'boolean' },
   contextHistory: { type: 'string' },
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },

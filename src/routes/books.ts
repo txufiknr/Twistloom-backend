@@ -2025,15 +2025,17 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
  * 
  * Response (201):
  * {
- *   "id": "comment123",
- *   "userId": "user456",
- *   "userName": "John Doe",
- *   "userImage": "https://example.com/avatar.jpg",
- *   "bookId": "book123",
- *   "parentCommentId": null,
- *   "content": "This story is amazing!",
- *   "createdAt": "2023-01-01T00:00:00.000Z",
- *   "updatedAt": "2023-01-01T00:00:00.000Z"
+ *   "comment": {
+ *     "id": "comment123",
+ *     "userId": "user456",
+ *     "userName": "John Doe",
+ *     "userImage": "https://example.com/avatar.jpg",
+ *     "bookId": "book123",
+ *     "parentCommentId": null,
+ *     "content": "This story is amazing!",
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-01T00:00:00.000Z"
+ *   }
  * }
  */
 router.post("/:id/comments", requireAuth, async (req: Request, res: Response) => {
@@ -2067,19 +2069,19 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
 
     // Validate parentCommentId if provided
     if (parentCommentId) {
-      const parentComment = await dbRead
+      const [parentComment] = await dbRead
         .select({ id: userComments.id, bookId: userComments.bookId })
         .from(userComments)
         .where(eq(userComments.id, parentCommentId))
         .limit(1);
 
-      if (!parentComment.length) {
+      if (!parentComment) {
         return res.status(400).json({
           error: "Parent comment not found"
         });
       }
 
-      if (parentComment[0].bookId !== id) {
+      if (parentComment.bookId !== id) {
         return res.status(400).json({
           error: "Parent comment does not belong to this book"
         });
@@ -2087,7 +2089,7 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
     }
 
     // Create comment
-    const newComment = await dbWrite
+    const [newComment] = await dbWrite
       .insert(userComments)
       .values({
         userId,
@@ -2099,8 +2101,9 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       })
       .returning();
 
-    // Get user info for response
-    const commentWithUser = await dbRead
+    // Get user info for response from dbWrite (avoid read replica stale)
+    // TODO: can we just use `newComment` + own user data without this subsequent db query
+    const [commentWithUser] = await dbWrite
       .select({
         id: userComments.id,
         userId: userComments.userId,
@@ -2114,10 +2117,10 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       })
       .from(userComments)
       .leftJoin(users, eq(userComments.userId, users.userId))
-      .where(eq(userComments.id, newComment[0].id))
+      .where(eq(userComments.id, newComment.id))
       .limit(1);
 
-    res.status(201).json(commentWithUser[0]);
+    res.status(201).json({ comment: commentWithUser });
   } catch (error) {
     handleApiError(res, "Failed to create comment", error);
   }

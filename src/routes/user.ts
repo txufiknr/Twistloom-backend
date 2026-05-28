@@ -93,8 +93,7 @@ const router = Router();
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": {
+ *   "user": {
  *     "userId": "user123",
  *     "name": "John Doe",
  *     "gender": "male",

@@ -5,7 +5,7 @@
 [x] POST /signup route pastiin accept `referrer`
 [x] GET /candidates/status meskipun no userId, tetep trigger generation workflow
 [ ] Kalau source action belum ada, insert dulu page progress parent page
-[ ] paid book (vip with 500 followers, 30 days-old account, email verified)
+[ ] paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as the book price
 
 [ ] userSettings schema
 - interests: string[]
@@ -18,6 +18,9 @@
 
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594
+
+future:
+[ ] initialize book: auto-generate MC picture (AI-generated image)
 
 by book creator:
 [ ] soundtrack based on mood

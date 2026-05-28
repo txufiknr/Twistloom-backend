@@ -734,7 +734,7 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - No two characters has the same name.
   - Don't introduce character with these first/last names: ${formatOneOf(blacklistedNames)}.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
-  - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive.
+  - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
   - narrativeFlags: set to match behavior and twist setup.
   - pastInteractions: dialogue or event towards MC in current page.
@@ -742,7 +742,8 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
 
 characterUpdates.updatedCharacters
   - Only include characters whose state actually changed this page.
-  - Include only changed fields: status, narrativeFlags, pastInteractions (append).
+  - Include only changed fields: bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries.
+  - bio: gradually update character's bio if new information is revealed in this page.
 ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
 : `  - Only update when status, interactions, or relevance changes.`}
   - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})

@@ -223,6 +223,18 @@ router.post('/signup', async (req, res) => {
       return handleValidationError(res, 'You must agree to the terms');
     }
 
+    // TODO: validate username
+    // Standard Validation Rules
+    // Length Constraints: Between 3 and 30 characters.
+    // Character Restrictions: Only allow alphanumeric characters (a-z, 0-9) and hyphens (-).
+    // No Spaces: Cannot contain spaces.
+    // Uniqueness: The username must not already exist in the database.
+    
+    // Security Rules
+    // Reserved Words: Don't allow restricted words (e.g., "admin," "support," "root") to prevent impersonation.
+    // Case Insensitivity: Treat "Username" and "username" as the same to prevent account duplication.
+    // Input Sanitization: Sanitize inputs to prevent Cross-Site Scripting (XSS) and SQL injection attacks.
+    
     // Validate password strength
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
@@ -252,6 +264,7 @@ router.post('/signup', async (req, res) => {
     const passwordHash = await hashPassword(password);
 
     // Use database transaction for atomic user and user_auth record creation
+    // TODO: sanitize text for db
     const newUser = await dbWrite.transaction(async (tx) => {
       // Create user record
       const [userRecord] = await tx.insert(users).values({
