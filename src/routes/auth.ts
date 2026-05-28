@@ -38,6 +38,8 @@ import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices } 
 import { getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { Request, Response } from "express";
 import type { DBUserForAuth } from '../types/schema.js';
+import { sanitizeTextForDB } from '../utils/text-processing.js';
+import { validateUsername, sanitizeUsername } from '../utils/username.js';
 
 const router = Router();
 
@@ -223,7 +225,11 @@ router.post('/signup', async (req, res) => {
       return handleValidationError(res, 'You must agree to the terms');
     }
 
-    // TODO: validate username
+    // Sanitize username and email for validation and DB operations
+    const cleanUsername = sanitizeUsername(String(username));
+    const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
+
+    // Validate username
     // Standard Validation Rules
     // Length Constraints: Between 3 and 30 characters.
     // Character Restrictions: Only allow alphanumeric characters (a-z, 0-9) and hyphens (-).
@@ -235,6 +241,12 @@ router.post('/signup', async (req, res) => {
     // Case Insensitivity: Treat "Username" and "username" as the same to prevent account duplication.
     // Input Sanitization: Sanitize inputs to prevent Cross-Site Scripting (XSS) and SQL injection attacks.
     
+    // Run username validation
+    const usernameValidation = validateUsername(cleanUsername);
+    if (!usernameValidation.valid) {
+      return res.status(422).json({ error: 'Invalid username', details: usernameValidation.errors });
+    }
+
     // Validate password strength
     const passwordValidation = validatePasswordStrength(password);
     if (!passwordValidation.valid) {
@@ -249,11 +261,11 @@ router.post('/signup', async (req, res) => {
       return handleValidationError(res, 'Temporary or disposable email addresses are not allowed.', undefined, 422);
     }
 
-    // Check if email or username already exists
+    // Check if email or username already exists (use sanitized values)
     const existing = await dbRead
       .select({ userId: users.userId })
       .from(users)
-      .where(or(eq(users.email, email), eq(users.username, username)))
+      .where(or(eq(users.email, cleanEmail), eq(users.username, cleanUsername)))
       .limit(1);
 
     if (existing && existing.length > 0) {
@@ -264,13 +276,13 @@ router.post('/signup', async (req, res) => {
     const passwordHash = await hashPassword(password);
 
     // Use database transaction for atomic user and user_auth record creation
-    // TODO: sanitize text for db
+    // TODO: sanitize texts for db
     const newUser = await dbWrite.transaction(async (tx) => {
       // Create user record
       const [userRecord] = await tx.insert(users).values({
         userId: generateId(),
-        email,
-        username,
+        email: cleanEmail,
+        username: cleanUsername,
         passwordHash,
         gender,
       }).returning();

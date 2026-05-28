@@ -45,6 +45,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
@@ -81,6 +82,7 @@ import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
 import { requireEnv } from "../utils/env.js";
+import type { UserComment } from "../types/user.js";
 
 const router = Router();
 
@@ -1986,7 +1988,7 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
         content: userComments.content,
         createdAt: userComments.createdAt,
         updatedAt: userComments.updatedAt
-      })
+      } satisfies Record<keyof UserComment, unknown>)
       .from(userComments)
       .leftJoin(users, eq(userComments.userId, users.userId))
       .where(eq(userComments.bookId, id as string))
@@ -2076,49 +2078,50 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
         .limit(1);
 
       if (!parentComment) {
-        return res.status(400).json({
-          error: "Parent comment not found"
-        });
+        return handleNotFoundError(res, "Parent comment not found");
       }
 
       if (parentComment.bookId !== id) {
-        return res.status(400).json({
-          error: "Parent comment does not belong to this book"
-        });
+        return handleValidationError(res, "Parent comment does not belong to this book");
       }
     }
 
-    // Create comment
-    const [newComment] = await dbWrite
-      .insert(userComments)
-      .values({
+    // Sanitize content for DB and safety
+    const cleanContent = sanitizeTextForDB(String(content).trim());
+    if (!cleanContent || cleanContent.length === 0) {
+      return handleValidationError(res, 'Content is required and cannot be empty after sanitization');
+    }
+
+    // Create comment and fetch user info in a single transaction to ensure consistency
+    const commentWithUser = await dbWrite.transaction(async (tx) => {
+      const [newComment] = await tx.insert(userComments).values({
         userId,
         bookId: id as string,
         parentCommentId: parentCommentId || null,
-        content: content.trim(),
+        content: cleanContent,
         createdAt: new Date(),
         updatedAt: new Date(),
-      })
-      .returning();
+      }).returning();
 
-    // Get user info for response from dbWrite (avoid read replica stale)
-    // TODO: can we just use `newComment` + own user data without this subsequent db query
-    const [commentWithUser] = await dbWrite
-      .select({
-        id: userComments.id,
-        userId: userComments.userId,
-        userName: users.name,
-        userImage: users.image,
-        bookId: userComments.bookId,
-        parentCommentId: userComments.parentCommentId,
-        content: userComments.content,
-        createdAt: userComments.createdAt,
-        updatedAt: userComments.updatedAt
-      })
-      .from(userComments)
-      .leftJoin(users, eq(userComments.userId, users.userId))
-      .where(eq(userComments.id, newComment.id))
-      .limit(1);
+      const [joined] = await tx
+        .select({
+          id: userComments.id,
+          userId: userComments.userId,
+          userName: users.name,
+          userImage: users.image,
+          bookId: userComments.bookId,
+          parentCommentId: userComments.parentCommentId,
+          content: userComments.content,
+          createdAt: userComments.createdAt,
+          updatedAt: userComments.updatedAt
+        } satisfies Record<keyof UserComment, unknown>)
+        .from(userComments)
+        .leftJoin(users, eq(userComments.userId, users.userId))
+        .where(eq(userComments.id, newComment.id))
+        .limit(1);
+
+      return joined;
+    });
 
     res.status(201).json({ comment: commentWithUser });
   } catch (error) {
@@ -2160,9 +2163,7 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
     }
 
     if (comment[0].userId !== userId) {
-      return res.status(403).json({
-        error: "Forbidden: You can only delete your own comments"
-      });
+      return handleForbiddenError(res, "You can only delete your own comments");
     }
 
     // Delete comment

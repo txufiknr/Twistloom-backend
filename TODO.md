@@ -5,7 +5,9 @@
 [x] POST /signup route pastiin accept `referrer`
 [x] GET /candidates/status meskipun no userId, tetep trigger generation workflow
 [ ] Kalau source action belum ada, insert dulu page progress parent page
-[ ] paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as the book price
+[ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as the book price -> promoted
+[ ] POST /user/comments - deprcated
+
 
 [ ] userSettings schema
 - interests: string[]

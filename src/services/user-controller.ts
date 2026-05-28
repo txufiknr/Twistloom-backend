@@ -16,8 +16,10 @@ import { users, userAuth } from '../db/schema.js';
 import { sql, eq } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
+import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { getUserIdByEmail, logUserActivity, updateUserLastActivity } from './user.js';
 import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
+import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
 import { REFERRAL_BONUS } from '../config/credits.js';
 import { awardCredits } from './credits.js';
@@ -144,8 +146,8 @@ export async function createOrUpdateOAuthUser(
     await dbWrite
       .update(users)
       .set({
-        ...(name && { name }),
-        ...(image && { image }),
+        ...(name && { name: sanitizeTextForDB(String(name)) }),
+        ...(image && { image: sanitizeTextForDB(String(image)) }),
         lastActive: new Date(),
         updatedAt: new Date(),
       })
@@ -156,13 +158,17 @@ export async function createOrUpdateOAuthUser(
   }
 
   // New user - create account from OAuth data
-  const newUser = await dbWrite.transaction(async (tx) => {
+    const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
+    const cleanName = name ? sanitizeTextForDB(String(name)) : null;
+    const cleanImage = image ? sanitizeTextForDB(String(image)) : null;
+
+    const newUser = await dbWrite.transaction(async (tx) => {
     // Create user record
     const userRecord = await tx.insert(users).values({
       userId: generateId(),
-      email,
-      name: name || null,
-      image: image || null,
+      email: cleanEmail,
+      name: cleanName || null,
+      image: cleanImage || null,
       isNewUser: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -231,11 +237,12 @@ export async function setReferrerForNewUser(
       return false;
     }
 
-    // Find referrer by username
+    // Find referrer by username (sanitize input)
+    const cleanReferrer = sanitizeUsername(referrerUsername);
     const [referrer] = await dbRead
       .select({ userId: users.userId, username: users.username })
       .from(users)
-      .where(eq(users.username, referrerUsername))
+      .where(eq(users.username, cleanReferrer))
       .limit(1);
 
     if (!referrer) {

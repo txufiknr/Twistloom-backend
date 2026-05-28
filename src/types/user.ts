@@ -93,3 +93,15 @@ export interface CheckinStatusResponse {
   regularClaimAmount: number;
   vipClaimAmount: number;
 }
+
+export type UserComment = {
+  id: string;
+  userId: string;
+  userName: string;
+  userImage: string;
+  bookId: string;
+  parentCommentId?: string;
+  content: string;
+  createdAt: Date;
+  updatedAt: Date;
+}

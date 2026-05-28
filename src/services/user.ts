@@ -15,6 +15,7 @@ import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
+import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { getErrorMessage } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
@@ -346,6 +347,9 @@ export async function getUserIdByEmail(email: string): Promise<string | null> {
  * ```
  */
 export async function getUserForAuth(emailOrUsername: string): Promise<DBUserForAuth | null> {
+  // Normalize lookup value (case-insensitive usernames/emails)
+  const lookup = sanitizeTextForDB(String(emailOrUsername).trim().toLowerCase());
+
   // Find user by email or username
   const [user] = await dbRead
     .select({
@@ -359,8 +363,8 @@ export async function getUserForAuth(emailOrUsername: string): Promise<DBUserFor
     .from(users)
     .where(
       or(
-        eq(users.email, emailOrUsername),
-        eq(users.username, emailOrUsername)
+        eq(users.email, lookup),
+        eq(users.username, lookup)
       )
     )
     .limit(1);

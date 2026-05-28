@@ -47,6 +47,7 @@ import { users, userLikes, userFavorites, userComments, userFollows, deletedImag
 import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType, User, UserActivityType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity } from "../services/user.js";
@@ -1229,8 +1230,7 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": {
+ *   "comment": {
  *     "id": "comment123",
  *     "userId": "user123",
  *     "bookId": "book456",
@@ -1252,30 +1252,34 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
       return handleValidationError(res, "Comment content is required");
     }
 
+    // Sanitize content before storing
+    const cleanContent = sanitizeTextForDB(String(content).trim());
+    if (!cleanContent || cleanContent.length === 0) {
+      return handleValidationError(res, "Comment content is empty after sanitization");
+    }
+
     // Prepare comment data
     const commentData: DBNewUserComment = {
       userId,
       bookId,
       parentCommentId: parentCommentId || null,
-      content: content.trim(),
+      content: cleanContent,
     };
 
     // Create the comment
-    const [row] = await dbWrite
+    const [comment] = await dbWrite
       .insert(userComments)
       .values(commentData)
       .returning();
 
-    res.status(201).json({
-      comment: row,
-    });
+    res.status(201).json({ comment });
 
     // Log user activity
     await logUserActivity({
       userId,
       activityType: 'commented',
       targetType: 'comment',
-      targetId: row.id,
+      targetId: comment.id,
       metadata: { bookId, parentCommentId },
       ipAddress: req.ip,
       userAgent: req.get('user-agent'),
@@ -1310,7 +1314,7 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
  * 
  * @returns {Object} Comment update response
  * @returns {boolean} success - Operation status
- * @returns {Object} data - Updated comment record
+ * @returns {Object} comment - Updated comment record
  * 
  * @example
  * // Request
@@ -1321,8 +1325,7 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": {
+ *   "comment": {
  *     "id": "comment123",
  *     "userId": "user123",
  *     "bookId": "book456",
@@ -1341,6 +1344,12 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
 
     if (!content || content.trim().length === 0) {
       return handleValidationError(res, "Comment content is required");
+    }
+
+    // Sanitize content before storing
+    const cleanContent = sanitizeTextForDB(String(content).trim());
+    if (!cleanContent || cleanContent.length === 0) {
+      return handleValidationError(res, "Comment content is empty after sanitization");
     }
 
     // Check if comment exists and belongs to user
@@ -1362,7 +1371,7 @@ router.put("/comments/:commentId", requireAuth, async (req: Request, res: Respon
     const [comment] = await dbWrite
       .update(userComments)
       .set({
-        content: content.trim(),
+        content: cleanContent,
         updatedAt: new Date(),
       })
       .where(and(
