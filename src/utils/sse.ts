@@ -722,9 +722,7 @@ export async function pollForCandidateGeneration(
           req.off('close', onClientDisconnect);
           req.off('aborted', onClientDisconnect);
           // Clear progress events after generation completes
-          if (clearActionProgressEvents) {
-            await clearActionProgressEvents(pageId);
-          }
+          await clearActionProgressEvents?.(pageId);
         }
         return;
       }

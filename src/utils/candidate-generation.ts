@@ -1331,37 +1331,43 @@ export async function triggerCandidateGenerationWorkflow(params: {
  * @returns Promise resolving to true if it's generating, false otherwise
  */
 async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
-  const isGenerating = !!dbPage.isGeneratingStartedAt;
   const totalPendingActions = dbPage.pendingGenerationCount ?? dbPage.actions.filter(a => !a.destination?.pageId).length;
   const isDone = totalPendingActions === 0;
+  const { isGeneratingStartedAt } = dbPage;
 
-  if (!isGenerating) return { isGenerating: false, isDone, totalPendingActions };
+  // Early exit: if generation never started
+  if (!isGeneratingStartedAt) return { isGenerating: false, isDone, totalPendingActions };
 
-  const now = new Date();
-  const startedAt = new Date(dbPage.isGeneratingStartedAt!);
-  const elapsedMs = now.getTime() - startedAt.getTime();
+  const elapsedMs = Date.now() - new Date(isGeneratingStartedAt).getTime();
   const isStuck = elapsedMs > MAX_GENERATION_DURATION_MS;
+  const isGenerating = !isStuck && !isDone;
+  const currentState = { isGenerating, isDone, totalPendingActions };
 
-  if (isStuck || isDone) {
-    if (isDone) console.log(`[checkAndResetStuckGeneration] ✅ Generation done for page ${dbPage.id}, resetting isGeneratingStartedAt`);
-    else if (isStuck) console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
+  // Still actively generating now
+  if (isGenerating) return currentState;
 
-    await Promise.all([
-      // Reset the timestamp in database
-      dbWrite.update(pages)
-        .set({ isGeneratingStartedAt: null })
-        .where(eq(pages.id, dbPage.id)),
-  
-      // Reset all stored progress events in database
-      ...(isDone ? [clearActionProgressEvents(dbPage.id)] : [])
-    ]);
-
-    // Refresh page after reset
+  try {
+    // Reset stale generation flag and mutate the caller object to reflect the update
+    await dbWrite.update(pages).set({ isGeneratingStartedAt: null }).where(eq(pages.id, dbPage.id));
     dbPage.isGeneratingStartedAt = null;
-    return { isGenerating: false, isDone, totalPendingActions };
+
+    if (isDone) {
+      console.log(`[checkAndResetStuckGeneration] ✅ Generation completed for page ${dbPage.id}`);
+
+      // Cleanup progress events only on successful completion
+      void clearActionProgressEvents(dbPage.id);
+    } else {
+      console.warn(`[checkAndResetStuckGeneration] ⚠️ Reset stuck generation for page ${dbPage.id} after ${Math.round(elapsedMs / 1000)}s`);
+    }
+
+  } catch (error) {
+    console.error(`[checkAndResetStuckGeneration] ❌ Failed to reset generation state for page ${dbPage.id}:`, error);
+
+    // Conservative fallback: assume generation still active if reset failed
+    return { ...currentState, isGenerating: true };
   }
 
-  return { isGenerating: true, isDone, totalPendingActions };
+  return currentState;
 }
 
 /**

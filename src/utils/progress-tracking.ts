@@ -133,13 +133,9 @@ export async function clearActionProgressEvents(
   pageId: string
 ): Promise<void> {
   try {
-    await dbWrite
-      .delete(actionProgress)
-      .where(eq(actionProgress.pageId, pageId));
-
+    await dbWrite.delete(actionProgress).where(eq(actionProgress.pageId, pageId));
     console.log(`[clearActionProgressEvents] ✨ Cleared all progress events for page ${pageId}`);
   } catch (error) {
     console.error(`[clearActionProgressEvents] ❌ Failed to clear progress events for page ${pageId}:`, error);
-    throw error;
   }
 }
