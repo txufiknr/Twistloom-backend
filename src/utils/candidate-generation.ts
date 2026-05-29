@@ -1,8 +1,19 @@
 /**
- * Shared validation and utility functions for candidate generation
- * 
- * This module extracts common validation logic used by both synchronous
- * and asynchronous candidate generation functions to eliminate code duplication.
+ * Candidate generation: validation, strategy execution, and progress tracking.
+ *
+ * Responsibilities
+ * - Validates whether a page needs generation (last page, depth limit, pending actions)
+ * - Chooses a generation strategy (parallel for Vercel/cron, sequential for GitHub Actions)
+ * - Runs AI generation with retry logic and distributed locking
+ * - Persists `destination.pageId` per-action as each completes so polling sees progress
+ * - Stores per-action progress events for the `/candidates/status` endpoint
+ * - Triggers deeper-level pre-generation for successfully generated candidate pages
+ * - Handles stuck-generation detection and reset
+ *
+ * Key design: write-chain serialisation
+ * In parallel mode multiple AI calls complete concurrently. `onActionProgress` uses a
+ * shared promise chain to serialise DB writes so no completed action is lost to a
+ * concurrent overwrite of the `actions` JSONB column.
  */
 
 import { getBook, getBookFromDB, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
@@ -14,7 +25,7 @@ import type { ActionProgressCallback, CandidateGenerationPageValidation, Candida
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
-import { storeActionProgressEvent } from './progress-tracking.js';
+import { clearActionProgressEvents, storeActionProgressEvent } from './progress-tracking.js';
 import { eq } from 'drizzle-orm';
 import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
@@ -463,14 +474,21 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 }
 
 /**
- * Generates candidate pages in parallel for multiple actions
- * 
- * This function processes multiple actions simultaneously using Promise.allSettled,
- * providing better performance and timeout resilience compared to sequential processing.
- * Each action generation is isolated, so failures don't affect other actions.
- * 
- * @param params - Parameters for parallel generation
- * @returns Array of generation results in the same order as input actions
+ * Generates candidate pages in parallel for multiple actions.
+ *
+ * Uses `Promise.allSettled` so failures in one action do not cancel others.
+ *
+ * Progress notification contract
+ * - `'started'` — fired fire-and-forget at the top of each promise (non-blocking).
+ * - `'failed'`  — fired awaited inside `.catch()` immediately on failure, before returning.
+ *   The caller must NOT fire `'failed'` again (no double-fire).
+ * - `'completed'` — delegated entirely to the caller via `onActionComplete`. The caller
+ *   is responsible for in-memory mutation, DB write, and progress notification.
+ *
+ * @param params.onActionComplete - Async hook called on each successful generation.
+ *   Receives `(action, candidatePage)`. The caller uses this to trigger `onActionProgress`
+ *   which is the SSOT for mutation + serialised write + event emission.
+ * @returns Array of results in input order; settled promises never throw.
  */
 async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
   const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress, allowDeeperLevel, onActionComplete } = params;
@@ -482,10 +500,12 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
   // Create generation promises for each action
   const generationPromises = actions.map(async (action, index) => {
     const letter = String.fromCharCode(65 + index);
+    const context = `"${currentBook.title}" page ${currentPage.page + 1} from action: ${letter}. ${action.text} (type: ${action.type})`;
     
-    // Notify action start
-    onProgress?.(action, 'started');
-    // console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}. ${action.text} (type: ${action.type})`);
+    // Notify action start — fire-and-forget intentionally: we don't want the tracking
+    // write to delay the AI generation call. Failures here are non-fatal.
+    void onProgress?.(action, 'started');
+    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for ${context}`);
     
     // Track the last error to determine if action should be removed
     let lastError: unknown = null;
@@ -519,7 +539,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
               console.log(`[generateCandidatesInParallel] ▶️ Retrying after rate limit delay`);
             }
             
-            console.error(`[generateCandidatesInParallel] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for action "${action.text}":`, error);
+            console.error(`[generateCandidatesInParallel] ⚠️ Retry ${attempt}/${MAX_BRANCHING_RETRIES} for ${context}:`, error);
           },
           // Stop retrying if error is non-retryable (e.g. validation errors)
           shouldRetry: (error) => {
@@ -545,25 +565,28 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
       ),
       new Promise<null>((_, reject) => 
         setTimeout(() => {
-          console.warn(`[generateCandidatesInParallel] ⏰ AI generation timeout for action ${letter}. ${action.text} after ${timeoutMs}ms`);
+          console.warn(`[generateCandidatesInParallel] ⏰ AI generation timeout for ${context} after ${timeoutMs}ms`);
           reject(new Error(`AI generation timeout (${timeoutMs}ms)`));
         }, timeoutMs)
       )
-    ]).catch(error => {
-      // Handle timeout and other errors gracefully
-      console.error(`[generateCandidatesInParallel] ❌ Generation failed for action ${letter}. ${action.text}:`, getErrorMessage(error));
+    ]).catch(async error => {
+      console.error(`[generateCandidatesInParallel] ❌ Generation failed for ${context}:`, getErrorMessage(error));
       lastError = error;
-      
-      // Notify failure
-      onProgress?.(action, 'failed', undefined, error);
+      // Notify failure immediately (awaited so the event is stored before we return).
+      // The caller's handleInvalidActionRemoval handles removal logic separately — this
+      // is the sole notification call so there is no double-fire.
+      try {
+        await onProgress?.(action, 'failed', undefined, error);
+      } catch (notifyError) {
+        console.error(`[generateCandidatesInParallel] ⚠️ Failed to notify failure for ${context}:`, getErrorMessage(notifyError));
+      }
       return null;
     });
 
-    // Notify success if generation completed
+    // On success, delegate to caller via onActionComplete.
+    // The caller's onActionProgress handles: in-memory mutation, serialized DB write, and event emission.
     if (candidatePage) {
-      // onProgress?.(action, 'completed', candidatePage);
-      console.log(`[generateCandidatesInParallel] ✅ Completed generation for: ${letter}. ${action.text} (type: ${action.type})`);
-      // Delegate to caller — caller persists to DB and fires onProgress
+      console.log(`[generateCandidatesInParallel] ✅ Completed generation for ${context}`);
       await onActionComplete?.(action, candidatePage);
     }
 
@@ -704,18 +727,39 @@ function triggerDeeperLevelGeneration(
 }
 
 /**
- * Core candidate generation implementation with configurable strategy
- * 
- * This function consolidates the logic for both parallel and non-parallel generation
- * by using a strategy pattern to determine the generation approach.
- * 
- * @param userId - The user's unique identifier
- * @param page - The story page to process
- * @param currentState - Story state for the current page for prompt (highly recommended)
- * @param currentBook - Optional book context
- * @param context - Generation context
- * 
- * @returns Promise<UserStoryPage> - The updated page with generated candidates
+ * Core candidate generation with configurable strategy (parallel or sequential).
+ *
+ * Execution Flow:
+ * 1. Validates page eligibility (last page, depth limit, pending actions).
+ * 2. Acquires a distributed lock to prevent duplicate concurrent runs.
+ * 3. Re-reads the page inside the lock (another worker may have already finished).
+ * 4. Marks `isGeneratingStartedAt` so polling endpoints see generation in progress.
+ * 5. For each pending action, generates a candidate page via AI.
+ * 6. After each success, `onActionProgress` atomically: mutates in-memory state,
+ *    serialises a DB write (write chain prevents lost-update races in parallel mode),
+ *    stores a progress event, and forwards to the external callback.
+ * 7. Final write clears `isGeneratingStartedAt` and reconciles any removed actions.
+ *
+ * Strategy Behaviour:
+ * - `vercel` / `cron` → `useParallel: true`  — all actions start concurrently.
+ * - `github-action`   → `useParallel: false` — actions run sequentially (reliable logging,
+ *   no rate-limit bursts).
+ *
+ * Write-chain Serialisation (parallel mode):
+ * Each `onActionProgress('completed')` call extends a promise chain so writes arrive in
+ * order regardless of which parallel AI call resolves first. Because
+ * `updateActionWithDestination` is synchronous, each chained write always reflects the
+ * most complete in-memory state accumulated so far — a later write automatically heals
+ * any earlier write that captured a partial snapshot.
+ *
+ * @param params.strategy  - Execution context: `'vercel'`, `'cron'`, or `'github-action'`
+ * @param params.userId    - User ID used for DB mapping and page generation
+ * @param params.page      - The story page whose actions need candidate pages
+ * @param params.currentState - Story state snapshot; highly recommended for prompt quality
+ * @param params.currentBook  - Optional pre-fetched book (avoids an extra DB round-trip)
+ * @param params.options   - Optional overrides: `timeoutMs`, `onProgress`, `allowDeeperLevel`
+ *
+ * @returns The updated UserStoryPage with completed actions; original page on lock miss
  */
 export async function ensureCandidatesForPageWithStrategy(
   params: GenerateCandidatesWithStrategyParams
@@ -778,7 +822,6 @@ export async function ensureCandidatesForPageWithStrategy(
     // Track if any actions were actually updated
     const generateNewBranchId = recheckedPendingDBActions.length < initialDBActions.length;
     let updatedDBActions = [...initialDBActions];
-    let hasRealChanges = false;
 
     // Track removed actions using Set for O(1) lookup (clean, type-safe approach)
     const removedActionTexts = new Set<string>();
@@ -840,46 +883,33 @@ export async function ensureCandidatesForPageWithStrategy(
         // Update map with new index
         actionIndexMap.set(action.text, updatedDBActions.length - 1);
       }
-      
-      hasRealChanges = true;
     }
 
     /**
-     * Process failed action generation result (invalid action removal)
+     * Handles post-failure cleanup for a failed action result.
+     *
+     * Responsibility: invalid action removal from updatedDBActions + actionIndexMap only.
+     * Progress notification ('failed' event) is NOT fired here — it is the caller's
+     * responsibility to avoid double-fire:
+     *   - Parallel path: fired immediately inside generateCandidatesInParallel's .catch()
+     *   - Sequential path: fired explicitly after this call
      */
-    async function processFailedActionResult(result: CandidateGenerationResult): Promise<void> {
-      const { action, success } = result;
-      if (success) return; // No processing needed for successes here (handled in onActionComplete)
+    function handleInvalidActionRemoval(result: CandidateGenerationResult): void {
+      if (result.success) return;
 
-      // if (result.success && result.candidatePage) {
-      //   // Success: update action with destination
-      //   console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
-      //   updateActionWithDestination(action, result.candidatePage);
+      const { action } = result;
+      const letter = generateActionLetter(action);
 
-      //   // Notify progress callback
-      //   await onActionProgress(action, 'completed', result.candidatePage);
-      // } else {
-        // Handle failed generation
-        const isInvalidAction = isInvalidActionError(result.error);
-
-        if (isInvalidAction) {
-          console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-          // Track removed action using clean Set-based approach
-          const existingIndex = actionIndexMap.get(action.text);
-          if (existingIndex !== undefined) {
-            removedActionTexts.add(action.text);
-            hasRealChanges = true;
-            // Remove from map immediately
-            actionIndexMap.delete(action.text);
-          }
-        } else {
-          const letter = generateActionLetter(action);
-          console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(result.error));
+      if (isInvalidActionError(result.error)) {
+        console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
+        const existingIndex = actionIndexMap.get(action.text);
+        if (existingIndex !== undefined) {
+          removedActionTexts.add(action.text);
+          actionIndexMap.delete(action.text);
         }
-
-        // Notify progress callback of failure
-        await onActionProgress(action, 'failed', undefined, result.error);
-      // }
+      } else {
+        console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(result.error));
+      }
     }
     
     /**
@@ -897,16 +927,27 @@ export async function ensureCandidatesForPageWithStrategy(
       });
     }
 
-    // Write chain for serializing per-action DB writes in parallel mode
+    // Write chain — serialises per-action DB writes in parallel mode.
+    // Each completion extends the chain so writes execute in arrival order; a later write
+    // always carries the most complete in-memory snapshot, self-healing any earlier partial write.
     let writeChain: Promise<void> = Promise.resolve();
 
-    // Unified progress callback — handles both DB progress events and per-action writes.
-    // Defined inside withLock so it can access updatedDBActions and updateActionWithDestination.
-    // Every call must use `await`, because it contains `await writeChain;` which serializes persistence.
+    // ── onActionProgress ────────────────────────────────────────────────────
+    // Single source of truth for everything that must happen after an action finishes:
+    //   1. Store a progress event (best-effort, never aborts generation if it fails)
+    //   2. On 'completed': update in-memory state, enqueue a serialised DB write
+    //   3. Forward to the external onProgress callback for UI updates
+    //
+    // Defined inside withLock so it closes over updatedDBActions, actionIndexMap,
+    // writeChain, and the helper functions — all of which live in the lock scope.
+    //
+    // IMPORTANT: always `await` this callback; it contains `await writeChain` which
+    // must complete before the next async step reads `updatedDBActions`.
     const onActionProgress: ActionProgressCallback = async (
       action, status, result, error
     ): Promise<void> => {
-      // Always store the progress event
+      // Store progress event — error handled internally so tracking failure never aborts generation.
+      // Progress tracking is best-effort — log and continue
       await storeActionProgressEvent(page.id, {
         action: action.text,
         status,
@@ -956,40 +997,23 @@ export async function ensureCandidatesForPageWithStrategy(
         maxDepth,
         onProgress: onActionProgress,
         allowDeeperLevel,
-        onActionComplete: async (action, candidatePage) => {
-          // Note: `onActionProgress(...)` already calls `updateActionWithDestination(action, result)`
-          // // Update in-memory state
-          // updateActionWithDestination(action, candidatePage);
-
-          // // Immediately persist so polling sees this action's destination now
-          // const currentPending = updatedDBActions.filter(a => !a.destination?.pageId).length;
-          // await dbWrite
-          //   .update(pages)
-          //   .set({
-          //     actions: updatedDBActions,
-          //     pendingGenerationCount: currentPending,
-          //   })
-          //   .where(eq(pages.id, page.id));
-          // console.log(`[ensureCandidatesForPageWithStrategy] 💾 Persisted destination for action "${action.text}" (${currentPending} still pending)`);
-
-          // Fire progress notification (moved here from inside the promise)
-          await onActionProgress(action, 'completed', candidatePage);
-        },
+        // onActionComplete bridges generateCandidatesInParallel's success callback into
+        // onActionProgress, which is the SSOT for in-memory mutation + serialized DB write + event emission.
+        onActionComplete: (action, candidatePage) => onActionProgress(action, 'completed', candidatePage),
       });
       
-      // // Process parallel results using helper functions
-      // for (let i = 0; i < generationResults.length; i++) {
-      //   const result = generationResults[i];
-      //   await processFailedActionResult(result);
-      // }
-
-      // Handles failures (successes are fully handled by onActionComplete above)
-      // TODO: processFailedActionResult only called in parallel mode, is it correct?
-      // what about we incorporate this internally in `generateCandidatesInParallel`?
-      for (let i = 0; i < generationResults.length; i++) {
-        const result = generationResults[i];
+      // Failure cleanup pass — runs after all parallel AI calls settle.
+      // Failure progress events were already fired immediately inside each promise's .catch(),
+      // so handleInvalidActionRemoval only needs to handle state mutation (invalid action removal).
+      //
+      // Why not incorporate this into generateCandidatesInParallel?
+      // removedActionTexts, actionIndexMap, and updatedDBActions are closure variables inside
+      // withLock. Pushing this logic into generateCandidatesInParallel would require threading
+      // mutable state containers as params, coupling a pure generation engine to persistence
+      // concerns. Keeping it in the caller is the correct boundary.
+      for (const result of generationResults) {
         if (!result.success) {
-          await processFailedActionResult(result);
+          handleInvalidActionRemoval(result);
         }
       }
     } else {
@@ -1055,48 +1079,19 @@ export async function ensureCandidatesForPageWithStrategy(
           lastError = error;
         });
 
-        // Process the result (success or failure)
+        // Process the result (success or failure).
+        // onActionProgress is the SSOT for completed actions: mutation + DB write + event emission.
+        // handleInvalidActionRemoval covers removal of invalid actions from the in-memory state.
         if (candidatePage) {
           // Success: update the action with the destination
           console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
-
-          // UPDATE: Removed the manual `updateActionWithDestination` call since `onActionProgress` now does it.
-          // updateActionWithDestination(action, candidatePage);
-
-          // // Immediately persist so polling sees this action's destination now
-          // const currentPending = updatedDBActions.filter(a => !a.destination?.pageId).length;
-          // await dbWrite
-          //   .update(pages)
-          //   .set({
-          //     actions: updatedDBActions,
-          //     pendingGenerationCount: currentPending,
-          //   })
-          //   .where(eq(pages.id, page.id));
-
-          // console.log(`[ensureCandidatesForPageWithStrategy] 💾 Persisted destination for action "${action.text}" (${currentPending} still pending)`);
-
           // Notify progress callback of success
           await onActionProgress(action, 'completed', candidatePage);
         } else {
-          // Handle failed generation
-          const isInvalidAction = isInvalidActionError(lastError);
-
-          if (isInvalidAction) {
-            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Invalid action "${action.text}" detected, removing from actions`);
-            // Track removed action using clean Set-based approach
-            const existingIndex = actionIndexMap.get(action.text);
-            if (existingIndex !== undefined) {
-              removedActionTexts.add(action.text);
-              hasRealChanges = true;
-              // Remove from map immediately
-              actionIndexMap.delete(action.text);
-            }
-          } else {
-            console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(lastError));
-          }
-
-          // Notify progress callback of failure
+          // Failure notification first (mirrors parallel path where .catch() fires immediately)
           await onActionProgress(action, 'failed', undefined, lastError);
+          // Then handle any invalid-action removal (pure state mutation, no re-notification)
+          handleInvalidActionRemoval({ action, success: false, candidatePage: null, error: lastError });
         }
       }
 
@@ -1337,7 +1332,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
  */
 async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
   const isGenerating = !!dbPage.isGeneratingStartedAt;
-  const totalPendingActions = dbPage.pendingGenerationCount || dbPage.actions.filter(a => !a.destination?.pageId).length;
+  const totalPendingActions = dbPage.pendingGenerationCount ?? dbPage.actions.filter(a => !a.destination?.pageId).length;
   const isDone = totalPendingActions === 0;
 
   if (!isGenerating) return { isGenerating: false, isDone, totalPendingActions };
@@ -1348,17 +1343,18 @@ async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerat
   const isStuck = elapsedMs > MAX_GENERATION_DURATION_MS;
 
   if (isStuck || isDone) {
-    if (isStuck) {
-      console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
-    }
-    if (isDone) {
-      console.log(`[checkAndResetStuckGeneration] ✅ Generation done for page ${dbPage.id}, resetting isGeneratingStartedAt`);
-    }
-    
-    // Reset the timestamp in database
-    await dbWrite.update(pages)
-      .set({ isGeneratingStartedAt: null })
-      .where(eq(pages.id, dbPage.id));
+    if (isDone) console.log(`[checkAndResetStuckGeneration] ✅ Generation done for page ${dbPage.id}, resetting isGeneratingStartedAt`);
+    else if (isStuck) console.log(`[checkAndResetStuckGeneration] ⚠️ Generation stuck for page ${dbPage.id} (${elapsedMs/1000/60} minutes elapsed), resetting isGeneratingStartedAt`);
+
+    await Promise.all([
+      // Reset the timestamp in database
+      dbWrite.update(pages)
+        .set({ isGeneratingStartedAt: null })
+        .where(eq(pages.id, dbPage.id)),
+  
+      // Reset all stored progress events in database
+      ...(isDone ? [clearActionProgressEvents(dbPage.id)] : [])
+    ]);
 
     // Refresh page after reset
     dbPage.isGeneratingStartedAt = null;
@@ -1402,6 +1398,9 @@ export async function validateAndRetrievePageForGeneration(
 
   // Check if generation is stuck and reset if needed
   const { isGenerating, isDone, totalPendingActions } = await checkAndResetStuckGeneration(dbPage);
+  if (!isGenerating && !isDone) {
+    dbPage.isGeneratingStartedAt = null; // Reset timestamp for stuck generation
+  }
 
   // Map to user story page
   const userPage = userId ? await mapToUserStoryPage(dbPage, userId) : mapToPersistedStoryPage(dbPage);

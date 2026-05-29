@@ -2399,7 +2399,7 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
           res.write(`data: ${JSON.stringify(userPage)}\n\n`);
           res.end();
         }
-        // Clear progress events since generation is complete
+        // Clear all progress events in database since generation is complete
         await clearActionProgressEvents(pageIdStr);
       } catch {
         if (!res.writableEnded) {

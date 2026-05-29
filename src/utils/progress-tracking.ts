@@ -45,40 +45,44 @@ export async function storeActionProgressEvent(
   pageId: string,
   event: ActionProgressEvent
 ): Promise<void> {
-  // Early exit: No need to store invalid action progress event
-  if (!event.action) return;
+  const { action: actionText, status, error, destinationPageId } = event;
 
+  // Early exit: No need to store invalid action progress event
+  if (!actionText) return;
+
+  const context = `${status} action "${actionText}" from page ${pageId}`;
   try {
     // Determine timestamps based on status
-    const startedAt = event.status === 'started' ? new Date(event.timestamp) : undefined;
-    const completedAt = event.status === 'completed' || event.status === 'failed' ? new Date(event.timestamp) : undefined;
+    const startedAt = status === 'started' ? new Date(event.timestamp) : undefined;
+    const completedAt = status === 'completed' || status === 'failed' ? new Date(event.timestamp) : undefined;
 
     // Upsert progress entry
     await dbWrite
       .insert(actionProgress)
       .values({
         pageId,
-        actionText: event.action,
-        status: event.status,
-        error: event.error,
+        actionText,
+        status,
+        error,
+        destinationPageId,
         startedAt,
         completedAt,
       })
       .onConflictDoUpdate({
         target: [actionProgress.pageId, actionProgress.actionText],
         set: {
-          status: event.status,
-          error: event.error,
+          status,
+          error,
+          destinationPageId,
           startedAt: startedAt || actionProgress.startedAt,
           completedAt: completedAt || actionProgress.completedAt,
           updatedAt: new Date(),
         },
       });
 
-    console.log(`[storeActionProgressEvent] 📊 Stored '${event.status}' event for action "${event.action}" from page ${pageId}`);
+    console.log(`[storeActionProgressEvent] 📊 Stored progress event for ${context}`);
   } catch (error) {
-    console.error(`[storeActionProgressEvent] ❌ Failed to store progress event:`, error);
-    throw error;
+    console.error(`[storeActionProgressEvent] ❌ Failed to store progress event for ${context}:`, error);
   }
 }
 
@@ -109,10 +113,10 @@ export async function getActionProgressEvents(
       destinationPageId: row.destinationPageId || undefined,
     }) satisfies ActionProgressEvent);
 
-    console.log(`[getActionProgressEvents] 📊 DATABASE - Retrieved ${events.length} events for page ${pageId}`);
+    console.log(`[getActionProgressEvents] 📊 Retrieved ${events.length} progress events for page ${pageId}`);
     return events;
   } catch (error) {
-    console.error(`[getActionProgressEvents] ❌ Failed to retrieve progress events:`, error);
+    console.error(`[getActionProgressEvents] ❌ Failed to retrieve progress events for page ${pageId}:`, error);
     throw error;
   }
 }
@@ -133,9 +137,9 @@ export async function clearActionProgressEvents(
       .delete(actionProgress)
       .where(eq(actionProgress.pageId, pageId));
 
-    console.log(`[clearActionProgressEvents] 📊 DATABASE - Cleared events for page ${pageId}`);
+    console.log(`[clearActionProgressEvents] ✨ Cleared all progress events for page ${pageId}`);
   } catch (error) {
-    console.error(`[clearActionProgressEvents] ❌ Failed to clear progress events:`, error);
+    console.error(`[clearActionProgressEvents] ❌ Failed to clear progress events for page ${pageId}:`, error);
     throw error;
   }
 }

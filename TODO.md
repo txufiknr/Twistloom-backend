@@ -9,6 +9,7 @@
 [ ] POST /user/comments - deprecated
 [ ] first purchase → +20 credits
 [ ] make `aiStreamSSE` return provider & model
+[ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 
 [ ] userSettings schema
 - interests: string[]
