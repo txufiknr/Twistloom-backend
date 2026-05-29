@@ -21,7 +21,7 @@ This document outlines the coding standards, conventions, and best practices for
 - **Linting**: ESLint
 - **Database Management**: Drizzle Kit
 - **Migrations**: Drizzle migrations
-- **Hosting**: Vercel/Netlify/Fly.io (serverless)
+- **Hosting**: Vercel (serverless)
 
 ---
 
@@ -310,7 +310,7 @@ import { formatFeedRows } from '../services/feed.js';
 > 
 > ```powershell
 > # Example: Navigate to project and run test script
-> cd "e:\Flutter\MuslimDigest\backend-neon"; pnpm tsx test-hero-image.js
+> cd "e:\Flutter\Twistloom\twistloom-backend"; pnpm tsx test-hero-image.js
 > 
 > # Example: Test API request
 > (Invoke-WebRequest -Uri "https://twistloom-backend.vercel.app/api/endpoint?limit=15" -Method GET -Headers @{"Content-Type"="application/json"; "X-App-Version"="1.0.0"; "X-Platform"="web"} -UseBasicParsing).Content
@@ -328,7 +328,7 @@ pnpm dev          # Start development server with hot reload
 pnpm dev:api       # Start API server only
 pnpm dev:cron:trending    # Run trending scores cron job locally
 pnpm dev:cron:generate    # Run originals generation cron job locally
-pnpm dev:cron:retry      # Run retry pending generations cron job locally
+pnpm dev:cron:candidate      # Run actions candidate generations cron job locally
 ```
 
 ### Production Scripts
@@ -338,7 +338,7 @@ pnpm start          # Start production server
 pnpm start:api    # Start production API server
 pnpm start:cron:trending     # Run trending scores cron job in production
 pnpm start:cron:generate     # Run originals generation cron job in production
-pnpm start:cron:retry       # Run retry pending generations cron job in production
+pnpm start:cron:candidate       # Run actions candidate generations cron job in production
 ```
 
 ### Build & Quality Scripts
@@ -379,8 +379,8 @@ Use Node.js testing approach with TypeScript and ES modules.
 ### Test Execution Format
 ```bash
 # Windows PowerShell (use semicolon separator)
-cd "e:\Flutter\MuslimDigest\backend-neon"; pnpm tsx test-something.js
-cd "e:\Flutter\MuslimDigest\backend-neon"; Remove-Item test-*.js
+cd "e:\Flutter\Twistloom\twistloom-backend"; pnpm tsx test-something.js
+cd "e:\Flutter\Twistloom\twistloom-backend"; Remove-Item test-*.js
 # Or use pnpm for package scripts
 pnpm dev:cron
 ```

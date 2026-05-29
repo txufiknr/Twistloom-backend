@@ -395,7 +395,7 @@ export async function cleanupStoryStatesWithStrategy(bookId: string): Promise<vo
     console.log(`[cleanupStoryStatesWithStrategy] 📊 Storage efficiency: ${keepRatio}% of states retained (${pagesToKeep.size}/${allStates.length})`);
     
   } catch (error) {
-    console.error(`Failed to cleanup story states for book ${bookId}:`, getErrorMessage(error));
+    console.error(`[cleanupStoryStatesWithStrategy] ❌ Failed to cleanup story states for book ${bookId}:`, error);
     // Don't throw error here - cleanup failure shouldn't break the main operation
   }
 }

@@ -328,7 +328,7 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       // Basic information
       details.push(`  Bio: ${character.bio}`);
       details.push(`  Visual description: ${character.visualDescription}`);
-      details.push(`  Introduced at page: ${character.introducedAtPage}`);
+      details.push(`  Introduced at page: ${character.introducedAtPage || '-'}`);
       details.push(`  Secrets (spoiler): ${character.secrets || 'none'}`);
       details.push(`  Relationship to MC: ${character.relationshipToMC}`);
       
@@ -433,13 +433,9 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   
   // Choose last name pool: 70% gender-specific, 30% neutral for variety
   const useGenderSpecific = Math.random() < 0.7;
-  let lastNamePool: string[];
-  
-  if (useGenderSpecific) {
-    lastNamePool = gender === 'male' ? maleLastNames : femaleLastNames;
-  } else {
-    lastNamePool = neutralLastNames;
-  }
+  const lastNamePool = useGenderSpecific
+    ? (gender === 'male' ? maleLastNames : femaleLastNames)
+    : neutralLastNames;
   
   // Generate random name and last name with retry logic to prevent duplicates
   const randomName = candidate?.name ?? namePool[Math.floor(Math.random() * namePool.length)];
@@ -453,13 +449,11 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
     attempts++;
   }
   
-  const fullName = `${randomName} ${randomLastName}`;
-  
-  // Age generation based on story config
+  const name = `${randomName} ${randomLastName}`;
   const age = candidate?.age ?? Math.floor(Math.random() * (MAX_CHARACTER_AGE - MIN_CHARACTER_AGE + 1)) + MIN_CHARACTER_AGE;
 
   return {
-    name: fullName,
+    name,
     age,
     gender,
     bio: generateRandomCharacterBio(gender),

@@ -740,7 +740,7 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
-  - secrets: spoiler or hints of the character for AI guidance.
+  - secrets: spoiler or hints of the character for AI narrative guidance.
   - narrativeFlags: set to match behavior and twist setup.
   - pastInteractions: dialogue or event towards MC in current page.
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
@@ -749,9 +749,8 @@ characterUpdates.updatedCharacters
   - Only include characters whose state actually changed this page.
   - Include only changed fields: bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries, secrets.
   - bio: only gradually update character's bio if new information is revealed in this page.
-  - secrets: reduce if some are revealed.
-${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
-: `  - Only update when bio, status, interactions, or relevance changes.`}
+  ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.
+  - secrets: remove any revealed secret.` : `  - Only update when bio, status, interactions, or relevance changes.`}
   - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})
   - Adjust narrativeFlags to reflect plot developments
 
@@ -1227,7 +1226,9 @@ function getActionTypesText(): string {
     .join('\n');
 }
 
-function getActionRulesText({isFinale = false, limit = MAX_ACTION_CHOICES}: {isFinale?: boolean, limit?: number}): string {
+function getActionRulesText(stateInfo: Partial<StoryStateInfo>): string {
+  const { isFirstPage, isFinale } = stateInfo;
+  const limit = isFirstPage || isFinale ? MAX_ACTION_CHOICES_FIRST_PAGE : MAX_ACTION_CHOICES;
   return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
 - Can be verb (what to do next) or dialogue (say/answer), ${ACTION_TEXT_LENGTH}
 - Represent the reader's decision - must feel natural, immediate, narrative-driven
@@ -2299,7 +2300,7 @@ FIRST PAGE RULES:
 - Max ${MAX_WORDS_PER_PAGE} words.
 
 BRANCHING ACTIONS:
-${getActionRulesText({ limit: MAX_ACTION_CHOICES_FIRST_PAGE })}`;
+${getActionRulesText({ isFirstPage: true })}`;
 }
 
 function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate | null): string {

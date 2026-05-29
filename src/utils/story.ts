@@ -1457,16 +1457,15 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
   const isLatePhase = pageProgress >= 0.70;
   const isMidPhase = !isEarlyPhase && !isLatePhase;
   const isFinale = pageProgress >= 0.90;
+  const isFirstPage = currentPage === 1;
   const isLastPage = currentPage === totalPages;
   const phase: StoryPhase = isFinale ? 'FINALE' : isLatePhase ? 'LATE' : isMidPhase ? 'MID' : 'EARLY';
   const phaseGoal = storyPhases[phase];
 
   // Determine finale phase only when story is in finale
-  const finalePhase: FinalePhase | undefined = isFinale 
-    ? currentPage >= totalPages * 0.95 ? 'END' 
-    : currentPage >= totalPages * 0.85 ? 'MID' 
-    : 'EARLY'
-    : undefined;
+  const finalePhase: FinalePhase | undefined = isFinale ? (
+    pageProgress >= 0.97 ? 'END' : pageProgress >= 0.94 ? 'MID' : 'EARLY'
+  ) : undefined;
 
   const charactersSlot = MAX_CHARACTERS - Object.keys(characters).length;
   const placesSlot = MAX_PLACES - Object.keys(places).length;
@@ -1480,6 +1479,7 @@ export function getStoryStateInfo(state: StoryState): StoryStateInfo {
     isLatePhase,
     isMidPhase,
     isFinale,
+    isFirstPage,
     isLastPage,
     phase,
     phaseGoal,

@@ -3,14 +3,18 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] Kalau source action belum ada, insert dulu page progress parent page
-[ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as the book price -> promoted
+[ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] POST /user/comments - deprecated
 [x] first purchase → +50 credits
 [x] make `aiStreamSSE` return provider & model
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] review claude: payment route
-[ ] plot flag buat "keyed" architecture
 [ ] review claude: story branch (getStoryStateWithBranch)
+[ ] CLAUDE.md
+
+story state & delta changes:
+[ ] plot flag buat "keyed"
+[ ] character secrets buat array aja
 
 [ ] userSettings schema
 - interests: string[]

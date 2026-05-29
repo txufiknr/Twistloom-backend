@@ -1,7 +1,7 @@
 import type { AIJsonEvaluation, AIJsonProperty } from "../types/ai-chat.js";
-import type { CharacterUpdates, Injury, InventoryItem } from "../types/character.js";
+import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { endingTypes } from "../types/story.js";
-import type { StoryOutline, Action, ActionHint, Archetype, Ending, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel } from "../types/story.js";
+import type { StoryOutline, Action, ActionHint, Archetype, Ending, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel } from "../types/story.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
@@ -62,8 +62,18 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
       required: ['text', 'isDone'] satisfies (keyof StoryOutline)[],
       additionalProperties: false
     } },
-  },
+  } satisfies Record<keyof Ending, AIJsonProperty>,
   required: ['text', 'type'] satisfies (keyof Ending)[],
+  additionalProperties: false
+};
+
+export const TAG_UPDATES_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: {
+    add:    { type: 'array', items: { type: 'string' } },
+    remove: { type: 'array', items: { type: 'string' } },
+  } satisfies Record<keyof TagUpdates, AIJsonProperty>,
+  required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
   additionalProperties: false
 };
 
@@ -85,26 +95,12 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   actions: STORY_ACTION_SCHEMA,
 
   // State Delta
+  // TODO: object schema
   flagUpdates: { type: 'object' },
   addPlotFlag: { type: 'object' },
-  traumaTagUpdates: {
-    type: 'object',
-    properties: {
-      add:    { type: 'array', items: { type: 'string' } },
-      remove: { type: 'array', items: { type: 'string' } },
-    },
-    required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
-    additionalProperties: false
-  },
-  futureNoteUpdates: {
-    type: 'object',
-    properties: {
-      add:    { type: 'array', items: { type: 'string' } },
-      remove: { type: 'array', items: { type: 'string' } },
-    },
-    required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
-    additionalProperties: false
-  },
+
+  traumaTagUpdates: TAG_UPDATES_SCHEMA,
+  futureNoteUpdates: TAG_UPDATES_SCHEMA,
 
   characterUpdates: {
     type: 'object',
@@ -112,21 +108,35 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
       newCharacters: {
         type: 'array',
         // TODO: object schema
+        description: 'New characters introduced in this page. Empty array if none.',
         items: { type: 'object' },
-        description: 'New characters introduced in this page. Empty array if none.'
       },
       updatedCharacters: {
         type: 'array',
         // TODO: object schema
+        description: 'Characters whose details have been updated in this page. Empty array if none.',
         items: { type: 'object' },
-        description: 'Characters whose details have been updated in this page. Empty array if none.'
       },
     } satisfies Record<keyof CharacterUpdates, AIJsonProperty>,
     required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
     additionalProperties: false
   },
+  relationshipUpdates: {
+    type: 'array',
+    description: 'Updates to relationships between side characters in this page. Empty array if none.',
+    items: {
+      type: 'object',
+      properties: {
+        source: { type: 'string' },
+        target: { type: 'string' },
+        type: { type: 'string', enum: [...relationshipTypes] },
+        status: { type: 'string', enum: [...relationshipStatuses] },
+      } satisfies Record<keyof RelationshipUpdate, AIJsonProperty>,
+      required: ['source', 'target', 'status'] satisfies (keyof RelationshipUpdate)[],
+      additionalProperties: false
+    },
+  },
   // TODO: object schema
-  relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },
   viableEnding: { type: 'object' },
@@ -141,9 +151,11 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
 
 export const EVALUATION_SCHEMA_DEFINITION = {
+  // TODO: object schema
   output: { type: 'object' },
   scoreBefore: { type: 'object' },
   scoreAfter: { type: 'object' },
+  // TODO: object schema
   actionFlags: { type: 'array', items: { type: 'object' } },
   integrityFlags: { type: 'array', items: { type: 'object' } },
 } satisfies Record<keyof AIJsonEvaluation<Record<string, unknown>>, AIJsonProperty>;
@@ -165,10 +177,10 @@ export const HIDDEN_STATE_DEFAULTS: HiddenState = {
 
 export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage'> = {
   flags: {
-    trust: 'medium',
-    fear: 'low',
-    guilt: 'low',
-    curiosity: 'medium'
+    trust: 'medium' satisfies TrustLevel,
+    fear: 'low' satisfies FearLevel,
+    guilt: 'low' satisfies GuiltLevel,
+    curiosity: 'medium' satisfies CuriosityLevel
   },
   threads: [],
   traumaTags: [],
@@ -176,8 +188,8 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   plotFlags: [],
   psychologicalProfile: PSYCHOLOGICAL_PROFILE_DEFAULTS,
   hiddenState: HIDDEN_STATE_DEFAULTS,
-  memoryIntegrity: 'stable',
-  difficulty: 'medium',
+  memoryIntegrity: 'stable' satisfies MemoryIntegrity,
+  difficulty: 'medium' satisfies Difficulty,
   viableEnding: undefined,
   characters: {},
   places: {},

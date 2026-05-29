@@ -104,6 +104,7 @@ export const pages = pgTable(
  *   "max_page": 20,
  *   "flags": {...},
  *   "trauma_tags": [...],
+ *   "future_notes": [...],
  *   "plot_flags": [...],
  *   "inventory": [...],
  *   "psychological_profile": {...},
