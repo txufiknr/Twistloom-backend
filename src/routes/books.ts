@@ -2466,6 +2466,7 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
  *   completedActions: number;
  *   totalActions: number;
  *   actions: Action[];
+ *   actionProgress: ActionProgressEvent[];
  *   startedAt?: string;
  *   lastUpdated?: string;
  * }
@@ -2483,22 +2484,12 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
  *   "completedActions": 2,
  *   "totalActions": 4,
  *   "actions": [...],
+ *   "actionProgress": [...],
  *   "startedAt": "2024-01-01T00:00:00Z",
  *   "lastUpdated": "2024-01-01T00:00:10Z"
  * }
  */
 router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: Request, res: Response) => {
-  // TODO: ensure response include completed `actions` with destination pageIds
-  // response shape:
-  // {
-  //   isGenerating: boolean;
-  //   completedActions: number;
-  //   totalActions: number;
-  //   actions: Action[]; // completed actions, ensure they have valid destination.pageId
-  //   actionProgress: ActionProgressEvent[];
-  //   startedAt: string;
-  //   lastUpdated: string;
-  // }
   try {
     const { userId } = req;
     const { identifier, pageId } = req.params;
@@ -2529,7 +2520,8 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
       return {
         action: action.text,
         status: hasDestination ? 'completed' : 'started',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        destinationPageId: hasDestination ? action.destination!.pageId : undefined,
       } satisfies ActionProgressEvent;
     });
 
@@ -2550,7 +2542,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
         isGenerating: true,
         completedActions,
         totalActions,
-        actions: actionsWithDestinations,
+        actions: actionsWithDestinations, // Current completed actions, this should be already correct
         actionProgress, // Include per-action progress events
         startedAt,
         lastUpdated: new Date().toISOString(),
@@ -2605,7 +2597,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
       isGenerating: true,
       completedActions,
       totalActions,
-      actions: actionsWithDestinations,
+      actions: actionsWithDestinations, // Current completed actions, this should be already correct
       actionProgress: progressEventFallback,
       startedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),

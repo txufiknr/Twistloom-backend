@@ -1241,6 +1241,9 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
 - Example actions: A. Open the door / B. Knock first
   Both → door opens` : `ACTION RULES:
 - Actions must be short, meaningful, each lead to very different path
+- Actions must be meaningfully distinct — vary between: reckless, cautious, emotional, avoidant
+- Action text must be unique (important) - it's used for identifier
+- No two actions should lead to the same implied consequence
 - Choice pattern: safe / risky / ambiguous
 - Occasionally include deceptive choice
 - Avoid over-explaining actions`}
@@ -2280,8 +2283,7 @@ FIRST PAGE RULES:
 - Max ${MAX_WORDS_PER_PAGE} words.
 
 BRANCHING ACTIONS:
-${getActionRulesText({ limit: MAX_ACTION_CHOICES_FIRST_PAGE })}
-Actions must be meaningfully distinct — vary between: reckless, cautious, emotional, avoidant. No two actions should lead to the same implied consequence.`;
+${getActionRulesText({ limit: MAX_ACTION_CHOICES_FIRST_PAGE })}`;
 }
 
 function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate | null): string {

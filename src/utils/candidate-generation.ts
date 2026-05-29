@@ -10,7 +10,7 @@ import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../con
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, ActionProgressStatus, CandidateGenerationPageValidation, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
+import type { ActionProgressCallback, CandidateGenerationPageValidation, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -400,8 +400,9 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
     throw createNonRetryableError(`Action "${actionCandidate.text}" not found in current page actions`, 'ACTION_NOT_FOUND');
   }
 
+  const letter = String.fromCharCode(65 + currentPage.actions.indexOf(action));
   const nextPageNumber = currentPage.page + 1;
-  console.log(`[generateCandidatePage] 📖 Should generate page ${nextPageNumber} for "${currentBook.title}" for action:`, actionCandidate);
+  console.log(`[generateCandidatePage] 📖 Should generate page ${nextPageNumber} for "${currentBook.title}" for action: ${letter}. ${action.text} (type: ${action.type})`);
 
   if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
     console.warn(`[generateCandidatePage] ⚠️ Unexpected page ${nextPageNumber} is already in plot flags`);
@@ -472,7 +473,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
  * @returns Array of generation results in the same order as input actions
  */
 async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
-  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress, allowDeeperLevel } = params;
+  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress, allowDeeperLevel, onActionComplete } = params;
   const startTime = Date.now();
   const lookupStartTime = Date.now();
 
@@ -484,7 +485,7 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
     
     // Notify action start
     onProgress?.(action, 'started');
-    console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}. ${action.text}`);
+    // console.log(`[generateCandidatesInParallel] ⏳ Starting generation for: ${letter}. ${action.text} (type: ${action.type})`);
     
     // Track the last error to determine if action should be removed
     let lastError: unknown = null;
@@ -560,8 +561,10 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
 
     // Notify success if generation completed
     if (candidatePage) {
-      onProgress?.(action, 'completed', candidatePage);
-      console.log(`[generateCandidatesInParallel] ✅ Completed generation for: ${letter}. ${action.text}`);
+      // onProgress?.(action, 'completed', candidatePage);
+      console.log(`[generateCandidatesInParallel] ✅ Completed generation for: ${letter}. ${action.text} (type: ${action.type})`);
+      // Delegate to caller — caller persists to DB and fires onProgress
+      await onActionComplete?.(action, candidatePage);
     }
 
     return {
@@ -720,25 +723,6 @@ export async function ensureCandidatesForPageWithStrategy(
   const { strategy: context, userId, page, currentState, currentBook: providedBook, options = {} } = params;
   const { timeoutMs: customTimeoutMs, onProgress, allowDeeperLevel = false } = options;
 
-  // Wrap onProgress callback to store progress in database
-  const onActionProgress: ActionProgressCallback = async (
-    action: Action,
-    status: ActionProgressStatus,
-    result?: PersistedStoryPage,
-    error?: unknown
-  ) => {
-    // Store progress event in database
-    await storeActionProgressEvent(page.id, {
-      action: action.text,
-      status,
-      error: error ? getErrorMessage(error) : undefined,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Call original callback if provided
-    onProgress?.(action, status, result, error);
-  };
-
   // Use shared validation to eliminate redundant checks
   const validation = await validateCandidateGeneration(page, providedBook, options);
   if (!validation.canGenerate) {
@@ -861,22 +845,20 @@ export async function ensureCandidatesForPageWithStrategy(
     }
 
     /**
-     * Process action generation result (success or failure)
+     * Process failed action generation result (invalid action removal)
      */
-    function processActionResult(
-      result: CandidateGenerationResult,
-      letter: string
-    ): void {
-      const action = result.action;
+    async function processFailedActionResult(result: CandidateGenerationResult): Promise<void> {
+      const { action, success } = result;
+      if (success) return; // No processing needed for successes here (handled in onActionComplete)
 
-      if (result.success && result.candidatePage) {
-        // Success: update action with destination
-        console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
-        updateActionWithDestination(action, result.candidatePage);
+      // if (result.success && result.candidatePage) {
+      //   // Success: update action with destination
+      //   console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
+      //   updateActionWithDestination(action, result.candidatePage);
 
-        // Notify progress callback
-        onActionProgress(action, 'completed', result.candidatePage);
-      } else {
+      //   // Notify progress callback
+      //   await onActionProgress(action, 'completed', result.candidatePage);
+      // } else {
         // Handle failed generation
         const isInvalidAction = isInvalidActionError(result.error);
 
@@ -891,12 +873,13 @@ export async function ensureCandidatesForPageWithStrategy(
             actionIndexMap.delete(action.text);
           }
         } else {
+          const letter = generateActionLetter(action);
           console.error(`[ensureCandidatesForPageWithStrategy] ❌ Failed to generate candidate for valid action ${letter}. ${action.text}:`, getErrorMessage(result.error));
         }
 
         // Notify progress callback of failure
-        onActionProgress(action, 'failed', undefined, result.error);
-      }
+        await onActionProgress(action, 'failed', undefined, result.error);
+      // }
     }
     
     /**
@@ -913,6 +896,50 @@ export async function ensureCandidatesForPageWithStrategy(
         actionIndexMap.set(action.text, index);
       });
     }
+
+    // Write chain for serializing per-action DB writes in parallel mode
+    let writeChain: Promise<void> = Promise.resolve();
+
+    // Unified progress callback — handles both DB progress events and per-action writes.
+    // Defined inside withLock so it can access updatedDBActions and updateActionWithDestination.
+    // Every call must use `await`, because it contains `await writeChain;` which serializes persistence.
+    const onActionProgress: ActionProgressCallback = async (
+      action, status, result, error
+    ): Promise<void> => {
+      // Always store the progress event
+      await storeActionProgressEvent(page.id, {
+        action: action.text,
+        status,
+        destinationPageId: result?.id, // destination pageId for completed actions
+        error: error ? getErrorMessage(error) : undefined,
+        timestamp: new Date().toISOString(),
+      });
+
+      // This must be the SSOT for: state mutation, DB persistence, event emission, progress updates
+      if (status === 'completed' && result) {
+        // Sync: update in-memory state (safe — JS single-threaded, no interleaving)
+        updateActionWithDestination(action, result);
+
+        // Serialize the DB write — chain ensures writes arrive in order regardless
+        // of which parallel promise completes first
+        writeChain = writeChain.then(async () => {
+          // By the time this runs, ALL synchronous mutations so far have happened,
+          // so updatedDBActions always reflects the most complete in-memory state.
+          const currentPending = updatedDBActions.filter(a => !a.destination?.pageId).length;
+          const letter = generateActionLetter(action);
+          await dbWrite.update(pages)
+            .set({ actions: updatedDBActions, pendingGenerationCount: currentPending })
+            .where(eq(pages.id, page.id));
+          console.log(`[ensureCandidatesForPageWithStrategy] 💾 Persisted completed action: ${letter}. ${action.text} (${currentPending} still pending)`);
+        });
+
+        // Wait for this specific write before proceeding
+        await writeChain;
+      }
+
+      // Forward to original caller callback if provided
+      onProgress?.(action, status, result, error);
+    };
     
     // Choose generation strategy based on context
     if (strategy.useParallel) {
@@ -928,14 +955,42 @@ export async function ensureCandidatesForPageWithStrategy(
         currentDepth,
         maxDepth,
         onProgress: onActionProgress,
-        allowDeeperLevel
+        allowDeeperLevel,
+        onActionComplete: async (action, candidatePage) => {
+          // Note: `onActionProgress(...)` already calls `updateActionWithDestination(action, result)`
+          // // Update in-memory state
+          // updateActionWithDestination(action, candidatePage);
+
+          // // Immediately persist so polling sees this action's destination now
+          // const currentPending = updatedDBActions.filter(a => !a.destination?.pageId).length;
+          // await dbWrite
+          //   .update(pages)
+          //   .set({
+          //     actions: updatedDBActions,
+          //     pendingGenerationCount: currentPending,
+          //   })
+          //   .where(eq(pages.id, page.id));
+          // console.log(`[ensureCandidatesForPageWithStrategy] 💾 Persisted destination for action "${action.text}" (${currentPending} still pending)`);
+
+          // Fire progress notification (moved here from inside the promise)
+          await onActionProgress(action, 'completed', candidatePage);
+        },
       });
       
-      // Process parallel results using helper functions
+      // // Process parallel results using helper functions
+      // for (let i = 0; i < generationResults.length; i++) {
+      //   const result = generationResults[i];
+      //   await processFailedActionResult(result);
+      // }
+
+      // Handles failures (successes are fully handled by onActionComplete above)
+      // TODO: processFailedActionResult only called in parallel mode, is it correct?
+      // what about we incorporate this internally in `generateCandidatesInParallel`?
       for (let i = 0; i < generationResults.length; i++) {
         const result = generationResults[i];
-        const letter = generateActionLetter(result.action);
-        processActionResult(result, letter);
+        if (!result.success) {
+          await processFailedActionResult(result);
+        }
       }
     } else {
       // If there were any existing actions, should generate new branchId for each pending action
@@ -947,7 +1002,7 @@ export async function ensureCandidatesForPageWithStrategy(
         console.log(`[ensureCandidatesForPageWithStrategy] ⏳ Pre-generating destination page for: ${letter}.`, action.text);
 
         // Notify progress callback of action start
-        onActionProgress(action, 'started');
+        await onActionProgress(action, 'started');
         
         // Calculate generateNewBranchId per action: first action uses parent branchId, subsequent actions get new branchId
         const actionGenerateNewBranchId = isPartial || generateNewBranchId || index > 0;
@@ -1004,10 +1059,24 @@ export async function ensureCandidatesForPageWithStrategy(
         if (candidatePage) {
           // Success: update the action with the destination
           console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated destination page for: ${letter}.`, action.text);
-          updateActionWithDestination(action, candidatePage);
+
+          // UPDATE: Removed the manual `updateActionWithDestination` call since `onActionProgress` now does it.
+          // updateActionWithDestination(action, candidatePage);
+
+          // // Immediately persist so polling sees this action's destination now
+          // const currentPending = updatedDBActions.filter(a => !a.destination?.pageId).length;
+          // await dbWrite
+          //   .update(pages)
+          //   .set({
+          //     actions: updatedDBActions,
+          //     pendingGenerationCount: currentPending,
+          //   })
+          //   .where(eq(pages.id, page.id));
+
+          // console.log(`[ensureCandidatesForPageWithStrategy] 💾 Persisted destination for action "${action.text}" (${currentPending} still pending)`);
 
           // Notify progress callback of success
-          onActionProgress(action, 'completed', candidatePage);
+          await onActionProgress(action, 'completed', candidatePage);
         } else {
           // Handle failed generation
           const isInvalidAction = isInvalidActionError(lastError);
@@ -1027,7 +1096,7 @@ export async function ensureCandidatesForPageWithStrategy(
           }
 
           // Notify progress callback of failure
-          onActionProgress(action, 'failed', undefined, lastError);
+          await onActionProgress(action, 'failed', undefined, lastError);
         }
       }
 
@@ -1064,17 +1133,15 @@ export async function ensureCandidatesForPageWithStrategy(
       }
     }
 
+    // Ensure all progressive writes completed
+    await writeChain;
+
     // Filter out removed actions and rebuild action index map before DB operations
-    filterRemovedActionsAndRebuildMap();
+    if (removedActionTexts.size > 0) {
+      filterRemovedActionsAndRebuildMap();
+    }
 
-    // Summarize results and decide whether we need to persist changes back to DB
-    const pendingAfter = updatedDBActions.filter(action => !action.destination?.pageId).length;
-    const succeededCount = updatedDBActions.length - pendingAfter;
-    console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
-    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ ${pendingAfter} still pending for candidate page generation`);
-
-    // Ensure there's at least one navigable action on the page.
-    // If all were removed as invalid, insert a 'Continue' action for navigating to the next page.
+    // Ensure fallback action exists
     if (updatedDBActions.length === 0) {
       console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.`);
       updatedDBActions.push({
@@ -1087,16 +1154,16 @@ export async function ensureCandidatesForPageWithStrategy(
         destination: {}, // Will be pre-generated on next run
         // _isFallback: true // Sentinel flag to prevent retry loops
       });
-      hasRealChanges = true;
     }
-    
-    // If nothing changed compared to rechecked state, return the current mapped page to avoid a DB update.
-    const shouldUpdate = hasRealChanges || pendingAfter !== recheckedPendingDBActions.length;
-    if (!shouldUpdate) return currentPage;
 
-    // Persist the updated actions, clear the generating timestamp and update pending count atomically.
-    const [updatedPage] = await dbWrite
-      .update(pages)
+    // Recompute final pending state AFTER all mutations
+    const pendingAfter = updatedDBActions.filter(a => !a.destination?.pageId).length;
+    const succeededCount = updatedDBActions.length - pendingAfter;
+    console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
+    if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ ${pendingAfter} still pending for candidate page generation`);
+
+    // Final cleanup write
+    const [updatedPage] = await dbWrite.update(pages)
       .set({
         actions: updatedDBActions,
         pendingGenerationCount: pendingAfter,
@@ -1326,6 +1393,7 @@ export async function validateAndRetrievePageForGeneration(
   // Get the page by book identifier from database
   const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
+  // Use dbWrite client for reliable up-to-date data (avoid read replica stale data)
   const dbPage = await getPageFromDB(pageId, { bookIdentifier, client: dbWrite });
   if (!dbPage) return null;
 

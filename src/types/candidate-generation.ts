@@ -69,6 +69,8 @@ export interface ActionProgressEvent {
   error?: string;
   /** ISO timestamp of when the event occurred */
   timestamp: string;
+  /** Destination pageId — present when status is 'completed' */
+  destinationPageId?: string;
 }
 
 /** Status of an action generation operation */
@@ -83,7 +85,7 @@ export type ActionProgressCallback = (
   result?: PersistedStoryPage,
   /** Error if generation failed */
   error?: unknown
-) => void;
+) => Promise<void>;
 
 /**
  * Parameters for parallel candidate generation
@@ -111,6 +113,8 @@ export interface GenerateCandidatesInParallelParams {
   onProgress?: ActionProgressCallback;
   /** Whether to allow generating deeper levels beyond currentDepth */
   allowDeeperLevel?: boolean;
+  /** Callback for when an action is completed */
+  onActionComplete?: (action: Action, candidatePage: PersistedStoryPage) => Promise<void>;
 }
 
 /** Parameters for generating candidates with a specific strategy */

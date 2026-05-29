@@ -106,7 +106,8 @@ export async function getActionProgressEvents(
       status: row.status,
       error: row.error || undefined,
       timestamp: row.updatedAt.toISOString(),
-    }));
+      destinationPageId: row.destinationPageId || undefined,
+    }) satisfies ActionProgressEvent);
 
     console.log(`[getActionProgressEvents] 📊 DATABASE - Retrieved ${events.length} events for page ${pageId}`);
     return events;
