@@ -32,7 +32,7 @@ import { formatPageTextForPrompt } from "./books.js";
 import { threadPriorities, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
-import type { ProgressCallback } from "../types/sse.js";
+import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import { stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
@@ -2981,7 +2981,7 @@ Only the theme is required. All other fields are optional - include them only if
  * Elements: Atmospheric dread, unreliable narrators, hidden agendas, psychological manipulation, isolation, and the blurring line between reality and delusion
  * ```
  */
-export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<ReadableStream<Uint8Array>> {
+export async function generateBookCreationPromptStream(params: GenerateBookCreationPromptParams = {}): Promise<AIChatStreamResult> {
   const { logPrompts = false, signal, language = 'en' } = params;
   const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
 
@@ -3041,6 +3041,6 @@ export async function generateBookCreationPrompt(params: GenerateBookCreationPro
  * ```
  */
 export async function generateBookCreationPromptText(params: GenerateBookCreationPromptParams = {}): Promise<string> {
-  const stream = await generateBookCreationPromptStream(params);
+  const { stream } = await generateBookCreationPromptStream(params);
   return parseSSEStreamContent(stream);
 }

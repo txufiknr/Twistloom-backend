@@ -7,6 +7,7 @@
 
 import type { ThemeValidationResult } from './theme-validation.js';
 import type { CreateBookResponse } from './book.js';
+import type { AIChatProvider } from './ai-chat.js';
 
 /**
  * Progress event types for book creation
@@ -79,3 +80,13 @@ export type BookCreationProgressEvent =
  * ```
  */
 export type ProgressCallback = (event: BookCreationProgressEvent) => void | Promise<void>;
+
+export type AIChatStreamProvider = {
+  provider: AIChatProvider;
+  model: string;
+} | null;
+
+export type AIChatStreamResult = {
+  stream: ReadableStream<Uint8Array>,
+  provider?: Promise<AIChatStreamProvider>
+};

@@ -83,6 +83,7 @@ import { CREDIT_ERRORS } from "../config/errors.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
 import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
+import type { AIChatProvider } from "../types/ai-chat.js";
 
 const router = Router();
 
@@ -828,7 +829,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
 
     // Generate via AI if cache not used or cache miss
     if (!promptContent) {
-      const stream = await generateBookCreationPromptStream({
+      const { stream, provider } = await generateBookCreationPromptStream({
         signal: abortController.signal,
         language,
         userId,
@@ -846,13 +847,25 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
       
       // Validate and save to cache if quality is good
       if (PROMPT_CACHE_CONFIG.enabled && userId) {
-        // TODO: can we also get AI provider & model from `generateBookCreationPromptStream`?
+        // Attempt to read provider/model used from the stream's metadata promise
+        let aiProvider: AIChatProvider | 'none' = 'none';
+        let aiModel: string | undefined = undefined;
+        try {
+          const used = await provider;
+          if (used && used.provider && used.model) {
+            aiProvider = used.provider;
+            aiModel = used.model;
+          }
+        } catch {
+          // ignore - fall back to 'none'
+        }
+
         promptId = await savePromptToCache({
           content: promptContent,
           userId,
           language,
-          aiProvider: 'none', // TODO: use actual
-          aiModel: undefined // TODO: use actual
+          aiProvider,
+          aiModel
         });
       }
       

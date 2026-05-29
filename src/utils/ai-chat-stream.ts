@@ -15,6 +15,7 @@ import type { ChatCompletionStreamRequest } from "@mistralai/mistralai/models/co
 import { convertToGeminiSchema, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingOpenAI } from "openai/resources/index.mjs";
 import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingGroq } from "groq-sdk/resources/chat/completions.mjs";
+import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 
 /**
  * SSE-enabled AI streaming function that yields chunks immediately
@@ -80,7 +81,7 @@ export async function aiStreamSSE(
   prompt: string, 
   options: AIPromptOptions = {},
   signal?: AbortSignal
-): Promise<ReadableStream<Uint8Array>> {
+): Promise<AIChatStreamResult> {
   const {
     modelSelection = AI_CHAT_MODELS_WRITING,
     config = AI_CHAT_CONFIG_DEFAULT,
@@ -99,12 +100,20 @@ export async function aiStreamSSE(
         controller.close();
       }
     });
-    return errorStream;
+    return { stream: errorStream };
   }
 
   const encoder = new TextEncoder();
-  
-  return new ReadableStream({
+
+  // Promise that resolves to the provider+model actually used for this stream.
+  // Attached to the returned stream as `aiUsed` so callers can await it.
+  let aiUsedResolve: (value: AIChatStreamProvider) => void;
+  let aiUsedResolved = false;
+  const aiUsed = new Promise<AIChatStreamProvider>((resolve) => {
+    aiUsedResolve = resolve;
+  });
+
+  const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let providerSucceeded = false;
       let abortHandler: (() => void) | null = null;
@@ -203,6 +212,16 @@ export async function aiStreamSSE(
                   // Send end event
                   controller.enqueue(encoder.encode(createEndEvent(provider, model)));
                   providerSucceeded = true;
+
+                  // Resolve aiUsed promise with selected provider/model
+                  try {
+                    if (!aiUsedResolved) {
+                      aiUsedResolved = true;
+                      aiUsedResolve({ provider, model });
+                    }
+                  } catch {
+                    // ignore
+                  }
                   
                   // Log success and increment usage
                   logAISuccess({ provider, model, output: '[SSE Stream]', result: '[SSE Stream]' });
@@ -225,16 +244,30 @@ export async function aiStreamSSE(
         if (!providerSucceeded) {
           controller.enqueue(encoder.encode(createErrorEvent('All providers failed')));
         }
-        
+
         controller.close();
       } finally {
         // Clean up event listener to prevent memory leak
         if (abortHandler && signal) {
           signal.removeEventListener('abort', abortHandler);
         }
+
+        // If no provider/model was chosen, resolve aiUsed with null
+        try {
+          if (!aiUsedResolved) {
+            aiUsedResolved = true;
+            aiUsedResolve(null);
+          }
+        } catch {
+          // ignore
+        }
       }
     }
   });
+
+  // Attach metadata promise to stream for callers to inspect which AI provider/model was used.
+  return { stream, provider: aiUsed };
+
 }
 
 /**
