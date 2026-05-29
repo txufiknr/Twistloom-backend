@@ -1,0 +1,1 @@
+ALTER TABLE "action_progress" ADD COLUMN "destination_page_id" uuid;

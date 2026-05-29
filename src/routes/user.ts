@@ -155,6 +155,7 @@ router.get("/", optionalAuth, async (req: Request, res: Response) => {
           likesReceived: userData.likesReceived,
           accountDaysOld: userData.accountDaysOld,
           emailVerified: userData.emailVerified,
+          havePurchased: userData.havePurchased,
         },
       };
 
@@ -286,6 +287,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
           likesReceived: userData.likesReceived,
           accountDaysOld: userData.accountDaysOld,
           emailVerified: userData.emailVerified,
+          havePurchased: userData.havePurchased,
         },
       };
 

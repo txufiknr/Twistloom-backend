@@ -850,7 +850,9 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
         promptId = await savePromptToCache({
           content: promptContent,
           userId,
-          language
+          language,
+          aiProvider: 'none', // TODO: use actual
+          aiModel: undefined // TODO: use actual
         });
       }
       

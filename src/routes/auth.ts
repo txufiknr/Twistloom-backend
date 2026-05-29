@@ -276,7 +276,6 @@ router.post('/signup', async (req, res) => {
     const passwordHash = await hashPassword(password);
 
     // Use database transaction for atomic user and user_auth record creation
-    // TODO: sanitize texts for db
     const newUser = await dbWrite.transaction(async (tx) => {
       // Create user record
       const [userRecord] = await tx.insert(users).values({

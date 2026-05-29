@@ -29,9 +29,9 @@ import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { checkRateLimitByIP } from "../middleware/rate-limit.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications, subscriptions } from "../db/schema.js";
-import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS } from "../config/credits.js";
+import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
 import type { TransactionType } from "../types/credits.js";
-import { getErrorMessage, handleApiError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleConflictError, handleNotFoundError, handleRateLimitError, handleValidationError } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
 import { consumeCredits, getCreditCost, awardCredits } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
@@ -112,19 +112,15 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
   
   // Validate subscription has required properties
   if (!isSubscriptionWithPeriods(subscription)) {
-    console.error("[subscription] ❌ Invalid subscription object: missing period properties");
-    return;
+    return console.error("[subscription] ❌ Invalid subscription object: missing period properties");
   }
   
   const userId = subscription.metadata?.userId;
-
   if (!userId) {
-    console.error("[subscription] ❌ Missing userId in subscription metadata");
-    return;
+    return console.error("[subscription] ❌ Missing userId in subscription metadata");
   }
 
   const priceId = subscription.items.data[0].price.id;
-
   await createSubscription({
     userId,
     stripeSubscriptionId: subscription.id,
@@ -145,8 +141,7 @@ async function handleSubscriptionUpdated(event: Stripe.Event) {
   
   // Validate subscription has required properties
   if (!isSubscriptionWithPeriods(subscription)) {
-    console.error("[subscription] ❌ Invalid subscription object: missing period properties");
-    return;
+    return console.error("[subscription] ❌ Invalid subscription object: missing period properties");
   }
 
   await updateSubscription({
@@ -181,16 +176,12 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   
   // Validate invoice has subscription property
   if (!isInvoiceWithSubscription(invoice)) {
-    console.error("[subscription] ❌ Invalid invoice object: missing subscription property");
-    return;
+    return console.error("[subscription] ❌ Invalid invoice object: missing subscription property");
   }
   
   const subscriptionId = invoice.subscription;
-  const invoiceId = invoice.id;
-
   if (!subscriptionId) {
-    console.error("[subscription] ❌ Missing subscriptionId in invoice");
-    return;
+    return console.error("[subscription] ❌ Missing subscriptionId in invoice");
   }
 
   const subscription = await dbRead
@@ -200,13 +191,12 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     .limit(1);
 
   if (subscription.length === 0) {
-    console.error("[subscription] ❌ Subscription not found for invoice");
-    return;
+    return console.error("[subscription] ❌ Subscription not found for invoice");
   }
 
   await renewSubscription({
     stripeSubscriptionId: subscriptionId,
-    stripeInvoiceId: invoiceId,
+    stripeInvoiceId: invoice.id,
     currentPeriodEnd: new Date(subscription[0].currentPeriodEnd),
   });
 
@@ -221,12 +211,10 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   
   // Validate invoice has subscription property
   if (!isInvoiceWithSubscription(invoice)) {
-    console.error("[subscription] ❌ Invalid invoice object: missing subscription property");
-    return;
+    return console.error("[subscription] ❌ Invalid invoice object: missing subscription property");
   }
   
   const subscriptionId = invoice.subscription;
-
   if (!subscriptionId) return;
 
   // Fetch subscription to get correct period end
@@ -237,8 +225,7 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
     .limit(1);
 
   if (subscription.length === 0) {
-    console.error("[subscription] ❌ Subscription not found for invoice payment failed");
-    return;
+    return console.error("[subscription] ❌ Subscription not found for invoice payment failed");
   }
 
   // Update subscription status to past_due
@@ -391,13 +378,11 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     const { packId, successPath, cancelPath, returnUrl } = req.body;
 
     // Validate input
-    if (!packId) {
-      return res.status(400).json({ error: "Credit pack ID is required" });
-    }
+    if (!packId) return handleValidationError(res, "Credit pack ID is required");
 
     // Get user from middleware
     const user = req.user!;
-    const userId = user.id;
+    const { id: userId, email } = user;
 
     // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
     const rateLimitResult = await checkRateLimit(`checkout-session-${userId}`, {
@@ -405,15 +390,13 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
       windowSeconds: 10,
     });
     if (!rateLimitResult.allowed) {
-      return res.status(429).json({
-        error: "Too many checkout session attempts. Please wait a few seconds before trying again."
-      });
+      return handleRateLimitError(res, "Too many checkout session attempts. Please wait a few seconds before trying again.");
     }
 
     // Validate and construct URLs (security: prevent open redirects)
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) {
-      return res.status(500).json({ error: "Frontend URL not configured" });
+      return handleApiError(res, "Frontend URL not configured");
     }
 
     // For refresh-less UX: use returnUrl to return user to same page
@@ -440,7 +423,7 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     // Find the credit pack
     const pack = CREDIT_PACKS.find((p) => p.id === packId);
     if (!pack) {
-      return res.status(404).json({ error: "Credit pack not found" });
+      return handleNotFoundError(res, "Credit pack not found");
     }
 
     // Initialize Stripe
@@ -452,7 +435,7 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "payment",
-      customer_email: user.email,
+      customer_email: email,
       line_items: [
         {
           price: pack.priceId,
@@ -552,9 +535,7 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
     // Check if user already has active subscription
     const hasActiveSub = await hasActiveVipSubscription(userId);
     if (hasActiveSub) {
-      return res.status(400).json({ 
-        error: "You already have an active VIP subscription" 
-      });
+      return handleValidationError(res, "You already have an active VIP subscription");
     }
 
     // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
@@ -563,15 +544,13 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
       windowSeconds: 10,
     });
     if (!rateLimitResult.allowed) {
-      return res.status(429).json({
-        error: "Too many checkout session attempts. Please wait a few seconds before trying again."
-      });
+      return handleRateLimitError(res, "Too many checkout session attempts. Please wait a few seconds before trying again.");
     }
 
     // Validate and construct URLs (security: prevent open redirects)
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) {
-      return res.status(500).json({ error: "Frontend URL not configured" });
+      return handleApiError(res, "Frontend URL not configured");
     }
 
     // For refresh-less UX: use returnUrl to return user to same page
@@ -596,7 +575,7 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
 
     // Validate VIP subscription configuration
     if (!VIP_SUBSCRIPTION.priceId) {
-      return res.status(500).json({ error: "VIP subscription not configured" });
+      return handleApiError(res, "VIP subscription not configured");
     }
 
     // Create or retrieve Stripe customer
@@ -687,18 +666,13 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
   try {
     const userId = req.userId;
     if (!userId) {
-      return res.json({
-        hasActiveSubscription: false,
-      });
+      return res.json({ hasActiveSubscription: false });
     }
 
     // Check if user has active VIP subscription
     const hasActiveSub = await hasActiveVipSubscription(userId);
-
     if (!hasActiveSub) {
-      return res.json({
-        hasActiveSubscription: false,
-      });
+      return res.json({ hasActiveSubscription: false });
     }
 
     // Get subscription details
@@ -718,9 +692,7 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
       .limit(1);
 
     if (subscription.length === 0) {
-      return res.json({
-        hasActiveSubscription: false,
-      });
+      return res.json({ hasActiveSubscription: false });
     }
 
     const sub = subscription[0];
@@ -790,7 +762,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
   // Apply IP-based rate limiting for webhook security (100 requests per 15 minutes)
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
   if (!checkRateLimitByIP(ip)) {
-    return res.status(429).json({ error: 'Too many webhook requests from this IP' });
+    return handleRateLimitError(res, 'Too many webhook requests from this IP');
   }
   
   // Track webhook delivery
@@ -798,13 +770,11 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
   
   try {
     const sig = req.headers["stripe-signature"];
-    
-    if (!sig) {
-      return res.status(400).json({ error: "Missing Stripe signature" });
-    }
+    if (!sig) return handleValidationError(res, "Missing Stripe signature");
 
-    if (!process.env.STRIPE_WEBHOOK_SECRET) {
-      return res.status(500).json({ error: "Webhook secret not configured" });
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      return handleApiError(res, "Webhook secret not configured");
     }
 
     // Initialize Stripe
@@ -814,16 +784,17 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
     const event = stripe.webhooks.constructEvent(
       req.body,
       sig,
-      process.env.STRIPE_WEBHOOK_SECRET
+      webhookSecret
     );
     
     // Create webhook delivery tracking record
-    const deliveryRecord = await dbWrite.insert(webhookDeliveries).values({
+    const [deliveryRecord] = await dbWrite.insert(webhookDeliveries).values({
       eventId: event.id,
       eventType: event.type,
       status: 'retrying',
     }).returning();
-    webhookDeliveryId = deliveryRecord[0].id;
+
+    webhookDeliveryId = deliveryRecord.id;
 
     // Handle different event types
     if (event.type === "checkout.session.completed") {
@@ -835,7 +806,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       
       if (!paymentIntentId) {
         console.error("[stripe] ❌ Missing payment_intent_id in session:", session.id);
-        return res.status(400).json({ error: "Missing payment intent" });
+        return handleValidationError(res, "Missing payment intent");
       }
 
       // Extract metadata
@@ -845,7 +816,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       
       if (!userId || !credits || !packId) {
         console.error("[stripe] ❌ Missing metadata in checkout session:", session.id);
-        return res.status(400).json({ error: "Invalid session metadata" });
+        return handleValidationError(res, "Invalid session metadata");
       }
 
       const creditsAmount = Number(credits);
@@ -855,16 +826,15 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       const pack = CREDIT_PACKS.find((p) => p.id === packId);
       if (!pack) {
         console.error("[stripe] ❌ Invalid pack ID in session metadata:", packId);
-        return res.status(400).json({ error: "Invalid credit pack" });
+        return handleValidationError(res, "Invalid credit pack");
       }
 
       const expectedAmount = Math.round(pack.priceUSD * 100); // Convert to cents
       const actualAmount = session.amount_total;
 
       if (actualAmount !== expectedAmount) {
-        console.error(`[stripe] ❌ Amount mismatch: expected ${expectedAmount}, got ${actualAmount} for pack ${packId}`);
-        console.error(`[stripe] 🚨 Security incident: Price manipulation attempt detected for session ${session.id}`);
-        return res.status(400).json({ error: "Amount validation failed" });
+        console.error(`[stripe] 🚨 AMOUNT MISMATCH for session ${session.id}: expected ${expectedAmount}, got ${actualAmount} for pack ${packId}`);
+        return handleValidationError(res, "Amount validation failed");
       }
 
       // Use database transaction for atomic credit update and transaction record creation
@@ -889,6 +859,14 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           return res.json({ received: true, duplicate: true });
         }
 
+        // Determine whether this is the user's first purchase
+        const priorPurchase = await tx
+          .select()
+          .from(transactions)
+          .where(and(eq(transactions.userId, userId), eq(transactions.type, 'purchase')))
+          .limit(1);
+        const isFirstPurchase = priorPurchase.length === 0;
+
         // Award credits using the helper function (includes transaction record and notification)
         const newBalance = await awardCredits(userId, creditsAmount, {
           type: "purchase",
@@ -911,6 +889,25 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
 
         console.log(`[stripe] 💰 Added ${creditsAmount} credits to user ${userId} (new balance: ${newBalance}) for payment ${session.id}`);
 
+        // Award first-purchase bonus if applicable
+        if (isFirstPurchase && FIRST_PURCHASE_BONUS > 0) {
+          try {
+            await awardCredits(userId, FIRST_PURCHASE_BONUS, {
+              type: 'reward',
+              notificationType: 'first_purchase_bonus',
+              notificationTitle: 'First Purchase Bonus',
+              notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
+              notificationData: { amount: amountUsd, packId, paymentIntentId },
+              metadata: { stripeEventId, paymentIntentId, packId },
+              tx
+            });
+            console.log(`[stripe] 🎁 Awarded first-purchase bonus (${FIRST_PURCHASE_BONUS} credits) to user ${userId}`);
+          } catch (err) {
+            console.error(`[stripe] ❌ Failed to award first-purchase bonus to user ${userId}:`, err);
+            // Do not re-throw — we still want webhook to succeed; bonus can be retried separately if needed
+          }
+        }
+
         // Update webhook delivery status as success
         await dbWrite.update(webhookDeliveries)
           .set({ 
@@ -923,18 +920,22 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
     } else if (event.type === "payment_intent.succeeded") {
       // Log payment intent success for monitoring
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
-      console.log(`[stripe] ✅ Payment intent succeeded: ${paymentIntent.id} (amount: ${paymentIntent.amount / 100} USD)`);
+      const amountUsd = paymentIntent.amount ? paymentIntent.amount / 100 : undefined;
+      console.log(`[stripe] ✅ Payment intent succeeded: ${paymentIntent.id} (amount: ${amountUsd} USD)`);
       
       // Note: Credits are added via checkout.session.completed event
       // This event is logged for monitoring and analytics purposes
     } else if (event.type === "payment_intent.payment_failed") {
       // Log payment intent failure for monitoring
       const paymentIntent = event.data.object as Stripe.PaymentIntent;
+      const amountUsd = paymentIntent.amount ? paymentIntent.amount / 100 : undefined;
       const lastPaymentError = paymentIntent.last_payment_error;
       
-      console.error(`[stripe] ❌ Payment intent failed: ${paymentIntent.id}`);
-      console.error(`[stripe] ❌ Error: ${lastPaymentError?.message || 'Unknown error'}`);
-      console.error(`[stripe] ❌ Type: ${lastPaymentError?.type || 'Unknown type'}`);
+      console.error(`[stripe] ❌ Payment intent failed:`, {
+        id: paymentIntent.id,
+        amountUsd,
+        lastPaymentError,
+      });
       
       // Note: No action needed - user will see error in Stripe checkout
       // This event is logged for monitoring and debugging
@@ -944,7 +945,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       
       if (!paymentIntentId) {
         console.error('[stripe] ❌ Missing payment_intent_id in charge:', charge.id);
-        return res.status(400).json({ error: 'Missing payment intent' });
+        return handleValidationError(res, 'Missing payment intent');
       }
       
       // Find the original transaction
@@ -956,7 +957,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       
       if (!originalTransaction.length) {
         console.error('[stripe] ❌ Original transaction not found for refund:', paymentIntentId);
-        return res.status(404).json({ error: 'Original transaction not found' });
+        return handleNotFoundError(res, 'Original transaction not found');
       }
       
       const transaction = originalTransaction[0];
@@ -1139,12 +1140,12 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
     
     // Validate input
     if (!costKey || typeof costKey !== 'string') {
-      return res.status(400).json({ error: "Valid costKey is required" });
+      return handleValidationError(res, "Valid costKey is required");
     }
 
     // Validate metadata is object if provided
     if (metadata && typeof metadata !== 'object' && !Array.isArray(metadata)) {
-      return res.status(400).json({ error: "Metadata must be an object" });
+      return handleValidationError(res, "Metadata must be an object");
     }
 
     // Validate costKey exists in CREDIT_COSTS
@@ -1153,7 +1154,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
     ) as CreditCostKey[];
     
     if (!validCostKeys.includes(costKey as CreditCostKey)) {
-      return res.status(400).json({ error: `Invalid costKey: ${costKey}` });
+      return handleValidationError(res, `Invalid costKey: ${costKey}`);
     }
 
     const userId = req.user!.id;
@@ -1164,9 +1165,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
       windowSeconds: 60,
     });
     if (!rateLimitResult.allowed) {
-      return res.status(429).json({ 
-        error: "Too many credit consumption attempts. Please wait before trying again." 
-      });
+      return handleRateLimitError(res, "Too many credit consumption attempts. Please wait before trying again.");
     }
 
     // Idempotency check: Prevent double charging on retries
@@ -1183,10 +1182,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
       if (!processing.set) {
         // Another request is already processing this idempotency key
         console.log(`[credits] 🔄 Request already processing for idempotencyKey: ${idempotencyKey}`);
-        return res.status(409).json({
-          error: "Request already in progress",
-          message: "This request is already being processed",
-        });
+        return handleConflictError(res, "Request already in progress");
       }
       
       // Store cleanup function
@@ -1361,7 +1357,8 @@ router.get("/transactions", requireAuth, async (req: Request, res: Response) => 
     const conditions = [eq(transactions.userId, userId)];
     
     // Add type filter if provided
-    if (type && ["purchase", "usage", "refund", "reward"].includes(type as string)) {
+    const transactionTypes: TransactionType[] = ["purchase", "usage", "refund", "reward"];
+    if (type && transactionTypes.includes(type as TransactionType)) {
       conditions.push(eq(transactions.type, type as TransactionType));
     }
     
@@ -1504,7 +1501,7 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
 
     // Validate plan
     if (planId !== VIP_SUBSCRIPTION.id) {
-      return res.status(404).json({ error: "Subscription plan not found" });
+      return handleNotFoundError(res, "Subscription plan not found");
     }
 
     // Check if user already has active subscription
@@ -1518,9 +1515,7 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
       .limit(1);
 
     if (existingSubscription.length > 0) {
-      return res.status(400).json({ 
-        error: "User already has an active subscription" 
-      });
+      return handleConflictError(res, "User already has an active subscription");
     }
 
     // Create or retrieve Stripe customer
@@ -1648,7 +1643,7 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
       .limit(1);
 
     if (subscription.length === 0) {
-      return res.status(404).json({ error: "No active subscription found" });
+      return handleNotFoundError(res, "No active subscription found");
     }
 
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
@@ -1701,7 +1696,7 @@ router.get("/subscription/portal", requireAuth, async (req: Request, res: Respon
       .limit(1);
 
     if (subscription.length === 0 || !subscription[0].stripeCustomerId) {
-      return res.status(404).json({ error: "No subscription found" });
+      return handleNotFoundError(res, "No subscription found");
     }
 
     const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);

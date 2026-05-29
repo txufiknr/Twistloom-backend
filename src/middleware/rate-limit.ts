@@ -26,7 +26,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { Ratelimit } from '@upstash/ratelimit';
 import { LRUCache } from 'lru-cache';
-import { getErrorMessage, handleTooManyRequestsError } from '../utils/error.js';
+import { getErrorMessage, handleRateLimitError } from '../utils/error.js';
 import type { RateLimitConfig } from '../types/redis.js';
 import { getRedisClient } from '../utils/redis.js';
 
@@ -113,7 +113,7 @@ export function rateLimit(config: RateLimitConfig = DEFAULT_RATE_LIMIT) {
         res.setHeader('X-RateLimit-Remaining', result.limit.toString());
         res.setHeader('X-RateLimit-Reset', resetTime.toISOString());
 
-        handleTooManyRequestsError(
+        handleRateLimitError(
           res,
           message || `Rate limit exceeded. Maximum ${maxRequests} requests per ${windowSeconds} seconds. Retry after ${retryAfter} seconds.`
         );

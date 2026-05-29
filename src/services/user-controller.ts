@@ -105,6 +105,11 @@ export function getEnrichedUserSelect() {
       WHERE ua.user_id = users.user_id
       LIMIT 1
     )`,
+    // Whether the user has ever purchased credits (exists in `transactions`)
+    havePurchased: sql<boolean>`EXISTS(
+      SELECT 1 FROM transactions t
+      WHERE t.user_id = users.user_id AND t.type = 'purchase'
+    )`,
   };
 }
 

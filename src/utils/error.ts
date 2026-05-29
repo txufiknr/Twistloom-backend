@@ -193,17 +193,29 @@ export function handleForbiddenError(
  * @example
  * ```typescript
  * if (requestCount > maxRequests) {
- *   handleTooManyRequestsError(res, "Rate limit exceeded");
+ *   handleRateLimitError(res, "Rate limit exceeded");
  *   return;
  * }
  * ```
  */
-export function handleTooManyRequestsError(
+export function handleRateLimitError(
   res: Response,
   message: string,
   error?: unknown
 ): void {
   handleApiError(res, message, error, 429);
+}
+
+/**
+ * Handles conflict errors with 409 status code.
+ * Use for conflicts such as duplicate entries or concurrent modifications.
+ */
+export function handleConflictError(
+  res: Response,
+  message: string,
+  error?: unknown
+): void {
+  handleApiError(res, message, error, 409);
 }
 
 type GenAIErrorCode =

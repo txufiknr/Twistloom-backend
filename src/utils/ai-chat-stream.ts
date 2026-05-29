@@ -23,9 +23,6 @@ import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsS
  * Instead of accumulating all chunks before returning, it yields each chunk as it arrives,
  * making it suitable for SSE responses in serverless environments.
  *
- * @remarks
- * **Architecture Approach: Orchestrator-Level Fallback**
- * 
  * This implementation uses an orchestrator-level fallback strategy:
  * - Model fallback is handled at the orchestrator level (this function), not within individual generators
  * - Each provider's generator receives a single model to attempt
@@ -45,6 +42,9 @@ import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsS
  * - Slightly more complex orchestrator with nested loops
  * - Less encapsulated fallback logic
  *
+ * @remarks
+ * **Architecture Approach: Orchestrator-Level Fallback**
+ * 
  * @remarks
  * **SDK Limitations**
  *

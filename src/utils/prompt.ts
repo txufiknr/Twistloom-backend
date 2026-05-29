@@ -2985,8 +2985,7 @@ export async function generateBookCreationPromptStream(params: GenerateBookCreat
   const { logPrompts = false, signal, language = 'en' } = params;
   const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
 
-  // TODO: can we make this function also return AI provider & model?
-
+  // TODO: can we make this function also return AI provider & model used in `aiStreamSSE`?
   return aiStreamSSE(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,
     systemPrompt,

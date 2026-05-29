@@ -2,14 +2,13 @@
 [ ] Stripe switch to live
 [ ] Implement belief
 [ ] Implement corruption curve
-[x] POST /signup route pastiin accept `referrer`
-[x] GET /candidates/status meskipun no userId, tetep trigger generation workflow
 [ ] Kalau source action belum ada, insert dulu page progress parent page
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as the book price -> promoted
 [ ] POST /user/comments - deprecated
 [ ] first purchase → +20 credits
 [ ] make `aiStreamSSE` return provider & model
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
+[ ] payment route claude review
 
 [ ] userSettings schema
 - interests: string[]

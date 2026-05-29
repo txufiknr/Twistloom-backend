@@ -35,6 +35,7 @@ export interface UserStats {
   likesReceived: number;
   accountDaysOld: number;
   emailVerified: Date | null;
+  havePurchased: boolean;
 }
 
 export type UserTier = 'standard' | 'vip';
