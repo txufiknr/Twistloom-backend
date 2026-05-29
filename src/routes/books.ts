@@ -49,7 +49,7 @@ import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
-import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache, validatePromptQuality } from "../services/prompt-cache.js";
+import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
@@ -801,6 +801,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
 
   try {
     const userId = req.userId || null;
+    const language = req.headerLanguage || 'en';
     let promptContent: string | null = null;
     let promptId: string | null = null;
 
@@ -808,7 +809,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
     if (PROMPT_CACHE_CONFIG.enabled && await shouldUseCache()) {
       // Try to get fresh prompt from cache for authenticated users
       if (userId) {
-        const cachedPrompt = await getFreshPromptForUser(userId, req.headerLanguage || 'en');
+        const cachedPrompt = await getFreshPromptForUser(userId, language);
         if (cachedPrompt) {
           promptContent = cachedPrompt.content;
           promptId = cachedPrompt.id;
@@ -829,8 +830,8 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
     if (!promptContent) {
       const stream = await generateBookCreationPromptStream({
         signal: abortController.signal,
-        language: req.headerLanguage || 'en',
-        userId: userId || null,
+        language,
+        userId,
       });
       
       // Collect the full content from the stream
@@ -845,21 +846,12 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
       
       // Validate and save to cache if quality is good
       if (PROMPT_CACHE_CONFIG.enabled && userId) {
-        const qualityScore = validatePromptQuality(promptContent);
-        if (qualityScore >= PROMPT_CACHE_CONFIG.minQuality) {
-          try {
-            // TODO: can we also get AI provider & model from `generateBookCreationPromptStream`?
-            promptId = await savePromptToCache({
-              content: promptContent,
-              qualityScore,
-              userId,
-              language: req.headerLanguage || 'en'
-            });
-            console.log('[GET /api/books/prompt] ✅ Saved to cache with score:', qualityScore);
-          } catch (error) {
-            console.error('[GET /api/books/prompt] Failed to save to cache:', error);
-          }
-        }
+        // TODO: can we also get AI provider & model from `generateBookCreationPromptStream`?
+        promptId = await savePromptToCache({
+          content: promptContent,
+          userId,
+          language
+        });
       }
       
       res.end();
@@ -867,6 +859,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
       // Stream from cache with simulated typing effect
       const cacheStream = await streamCachedPrompt(promptContent);
       
+      // Stream chunks to client
       for await (const chunk of cacheStream) {
         res.write(chunk);
       }
@@ -879,7 +872,7 @@ router.get("/prompt", optionalAuth, async (req: Request, res: Response) => {
       try {
         await trackPromptView(userId, promptId);
       } catch (error) {
-        console.error('[GET /api/books/prompt] Failed to track prompt view:', error);
+        console.error('[GET /api/books/prompt] ❌ Failed to track prompt view:', error);
       }
     }
 
@@ -2495,6 +2488,17 @@ router.get("/:identifier/:pageId/candidates", requireAuth, async (req: Request, 
  * }
  */
 router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: Request, res: Response) => {
+  // TODO: ensure response include completed `actions` with destination pageIds
+  // response shape:
+  // {
+  //   isGenerating: boolean;
+  //   completedActions: number;
+  //   totalActions: number;
+  //   actions: Action[]; // completed actions, ensure they have valid destination.pageId
+  //   actionProgress: ActionProgressEvent[];
+  //   startedAt: string;
+  //   lastUpdated: string;
+  // }
   try {
     const { userId } = req;
     const { identifier, pageId } = req.params;

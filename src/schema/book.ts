@@ -1,12 +1,13 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
-import type { CharacterMemory, StoryMC, StoryMCTranslation } from "../types/character.js";
-import type { PlaceMemory } from "../types/places.js";
-import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, StoryPage, StoryStateInitialGeneration, TrustLevel } from "../types/story.js";
+import { characterStatuses, type InitialCharacterMemory, type StoryMC, type StoryMCTranslation } from "../types/character.js";
+import { placeMoods, placeTypes, type InitialPlaceMemory } from "../types/places.js";
+import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, StoryPage, InitialStoryState, TrustLevel } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, flagLevels, plotFlagTypes } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
 import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_ACTION_SCHEMA, VIABLE_ENDING_SCHEMA } from "./story.js";
+import { CHARACTER_SECRETS_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -96,20 +97,20 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       isMajorEvent: { type: 'boolean' },
       inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INJURY_SCHEMA },
-    } satisfies Record<keyof StoryStateInitialGeneration, AIJsonProperty>,
-    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof StoryStateInitialGeneration)[],
+    } satisfies Record<keyof InitialStoryState, AIJsonProperty>,
+    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof InitialStoryState)[],
     additionalProperties: false
   },
   initialPlace: {
     type: 'object',
     properties: {
       name: { type: 'string' },
-      type: { type: 'string' },
-      currentMood: { type: 'string' },
+      type: { type: 'string', enum: [...placeTypes] },
+      currentMood: { type: 'string', enum: [...placeMoods] },
       context: { type: 'string' },
       familiarity: { type: 'number' },
-    },
-    required: ['name', 'type', 'currentMood', 'context', 'familiarity'] satisfies (keyof PlaceMemory)[],
+    } satisfies Record<keyof InitialPlaceMemory, AIJsonProperty>,
+    required: ['name', 'type', 'currentMood', 'context', 'familiarity'] satisfies (keyof InitialPlaceMemory)[],
     additionalProperties: false
   },
   initialCharacters: {
@@ -120,12 +121,13 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         name: { type: 'string' },
         role: { type: 'string' },
         gender: { type: "string", enum: [...genders] },
-        status: { type: 'string' },
-        relationshipToMC: { type: 'string' },
-        bio: { type: 'string' },
-        visualDescription: { type: 'string' },
-      },
-      required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription'] satisfies (keyof CharacterMemory)[],
+        status: { type: 'string', enum: [...characterStatuses] },
+        relationshipToMC: { type: 'string', description: "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')" },
+        bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
+        visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
+        secrets: { type: 'string', description: `Any secrets the character has that the MC doesn't know, ${CHARACTER_SECRETS_LENGTH}. Can be empty string if none.` },
+      } satisfies Record<keyof InitialCharacterMemory, AIJsonProperty>,
+      required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof InitialCharacterMemory)[],
       additionalProperties: false
     }
   },
@@ -136,7 +138,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       age: { type: 'integer' },
       gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
       bio: { type: 'string' },
-    },
+    } satisfies Record<keyof StoryMC, AIJsonProperty>,
     required: ['name', 'age', 'gender', 'bio'] satisfies (keyof StoryMC)[],
     additionalProperties: false
   }
@@ -183,7 +185,7 @@ export const BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
     properties: { bookId: { type: 'string' }, ...BOOK_TRANSLATION_SCHEMA_DEFINITION },
-    required: ['title', 'hook', 'summary', 'keywords', 'mc'] satisfies (keyof BookTranslation)[],
+    required: ['bookId', 'title', 'hook', 'summary', 'keywords', 'mc'] satisfies (keyof BookTranslation | 'bookId')[],
     additionalProperties: false
   } }
 } satisfies Record<keyof { translations: BookTranslation[] }, AIJsonProperty>;
@@ -218,7 +220,7 @@ export const BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
     properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION },
-    required: ['text', 'place', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslation)[],
+    required: ['pageId', 'text', 'place', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslation | 'pageId')[],
     additionalProperties: false
   } }
 } satisfies Record<keyof { translations: PageTranslation[] }, AIJsonProperty>;

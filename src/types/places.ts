@@ -125,13 +125,14 @@ export type PlaceMemory = {
   currentMood?: PlaceMood;
 };
 
+export type InitialPlaceMemory = Pick<PlaceMemory, 'name' | 'type' | 'context' | 'familiarity' | 'currentMood'>;
+
 /**
  * Place update structure for AI output
  * 
  * When AI modifies existing places, it provides updates in this format
  * to maintain place development and narrative consistency.
  */
-// export type PlaceUpdate = Omit<PlaceMemory, 'type' | 'locationHint'>;
 export type PlaceUpdate = Partial<PlaceMemory>;
 
 /**

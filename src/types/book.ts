@@ -1,6 +1,6 @@
-import type { CharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
-import type { PlaceMood, PlaceType } from "./places.js";
-import type { Action, ActionTranslation, PersistedStoryPage, StoryPage, StoryState, StoryStateInitialGeneration } from "./story.js";
+import type { InitialCharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
+import type { InitialPlaceMemory } from "./places.js";
+import type { Action, ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState } from "./story.js";
 import type { DBBookTranslations, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -158,17 +158,11 @@ export type BookCreationResponse = {
   /** First story page content */
   firstPage: StoryPage;
   /** Initial state for the story */
-  initialState: StoryStateInitialGeneration;
+  initialState: InitialStoryState;
   /** Initial place memory setup */
-  initialPlace: {
-    name: string;
-    type: PlaceType;
-    currentMood: PlaceMood;
-    context?: string;
-    familiarity: number; // 0-1, important for reuse priority
-  };
+  initialPlace: InitialPlaceMemory;
   /** Initial character memories setup (excluding MC) */
-  initialCharacters: Array<Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio' | 'visualDescription'>>;
+  initialCharacters: Array<InitialCharacterMemory>;
 };
 
 /**

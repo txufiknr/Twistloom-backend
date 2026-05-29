@@ -52,6 +52,9 @@ export const CREDIT_COSTS = {
   /** Cost to generate custom actions (future feature) */
   CUSTOM_ACTION: 5, // TODO: use
 
+  /** Cost to add new custom characters (future feature) */
+  SUMMON_NEW_CHARACTER: 50, // TODO: use
+
   /** Cost per page when using time travel (reset chosen actions) */
   TIME_TRAVEL_PER_PAGE: 5, // TODO: use
   

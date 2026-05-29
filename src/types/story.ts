@@ -929,7 +929,7 @@ export type StoryStateInfo = {
   placesSlot: number;
 }
 
-export type StoryStateInitialGeneration = Partial<Pick<StoryState,
+export type InitialStoryState = Partial<Pick<StoryState,
   'flags' |
   'difficulty' |
   'viableEnding' |

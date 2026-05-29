@@ -176,6 +176,8 @@ export type CharacterMemory = {
   visualDescription: string;
   /** Current relationship status affecting behavior */
   status: CharacterStatus;
+  /** Secret or hint for AI guidance (spoiler) */
+  secrets: string;
   /** Relationship to main character */
   relationshipToMC: string;
   /** Directional relationships to other characters (max 3) */
@@ -188,7 +190,8 @@ export type CharacterMemory = {
   injuries: Injury[];
 };
 
-export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
+// export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
+export type InitialCharacterMemory = Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio' | 'visualDescription' | 'secrets'>;
 
 /**
  * Character update structure for AI output

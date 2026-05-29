@@ -7,7 +7,7 @@
 
 import { generateBookCreationPrompt } from "../utils/prompt.js";
 import { requireEnv } from "../utils/env.js";
-import { getActivePromptCount, savePromptToCache, validatePromptQuality, deactivateExpiredPrompts, deactivateLowQualityPrompts } from "../services/prompt-cache.js";
+import { getActivePromptCount, savePromptToCache, deactivateExpiredPrompts, deactivateLowQualityPrompts } from "../services/prompt-cache.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { getErrorMessage } from "../utils/error.js";
 import type { AIResponse } from "../types/ai-chat.js";
@@ -55,21 +55,17 @@ export async function generateWeeklyPrompts() {
     }
     
     // Step 2: Calculate how many to generate
-    const toGenerate = Math.min(
-      PROMPT_CACHE_CONFIG.batchSize,
-      targetSize - activeCount
-    );
-
-    const systemUserId = requireEnv('SYSTEM_USER_ID');
-    
-    console.log(`[generateWeeklyPrompts] 💭 Generating ${toGenerate} new prompts (current: ${activeCount}, target: ${targetSize})`);
+    const toGenerate = Math.min(PROMPT_CACHE_CONFIG.batchSize, targetSize - activeCount);
     
     // Step 3: Generate prompts via AI
+    console.log(`[generateWeeklyPrompts] 💭 Generating ${toGenerate} new story theme prompts (current: ${activeCount}, target: ${targetSize})`);
     const generatedPrompts: AIResponse<string>[] = [];
+    const userId = requireEnv('SYSTEM_USER_ID');
+
     for (let i = 0; i < toGenerate; i++) {
       try {
         console.log(`[generateWeeklyPrompts] ✒️ Generating prompt ${i + 1}/${toGenerate}`);
-        const response = await generateBookCreationPrompt({ logPrompts: true, language: 'en', userId: systemUserId });
+        const response = await generateBookCreationPrompt({ logPrompts: true, language: 'en', userId });
         if (response.output) {
           generatedPrompts.push(response);
           console.log(`[generateWeeklyPrompts] ✅ Generated prompt ${i + 1}/${toGenerate}`);
@@ -84,27 +80,15 @@ export async function generateWeeklyPrompts() {
     // Step 4: Validate and save
     let savedCount = 0;
     for (const response of generatedPrompts) {
-      const qualityScore = validatePromptQuality(response.output);
-      
-      if (qualityScore >= PROMPT_CACHE_CONFIG.minQuality) {
-          try {
-            const { output: content, provider: aiProvider, model: aiModel } = response;
-            await savePromptToCache({
-              content,
-              userId: systemUserId,
-              qualityScore,
-              aiProvider,
-              aiModel,
-              language: 'en'
-            });
-            savedCount++;
-            console.log(`[generateWeeklyPrompts] ✅ Saved prompt with score ${qualityScore.toFixed(2)}`);
-          } catch (error) {
-            console.error('[generateWeeklyPrompts] ❌ Failed to save prompt to cache:', error);
-          }
-      } else {
-        console.log(`[generateWeeklyPrompts] ⚠️ Skipped prompt with low score ${qualityScore.toFixed(2)}`);
-      }
+      const { output: content, provider: aiProvider, model: aiModel } = response;
+      const promptId = await savePromptToCache({
+        content,
+        userId,
+        aiProvider,
+        aiModel,
+        language: 'en'
+      });
+      if (promptId) savedCount++;
     }
     
     console.log(`[generateWeeklyPrompts] ✅ Saved ${savedCount}/${generatedPrompts.length} prompts`);

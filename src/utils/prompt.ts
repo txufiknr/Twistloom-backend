@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, CHARACTER_SECRETS_LENGTH } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -284,7 +284,8 @@ const firstBookOutputFormat: string = `{
       "role": "e.g. 'schoolmate', 'neighbor'",
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
-      "relationshipToMC": "Specific dynamic, not generic, 1-2 sentences (e.g. 'Close childhood friend who knows too much.')",
+      "secrets": "Any secrets the character has that the MC doesn't know, ${CHARACTER_SECRETS_LENGTH}. Can be empty string if none.",
+      "relationshipToMC": "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')",
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
       "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc)."
     }
@@ -398,6 +399,7 @@ const nextPageOutputFormat: string = `{
         "bio": "...",
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
+        "secrets": "...",
         "relationshipToMC": "...",
         "relationships": [
           {
@@ -430,6 +432,7 @@ const nextPageOutputFormat: string = `{
         "bio": "...",
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
+        "secrets": "...",
         "relationshipToMC": "...",
         "relationships": [
           {
@@ -736,16 +739,18 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
+  - secrets: spoiler or hints of the character for AI guidance.
   - narrativeFlags: set to match behavior and twist setup.
   - pastInteractions: dialogue or event towards MC in current page.
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
 
 characterUpdates.updatedCharacters
   - Only include characters whose state actually changed this page.
-  - Include only changed fields: bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries.
-  - bio: gradually update character's bio if new information is revealed in this page.
+  - Include only changed fields: bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries, secrets.
+  - bio: only gradually update character's bio if new information is revealed in this page.
+  - secrets: reduce if some are revealed.
 ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
-: `  - Only update when status, interactions, or relevance changes.`}
+: `  - Only update when bio, status, interactions, or relevance changes.`}
   - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})
   - Adjust narrativeFlags to reflect plot developments
 
@@ -2520,6 +2525,7 @@ export async function initializeBook(
               bio: char.bio,
               visualDescription: char.visualDescription,
               status: char.status,
+              secrets: char.secrets,
               relationshipToMC: char.relationshipToMC,
               relationships: [],
               pastInteractions: [],
@@ -2542,7 +2548,7 @@ export async function initializeBook(
           visitCount: 1,
           lastVisitedAtPage: 1,
           familiarity: initialPlace.familiarity,
-          moodHistory: [initialPlace.currentMood],
+          moodHistory: initialPlace.currentMood ? [initialPlace.currentMood] : [],
           events: [],
           knownCharacters: {},
           currentMood: initialPlace.currentMood,

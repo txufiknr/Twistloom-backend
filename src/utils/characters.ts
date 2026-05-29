@@ -1,6 +1,6 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, CharacterCreationParam, InjurySeverity } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -33,45 +33,45 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
   return 'none';
 }
 
-/**
- * Creates a new character with default values
- * 
- * @param newCharacter - Character creation parameters including name, gender, role, bio, visualDescription, status, narrativeFlags, and relationshipToMC
- * @returns New character memory structure
- * 
- * @example
- * ```typescript
- * const character = createCharacter({
- *   name: "Lina",
- *   gender: "female",
- *   role: "best friend",
- *   bio: "Cheerful but secretive",
- *   visualDescription: "tall, pale, messy black hair, hollow eyes",
- *   status: "trusting",
- *   narrativeFlags: { isSuspicious: false, isMissing: false, isDead: false, hasSecret: false, potentialTwist: "none" },
- *   relationshipToMC: "close friend"
- * });
- * ```
- */
-export function createCharacter(
-  newCharacter: CharacterCreationParam
-): CharacterMemory {
-  const { status, narrativeFlags } = newCharacter;
-  return {
-    ...newCharacter,
-    relationships: [],
-    pastInteractions: [],
-    narrativeFlags: {
-      ...narrativeFlags,
-      isSuspicious: narrativeFlags.isSuspicious || status === "suspicious",
-      isMissing: narrativeFlags.isMissing || status === "missing",
-      isDead: narrativeFlags.isDead || status === "dead",
-      hasSecret: narrativeFlags.hasSecret || status === "suspicious" || status === "hostile",
-      potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
-    },
-    injuries: [],
-  };
-}
+// /**
+//  * Creates a new character with default values
+//  * 
+//  * @param newCharacter - Character creation parameters including name, gender, role, bio, visualDescription, status, narrativeFlags, and relationshipToMC
+//  * @returns New character memory structure
+//  * 
+//  * @example
+//  * ```typescript
+//  * const character = createCharacter({
+//  *   name: "Lina",
+//  *   gender: "female",
+//  *   role: "best friend",
+//  *   bio: "Cheerful but secretive",
+//  *   visualDescription: "tall, pale, messy black hair, hollow eyes",
+//  *   status: "trusting",
+//  *   narrativeFlags: { isSuspicious: false, isMissing: false, isDead: false, hasSecret: false, potentialTwist: "none" },
+//  *   relationshipToMC: "close friend"
+//  * });
+//  * ```
+//  */
+// export function createCharacter(
+//   newCharacter: CharacterCreationParam
+// ): CharacterMemory {
+//   const { status, narrativeFlags } = newCharacter;
+//   return {
+//     ...newCharacter,
+//     relationships: [],
+//     pastInteractions: [],
+//     narrativeFlags: {
+//       ...narrativeFlags,
+//       isSuspicious: narrativeFlags.isSuspicious || status === "suspicious",
+//       isMissing: narrativeFlags.isMissing || status === "missing",
+//       isDead: narrativeFlags.isDead || status === "dead",
+//       hasSecret: narrativeFlags.hasSecret || status === "suspicious" || status === "hostile",
+//       potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
+//     },
+//     injuries: [],
+//   };
+// }
 
 /**
  * Updates an existing character with new information
@@ -102,6 +102,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.bio) updated.bio = update.bio;
   if (update.visualDescription) updated.visualDescription = update.visualDescription;
   if (update.status) updated.status = update.status;
+  if (update.secrets) updated.secrets = update.secrets;
   if (update.relationshipToMC) updated.relationshipToMC = update.relationshipToMC;
   
   // Merge relationships (replace entire array if provided)
@@ -323,6 +324,7 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       details.push(`  Bio: ${character.bio}`);
       details.push(`  Visual description: ${character.visualDescription}`);
       details.push(`  Relationship to MC: ${character.relationshipToMC}`);
+      details.push(`  Secrets (SPOILER): ${character.secrets || 'none'}`);
       
       // Recent interactions with nested bullets
       if (character.pastInteractions.length > 0) {

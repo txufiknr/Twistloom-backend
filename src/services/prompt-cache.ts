@@ -10,6 +10,7 @@ import { storyPrompts, userPromptHistory } from "../db/schema.js";
 import { eq, and, sql, count } from "drizzle-orm";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
+import type { DBNewStoryPrompt, DBStoryPrompt } from "../types/schema.js";
 
 // Simple in-memory cache hit rate tracking (for monitoring)
 let cacheHits = 0;
@@ -110,7 +111,7 @@ export async function getLeastRecentlyViewedPrompt(userId: string): Promise<type
  * }
  * ```
  */
-export async function getFreshPromptForUser(userId: string, language?: string | null): Promise<typeof storyPrompts.$inferSelect | null> {
+export async function getFreshPromptForUser(userId: string, language?: string | null): Promise<DBStoryPrompt | null> {
   const viewedPromptIds = await getUserViewedPromptIds(userId);
   
   // Select from active prompts excluding viewed ones
@@ -118,15 +119,15 @@ export async function getFreshPromptForUser(userId: string, language?: string | 
   if (viewedPromptIds.length > 0) whereClauses.push(sql`${storyPrompts.id} NOT IN ${viewedPromptIds}`);
   if (language) whereClauses.push(eq(storyPrompts.language, language));
 
-  const freshPrompt = await dbRead
+  const [freshPrompt] = await dbRead
     .select()
     .from(storyPrompts)
     .where(and(...whereClauses))
     .orderBy(sql`RANDOM()`)
     .limit(1);
   
-  if (freshPrompt.length) {
-    return freshPrompt[0];
+  if (freshPrompt) {
+    return freshPrompt;
   }
   
   // Fallback to least recently viewed
@@ -249,28 +250,41 @@ export function calculateExpiration(qualityScore: number): Date {
 export async function savePromptToCache(params: {
   content: string,
   userId: string,
-  qualityScore?: number,
   aiProvider?: AIChatProvider | 'none',
   aiModel?: string,
-  language?: string | null,
-}): Promise<string> {
-  const { content, userId, qualityScore, aiProvider, aiModel, language } = params;
-  const score = qualityScore ?? validatePromptQuality(content);
-  const result = await dbWrite
-    .insert(storyPrompts)
-    .values({
-      content,
-      aiProvider,
-      aiModel,
-      userId,
-      language: language || 'en',
-      qualityScore: score,
-      expiresAt: calculateExpiration(score),
-      isActive: true,
-    })
-    .returning({ id: storyPrompts.id });
-  
-  return result[0].id;
+  language?: string,
+}): Promise<string | null> {
+  const { content, userId, aiProvider, aiModel, language = 'en' } = params;
+
+  try {
+    // Calculate quality score
+    const qualityScore = validatePromptQuality(content);
+    if (qualityScore < PROMPT_CACHE_CONFIG.minQuality) {
+      console.log(`[savePromptToCache] ⏩ Skipped prompt with low quality score: ${qualityScore.toFixed(2)}`);
+      return null;
+    }
+
+    // Save quality prompt to database
+    const [result] = await dbWrite
+      .insert(storyPrompts)
+      .values({
+        content,
+        aiProvider,
+        aiModel,
+        userId,
+        language,
+        qualityScore,
+        expiresAt: calculateExpiration(qualityScore),
+        isActive: true,
+      } satisfies DBNewStoryPrompt)
+      .returning({ id: storyPrompts.id });
+    
+    console.log(`[savePromptToCache] ✅ Saved prompt with score ${qualityScore.toFixed(2)}`);
+    return result.id;
+  } catch (error) {
+    console.error('[savePromptToCache] ❌ Failed to save prompt to cache:', error);
+    return null;
+  }
 }
 
 /**
