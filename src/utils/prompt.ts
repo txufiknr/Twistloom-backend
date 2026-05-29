@@ -421,6 +421,7 @@ const nextPageOutputFormat: string = `{
           "hasSecret": false,
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
+        "introducedAtPage": <number>,
         "injuries": []
       }
     ],
@@ -697,9 +698,9 @@ ${isFinale ? `  - Expected to be true. The finale is a major event by definition
 
 addPlotFlag
   - Crucial plot development that affect the overall story trajectory.
-  - Add ONLY when: a) Major secret is revealed, b) Critical evidence is discovered, c) Key relationship changes occur, d) Story direction pivots significantly.
+  - ONLY add if isMajorEvent is true.
+  - ONLY add when: a) Major secret is revealed, b) Critical evidence is discovered, c) Key relationship changes occur, d) Story direction pivots significantly.
   - Must include: page number, specific fact discovered (verbose), and appropriate type.
-  - If isMajorEvent is true, a plot flag is almost always required.
 
 contextHistory
   - Running sumary from page 1 until now — key plot developments, hard facts, major events.
@@ -2021,8 +2022,23 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
   if (plotFlags.length === 0) return 'No plot flags yet';
   
   // Sort by page number for chronological display
-  const sortedFlags = plotFlags.sort((a, b) => a.page - b.page);
-  return sortedFlags.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}`).join('\n');
+  // Deduplicate identical page+type+fact while preserving chronological order
+  const sortedFlags = [...plotFlags].sort((a, b) => a.page - b.page);
+
+  const seen = new Set<string>();
+  const deduped: PlotFlag[] = [];
+
+  for (const flag of sortedFlags) {
+    const key = `${flag.page}|${flag.type}|${flag.fact}`;
+    if (seen.has(key)) {
+      console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
+      continue;
+    }
+    seen.add(key);
+    deduped.push(flag);
+  }
+
+  return deduped.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}`).join('\n');
 }
 
 /**
@@ -2385,7 +2401,7 @@ export async function initializeBook(
     bookId: draftBookId,
   } = params;
 
-  // TODO: if language `en`, pre-define MC name idea via `generateRandomCharacter`
+  // TODO: if detectedLanguage === `en`, pre-define MC name idea via `generateRandomCharacter`
 
   // Helper to persist book generation progress to DB (fire-and-forget)
   async function onGenerationProgress(progress: StoryGenerationStep | BookGenerationProgress) {
@@ -2538,6 +2554,7 @@ export async function initializeBook(
                 hasSecret: false,
                 potentialTwist: 'none'
               },
+              introducedAtPage: 1,
               injuries: []
             } satisfies CharacterMemory
           ])
@@ -2985,7 +3002,6 @@ export async function generateBookCreationPromptStream(params: GenerateBookCreat
   const { logPrompts = false, signal, language = 'en' } = params;
   const { systemPrompt, userPrompt } = getBookCreationPrompts(language);
 
-  // TODO: can we make this function also return AI provider & model used in `aiStreamSSE`?
   return aiStreamSSE(userPrompt, {
     modelSelection: AI_CHAT_MODELS_THEME,
     systemPrompt,

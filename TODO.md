@@ -8,7 +8,9 @@
 [x] first purchase → +50 credits
 [x] make `aiStreamSSE` return provider & model
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
-[ ] payment route claude review
+[ ] review claude: payment route
+[ ] plot flag buat "keyed" architecture
+[ ] review claude: story branch (getStoryStateWithBranch)
 
 [ ] userSettings schema
 - interests: string[]

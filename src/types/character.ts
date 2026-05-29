@@ -188,6 +188,8 @@ export type CharacterMemory = {
   narrativeFlags: NarrativeFlags;
   /** Whether character has injury */
   injuries: Injury[];
+  /** The page number at which the character was introduced */
+  introducedAtPage: number;
 };
 
 // export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
@@ -201,7 +203,7 @@ export type InitialCharacterMemory = Pick<CharacterMemory, 'name' | 'role' | 'ge
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Partial<CharacterMemory>;
+export type CharacterUpdate = Partial<Omit<CharacterMemory, 'introducedAtPage'>>;
 
 /**
  * Complete character updates structure for AI JSON output

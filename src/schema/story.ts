@@ -1,5 +1,5 @@
 import type { AIJsonEvaluation, AIJsonProperty } from "../types/ai-chat.js";
-import type { Injury, InventoryItem } from "../types/character.js";
+import type { CharacterUpdates, Injury, InventoryItem } from "../types/character.js";
 import { endingTypes } from "../types/story.js";
 import type { StoryOutline, Action, ActionHint, Archetype, Ending, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel } from "../types/story.js";
 
@@ -106,8 +106,26 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
     additionalProperties: false
   },
 
+  characterUpdates: {
+    type: 'object',
+    properties: {
+      newCharacters: {
+        type: 'array',
+        // TODO: object schema
+        items: { type: 'object' },
+        description: 'New characters introduced in this page. Empty array if none.'
+      },
+      updatedCharacters: {
+        type: 'array',
+        // TODO: object schema
+        items: { type: 'object' },
+        description: 'Characters whose details have been updated in this page. Empty array if none.'
+      },
+    } satisfies Record<keyof CharacterUpdates, AIJsonProperty>,
+    required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
+    additionalProperties: false
+  },
   // TODO: object schema
-  characterUpdates: { type: 'object' },
   relationshipUpdates: { type: 'array', items: { type: 'object' } },
   placeUpdates: { type: 'object' },
   threadUpdates: { type: 'object' },

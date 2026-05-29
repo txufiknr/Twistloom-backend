@@ -252,6 +252,8 @@ export function processCharacterUpdates(
  * · Tom Martinez (friend) - male, healthy, active
  *   Bio: Former military medic, now works as security guard
  *   Visual description: Tall, muscular build with military haircut and tired eyes
+ *   Introduced at page: 5
+ *   Secrets (spoiler): none
  *   Relationship to MC: protective friend with secret knowledge
  *   Recent interactions:
  *     - Page 12: Helped treat Sarah's arm injury
@@ -266,6 +268,8 @@ export function processCharacterUpdates(
  * · Lisa Park (mentor) - female, suspicious [suspicious, secret]
  *   Bio: Quiet girl who knows more than she lets on
  *   Visual description: Small frame, dark hair always in ponytail, avoids eye contact
+ *   Introduced at page: 5
+ *   Secrets (spoiler): none
  *   Relationship to MC: childhood friend with hidden agenda
  *   Recent interactions:
  *     - Page 15: First meeting here, seemed nervous
@@ -303,6 +307,7 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
     ? Object.values(characters).filter(character => character.name !== mc.name)
     : [];
   
+  // Early return: still no side characters yet
   if (sideCharacters.length === 0) {
     return mcInfo;
   }
@@ -323,8 +328,9 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       // Basic information
       details.push(`  Bio: ${character.bio}`);
       details.push(`  Visual description: ${character.visualDescription}`);
+      details.push(`  Introduced at page: ${character.introducedAtPage}`);
+      details.push(`  Secrets (spoiler): ${character.secrets || 'none'}`);
       details.push(`  Relationship to MC: ${character.relationshipToMC}`);
-      details.push(`  Secrets (SPOILER): ${character.secrets || 'none'}`);
       
       // Recent interactions with nested bullets
       if (character.pastInteractions.length > 0) {
