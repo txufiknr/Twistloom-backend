@@ -1,7 +1,7 @@
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState, StoryStateSource } from "../types/story.js";
+import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState, StoryStateSource, FutureNote } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToUserStoryPage } from "./book.js";
@@ -14,6 +14,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { applyStateDelta } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
 import { ucfirst } from "../utils/formatter.js";
+import { generateSlug } from "../utils/text-processing.js";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -747,7 +748,7 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     flags: dbStoryState.flags,
     threads: dbStoryState.threads,
     traumaTags: dbStoryState.traumaTags,
-    futureNotes: dbStoryState.futureNotes,
+    futureNotes: dbStoryState.futureNotes.map<FutureNote>(note => typeof note === "string" ? { key: generateSlug(note), note } : note), // Handle legacy string format
     plotFlags: dbStoryState.plotFlags,
     inventory: dbStoryState.inventory,
     psychologicalProfile: dbStoryState.psychologicalProfile,

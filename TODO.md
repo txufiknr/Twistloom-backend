@@ -22,8 +22,8 @@
 
 
 story state & delta changes:
-[ ] plot flag buat "keyed" (PermanentMemory)
-[ ] future notes: addedAtPage N & targetPhase (desired phase to reveal/incorporate) -> sort by targetPhase ASC
+[ ] PermanentMemory (keyed, updateable)
+[ ] TagUpdate add prop `update: Partial<T>`
 
 [ ] userSettings schema
 - interests: string[]

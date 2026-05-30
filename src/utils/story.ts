@@ -1,7 +1,7 @@
 import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
@@ -567,22 +567,36 @@ function updateFlagWithHysteresis(
  * processTagUpdates(state.inventory, updates);
  * ```
  */
-function processTagUpdates(targetArray: string[], updates?: TagUpdates, maxItems?: number): void {
+function processTagUpdates<T extends TagItem>(
+  targetArray: T[],
+  updates?: TagUpdates<T>,
+  maxItems?: number,
+): void {
   if (!updates) return;
-  
+
+  const isSameItem = (a: TagItem, b: TagItem): boolean => {
+    if (typeof a === 'string' && typeof b === 'string') return a === b;
+    if (typeof a === 'object' && typeof b === 'object') return a.key === b.key;
+    return false;
+  };
+
   // Remove specified items
   if (updates.remove && updates.remove.length > 0) {
-    targetArray.splice(0, targetArray.length, ...targetArray.filter(item => !updates.remove!.includes(item)));
+    targetArray.splice(
+      0,
+      targetArray.length,
+      ...targetArray.filter(item => !updates.remove!.some(r => isSameItem(item, r))),
+    );
   }
-  
+
   // Add new items (avoid duplicates)
   if (updates.add && updates.add.length > 0) {
     for (const item of updates.add) {
-      if (!targetArray.includes(item)) {
+      if (!targetArray.some(existing => isSameItem(existing, item))) {
         targetArray.push(item);
       }
     }
-    
+
     // Keep only the last maxItems if specified
     if (maxItems && targetArray.length > maxItems) {
       targetArray.splice(0, targetArray.length, ...targetArray.slice(-maxItems));
@@ -607,11 +621,11 @@ function processTagUpdates(targetArray: string[], updates?: TagUpdates, maxItems
  * });
  * ```
  */
-export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates): void {
+export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates<string>): void {
   processTagUpdates(state.traumaTags, updates, MAX_TRAUMA_TAGS);
 }
 
-export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates): void {
+export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates<FutureNote>): void {
   processTagUpdates(state.futureNotes, updates, MAX_FUTURE_NOTES);
 }
 

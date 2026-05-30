@@ -79,11 +79,6 @@ import {
   MAX_TRAVERSAL_DEPTH} from "../config/branch-traversal.js";
 import { retryOperation, withCircuitBreaker, createReliabilityMeasurement, completeReliabilityMeasurement } from "./reliability.js";
 // import { getUserBookSnapshots } from "../services/snapshots.bak.js";
-
-// Re-export centralized cache constants for backward compatibility
-export { BRANCH_CACHE_TTL, STATE_CACHE_TTL, MAX_CACHE_SIZE, MAX_STATE_CACHE_SIZE } from "../services/story-state-cache.js";
-
-// Re-export centralized functions for use within this module
 // import { shouldCreateSnapshot, createStateSnapshot } from '../services/snapshots.bak.js';
 // import { createStateDelta, applyStateDelta } from '../services/deltas.bak.js';
 import { getErrorMessage } from "./error.js";

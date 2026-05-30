@@ -298,6 +298,24 @@ export interface PlotFlag {
   place?: string;
 }
 
+export type FutureNote = {
+  /** Unique identifier for the note (for updates) */
+  key: string;
+  /** Text of the future note */
+  note: string;
+  /** Whether the note is a major plot point or minor detail */
+  isMajor?: boolean;
+  /** Page number where the note was added */
+  addedAtPage?: number;
+  /** Optional tag for categorizing the note (e.g. 'relationship', 'clue') */
+  tag?: FutureNoteTag;
+  /** Optional target story phase for when this note should become relevant */
+  targetPhase?: StoryPhase;
+};
+
+export const futureNoteTags = ['relationship', 'clue', 'character', 'place', 'other'] as const;
+export type FutureNoteTag = typeof futureNoteTags[number];
+
 /** An ending of a story with optional text and type. */
 export type Ending = {
   /** Text describing the ending (optional). */
@@ -636,15 +654,15 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
  * @interface StateDelta
  */
 export type StateDelta = {
-  // TODO: add factUpdates
+  // TODO: add currentFactUpdates
   /** Updates to psychological flags (trust, fear, guilt, curiosity) */
   flagUpdates?: Partial<PsychologicalFlags>;
   /** Updates to trauma tags (add/remove) based on page events */
-  traumaTagUpdates?: TagUpdates;
+  traumaTagUpdates?: TagUpdates<string>;
   /** Updates to future notes (add/remove) based on story progression */
-  futureNoteUpdates?: TagUpdates;
+  futureNoteUpdates?: TagUpdates<FutureNote>;
   /** Updates to plot flags (add) for story progression */
-  addPlotFlag?: PlotFlag; // TODO: change to `addMajorEvent`
+  addPlotFlag?: PlotFlag;
   /** Updates to characters (new and existing) with changes */
   characterUpdates?: CharacterUpdates;
   /** Updates to character relationships and dynamics */
@@ -656,7 +674,7 @@ export type StateDelta = {
   /** Partial ending information if this page leads to an ending */
   viableEnding?: Partial<Ending>;
   /** Flag indicating if this is a major story event */
-  isMajorEvent?: boolean; // TODO: redundant, can infer
+  isMajorEvent?: boolean;
   /** Updated AI-summarized context of the entire story */
   contextHistory?: string;
   /** Object in MC's possession */
@@ -724,8 +742,9 @@ export type ActionTranslation = {
   text: string;
 };
 
-export type TagUpdates = {
-  add?: string[];
+export type TagItem = string | { key: string };
+export type TagUpdates<T extends TagItem> = {
+  add?: T[];
   remove?: string[];
 }
 
@@ -874,7 +893,7 @@ export type StoryState = {
   injuries: Injury[];
 
   /** Important notes for future AI turns */
-  futureNotes: string[];
+  futureNotes: FutureNote[];
 };
 
 /**

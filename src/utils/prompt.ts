@@ -14,7 +14,7 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, Ending, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, Ending, FutureNote, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
@@ -1514,9 +1514,88 @@ function formatActionChoices(actions: Action[]): string {
     .join('\n');
 }
 
-function formatFutureNotes(futureNotes: string[]): string {
-  if (futureNotes.length === 0) return 'none';
-  return `\n${futureNotes.map(n => `  - ${n}`).join('\n')}`;
+/**
+ * Pretty-format an array of `FutureNote` items for inclusion in AI prompts.
+ *
+ * Output is a multi-line, human-readable bullet list. Each note is printed
+ * with its `key` and `note` on the top line, and optional properties are
+ * shown as nested bullet points when present (`isMajor`, `addedAtPage`,
+ * `tag`, `targetPhase`). Returns the string `none` when there are no notes.
+ *
+ * @example
+ *   - fn_123: Find the hidden latch behind the painting (major)
+ *     • Added at page: 5
+ *     • Tag: clue
+ *     • Target phase: MID
+ *   - fn_789: Remember the name on the letter
+ *     • Tag: relationship
+ */
+// function formatFutureNotes(futureNotes: FutureNote[]): string {
+//   if (!futureNotes || futureNotes.length === 0) return 'none';
+
+//   return `\n${futureNotes
+//     .map((n) => {
+//       const header = `  - ${n.key}: ${n.note}${n.isMajor ? ' (major)' : ''}`;
+//       const details: string[] = [];
+//       if (n.addedAtPage) details.push(`    • Added at page: ${n.addedAtPage}`);
+//       if (n.tag) details.push(`    • Tag: ${n.tag}`);
+//       if (n.targetPhase) details.push(`    • Target phase: ${n.targetPhase}`);
+//       return details.length > 0 ? `${header}\n${details.join('\n')}` : header;
+//     })
+//     .join('\n')}`;
+// }
+
+/**
+ * Pretty-format an array of `FutureNote` items for inclusion in AI prompts.
+ *
+ * Output is a multi-line, human-readable bullet list. Each note is printed
+ * with its `key` and `note` on the top line, and optional properties are
+ * shown as nested bullet points when present (`isMajor`, `addedAtPage`,
+ * `tag`, `targetPhase`). Notes are sorted by `targetPhase` ascending:
+ * EARLY → MID → LATE → FINALE → undefined. Returns the string `none` when
+ * there are no notes.
+ *
+ * @example
+ *   - fn_123: Find the hidden latch behind the painting (major)
+ *     • Added at page: 5
+ *     • Tag: clue
+ *     • Target phase: MID
+ *   - fn_789: Remember the name on the letter
+ *     • Tag: relationship
+ */
+function formatFutureNotes(futureNotes: FutureNote[]): string {
+  if (!futureNotes || futureNotes.length === 0) return 'none';
+
+  const phaseOrder: Record<StoryPhase, number> = {
+    EARLY: 0,
+    MID: 1,
+    LATE: 2,
+    FINALE: 3,
+  };
+
+  const sorted = [...futureNotes].sort((a, b) => {
+    const pa = a.targetPhase ?? '';
+    const pb = b.targetPhase ?? '';
+    const ia = pa && Object.prototype.hasOwnProperty.call(phaseOrder, pa) ? phaseOrder[pa] : 4;
+    const ib = pb && Object.prototype.hasOwnProperty.call(phaseOrder, pb) ? phaseOrder[pb] : 4;
+    if (ia !== ib) return ia - ib;
+
+    // If same phase (or both undefined), preserve by addedAtPage ascending when available
+    const aPage = a.addedAtPage ?? Number.POSITIVE_INFINITY;
+    const bPage = b.addedAtPage ?? Number.POSITIVE_INFINITY;
+    return aPage - bPage;
+  });
+
+  return `\n${sorted
+    .map((n) => {
+      const header = `  - ${n.key}: ${n.note}${n.isMajor ? ' (major)' : ''}`;
+      const details: string[] = [];
+      if (n.addedAtPage !== undefined && n.addedAtPage !== null) details.push(`    • Added at page: ${n.addedAtPage}`);
+      if (n.tag) details.push(`    • Tag: ${n.tag}`);
+      if (n.targetPhase) details.push(`    • Target phase: ${n.targetPhase}`);
+      return details.length > 0 ? `${header}\n${details.join('\n')}` : header;
+    })
+    .join('\n')}`;
 }
 
 /**

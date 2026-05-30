@@ -3,7 +3,7 @@ import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type In
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, moods } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
-import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration } from "../types/story.js";
+import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote } from "../types/story.js";
 import type { ThreadUpdates } from "../types/thread.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
@@ -51,14 +51,16 @@ export const INJURY_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
-export const TAG_UPDATES_SCHEMA: AIJsonProperty = {
-  type: 'object',
-  properties: {
-    add:    { type: 'array', items: { type: 'string' } },
-    remove: { type: 'array', items: { type: 'string' } },
-  } satisfies Record<keyof TagUpdates, AIJsonProperty>,
-  required: ['add', 'remove'] satisfies (keyof TagUpdates)[],
-  additionalProperties: false
+function getTagUpdatesSchema<T extends TagItem>(): AIJsonProperty {
+  return {
+    type: 'object',
+    properties: {
+      add:    { type: 'array', items: { type: 'string' } },
+      remove: { type: 'array', items: { type: 'string' } },
+    } satisfies Record<keyof TagUpdates<T>, AIJsonProperty>,
+    required: ['add', 'remove'] satisfies (keyof TagUpdates<T>)[],
+    additionalProperties: false
+  };
 };
 
 // export const STORY_PAGE_GENERATION_SCHEMA: { [K in keyof StoryPageGeneration]: AIJsonProperty } = {
@@ -84,8 +86,9 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   ...STORY_PAGE_GENERATION_SCHEMA,
 
   // State Delta
-  traumaTagUpdates: TAG_UPDATES_SCHEMA,
-  futureNoteUpdates: TAG_UPDATES_SCHEMA,
+  // TODO: separate into StoryStateGeneration
+  traumaTagUpdates: getTagUpdatesSchema<string>(),
+  futureNoteUpdates: getTagUpdatesSchema<FutureNote>(),
 
   placeUpdates: {
     type: 'object',
@@ -116,7 +119,6 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
       },
       updatedPlaces: {
         type: 'array',
-        // TODO: object schema
         description: 'Places which details have been updated if any.',
         items: { type: 'object' },
       },
@@ -204,7 +206,7 @@ export function buildEvaluationSchemaDefinition<T extends Record<string, unknown
     // TODO: object schema
     actionFlags: { type: 'array', items: { type: 'object' } },
     integrityFlags: { type: 'array', items: { type: 'object' } },
-  };
+  } satisfies Record<keyof AIJsonEvaluation<T>, AIJsonProperty>;
 }
 
 export const EVALUATION_REQUIRED_FIELDS = ['output', 'scoreBefore', 'scoreAfter', 'actionFlags', 'integrityFlags'] satisfies Array<keyof AIJsonEvaluation<Record<string, unknown>>>;
