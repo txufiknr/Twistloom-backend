@@ -2,12 +2,12 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import { characterStatuses, type InitialCharacterMemory, type StoryMC, type StoryMCTranslation } from "../types/character.js";
 import { placeMoods, placeTypes, type InitialPlaceMemory } from "../types/places.js";
-import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, StoryPage, InitialStoryState, TrustLevel } from "../types/story.js";
+import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, Ending, StoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
-import { difficulties, flagLevels, plotFlagTypes } from "../types/story.js";
+import { difficulties, endingTypes, flagLevels, plotFlagTypes } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
-import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_ACTION_SCHEMA, VIABLE_ENDING_SCHEMA } from "./story.js";
-import { CHARACTER_SECRETS_LENGTH } from "../config/story.js";
+import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { MAX_CHARACTER_SECRETS, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -17,7 +17,8 @@ import { CHARACTER_SECRETS_LENGTH } from "../config/story.js";
  */
 export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER', 'NONE'];
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
-export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonProperty } = {
+// export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonProperty } = {
+export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonProperty> = {
   isViolating: { type: 'boolean' },
   category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES },
   confidence: { type: 'number' },
@@ -28,13 +29,37 @@ export const THEME_VALIDATION_SCHEMA: { [K in keyof AIValidationResult]: AIJsonP
       value: { type: 'string' },
       context: { type: 'string' },
       reason: { type: 'string' },
-    },
+    } satisfies Record<keyof AIDetectedItem, AIJsonProperty>,
     required: ['type', 'value', 'context', 'reason'] satisfies (keyof AIDetectedItem)[],
     additionalProperties: false
   } },
   suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue, or empty string if theme is valid' },
   comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
   language: { type: 'string', description: 'Detected language code (ISO 639-1)' }
+};
+
+export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: 'A viable doom ending plan based on current story trajectory and theme.',
+  properties: {
+    text: { type: 'string', description: `Write the story ending plan in ${VIABLE_ENDING_LENGTH}. Be specific to MC and theme.` },
+    type: { type: 'string', enum: Object.keys(endingTypes) as EndingType[] },
+    outline: {
+      type: 'array',
+      description: 'A roadmap to reach the ending. 1-2 sentence per item. Align done count with current phase.',
+      items: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          isDone: { type: 'boolean' },
+        },
+        required: ['text', 'isDone'] satisfies (keyof StoryOutline)[],
+        additionalProperties: false
+      }
+    },
+  } satisfies Record<keyof Ending, AIJsonProperty>,
+  required: ['text', 'type'] satisfies (keyof Ending)[],
+  additionalProperties: false
 };
 
 /**
@@ -47,23 +72,14 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
   title: { type: 'string' },
   alternativeTitles: { type: 'array', items: { type: 'string' } },
   totalPages: { type: 'integer' },
-  language: { type: 'string' },
+  language: { type: 'string', description: 'ISO 639-1 language code' },
   hook: { type: 'string' },
   summary: { type: 'string' },
   keywords: { type: 'array', items: { type: 'string' } },
   firstPage: {
     type: 'object',
-    properties: {
-      text: { type: 'string' },
-      mood: { type: 'string' },
-      place: { type: 'string' },
-      timeOfDay: { type: 'string' },
-      charactersPresent: { type: 'array', items: { type: 'string' } },
-      keyEvents: { type: 'array', items: { type: 'string' } },
-      importantObjects: { type: 'array', items: { type: 'string' } },
-      actions: STORY_ACTION_SCHEMA,
-    },
-    required: ['text'] satisfies (keyof StoryPage)[],
+    properties: STORY_PAGE_GENERATION_SCHEMA,
+    required: ['text', 'actions'] satisfies (keyof StoryPageGeneration)[],
     additionalProperties: false
   },
   initialState: {
@@ -125,7 +141,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         relationshipToMC: { type: 'string', description: "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')" },
         bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
         visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
-        secrets: { type: 'string', description: `Any secrets the character has that the MC doesn't know, ${CHARACTER_SECRETS_LENGTH}. Can be empty string if none.` },
+        secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}). Empty array if none.` },
       } satisfies Record<keyof InitialCharacterMemory, AIJsonProperty>,
       required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof InitialCharacterMemory)[],
       additionalProperties: false

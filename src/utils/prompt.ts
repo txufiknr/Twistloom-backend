@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, CHARACTER_SECRETS_LENGTH } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -284,7 +284,7 @@ const firstBookOutputFormat: string = `{
       "role": "e.g. 'schoolmate', 'neighbor'",
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
-      "secrets": "Any secrets the character has that the MC doesn't know, ${CHARACTER_SECRETS_LENGTH}. Can be empty string if none.",
+      "secrets": "Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).",
       "relationshipToMC": "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')",
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
       "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc)."
@@ -650,7 +650,7 @@ timeOfDay
 charactersPresent
   - Names of side characters in the scene besides MC.
   - Only side characters, exclude MC, MC is central POV and always on the scene.
-  - Must match names in story state or newCharacters on this page. No invented names.
+  - Must match names in known characters or newCharacters on this page. No invented names.
 ${isFinale ? `  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.` : ''}
 
 keyEvents
@@ -665,7 +665,8 @@ ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unl
 
 inventory
   - Items the MC brings to the scene. Can include the amount, traits, and where it located.
-  - Limit it. Only include items that actually matters to the plot.
+  - Limit it to ${MAX_INVENTORY_ITEM} items. Only include items that actually matters to the plot.
+  - To remove an item, explicitly set its amount to 0 - system will auto-remove.
   - If no changes, output empty array or omit this field entirely.
   - Otherwise, include all current items in MC possession with updated values.
 
@@ -686,19 +687,21 @@ ${isEarlyPhase ? `  - Max 1 per page. Plant sparingly — early trauma tags shap
 ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not new ones being added.` : ''}
 
 futureNoteUpdates
-${futureNotes.length < MAX_FUTURE_NOTES ? `  - Add any important notes for future AI turns which are not included in current turn` : ''}
-${futureNotes.length > 0 ? `  - Incorporate existing future notes in this turn if viable
-  - Remove which have been incorporated or irrelevant` : ''}
-  - Keep max ${MAX_FUTURE_NOTES} items
+${futureNotes.length < MAX_FUTURE_NOTES ? `  - Add any important notes for future AI turns which are not included in current turn.` : ''}
+${futureNotes.length > 0 ? `  - Incorporate existing future notes in this turn if viable.
+  - Remove which have been incorporated or irrelevant.` : ''}
+${futureNotes.length > 1 ? '  - Consolidate which redundant or about the same matter (if any).' : ''}
+  - Keep max ${MAX_FUTURE_NOTES} items.
 
 isMajorEvent
-  - true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
+  - true only if this page contains an irreversible story change: death, betrayal, revelation, or point of no return.
 ${isEarlyPhase ? `  - Should be false for most early pages. Reserve major events — they lose weight if overused.` : ''}
+${isMidPhase ? `  - Major events should be relatively rare and spaced out to maintain impact.` : ''}
 ${isFinale ? `  - Expected to be true. The finale is a major event by definition.` : ''}
 
 addPlotFlag
-  - Crucial plot development that affect the overall story trajectory.
-  - ONLY add if isMajorEvent is true.
+  - Crucial and significant plot development that affect the overall story trajectory.
+  - ONLY add if isMajorEvent is true. NEVER add if isMajorEvent is false.
   - ONLY add when: a) Major secret is revealed, b) Critical evidence is discovered, c) Key relationship changes occur, d) Story direction pivots significantly.
   - Must include: page number, specific fact discovered (verbose), and appropriate type.
 
@@ -717,7 +720,7 @@ ${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt
 
 actions
 ${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No subject ("I"). Directly begin with verb (e.g. Pretend not to hear) or saying (e.g. "Yes, of course.").
-  - hint.text: what actually happens as a consequence — written as a story beat, not a label. Invisible to the player.
+  - hint.text: what will happen as a consequence — written as a story beat, not a label. Invisible to the player.
   - ${isFinale ? `Max 2 choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
   - ${isLatePhase ? `Each action text should be distinct despite similar outcomes` : `Each action text should be distinct and convey unique consequences.`}
@@ -740,7 +743,7 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
-  - secrets: spoiler or hints of the character for AI narrative guidance.
+  - secrets: spoiler or hints of the character for AI narrative guidance (max ${MAX_CHARACTER_SECRETS}).
   - narrativeFlags: set to match behavior and twist setup.
   - pastInteractions: dialogue or event towards MC in current page.
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
@@ -818,7 +821,7 @@ viableEnding
   - Only output if story trajectory has meaningfully shifted and the previously planned ending no longer fits, or if outline should be updated.
 ${futureNotes.length > 0 ? `  - Ensure it supports or aligns with future notes` : ''}
   - text: ${VIABLE_ENDING_LENGTH}. Specific to this MC and theme — not a genre template.
-  - outline: A roadmap to reach the ending. 1-2 sentence per item. Align count with current ${phase} phase. Don't change what have been done, only adjust what haven't done.
+  - outline: A roadmap to reach the ending. 1-2 sentence per item. Align done count with current ${phase} phase. Don't change what have been done, only adjust what haven't done.
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
 ${isMidPhase ? `  - Revise if a major twist has made the original ending implausible or redundant.` : ''}
 ${isLatePhase ? `  - Should be stable now. Revise only if a late revelation makes the ending genuinely unreachable.` : ''}
@@ -1315,30 +1318,6 @@ function getEndingArchetypesText(): string {
  */
 
 /**
- * Formats previous pages for prompt display
- * 
- * Takes an array of previous pages with actions and formats them
- * for inclusion in AI prompts to provide narrative context.
- * 
- * @param previousPages - Array of previous pages with actions from service
- * @returns Formatted string with previous pages content
- * 
- * @example
- * ```typescript
- * const formatted = formatPreviousPagesForPrompt([{ page: DBPage, action: Action }, ...]);
- * ```
- * 
- * Example output:
- * ```
- * • Page 3: I walked into the empty classroom, the chalkboards still covered in yesterday's equations. Sarah was already there, sitting by the window with that mysterious book I'd seen her reading. (place: classroom, timeOfDay: morning)
- *   → Selected action: "Ask about the book" (type: dialogue)
- *   → Hint for page 4: "Sarah will reveal the book contains ancient symbols" (type: mystery)
- * • Page 4: The symbols glowed faintly as Sarah traced them with her finger. "These aren't just drawings," she whispered, "they're a map." (place: classroom, timeOfDay: morning)
- *   → Selected action: "Examine the map closely" (type: investigate)
- *   → Hint for page 5: "The map shows a hidden passage beneath the school" (type: discovery)
- * ```
-  */
-/**
  * Formats a single previous page entry with proper indentation and structure
  * 
  * @param page - The page data
@@ -1351,8 +1330,8 @@ function formatPreviousPageEntry(page: UserStoryPage): string {
   const timeOfDay = page.timeOfDay || 'unknown';
   
   // Base page information
-  let entry = `• Page ${page.page}: ${pageText} (place: ${place}, timeOfDay: ${timeOfDay})`;
-  
+  let entry = `• Page ${page.page} (place: ${place}, timeOfDay: ${timeOfDay}):\n  ${pageText}`;
+
   // Add action information if present
   const action = page.selectedActions?.at(-1);
   if (action) {
@@ -1369,6 +1348,32 @@ function formatPreviousPageEntry(page: UserStoryPage): string {
   return entry;
 }
 
+/**
+ * Formats previous pages for prompt display
+ * 
+ * Takes an array of previous pages with actions and formats them
+ * for inclusion in AI prompts to provide narrative context.
+ * 
+ * @param previousPages - Array of previous pages with actions from service
+ * @returns Formatted string with previous pages content
+ * 
+ * @example
+ * ```typescript
+ * const formatted = formatPreviousPagesForPrompt([{ page: DBPage, action: Action }, ...]);
+ * ```
+ * 
+ * Example output:
+ * ```
+ * • Page 3 (place: classroom, timeOfDay: morning):
+ *   I walked into the empty classroom, the chalkboards still covered in yesterday's equations. Sarah was already there, sitting by the window with that mysterious book I'd seen her reading.
+ *   → Selected action: "Ask about the book" (type: dialogue)
+ *   → Hint for page 4: "Sarah will reveal the book contains ancient symbols" (type: mystery)
+ * • Page 4 (place: classroom, timeOfDay: morning):
+ *   The symbols glowed faintly as Sarah traced them with her finger. "These aren't just drawings," she whispered, "they're a map."
+ *   → Selected action: "Examine the map closely" (type: investigate)
+ *   → Hint for page 5: "The map shows a hidden passage beneath the school" (type: discovery)
+ * ```
+ */
 function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
   if (previousPages.length === 0) return 'No previous pages yet.';
 
@@ -2337,12 +2342,12 @@ First Page:
 Initial State:
 - Set flags based on opening scene — not defaults.
 - difficulty should reflect how hostile the world is to this MC at the start.
-- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to this MC and theme. If user mention anything about desired ending in theme input, respect it.
+- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - futureNotes: any important notes for future AI turns which are not included in current turn (initial state, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
 - plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
-- inventory: if any, what items MC brings, can include the amount, traits, and where it located.
+- inventory: if any, what items MC brings, can include the amount, traits, and where it located (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
 
 Ending Archetypes:
@@ -2586,7 +2591,7 @@ export async function initializeBook(
     }
 
     // 8. Persist story state to database
-    await insertStoryState(bookId, firstPage.id, initialState, { client });
+    await insertStoryState(bookId, firstPage.id, initialState, "original", { client });
 
     // 9. Pre-generate candidate pages for each action in the first page
     if (isOriginal) { // GitHub cron job, use github-action strategy
@@ -2884,7 +2889,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const { bookId, id: pageId } = newPage;
 
   // 10. Persist story state for the generated page (page-based state management)
-  await insertStoryState(bookId, pageId, newState);
+  await insertStoryState(bookId, pageId, newState, "original");
 
   // 11. Return the persisted story page with all database metadata
   return newPage;

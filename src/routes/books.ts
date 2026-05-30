@@ -1272,11 +1272,13 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     // Cache strategy: don't cache user-specific queries
     const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'recommendations';
     const cacheKey = isCreations
-      ? `books:creations:${userId}:page:${page}`
+      ? `books:user:${userId}:page:${page}`
       : bookSortBy === 'trending'
       ? CACHE_KEYS.EXPLORE_PAGE_1_TRENDING
       : CACHE_KEYS.EXPLORE_PAGE_1;
-    const cacheTTL = bookSortBy === 'trending' ? CACHE_TTL.FIVE_MINUTES : CACHE_TTL.THIRTY_MINUTES;
+    const cacheTTL = bookSortBy === 'trending'
+      ? CACHE_TTL.EXPLORE_PAGE_1_TRENDING
+      : CACHE_TTL.EXPLORE_PAGE_1;
 
     // Fetch function for cache
     const fetchBooks = async () => {
@@ -1321,7 +1323,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
 
     // Add HTTP cache headers for CDN/edge caching (works alongside Redis)
     if (shouldCache) {
-      const httpCacheMaxAge = bookSortBy === 'trending' ? 300 : 1800; // 5 min for trending, 30 min for newest
+      const httpCacheMaxAge = cacheTTL; // 5 min for trending, 30 min for newest
       res.set('Cache-Control', `public, max-age=${httpCacheMaxAge}, s-maxage=${httpCacheMaxAge}, stale-while-revalidate=${httpCacheMaxAge / 2}`);
     }
     

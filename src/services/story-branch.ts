@@ -117,8 +117,7 @@ export async function getStoryStateWithBranch(
     // Persist reconstructed story state to database if persistState is true
     const { persistState = true } = options;
     if (persistState) {
-      console.log(`[getStoryStateWithBranch] 💾 Persisting reconstructed state for page ${pageId}`);
-      void insertStoryState(bookId, pageId, finalState);
+      void insertStoryState(bookId, pageId, finalState, "reconstructed");
     }
 
     return finalState;

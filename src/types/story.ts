@@ -613,7 +613,7 @@ export type StoryPage = {
   importantObjects?: string[];
   /** Next branching actions for user choice (2-3 options) */
   actions: Action[];
-  /** */
+  /** Changes to the story state */
   stateDelta: StateDelta;
   /** AI provider used for generating the page content */
   aiProvider?: AIChatProvider | 'none';
@@ -670,8 +670,8 @@ export type StateDelta = {
 };
 
 export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
-export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel'>;
-export type StoryGeneration = Omit<StoryPageGeneration, 'stateDelta'> & StateDeltaGeneration;
+export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel' | 'stateDelta'>;
+export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: Action[] };
@@ -930,6 +930,8 @@ export type StoryStateInfo = {
   /** Number of places remaining can be added */
   placesSlot: number;
 }
+
+export type StoryStateSource = 'original' | 'reconstructed';
 
 export type InitialStoryState = Partial<Pick<StoryState,
   'flags' |

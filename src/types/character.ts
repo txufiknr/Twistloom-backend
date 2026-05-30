@@ -59,7 +59,7 @@ export const relationshipStatuses = [
   "trusting",    // Positive, friendly, helpful, reliable connection
   "neutral",     // Indifferent, baseline state, background character
   "suspicious",  // Distrustful, hiding something, potentially hostile
-  "hostile"      // Actively opposed/working against MC
+  "hostile"      // Actively opposed/working against target
 ] as const;
 
 /**
@@ -177,7 +177,7 @@ export type CharacterMemory = {
   /** Current relationship status affecting behavior */
   status: CharacterStatus;
   /** Secret or hint for AI guidance (spoiler) */
-  secrets: string;
+  secrets: string[];
   /** Relationship to main character */
   relationshipToMC: string;
   /** Directional relationships to other characters (max 3) */
@@ -219,9 +219,13 @@ export type CharacterUpdates = {
 };
 
 export type InventoryItem = {
+  /** The name of the item */
   name: string;
-  traits?: Record<string, string>; // color, length, state, rules, etc
+  /** The traits of the item (e.g., color, length, state, rules, etc) */
+  traits?: Record<string, string>;
+  /** The quantity of the item */
   amount?: number;
+  /** The location or context of the item (e.g., "in backpack", "on the table", "worn by the character") */
   where?: string;
 }
 

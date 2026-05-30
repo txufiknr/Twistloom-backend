@@ -9,9 +9,11 @@ export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 export const MAX_CHARACTERS = 6;
 export const MIN_CHARACTER_AGE = 13;
 export const MAX_CHARACTER_AGE = 25;
+export const MAX_CHARACTER_SECRETS = 3;
 export const MAX_PLACES = 6;
 export const MAX_ACTIVE_THREADS = 5;
 export const MAX_THREADS_PER_PAGE = 2;
+export const MAX_INVENTORY_ITEM = 5;
 
 export const MIN_ACTION_CHOICES = 1;
 export const MAX_ACTION_CHOICES = 3;
@@ -32,7 +34,6 @@ export const PLACE_CONTEXT_LENGTH = '1 sentence max';
 export const BOOK_TITLE_LENGTH = '2-5 words';
 export const HOOK_LENGTH = '1-2 sentences';
 export const RELATIONSHIP_TO_MC_LENGTH = '1-2 sentences';
-export const CHARACTER_SECRETS_LENGTH = 'max 3 (semicolon-separated)';
 export const SUMMARY_LENGTH = '50-100 words';
 export const KEYWORDS_COUNT = '3-5';
 

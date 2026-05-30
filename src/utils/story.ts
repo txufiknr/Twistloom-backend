@@ -2,7 +2,7 @@ import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOT
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration } from "../types/story.js";
-import type { Injury } from "../types/character.js";
+import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
@@ -214,13 +214,22 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   // Apply thread updates
   processThreadUpdates(newState, threadUpdates);
 
-  // Apply inventory updates
-  if (inventory && inventory.length > 0) newState.inventory = [...inventory];
-
-  // Apply injury updates
-  if (injuries && injuries.length > 0) newState.injuries = [...injuries];
+  // Apply inventory updates (remove which has amount of 0)
+  if (inventory && inventory.length > 0) newState.inventory = cleanUpInventory(inventory);
+  
+  // Apply injury updates (remove which has severity of 0)
+  if (injuries && injuries.length > 0) newState.injuries = removeHealedInjuries(injuries);
 
   return newState;
+}
+
+/**
+ * Cleans up inventory by removing items with zero amount
+ * @param inventory 
+ * @returns 
+ */
+function cleanUpInventory(inventory: InventoryItem[]): InventoryItem[] {
+  return inventory.filter(item => item.amount !== 0);
 }
 
 // ============================================================================
@@ -234,19 +243,21 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
  * @returns Array of injuries with updated severity, filtered out if healed
  */
 function decayInjuries(injuries: Injury[]): Injury[] {
-  return injuries
-    .map(injury => {
-      // Permanent injury (no change)
-      if (!injury.severity || !injury.decayPerPage || injury.decayPerPage === 0) return injury;
-      
-      // Return updated injury, or mark as healed if severity reaches 0
-      const newSeverity = Math.max(0, injury.severity - injury.decayPerPage);
-      return {
-        ...injury,
-        severity: newSeverity
-      };
-    })
-    .filter(injury => !injury.severity || injury.severity > 0); // Remove fully healed injuries
+  const healedInjuries = injuries.map(injury => {
+    // Permanent injury (no change)
+    if (!injury.severity || !injury.decayPerPage || injury.decayPerPage === 0) return injury;
+    
+    // Return updated injury, or mark as healed if severity reaches 0
+    const newSeverity = Math.max(0, injury.severity - injury.decayPerPage);
+    return { ...injury, severity: newSeverity };
+  });
+
+  // Remove fully healed injuries
+  return removeHealedInjuries(healedInjuries);
+}
+
+function removeHealedInjuries(injuries: Injury[]): Injury[] {
+  return injuries.filter(injury => !injury.severity || injury.severity > 0);
 }
 
 /**
@@ -294,6 +305,11 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ac
   // Add chosen action to history and increment page number
   updatedState.actionsHistory.push({...actionedPage.selectedAction, page: updatedState.page});
   updatedState.page++;
+
+  // Remove any items which has zero amount
+  if (updatedState.inventory && updatedState.inventory.length > 0) {
+    updatedState.inventory = cleanUpInventory(updatedState.inventory);
+  }
 
   // Apply injury decay to MC injuries
   if (updatedState.injuries && updatedState.injuries.length > 0) {

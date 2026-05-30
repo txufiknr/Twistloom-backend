@@ -191,8 +191,16 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
       prompt,
       configs: {
         schema: THEME_VALIDATION_SCHEMA,
-        requiredFields: ['isViolating', 'category'],
-        fallbackField: 'isViolating',
+        requiredFields: [
+          'isViolating',
+          'category',
+          'confidence',
+          'detectedItems',
+          'suggestion',
+          'comment',
+          'language',
+        ],
+        fallbackField: 'suggestion',
         baseOptions: {
           config: AI_CHAT_CONFIG_DEFAULT,
           modelSelection: AI_CHAT_MODELS_WRITING,

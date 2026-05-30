@@ -6,7 +6,7 @@ import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } fro
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag, ActionTranslation } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag, ActionTranslation, StoryStateSource } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -146,6 +146,7 @@ export const storyStates = pgTable(
     injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     isMajorEvent: boolean("is_major_event").notNull().default(false),
+    source: text("source").$type<StoryStateSource>().notNull().default("original"),
     createdAt,
     updatedAt,
   },

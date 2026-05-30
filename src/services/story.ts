@@ -1,9 +1,9 @@
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState } from "../types/story.js";
+import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState, StoryStateSource } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
-import { getDeletedState, getStoryState as getCachedStoryState, setStoryState as setCachedStoryState } from "./story-state-cache.js";
+import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToUserStoryPage } from "./book.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
@@ -13,6 +13,7 @@ import type { BookPageVisit, EnrichedBookData } from "../types/book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { applyStateDelta } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
+import { ucfirst } from "../utils/formatter.js";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -219,6 +220,7 @@ export async function insertStoryState(
   bookId: string,
   pageId: string,
   state: StoryState,
+  source: StoryStateSource = "original",
   options: { client?: DBClient } = {},
 ): Promise<void> {
   const { client = dbWrite } = options;
@@ -244,6 +246,7 @@ export async function insertStoryState(
         places: state.places,
         actionsHistory: state.actionsHistory,
         contextHistory: state.contextHistory,
+        source,
       })
       .onConflictDoUpdate({
         target: [storyStates.pageId],
@@ -268,10 +271,12 @@ export async function insertStoryState(
         }
       });
 
+    console.log(`[insertStoryState] ✅ ${ucfirst(source)} state inserted for page:`, pageId);
+  
     // Optimize story states strategically per book (branch-aware)
     await cleanupStoryStatesWithStrategy(bookId);
   } catch (error) {
-    console.error(`[insertStoryState] ❌ Failed to insert story state for page ${pageId}:`, getErrorMessage(error));
+    console.error(`[insertStoryState] ❌ Failed to insert story state for page ${pageId}:`, error);
     throw new Error(`Unable to insert story state: ${getErrorMessage(error)}`, { cause: error });
   }
 }
@@ -550,7 +555,7 @@ export async function getStoryStateFromDB(
   } = {}
 ): Promise<DBStoryState | null> {
   // Try get from LRU cache first
-  const cachedState = getCachedStoryState(pageId);
+  const cachedState = getStoryStateCache(pageId);
   if (cachedState) return cachedState;
   
   const { client = dbRead } = options;
@@ -562,7 +567,8 @@ export async function getStoryStateFromDB(
   
   // Cache the story state if found
   if (storyState) {
-    setCachedStoryState(pageId, storyState);
+    console.log(`[getStoryStateFromDB] ✅ Sucessfully obtained ${storyState.source} story state for page:`, pageId);
+    setStoryStateCache(pageId, storyState);
   }
   
   return storyState;
@@ -640,7 +646,7 @@ async function reconstructStoryStateFromParentChain(
     currentState.page = dbPage.page;
 
     // Persist reconstructed story state to database (fire-and-forget)
-    void insertStoryState(dbPage.bookId, dbPage.id, currentState);
+    void insertStoryState(dbPage.bookId, dbPage.id, currentState, "reconstructed");
 
     console.log(`[reconstructStoryStateFromParentChain] 🌳 Reconstructed state for page ${dbPage.id} from ${pageChain.length} pages (max depth: ${maxTraversalDepth})`);
     return currentState;

@@ -105,7 +105,7 @@ export const deletedStateCache = new LRUCache<string, DeletedStateCacheEntry>({
   updateAgeOnGet: true,
   // Custom dispose method for logging
   dispose: (value: DeletedStateCacheEntry, key: string) => {
-    console.log(`[DeletedStateCache] 🗑️ Evicted expired entry: ${key} (age: ${Date.now() - value.deletedAt}ms)`);
+    console.log(`[story-state] 🗑️ Evicted expired entry: ${key} (age: ${Date.now() - value.deletedAt}ms)`);
   }
 });
 
@@ -123,7 +123,7 @@ export function getStoryStateCacheKey(pageId: string): string {
 /**
  * Gets a cached story state if valid
  */
-export function getStoryState(pageId: string): DBStoryState | null {
+export function getStoryStateCache(pageId: string): DBStoryState | null {
   const key = getStoryStateCacheKey(pageId);
   const entry = storyStateCache.get(key);
   
@@ -140,7 +140,7 @@ export function getStoryState(pageId: string): DBStoryState | null {
 /**
  * Caches a story state
  */
-export function setStoryState(pageId: string, state: DBStoryState): void {
+export function setStoryStateCache(pageId: string, state: DBStoryState): void {
   const key = getStoryStateCacheKey(pageId);
   
   const entry: StoryStateCacheEntry = {
@@ -219,7 +219,7 @@ export function getDeletedState(pageId: string): StoryState | null {
   }
   
   cacheHits++;
-  console.log(`[DeletedStateCache] 🍪 Cache hit for ${key} (age: ${Date.now() - entry.deletedAt}ms)`);
+  console.log(`[story-state] 🍪 Cache hit for ${key} (age: ${Date.now() - entry.deletedAt}ms)`);
   return entry.state;
 }
 
@@ -235,7 +235,7 @@ export function setDeletedState(pageId: string, state: StoryState): void {
   };
   
   deletedStateCache.set(key, entry);
-  console.log(`[DeletedStateCache] 🍪 Cached deleted state for ${key} (TTL: ${DELETED_STATE_CACHE_TTL}ms)`);
+  console.log(`[story-state] 🍪 Cached deleted state for ${key} (TTL: ${DELETED_STATE_CACHE_TTL}ms)`);
 }
 
 /**
@@ -269,7 +269,7 @@ export function getDeletedStateCacheStats(): {
  */
 export function clearDeletedStateCache(): void {
   deletedStateCache.clear();
-  console.log(`[DeletedStateCache] ✨ Cache cleared`);
+  console.log(`[story-state] ✨ Cache cleared`);
 }
 
 /**
@@ -278,5 +278,5 @@ export function clearDeletedStateCache(): void {
 export function resetDeletedStateCacheStats(): void {
   cacheHits = 0;
   cacheMisses = 0;
-  console.log(`[DeletedStateCache] 📊 Statistics reset`);
+  console.log(`[story-state] 📊 Cache statistics reset`);
 }

@@ -1150,8 +1150,8 @@ export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocum
   if (!book) return [];
   
   const bookMeta = { title: `BOOK META`, snippet: formatBookMetaForPrompt(book) };
-  const charactersMeta = { title: `CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state) };
-  const placesMeta = { title: `PLACES`, snippet: formatPlacesForPrompt(state) };
+  const charactersMeta = { title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state) };
+  const placesMeta = { title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state) };
 
   return [bookMeta, charactersMeta, placesMeta];
 }

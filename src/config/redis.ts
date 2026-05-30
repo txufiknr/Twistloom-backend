@@ -14,7 +14,7 @@
 /**
  * Cache TTL configuration (in seconds)
  */
-export const CACHE_TTL = {
+export const REDIS_CACHE_TTL = {
   /** Per-user book list: 5 minutes */
   PER_USER_BOOKS: 5 * 60,
   /** Explore page 1: 30 minutes (for default/newest sort which changes slowly)
@@ -37,7 +37,7 @@ export const CACHE_TTL = {
 /**
  * Cache key patterns
  */
-export const CACHE_KEYS = {
+export const REDIS_CACHE_KEYS = {
   /** Per-user book list: books:user:{userId}:page:{page} */
   USER_BOOKS: (userId: string, page: number) => `books:user:${userId}:page:${page}`,
   /** Invalidate all user books: books:user:{userId}:* */

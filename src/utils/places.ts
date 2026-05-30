@@ -113,12 +113,10 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMe
  * ```
  */
 export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates): void {
-  if (!placeUpdates) return;
-  
-  const {
-    newPlaces = [],
-    updatedPlaces = [],
-  } = placeUpdates;
+  const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
+
+  // Early exit: if no updates to process
+  if (!newPlaces.length && !updatedPlaces.length) return;
   
   // Add new places into place memory
   for (const newPlace of newPlaces) {

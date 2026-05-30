@@ -413,7 +413,7 @@ export async function generateCandidatePage(params: GenerateCandidatePageParams)
 
   const letter = String.fromCharCode(65 + currentPage.actions.indexOf(action));
   const nextPageNumber = currentPage.page + 1;
-  console.log(`[generateCandidatePage] 📖 Should generate page ${nextPageNumber} for "${currentBook.title}" for action: ${letter}. ${action.text} (type: ${action.type})`);
+  console.log(`[generateCandidatePage] 📖 Should generate for "${currentBook.title}" page ${nextPageNumber} from action: ${letter}. ${action.text} (type: ${action.type})`);
 
   if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
     console.warn(`[generateCandidatePage] ⚠️ Unexpected page ${nextPageNumber} is already in plot flags`);

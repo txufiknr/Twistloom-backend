@@ -10,11 +10,45 @@
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] review claude: payment route
 [ ] review claude: story branch (getStoryStateWithBranch)
-[ ] CLAUDE.md
+[ ] write CLAUDE.md based on README.md & AGENTS.md
+[x] prompt: update amount to 0 to remove inventory
+[x] applyStateDelta: remove inventory which has amount of 0
+
+{
+  "flagUpdates": [
+    { "flag_type": "fear", "level": "High" }
+  ]
+}
+
+
+db/schema.ts
+services/story.ts
+services/story-branch.ts
+utils/branch-traversal.ts
+utils/story.ts
+types/story.ts
+
+please thoroughly examine these files, especially `getStoryState` and `getStoryStateWithBranch` function for reconstructing story state for given `pageId` (and `bookId`)
+
+recently, I found this duplicate plot flags issue on reconstructed story state:
+regarding this, I think you can also investigate and review on `applyStateDelta` and `advanceStoryState` function
+
+```
+PLOT FLAGS:
+  • Page 1 [mystery_started]: Riley witnesses the town’s first impossible phenomena: a backward-ticking clock and Liam’s note.
+  • Page 2 [threat_identified]: Riley receives a warning message from an unknown source while in the fog, implying external awareness of her actions.
+  • Page 2 [threat_identified]: Riley receives a warning message from an unknown source while in the fog, implying external awareness of her actions.
+  • Page 3 [threat_identified]: The fog is not just alive—it communicates through stolen voices and physical manipulation, suggesting intelligence and malice.
+  • Page 3 [threat_identified]: The fog is not just alive—it communicates through stolen voices and physical manipulation, suggesting intelligence and malice.
+  • Page 4 [threat_identified]: The fog is not only sentient but capable of mimicking voices with malicious intent, suggesting it has absorbed or consumed something—or someone—familiar to Riley.
+```
+
+can you evaluate about correctness and optimality, and finally provide me comprehensive review and complete corrected code?
+
 
 story state & delta changes:
-[ ] plot flag buat "keyed"
-[ ] character secrets buat array aja
+[ ] plot flag buat "keyed" (PermanentMemory)
+[ ] future notes: addedAtPage N & targetPhase (desired phase to reveal/incorporate) -> sort by targetPhase ASC
 
 [ ] userSettings schema
 - interests: string[]

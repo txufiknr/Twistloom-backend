@@ -12,7 +12,7 @@
  * - Error logging and monitoring
  */
 
-import { CACHE_TTL as REDIS_CACHE_TTL, CACHE_KEYS as REDIS_CACHE_KEYS } from '../config/redis.js';
+import { REDIS_CACHE_TTL, REDIS_CACHE_KEYS } from '../config/redis.js';
 import { getRedisClient } from '../utils/redis.js';
 
 // Re-export for convenience
