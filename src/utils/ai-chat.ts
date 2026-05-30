@@ -14,7 +14,7 @@ import { type GenerateContentConfig, Type, type GenerateContentParameters, type 
 import type { ResponseFormatV2, V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "cohere-ai/api";
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
-import { EVALUATION_REQUIRED_FIELDS, EVALUATION_SCHEMA_DEFINITION } from "../schema/story.js";
+import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
 import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
@@ -915,7 +915,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
               // Evaluation output schema
               outputAsJson: true,
-              outputJsonStructure: EVALUATION_SCHEMA_DEFINITION,
+              outputJsonStructure: buildEvaluationSchemaDefinition(options),
               outputJsonRequired: EVALUATION_REQUIRED_FIELDS satisfies (keyof AIJsonEvaluation<T>)[],
               outputJsonFallbackField: 'output' satisfies keyof AIJsonEvaluation<T>
 

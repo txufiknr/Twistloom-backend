@@ -141,7 +141,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         relationshipToMC: { type: 'string', description: "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')" },
         bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
         visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
-        secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}). Empty array if none.` },
+        secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
       } satisfies Record<keyof InitialCharacterMemory, AIJsonProperty>,
       required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof InitialCharacterMemory)[],
       additionalProperties: false

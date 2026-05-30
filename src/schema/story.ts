@@ -2,7 +2,7 @@ import { MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/stor
 import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, moods } from "../types/story.js";
-import type { AIJsonEvaluation, AIJsonProperty } from "../types/ai-chat.js";
+import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
 import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration } from "../types/story.js";
 import type { ThreadUpdates } from "../types/thread.js";
 
@@ -92,7 +92,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
     properties: {
       newPlaces: {
         type: 'array',
-        description: 'New places visited. Empty array if none.',
+        description: 'New places visited if any.',
         items: {
           type: 'object',
           properties: {
@@ -117,7 +117,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
       updatedPlaces: {
         type: 'array',
         // TODO: object schema
-        description: 'Places which details have been updated. Empty array if none.',
+        description: 'Places which details have been updated if any.',
         items: { type: 'object' },
       },
     } satisfies Record<keyof PlaceUpdates, AIJsonProperty>,
@@ -131,13 +131,13 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
       newCharacters: {
         type: 'array',
         // TODO: object schema
-        description: 'New characters introduced. Empty array if none.',
+        description: 'New characters introduced if any.',
         items: { type: 'object' },
       },
       updatedCharacters: {
         type: 'array',
         // TODO: object schema
-        description: 'Characters whose details have been updated. Empty array if none.',
+        description: 'Characters whose details have been updated if any.',
         items: { type: 'object' },
       },
     } satisfies Record<keyof CharacterUpdates, AIJsonProperty>,
@@ -147,7 +147,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
 
   relationshipUpdates: {
     type: 'array',
-    description: 'Updates to relationships between side characters. Empty array if none.',
+    description: 'Updates to relationships between side characters if any.',
     items: {
       type: 'object',
       properties: {
@@ -169,10 +169,10 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
     type: 'object',
     description: 'Updates to narrative threads. Omit if no update.',
     properties: {
-      newThreads: { type: 'array', description: 'New important core mysteries. Empty array if none.', items: { type: 'object' } },
-      updateThreads: { type: 'array', description: 'Updates to existing threads. Empty array if none.', items: { type: 'object' } },
-      addClues: { type: 'array', description: 'Clues to be added to existing threads. Empty array if none.', items: { type: 'object' } },
-      closeThreads: { type: 'array', description: 'Threads to be closed. Empty array if none.', items: { type: 'string' } },
+      newThreads: { type: 'array', description: 'New important core mysteries if any.', items: { type: 'object' } },
+      updateThreads: { type: 'array', description: 'Updates to existing threads if any.', items: { type: 'object' } },
+      addClues: { type: 'array', description: 'Clues to be added to existing threads if any.', items: { type: 'object' } },
+      closeThreads: { type: 'array', description: 'Threads to be closed if any.', items: { type: 'string' } },
     } satisfies Record<keyof ThreadUpdates, AIJsonProperty>,
     // Note: no any required fields, but Cohere requires at least one field in `required` array
     required: ['newThreads'] satisfies (keyof ThreadUpdates)[],
@@ -189,15 +189,23 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
 
-export const EVALUATION_SCHEMA_DEFINITION = {
-  // TODO: object schema
-  output: { type: 'object' },
-  scoreBefore: { type: 'object' },
-  scoreAfter: { type: 'object' },
-  // TODO: object schema
-  actionFlags: { type: 'array', items: { type: 'object' } },
-  integrityFlags: { type: 'array', items: { type: 'object' } },
-} satisfies Record<keyof AIJsonEvaluation<Record<string, unknown>>, AIJsonProperty>;
+export function buildEvaluationSchemaDefinition<T extends Record<string, unknown>>(options: AIPromptOptions): Record<keyof AIJsonEvaluation<T>, AIJsonProperty> {
+  const { outputJsonStructure, outputJsonRequired } = options;
+  return {
+    output: {
+      type: 'object',
+      properties: outputJsonStructure,
+      required: outputJsonRequired,
+      additionalProperties: outputJsonStructure ? false : undefined
+    },
+    // TODO: object schema
+    scoreBefore: { type: 'object' },
+    scoreAfter: { type: 'object' },
+    // TODO: object schema
+    actionFlags: { type: 'array', items: { type: 'object' } },
+    integrityFlags: { type: 'array', items: { type: 'object' } },
+  };
+}
 
 export const EVALUATION_REQUIRED_FIELDS = ['output', 'scoreBefore', 'scoreAfter', 'actionFlags', 'integrityFlags'] satisfies Array<keyof AIJsonEvaluation<Record<string, unknown>>>;
 
