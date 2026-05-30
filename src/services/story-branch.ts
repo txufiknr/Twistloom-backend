@@ -16,7 +16,6 @@ import { setDeletedState } from "./story-state-cache.js";
 import { getErrorMessage } from "../utils/error.js";
 import { MAX_ACTION_CHOICES, MIN_PAGES_FOR_MIDDLE, SNAPSHOT_INTERVAL } from "../config/story.js";
 import { generateId } from "../utils/uuid.js";
-import { createEmptyStoryState } from "../utils/story.js";
 
 // ============================================================================
 // ENHANCED STORY FUNCTIONS WITH BRANCH TRAVERSAL
@@ -81,48 +80,49 @@ export async function getStoryStateWithBranch(
   try {
     console.log(`[getStoryStateWithBranch] 🌳 Getting story state for page:`, pageId);
 
-    // First attempt: Get from database & cache
+    // Fast path: try to get from database and cache
     const persistedState = await getStoryState(pageId);
     if (persistedState) return persistedState;
 
-    // Second attempt: Reconstruct from branch path using advanced reconstruction
     console.log(`[getStoryStateWithBranch] 🔄 Reconstructing state for page:`, pageId);
-    
-    // Create dependencies for reconstruction with branch-aware page retrieval
-    // Note: using dbWrite to avoid read replica stale
-    const reconstructionDeps: StateReconstructionDeps = {
-      getPageById: async (id: string) => await getPageFromDB(id, { client: dbWrite }),
-      getBook: async (bookId: string) => await getBookFromDB(bookId),
-      getStoryState: async (id: string) => await getStoryState(id)
-    };
-    
-    const reconstructionResult = await reconstructStoryState(pageId, reconstructionDeps, options);
-    const reconstructedState = reconstructionResult.state;
-    
-    // Get branch path for page number
-    const branchPathData = await getBranchPath(pageId, options);
 
+    // Fetch book before reconstruction so we can fail-fast and
+    // have totalPages available for the final override without an extra await.
     const book = await getBookFromDB(bookId);
-    if (!book) throw new Error("Book not found");
+    if (!book) throw new Error(`Book not found: ${bookId}`);
 
-    // Create minimal valid state
-    const minimalState: StoryState = createEmptyStoryState(
+    // Note: using dbWrite to avoid read-replica stale reads
+    const reconstructionDeps: StateReconstructionDeps = {
+      getPageById: async (id: string) => getPageFromDB(id, { client: dbWrite }),
+      getBook: async (id: string) => getBookFromDB(id),
+      getStoryState: async (id: string) => getStoryState(id),
+    };
+
+    const reconstructionResult = await reconstructStoryState(
       pageId,
-      branchPathData.pages[branchPathData.pages.length - 1].page,
-      book.totalPages
+      reconstructionDeps,
+      options
     );
 
-    const finalState: StoryState = { ...minimalState, ...reconstructedState };
+    // No redundant getBranchPath call; reconstructionResult.state
+    // already has .pageId and .page set correctly by reconstructStoryState.
+    // We only override maxPage from the authoritative book record (in case
+    // reconstruction used a stale/inferred value).
+    const finalState: StoryState = {
+      ...reconstructionResult.state,
+      pageId,                       // assert correct pageId
+      maxPage: book.totalPages,     // assert authoritative maxPage
+    };
 
-    // Persist reconstructed story state to database if persistState is true
     const { persistState = true } = options;
     if (persistState) {
+      console.log(`[getStoryStateWithBranch] 💾 Persisting reconstructed state for page ${pageId}`);
       void insertStoryState(bookId, pageId, finalState, "reconstructed");
     }
 
     return finalState;
   } catch (error) {
-    console.error(`[getStoryStateWithBranch] ❌ Failed to get/reconstruct state for page ${pageId}:`, getErrorMessage(error));
+    console.error(`[getStoryStateWithBranch] ❌ Failed for page ${pageId}:`, error);
     return null;
   }
 }

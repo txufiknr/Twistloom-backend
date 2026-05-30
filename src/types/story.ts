@@ -636,6 +636,7 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
  * @interface StateDelta
  */
 export type StateDelta = {
+  // TODO: add factUpdates
   /** Updates to psychological flags (trust, fear, guilt, curiosity) */
   flagUpdates?: Partial<PsychologicalFlags>;
   /** Updates to trauma tags (add/remove) based on page events */
@@ -643,7 +644,7 @@ export type StateDelta = {
   /** Updates to future notes (add/remove) based on story progression */
   futureNoteUpdates?: TagUpdates;
   /** Updates to plot flags (add) for story progression */
-  addPlotFlag?: PlotFlag;
+  addPlotFlag?: PlotFlag; // TODO: change to `addMajorEvent`
   /** Updates to characters (new and existing) with changes */
   characterUpdates?: CharacterUpdates;
   /** Updates to character relationships and dynamics */
@@ -655,7 +656,7 @@ export type StateDelta = {
   /** Partial ending information if this page leads to an ending */
   viableEnding?: Partial<Ending>;
   /** Flag indicating if this is a major story event */
-  isMajorEvent?: boolean;
+  isMajorEvent?: boolean; // TODO: redundant, can infer
   /** Updated AI-summarized context of the entire story */
   contextHistory?: string;
   /** Object in MC's possession */

@@ -64,11 +64,11 @@ export const SNAPSHOT_SELECTION_MAX_RETRIES = 2;
 /** Base delay in milliseconds for snapshot selection retry operations */
 export const SNAPSHOT_SELECTION_BASE_DELAY = 500;
 
-/** Maximum number of retry attempts for delta application operations */
-export const DELTA_APPLICATION_MAX_RETRIES = 2;
+// /** Maximum number of retry attempts for delta application operations */
+// export const DELTA_APPLICATION_MAX_RETRIES = 2;
 
-/** Base delay in milliseconds for delta application retry operations */
-export const DELTA_APPLICATION_BASE_DELAY = 200;
+// /** Base delay in milliseconds for delta application retry operations */
+// export const DELTA_APPLICATION_BASE_DELAY = 200;
 
 /** Maximum number of retry attempts for entire reconstruction process */
 export const RECONSTRUCTION_MAX_RETRIES = 2;

@@ -174,10 +174,24 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     difficulty,
   } = stateDelta;
 
-  // Create new state with base state values
+  // Explicitly copy every mutable array/object field so that
+  // in-place mutations by processXxx helpers never bleed back into baseState.
+  // Without these explicit copies, `{ ...baseState }` only creates a shallow
+  // object clone — all array/object values remain the same references.
   const newState: StoryState = {
     ...baseState,
-    // Apply optional delta fields
+    // ── mutable arrays ──────────────────────────────────────────────────────
+    plotFlags:      [...baseState.plotFlags],
+    traumaTags:     [...baseState.traumaTags],
+    futureNotes:    [...baseState.futureNotes],
+    threads:        [...baseState.threads],
+    actionsHistory: [...baseState.actionsHistory],
+    injuries:       [...baseState.injuries],
+    inventory:      [...baseState.inventory],
+    // ── mutable record objects ───────────────────────────────────────────────
+    characters: { ...baseState.characters },
+    places:     { ...baseState.places },
+    // ── scalar delta overrides ───────────────────────────────────────────────
     flags: { ...baseState.flags, ...(flagUpdates ?? {}) },
     isMajorEvent: isMajorEvent ?? baseState.isMajorEvent,
     contextHistory: contextHistory || baseState.contextHistory,
@@ -185,39 +199,27 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
       text: viableEnding.text || baseState.viableEnding?.text,
       type: viableEnding.type || baseState.viableEnding?.type,
     } : baseState.viableEnding,
-    // Apply new delta fields
-    psychologicalProfile: psychologicalProfileUpdates 
-      ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates } 
+    psychologicalProfile: psychologicalProfileUpdates
+      ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates }
       : baseState.psychologicalProfile,
-    hiddenState: hiddenStateUpdates 
-      ? { ...baseState.hiddenState, ...hiddenStateUpdates } 
+    hiddenState: hiddenStateUpdates
+      ? { ...baseState.hiddenState, ...hiddenStateUpdates }
       : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
     difficulty: difficulty ?? baseState.difficulty,
   };
 
-  // Apply trauma tag updates
+  // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
-
-  // Apply future notes updates
   processFutureNoteUpdates(newState, futureNoteUpdates);
-
-  // Apply plot flag updates
   processPlotFlagUpdates(newState, addPlotFlag);
-
-  // Apply character and relationship updates
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
-
-  // Apply place updates
   processPlaceUpdates(newState, placeUpdates);
-
-  // Apply thread updates
   processThreadUpdates(newState, threadUpdates);
 
-  // Apply inventory updates (remove which has amount of 0)
+  // Apply inventory updates (full replacements, remove which has amount of 0)
   if (inventory && inventory.length > 0) newState.inventory = cleanUpInventory(inventory);
-  
-  // Apply injury updates (remove which has severity of 0)
+  // Apply injury updates (full replacements, remove which has severity of 0)
   if (injuries && injuries.length > 0) newState.injuries = removeHealedInjuries(injuries);
 
   return newState;
@@ -635,9 +637,23 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
 export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag): void {
   if (!addPlotFlag) return;
 
-  // Validate plot flag type - default to "other" if invalid
+  // Validate / normalise type
   const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-  state.plotFlags.push({ ...addPlotFlag, type: validType });
+  const normalized: PlotFlag = { ...addPlotFlag, type: validType };
+
+  // Guard against duplicates (same page + type + fact).
+  // This mirrors the deduplication in processTagUpdates and provides a safety
+  // net against double-application from retries or repeated reconstruction.
+  const isDuplicate = state.plotFlags.some(
+    (f) =>
+      f.page === normalized.page &&
+      f.type === normalized.type &&
+      f.fact === normalized.fact
+  );
+
+  if (!isDuplicate) {
+    state.plotFlags.push(normalized);
+  }
 }
 
 /**
