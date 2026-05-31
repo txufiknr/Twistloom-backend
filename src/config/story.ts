@@ -328,133 +328,124 @@ export const JSON_RELIABILITY_TEMPERATURE_THRESHOLD = 0.8;
 // ============================================================================
 
 /**
- * AI parameter adjustments for different action types
- * 
- * These configurations define how AI parameters should be adjusted based on
- * the type of action the user selects. All adjustments are conservative to
- * maintain narrative consistency while providing subtle variations in tone
- * and creativity appropriate to each action type.
- * 
- * Specific Action Adjustments:
- * 
- * | Action Type | Temp Change | topP Change | topK Change | Purpose |
- * |-------------|-------------|-------------|-------------|---------|
- * | `attack` | -0.05 | - | - | Controlled violence |
- * | `escape` | -0.03 | -0.02 | - | Panic responses |
- * | `risk` | -0.02 | - | -3 | Bold moves |
- * | `social` | +0.02 | +0.01 | - | Dialogue creativity |
- * | `deceive` | -0.02 | - | -3 | Psychological manipulation |
- * | `create` | +0.03 | +0.02 | - | Creative expression |
- * | `heal` | -0.04 | -0.02 | - | Recovery scenes |
- * | `ignore` | -0.03 | - | -5 | Avoidance |
- * | `explore` | +0.02 | +0.01 | - | Discovery |
- * | `protect` | -0.02 | - | -3 | Defense |
- * 
- * All adjustments are conservative (±0.05 max temp, ±0.02 max topP, ±5 max topK) to maintain
- * narrative consistency and prevent sudden style changes between actions.
+ * Neutral adjustment.
+ *
+ * Used for actions that should not meaningfully affect
+ * generation creativity or sampling behavior.
+ */
+export const DEFAULT_ACTION_AI_CONFIG: AIActionConfig = {
+  temperature: { adjustment: 0, min: 0.6, max: 0.8 },
+  topP: { adjustment: 0, min: 0.85, max: 0.95 },
+  topK: { adjustment: 0, min: 40, max: 50 }
+};
+
+/**
+ * Action-specific sampling adjustments.
+ *
+ * These provide subtle nudges to generation style.
+ *
+ * Important:
+ * - Action configs should NEVER drastically change model behavior.
+ * - Large behavioral changes belong in prompting.
+ * - Sampling changes should stay small enough that story tone remains stable.
  */
 export const ACTION_AI_CONFIG: Record<ActionType, AIActionConfig> = {
-  "attack": {
-    temperature: { adjustment: -0.05, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  "escape": {
-    temperature: { adjustment: -0.03, min: 0.65, max: 0.8 },
-    topP: { adjustment: -0.02, min: 0.88, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  "risk": {
-    temperature: { adjustment: -0.02, min: 0.65, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: -3, min: 40, max: 50 }
-  },
-  "social": {
+  attack: {
     temperature: { adjustment: 0.02, min: 0.6, max: 0.8 },
     topP: { adjustment: 0.01, min: 0.85, max: 0.95 },
     topK: { adjustment: 0, min: 40, max: 50 }
   },
-  "deceive": {
-    temperature: { adjustment: -0.02, min: 0.7, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: -3, min: 45, max: 50 }
+  escape: {
+    temperature: { adjustment: 0.01, min: 0.6, max: 0.8 },
+    topP: { adjustment: 0.01, min: 0.85, max: 0.95 },
+    topK: { adjustment: 0, min: 40, max: 50 }
   },
-  "create": {
+  risk: {
     temperature: { adjustment: 0.03, min: 0.6, max: 0.8 },
     topP: { adjustment: 0.02, min: 0.85, max: 0.95 },
+    topK: { adjustment: 3, min: 40, max: 50 }
+  },
+  social: {
+    temperature: { adjustment: 0.04, min: 0.6, max: 0.8 },
+    topP: { adjustment: 0.02, min: 0.85, max: 0.95 },
+    topK: { adjustment: 2, min: 40, max: 50 }
+  },
+  deceive: {
+    temperature: { adjustment: 0.02, min: 0.6, max: 0.8 },
+    topP: { adjustment: 0.01, min: 0.85, max: 0.95 },
     topK: { adjustment: 0, min: 40, max: 50 }
   },
-  "heal": {
-    temperature: { adjustment: -0.04, min: 0.6, max: 0.8 },
-    topP: { adjustment: -0.02, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
+  create: {
+    temperature: { adjustment: 0.05, min: 0.6, max: 0.8 },
+    topP: { adjustment: 0.03, min: 0.85, max: 0.95 },
+    topK: { adjustment: 5, min: 40, max: 50 }
   },
-  "ignore": {
-    temperature: { adjustment: -0.03, min: 0.65, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: -5, min: 40, max: 50 }
+  explore: {
+    temperature: { adjustment: 0.05, min: 0.6, max: 0.8 },
+    topP: { adjustment: 0.03, min: 0.85, max: 0.95 },
+    topK: { adjustment: 5, min: 40, max: 50 }
   },
-  "explore": {
-    temperature: { adjustment: 0.02, min: 0.6, max: 0.75 },
-    topP: { adjustment: 0.01, min: 0.85, max: 0.9 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  "protect": {
-    temperature: { adjustment: -0.02, min: 0.65, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: -3, min: 40, max: 50 }
-  },
-  "custom": {
-    temperature: { adjustment: 0, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  "other": {
-    temperature: { adjustment: 0, min: 0.6, max: 0.8 },
+  protect: {
+    temperature: { adjustment: -0.01, min: 0.6, max: 0.8 },
     topP: { adjustment: 0, min: 0.85, max: 0.95 },
     topK: { adjustment: 0, min: 40, max: 50 }
-  }
+  },
+  heal: DEFAULT_ACTION_AI_CONFIG,
+  ignore: DEFAULT_ACTION_AI_CONFIG,
+  dialogue: DEFAULT_ACTION_AI_CONFIG,
+  custom: DEFAULT_ACTION_AI_CONFIG,
+  other: DEFAULT_ACTION_AI_CONFIG
 };
-
-/**
- * Type definition for action AI parameter configuration
- */
-export type ActionAIConfig = typeof ACTION_AI_CONFIG[keyof typeof ACTION_AI_CONFIG];
 
 // ============================================================================
 // SPECIAL AI CONFIGURATIONS FOR STORY MOMENTS
 // ============================================================================
 
 /**
- * AI configuration for psychologically distressed states
- * 
- * Applied when character stability is 'unstable' or 'fractured'
- * to increase creativity and unpredictability.
- */
-export const PSYCHOLOGICAL_DISTRESS_CONFIG: AIActionConfig = {
-  temperature: { adjustment: 0.8, min: 0.8, max: 0.9 },
-  topP: { adjustment: 0.95, min: 0.95, max: 0.98 },
-  topK: { adjustment: 60, min: 60, max: 70 }
-};
-
-/**
  * AI configuration for twist injection moments
  * 
- * Applied during major reveals, betrayals, or near ending
- * to increase dramatic impact and unpredictability.
+ * Temporary creativity boost to increase dramatic impact and unpredictability for:
+ * - Major revelations
+ * - Betrayals
+ * - Plot twists
+ * - Unexpected discoveries
+ *
+ * Purpose:
+ * Encourage slightly less predictable narrative choices
+ * while preserving coherence.
  */
 export const TWIST_INJECTION_CONFIG: AIActionConfig = {
-  temperature: { adjustment: 0.1, min: 0.7, max: 0.8 },
-  topP: { adjustment: 0.05, min: 0.9, max: 0.95 },
-  topK: { adjustment: 10, min: 40, max: 60 }
+  temperature: { adjustment: 0.05, min: 0.65, max: 0.8 },
+  topP: { adjustment: 0.02, min: 0.88, max: 0.95 },
+  topK: { adjustment: 5, min: 40, max: 55 }
 };
 
 /**
- * AI configuration for JSON reliability layer
- * 
- * Applied when temperature is too high to ensure structured output
- * by capping topK for better sentence structure.
+ * Finale configuration.
+ *
+ * As the story approaches resolution,
+ * consistency becomes more important than novelty.
+ *
+ * This reduces randomness slightly to improve:
+ * - callbacks
+ * - payoff delivery
+ * - narrative consistency
+ * - ending quality
+ */
+export const FINALE_CONFIG: AIActionConfig = {
+  temperature: { adjustment: -0.08, min: 0.55, max: 0.7 },
+  topP: { adjustment: -0.04, min: 0.82, max: 0.9 },
+  topK: { adjustment: -5, min: 30, max: 45 }
+};
+
+/**
+ * Reliability caps for structured output generation.
+ *
+ * High sampling values can occasionally reduce JSON reliability.
+ * These caps provide a final safeguard without noticeably affecting prose quality.
  */
 export const JSON_RELIABILITY_CAPS = {
+  maxTemperature: 0.85,
+  maxTopP: 0.95,
   maxTopK: 50
 };

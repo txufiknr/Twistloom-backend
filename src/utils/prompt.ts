@@ -2,9 +2,9 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes, factTypes, futureNoteTags, storyPhases } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes, factTypes, futureNoteTags, storyPhases } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT } from "../config/story.js";
+import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -14,7 +14,7 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, MemoryIntegrity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
@@ -26,7 +26,7 @@ import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExplore
 import { logUserActivity } from "../services/user.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import { generateBranchId, getStoryStateWithBranch } from "../services/story-branch.js";
-import { STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
+import { CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
 import { threadPriorities, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
@@ -38,6 +38,8 @@ import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
 import { formatLanguage } from "./translation.js";
+import { MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
+import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -294,7 +296,7 @@ const firstBookOutputFormat: string = `{
     {
       "key": "fact.key",
       "value": "Fact Value",
-      "type": "One of: ${formatOneOf(factTypes)}",
+      "type": "One of: ${formatOneOf(Object.keys(factTypes))}",
       "reason": "Reason for the fact"
     }
   ]
@@ -396,7 +398,7 @@ const nextPageOutputFormat: string = `{
       "key": <new or existing identifier>,
       "page": <number>,
       "value": "...",
-      "type": "One of: ${formatOneOf(factTypes)}",
+      "type": "One of: ${formatOneOf(Object.keys(factTypes))}",
       "reason": "..."
     }
   ],
@@ -585,10 +587,10 @@ const nextPageOutputFormat: string = `{
 }`;
 
 function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state } = params;
+  const { advancedState: state, candidateCount } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
 
-  return `TASK: ${formatNextPageTaskPrompt(state)}
+  return `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}
 
 ${formatNextPageStoryContextPrompt(params)}
 
@@ -722,7 +724,7 @@ ${futureNotes.length > 1 ? '  - Consolidate which redundant or about the same ma
 factUpdates
   - Represents long-term story memory, discoveries, or important established facts that influence future turns.
   - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
-  - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(factTypes)}.
+  - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
   - value: latest known state. Prefer concise value over long sentence (explanation can be added in reason).
   - reason: 1-sentence, why or how it hapenned or changed.
   - Facts should be objectively true within the story after this page ends.
@@ -944,13 +946,13 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 }
 
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage } = params;
+  const { advancedState: state, actionedPage, candidateCount } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale } = getStoryStateInfo(state);
   const { selectedAction } = actionedPage;
 
   const prompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
-Original task (on previous AI): ${formatNextPageTaskPrompt(state)}
+Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount)}
 
 ${formatNextPageStoryContextPrompt(params)}
 
@@ -1846,13 +1848,20 @@ ENDING RULES:
 ${buildEndingRules(state)}`;
 }
 
-function formatNextPageTaskPrompt(state: StoryState): string {
-  const { page, maxPage } = state;
+function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): string {
+  const { page, maxPage, memoryIntegrity } = state;
   const remainingPages = maxPage - page;
   const pageLabel = remainingPages > 0
     ? `page ${page} of ${maxPage} — ${remainingPages} pages remaining.`
     : `the very last page (the end).`;
-  return `Continue the story in first-person ("I") POV. Now you write ${pageLabel}`;
+
+  const prompt = `Continue the story in first-person ("I") POV. Now you write ${pageLabel}`;
+  if (candidateCount === 1) return prompt;
+
+  return `${prompt}
+Please generate ${candidateCount} different story continuation as alternate fate (like in multiverse).
+Apply the exact same rules, but make each have distinct outcome unexpected by readers.
+${memoryIntegrity !== 'stable' ? `Sometimes you can leak narrative accross the multiverse, like déjà vu or hallucination, but don't overdo it.` : ''}`.trim();
 }
 
 /**
@@ -1941,14 +1950,14 @@ ${formatSelectedAction(page)}`;
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state } = params;
-  const { flags, psychologicalProfile, hiddenState, threads } = state;
+  const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity } = state;
   const stateInfo = getStoryStateInfo(state);
 
   return `NARRATIVE STYLE:
 ${createNarrativeStyle(state).instructions}
 
 PSYCHOLOGICAL FLAGS (Accumulated):
-${formatPsychologicalFlags(flags)}
+${formatPsychologicalFlags(flags, memoryIntegrity)}
 
 PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
 ${formatPsychologicalProfile(psychologicalProfile)}
@@ -2024,7 +2033,7 @@ If the current viable ending is no longer viable, re-determine or alter the viab
 - Profile archetype: ${psychologicalProfile.archetype}
 - Profile stability: ${psychologicalProfile.stability}
 - Psychological flags
-- Detected shift: ${hiddenState.profileShift?.detected === true ? state.hiddenState.profileShift!.shiftType : '-'}
+- Detected shift: ${hiddenState.profileShift?.detected === true ? state.hiddenState.profileShift!.shiftType : 'none'}
 - Recommended ending type: ${determineOptimalEnding(state)}
 
 Example: High curiosity leads to discovering uncomfortable truths
@@ -2044,11 +2053,12 @@ Example: High curiosity leads to discovering uncomfortable truths
  * @param flags - Psychological flags object
  * @returns Formatted string for prompt inclusion
  */
-function formatPsychologicalFlags(flags: PsychologicalFlags): string {
+function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: MemoryIntegrity): string {
   return `• Trust: ${flags.trust}
 • Fear: ${flags.fear}
 • Guilt: ${flags.guilt}
-• Curiosity: ${flags.curiosity}`;
+• Curiosity: ${flags.curiosity}
+• Memory Integrity: ${memoryIntegrity}`;
 }
 
 /**
@@ -2252,35 +2262,43 @@ function validateAIConfig(config: AIChatConfig): AIChatConfig {
 }
 
 /**
- * Applies action-specific AI configuration to base config
+ * Applies AI bounded sampling adjustments to base config.
  * 
  * This function adjusts AI parameters based on the selected action type,
  * applying configured adjustments while respecting defined bounds.
  * 
  * @param config - Base AI configuration to modify
  * @param actionConfig - Action-specific configuration with adjustments and bounds
- * @returns Modified AI configuration with applied adjustments
+ * @returns New configuration object without mutating the original
  */
-function applyActionConfig(config: AIChatConfig, actionConfig: AIActionConfig): AIChatConfig {
-  // Apply temperature adjustment with bounds
-  config.temperature = Math.max(
-    actionConfig.temperature.min,
-    Math.min(actionConfig.temperature.max, config.temperature + actionConfig.temperature.adjustment)
-  );
-  
-  // Apply topP adjustment with bounds
-  config.topP = Math.max(
-    actionConfig.topP.min,
-    Math.min(actionConfig.topP.max, config.topP + actionConfig.topP.adjustment)
-  );
-  
-  // Apply topK adjustment with bounds
-  config.topK = Math.max(
-    actionConfig.topK.min,
-    Math.min(actionConfig.topK.max, config.topK + actionConfig.topK.adjustment)
-  );
-  
-  return config;
+function applyActionConfig(
+  config: AIChatConfig,
+  adjustment: AIActionConfig
+): AIChatConfig {
+  return {
+    ...config,
+    temperature: Math.max(
+      adjustment.temperature.min,
+      Math.min(
+        adjustment.temperature.max,
+        config.temperature + adjustment.temperature.adjustment
+      )
+    ),
+    topP: Math.max(
+      adjustment.topP.min,
+      Math.min(
+        adjustment.topP.max,
+        config.topP + adjustment.topP.adjustment
+      )
+    ),
+    topK: Math.max(
+      adjustment.topK.min,
+      Math.min(
+        adjustment.topK.max,
+        config.topK + adjustment.topK.adjustment
+      )
+    )
+  };
 }
 
 /**
@@ -2310,17 +2328,30 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
 }
 
 /**
- * Determines dynamic AI configuration based on story progress and psychological state
+ * Determines AI sampling configuration for the current generation
  * 
  * This function implements a sophisticated multi-layer configuration system that balances
  * creative unpredictability with narrative consistency and structural reliability.
  * 
  * Configuration follows these principles:
  * - Controlled chaos: High enough creativity for eerie tone, low enough for consistency
- * - Psychological manipulation: Adapts to character's mental state
  * - Phase-based progression: Different creativity levels for story arcs
  * - JSON reliability: Ensures structured output integrity
  * 
+ * Purpose:
+ * - Sampling configuration controls: creativity, variation, novelty.
+ * - It does NOT control: paranoia, hallucinations, psychological instability, narrative tone.
+ * - Psychological stability is intentionally absent.
+ * - Those should be handled through prompting.
+ * 
+ * Core Philosophy:
+ * - Story Phase -> Major influence on creativity
+ * - Action Type -> Minor influence on creativity
+ * - Twists / Revelations -> Temporary creativity boost
+ * 
+ * This will produce more consistent thriller stories, because the psychological effects will
+ * come from prompt engineering and story-state system rather than from large sampling swings
+ * that can make the model feel erratic.
  * 
  * @param state - Current story state containing progress, psychological profile, and hidden values
  * @param action - Optional action taken by user for context-specific adjustments
@@ -2343,59 +2374,42 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
  * // Returns: { temperature: 0.65, topP: 0.88, topK: 45, ... }
  * ```
  */
-export function determineAIConfig(state: StoryState, selectedAction?: Action): AIChatConfig {
+export function determineAIConfig(
+  state: StoryState,
+  selectedAction?: Action
+): AIChatConfig {
   const { isEarlyPhase, isMidPhase, isFinale } = getStoryStateInfo(state);
-  
-  // Check for psychological stability level and special conditions
-  const stability = state.psychologicalProfile.stability;
-  const hasProfileShift = state.hiddenState.profileShift?.detected;
-  const isPsychologicallyDistressed = stability === 'unstable' || stability === 'fractured';
-  const hasValidActionType = !!selectedAction?.type && selectedAction.type in actionTypes;
-  
-  // 1. Story phase adjustments: Controlled chaos with consistency
-  //   - Early Game (0-40%): More exploration and curiosity
-  //   - Mid Game (40-70%): Balanced tension and continuity
-  //   - Late Game (70-100%): Tighter control for consistent endings
-  let config: AIChatConfig = isEarlyPhase ? AI_CHAT_CONFIG_HUMAN_STYLE : isMidPhase ? AI_CHAT_CONFIG_DEFAULT : {
-    ...AI_CHAT_CONFIG_DEFAULT,
-    temperature: 0.6,
-    topP: 0.85,
-    topK: 30,
-  }
-  
-  // 2. Psychological state adjustments
-  // Psychological Manipulation Mode: When sanity is low or memory corruption
-  if (isPsychologicallyDistressed) {
-    config = applyActionConfig(config, PSYCHOLOGICAL_DISTRESS_CONFIG);
-  }
-  
-  // 3. Special moments adjustments
-  // Twist Injection Mode: Major reveals and betrayals
-  if (hasProfileShift || isFinale) {
+
+  let config: AIChatConfig =
+    isEarlyPhase
+      ? AI_CHAT_CONFIG_HUMAN_STYLE
+      : isMidPhase
+        ? AI_CHAT_CONFIG_DEFAULT
+        : {
+            ...AI_CHAT_CONFIG_DEFAULT,
+            temperature: 0.6,
+            topP: 0.85,
+            topK: 35
+          };
+
+  if (state.hiddenState.profileShift?.detected) {
     config = applyActionConfig(config, TWIST_INJECTION_CONFIG);
   }
-  
-  // 4. Action-specific adjustments
-  // Apply subtle adjustments based on action type using configuration
-  // This comes after psychological and special moments to preserve their impact
-  if (hasValidActionType) {
-    const actionConfig = ACTION_AI_CONFIG[selectedAction.type satisfies ActionType];
+
+  if (selectedAction?.type) {
+    const actionConfig = ACTION_AI_CONFIG[selectedAction.type];
     if (actionConfig) {
       config = applyActionConfig(config, actionConfig);
-    } else {
-      console.warn(`[determineAIConfig] ⚠️ No configuration found for action type: ${selectedAction.type}`);
     }
   }
-  
-  // 5. Final safety check: Ensure structured output doesn't break - this is applied last to cap any excessive values
-  if (config.temperature > JSON_RELIABILITY_TEMPERATURE_THRESHOLD) {
-    config = applyConfigCaps(config, JSON_RELIABILITY_CAPS);
+
+  if (isFinale) {
+    config = applyActionConfig(config, FINALE_CONFIG);
   }
-  
-  // 6. Final validation: Ensure all parameters are within acceptable bounds
-  config = validateAIConfig(config);
-  
-  return config;
+
+  config = applyConfigCaps(config, JSON_RELIABILITY_CAPS);
+
+  return validateAIConfig(config);
 }
 
 /**
@@ -2491,7 +2505,7 @@ Initial State:
 Initial Facts:
 - Represents long-term story memory, discoveries, or important established facts that influence future turns.
 - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
-- key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(factTypes)}.
+- key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
 - value: current state. Prefer concise value over long sentence (explanation can be added in reason).
 - reason: 1-sentence, why or how it hapenned.
 
@@ -2897,7 +2911,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     console.log(`[generateNextPage] ⚠️ Previous page count mismatch, should be ${expectedPreviousPagesLength} but we got ${previousPages.length}`);
   }
 
-  const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages };
+  const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages, candidateCount: 1 };
   const prompt = buildNextPagePrompt(promptParams);
   const { systemPrompt, documents } = buildSystemPrompt(book, advancedState);
   const { selectedAction } = actionedPage;
@@ -2982,16 +2996,16 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         // Check if this specific action already has a destination pageId
         // If it does, skip insertion to prevent duplicate database entries
         const currentAction = freshActionedPage.actions.find(a => a.text === selectedAction.text);
-        if (currentAction?.destination?.pageId) {
-          console.log(`[generateNextPage] ⏭️ Action "${selectedAction.text}" already has destination pageId ${currentAction.destination.pageId}, skipping insertion`);
+        if (currentAction?.destinationPageIds.length) {
+          console.log(`[generateNextPage] ⏭️ Action "${selectedAction.text}" already has ${currentAction.destinationPageIds.length} destination pages, skipping insertion`);
           throw createNonRetryableError(
-            `Action "${selectedAction.text}" already has destination pageId ${currentAction.destination.pageId}`,
+            `Action "${selectedAction.text}" already has ${currentAction.destinationPageIds.length} destination pages`,
             'ACTION_ALREADY_HAS_DESTINATION'
           );
         }
 
         // Make branching decision with fresh data
-        const shouldCreateNewBranch = freshActionedPage.actions.some(a => !!a.destination?.pageId);
+        const shouldCreateNewBranch = freshActionedPage.actions.some(a => a.destinationPageIds.length);
         branchId = shouldCreateNewBranch ? generateBranchId() : parentBranchId;
       }
 
@@ -3046,6 +3060,249 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
 
   // 11. Return the persisted story page with all database metadata
   return newPage;
+}
+
+/**
+ * Builds the next story page using AI generation with dynamic configuration
+ *
+ * This function orchestrates the complete story generation pipeline with page-based architecture:
+ * 0. Advance story state based on user action and previous AI turn updates
+ * 0.5. Increment page number (only after state advancement succeeds)
+ * 1. Create personalized prompt with character, story context, and previous action
+ * 2. Determine optimal AI configuration based on story progress and psychological state
+ * 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
+ * 4. Handle AI response validation
+ * 5. Extract generated content from AI response
+ * 6. Lazy branching: Atomic branch creation with retry on conflict
+ * 7. Apply current AI turn's updates to story state
+ * 8. Persist generated page to database with parent-child relationship and retry logic
+ * 9. Pre-generate candidate pages for each action in the new page
+ * 10. Create delta from previous state to new state for efficient reconstruction
+ * 11. Persist story state for the generated page (page-based state management)
+ * 12. Create snapshot if conditions are met
+ * 13. Return the persisted story page with all database metadata
+ *
+ * The function uses the sophisticated configuration system from determineAIConfig()
+ * to balance creativity, consistency, and reliability throughout the story progression.
+ * For main story pages, it also pre-generates candidate pages for branching narrative.
+ *
+ * @param params.userId - The user's unique identifier for database operations
+ * @param params.book - Book metadata for context
+ * @param params.previousState - Current story state with progression, flags, and hidden values
+ * @param params.actionedPage - Previous page with selected action for context
+ * @param params.isUserAction - Whether to pre-generate candidates for next page (default: true)
+ * @returns Promise resolving to persisted story page with database ID and metadata
+ *
+ * @example
+ * ```typescript
+ * // Generate main story page with candidates for next actions
+ * const mainPage = await generateNextPage({
+ *   userId: "user123",
+ *   book: currentBook,
+ *   previousState: storyState,
+ *   actionedPage: currentPage,
+ *   isUserAction: true
+ * });
+ * // Returns: { id: "page456", bookId: "book789", text: "The door creaked open...", actions: [...] }
+ *
+ * // Generate candidate page without additional candidates
+ * const candidatePage = await generateNextPage({
+ *   userId: "user123",
+ *   book: currentBook,
+ *   currentState: storyState,
+ *   actionedPage: currentPage,
+ *   isUserAction: false
+ * });
+ * // Returns: { id: "page457", bookId: "book789", text: "Reality began to distort...", actions: [...] }
+ * ```
+ */
+export async function generateNextPages(params: BuildNextPageParams): Promise<PersistedStoryPage[]> {
+  const { userId, book, actionedPage, currentState: providedState, generateNewBranchId = false } = params;
+
+  // It's highly recommended to provide the currentState explicitly
+  if (!providedState) {
+    console.warn(`[generateNextPage] ⚠️ Base state not provided, will be reconstructed from current page`);
+  }
+
+  // Ensure story state exists for the actioned page
+  const currentState: StoryState | null = providedState ? structuredClone(providedState) : await getStoryStateWithBranch(actionedPage.bookId, actionedPage.id);
+  if (!currentState) {
+    throw new Error(`Failed to get story state for page ${actionedPage.id}`);
+  }
+  
+  // 0. Advance story state based on user action and previous AI turn updates
+  const expectedPageNumber = actionedPage.page + 1;
+  const expectedPreviousPagesLength = actionedPage.page - 1;
+  const advancedState = await advanceStoryState(currentState, actionedPage);
+
+  console.log(`[generateNextPage] 💭 Conceptualizing ${MAX_CANDIDATE_PAGE_PER_ACTION} continuation idea for "${book.title}" page ${expectedPageNumber} of ${book.totalPages}...`);
+
+  // 1. Create personalized prompt with character, story context, and previous action
+  if (advancedState.page !== expectedPageNumber) {
+    // Provided story state might mismatch, but still respect what provided
+    console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${advancedState.page} from advancedState`);
+    advancedState.page = expectedPageNumber;
+  }
+  
+  const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
+  if (previousPages.length !== expectedPreviousPagesLength) {
+    console.log(`[generateNextPage] ⚠️ Previous page count mismatch, should be ${expectedPreviousPagesLength} but we got ${previousPages.length}`);
+  }
+
+  const promptParams: BuildNextPagePromptParams = { book, actionedPage, advancedState, previousPages, candidateCount: MAX_CANDIDATE_PAGE_PER_ACTION };
+  const prompt = buildNextPagePrompt(promptParams);
+  const { systemPrompt, documents } = buildSystemPrompt(book, advancedState);
+  const { selectedAction } = actionedPage;
+  
+  // 2. Determine optimal AI configuration based on story progress and psychological state
+  const config = determineAIConfig(advancedState, selectedAction);
+  
+  // 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
+  const response = await executePromptForJSON<CandidatePagesGeneration>({
+    prompt,
+    configs: {
+      schema: CANDIDATE_GENERATION_SCHEMA_DEFINITION,
+      requiredFields: CANDIDATE_GENERATION_REQUIRED_FIELDS,
+      fallbackField: 'output',
+      baseOptions: {
+        config,
+        modelSelection: AI_CHAT_MODELS_WRITING,
+        context: 'story-page-candidates',
+        logPrompts: true,
+        systemPrompt,
+        documents
+      }
+    } satisfies AIPromptForJson<CandidatePagesGeneration>,
+    jsonStructure: nextPageOutputFormat,
+    fieldInstructions: buildNextPageFieldInstructions(advancedState, selectedAction),
+    thinkThenOutput: buildNextPageReviewChecklist(advancedState),
+    evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
+  });
+  
+  // 4. Handle AI response validation
+  if (!response.result) {
+    // Include error code and provider information for better error handling
+    const errorCode = response.finishReason || 'UNKNOWN';
+    const provider = response.provider || 'unknown';
+    throw new Error(`Failed to generate story page candidates: ${errorCode} (${provider})`);
+  }
+
+  // 5. Generated content from AI response
+  const generatedStoryPages = response.result.generatedPages;
+  const newPages: PersistedStoryPage[] = [];
+
+  for (const generatedStoryPage of generatedStoryPages) {
+    // 6. Apply current AI turn's updates to advanced story state
+    const stateDelta = extractStateDelta(generatedStoryPage);
+    const newState = applyStateDelta(advancedState, stateDelta);
+    if (newState.page !== expectedPageNumber) {
+      // Provided story state might mismatch, but still respect what provided
+      console.warn(`[generateNextPage] ⚠️ Should be generating page ${expectedPageNumber}, but we got ${newState.page} from newState`);
+      newState.page = expectedPageNumber;
+    }
+    
+    // 6.1. Calculate psychological deltas from state changes
+    const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
+    
+    // 6.2. Merge psychological deltas into the state delta for storage
+    const fullStateDelta: StateDelta = {
+      ...stateDelta,
+      ...psychologicalDeltas,
+    };
+  
+    // 7. Persist generated page to database with automatic retry on branch conflicts
+    // Branching decision is made inside the retry function to eliminate race conditions
+    const parentBranchId = actionedPage.branchId ?? "main";
+    const newPage = await retryWithBranchConflict<PersistedStoryPage, StoryPageMeta>(
+      async (data) => {
+        // let branchId = parentBranchId; // Default: same branchId as parent page
+        let branchId: string;
+  
+        if (generateNewBranchId) {
+          branchId = generateBranchId();
+        } else {
+          // Read fresh page data from write DB to ensure read-after-write consistency
+          // This is critical because ensureCandidatesForPage updates actions with destinations,
+          // and we need to see those updates to determine if branching is needed
+          const freshActionedPage = await getPageFromDB(actionedPage.id, { client: dbWrite });
+          if (!freshActionedPage) {
+            // Create a specific error for deleted pages that won't be retried
+            throw createNonRetryableError(
+              `Actioned page ${actionedPage.id} was deleted during retry operation`,
+              'PAGE_DELETED'
+            );
+          }
+    
+          // Check if this specific action already has a destination pageId
+          // If it does, skip insertion to prevent duplicate database entries
+          const currentAction = freshActionedPage.actions.find(a => a.text === selectedAction.text);
+          if (currentAction?.destinationPageIds.length) {
+            console.log(`[generateNextPage] ⏭️ Action "${selectedAction.text}" already has ${currentAction.destinationPageIds.length} destination pages, skipping insertion`);
+            throw createNonRetryableError(
+              `Action "${selectedAction.text}" already has ${currentAction.destinationPageIds.length} destination pages`,
+              'ACTION_ALREADY_HAS_DESTINATION'
+            );
+          }
+  
+          // Make branching decision with fresh data
+          const shouldCreateNewBranch = freshActionedPage.actions.some(a => a.destinationPageIds.length);
+          branchId = shouldCreateNewBranch ? generateBranchId() : parentBranchId;
+        }
+  
+        if (branchId === parentBranchId) {
+          console.log(`[generateNextPage] 🌳 Using parent branchId:`, branchId);
+        } else {
+          console.log(`[generateNextPage] 🌳 Using new branchId:`, branchId);
+        }
+        
+        const pageToInsert: StoryPage = {
+          ...generatedStoryPage,
+          stateDelta: fullStateDelta,
+          aiProvider: response.provider || 'none',
+          aiModel: response.model || 'none',
+        };
+  
+        // Create updated data with immutable pattern
+        const updatedData: StoryPageMeta = { 
+          ...data, 
+          branchId,
+          selectedAction, // Pass the selectedAction for duplicate prevention
+          // pendingGenerationCount: isLastPage ? 0 : undefined
+        };
+  
+        return insertStoryPage(userId, expectedPageNumber, pageToInsert, updatedData);
+      },
+      {
+        bookId: actionedPage.bookId,
+        parentId: actionedPage.id,
+        branchId: parentBranchId,
+      },
+      generateBranchId,
+      {
+        maxRetries: MAX_BRANCHING_RETRIES,
+        baseDelayMs: 1000,
+        onRetry: (attempt: number) => {
+          console.log(`[generateNextPage] 🔄 Branch conflict retry ${attempt}/${MAX_BRANCHING_RETRIES} for parent ${actionedPage.id}`);
+        }
+      }
+    );
+  
+    // Ensure newPage was successfully created
+    if (!newPage) {
+      throw new Error(`Failed to create page: newPage is undefined after retry loop for parent ${actionedPage.id}`);
+    }
+  
+    // 9. Pre-generate candidate pages for each action in the new page
+    const { bookId, id: pageId } = newPage;
+  
+    // 10. Persist story state for the generated page (page-based state management)
+    await insertStoryState(bookId, pageId, newState, "original");
+  
+    // 11. Return the persisted story page with all database metadata
+    newPages.push(newPage);
+  }
+  
+  return newPages;
 }
 
 /**

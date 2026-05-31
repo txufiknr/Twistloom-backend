@@ -10,8 +10,9 @@
 [ ] Action destinationPageIds: string[]
 [ ] 2 destination at once
 
-@story.ts#L881-889 @story.ts#L301-321 @story.ts#L676-682 I have these shape for facts tracking
-can you complete my processFactUpdates function implementation and write refined jsdoc comment fot it?
+destination
+destinationPageId
+insertStoryPage
 
 {
   "flagUpdates": [

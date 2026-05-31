@@ -141,7 +141,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       properties: {
         key: { type: 'string', description: FACT_KEY_FORMAT },
         value: { type: 'string' },
-        type: { type: 'string', enum: [...factTypes] },
+        type: { type: 'string', enum: [...Object.keys(factTypes)] },
         reason: { type: 'string', description: 'Explain why in 1 sentence' },
       } satisfies Record<keyof InitialFact, AIJsonProperty>,
       required: ['key', 'value'] satisfies (keyof InitialFact)[],

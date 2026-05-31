@@ -411,8 +411,8 @@ export async function markPageVisited(params: {
   const { id: bookId, totalPages, stats } = book;
   const { id: pageId, page: pageNumber, branchId, visitCount } = visitedPage;
 
-  if (action && action.destination.pageId !== pageId) {
-    throw new Error(`action.destination.pageId and pageId mismatch`);
+  if (action && !action.destinationPageIds.some(p => p === pageId)) {
+    throw new Error(`Action destination pageId mismatch`);
   }
 
   // Skip credit consumption for internal system user
@@ -769,7 +769,7 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
 export async function insertUserPageProgress(data: DBNewUserPageProgress & { client?: DBClient }): Promise<DBUserPageProgress | null> {
   try {
     const { action, nextPageId, client = dbWrite } = data;
-    if (action.destination.pageId !== nextPageId) {
+    if (!action.destinationPageIds.some(p => p === nextPageId)) {
       throw new Error("Action destination pageId does not match nextPageId");
     }
 

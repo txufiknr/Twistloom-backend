@@ -768,7 +768,7 @@ export async function reconstructStoryState(
         const parentPage = branchPath.pages[i - 1];
         
         // Find the action in parent page that led to this page
-        const selectedAction = parentPage.actions?.find(action => action.destination?.pageId === page.id);
+        const selectedAction = parentPage.actions?.find(action => action.destinationPageIds.some(p => p === page.id));
         
         if (selectedAction) {
           currentState.actionsHistory.push({

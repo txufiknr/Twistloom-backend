@@ -204,7 +204,7 @@ export function invalidateEnrichedBookCache(bookIdentifier: string): void {
  * - Creates parent-child relationship for branching when parentPageId provided
  * - Handles both root pages (no parent) and child pages (with parent)
  * 
- * Examples:
+ * @example
  * ```typescript
  * // Root page
  * const firstPage = await insertStoryPage("user123", 1, firstPageContent, "book456");
@@ -232,22 +232,20 @@ export async function insertStoryPage(
       }
       
       // Find the specific action in parent that matches the selectedAction
-      const matchingAction = parentPage.actions.find(action => action.text === selectedAction.text);
+      // const matchingAction = parentPage.actions.find(action => action.text === selectedAction.text);
       
       // Check if the matching action already has a destination pageId
-      if (matchingAction?.destination?.pageId && matchingAction.destination.pageId !== 'pending') {
-        console.warn(`[insertStoryPage] ⚠️ Parent action "${selectedAction.text}" already has destination pageId ${matchingAction.destination.pageId}, skipping insertion`);
-        // Return the existing page instead of inserting a new one
-        const existingPage = await getPageFromDB(matchingAction.destination.pageId, { client });
-        if (existingPage) {
-          return mapToPersistedStoryPage(existingPage);
-        }
-        // If existing page not found, proceed with insertion (race condition handling)
-      }
+      // if (matchingAction?.destinationPageIds.length) {
+      //   console.warn(`[insertStoryPage] ⚠️ Parent action "${selectedAction.text}" already has ${matchingAction.destinationPageIds.length} destination pages, skipping insertion`);
+      //   // Return the existing page instead of inserting a new one
+      //   // TODO: pick one
+      //   const existingPage = await getPageFromDB(matchingAction.destinationPageIds[0], { client });
+      //   if (existingPage) {
+      //     return mapToPersistedStoryPage(existingPage);
+      //   }
+      //   // If existing page not found, proceed with insertion (race condition handling)
+      // }
     }
-
-    // // Count actions without destinations for initial pendingGenerationCount
-    // const pendingGenerationCount = pageMeta.pendingGenerationCount ?? page.actions.filter(action => !action.destination?.pageId).length;
 
     const newPageData: DBNewPage = {
       userId,
@@ -266,7 +264,6 @@ export async function insertStoryPage(
       stateDelta: extractStateDelta(page),
       aiProvider: page.aiProvider || null,
       aiModel: page.aiModel || null,
-      // pendingGenerationCount,
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -274,11 +271,8 @@ export async function insertStoryPage(
     // Use retryWithBranchConflict to handle unique constraint violations
     const result = await retryWithBranchConflict(
       async (data: DBNewPage) => {
-        const insertResult = await client
-          .insert(pages)
-          .values(data)
-          .returning();
-        return insertResult[0];
+        const [newPage] = await client.insert(pages).values(data).returning();
+        return newPage;
       },
       newPageData,
       generateBranchId,
@@ -968,7 +962,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
 }): Promise<EnrichedStoryPage | null> {
   const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction } = options;
   const allActions = dbPage.actions;
-  const visibleActions = allActions.filter(action => action.destination?.pageId);
+  const visibleActions = allActions.filter(action => !!action.destinationPageIds.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, bookId } = dbPage;
 

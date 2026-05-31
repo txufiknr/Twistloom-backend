@@ -3,8 +3,9 @@ import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type In
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
-import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration } from "../types/story.js";
 import type { ThreadUpdates } from "../types/thread.js";
+import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
@@ -20,8 +21,8 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
       required: ['text', 'type'] satisfies (keyof ActionHint)[],
       additionalProperties: false
     },
-  } satisfies Record<keyof Omit<Action, 'destination'>, AIJsonProperty>,
-  required: ['text', 'type', 'hint'] satisfies (keyof Omit<Action, 'destination'>)[],
+  } satisfies Record<keyof ActionGeneration, AIJsonProperty>,
+  required: ['text', 'type', 'hint'] satisfies (keyof ActionGeneration)[],
   additionalProperties: false
 } };
 
@@ -85,7 +86,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
         key: { type: 'string', description: `${FACT_KEY_FORMAT} (new or existing)` },
         value: { type: 'string' },
         page: { type: 'integer' },
-        type: { type: 'string', enum: [...factTypes] },
+        type: { type: 'string', enum: [...Object.keys(factTypes)] },
         reason: { type: 'string', description: 'Explain why or how it happened in 1 sentence' },
       } satisfies Record<keyof FactUpdate, AIJsonProperty>,
       required: ['key', 'value', 'page'] satisfies (keyof FactUpdate)[],
@@ -204,6 +205,21 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
+
+/**
+ * Schema definition for PageTranslation type
+ */
+export const CANDIDATE_GENERATION_SCHEMA_DEFINITION = {
+  generatedPages: { type: 'array', description: 'Alternative fate sourced from the same action', items: {
+    type: 'object',
+    properties: STORY_GENERATION_SCHEMA_DEFINITION,
+    required: STORY_GENERATION_REQUIRED_FIELDS,
+    additionalProperties: false
+  } },
+  output: { type: 'string', description: "Concise comment or verdict" }
+} satisfies Record<keyof CandidatePagesGeneration, AIJsonProperty>;
+
+export const CANDIDATE_GENERATION_REQUIRED_FIELDS = ['generatedPages'] satisfies Array<keyof CandidatePagesGeneration>;
 
 export function buildEvaluationSchemaDefinition<T extends Record<string, unknown>>(options: AIPromptOptions): Record<keyof AIJsonEvaluation<T>, AIJsonProperty> {
   const { outputJsonStructure, outputJsonRequired } = options;

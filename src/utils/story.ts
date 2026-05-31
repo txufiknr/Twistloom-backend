@@ -824,9 +824,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
 function updateHiddenState(state: StoryState): void {
   const pageProgress = state.page / state.maxPage;
   const traumaCount = state.traumaTags.length;
-  const majorEventCount = state.actionsHistory.filter(a => 
-    a.type === 'confront' || a.type === 'avoid'
-  ).length;
+  const majorEventCount = state.actionsHistory.filter(a => a.type === 'attack' || a.type === 'ignore').length;
 
   // ========================
   // TRUTH LEVEL CALCULATION
@@ -897,7 +895,7 @@ function updateHiddenState(state: StoryState): void {
   if (stabilityScore <= 0.3) {
     state.hiddenState.realityStability = "broken";
   } else if (stabilityScore <= 0.6) {
-    state.hiddenState.realityStability = "shaking";
+    state.hiddenState.realityStability = "slipping";
   } else {
     state.hiddenState.realityStability = "stable";
   }
@@ -1441,7 +1439,9 @@ export function getShiftedEnding(state: StoryState): EndingType | undefined {
     case "trait_inversion": return "loop";
     // "Fear turned to rage, and rage opened the wrong door"
     case "fear_to_aggression": return "possession";
+    // "You thought you were escaping... but you were just running in circles"
     case "denial_break": return "false_reality";
+    // "You betrayed your own instincts... and now you can't trust anything"
     case "trust_betrayal": return "fake_escape";
       
     default: return state.viableEnding?.type;

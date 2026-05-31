@@ -1,6 +1,6 @@
 import type { Book } from "./book.js";
 import type { DBBook, DBPage } from "./schema.js";
-import type { Action, PersistedStoryPage, StoryState, UserStoryPage } from "./story.js";
+import type { Action, PersistedStoryPage, StoryGeneration, StoryState, UserStoryPage } from "./story.js";
 
 /**
  * Candidate generation strategies for different deployment contexts
@@ -52,7 +52,7 @@ export interface CandidateGenerationResult {
   /** Whether the generation succeeded */
   success: boolean;
   /** The generated candidate page (if successful) */
-  candidatePage: PersistedStoryPage | null;
+  candidatePages: PersistedStoryPage[];
   /** The error that occurred (if failed) */
   error: unknown;
 }
@@ -70,7 +70,7 @@ export interface ActionProgressEvent {
   /** ISO timestamp of when the event occurred */
   timestamp: string;
   /** Destination pageId — present when status is 'completed' */
-  destinationPageId?: string;
+  destinationPageIds?: string[];
 }
 
 /** Status of an action generation operation */
@@ -82,7 +82,7 @@ export type ActionProgressCallback = (
   /** Current status of the action generation */
   status: ActionProgressStatus,
   /** Generated candidate page if successful */
-  result?: PersistedStoryPage,
+  candidatePages?: PersistedStoryPage[],
   /** Error if generation failed */
   error?: unknown
 ) => Promise<void>;
@@ -114,7 +114,7 @@ export interface GenerateCandidatesInParallelParams {
   /** Whether to allow generating deeper levels beyond currentDepth */
   allowDeeperLevel?: boolean;
   /** Callback for when an action is completed */
-  onActionComplete?: (action: Action, candidatePage: PersistedStoryPage) => Promise<void>;
+  onActionComplete?: (action: Action, candidatePages: PersistedStoryPage[]) => Promise<void>;
 }
 
 /** Parameters for generating candidates with a specific strategy */
@@ -183,3 +183,8 @@ export interface CandidateGenerationStatus {
   startedAt?: string;
   lastUpdated: string;
 }
+
+export type CandidatePagesGeneration = {
+  generatedPages: StoryGeneration[];
+  output?: string;
+};

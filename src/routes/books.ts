@@ -2529,16 +2529,16 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
     const { actions, updatedAt } = userPage;
 
     // Calculate completed/total from page actions (SSOT)
-    const actionsWithDestinations = actions.filter(a => a.destination?.pageId);
+    const actionsWithDestinations = actions.filter(a => !!a.destinationPageIds.length);
     const completedActions = actionsWithDestinations.length;
     const totalActions = actions.length;
     const progressEventFallback = actions.map((action) => {
-      const hasDestination = !!action.destination?.pageId;
+      const hasDestination = !!action.destinationPageIds.length;
       return {
         action: action.text,
         status: hasDestination ? 'completed' : 'started',
         timestamp: new Date().toISOString(),
-        destinationPageId: hasDestination ? action.destination!.pageId : undefined,
+        destinationPageIds: hasDestination ? action.destinationPageIds : undefined,
       } satisfies ActionProgressEvent;
     });
 

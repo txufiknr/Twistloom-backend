@@ -2,12 +2,14 @@ import type { Book } from "./book.js";
 import type { StoryState, ActionedStoryPage, UserStoryPage } from "./story.js";
 
 export type GenerateBookCreationPromptParams = {
-  logPrompts?: boolean,
+  /** Whether to */
+  logPrompts?: boolean;
+  /** */
   signal?: AbortSignal;
   /** Language code from Accept-Language header (e.g. 'en', 'es') */
-  language?: string | null,
+  language?: string | null;
   /** Initiator user id who requested/generated this prompt */
-  userId?: string | null,
+  userId?: string | null;
 };
 
 /**
@@ -30,5 +32,6 @@ export type BuildNextPagePromptParams = {
   book: Book,
   actionedPage: ActionedStoryPage,
   advancedState: StoryState,
-  previousPages: UserStoryPage[]
+  previousPages: UserStoryPage[],
+  candidateCount: number;
 }

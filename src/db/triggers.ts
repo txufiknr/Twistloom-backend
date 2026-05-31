@@ -658,11 +658,12 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION update_pending_generation_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- Count actions without destination.pageId (excluding fallback actions)
+        -- Count actions with empty destinationPageIds (excluding fallback actions)
         NEW.pending_generation_count = (
           SELECT COUNT(*)
           FROM jsonb_array_elements(NEW.actions) AS action
-          WHERE (action->'destination'->>'pageId') IS NULL
+          WHERE jsonb_typeof(action->'destinationPageIds') = 'array' 
+            AND jsonb_array_length(action->'destinationPageIds') = 0
         );
         RETURN NEW;
       END;

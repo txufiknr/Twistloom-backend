@@ -45,7 +45,7 @@ export async function storeActionProgressEvent(
   pageId: string,
   event: ActionProgressEvent
 ): Promise<void> {
-  const { action: actionText, status, error, destinationPageId } = event;
+  const { action: actionText, status, error, destinationPageIds } = event;
 
   // Early exit: No need to store invalid action progress event
   if (!actionText) return;
@@ -64,7 +64,7 @@ export async function storeActionProgressEvent(
         actionText,
         status,
         error,
-        destinationPageId,
+        destinationPageIds,
         startedAt,
         completedAt,
       })
@@ -73,7 +73,7 @@ export async function storeActionProgressEvent(
         set: {
           status,
           error,
-          destinationPageId,
+          destinationPageIds,
           startedAt: startedAt || actionProgress.startedAt,
           completedAt: completedAt || actionProgress.completedAt,
           updatedAt: new Date(),
@@ -110,7 +110,7 @@ export async function getActionProgressEvents(
       status: row.status,
       error: row.error || undefined,
       timestamp: row.updatedAt.toISOString(),
-      destinationPageId: row.destinationPageId || undefined,
+      destinationPageIds: row.destinationPageIds,
     }) satisfies ActionProgressEvent);
 
     console.log(`[getActionProgressEvents] 📊 Retrieved ${events.length} progress events for page ${pageId}`);

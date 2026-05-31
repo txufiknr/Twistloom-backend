@@ -53,6 +53,8 @@ export const endingTypes = {
   "ambiguity": "Ending is unclear and open to interpretation → multiple interpretations, unclear resolutions, missing details",
   /** The world itself is not real (or partially fabricated) */
   "false_reality": "The world itself is not real → reality inconsistencies, strange objects, 'wrong' world moments",
+  /** MC is taken over or controlled by an external force */
+  "possession": "MC is taken over or controlled by an external force → loss of agency, mind/body takeover, external influence",
   /** Key relationships/events are products of MC's mental state */
   "mental_fabrication": "Key relationships/events are products of MC's mental state → questionable relationships, inconsistent memories, unreliable perceptions",
   /** All choices lead to the same predetermined outcome */
@@ -128,7 +130,7 @@ export type Mood = typeof moods[number];
  * Generated from the endings object to ensure type safety
  * when specifying target story endings.
  */
-export type EndingType = typeof endingTypes[keyof typeof endingTypes];
+export type EndingType = keyof typeof endingTypes;
 
 /**
  * Union type of all possible action type values
@@ -136,7 +138,7 @@ export type EndingType = typeof endingTypes[keyof typeof endingTypes];
  * Generated from the actionTypes array to ensure type safety
  * for categorizing user actions.
  */
-export type ActionType = typeof actionTypes[keyof typeof actionTypes];
+export type ActionType = keyof typeof actionTypes;
 
 export type AIParameterValue = { adjustment: number, min: number, max: number };
 export type AIActionConfig = { temperature: AIParameterValue, topP: AIParameterValue, topK: AIParameterValue };
@@ -298,16 +300,19 @@ export interface PlotFlag {
   place?: string;
 }
 
-export const factTypes = [
-  "character",
-  "relationship",
-  "inventory",
-  "world",
-  "mystery",
-  "other"
-] as const;
+export const factTypes = {
+  character: "About characters, including status, goals, traits, conditions, locations, and major developments.",
+  relationship: "Describing relationships, trust, loyalty, hostility, romance, or other connections between characters.",
+  inventory: "About items, objects, evidence, weapons, documents, ownership, possession, or condition.",
+  location: "About places, buildings, rooms, landmarks, accessibility, security, or location status.",
+  // organization: "About groups, companies, governments, factions, cults, teams, or institutions.",
+  world: "About the broader world state, environment, weather, disasters, laws, politics, infrastructure, or global conditions.",
+  mystery: "Related to investigations, clues, suspects, evidence, revelations, secrets, or unresolved questions.",
+  knowledge: "Describing what a character knows, believes, suspects, remembers, or has learned. Represents character knowledge rather than objective truth.",
+  other: "Important durable story facts that do not fit any other category."
+};
 
-export type FactType = typeof factTypes[number];
+export type FactType = keyof typeof factTypes;
 
 export type FactHistory = {
   page: number;
@@ -462,17 +467,17 @@ export const realityStabilities = {
 /**
  * Union type of all possible truth level keys
  */
-export type TruthLevel = typeof truthLevels[keyof typeof truthLevels];
+export type TruthLevel = keyof typeof truthLevels;
 
 /**
  * Union type of all possible threat proximity keys
  */
-export type ThreatProximity = typeof threatProximities[keyof typeof threatProximities];
+export type ThreatProximity = keyof typeof threatProximities;
 
 /**
  * Union type of all possible reality stability keys
  */
-export type RealityStability = typeof realityStabilities[keyof typeof realityStabilities];
+export type RealityStability = keyof typeof realityStabilities;
 
 /**
  * Hidden narrative state not directly visible to users
@@ -534,15 +539,25 @@ export const archetypes = {
  * Available stability levels for psychological profiles
  * 
  * These define the current mental coherence and stability of the MC.
+ * How psychologically compromised is the protagonist?
  */
+// export const stabilityLevels = {
+//   /** Mentally coherent, rational thinking */
+//   "stable": "Mentally coherent, rational thinking → Subtle manipulation, gradual escalation",
+//   /** Under stress, showing cracks in composure */
+//   "cracking": "Under stress, showing cracks in composure → More direct psychological attacks, visible stress",
+//   /** Severely distressed, reality breakdown */
+//   "unstable": "Severely distressed, reality breakdown → Full psychological warfare, reality breakdown"
+// };
+
 export const stabilityLevels = {
   /** Mentally coherent, rational thinking */
-  "stable": "Mentally coherent, rational thinking → Subtle manipulation, gradual escalation",
+  stable: "Mentally coherent and rational. Trusts perception and reasoning. → Interpret events objectively.",
   /** Under stress, showing cracks in composure */
-  "cracking": "Under stress, showing cracks in composure → More direct psychological attacks, visible stress",
+  cracking: "Under psychological stress. Experiencing paranoia, doubt, intrusive thoughts, or growing instability. → Interpret ambiguous events with growing suspicion.",
   /** Severely distressed, reality breakdown */
-  "unstable": "Severely distressed, reality breakdown → Full psychological warfare, reality breakdown"
-};
+  unstable: "Severely psychologically compromised. Reality perception is unreliable, with possible delusions, hallucinations, or identity breakdown. → Perception may be unreliable. Increase paranoia, self-doubt, and distorted interpretations while preserving narrative coherence."
+} as const;
 
 /**
  * Available manipulation affinities for psychological targeting
@@ -569,7 +584,7 @@ export const manipulationAffinities = {
  * Generated from the archetypes object to ensure type safety
  * when specifying MC behavioral patterns.
  */
-export type Archetype = typeof archetypes[keyof typeof archetypes];
+export type Archetype = keyof typeof archetypes;
 
 /**
  * Union type of all possible stability level keys
@@ -577,7 +592,7 @@ export type Archetype = typeof archetypes[keyof typeof archetypes];
  * Generated from the stabilityLevels object to ensure type safety
  * when specifying MC mental states.
  */
-export type StabilityLevel = typeof stabilityLevels[keyof typeof stabilityLevels];
+export type StabilityLevel = keyof typeof stabilityLevels;
 
 /**
  * Union type of all possible manipulation affinity keys
@@ -585,7 +600,7 @@ export type StabilityLevel = typeof stabilityLevels[keyof typeof stabilityLevels
  * Generated from the manipulationAffinities object to ensure type safety
  * when specifying psychological targeting vectors.
  */
-export type ManipulationAffinity = typeof manipulationAffinities[keyof typeof manipulationAffinities];
+export type ManipulationAffinity = keyof typeof manipulationAffinities;
 
 /**
  * Psychological profile of the main character based on behavior patterns
@@ -748,14 +763,16 @@ export type Action = {
   /** Consequence hint for the action (for AI guidance) */
   hint: ActionHint;
   /** Destination meta for the action */
-  destination: {
-    branchId?: string;
-    pageId?: string;
-  };
+  destinationPageIds: string[];
+  // destination: {
+  //   branchId?: string;
+  //   pageId?: string;
+  // };
   // /** Internal sentinel flag to prevent infinite retry loops for fallback actions */
   // _isFallback?: boolean;
 };
 
+export type ActionGeneration = Omit<Action, 'destinationPageIds'>;
 export type ActionHistory = Action & { page: number }
 export type ActionTranslation = {
   /** Original action text (serves as unique identifier) */

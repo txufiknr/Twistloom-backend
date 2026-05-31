@@ -692,16 +692,16 @@ export async function visitBookPage(
       return {};
     }
   
-    action = parentDbPage.actions.filter(a => a.destination.pageId === pageId)[0];
+    action = parentDbPage.actions.filter(a => a.destinationPageIds.some(p => p === pageId))[0];
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
       handleNotFoundError(res, `Action for this page not found in the parent page`);
       return {};
     }
 
-    const isActionMatch = !action || action.destination.pageId === pageId;
+    const isActionMatch = !action || action.destinationPageIds.some(p => p === pageId);
     if (!isActionMatch) {
-      console.error(`[visitBookPage] ❌ action.destination.pageId and pageId mismatch`);
+      console.error(`[visitBookPage] ❌ Action destination pageId mismatch`);
       return { dbPage, book };
     }
 
