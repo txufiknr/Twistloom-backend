@@ -712,11 +712,19 @@ export function processFactUpdates(
 
     const latestFact = history.at(-1);
 
-    // Skip consecutive duplicate values
-    if (
-      latestFact &&
-      latestFact.value === factHistory.value
-    ) {
+    if (!latestFact) {
+      history.push(factHistory);
+      continue;
+    }
+
+    // Same page -> replace
+    if (latestFact.page === factHistory.page) {
+      history[history.length - 1] = factHistory;
+      continue;
+    }
+
+    // Skip unchanged state
+    if (latestFact.value === factHistory.value) {
       continue;
     }
 
