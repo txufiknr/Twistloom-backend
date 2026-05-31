@@ -2,7 +2,7 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes, factTypes } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -14,7 +14,7 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, Ending, FutureNote, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPageMeta, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import { getErrorMessage } from "./error.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB } from "../services/book.js";
@@ -285,9 +285,17 @@ const firstBookOutputFormat: string = `{
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
       "secrets": "Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).",
-      "relationshipToMC": "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')",
+      "relationshipToMC": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
       "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc)."
+    }
+  ],
+  "initialFacts": [
+    {
+      "key": "fact.key",
+      "value": "Fact Value",
+      "type": "One of: ${formatOneOf(factTypes)}",
+      "reason": "Reason for the fact"
     }
   ]
 }`;
@@ -1852,7 +1860,7 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   const { book, advancedState: state, actionedPage: page, previousPages } = params;
   const { mc, summary } = book;
   const { actions } = page;
-  const { contextHistory, plotFlags } = state;
+  const { contextHistory, plotFlags, factsHistory } = state;
   const stateInfo = getStoryStateInfo(state);
   const { phase, phaseGoal } = stateInfo;
 
@@ -1877,6 +1885,9 @@ ${contextHistory || 'No story context yet.'}
 
 PLOT FLAGS:
 ${formatPlotFlags(plotFlags)}
+
+CURRENT FACTS:
+${formatCurrentFacts(factsHistory)}
 
 PREVIOUS PAGES:
 ${formatPreviousPagesForPrompt(previousPages)}
@@ -2124,6 +2135,21 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
   }
 
   return deduped.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}`).join('\n');
+}
+
+/**
+ * Formats current facts for prompt display
+ * 
+ * Extracts the most recent fact for each key from the facts history
+ * for current canonical facts
+ * 
+ * @todo categorize per type
+ */
+function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>): string {
+  const currentFacts = Object.fromEntries(Object.entries(factsHistory).filter(([_, history]) => history.length > 0).map(([key, history]) => [key, history.at(-1)!]));
+  if (Object.keys(currentFacts).length === 0) return 'No facts discovered yet.';
+
+  return Object.entries(currentFacts).map(([key, fact]) => `• ${key}: ${fact.value}`).join('\n');
 }
 
 /**
@@ -2545,6 +2571,7 @@ export async function initializeBook(
       firstPage: generatedFirstPage,
       initialPlace,
       initialCharacters,
+      initialFacts,
       mainCharacter: mc,
       language
     } = response.result;
@@ -2617,8 +2644,8 @@ export async function initializeBook(
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
       ...generatedInitialState,
       hiddenState: createInitialHiddenState(),
-      characters: initialCharacters ? 
-        Object.fromEntries(
+      characters: initialCharacters && initialCharacters.length > 0 ? 
+        Object.fromEntries<CharacterMemory>(
           initialCharacters.map((char) => [
             char.name,
             {
@@ -2658,6 +2685,13 @@ export async function initializeBook(
           currentMood: initialPlace.currentMood,
         } satisfies PlaceMemory
       } : {},
+      factsHistory: initialFacts && initialFacts.length > 0 ?
+        Object.fromEntries<FactHistory[]>(
+          initialFacts.map((fact) => [
+            fact.key,
+            [{ ...fact, page: 1 }]
+          ])
+        ) : {}
     };
 
     // 7. Generate book cover image in background (fire-and-forget)

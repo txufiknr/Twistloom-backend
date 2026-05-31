@@ -6,11 +6,12 @@
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
-[ ] review claude: payment route
-[ ] review claude: story branch (getStoryStateWithBranch)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 [ ] Action destinationPageIds: string[]
 [ ] 2 destination at once
+
+@story.ts#L881-889 @story.ts#L301-321 @story.ts#L676-682 I have these shape for facts tracking
+can you complete my processFactUpdates function implementation and write refined jsdoc comment fot it?
 
 {
   "flagUpdates": [
@@ -18,10 +19,6 @@
   ]
 }
 
-
-story state & delta changes:
-[ ] PermanentMemory (keyed, updateable)
-[ ] TagUpdate add prop `update: Partial<T>`
 
 [ ] userSettings schema
 - interests: string[]

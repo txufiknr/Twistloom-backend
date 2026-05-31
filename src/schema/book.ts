@@ -2,12 +2,12 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import { characterStatuses, type InitialCharacterMemory, type StoryMC, type StoryMCTranslation } from "../types/character.js";
 import { placeMoods, placeTypes, type InitialPlaceMemory } from "../types/places.js";
-import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, Ending, StoryPageGeneration, FutureNote } from "../types/story.js";
+import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, Ending, StoryPageGeneration, FutureNote, InitialFact } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
-import { difficulties, endingTypes, flagLevels, futureNoteTags, plotFlagTypes, storyPhases } from "../types/story.js";
+import { difficulties, endingTypes, factTypes, flagLevels, futureNoteTags, plotFlagTypes, storyPhases } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
 import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
-import { MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -134,6 +134,20 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
     required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof InitialStoryState)[],
     additionalProperties: false
   },
+  initialFacts: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        value: { type: 'string' },
+        type: { type: 'string', enum: [...factTypes] },
+        reason: { type: 'string', description: 'Describe the fact in 1 sentence' },
+      } satisfies Record<keyof InitialFact, AIJsonProperty>,
+      required: ['key', 'value'] satisfies (keyof InitialFact)[],
+      additionalProperties: false
+    }
+  },
   initialPlace: {
     type: 'object',
     properties: {
@@ -155,7 +169,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         role: { type: 'string' },
         gender: { type: "string", enum: [...genders] },
         status: { type: 'string', enum: [...characterStatuses] },
-        relationshipToMC: { type: 'string', description: "Specific dynamic, not generic, ${RELATIONSHIP_TO_MC_LENGTH} (e.g. 'Close childhood friend who knows too much.')" },
+        relationshipToMC: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
         bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
         visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
         secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
@@ -168,7 +182,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
     type: 'object',
     properties: {
       name: { type: 'string' },
-      age: { type: 'integer' },
+      age: { type: 'integer', description: `Between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}` },
       gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
       bio: { type: 'string' },
     } satisfies Record<keyof StoryMC, AIJsonProperty>,
@@ -188,6 +202,7 @@ export const BOOK_CREATION_REQUIRED_FIELDS = [
   'initialState',
   'initialPlace',
   'initialCharacters',
+  'initialFacts',
   'mainCharacter'
 ] satisfies Array<keyof BookCreationResponse>;
 

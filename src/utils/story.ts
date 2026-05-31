@@ -1,7 +1,7 @@
 import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
@@ -27,6 +27,7 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
     futureNoteUpdates: generation.futureNoteUpdates,
+    factUpdates: generation.factUpdates,
     addPlotFlag: generation.addPlotFlag,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
@@ -159,6 +160,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     traumaTagUpdates,
     futureNoteUpdates,
     addPlotFlag,
+    factUpdates,
     characterUpdates,
     relationshipUpdates,
     placeUpdates,
@@ -213,6 +215,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
   processPlotFlagUpdates(newState, addPlotFlag);
+  processFactUpdates(newState, factUpdates);
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
   processPlaceUpdates(newState, placeUpdates);
   processThreadUpdates(newState, threadUpdates);
@@ -555,7 +558,7 @@ function updateFlagWithHysteresis(
 /**
  * Generic helper to process array updates from AI-generated content
  * 
- * Handles both adding and removing items from an array based on the TagUpdates structure.
+ * Handles both removing then adding items from an array based on the TagUpdates structure.
  * 
  * @param targetArray - The array to update (passed by reference)
  * @param updates - TagUpdates object with add and remove arrays
@@ -580,7 +583,7 @@ function processTagUpdates<T extends TagItem>(
     return false;
   };
 
-  // Remove specified items
+  // 1. Remove specified items
   if (updates.remove && updates.remove.length > 0) {
     targetArray.splice(
       0,
@@ -589,7 +592,7 @@ function processTagUpdates<T extends TagItem>(
     );
   }
 
-  // Add new items (avoid duplicates)
+  // 2. Add new items (avoid duplicates)
   if (updates.add && updates.add.length > 0) {
     for (const item of updates.add) {
       if (!targetArray.some(existing => isSameItem(existing, item))) {
@@ -667,6 +670,57 @@ export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag
 
   if (!isDuplicate) {
     state.plotFlags.push(normalized);
+  }
+}
+
+/**
+ * Applies fact updates to the story state's fact history.
+ *
+ * Each fact key maintains a chronological history of changes.
+ * If a key already exists, the new fact is appended to its history.
+ * Otherwise a new history array is created for that key.
+ *
+ * Consecutive duplicate values are ignored to avoid bloating
+ * the history with unchanged state updates.
+ *
+ * @example
+ * inventory.silver_key.owner: [
+ *   { page: 5, value: "Sarah" },
+ *   { page: 33, value: "John" }
+ * ]
+ * relationship.sarah.john: [
+ *   { page: 8, value: "friends" },
+ *   { page: 22, value: "distrust" }
+ * ]
+ *
+ * @param state - Mutable story state.
+ * @param factUpdates - Fact changes extracted from the newly generated page.
+ */
+export function processFactUpdates(
+  state: StoryState,
+  factUpdates?: FactUpdate[]
+): void {
+  if (!factUpdates?.length) return;
+
+  for (const { key, ...factHistory } of factUpdates) {
+    const history = state.factsHistory[key];
+
+    if (!history) {
+      state.factsHistory[key] = [factHistory];
+      continue;
+    }
+
+    const latestFact = history.at(-1);
+
+    // Skip consecutive duplicate values
+    if (
+      latestFact &&
+      latestFact.value === factHistory.value
+    ) {
+      continue;
+    }
+
+    history.push(factHistory);
   }
 }
 

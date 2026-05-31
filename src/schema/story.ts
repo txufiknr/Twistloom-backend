@@ -1,9 +1,9 @@
 import { MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
-import { actionHintTypes, moods } from "../types/story.js";
+import { actionHintTypes, factTypes, moods } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
-import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote } from "../types/story.js";
+import type { Action, ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration } from "../types/story.js";
 import type { ThreadUpdates } from "../types/thread.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
@@ -63,7 +63,6 @@ function getTagUpdatesSchema<T extends TagItem>(): AIJsonProperty {
   };
 };
 
-// export const STORY_PAGE_GENERATION_SCHEMA: { [K in keyof StoryPageGeneration]: AIJsonProperty } = {
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {
   text: { type: 'string', description: `Main story page content. First-person central ("I") POV as MC. Max ${MAX_WORDS_PER_PAGE} words.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
@@ -75,20 +74,24 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   actions: STORY_ACTION_SCHEMA
 };
 
-/**
- * Common schema definition for StoryGeneration type
- * 
- * This is the single source of truth for StoryGeneration schema.
- * All helper functions reference this to avoid duplication.
- */
-export const STORY_GENERATION_SCHEMA_DEFINITION = {
-  // Page
-  ...STORY_PAGE_GENERATION_SCHEMA,
-
-  // State Delta
-  // TODO: separate into StoryStateGeneration
+export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, AIJsonProperty> = {
   traumaTagUpdates: getTagUpdatesSchema<string>(),
   futureNoteUpdates: getTagUpdatesSchema<FutureNote>(),
+  factUpdates: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        value: { type: 'string' },
+        page: { type: 'integer' },
+        type: { type: 'string', enum: [...factTypes] },
+        reason: { type: 'string', description: 'Describe the fact and how it happened in 1 sentence' },
+      } satisfies Record<keyof FactUpdate, AIJsonProperty>,
+      required: ['key', 'value', 'page'] satisfies (keyof FactUpdate)[],
+      additionalProperties: false
+    }
+  },
 
   placeUpdates: {
     type: 'object',
@@ -187,6 +190,17 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   // Provide full to overwrite current. Can omit or empty if no changes.
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: 'Items added to or removed from inventory on this page. Empty array if no changes.' },
   injuries: { type: 'array', items: INJURY_SCHEMA, description: 'Injuries sustained on this page. Injuries severity are automatically decaying. Empty array if no changes.' },
+}
+
+/**
+ * Common schema definition for StoryGeneration type
+ * 
+ * This is the single source of truth for StoryGeneration schema.
+ * All helper functions reference this to avoid duplication.
+ */
+export const STORY_GENERATION_SCHEMA_DEFINITION = {
+  ...STORY_PAGE_GENERATION_SCHEMA, // Page
+  ...STORY_STATE_GENERATION_SCHEMA // State Delta
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
@@ -242,6 +256,7 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   viableEnding: undefined,
   characters: {},
   places: {},
+  factsHistory: {},
   actionsHistory: [],
   contextHistory: '',
   isMajorEvent: false,

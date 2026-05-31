@@ -1,6 +1,6 @@
 import type { InitialCharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { InitialPlaceMemory } from "./places.js";
-import type { Action, ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState } from "./story.js";
+import type { Action, ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact } from "./story.js";
 import type { DBBookTranslations, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -162,7 +162,9 @@ export type BookCreationResponse = {
   /** Initial place memory setup */
   initialPlace: InitialPlaceMemory;
   /** Initial character memories setup (excluding MC) */
-  initialCharacters: Array<InitialCharacterMemory>;
+  initialCharacters: InitialCharacterMemory[];
+  /** Initial facts discovered in first page */
+  initialFacts: InitialFact[];
 };
 
 /**

@@ -298,6 +298,27 @@ export interface PlotFlag {
   place?: string;
 }
 
+export const factTypes = [
+  "character",
+  "relationship",
+  "inventory",
+  "world",
+  "mystery",
+  "other"
+] as const;
+
+export type FactType = typeof factTypes[number];
+
+export type FactHistory = {
+  page: number;
+  value: string;
+  type?: FactType;
+  reason?: string;
+};
+
+export type FactUpdate = { key: string; } & FactHistory
+export type InitialFact = Omit<FactUpdate, 'page'>;
+
 export type FutureNote = {
   /** Unique identifier for the note (for updates) */
   key: string;
@@ -654,7 +675,6 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
  * @interface StateDelta
  */
 export type StateDelta = {
-  // TODO: add currentFactUpdates
   /** Updates to psychological flags (trust, fear, guilt, curiosity) */
   flagUpdates?: Partial<PsychologicalFlags>;
   /** Updates to trauma tags (add/remove) based on page events */
@@ -663,6 +683,7 @@ export type StateDelta = {
   futureNoteUpdates?: TagUpdates<FutureNote>;
   /** Updates to plot flags (add) for story progression */
   addPlotFlag?: PlotFlag;
+  factUpdates?: FactUpdate[];
   /** Updates to characters (new and existing) with changes */
   characterUpdates?: CharacterUpdates;
   /** Updates to character relationships and dynamics */
@@ -856,6 +877,15 @@ export type StoryState = {
    * as the story progresses using specialized summarization models.
    */
   contextHistory: string;
+
+  /**
+   * History of all known facts in the story and their updates
+   * 
+   * Track the evolution of the story's mysteries, clues, and revelations over time,
+   * enabling consistent narrative development and foreshadowing.
+   * Updated incrementally as new facts are discovered.
+   */
+  factsHistory: Record<string, FactHistory[]>;
 
   /**
    * Indicates whether the current page contains a major event

@@ -6,7 +6,7 @@ import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } fro
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag, ActionTranslation, StoryStateSource, FutureNote } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -132,6 +132,7 @@ export const storyStates = pgTable(
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
     traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     futureNotes: jsonb("future_notes").$type<(FutureNote | string)[]>().notNull().default(sql`'[]'::jsonb`),
+    factsHistory: jsonb("facts_history").$type<Record<string, FactHistory[]>>().notNull().default(sql`'{}'::jsonb`), // Chronological history of discovered facts
     plotFlags: jsonb("plot_flags").$type<PlotFlag[]>().notNull().default(sql`'[]'::jsonb`), // Narrative flags and hints
     inventory: jsonb("inventory").$type<InventoryItem[]>().notNull().default(sql`'[]'::jsonb`), // Items and resources
     psychologicalProfile: jsonb("psychological_profile").$type<PsychologicalProfile>().notNull(), // PsychologicalProfile structure
