@@ -1,9 +1,9 @@
 /**
  * Credits Service Module
- * 
+ *
  * Provides centralized credit management functionality including consumption,
  * balance checking, and transaction recording.
- * 
+ *
  * @example
  * ```typescript
  * // Consume credits for story generation
@@ -11,13 +11,13 @@
  *   context: "book_creation",
  *   metadata: { bookId: "book123" }
  * });
- * 
+ *
  * // Check if user has enough credits
  * const hasCredits = await hasSufficientCredits(userId, "STORY_GENERATION");
  * ```
  */
 
-import { type DBTransaction, dbWrite } from "../db/client.js";
+import { type DBTransaction, dbWrite, dbRead } from "../db/client.js";
 import { users, transactions, userNotifications } from "../db/schema.js";
 import { CREDIT_COSTS, type CreditCostKey } from "../config/credits.js";
 import { generateId } from "../utils/uuid.js";
@@ -55,14 +55,14 @@ interface ConsumeCreditsResult<T> {
 
 /**
  * Consumes credits from a user's account
- * 
+ *
  * @param userId - User ID to consume credits from
  * @param costKey - Credit cost key from CREDIT_COSTS
  * @param options - Additional options for the transaction
  * @returns Updated user credit balance and transaction ID
- * 
+ *
  * @throws Error if user has insufficient credits
- * 
+ *
  * @example
  * ```typescript
  * const { remainingCredits, transactionId } = await consumeCredits("user123", "STORY_GENERATION", {
@@ -77,7 +77,7 @@ export async function consumeCredits(
   options: ConsumeCreditsOptions = {}
 ): Promise<{ remainingCredits: number; transactionId: string }> {
   const isInternal = userId === process.env.SYSTEM_USER_ID;
-  
+
   // Skip credit consumption for internal system user (cron jobs, etc.)
   if (isInternal) {
     console.log(`[consumeCredits] ⏩ Skipping credit consumption for internal user: ${userId}`);
@@ -97,10 +97,10 @@ export async function consumeCredits(
   if (!trx) console.warn(`[consumeCredits] ⚠️ Called without database transaction provided:`, { costKey, context, correlationId });
 
   // Use provided transaction or create a new one
-  const result = trx 
+  const result = trx
     ? await consumeCreditsInTransaction(trx, userId, cost, options)
     : await dbWrite.transaction(async (tx) => consumeCreditsInTransaction(tx, userId, cost, options));
-  
+
   // Log user activity for analytics and security monitoring
   // Note: This happens outside of transaction to avoid breaking credit consumption if logging fails
   // It has internal error handling, ensuring failures don't affect main flow
@@ -123,7 +123,7 @@ export async function consumeCredits(
 
 /**
  * Core credit consumption logic that can be used within an existing transaction
- * 
+ *
  * @param tx - Transaction object to use
  * @param userId - User ID to consume credits from
  * @param cost - Credit cost to consume
@@ -158,7 +158,7 @@ async function consumeCreditsInTransaction(
   // Update user credits
   await tx
     .update(users)
-    .set({ 
+    .set({
       credits: sql`${users.credits} - ${cost}`,
       updatedAt: new Date()
     })
@@ -173,7 +173,9 @@ async function consumeCreditsInTransaction(
     credits: -cost, // Negative for consumption
     amountUsd: null, // Usage transactions don't have USD amount
     context: options.context,
-    metadata: options.metadata ? JSON.stringify({ ...options.metadata, correlationId: options.correlationId }) : null,
+    metadata: options.metadata
+      ? { ...options.metadata, correlationId: options.correlationId }
+      : null,
     createdAt: new Date()
   });
 
@@ -182,11 +184,11 @@ async function consumeCreditsInTransaction(
 
 /**
  * Checks if a user has sufficient credits for a specific action
- * 
+ *
  * @param userId - User ID to check
  * @param costKey - Credit cost key from CREDIT_COSTS
  * @returns Whether user has sufficient credits
- * 
+ *
  * @example
  * ```typescript
  * const canCreateStory = await hasSufficientCredits("user123", "STORY_GENERATION");
@@ -200,30 +202,27 @@ export async function hasSufficientCredits(
   costKey: CreditCostKey
 ): Promise<boolean> {
   const cost = CREDIT_COSTS[costKey];
-  
+
   if (cost <= 0) {
     throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
   }
 
-  const userResult = await dbWrite
+  const [user] = await dbRead
     .select({ credits: users.credits })
     .from(users)
     .where(eq(users.userId, userId))
     .limit(1);
 
-  if (!userResult.length) {
-    return false;
-  }
-
-  return userResult[0].credits >= cost;
+  if (user) return user.credits >= cost;
+  return false;
 }
 
 /**
  * Gets the credit cost for a specific action
- * 
+ *
  * @param costKey - Credit cost key from CREDIT_COSTS
  * @returns Credit cost in credits
- * 
+ *
  * @example
  * ```typescript
  * const storyCost = getCreditCost("STORY_GENERATION"); // Returns 5
@@ -234,15 +233,15 @@ export function getCreditCost(costKey: CreditCostKey): number {
 }
 
 /**
- * Adds credits to a user's account (daily check-in bonus, etc)
- * 
+ * Adds credits to a user's account (daily check-in bonus, etc.)
+ *
  * @param userId - User ID to add credits to
  * @param amount - Number of credits to add (must be positive)
  * @param options - Additional options for the transaction
  * @returns Updated user credit balance
- * 
+ *
  * @throws Error if amount is not positive or user not found
- * 
+ *
  * @example
  * ```typescript
  * const newBalance = await addCredits("user123", 30, {
@@ -256,80 +255,80 @@ export async function addCredits(
   amount: number,
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
-  if (amount <= 0) {
-    throw new Error(`Invalid credit amount: ${amount} must be greater than 0`);
-  }
+  if (amount <= 0) throw new Error(`Invalid credit amount: ${amount} must be greater than 0`);
 
-  // Start transaction to ensure atomicity
-  const result = await dbWrite.transaction(async (tx) => {
-    // Get current user credits with row lock
-    const userResult = await tx
+  // Important: Use the provided `tx` when available for atomic operations.
+  const execute = async (tx: DBTransaction) => {
+    const [user] = await tx
       .select({ credits: users.credits })
       .from(users)
       .where(eq(users.userId, userId))
       .for('update')
       .limit(1);
 
-    if (!userResult.length) {
-      throw new Error(`User not found: ${userId}`);
-    }
-
-    const currentCredits = userResult[0].credits;
+    if (!user) throw new Error(`User not found: ${userId}`);
+    const currentCredits = user.credits;
 
     // Update user credits
     await tx
       .update(users)
-      .set({ 
+      .set({
         credits: sql`${users.credits} + ${amount}`,
         updatedAt: new Date()
       })
       .where(eq(users.userId, userId));
 
-    // Record transaction
+    // Pass metadata as a direct object — see note in consumeCreditsInTransaction.
     await tx.insert(transactions).values({
       userId,
       type: 'reward',
       credits: amount, // Positive for addition
       amountUsd: null, // Credit additions don't have USD amount
       context: options.context,
-      metadata: options.metadata ? JSON.stringify(options.metadata) : null,
+      metadata: options.metadata ?? null,
       createdAt: new Date()
     });
 
     return currentCredits + amount;
-  });
-  
-  // Log user activity for analytics and security monitoring
-  // Note: This happens outside the transaction to avoid breaking credit consumption if logging fails
-  // The logUserActivity function handles errors internally to avoid breaking the main flow
-  await logUserActivity({
-    userId,
-    activityType: 'credits_added',
-    targetType: options.context ? 'credit_action' : null,
-    targetId: null,
-    metadata: {
-      amount,
-      context: options.context,
-      userMetadata: options.metadata || {} // Separate user metadata to prevent overwrites
-    }
-  });
+  };
+
+  const result = options.tx
+    ? await execute(options.tx)
+    : await dbWrite.transaction(execute);
+
+  // Only log activity when we own the transaction. When called from within an
+  // external transaction (options.tx provided), the caller is responsible for
+  // any post-commit side effects to avoid polluting the outer transaction scope.
+  if (!options.tx) {
+    await logUserActivity({
+      userId,
+      activityType: 'credits_added',
+      targetType: options.context ? 'credit_action' : null,
+      targetId: null,
+      metadata: {
+        amount,
+        context: options.context,
+        userMetadata: options.metadata || {}
+      }
+    });
+  }
 
   return result;
 }
 
 /**
  * Refunds credits to a user's account (for failed operations)
- * 
+ *
  * This is a wrapper around refundCreditsIdempotent that generates a correlation ID
  * automatically and includes retry logic with exponential backoff.
- * 
+ *
  * @param userId - User ID to refund credits to
  * @param costKey - Credit cost key from CREDIT_COSTS to refund
  * @param options - Additional options for the transaction
  * @returns Updated user credit balance
- * 
+ *
  * @throws Error if user not found
- * 
+ *
  * @example
  * ```typescript
  * const newBalance = await refundCredits("user123", "STORY_GENERATION", {
@@ -344,7 +343,7 @@ export async function refundCredits(
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
   const amount = CREDIT_COSTS[costKey];
-  
+
   if (amount <= 0) {
     throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
   }
@@ -376,19 +375,19 @@ export async function refundCredits(
 
 /**
  * Idempotently refunds credits for a specific transaction
- * 
+ *
  * Checks if a refund was already processed for the given correlation ID
  * to prevent duplicate refunds. If a refund exists, returns the existing
  * transaction instead of creating a new one.
- * 
+ *
  * @param userId - User ID to refund credits to
  * @param costKey - Credit cost key from CREDIT_COSTS to refund
  * @param correlationId - Unique ID linking this refund to the original transaction
  * @param options - Additional options for the transaction
  * @returns Updated user credit balance
- * 
+ *
  * @throws Error if user not found
- * 
+ *
  * @example
  * ```typescript
  * const newBalance = await refundCreditsIdempotent(
@@ -409,7 +408,7 @@ export async function refundCreditsIdempotent(
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
   const amount = CREDIT_COSTS[costKey];
-  
+
   if (amount <= 0) {
     throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
   }
@@ -433,11 +432,11 @@ export async function refundCreditsIdempotent(
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
-    
+
     if (!userResult.length) {
       throw new Error(`User not found: ${userId}`);
     }
-    
+
     return userResult[0].credits;
   }
 
@@ -450,22 +449,22 @@ export async function refundCreditsIdempotent(
 
 /**
  * Executes an operation with credit consumption in a single transaction
- * 
+ *
  * This function provides a unified flow for:
  * 1. Consuming credits atomically
  * 2. Executing the provided operation
  * 3. Returning a correlation ID for idempotent refunds
- * 
+ *
  * If the operation fails, credits are automatically refunded within the same transaction.
- * 
+ *
  * @param userId - User ID to consume credits from
  * @param costKey - Credit cost key from CREDIT_COSTS
  * @param operation - Async function to execute after credit consumption. Receives transaction object `tx`.
  * @param options - Additional options for the transaction
  * @returns Result from the operation and correlation ID for potential refunds
- * 
+ *
  * @throws Error if credit consumption fails or operation fails
- * 
+ *
  * @example
  * ```typescript
  * const { result, correlationId } = await executeWithCredits(
@@ -488,29 +487,10 @@ export async function refundCreditsIdempotent(
  *   metadata: { bookId }
  * });
  * ```
- * 
+ *
  * @remarks
  * **IMPORTANT:** For full atomicity, the operation function MUST use the provided `tx` parameter
- * for all database operations. If the operation performs DB operations outside the transaction,
- * partial success scenarios can occur where credits are consumed but the operation partially fails.
- * 
- * Example of INCORRECT usage (partial atomicity):
- * ```typescript
- * await executeWithCredits(userId, "STORY_GENERATION", async (tx) => {
- *   // ❌ WRONG: Not using tx, operations are outside transaction
- *   await insertBook(bookData);
- *   await insertPage(pageData);
- * });
- * ```
- * 
- * Example of CORRECT usage (full atomicity):
- * ```typescript
- * await executeWithCredits(userId, "STORY_GENERATION", async (tx) => {
- *   // ✅ CORRECT: Using tx for all DB operations
- *   await tx.insert(books).values(bookData);
- *   await tx.insert(pages).values(pageData);
- * });
- * ```
+ * for all database operations.
  */
 export async function executeWithCredits<T>(
   userId: string,
@@ -520,7 +500,7 @@ export async function executeWithCredits<T>(
 ): Promise<ConsumeCreditsResult<T>> {
   const cost = typeof costKey === 'number' ? costKey : CREDIT_COSTS[costKey];
   const correlationId = options.correlationId || generateId();
-  
+
   // Validate item cost
   if (cost <= 0) {
     throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
@@ -537,16 +517,16 @@ export async function executeWithCredits<T>(
     try {
       // Execute the provided operation
       const result = await operation(tx);
-      
+
       return { result, correlationId, transactionId };
     } catch (operationError) {
       // Operation failed, refund credits within the same transaction
       console.error(`[executeWithCredits] ❌ Operation failed, refunding credits:`, operationError);
-      
+
       // Refund credits (add back the consumed amount)
       await tx
         .update(users)
-        .set({ 
+        .set({
           credits: sql`${users.credits} + ${cost}`,
           updatedAt: new Date()
         })
@@ -557,16 +537,18 @@ export async function executeWithCredits<T>(
       await tx.insert(transactions).values({
         id: refundTransactionId,
         userId,
-        type: 'usage',
+        type: 'refund',
         credits: cost, // Positive for refund
         amountUsd: null,
         context: options.context ? `${options.context}_failed` : 'refund',
-        metadata: options.metadata ? JSON.stringify({ 
-          ...options.metadata, 
-          correlationId,
-          reason: 'operation_failed',
-          originalTransactionId: transactionId
-        }) : null,
+        metadata: options.metadata
+          ? {
+              ...options.metadata,
+              correlationId,
+              reason: 'operation_failed',
+              originalTransactionId: transactionId
+            }
+          : null,
         createdAt: new Date()
       });
 
@@ -598,12 +580,12 @@ interface AwardCreditsOptions {
 
 /**
  * Awards credits to a user's account with transaction record and notification
- * 
+ *
  * @param userId - User ID to award credits to
  * @param creditsAmount - Number of credits to award
  * @param options - Additional options for the transaction and notification
  * @returns Updated user credit balance
- * 
+ *
  * @example
  * ```typescript
  * const newBalance = await awardCredits("user123", 10, {
@@ -635,8 +617,8 @@ export async function awardCredits(
     // Update user credits
     const updateResult = await tx
       .update(users)
-      .set({ 
-        credits: sql`${users.credits} + ${creditsAmount}` 
+      .set({
+        credits: sql`${users.credits} + ${creditsAmount}`
       })
       .where(eq(users.userId, userId))
       .returning({ credits: users.credits });
@@ -654,7 +636,7 @@ export async function awardCredits(
       credits: creditsAmount,
       amountUsd: null,
       context: notificationType,
-      metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,
+      metadata: Object.keys(metadata).length > 0 ? metadata : null,
       createdAt: new Date()
     });
 
