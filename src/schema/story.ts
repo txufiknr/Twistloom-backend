@@ -1,4 +1,4 @@
-import { MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
+import { FACT_KEY_FORMAT, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods } from "../types/story.js";
@@ -82,11 +82,11 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     items: {
       type: 'object',
       properties: {
-        key: { type: 'string' },
+        key: { type: 'string', description: `${FACT_KEY_FORMAT} (new or existing)` },
         value: { type: 'string' },
         page: { type: 'integer' },
         type: { type: 'string', enum: [...factTypes] },
-        reason: { type: 'string', description: 'Describe the fact and how it happened in 1 sentence' },
+        reason: { type: 'string', description: 'Explain why or how it happened in 1 sentence' },
       } satisfies Record<keyof FactUpdate, AIJsonProperty>,
       required: ['key', 'value', 'page'] satisfies (keyof FactUpdate)[],
       additionalProperties: false

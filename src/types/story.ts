@@ -683,6 +683,7 @@ export type StateDelta = {
   futureNoteUpdates?: TagUpdates<FutureNote>;
   /** Updates to plot flags (add) for story progression */
   addPlotFlag?: PlotFlag;
+  /** What durable facts about the story world changed */
   factUpdates?: FactUpdate[];
   /** Updates to characters (new and existing) with changes */
   characterUpdates?: CharacterUpdates;

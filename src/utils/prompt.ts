@@ -2,9 +2,9 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes, factTypes } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type ActionType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes, factTypes, futureNoteTags, storyPhases } from "../types/story.js";
 import { retryWithBranchConflict, createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS } from "../config/story.js";
+import { ACTION_AI_CONFIG, PSYCHOLOGICAL_DISTRESS_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, JSON_RELIABILITY_TEMPERATURE_THRESHOLD, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_BRANCHING_RETRIES, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -379,9 +379,27 @@ const nextPageOutputFormat: string = `{
   "isMajorEvent": <true or false>,
   "contextHistory": "...",
   "futureNoteUpdates": {
-    "add": [],
-    "remove": []
+    "add": [
+      {
+        "key": <identifier>,
+        "note": "...",
+        "isMajor": <boolean>,
+        "addedAtPage": <number>,
+        "tag": "One of: ${formatOneOf(futureNoteTags)}",
+        "targetPhase": "One of: ${formatOneOf(Object.keys(storyPhases))}"
+      }
+    ],
+    "remove": [<identifier>]
   },
+  "factUpdates": [
+    {
+      "key": <new or existing identifier>,
+      "page": <number>,
+      "value": "...",
+      "type": "One of: ${formatOneOf(factTypes)}",
+      "reason": "..."
+    }
+  ],
   "flagUpdates": {
     "trust": "One of: low | medium | high",
     "fear": "One of: low | medium | high",
@@ -700,6 +718,21 @@ ${futureNotes.length > 0 ? `  - Incorporate existing future notes in this turn i
   - Remove which have been incorporated or irrelevant.` : ''}
 ${futureNotes.length > 1 ? '  - Consolidate which redundant or about the same matter (if any).' : ''}
   - Keep max ${MAX_FUTURE_NOTES} items.
+
+factUpdates
+  - Represents long-term story memory, discoveries, or important established facts that influence future turns.
+  - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
+  - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(factTypes)}.
+  - value: latest known state. Prefer concise value over long sentence (explanation can be added in reason).
+  - reason: 1-sentence, why or how it hapenned or changed.
+  - Facts should be objectively true within the story after this page ends.
+  - Do NOT record every event that happened on the page.
+  - Reuse existing keys whenever updating the same fact (only meaningful change).
+  - Only include facts that meet at least one of these criteria:
+    → Permanently change the story world.
+    → Reveal important information.
+    → Change a character's status, goal, relationship, possession, or knowledge.
+    → Establish a mystery clue, suspect, or revelation.
 
 isMajorEvent
   - true only if this page contains an irreversible story change: death, betrayal, revelation, or point of no return.
@@ -2419,7 +2452,7 @@ function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate | null):
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
-- TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
+- TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
 
 Main Character (MC):
 ${mcCandidate?.name ? `- MC's name is ${mcCandidate.name}.` : `- If MC's name provided in theme input, strictly use it.
@@ -2454,6 +2487,13 @@ Initial State:
 - isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
 - inventory: if any, what items MC brings, can include the amount, traits, and where it located (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
+
+Initial Facts:
+- Represents long-term story memory, discoveries, or important established facts that influence future turns.
+- Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
+- key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(factTypes)}.
+- value: current state. Prefer concise value over long sentence (explanation can be added in reason).
+- reason: 1-sentence, why or how it hapenned.
 
 Ending Archetypes:
 ${getEndingArchetypesText()}`;

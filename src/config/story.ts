@@ -36,6 +36,7 @@ export const HOOK_LENGTH = '1-2 sentences';
 export const RELATIONSHIP_TO_MC_LENGTH = '1-2 sentences';
 export const SUMMARY_LENGTH = '50-100 words';
 export const KEYWORDS_COUNT = '3-5';
+export const FACT_KEY_FORMAT = '3-segment dot-separated key: "{type}.{entity_name}.{property_name}"';
 
 /**
  * Maximum number of trauma tags to maintain in story state

@@ -7,7 +7,7 @@ import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValid
 import { difficulties, endingTypes, factTypes, flagLevels, futureNoteTags, plotFlagTypes, storyPhases } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
 import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
-import { MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -139,10 +139,10 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
     items: {
       type: 'object',
       properties: {
-        key: { type: 'string' },
+        key: { type: 'string', description: FACT_KEY_FORMAT },
         value: { type: 'string' },
         type: { type: 'string', enum: [...factTypes] },
-        reason: { type: 'string', description: 'Describe the fact in 1 sentence' },
+        reason: { type: 'string', description: 'Explain why in 1 sentence' },
       } satisfies Record<keyof InitialFact, AIJsonProperty>,
       required: ['key', 'value'] satisfies (keyof InitialFact)[],
       additionalProperties: false
