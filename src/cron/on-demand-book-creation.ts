@@ -102,6 +102,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
         mcCandidate: bookGenerations.mcCandidate,
         generateCoverImage: bookGenerations.generateCoverImage,
         language: bookGenerations.language,
+        titleIdea: bookGenerations.titleIdea,
         aiComment: bookGenerations.aiComment,
       })
       .from(bookGenerations)
@@ -112,19 +113,15 @@ async function processBookGeneration(bookId: string): Promise<void> {
       throw new Error(`Book generation record not found for bookId: ${bookId}`);
     }
 
-    const { userId, theme, mcCandidate, generateCoverImage, aiComment, language } = generationData;
+    const { userId, theme } = generationData;
     if (!userId || !theme) {
       throw new Error(`Missing required fields in bookGenerations: userId=${userId}, theme=${theme}`);
     }
 
     const params: InitializeBookParams = {
+      ...generationData,
       bookId, // IMPORTANT: Pass bookId to update existing draft
-      userId,
-      theme,
-      language,
-      generateCoverImage,
-      mcCandidate,
-      aiComment,
+      theme
     };
 
     console.log('[book-creation] ✒️ Writing the book...', params);

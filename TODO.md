@@ -8,6 +8,46 @@
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 
+FutureNotes = forward-looking obligations ("this should happen later")
+PlotFlags = historical facts ("this already happened")
+
+const majorEvents =
+  plotFlags.filter(flag => flag.isMajorEvent);
+
+const recentMajorEvents =
+  plotFlags.filter(flag => flag.isMajorEvent).slice(-5);
+
+
+Prompt context:
+(Most recent first)
+recentMajorEvents: [
+  "revelation",
+  "betrayal",
+  "death"
+]
+
+[ ] calculate majorEventCounts: {
+  revelation: 2,
+  betrayal: 1,
+  death: 1
+}
+
+unstable
+→ narration may contain paranoia
+→ ambiguous events interpreted negatively
+→ increased self-doubt
+→ unreliable perception
+
+The protagonist is psychologically unstable.
+Interpret ambiguous situations in a threatening way.
+Increase paranoia and uncertainty.
+
+Theme validation tambah title idea, pass ke initallze book & github workflow dynamic job title
+Generate originals tambah custom input book title & mc name
+
+Paid book: VIP 500+ followers, must be > 30 days old account, ✅ Verified email required
+Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
+
 
 {
   "flagUpdates": [

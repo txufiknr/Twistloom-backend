@@ -1,5 +1,5 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
-import { CharacterMemory, characterStatuses, NarrativeFlags, potentialTwistTypes, relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
+import { type CharacterMemory, characterStatuses, type NarrativeFlags, potentialTwistTypes, relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
@@ -217,7 +217,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     additionalProperties: false
   },
   flagUpdates: { type: 'object', description: 'Updates to psychological flags (trust, fear, guilt, curiosity). Omit if no update.' },
-  addPlotFlag: { type: 'object', description: 'A crucial and significant plot development that affects the overall story trajectory. Only add if isMajorEvent is true.' },
+  addPlotFlag: { type: 'object', description: 'A crucial and significant plot development that affects the overall story trajectory.' },
   viableEnding: { type: 'object', description: 'An ending plan for the story. Omit if no update.' },
 
   // Provide full to overwrite current. Can omit or empty if no changes.

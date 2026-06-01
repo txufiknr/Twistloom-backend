@@ -38,6 +38,8 @@ export const SUMMARY_LENGTH = '50-100 words';
 export const KEYWORDS_COUNT = '3-5';
 export const FACT_KEY_FORMAT = '3-segment dot-separated key: "{type}.{entity_name}.{property_name}"';
 
+export const FUTURE_NOTE_LOOKAHEAD_PAGES = 2;
+
 /**
  * Maximum number of trauma tags to maintain in story state
  * 

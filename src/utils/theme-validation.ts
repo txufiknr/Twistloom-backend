@@ -19,6 +19,7 @@ import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResu
 import type { ProgressCallback } from '../types/sse.js';
 import type { Response } from "express";
 import type { ErrorResponse } from './error.js';
+import { BOOK_TITLE_LENGTH } from '../config/story.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -184,6 +185,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
     suggestion: '',
     comment: '',
     language: 'en',
+    titleIdea: '',
   };
 
   try {
@@ -199,7 +201,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           'suggestion',
           'comment',
           'language',
-        ],
+          'titleIdea',
+        ] satisfies (keyof AIValidationResult)[],
         fallbackField: 'suggestion',
         baseOptions: {
           config: AI_CHAT_CONFIG_DEFAULT,
@@ -219,6 +222,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 - suggestion: 1-sentence (how to fix the issue, or empty string if theme is valid)
 - comment: max 250 chars (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
 - language: detected language code of theme input (ISO 639-1)
+- titleIdea: Book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
 
 Comment structure (only if theme is valid):
 - Use creative & thriller-themed wording
@@ -241,7 +245,8 @@ Comment example (use your own wording):
   ],
   "suggestion": "...",
   "comment": "...",
-  "language": "<ISO 639-1 language code>"
+  "language": "<ISO 639-1 language code>",
+  "titleIdea": "..."
 }
   
 If the theme is valid and safe, return:
@@ -252,7 +257,8 @@ If the theme is valid and safe, return:
   "detectedItems": [],
   "suggestion": "",
   "comment": "Your complimentary comment (follow comment structure & example)",
-  "language": "<ISO 639-1 language code>"
+  "language": "<ISO 639-1 language code>",
+  "titleIdea": "..."
 }`,
     });
 

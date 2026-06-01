@@ -298,6 +298,8 @@ export interface PlotFlag {
   type: PlotFlagType;
   /** Place where the flagged event occurred (optional). */
   place?: string;
+  /** Indicates whether the flagged event is a major plot point. */
+  isMajorEvent: boolean;
 }
 
 export const factTypes = {
@@ -337,6 +339,8 @@ export type FutureNote = {
   tag?: FutureNoteTag;
   /** Optional target story phase for when this note should become relevant */
   targetPhase?: StoryPhase;
+  /** Optional target page number for when this note should become relevant */
+  targetPageRange?: string;
 };
 
 export const futureNoteTags = ['relationship', 'clue', 'character', 'place', 'other'] as const;
@@ -350,7 +354,16 @@ export type Ending = {
   type?: EndingType;
   /** Outline hint for the ending (optional). */
   outline?: StoryOutline[];
+  /** Optional note about changes to the ending plan based on story progression */
+  changeNote?: {
+    /** Details of the change that triggered the ending mutation */
+    reason: string;
+    viabilityBefore: number;
+    viabilityAfter: number;
+  }
 }
+
+export type InitialEnding = Omit<Ending, 'changeNote'>;
 
 export type StoryOutline = {
   text: string;
@@ -385,6 +398,26 @@ export type EndingPlan = {
   /** Whether this is a fake ending followed by real ending */
   fakeToReal?: boolean;
 };
+
+export const majorEventTypes = [
+  "revelation", // Important truth discovered
+  "betrayal", // Trust broken
+  "death", // Major character death
+  "disappearance", // Character vanishes
+  "identity_exposed", // Secret identity revealed
+  "alliance", // Unexpected partnership
+  "escape", // Escapes danger
+  "capture", // Falls into enemy control
+  "sacrifice", // Gives up something significant
+  "corruption", // Character morally declines
+  "transformation", // Fundamental character change
+  "victory", // Major objective achieved
+  "defeat", // Major setback
+  "point_of_no_return", // Story direction permanently changes
+  "other",
+  "none",
+];
+export type MajorEventType = typeof majorEventTypes[number];
 
 /**
  * Types of behavioral shifts that can trigger dynamic ending mutations
@@ -556,7 +589,7 @@ export const stabilityLevels = {
   /** Under stress, showing cracks in composure */
   cracking: "Under psychological stress. Experiencing paranoia, doubt, intrusive thoughts, or growing instability. → Interpret ambiguous events with growing suspicion.",
   /** Severely distressed, reality breakdown */
-  unstable: "Severely psychologically compromised. Reality perception is unreliable, with possible delusions, hallucinations, or identity breakdown. → Perception may be unreliable. Increase paranoia, self-doubt, and distorted interpretations while preserving narrative coherence."
+  unstable: "Severely psychologically compromised. Reality perception is unreliable, with possible delusions, hallucinations, or identity breakdown. → Unreliable perception. Increased paranoia, self-doubt, and distorted interpretations while preserving narrative coherence."
 } as const;
 
 /**
@@ -709,7 +742,7 @@ export type StateDelta = {
   /** Updates to story threads (new, modify, add clues, close) */
   threadUpdates?: ThreadUpdates;
   /** Partial ending information if this page leads to an ending */
-  viableEnding?: Partial<Ending>;
+  viableEnding?: Ending;
   /** Flag indicating if this is a major story event */
   isMajorEvent?: boolean;
   /** Updated AI-summarized context of the entire story */
@@ -911,7 +944,7 @@ export type StoryState = {
    * Major events are plot-level facts that have significant impact
    * on the story's narrative arc and can introduce new plot twists.
    */
-  isMajorEvent: boolean;
+  isMajorEvent?: boolean;
 
   /**
    * Collection of ongoing narrative threads in the story
@@ -1007,7 +1040,6 @@ export type InitialStoryState = Partial<Pick<StoryState,
   'viableEnding' |
   'traumaTags' |
   'plotFlags' |
-  'isMajorEvent' |
   'inventory' |
   'injuries' |
   'futureNotes'>>;

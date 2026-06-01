@@ -188,6 +188,8 @@ export type InitializeBookParams = {
   aiComment?: string | null;
   /** Detected language code (ISO 639-1) */
   language?: string | null;
+  /** Book title idea for the story based on the theme */
+  titleIdea?: string | null;
   /** Express request object for activity log */
   req?: Request;
   /** Optional: Update existing book by ID instead of inserting new (for async book creation) */

@@ -153,6 +153,8 @@ export type AIValidationResult = {
   comment: string;
   /** Detected language code (ISO 639-1) */
   language: string;
+  /** Book title idea for the story based on the theme */
+  titleIdea: string;
 }
 
 /**

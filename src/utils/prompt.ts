@@ -249,7 +249,8 @@ const firstBookOutputFormat: string = `{
       {
         "page": 1,
         "fact": "...",
-        "type": "One of: ${formatOneOf(plotFlagTypes)}"
+        "type": "One of: ${formatOneOf(plotFlagTypes)}",
+        "isMajorEvent": <boolean>
       }
     ],
     "inventory": [
@@ -270,7 +271,6 @@ const firstBookOutputFormat: string = `{
         "decayPerPage": <number between 0.0 and 1.0>
       }
     ],
-    "isMajorEvent": <true or false>,
     "futureNotes": ["..."]
   },
   "initialPlace": {
@@ -365,7 +365,8 @@ const nextPageOutputFormat: string = `{
   "addPlotFlag": {
     "page": <number>,
     "fact": "...",
-    "type": "One of: ${formatOneOf(plotFlagTypes)}"
+    "type": "One of: ${formatOneOf(plotFlagTypes)}",
+    "isMajorEvent": <boolean>
   },
   "inventory": [
     {
@@ -385,7 +386,6 @@ const nextPageOutputFormat: string = `{
       "decayPerPage": <number between 0.0 and 1.0>
     }
   ],
-  "isMajorEvent": <true or false>,
   "contextHistory": "...",
   "futureNoteUpdates": {
     "add": [
@@ -395,7 +395,8 @@ const nextPageOutputFormat: string = `{
         "isMajor": <boolean>,
         "addedAtPage": <number>,
         "tag": "One of: ${formatOneOf(futureNoteTags)}",
-        "targetPhase": "One of: ${formatOneOf(Object.keys(storyPhases))}"
+        "targetPhase": "One of: ${formatOneOf(Object.keys(storyPhases))}",
+        "targetPageRange": "<number>-<number>"
       }
     ],
     "remove": [<identifier>]
@@ -589,7 +590,12 @@ const nextPageOutputFormat: string = `{
         "text": "...",
         "isDone": <boolean>
       }
-    ]
+    ],
+    "changeNote": {
+      "reason": "...",
+      "viabilityBefore": <number between 0.0 and 1.0>,
+      "viabilityAfter": <number between 0.0 and 1.0>
+    }
   }
 }`;
 
@@ -723,9 +729,9 @@ ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not 
 
 futureNoteUpdates
 ${futureNotes.length < MAX_FUTURE_NOTES ? `  - Add any important notes for future AI turns which are not included in current turn.` : ''}
-${futureNotes.length > 0 ? `  - Incorporate existing future notes in this turn if viable.
-  - Remove which have been incorporated or irrelevant.` : ''}
-${futureNotes.length > 1 ? '  - Consolidate which redundant or about the same matter if any.' : ''}
+${futureNotes.length > 0 ? `  - incorporate it into the narrative when their target timing becomes relevant.
+  - Resolve future notes naturally through story progression. If any resolved, add it to plot flag.
+  - Remove which have been paid off or irrelevant.` : ''}
   - Keep max ${MAX_FUTURE_NOTES} items.
 
 factUpdates
@@ -743,17 +749,11 @@ factUpdates
     → Change a character's status, goal, relationship, possession, or knowledge.
     → Establish a mystery clue, suspect, or revelation.
 
-isMajorEvent
-  - true only if this page contains an irreversible story change: death, betrayal, revelation, or point of no return.
-${isEarlyPhase ? `  - Should be false for most early pages. Reserve major events — they lose weight if overused.` : ''}
-${isMidPhase ? `  - Major events should be relatively rare and spaced out to maintain impact.` : ''}
-${isFinale ? `  - Expected to be true. The finale is a major event by definition.` : ''}
-
 addPlotFlag
-  - Crucial and significant plot development that affect the overall story trajectory.
-  - ONLY add if isMajorEvent is true. NEVER add if isMajorEvent is false.
+  - Add to record significant plot development that affect the overall story trajectory.
   - ONLY add when: a) Major secret is revealed, b) Critical evidence is discovered, c) Key relationship changes occur, d) Story direction pivots significantly.
-  - Must include: page number, specific fact discovered (verbose), and appropriate type.
+  - Must include: page number, specific fact discovered (verbose), appropriate type and significance.
+  - isMajorEvent: true only if this page contains an irreversible story change: death, betrayal, revelation, or point of no return.
 
 contextHistory
   - Running sumary from page 1 until now — key plot developments, hard facts, major events.
@@ -1106,10 +1106,8 @@ OUTPUT FORMAT (strict JSON, no extra text):
   return prompt.split('---').map(stripEmptyLines).join('\n\n---\n');
 }
 
-function buildFirstBookEvaluatorPrompt(
-  theme: string,
-  mcCandidate?: StoryMCCandidate | null,
-): string {
+function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
+  const { theme, mcCandidate } = params;
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
@@ -1121,7 +1119,7 @@ EXPECTED JSON SCHEMA:
 ${firstBookOutputFormat}
 
 FIELD INSTRUCTIONS:
-${buildFirstBookFieldInstructions(mcCandidate)}
+${buildFirstBookFieldInstructions(params)}
 
 ---
 INSTRUCTIONS — FOLLOW IN ORDER:
@@ -1565,56 +1563,30 @@ function formatActionChoices(actions: Action[]): string {
 }
 
 /**
- * Pretty-format an array of `FutureNote` items for inclusion in AI prompts.
+ * Pretty-format FutureNotes for AI prompts.
  *
- * Output is a multi-line, human-readable bullet list. Each note is printed
- * with its `key` and `note` on the top line, and optional properties are
- * shown as nested bullet points when present (`isMajor`, `addedAtPage`,
- * `tag`, `targetPhase`). Returns the string `none` when there are no notes.
+ * Sort priority:
+ * 1. targetPageRange (ascending start page)
+ * 2. targetPhase (EARLY → MID → LATE → FINALE)
+ * 3. Major notes before minor notes
+ * 4. addedAtPage (ascending, tie-breaker only)
  *
- * @example
- *   - fn_123: Find the hidden latch behind the painting (major)
- *     • Added at page: 5
- *     • Tag: clue
- *     • Target phase: MID
- *   - fn_789: Remember the name on the letter
- *     • Tag: relationship
- */
-// function formatFutureNotes(futureNotes: FutureNote[]): string {
-//   if (!futureNotes || futureNotes.length === 0) return 'none';
-
-//   return `\n${futureNotes
-//     .map((n) => {
-//       const header = `  - ${n.key}: ${n.note}${n.isMajor ? ' (major)' : ''}`;
-//       const details: string[] = [];
-//       if (n.addedAtPage) details.push(`    • Added at page: ${n.addedAtPage}`);
-//       if (n.tag) details.push(`    • Tag: ${n.tag}`);
-//       if (n.targetPhase) details.push(`    • Target phase: ${n.targetPhase}`);
-//       return details.length > 0 ? `${header}\n${details.join('\n')}` : header;
-//     })
-//     .join('\n')}`;
-// }
-
-/**
- * Pretty-format an array of `FutureNote` items for inclusion in AI prompts.
+ * Output emphasizes future payoff timing rather than creation history.
  *
- * Output is a multi-line, human-readable bullet list. Each note is printed
- * with its `key` and `note` on the top line, and optional properties are
- * shown as nested bullet points when present (`isMajor`, `addedAtPage`,
- * `tag`, `targetPhase`). Notes are sorted by `targetPhase` ascending:
- * EARLY → MID → LATE → FINALE → undefined. Returns the string `none` when
- * there are no notes.
+ * Returns "none" when empty.
  *
- * @example
- *   - fn_123: Find the hidden latch behind the painting (major)
- *     • Added at page: 5
- *     • Tag: clue
- *     • Target phase: MID
- *   - fn_789: Remember the name on the letter
- *     • Tag: relationship
+ * Example:
+ * - [MAJOR] fn_123: Reveal that Evelyn forged the diary
+ *   • Payoff: pages 18-22
+ *   • Phase: LATE
+ *   • Tag: clue
+ *
+ * - fn_456: Mention the broken pocket watch
+ *   • Payoff: pages 8-12
+ *   • Tag: foreshadowing
  */
 function formatFutureNotes(futureNotes: FutureNote[]): string {
-  if (!futureNotes || futureNotes.length === 0) return 'none';
+  if (!futureNotes?.length) return 'none';
 
   const phaseOrder: Record<StoryPhase, number> = {
     EARLY: 0,
@@ -1623,29 +1595,54 @@ function formatFutureNotes(futureNotes: FutureNote[]): string {
     FINALE: 3,
   };
 
-  const sorted = [...futureNotes].sort((a, b) => {
-    const pa = a.targetPhase ?? '';
-    const pb = b.targetPhase ?? '';
-    const ia = pa && Object.prototype.hasOwnProperty.call(phaseOrder, pa) ? phaseOrder[pa] : 4;
-    const ib = pb && Object.prototype.hasOwnProperty.call(phaseOrder, pb) ? phaseOrder[pb] : 4;
-    if (ia !== ib) return ia - ib;
+  /**
+   * Extract starting page from a page range.
+   *
+   * Examples:
+   * "10-15" -> 10
+   * "20+"   -> 20
+   * "7"     -> 7
+   */
+  const getPageRangeStart = (range?: string): number => {
+    if (!range) return Number.POSITIVE_INFINITY;
 
-    // If same phase (or both undefined), preserve by addedAtPage ascending when available
-    const aPage = a.addedAtPage ?? Number.POSITIVE_INFINITY;
-    const bPage = b.addedAtPage ?? Number.POSITIVE_INFINITY;
-    return aPage - bPage;
+    const match = range.match(/^(\d+)/);
+    return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+  };
+
+  const sorted = [...futureNotes].sort((a, b) => {
+    // 1. Target page range
+    const pageA = getPageRangeStart(a.targetPageRange);
+    const pageB = getPageRangeStart(b.targetPageRange);
+
+    if (pageA !== pageB) return pageA - pageB;
+
+    // 2. Target phase
+    const phaseA = a.targetPhase !== undefined ? phaseOrder[a.targetPhase] : Number.POSITIVE_INFINITY;
+    const phaseB = b.targetPhase !== undefined ? phaseOrder[b.targetPhase] : Number.POSITIVE_INFINITY;
+    if (phaseA !== phaseB) return phaseA - phaseB;
+
+    // 3. Major before minor
+    if (!!a.isMajor !== !!b.isMajor) return a.isMajor ? -1 : 1;
+
+    // 4. Stable tie-breaker
+    return (
+      (a.addedAtPage ?? Number.POSITIVE_INFINITY) -
+      (b.addedAtPage ?? Number.POSITIVE_INFINITY)
+    );
   });
 
-  return `\n${sorted
-    .map((n) => {
-      const header = `  - ${n.key}: ${n.note}${n.isMajor ? ' (major)' : ''}`;
-      const details: string[] = [];
-      if (n.addedAtPage !== undefined && n.addedAtPage !== null) details.push(`    • Added at page: ${n.addedAtPage}`);
-      if (n.tag) details.push(`    • Tag: ${n.tag}`);
-      if (n.targetPhase) details.push(`    • Target phase: ${n.targetPhase}`);
-      return details.length > 0 ? `${header}\n${details.join('\n')}` : header;
-    })
-    .join('\n')}`;
+  return (
+    '\n' +
+    sorted.map((n) => {
+      const lines: string[] = [];
+      lines.push(`  - ${n.isMajor ? '[MAJOR] ' : ''}${n.key}: ${n.note}`);
+      if (n.targetPageRange) lines.push(`    • Payoff: pages ${n.targetPageRange}`);
+      if (n.targetPhase) lines.push(`    • Phase: ${n.targetPhase}`);
+      if (n.tag) lines.push(`    • Tag: ${n.tag}`);
+      return lines.join('\n');
+    }).join('\n\n')
+  );
 }
 
 /**
@@ -2215,27 +2212,78 @@ function formatRouteContext(state: StoryState): string {
  * @param state - Story state containing plot flags
  * @returns Formatted string with plot flags as bullet points
  */
-function formatPlotFlags(plotFlags: PlotFlag[]): string {
-  if (plotFlags.length === 0) return 'No plot flags yet';
+// function formatPlotFlags(plotFlags: PlotFlag[]): string {
+//   if (plotFlags.length === 0) return 'No plot flags yet';
   
-  // Sort by page number for chronological display
-  // Deduplicate identical page+type+fact while preserving chronological order
-  const sortedFlags = [...plotFlags].sort((a, b) => a.page - b.page);
+//   // Sort by page number for chronological display
+//   // Deduplicate identical page+type+fact while preserving chronological order
+//   const sortedFlags = [...plotFlags].sort((a, b) => a.page - b.page);
 
+//   const seen = new Set<string>();
+//   const deduped: PlotFlag[] = [];
+
+//   for (const flag of sortedFlags) {
+//     const key = `${flag.page}|${flag.type}|${flag.fact}`;
+//     if (seen.has(key)) {
+//       console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
+//       continue;
+//     }
+//     seen.add(key);
+//     deduped.push(flag);
+//   }
+
+//   return deduped.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}${flag.isMajorEvent ? ' (MAJOR)' : ''}`).join('\n');
+// }
+
+/**
+ * Formats plot flags and recent major events for anti-repetition guidance.
+ *
+ * Shows plot flags and the most recent major events so the AI can avoid
+ * generating similar major beats in close succession.
+ *
+ * @param plotFlags Story plot flags
+ * @param limit Maximum number of recent major events to include
+ * @returns Formatted major events section
+ */
+function formatPlotFlags(plotFlags: PlotFlag[]): string {
+  if (!plotFlags.length) return 'No plot flags yet';
+
+  const sorted = [...plotFlags].sort((a, b) => a.page - b.page);
   const seen = new Set<string>();
-  const deduped: PlotFlag[] = [];
 
-  for (const flag of sortedFlags) {
+  const formatted = sorted.filter(flag => {
     const key = `${flag.page}|${flag.type}|${flag.fact}`;
     if (seen.has(key)) {
       console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
-      continue;
+      return false;
     }
     seen.add(key);
-    deduped.push(flag);
+    return true;
+  }).map(flag => {
+    const details: string[] = [];
+    if (flag.place) details.push(`Location: ${flag.place}`);
+
+    return [
+      `• ${flag.isMajorEvent ? '[MAJOR] ' : ''}[${flag.type}] ${flag.fact}`,
+      ...details.map(d => `  - ${d}`)
+    ].join('\n');
+  }).join('\n');
+
+  const recentMajorEvents = plotFlags
+    .filter(flag => flag.isMajorEvent)
+    .sort((a, b) => a.page - b.page)
+    .slice(-5); // TODO: config
+
+  if (recentMajorEvents.length) {
+    const majorEventsFormatted = recentMajorEvents.map(flag => {
+      const location = flag.place ? ` (${flag.place})` : '';
+      return `• [${flag.type}] ${flag.fact}${location}`;
+    }).join('\n');
+
+    return `${formatted}\n\nRecent Major Events (avoid repeating similar major beats):\n${majorEventsFormatted}`;
   }
 
-  return deduped.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}`).join('\n');
+  return formatted;
 }
 
 /**
@@ -2490,7 +2538,8 @@ export function determineAIConfig(
  * });
  * ```
  */
-function buildBookCreationPrompt(theme: string, mcCandidate?: StoryMCCandidate | null, language?: string | null): string {
+function buildBookCreationPrompt(params: InitializeBookParams): string {
+  const { theme, mcCandidate, language } = params;
   return `Create a psychological thriller story from this theme input from user:\n"""\n${theme.trim()}\n"""
 
 HARD RULES (apply to everything below):
@@ -2518,9 +2567,10 @@ BRANCHING ACTIONS:
 ${getActionRulesText({ isFirstPage: true })}`;
 }
 
-function buildFirstBookFieldInstructions(mcCandidate?: StoryMCCandidate | null): string {
+function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcCandidate' | 'titleIdea'>): string {
+  const { mcCandidate, titleIdea } = params;
   return `Book Metadata:
-- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic. Can include subtitle (e.g., "Book Title: The Subtitle").
+- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.${titleIdea ? ` Current title idea is "${titleIdea}".` : ''}
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
@@ -2556,8 +2606,7 @@ Initial State:
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - futureNotes: any important notes for future AI turns which are not included in current turn (initial state, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
-- plotFlags: plot important facts, add if isMajorEvent is true (max 1 per page).
-- isMajorEvent: true only if this page contains an irreversible story change: a death, betrayal, revelation, or point of no return.
+- plotFlags: significant plot development that affect the overall story trajectory (max 1 per page).
 - inventory: if any, what items MC brings, can include the amount, traits, and where it located (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
 
@@ -2616,16 +2665,15 @@ export async function initializeBook(
   const {
     userId,
     theme,
-    mcCandidate,
     generateCoverImage = false,
     isOriginal = false,
     aiComment,
-    language: detectedLanguage,
+    // Future note: if detectedLanguage === `en`, maybe we can consider to pre-define MC name idea via `generateRandomCharacter`
+    // language: detectedLanguage,
     req,
     bookId: draftBookId,
   } = params;
 
-  // TODO: if detectedLanguage === `en`, pre-define MC name idea via `generateRandomCharacter`
 
   // Helper to persist book generation progress to DB (fire-and-forget)
   async function onGenerationProgress(progress: StoryGenerationStep | BookGenerationProgress) {
@@ -2644,7 +2692,7 @@ export async function initializeBook(
     await onGenerationProgress('book_initialization');
 
     // 1. Create AI prompt for book creation
-    const prompt = buildBookCreationPrompt(theme, mcCandidate, detectedLanguage);
+    const prompt = buildBookCreationPrompt(params);
 
     // 2. Generate complete book setup using AI
     const response = await executePromptForJSON<BookCreationResponse>({
@@ -2661,10 +2709,10 @@ export async function initializeBook(
         },
       } satisfies AIPromptForJson<BookCreationResponse>,
       jsonStructure: firstBookOutputFormat,
-      fieldInstructions: buildFirstBookFieldInstructions(mcCandidate),
+      fieldInstructions: buildFirstBookFieldInstructions(params),
       thinkThenOutput: firstBookReviewChecklist,
       // STEP 3: EVALUATING (inside `executePromptForJSON`)
-      evaluatorPrompt: buildFirstBookEvaluatorPrompt(theme, mcCandidate),
+      evaluatorPrompt: buildFirstBookEvaluatorPrompt(params),
     }, onProgress, onGenerationProgress);
 
     // 3. Validate AI response
@@ -2751,11 +2799,12 @@ export async function initializeBook(
     }, { bookId }, { client });
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
+    const { place } = firstUserPage;
 
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
-      ...generatedInitialState,
+      ...{...generatedInitialState, plotFlags: generatedInitialState.plotFlags?.map((flag) => ({ ...flag, place })) || []},
       hiddenState: createInitialHiddenState(),
       characters: initialCharacters && initialCharacters.length > 0 ? 
         Object.fromEntries<CharacterMemory>(

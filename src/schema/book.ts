@@ -2,12 +2,12 @@ import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import { characterStatuses, type InitialCharacterMemory, type StoryMC, type StoryMCTranslation } from "../types/character.js";
 import { placeMoods, placeTypes, type InitialPlaceMemory } from "../types/places.js";
-import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, Ending, StoryPageGeneration, FutureNote, InitialFact } from "../types/story.js";
+import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, FutureNote, InitialFact, InitialEnding } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, endingTypes, factTypes, flagLevels, futureNoteTags, plotFlagTypes, storyPhases } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
 import { CHARACTER_NARRATIVE_FLAGS_SCHEMA, INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
-import { FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -35,7 +35,8 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
   } },
   suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue, or empty string if theme is valid' },
   comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
-  language: { type: 'string', description: 'Detected language code (ISO 639-1)' }
+  language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
+  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` }
 };
 
 export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
@@ -57,8 +58,8 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
         additionalProperties: false
       }
     },
-  } satisfies Record<keyof Ending, AIJsonProperty>,
-  required: ['text', 'type'] satisfies (keyof Ending)[],
+  } satisfies Record<keyof InitialEnding, AIJsonProperty>,
+  required: ['text', 'type'] satisfies (keyof InitialEnding)[],
   additionalProperties: false
 };
 
@@ -110,6 +111,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
             isMajor: { type: 'boolean', description: 'Whether the note is a major plot point or minor detail' },
             addedAtPage: { type: 'integer', description: 'Page number where the note was added' },
             targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
+            targetPageRange: { type: 'string', description: 'When this note should become relevant ({pageNumberMin}-{pageNumberMax})', enum: [...Object.keys(storyPhases)] },
             tag: { type: 'string', description: 'Category for organizing the note', enum: [...futureNoteTags] },
           } satisfies Record<keyof FutureNote, AIJsonProperty>,
           required: ['key', 'note'] satisfies (keyof FutureNote)[],
@@ -123,15 +125,15 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
           fact: { type: 'string' },
           type: { type: 'string', enum: [...plotFlagTypes] satisfies PlotFlagType[] },
           place: { type: 'string' },
+          isMajorEvent: { type: 'boolean' },
         } satisfies Record<keyof PlotFlag, AIJsonProperty>,
         required: ['page', 'fact', 'type'] satisfies (keyof PlotFlag)[],
         additionalProperties: false
       } },
-      isMajorEvent: { type: 'boolean' },
       inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INJURY_SCHEMA },
     } satisfies Record<keyof InitialStoryState, AIJsonProperty>,
-    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'isMajorEvent'] satisfies (keyof InitialStoryState)[],
+    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags'] satisfies (keyof InitialStoryState)[],
     additionalProperties: false
   },
   initialFacts: {

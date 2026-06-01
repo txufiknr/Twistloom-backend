@@ -23,12 +23,13 @@ import { deepEqualSimple } from "../utils/parser.js";
  * ```
  */
 export function extractStateDelta(generation: StoryGeneration): StateDelta {
+  const { place } = generation;
   return {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
     futureNoteUpdates: generation.futureNoteUpdates,
     factUpdates: generation.factUpdates,
-    addPlotFlag: generation.addPlotFlag,
+    addPlotFlag: generation.addPlotFlag ? { ...generation.addPlotFlag, place } : undefined,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
     placeUpdates: generation.placeUpdates,
@@ -655,7 +656,10 @@ export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag
   // This mirrors the deduplication in processTagUpdates and provides a safety
   // net against double-application from retries or repeated reconstruction.
   const isDuplicate = state.plotFlags.some(f => f.page === normalized.page && f.type === normalized.type && f.fact === normalized.fact);
-  if (!isDuplicate) state.plotFlags.push(normalized);
+  if (isDuplicate) return;
+
+  state.plotFlags.push(normalized);
+  if (normalized.isMajorEvent) state.isMajorEvent = true;
 }
 
 /**
@@ -1164,14 +1168,13 @@ export function determineOptimalEnding(state: StoryState): EndingType {
  * ```
  */
 export function setupFakeToRealEnding(state: StoryState, triggerPage: number, executionType: "fake_relief_twist" | "loop_trap" | "identity_reveal"): void {
-  if (!state.hiddenState.endingPlan) {
-    state.hiddenState.endingPlan = {
-      type: executionType,
-      armed: true,
-      triggerPage,
-      fakeToReal: true
-    };
-  }
+  if (state.hiddenState.endingPlan) return;
+  state.hiddenState.endingPlan = {
+    type: executionType,
+    armed: true,
+    triggerPage,
+    fakeToReal: true
+  };
 }
 
 /**
