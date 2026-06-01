@@ -3,12 +3,12 @@ export const CHARACTER_NAMES = {
   maleNames: [
     'Liam', 'Noah', 'Oliver', 'Elijah', 'Lucas', 'Mason', 'Logan', 'Ethan', 'Aiden',
     'James', 'Benjamin', 'William', 'Jacob', 'Michael', 'Caleb', 'Daniel', 'Jackson',
-    'Sebastian', 'Jack', 'Owen', 'Grayson', 'Julian', 'Levi', 'Mateo', 'Josiah',
+    'Sebastian', 'Jack', 'Owen', 'Grayson', 'Julian', 'Levi', 'Mateo', 'Josiah', 'Danny',
     'Henry', 'Theodore', 'Wyatt', 'Gabriel', 'Samuel', 'Carter', 'Jayden', 'John',
     'Dylan', 'Luke', 'Asher', 'Oscar', 'Isaac', 'Parker', 'Nolan', 'Ryan', 'Peter',
     'Miles', 'Ezra', 'Hudson', 'Nathaniel', 'Connor', 'Jeremiah', 'Cameron', 'Santiago',
     'Evan', 'Angel', 'Adrian', 'Xavier', 'Kai', 'Jaxson', 'Easton', 'Everett', 'Glenn',
-    'Maverick', 'Silas', 'Carson', 'Luka', 'Rowan', 'Axel', 'Bodhi', 'River', 'Cashel',
+    'Maverick', 'Carson', 'Carl', 'Luka', 'Rowan', 'Axel', 'Bodhi', 'River', 'Cashel',
     'Kai', 'Zen', 'Phoenix', 'Orion', 'Atlas', 'Arlo', 'Sage', 'Wilder', 'Finn', 'Evander',
     'Jasper', 'Cyrus', 'Ronan', 'Zion', 'Apollo', 'Stellan', 'Caspian', 'Tyler', 'Lucian',
     'Storm', 'Blaze', 'Ace', 'Rex', 'Wolf', 'Fox', 'Hawk', 'Jett', 'Dash', 'Knox', 'Lysander',
@@ -20,11 +20,11 @@ export const CHARACTER_NAMES = {
     'Zephyr', 'Boreas', 'Notus', 'Eurus', 'Aeolus', 'Chinook', 'Sirocco', 'Mistral',
     'Eon', 'Epoch', 'Era', 'Aeon', 'Chronos', 'Kairos', 'Tempus', 'Hora', 'Fred',
     'Cipher', 'Nova', 'Zenon', 'Axon', 'Pixel', 'Vector', 'Matrix', 'Quantum',
-    'Neo', 'Echo', 'Cipher', 'Halo', 'Prism', 'Flux', 'Vortex', 'Nexus', 'Vertex',
+    'Neo', 'Echo', 'Cipher', 'Prism', 'Flux', 'Vortex', 'Nexus', 'Vertex',
     'Onyx', 'Jet', 'Coal', 'Slate', 'Flint', 'Obsidian', 'Graphite', 'Charcoal',
     'Zenith', 'Nadir', 'Apex', 'Summit', 'Pinnacle', 'Crest', 'Peak', 'Vertex',
     'Rogue', 'Rebel', 'Maverick', 'Renegade', 'Outlaw', 'Vandal', 'Bandit', 'Ranger',
-    'Legend', 'Myth', 'Fable', 'Saga', 'Epic', 'Tale', 'Story', 'Chronicle'
+    'Myth', 'Fable', 'Saga'
   ],
 
   // Male-preferring last names (stronger masculine associations)
@@ -36,7 +36,7 @@ export const CHARACTER_NAMES = {
     'Green', 'Adams', 'Baker', 'Gonzalez', 'Nelson', 'Carter', 'Mitchell', 'Perez',
     'Roberts', 'Turner', 'Phillips', 'Campbell', 'Parker', 'Evans', 'Edwards', 'Collins',
     'Stewart', 'Sanchez', 'Morris', 'Rogers', 'Reed', 'Cook', 'Morgan', 'Bell', 'Murphy',
-    'Bailey', 'Cooper', 'Richardson', 'Cox', 'Howard', 'Ward', 'Torres', 'Peterson', 'Gray',
+    'Bailey', 'Cooper', 'Richardson', 'Carlson', 'Cox', 'Howard', 'Ward', 'Torres', 'Peterson', 'Gray',
     'Ramirez', 'James', 'Watson', 'Brooks', 'Kelly', 'Sanders', 'Price', 'Bennett', 'Wood',
     'Barnes', 'Ross', 'Henderson', 'Coleman', 'Jenkins', 'Perry', 'Powell', 'Long', 'Patterson',
     'Hughes', 'Flores', 'Washington', 'Butler', 'Simmons', 'Foster', 'Gonzalez', 'Bryant', 'Alexander',
