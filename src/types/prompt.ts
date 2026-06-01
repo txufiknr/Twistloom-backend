@@ -26,6 +26,8 @@ export type BuildNextPageParams = {
   actionedPage: ActionedStoryPage;
   /** Whether next page should have new branchId */
   generateNewBranchId?: boolean;
+  /** Number of candidate pages to generate per action (default: DEFAULT_CANDIDATE_PAGE_PER_ACTION) */
+  candidateCount?: number;
 };
 
 export type BuildNextPagePromptParams = {

@@ -7,12 +7,9 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] Action destinationPageIds: string[]
-[ ] 2 destination at once
+[x] Action destinationPageIds: string[]
+[x] 2 destination at once
 
-destination
-destinationPageId
-insertStoryPage
 
 {
   "flagUpdates": [

@@ -191,22 +191,15 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
     injuries:       [...baseState.injuries],
     inventory:      [...baseState.inventory],
     // ── mutable record objects ───────────────────────────────────────────────
-    characters: { ...baseState.characters },
-    places:     { ...baseState.places },
+    characters:     { ...baseState.characters },
+    places:         { ...baseState.places },
     // ── scalar delta overrides ───────────────────────────────────────────────
-    flags: { ...baseState.flags, ...(flagUpdates ?? {}) },
-    isMajorEvent: isMajorEvent ?? baseState.isMajorEvent,
+    flags:          { ...baseState.flags, ...(flagUpdates ?? {}) },
+    isMajorEvent:   isMajorEvent ?? baseState.isMajorEvent,
     contextHistory: contextHistory || baseState.contextHistory,
-    viableEnding: viableEnding ? {
-      text: viableEnding.text || baseState.viableEnding?.text,
-      type: viableEnding.type || baseState.viableEnding?.type,
-    } : baseState.viableEnding,
-    psychologicalProfile: psychologicalProfileUpdates
-      ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates }
-      : baseState.psychologicalProfile,
-    hiddenState: hiddenStateUpdates
-      ? { ...baseState.hiddenState, ...hiddenStateUpdates }
-      : baseState.hiddenState,
+    viableEnding: viableEnding ? { text: viableEnding.text || baseState.viableEnding?.text, type: viableEnding.type || baseState.viableEnding?.type } : baseState.viableEnding,
+    psychologicalProfile: psychologicalProfileUpdates ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates } : baseState.psychologicalProfile,
+    hiddenState: hiddenStateUpdates ? { ...baseState.hiddenState, ...hiddenStateUpdates } : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
     difficulty: difficulty ?? baseState.difficulty,
   };
@@ -661,16 +654,8 @@ export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag
   // Guard against duplicates (same page + type + fact).
   // This mirrors the deduplication in processTagUpdates and provides a safety
   // net against double-application from retries or repeated reconstruction.
-  const isDuplicate = state.plotFlags.some(
-    (f) =>
-      f.page === normalized.page &&
-      f.type === normalized.type &&
-      f.fact === normalized.fact
-  );
-
-  if (!isDuplicate) {
-    state.plotFlags.push(normalized);
-  }
+  const isDuplicate = state.plotFlags.some(f => f.page === normalized.page && f.type === normalized.type && f.fact === normalized.fact);
+  if (!isDuplicate) state.plotFlags.push(normalized);
 }
 
 /**
@@ -704,29 +689,16 @@ export function processFactUpdates(
 
   for (const { key, ...factHistory } of factUpdates) {
     const history = state.factsHistory[key];
-
-    if (!history) {
-      state.factsHistory[key] = [factHistory];
-      continue;
-    }
+    if (!history) { state.factsHistory[key] = [factHistory]; continue; }
 
     const latestFact = history.at(-1);
-
-    if (!latestFact) {
-      history.push(factHistory);
-      continue;
-    }
+    if (!latestFact) { history.push(factHistory); continue; }
 
     // Same page -> replace
-    if (latestFact.page === factHistory.page) {
-      history[history.length - 1] = factHistory;
-      continue;
-    }
+    if (latestFact.page === factHistory.page) { history[history.length - 1] = factHistory; continue; }
 
     // Skip unchanged state
-    if (latestFact.value === factHistory.value) {
-      continue;
-    }
+    if (latestFact.value === factHistory.value) continue;
 
     history.push(factHistory);
   }

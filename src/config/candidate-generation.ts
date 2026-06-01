@@ -5,7 +5,8 @@ export const MAX_GENERATION_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 export const MAX_GENERATION_PARALLEL_DURATION_MS = 780_000; // 13 minutes for cron jobs (20s buffer)
 
 /** Limit to prevent too many exponential pre-generation */
-export const MAX_CANDIDATE_PAGE_PER_ACTION = 1;
+export const DEFAULT_CANDIDATE_PAGE_PER_ACTION = 2;
+export const MAX_CANDIDATE_PAGE_PER_ACTION = 3;
 export const ALLOW_DEEPER_LEVEL_UNTIL_PAGE = 3;
 
 // SSE polling configuration

@@ -31,7 +31,7 @@ import { LOCK_KEYS, withLock } from './distributed-lock.js';
 import { createNonRetryableError, type ErrorWithCustomProperties, retryWithBackoffOrNull } from './retry.js';
 import { generateNextPages } from './prompt.js';
 import { dispatchGitHubWorkflow } from './github-workflow.js';
-import { ALLOW_DEEPER_LEVEL_UNTIL_PAGE, MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
+import { ALLOW_DEEPER_LEVEL_UNTIL_PAGE, MAX_CANDIDATE_PAGE_PER_ACTION, MAX_GENERATION_DURATION_MS, MAX_GENERATION_PARALLEL_DURATION_MS } from '../config/candidate-generation.js';
 import { formatDuration } from './formatter.js';
 import { delay } from './time.js';
 import { isValidUuid } from './uuid.js';
@@ -394,7 +394,7 @@ export function calculateGenerationTimeout(
  * ```
  */
 export async function generateCandidatePages(params: GenerateCandidatePageParams): Promise<PersistedStoryPage[]> {
-  const { userId, action: actionCandidate, currentBook, currentPage, currentState, generateNewBranchId } = params;
+  const { userId, action: actionCandidate, currentBook, currentPage, currentState, generateNewBranchId, candidateCount, skipIfAlreadyHasDestinations = true } = params;
   
   // 1. Validate page context for candidates generation
   if (!currentPage || !currentBook) {
@@ -412,8 +412,10 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
     throw createNonRetryableError(`Action "${actionCandidate.text}" not found in current page actions`, 'ACTION_NOT_FOUND');
   }
 
-  const letter = String.fromCharCode(65 + currentPage.actions.indexOf(action));
+  const letter = String.fromCharCode(65 + currentPage.actions.findIndex(a => a.text === action.text));
+  const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
   const nextPageNumber = currentPage.page + 1;
+
   console.log(`[generateCandidatePage] 📖 Should generate for "${currentBook.title}" page ${nextPageNumber} from action: ${letter}. ${action.text} (type: ${action.type})`);
 
   if (currentState?.plotFlags.some(p => p.page === nextPageNumber)) {
@@ -421,12 +423,33 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
   }
 
   // 4. Check if next page is pre-generated (candidate) and reuse if available
-  // const nextPageId = action.destination?.pageId;
+  const existing = action.destinationPageIds;
   const bookId = currentBook.id;
   const newPages: PersistedStoryPage[] = [];
-  for (const candidatePageId of action.destinationPageIds) {
-    const candidatePage = await getStoryPageById(userId, bookId, candidatePageId);
-    if (candidatePage) newPages.push(candidatePage);
+  const limit = MAX_CANDIDATE_PAGE_PER_ACTION;
+
+  if (existing.length > 0) {
+    if (skipIfAlreadyHasDestinations !== false || existing.length >= limit) {
+      // Default path: reuse what's there
+      console.log(`[generateCandidatePage] ✅ Using ${existing.length} pre-generated pages`);
+      for (const id of existing) {
+        const page = await getStoryPageById(userId, bookId, id);
+        if (page) newPages.push(page);
+      }
+    } else {
+      // Top-up path: generate the missing alternatives
+      const needed = limit - existing.length;
+      console.log(`[generateCandidatePage] 🔁 Topping up ${existing.length}→${limit} (generating ${needed} more)`);
+      const topUpPages = await generateNextPages({
+        userId,
+        book: currentBook,
+        currentState,
+        actionedPage,
+        generateNewBranchId: true, // always new branch — first slot is taken
+        candidateCount: needed,
+      });
+      newPages.push(...topUpPages);
+    }
   }
 
   // 5. If no pre-generated page exists, generate new page with state progression
@@ -434,20 +457,15 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
     // Candidate: wait until user visit the page and ensure next candidates
     console.log(`[generateCandidatePage] ✅ Using ${newPages.length} pre-generated pages, delta already exists from pre-generation`);
   } else {
-    // 6a. Create actioned page with selected action for state processing
-    const actionedPage: ActionedStoryPage = {
-      ...currentPage,
-      selectedAction: action
-    };
-    
-    // 6b. Generate next page using AI with dynamic configuration
+    // 6. Generate next page using AI with dynamic configuration
     try {
       const newGeneratedPages = await generateNextPages({
         userId,
         book: currentBook,
         currentState,
         actionedPage,
-        generateNewBranchId
+        generateNewBranchId,
+        candidateCount,
       });
 
       // newPages.splice(0, newPages.length, ...newGeneratedPages);
@@ -495,7 +513,7 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
  * @returns Array of results in input order; settled promises never throw.
  */
 async function generateCandidatesInParallel(params: GenerateCandidatesInParallelParams): Promise<CandidateGenerationResult[]> {
-  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress, allowDeeperLevel, onActionComplete } = params;
+  const { userId, actions, currentPage, currentState, currentBook, initialGenerateNewBranchId, timeoutMs, currentDepth, maxDepth, onProgress, allowDeeperLevel, onActionComplete, candidateCount } = params;
   const startTime = Date.now();
   const lookupStartTime = Date.now();
 
@@ -526,7 +544,8 @@ async function generateCandidatesInParallel(params: GenerateCandidatesInParallel
           currentPage,
           currentState,
           currentBook,
-          generateNewBranchId
+          generateNewBranchId,
+          candidateCount
         }),
         {
           maxRetries: MAX_BRANCHING_RETRIES,
@@ -768,7 +787,7 @@ function triggerDeeperLevelGeneration(
 export async function ensureCandidatesForPageWithStrategy(
   params: GenerateCandidatesWithStrategyParams
 ): Promise<UserStoryPage> {
-  const { strategy: context, userId, page, currentState, currentBook: providedBook, options = {} } = params;
+  const { strategy: context, userId, page, currentState, currentBook: providedBook, candidateCount, options = {} } = params;
   const { timeoutMs: customTimeoutMs, onProgress, allowDeeperLevel = false } = options;
 
   // Use shared validation to eliminate redundant checks
@@ -937,9 +956,7 @@ export async function ensureCandidatesForPageWithStrategy(
     //
     // IMPORTANT: always `await` this callback; it contains `await writeChain` which
     // must complete before the next async step reads `updatedDBActions`.
-    const onActionProgress: ActionProgressCallback = async (
-      action, status, candidatePages, error
-    ): Promise<void> => {
+    const onActionProgress: ActionProgressCallback = async (action, status, candidatePages, error): Promise<void> => {
       // Store progress event — error handled internally so tracking failure never aborts generation.
       // Progress tracking is best-effort — log and continue
       await storeActionProgressEvent(page.id, {
@@ -991,6 +1008,7 @@ export async function ensureCandidatesForPageWithStrategy(
         maxDepth,
         onProgress: onActionProgress,
         allowDeeperLevel,
+        candidateCount,
         // onActionComplete bridges generateCandidatesInParallel's success callback into
         // onActionProgress, which is the SSOT for in-memory mutation + serialized DB write + event emission.
         onActionComplete: (action, candidatePage) => onActionProgress(action, 'completed', candidatePage),
@@ -1035,7 +1053,8 @@ export async function ensureCandidatesForPageWithStrategy(
             currentPage,
             currentState,
             currentBook,
-            generateNewBranchId: actionGenerateNewBranchId
+            generateNewBranchId: actionGenerateNewBranchId,
+            candidateCount
           }),
           {
             maxRetries: MAX_BRANCHING_RETRIES,

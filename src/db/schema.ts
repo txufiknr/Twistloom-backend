@@ -491,7 +491,6 @@ export const actionProgress = pgTable(
     /** Current status of the action generation */
     status: text("status").$type<ActionProgressStatus>().notNull().default('started'),
     /** Action destination page ID (when status is 'completed') */
-    // destinationPageId: uuid("destination_page_id"),
     destinationPageIds: jsonb("destination_page_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     /** Error message if status is 'failed' */
     error: text("error"),

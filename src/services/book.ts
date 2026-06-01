@@ -19,12 +19,12 @@ import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, PublicStats } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage } from "../types/story.js";
-import { getStoryStateFromPage } from "./story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, ActionedStoryPage, StoryGeneration } from "../types/story.js";
+import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
-import type { AIDocument } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument } from "../types/ai-chat.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
@@ -317,6 +317,105 @@ export async function updateStoryPage(
     .returning();
 
   return result[0];
+}
+
+/**
+ * Deletes a story page by ID.
+ *
+ * Used exclusively by persistPageWithState for orphan cleanup: when a page
+ * is successfully inserted but its story-state insertion fails, we remove
+ * the page so the DB stays consistent and the action can be retried cleanly.
+ *
+ * @param pageId - The page to delete
+ */
+export async function deleteStoryPage(pageId: string): Promise<void> {
+  await dbWrite.delete(pages).where(eq(pages.id, pageId));
+}
+
+/**
+ * Atomically persists a generated page and its story state.
+ *
+ * ── Atomicity ────────────────────────────────────────────────────────────────
+ * A true DB transaction is not used here because insertStoryPage already
+ * contains retryWithBranchConflict (which retries with a new branchId on
+ * unique-constraint violation). Running that retry inside a transaction would
+ * abort the transaction on the first constraint failure, defeating the retry.
+ *
+ * Instead we approximate atomicity with a cleanup contract:
+ *   1. insertStoryPage   — succeeds or throws (no side effects on throw)
+ *   2. insertStoryState  — on failure → delete the already-committed page
+ *
+ * If the delete also fails (e.g. network partition), the orphan page will be
+ * detectable by a periodic reconciliation job (no state, never linked as a
+ * destination). The function re-throws the original state error in all cases.
+ *
+ * @param context  Short log prefix for debugging (e.g. 'generateNextPages')
+ */
+export async function persistPageWithState(params: {
+  userId: string;
+  expectedPageNumber: number;
+  generatedStoryPage: StoryGeneration;
+  fullStateDelta: StateDelta;
+  newState: StoryState;
+  aiProvider: AIChatProvider | 'none';
+  aiModel: string;
+  actionedPage: ActionedStoryPage;
+  selectedAction: Action;
+  branchId: string;
+  context?: string;
+}): Promise<PersistedStoryPage> {
+  const {
+    userId,
+    expectedPageNumber,
+    generatedStoryPage,
+    fullStateDelta,
+    newState,
+    aiProvider,
+    aiModel,
+    actionedPage,
+    selectedAction,
+    branchId,
+    context = "persistPageWithState",
+  } = params;
+
+  const pageToInsert: StoryPage = {
+    ...generatedStoryPage,
+    stateDelta: fullStateDelta,
+    aiProvider,
+    aiModel,
+  };
+
+  const pageMeta: StoryPageMeta = {
+    bookId: actionedPage.bookId,
+    parentId: actionedPage.id,
+    branchId,
+    selectedAction,
+  };
+
+  // Step 1: Insert the page. insertStoryPage has its own retryWithBranchConflict
+  // internally, so unique-constraint race conditions (two workers, same branchId)
+  // are already handled. No outer retry needed.
+  const newPage = await insertStoryPage(userId, expectedPageNumber, pageToInsert, pageMeta);
+
+  // Step 2: Insert story state. On failure, delete the orphan page so the
+  // action's destination list stays consistent and the job can retry cleanly.
+  try {
+    await insertStoryState(newPage.bookId, newPage.id, newState, "original");
+  } catch (stateError) {
+    const errorMessage = getErrorMessage(stateError);
+    console.error(`[${context}] ❌ State insertion failed for page ${newPage.id} (branchId: ${branchId}), cleaning up orphan...`, errorMessage);
+    try {
+      await deleteStoryPage(newPage.id);
+      console.log(`[${context}] 🗑️ Orphan page ${newPage.id} deleted successfully`);
+    } catch (deleteError) {
+      // Log and continue — don't swallow the original stateError.
+      // The orphan is detectable by a reconciliation cron (page exists, no state, never linked).
+      console.error(`[${context}] ⚠️ Failed to delete orphan page ${newPage.id}:`, getErrorMessage(deleteError));
+    }
+    throw new Error(`Story state insertion failed for page ${newPage.id}: ${errorMessage}`, { cause: stateError });
+  }
+
+  return newPage;
 }
 
 /**

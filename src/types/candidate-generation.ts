@@ -41,6 +41,10 @@ export type GenerateCandidatePageParams = {
   currentBook: Book;
   /** Whether candidate page should have new branchId */
   generateNewBranchId?: boolean;
+  /** Number of candidate pages to generate per action */
+  candidateCount?: number;
+  /** Whether to skip generating candidates if the action already has destinations */
+  skipIfAlreadyHasDestinations?: boolean;
 };
 
 /**
@@ -113,6 +117,8 @@ export interface GenerateCandidatesInParallelParams {
   onProgress?: ActionProgressCallback;
   /** Whether to allow generating deeper levels beyond currentDepth */
   allowDeeperLevel?: boolean;
+  /** Number of candidate pages to generate per action */
+  candidateCount?: number;
   /** Callback for when an action is completed */
   onActionComplete?: (action: Action, candidatePages: PersistedStoryPage[]) => Promise<void>;
 }
@@ -129,6 +135,8 @@ export interface GenerateCandidatesWithStrategyParams {
   currentState?: StoryState | null;
   /** Current book context */
   currentBook?: Book | null;
+  /** Number of candidate pages to generate per action */
+  candidateCount?: number;
   /** Optional generation options */
   options?: GenerateCandidatesOptions
 }
