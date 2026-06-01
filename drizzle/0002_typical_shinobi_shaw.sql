@@ -1,1 +1,0 @@
-ALTER TABLE "book_generations" ADD COLUMN "ai_comment" text;

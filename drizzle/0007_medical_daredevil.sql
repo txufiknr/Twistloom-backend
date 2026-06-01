@@ -1,1 +1,0 @@
-ALTER TABLE "story_states" ADD COLUMN "source" text DEFAULT 'original' NOT NULL;
