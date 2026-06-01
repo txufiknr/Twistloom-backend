@@ -52,7 +52,7 @@ const readPool = IS_TEST ? writePool : new Pool({ connectionString: DATABASE_REA
 
 /**
  * Primary write connection
- * @note Uses DATABASE_TEST_URL in test environment, DATABASE_URL otherwise
+ * Uses {@link DATABASE_TEST_URL} in test environment, {@link DATABASE_URL} otherwise
  */
 export const dbWrite: NeonDatabase<typeof schema> = drizzle(writePool, {
   schema,
@@ -61,7 +61,7 @@ export const dbWrite: NeonDatabase<typeof schema> = drizzle(writePool, {
 
 /**
  * Read replica connection
- * @note In test environment, uses same connection as write (DATABASE_TEST_URL)
+ * In test environment, uses same {@link DATABASE_TEST_URL} connection as write
  */
 export const dbRead: NeonDatabase<typeof schema> = drizzle(readPool, {
   schema,
@@ -69,10 +69,29 @@ export const dbRead: NeonDatabase<typeof schema> = drizzle(readPool, {
 });
 
 /**
- * Default database client (uses write connection)
+ * Default database client (uses {@link dbWrite} connection)
  */
 export const db = dbWrite;
 
 export type DBTransaction = PgTransaction<any, any, any>;
 
 export type DBClient = typeof dbRead | typeof dbWrite | DBTransaction;
+
+/**
+ * Detects if the provided client is a transaction instance
+ * 
+ * Drizzle transaction objects have methods that regular database clients don't.
+ * However, this relies on Drizzle implementation details and could theoretically break in a future version.
+ * 
+ * @param client 
+ * @returns 
+ */
+export function isTransaction(client: DBClient): client is DBTransaction {
+  // return "rollback" in client;
+  return (
+    typeof client === "object" &&
+    client !== null &&
+    "rollback" in client &&
+    typeof (client as any).rollback === "function"
+  );
+}

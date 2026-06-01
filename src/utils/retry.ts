@@ -252,26 +252,30 @@ export interface ErrorWithCustomProperties extends Error {
 }
 
 /**
- * Checks if an error is a unique constraint violation
- * 
- * Checks both the error message and the error code (if available)
- * to support PostgreSQL error codes from Neon/Drizzle
+ * Checks if an error is a unique constraint violation, including through
+ * wrapped errors (i.e., errors with a `cause` chain).
+ *
+ * Drizzle and application code frequently wrap PostgreSQL errors in new Error
+ * instances. Walking the cause chain ensures the original constraint error's
+ * `code` and `message` are reachable even after wrapping.
  */
 export function isUniqueConstraintError(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  
-  // Check message patterns
-  if (UNIQUE_CONSTRAINT_PATTERNS.some(pattern => message.includes(pattern))) {
-    return true;
-  }
-  
-  // Check error code (PostgreSQL errors from Neon have a 'code' property)
-  const err = error as ErrorWithCustomProperties & { code?: string };
-  if (err.code === '23505' || err.code === '23000') {
-    return true;
-  }
-  
-  return false;
+  const check = (err: unknown): boolean => {
+    if (!err) return false;
+
+    const message = getErrorMessage(err).toLowerCase();
+    if (UNIQUE_CONSTRAINT_PATTERNS.some(pattern => message.includes(pattern))) return true;
+
+    const e = err as ErrorWithCustomProperties & { code?: string };
+    if (e.code === '23505' || e.code === '23000') return true;
+
+    // Walk the cause chain — errors are often wrapped multiple times
+    if (e.cause !== undefined) return check(e.cause);
+
+    return false;
+  };
+
+  return check(error);
 }
 
 /**
@@ -292,7 +296,7 @@ export function isNonRetryableError(error: unknown): boolean {
  * Creates a non-retryable error with custom properties
  * 
  * This helper function creates errors that will not be retried by the
- * retryWithUniqueConstraint function, providing a type-safe way to
+ * {@link retryWithUniqueConstraint} function, providing a type-safe way to
  * mark errors as non-retryable.
  * 
  * @param message - Error message
@@ -318,6 +322,11 @@ export interface DatabaseRetryOptions<TData = any> extends RetryOptions {
 
 /**
  * Executes a database operation with automatic retry on unique constraint conflicts
+ *
+ * Note: `shouldRetry` from the base `RetryOptions` interface is intentionally
+ * not used here. This function enforces its own retry predicate: only unique
+ * constraint violations are retried; all other errors (including non-retryable
+ * ones) are thrown immediately.
  * 
  * @param operation - The database operation function to execute
  * @param initialData - Initial data for operation
@@ -343,9 +352,8 @@ export async function retryWithUniqueConstraint<T, D = any>(
 
       // Only retry on unique constraint violations
       // Check for specific error codes that should not be retried
-      if (isNonRetryableError(error)) {
-        throw error;
-      }
+      if (isNonRetryableError(error)) throw error;
+
       if (!isUniqueConstraintError(error)) {
         // Add retry context to non-unique constraint errors
         const errorMessage = getErrorMessage(error);
@@ -360,16 +368,14 @@ export async function retryWithUniqueConstraint<T, D = any>(
       }
 
       // Don't retry on last attempt
-      if (attempt === maxRetries) {
-        break;
-      }
+      if (attempt === maxRetries) break;
 
       // Modify data for next attempt
       if (modifyData) {
         try {
           currentData = modifyData(attempt + 1, currentData);
         } catch (modifyError) {
-          console.error(`[retryWithUniqueConstraint] Error modifying data on attempt ${attempt + 1}:`, modifyError);
+          console.error(`[retryWithUniqueConstraint] ❌ Error modifying data on attempt ${attempt + 1}:`, modifyError);
           throw modifyError; // Re-throw to fail the retry
         }
       }

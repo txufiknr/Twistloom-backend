@@ -3011,8 +3011,7 @@ async function determineBranchIdForPage(params: {
  * Use {@link generateNextPages} for the branching-narrative multiverse flow.
  *
  * This function orchestrates the complete story generation pipeline with page-based architecture:
- * 0. Advance story state based on user action and previous AI turn updates
- * 0.5. Increment page number (only after state advancement succeeds)
+ * 0. Advance story state based on user action and previous AI turn updates via {@link preparePageGenerationContext}
  * 1. Create personalized prompt with character, story context, and previous action
  * 2. Determine optimal AI configuration based on story progress and psychological state
  * 3. Send prompt to AI with dynamic parameters (candidate vs main story context)
@@ -3067,10 +3066,11 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const { selectedAction, actions } = actionedPage;
   const letter = String.fromCharCode(65 + actions.findIndex(a => a.text === selectedAction.text));
   const context = "generateNextPage";
+  const generationContext = `"${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${selectedAction.text} (type: ${selectedAction.type})`;
 
-  console.log(`[${context}] 💭 Conceptualizing continuation for "${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${selectedAction.text} (type: ${selectedAction.type})...`);
+  console.log(`[${context}] 💭 Conceptualizing continuation for ${generationContext}...`);
 
-  // ── 1. Build prompt ──────────────────────────────────────────────────────
+  // 1. Build single-page generation prompt
   const promptParams: BuildNextPagePromptParams = {
     book,
     actionedPage,
@@ -3117,19 +3117,18 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   // 6. Apply current AI turn's updates to advanced story state
   const stateDelta = extractStateDelta(generatedStoryPage);
   const newState = applyStateDelta(advancedState, stateDelta);
+
+  // Provided story state might mismatch, but still respect what provided
   if (newState.page !== expectedPageNumber) {
-    // Provided story state might mismatch, but still respect what provided
     console.warn(`[${context}] ⚠️ newState.page mismatch: expected ${expectedPageNumber}, got ${newState.page}. Correcting.`);
     newState.page = expectedPageNumber;
   }
   
-  // 6.1. Calculate psychological deltas from state changes
+  // Calculate psychological deltas and merge into the state delta
   const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
-  
-  // 6.2. Merge psychological deltas into the state delta for storage
   const fullStateDelta: StateDelta = { ...stateDelta, ...psychologicalDeltas };
 
-  // ── 4. Determine branchId ────────────────────────────────────────────────
+  // Determine branchId
   // Single-page call → always "first alternative". The idempotency check and
   // sibling-destination check inside determineBranchIdForPage still apply.
   const parentBranchId = actionedPage.branchId ?? "main";
@@ -3147,7 +3146,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   console.log(`[${context}] 🌳 branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
   usedBranchIds.add(branchId);
 
-  // ── 5. Persist page + state atomically ──────────────────────────────────
+  // Persist page and its state atomically
   return persistPageWithState({
     userId,
     expectedPageNumber,
@@ -3159,6 +3158,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     actionedPage,
     selectedAction,
     branchId,
+    usedBranchIds,
     context,
   });
 }
@@ -3203,10 +3203,11 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   const { selectedAction, actions } = actionedPage;
   const letter = String.fromCharCode(65 + actions.findIndex(a => a.text === selectedAction.text));
   const context = "generateNextPages";
+  const generationContext = `"${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${selectedAction.text} (type: ${selectedAction.type})`;
   
-  console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for "${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${selectedAction.text} (type: ${selectedAction.type})...`);
+  console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for ${generationContext}...`);
 
-  // ── 1. Build prompt ──────────────────────────────────────────────────────
+  // 1. Build multi-page generation prompt
   const promptParams: BuildNextPagePromptParams = {
     book,
     actionedPage,
@@ -3258,29 +3259,29 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
 
   let lastError: unknown = null;
 
+  // Per-page state processing and persistence
   for (const [index, generatedStoryPage] of generatedStoryPages.entries()) {
     // isFirstAlternative controls whether the parent's branchId may be inherited.
-    // Only alt 0 is eligible; all subsequent alternatives MUST diverge.
+    // Only the first alternative fate is eligible; all subsequent alternatives MUST diverge.
     const isFirstAlternative = index === 0;
 
-    // ── 3a. Per-page state processing ──────────────────────────────────────
+    // Extract generated state delta
     const stateDelta = extractStateDelta(generatedStoryPage);
+
     // Each alternative fate diverges from the same advancedState base, producing
     // independently-evolved newStates for each fate branch.
     const newState = applyStateDelta(advancedState, stateDelta);
     if (newState.page !== expectedPageNumber) {
       // Provided story state might mismatch, but still respect what provided
-      console.warn(`[${context}] ⚠️ newState.page mismatch for alt ${index + 1}: expected ${expectedPageNumber}, got ${newState.page}. Correcting.`);
+      console.warn(`[${context}] ⚠️ newState.page mismatch for alternative fate ${index + 1}: expected ${expectedPageNumber}, got ${newState.page}. Correcting.`);
       newState.page = expectedPageNumber;
     }
     
-    // 6.1. Calculate psychological deltas from state changes
+    // 6. Calculate psychological deltas and merge into the state delta
     const psychologicalDeltas = calculatePsychologicalDeltas(currentState, newState);
-    
-    // 6.2. Merge psychological deltas into the state delta for storage
     const fullStateDelta: StateDelta = { ...stateDelta, ...psychologicalDeltas };
 
-    // ── 3b. Determine branchId ──────────────────────────────────────────────
+    // Determine branchId
     let branchId: string;
     try {
       branchId = await determineBranchIdForPage({
@@ -3295,15 +3296,15 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       // Non-retryable signals (PAGE_DELETED, ACTION_ALREADY_HAS_DESTINATION):
       // abort the entire loop — there is no point continuing if the parent page
       // is gone or a concurrent worker already completed this action.
-      console.error(`[${context}] ❌ Cannot determine branchId for alt ${index + 1}/${generatedStoryPages.length}:`, getErrorMessage(error));
+      console.error(`[${context}] ❌ Cannot determine branchId for alternative fate ${index + 1}/${generatedStoryPages.length}:`, getErrorMessage(error));
       throw error;
     }
     // Register before the insert so a potential within-call collision on alt N+1
     // is caught by determineBranchIdForPage's while-loop guard.
-    console.log(`[${context}] 🌳 Alt ${index + 1}/${generatedStoryPages.length} — branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
+    console.log(`[${context}] 🌳 Alternative fate ${index + 1}/${generatedStoryPages.length} — branchId: ${branchId} (${branchId === parentBranchId ? "inherited from parent" : "new branch"})`);
     usedBranchIds.add(branchId);
 
-    // ── 3c. Persist page + state atomically ────────────────────────────────
+    // 7. Persist page and its state atomically
     try {
       const newPage = await persistPageWithState({
         userId,
@@ -3316,32 +3317,30 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         actionedPage,
         selectedAction,
         branchId,
+        usedBranchIds,
         context,
       });
 
       newPages.push(newPage);
-      console.log(`[${context}] ✅ Persisted alt ${index + 1}/${generatedStoryPages.length} — page ${newPage.id}`);
+      console.log(`[${context}] ✅ Persisted alternative fate ${index + 1}/${generatedStoryPages.length} — page ${newPage.id}`);
     } catch (error) {
       // One alternative failing should not abort the others.
       // Partial success (≥1 page) is acceptable and useful to the caller.
       lastError = error;
-      console.error(`[${context}] ❌ Failed to persist alt ${index + 1}/${generatedStoryPages.length} (branchId: ${branchId}):`, getErrorMessage(error));
+      console.error(`[${context}] ❌ Failed to persist alternative fate ${index + 1}/${generatedStoryPages.length} (branchId: ${branchId}):`, getErrorMessage(error));
       // Continue to next alternative
     }
   }
 
   // Surface an error only when zero alternatives were persisted (total failure).
   if (newPages.length === 0) {
-    throw (
-      lastError ??
-      new Error(`[${context}] All ${generatedStoryPages.length} alternatives failed to persist for action "${selectedAction.text}"`)
-    );
+    throw (lastError ?? new Error(`All ${generatedStoryPages.length} alternatives failed to persist for ${generationContext}`));
   }
 
   if (newPages.length < generatedStoryPages.length) {
-    console.warn(`[${context}] ⚠️ Partial success: persisted ${newPages.length}/${generatedStoryPages.length} alternatives for action "${selectedAction.text}"`);
+    console.warn(`[${context}] ⚠️ Partial success: persisted ${newPages.length}/${generatedStoryPages.length} alternatives for ${generationContext}`);
   } else {
-    console.log(`[${context}] ✅ Persisted all ${newPages.length} alternatives for action "${selectedAction.text}"`);
+    console.log(`[${context}] 🌌 Persisted all ${newPages.length} alternative fates for ${generationContext}`);
   }
   
   return newPages;

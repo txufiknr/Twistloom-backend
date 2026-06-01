@@ -11,7 +11,7 @@
  * - Type-safe database operations
  */
 
-import { type DBClient, dbRead, dbWrite } from "../db/client.js";
+import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
 import { pages, books, users, userPageProgress, userCompletedBooks, userActionHints } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, sql } from "drizzle-orm";
@@ -222,57 +222,58 @@ export async function insertStoryPage(
 ): Promise<PersistedStoryPage> {
   const { client = dbWrite } = options;
   const { bookId, branchId, parentId, selectedAction } = pageMeta;
-  
-  try {
-    // Early validation: check specific selectedAction in parent page if provided
-    if (parentId && selectedAction) {
-      const parentPage = await getPageFromDB(parentId, { client });
-      if (!parentPage) {
-        throw new Error(`Parent page ${parentId} not found`);
-      }
-      
-      // Find the specific action in parent that matches the selectedAction
-      // const matchingAction = parentPage.actions.find(action => action.text === selectedAction.text);
-      
-      // Check if the matching action already has a destination pageId
-      // if (matchingAction?.destinationPageIds.length) {
-      //   console.warn(`[insertStoryPage] ⚠️ Parent action "${selectedAction.text}" already has ${matchingAction.destinationPageIds.length} destination pages, skipping insertion`);
-      //   // Return the existing page instead of inserting a new one
-      //   // TODO: pick one
-      //   const existingPage = await getPageFromDB(matchingAction.destinationPageIds[0], { client });
-      //   if (existingPage) {
-      //     return mapToPersistedStoryPage(existingPage);
-      //   }
-      //   // If existing page not found, proceed with insertion (race condition handling)
-      // }
+
+  // Validation runs the same regardless of mode
+  if (parentId && selectedAction) {
+    const parentPage = await getPageFromDB(parentId, { client });
+    if (!parentPage) throw new Error(`Parent page ${parentId} not found`);
+  }
+
+  const newPageData: DBNewPage = {
+    userId,
+    bookId,
+    branchId,
+    parentId,
+    page: pageNumber,
+    text: page.text,
+    mood: page.mood,
+    place: page.place || "Unknown", // Default place if not provided
+    timeOfDay: page.timeOfDay || "unknown",
+    charactersPresent: page.charactersPresent || [],
+    keyEvents: page.keyEvents || [],
+    importantObjects: page.importantObjects || [],
+    actions: page.actions,
+    stateDelta: extractStateDelta(page),
+    aiProvider: page.aiProvider || null,
+    aiModel: page.aiModel || null,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+
+  if (isTransaction(client)) {
+    // ── Transaction mode ────────────────────────────────────────────────────
+    // Skip internal retry: retrying inside a transaction is impossible because
+    // PostgreSQL aborts the transaction on the first constraint failure.
+    // The caller (persistPageWithState) owns the retry loop and wraps the
+    // transaction. Re-throw the original error unwrapped so isUniqueConstraintError
+    // can read code: '23505' directly.
+    try {
+      const [newPage] = await client.insert(pages).values(newPageData).returning();
+      return mapToPersistedStoryPage(newPage);
+    } catch (error) {
+      console.error(`[insertStoryPage] ❌ Insert failed (tx mode) for page ${pageNumber}:`, getErrorMessage(error));
+      throw error; // Preserve original error — do NOT wrap
     }
+  }
 
-    const newPageData: DBNewPage = {
-      userId,
-      bookId,
-      branchId,
-      parentId,
-      page: pageNumber,
-      text: page.text,
-      mood: page.mood,
-      place: page.place || "Unknown", // Default place if not provided
-      timeOfDay: page.timeOfDay || "unknown",
-      charactersPresent: page.charactersPresent || [],
-      keyEvents: page.keyEvents || [],
-      importantObjects: page.importantObjects || [],
-      actions: page.actions,
-      stateDelta: extractStateDelta(page),
-      aiProvider: page.aiProvider || null,
-      aiModel: page.aiModel || null,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    // Use retryWithBranchConflict to handle unique constraint violations
-    const result = await retryWithBranchConflict(
+  // ── Standalone mode ──────────────────────────────────────────────────────
+  // Retry with a fresh branchId on constraint violation. Safe here because
+  // each retry is an independent statement with no enclosing transaction.
+  try {
+    return await retryWithBranchConflict(
       async (data: DBNewPage) => {
         const [newPage] = await client.insert(pages).values(data).returning();
-        return newPage;
+        return mapToPersistedStoryPage(newPage);
       },
       newPageData,
       generateBranchId,
@@ -283,18 +284,14 @@ export async function insertStoryPage(
         onRetry: (attempt) => {
           console.log(`[insertStoryPage] 🔄 Branch conflict retry ${attempt}/3 for page ${pageNumber} (parent: ${parentId})`);
         },
-        shouldRetry: (error) => {
-          // Only retry on unique constraint violations
-          return isUniqueConstraintError(error);
-        }
+        // Note: shouldRetry here is passed to retryWithBranchConflict → retryWithUniqueConstraint,
+        // which does NOT use this field (it applies isUniqueConstraintError internally).
+        // Keeping it as documentation of intent only.
       }
     );
-
-    const insertedPage = mapToPersistedStoryPage(result);
-    return insertedPage;
   } catch (error) {
     const errorMessage = getErrorMessage(error);
-    console.error(`[insertStoryPage] ❌ Failed to insert story page for page ${pageNumber}:`, errorMessage);
+    console.error(`[insertStoryPage] ❌ Failed to insert story page ${pageNumber}:`, errorMessage);
     throw new Error(`Unable to insert story page: ${errorMessage}`, { cause: error });
   }
 }
@@ -362,6 +359,7 @@ export async function persistPageWithState(params: {
   actionedPage: ActionedStoryPage;
   selectedAction: Action;
   branchId: string;
+  usedBranchIds: Set<string>; // must be passed in for within-call collision safety on retry
   context?: string;
 }): Promise<PersistedStoryPage> {
   const {
@@ -374,7 +372,7 @@ export async function persistPageWithState(params: {
     aiModel,
     actionedPage,
     selectedAction,
-    branchId,
+    usedBranchIds,
     context = "persistPageWithState",
   } = params;
 
@@ -385,37 +383,43 @@ export async function persistPageWithState(params: {
     aiModel,
   };
 
-  const pageMeta: StoryPageMeta = {
-    bookId: actionedPage.bookId,
-    parentId: actionedPage.id,
-    branchId,
-    selectedAction,
-  };
+  const MAX_BRANCH_RETRIES = 3;
+  let currentBranchId = params.branchId;
 
-  // Step 1: Insert the page. insertStoryPage has its own retryWithBranchConflict
-  // internally, so unique-constraint race conditions (two workers, same branchId)
-  // are already handled. No outer retry needed.
-  const newPage = await insertStoryPage(userId, expectedPageNumber, pageToInsert, pageMeta);
-
-  // Step 2: Insert story state. On failure, delete the orphan page so the
-  // action's destination list stays consistent and the job can retry cleanly.
-  try {
-    await insertStoryState(newPage.bookId, newPage.id, newState, "original");
-  } catch (stateError) {
-    const errorMessage = getErrorMessage(stateError);
-    console.error(`[${context}] ❌ State insertion failed for page ${newPage.id} (branchId: ${branchId}), cleaning up orphan...`, errorMessage);
+  for (let attempt = 1; attempt <= MAX_BRANCH_RETRIES; attempt++) {
     try {
-      await deleteStoryPage(newPage.id);
-      console.log(`[${context}] 🗑️ Orphan page ${newPage.id} deleted successfully`);
-    } catch (deleteError) {
-      // Log and continue — don't swallow the original stateError.
-      // The orphan is detectable by a reconciliation cron (page exists, no state, never linked).
-      console.error(`[${context}] ⚠️ Failed to delete orphan page ${newPage.id}:`, getErrorMessage(deleteError));
+      return await dbWrite.transaction(async (tx) => {
+        const pageMeta: StoryPageMeta = {
+          bookId: actionedPage.bookId,
+          parentId: actionedPage.id,
+          branchId: currentBranchId,
+          selectedAction,
+        };
+
+        // insertStoryPage detects tx client → skips internal retry → bubbles original error
+        const newPage = await insertStoryPage(userId, expectedPageNumber, pageToInsert, pageMeta, { client: tx });
+
+        // If this throws, the transaction auto-rolls back — no orphan page
+        await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });
+
+        return newPage;
+      });
+    } catch (error) {
+      // isUniqueConstraintError now walks the cause chain, so code: '23505' is
+      // reliably detected even if the error is wrapped by Drizzle or insertStoryPage
+      if (isUniqueConstraintError(error) && attempt < MAX_BRANCH_RETRIES) {
+        let newBranchId = generateBranchId();
+        while (usedBranchIds.has(newBranchId)) newBranchId = generateBranchId();
+        usedBranchIds.add(newBranchId);
+        currentBranchId = newBranchId;
+        console.warn(`[${context}] ⚠️ branchId conflict on attempt ${attempt}/${MAX_BRANCH_RETRIES}, retrying with ${newBranchId}`);
+        continue;
+      }
+      throw error;
     }
-    throw new Error(`Story state insertion failed for page ${newPage.id}: ${errorMessage}`, { cause: stateError });
   }
 
-  return newPage;
+  throw new Error(`[${context}] ❌ Failed to persist page after ${MAX_BRANCH_RETRIES} branch conflict retries`);
 }
 
 /**
