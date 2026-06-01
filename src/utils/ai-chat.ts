@@ -8,14 +8,14 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure } from './ai-logger.js';
 import { classifyGenAIError, getErrorMessage } from "./error.js";
 import { parseAISafely } from "./parser.js";
-import type Groq from 'groq-sdk';
-import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
-import { type GenerateContentConfig, Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
-import type { ResponseFormatV2, V2ChatRequest, V2ChatRequestDocumentsItem, V2ChatResponse } from "cohere-ai/api";
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
-import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
+import { type GenerateContentConfig, Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
+import type Groq from 'groq-sdk';
+import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
+import type { Cohere } from "cohere-ai";
+import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
+import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 
@@ -159,7 +159,7 @@ export async function githubPrompt(
     (response) => {
       const content = response.choices?.[0]?.message?.content;
       if (typeof content !== 'string' || !content.trim()) {
-        console.warn('[github] Invalid or empty model response');
+        console.warn('[github] ⚠️ Invalid or empty model response');
         return null;
       }
       return content.trim();
@@ -167,7 +167,7 @@ export async function githubPrompt(
     (response) => {
       const { usage } = response;
       if (!usage) {
-        console.warn('[github] No usage data in response');
+        console.warn('[github] ❓ No usage data in response');
         return undefined;
       }
       return {
@@ -397,14 +397,14 @@ export async function groqPrompt(
     },
     (response) => {
       if (!response.choices || response.choices.length === 0) {
-        console.warn('[groq] No choices in response');
+        console.warn('[groq] ❓ No choices in response');
         return null;
       }
 
       const choice = response.choices[0];
       const content = choice.message?.content;
       if (typeof content !== 'string' || !content.trim()) {
-        console.warn('[groq] No valid content in response');
+        console.warn('[groq] ❓ No valid content in response');
         return null;
       }
       return content.trim();
@@ -412,7 +412,7 @@ export async function groqPrompt(
     (response) => {
       const { usage } = response;
       if (!usage) {
-        console.warn('[groq] No usage data in response');
+        console.warn('[groq] ❓ No usage data in response');
         return undefined;
       }
       return {
@@ -450,7 +450,7 @@ export async function coherePrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
-  return promptWithFallback<V2ChatResponse>(
+  return promptWithFallback<Cohere.V2ChatResponse>(
     'cohere',
     prompt,
     options,
@@ -463,7 +463,7 @@ export async function coherePrompt(
           { role: 'user', content: prompt },
         ],
         documents: documents && documents.length > 0
-          ? documents.map((data: AIDocument) => ({ data })) satisfies V2ChatRequestDocumentsItem[]
+          ? documents.map((data: AIDocument) => ({ data })) satisfies Cohere.V2ChatRequestDocumentsItem[]
           : undefined,
         maxTokens: config.maxOutputToken,
         temperature: config.temperature,
@@ -478,8 +478,8 @@ export async function coherePrompt(
             required: outputJsonRequired,
             additionalProperties: false
           } : undefined
-        } satisfies ResponseFormatV2 : undefined,
-      } satisfies V2ChatRequest);
+        } satisfies Cohere.ResponseFormatV2 : undefined,
+      } satisfies Cohere.V2ChatRequest);
     },
     (response) => {
       const message = response.message;
@@ -488,7 +488,7 @@ export async function coherePrompt(
         ?.find((item): item is { type: 'text'; text: string } => item.type === 'text')
         ?.text ?? contentText;
       if (!text) {
-        console.warn('[cohere] No text in response');
+        console.warn('[cohere] ❓ No text in response');
         return null;
       }
       return text;
@@ -496,7 +496,7 @@ export async function coherePrompt(
     (response) => {
       const { usage } = response;
       if (!usage) {
-        console.warn('[cohere] No usage data in response');
+        console.warn('[cohere] ❓ No usage data in response');
         return undefined;
       }
       return {
@@ -571,7 +571,7 @@ export async function cerebrasPrompt(
     (response) => {
       const content = response.choices?.[0]?.message?.content;
       if (!content) {
-        console.warn('[cerebras] No content in response');
+        console.warn('[cerebras] ❓ No content in response');
         return null;
       }
       return content.trim();
@@ -650,7 +650,7 @@ export async function mistralPrompt(
     (response) => {
       const content = response.choices?.[0]?.message?.content;
       if (!content) {
-        console.warn('[mistral] No content in response');
+        console.warn('[mistral] ❓ No content in response');
         return null;
       }
       return Array.isArray(content) 
@@ -732,7 +732,7 @@ export async function nvidiaPrompt(
     (response) => {
       const content = response.choices?.[0]?.message?.content;
       if (!content) {
-        console.warn('[nvidia] No content in response');
+        console.warn('[nvidia] ❓ No content in response');
         return null;
       }
       return content.trim();
@@ -930,7 +930,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             if (evaluationResult) {
               const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
               if (logEvaluationResult) {
-                group(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore} → ${scoreAfter}):`, async () => {
+                group(`[${evaluationContext}] 🕵️‍♂️ Evaluation result (score: ${scoreBefore.total} → ${scoreAfter.total}):`, async () => {
                   console.log("Score before:", scoreBefore);
                   console.log("Score after:", scoreAfter);
                   console.log("Action flags:", actionFlags);
@@ -942,7 +942,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
                 result: evaluationResult.output
               } satisfies AIResponse<T>;
             } else if (logEvaluationResult) {
-              console.log(`[${evaluationContext}] Evaluation returned no result — falling back to generation output`);
+              console.log(`[${evaluationContext}] ❓ Evaluation returned no result — falling back to generation output`);
             }
           } catch (evalError) {
             console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, getErrorMessage(evalError));
@@ -982,7 +982,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     // Log fallback if there are more providers to try
     const remainingProviders = providers.slice(providers.indexOf(provider) + 1);
     if (remainingProviders.length > 0) {
-      console.log(`${provider} failed, trying remaining fallback: ${remainingProviders.join(' → ')}`);
+      console.log(`[${provider}] ⚠️ Failed, trying remaining fallback: ${remainingProviders.join(' → ')}`);
     }
   }
 
@@ -1106,11 +1106,6 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
 export function logPromptWithSeparators(provider: AIChatProvider, message: string, content: string, shouldLog: boolean): void {
   if (!shouldLog) return;
   
-  // const separator = '═'.repeat(80);
-  // console.log(`\n${separator}`);
-  // console.log(`[${provider}] ${message} (${content.length} chars):`, content);
-  // console.log(`${separator}\n`);
-
   group(`[${provider}] ${message} (${content.length} chars):`, async () => {
     console.log(content);
   });

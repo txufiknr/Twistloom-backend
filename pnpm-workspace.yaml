@@ -1,3 +1,9 @@
+allowBuilds:
+  '@google/genai': true
+  bcrypt: set this to true or false
+  esbuild: true
+  protobufjs: true
+  sharp: set this to true or false
 onlyBuiltDependencies:
   - bcrypt
   - esbuild

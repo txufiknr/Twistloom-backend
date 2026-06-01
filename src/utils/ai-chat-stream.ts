@@ -8,11 +8,11 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess } from './ai-logger.js';
 import { getErrorMessage } from "./error.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
+import { convertToGeminiSchema, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import { type GenerateContentConfig, Type, type GenerateContentParameters, type Schema } from "@google/genai";
-import type { V2ChatRequest, V2ChatRequestDocumentsItem } from "cohere-ai/api";
+import type { Cohere } from "cohere-ai";
 import type { ChatCompletion, ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingCerebras } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { ChatCompletionStreamRequest } from "@mistralai/mistralai/models/components";
-import { convertToGeminiSchema, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingOpenAI } from "openai/resources/index.mjs";
 import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingGroq } from "groq-sdk/resources/chat/completions.mjs";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
@@ -410,7 +410,7 @@ async function* cohereStreamGenerator(
       { role: 'user', content: prompt },
     ],
     documents: documents && documents.length > 0
-      ? documents.map((data: AIDocument) => ({ data })) satisfies V2ChatRequestDocumentsItem[]
+      ? documents.map<Cohere.V2ChatRequestDocumentsItem>((data: AIDocument) => ({ data }))
       : undefined,
     maxTokens: config.maxOutputToken,
     temperature: config.temperature,
@@ -430,7 +430,7 @@ async function* cohereStreamGenerator(
         }
       }
     } : { type: 'json_object' }) : undefined,
-  } satisfies V2ChatRequest);
+  } satisfies Cohere.V2ChatStreamRequest);
   
   for await (const chunk of stream) {
     if (signal?.aborted) return;
@@ -489,11 +489,11 @@ async function* cerebrasStreamGenerator(
       // Handle error chunk - log and skip without terminating stream
       const { error, status_code } = chunkTyped as ChatCompletion.ErrorChunkResponse;
       const errorMessage = error?.message || 'Unknown Cerebras error';
-      console.warn(`Cerebras error chunk (${status_code}):`, errorMessage);
+      console.warn(`[cerebras] ⚠️ Error chunk (${status_code}):`, errorMessage);
       // Skip this chunk and continue streaming
     } else {
       // Unexpected chunk type - log warning and skip
-      console.warn('Unexpected Cerebras chunk type:', chunk);
+      console.warn('[cerebras] ⚠️ Unexpected chunk type:', chunk);
     }
   }
 }
@@ -541,7 +541,7 @@ async function* mistralStreamGenerator(
     if (Array.isArray(delta)) {
       const nonStringItems = delta.filter(d => typeof d !== 'string');
       if (nonStringItems.length > 0) {
-        console.warn('Mistral delta contains non-string items:', nonStringItems);
+        console.warn('[mistral] ⚠️ Delta contains non-string items:', nonStringItems);
       }
     }
     const text = typeof delta === 'string' ? delta : Array.isArray(delta) ? delta.map(d => typeof d === 'string' ? d : '').join('') : '';
@@ -562,9 +562,7 @@ async function* nvidiaStreamGenerator(
 
   // Create timeout signal (using Node.js 24+)
   const timeoutSignal = AbortSignal.timeout(NVIDIA_REQUEST_TIMEOUT_MS);
-  const combinedSignal = signal ? 
-    AbortSignal.any([signal, timeoutSignal]) : 
-    timeoutSignal;
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
   const res = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
     method: 'POST',
@@ -588,16 +586,7 @@ async function* nvidiaStreamGenerator(
   });
 
   if (!res.ok) {
-    // const errorText = await res.text().catch(() => 'Unknown error');
-    let errorText = 'Unknown error';
-    try {
-      errorText = await res.text();
-    } catch {
-      // Body consumption failed, use default error text
-    } finally {
-      // Ensure body is consumed even if text() throws
-      await res.body?.cancel().catch(() => {});
-    }
+    const errorText = await res.text().catch(() => 'Unknown error');
     throw new Error(`HTTP ${res.status}: ${errorText}`);
   }
 
@@ -628,13 +617,13 @@ async function* nvidiaStreamGenerator(
             try {
               const data = JSON.parse(jsonStr);
               if (!data.choices || !data.choices[0]) {
-                console.warn('NVIDIA response missing choices:', data);
+                console.warn('[nvidia] ⚠️ Response missing choices:', data);
                 continue;
               }
               const delta = data.choices[0]?.delta?.content || '';
               if (delta) yield delta;
             } catch (e) {
-              console.warn('Failed to parse NVIDIA SSE chunk:', getErrorMessage(e));
+              console.warn('[nvidia] ⚠️ Failed to parse SSE chunk:', getErrorMessage(e));
             }
           }
         }
