@@ -8,30 +8,6 @@
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 
-FutureNotes = forward-looking obligations ("this should happen later")
-PlotFlags = historical facts ("this already happened")
-
-const majorEvents =
-  plotFlags.filter(flag => flag.isMajorEvent);
-
-const recentMajorEvents =
-  plotFlags.filter(flag => flag.isMajorEvent).slice(-5);
-
-
-Prompt context:
-(Most recent first)
-recentMajorEvents: [
-  "revelation",
-  "betrayal",
-  "death"
-]
-
-[ ] calculate majorEventCounts: {
-  revelation: 2,
-  betrayal: 1,
-  death: 1
-}
-
 unstable
 → narration may contain paranoia
 → ambiguous events interpreted negatively

@@ -102,7 +102,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       traumaTags: { type: 'array', items: { type: 'string' } },
       futureNotes: {
         type: 'array',
-        description: `Foreshadowing notes for future AI turns (max ${MAX_FUTURE_NOTES}).`,
+        description: `Forward-looking narrative obligations ("what should happen later") — Foreshadowing notes for future AI turns (max ${MAX_FUTURE_NOTES}).`,
         items: {
           type: 'object',
           properties: {
@@ -118,18 +118,22 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
           additionalProperties: false
         }
       },
-      plotFlags: { type: 'array', items: {
-        type: 'object',
-        properties: {
-          page: { type: 'integer' },
-          fact: { type: 'string' },
-          type: { type: 'string', enum: [...plotFlagTypes] satisfies PlotFlagType[] },
-          place: { type: 'string' },
-          isMajorEvent: { type: 'boolean' },
-        } satisfies Record<keyof PlotFlag, AIJsonProperty>,
-        required: ['page', 'fact', 'type'] satisfies (keyof PlotFlag)[],
-        additionalProperties: false
-      } },
+      plotFlags: {
+        type: 'array',
+        description: 'Historical facts ("what already happened") — Significant story events or revelations that impact narrative trajectory.',
+        items: {
+          type: 'object',
+          properties: {
+            page: { type: 'integer' },
+            fact: { type: 'string' },
+            type: { type: 'string', enum: [...plotFlagTypes] satisfies PlotFlagType[] },
+            place: { type: 'string' },
+            isMajorEvent: { type: 'boolean' },
+          } satisfies Record<keyof PlotFlag, AIJsonProperty>,
+          required: ['page', 'fact', 'type'] satisfies (keyof PlotFlag)[],
+          additionalProperties: false
+        }
+      },
       inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INJURY_SCHEMA },
     } satisfies Record<keyof InitialStoryState, AIJsonProperty>,

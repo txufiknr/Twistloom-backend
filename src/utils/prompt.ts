@@ -4,7 +4,7 @@ import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPro
 import { type CharacterMemory, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes, type StoryMCCandidate } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, type ActionedStoryPage, endingTypes, finalePhases, plotFlagTypes, factTypes, futureNoteTags, storyPhases } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG } from "../config/story.js";
+import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas } from "./story.js";
@@ -142,6 +142,16 @@ Trauma Tags — Reappear in altered, disturbing forms. Echo through environment,
 Consequences — Delayed, subtle, escalating. Sometimes unfair or illogical. The story should feel like something remembers what they did.
 
 Memory Corruption — Never state it directly. Let contradictions surface naturally. Make the reader quietly question previous pages.`;
+
+export const RULES_FUTURE_NOTES = `FUTURE NOTE RULES:
+
+Future Notes Becoming Relevant:
+- Prioritize opportunities to advance these notes naturally.
+- Advancement does not require immediate resolution.
+
+Future Notes For Later:
+- Keep these in mind for future planning.
+- Do not force them into the current page unless naturally justified.`;
 
 /**
  * Rules for maintaining narrative consistency despite psychological elements
@@ -728,24 +738,26 @@ ${isEarlyPhase ? `  - Max 1 per page. Plant sparingly — early trauma tags shap
 ${isFinale ? `  - Existing trauma tags should be echoing and surfacing now, not new ones being added.` : ''}
 
 futureNoteUpdates
-${futureNotes.length < MAX_FUTURE_NOTES ? `  - Add any important notes for future AI turns which are not included in current turn.` : ''}
-${futureNotes.length > 0 ? `  - incorporate it into the narrative when their target timing becomes relevant.
-  - Resolve future notes naturally through story progression. If any resolved, add it to plot flag.
-  - Remove which have been paid off or irrelevant.` : ''}
-  - Keep max ${MAX_FUTURE_NOTES} items.
+${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved clues, revelations, promises, relationships, mysteries, or future developments which matter later.
+  - Do NOT add for temporary details, completed events, or facts already captured by plot flags.
+  - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : ''}
+  - Future notes represent narrative obligations, not immediate requirements. Do not resolve a future note merely because it exists.
+  - When a target timing becomes relevant, begin incorporating it naturally into the narrative.
+  - Remove which have been fulfilled or becomes irrelevant.
+  - If fulfilling the future note materially changes the story, record the outcome as a plot flag.
+  - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.
 
 factUpdates
   - Represents long-term story memory, discoveries, or important established facts that influence future turns.
-  - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
   - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
   - value: latest known state. Prefer concise value over long sentence (explanation can be added in reason).
   - reason: 1-sentence, why or how it hapenned or changed.
   - Facts should be objectively true within the story after this page ends.
   - Do NOT record every event that happened on the page.
   - Reuse existing keys whenever updating the same fact (only meaningful change).
-  - Only include facts that meet at least one of these criteria:
+  - ONLY include facts that meet at least one of these criteria (if unsure, omit it):
     → Permanently change the story world.
-    → Reveal important information.
+    → Reveal important information to remember 20+ pages later.
     → Change a character's status, goal, relationship, possession, or knowledge.
     → Establish a mystery clue, suspect, or revelation.
 
@@ -1565,28 +1577,27 @@ function formatActionChoices(actions: Action[]): string {
 /**
  * Pretty-format FutureNotes for AI prompts.
  *
- * Sort priority:
+ * Sort priority (by payoff timing):
  * 1. targetPageRange (ascending start page)
  * 2. targetPhase (EARLY → MID → LATE → FINALE)
  * 3. Major notes before minor notes
  * 4. addedAtPage (ascending, tie-breaker only)
  *
- * Output emphasizes future payoff timing rather than creation history.
- *
- * Returns "none" when empty.
- *
- * Example:
+ * @example
  * - [MAJOR] fn_123: Reveal that Evelyn forged the diary
  *   • Payoff: pages 18-22
  *   • Phase: LATE
  *   • Tag: clue
- *
  * - fn_456: Mention the broken pocket watch
  *   • Payoff: pages 8-12
  *   • Tag: foreshadowing
  */
-function formatFutureNotes(futureNotes: FutureNote[]): string {
-  if (!futureNotes?.length) return 'none';
+function formatFutureNotes(
+  futureNotes: FutureNote[],
+  currentPage: number,
+  currentPhase: StoryPhase,
+): string {
+  if (!futureNotes.length) return 'None yet.';
 
   const phaseOrder: Record<StoryPhase, number> = {
     EARLY: 0,
@@ -1595,54 +1606,66 @@ function formatFutureNotes(futureNotes: FutureNote[]): string {
     FINALE: 3,
   };
 
-  /**
-   * Extract starting page from a page range.
-   *
-   * Examples:
-   * "10-15" -> 10
-   * "20+"   -> 20
-   * "7"     -> 7
-   */
-  const getPageRangeStart = (range?: string): number => {
-    if (!range) return Number.POSITIVE_INFINITY;
-
+  const getPageRangeStart = (range?: string): number | undefined => {
+    if (!range) return undefined;
     const match = range.match(/^(\d+)/);
-    return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+    return match ? Number(match[1]) : undefined;
   };
 
-  const sorted = [...futureNotes].sort((a, b) => {
-    // 1. Target page range
-    const pageA = getPageRangeStart(a.targetPageRange);
-    const pageB = getPageRangeStart(b.targetPageRange);
+  const becomingRelevant: FutureNote[] = [];
+  const later: FutureNote[] = [];
+  const unscheduled: FutureNote[] = [];
 
-    if (pageA !== pageB) return pageA - pageB;
+  for (const note of futureNotes) {
+    const startPage = getPageRangeStart(note.targetPageRange);
 
-    // 2. Target phase
-    const phaseA = a.targetPhase !== undefined ? phaseOrder[a.targetPhase] : Number.POSITIVE_INFINITY;
-    const phaseB = b.targetPhase !== undefined ? phaseOrder[b.targetPhase] : Number.POSITIVE_INFINITY;
-    if (phaseA !== phaseB) return phaseA - phaseB;
+    // Page-based scheduling takes precedence
+    if (startPage !== undefined) {
+      if (currentPage >= startPage - FUTURE_NOTE_LOOKAHEAD_PAGES) {
+        becomingRelevant.push(note);
+      } else {
+        later.push(note);
+      }
+      continue;
+    }
 
-    // 3. Major before minor
-    if (!!a.isMajor !== !!b.isMajor) return a.isMajor ? -1 : 1;
+    // Phase-based scheduling
+    if (note.targetPhase) {
+      const targetOrder = phaseOrder[note.targetPhase];
+      const currentOrder = phaseOrder[currentPhase];
 
-    // 4. Stable tie-breaker
-    return (
-      (a.addedAtPage ?? Number.POSITIVE_INFINITY) -
-      (b.addedAtPage ?? Number.POSITIVE_INFINITY)
-    );
-  });
+      if (targetOrder <= currentOrder) {
+        becomingRelevant.push(note);
+      } else {
+        later.push(note);
+      }
 
-  return (
-    '\n' +
-    sorted.map((n) => {
-      const lines: string[] = [];
-      lines.push(`  - ${n.isMajor ? '[MAJOR] ' : ''}${n.key}: ${n.note}`);
+      continue;
+    }
+
+    // No scheduling information
+    unscheduled.push(note);
+  }
+
+  const formatSection = (title: string, notes: FutureNote[]): string => {
+    if (!notes.length) return '';
+
+    const body = notes.map((n) => {
+      const lines = [`  - ${n.isMajor ? '[MAJOR] ' : ''}${n.key}: ${n.note}`];
       if (n.targetPageRange) lines.push(`    • Payoff: pages ${n.targetPageRange}`);
       if (n.targetPhase) lines.push(`    • Phase: ${n.targetPhase}`);
       if (n.tag) lines.push(`    • Tag: ${n.tag}`);
       return lines.join('\n');
-    }).join('\n\n')
-  );
+    }).join('\n');
+
+    return `${title}\n${body}`;
+  };
+
+  return [
+    formatSection('Becoming Relevant (prioritize advancement, not necessarily immediate resolution):', becomingRelevant),
+    formatSection('For Later:', later),
+    formatSection('Unscheduled:', unscheduled),
+  ].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -1980,7 +2003,7 @@ ${phase} — ${phaseGoal}
 STORY CONTEXT:
 ${contextHistory || 'No story context yet.'}
 
-PLOT FLAGS:
+PLOT FLAGS (canonical history):
 ${formatPlotFlags(plotFlags)}
 
 CURRENT FACTS:
@@ -2005,8 +2028,9 @@ ${formatSelectedAction(page)}`;
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state } = params;
-  const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity } = state;
+  const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes } = state;
   const stateInfo = getStoryStateInfo(state);
+  const { currentPage, phase } = stateInfo;
 
   return `NARRATIVE STYLE:
 ${createNarrativeStyle(state).instructions}
@@ -2025,8 +2049,14 @@ ${formatHiddenState(hiddenState)}
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
 
+FUTURE NOTES:
+${formatFutureNotes(futureNotes, currentPage, phase)}
+
 ---
 ${RULES_ROUTE_MEMORY}
+
+---
+${RULES_FUTURE_NOTES}
 
 ---
 ${RULES_STORY_CONSISTENCY}
@@ -2168,10 +2198,10 @@ ${getManipulationAffinitiesText(profile.manipulationAffinity)}`;
  * @returns Formatted string for prompt inclusion
  */
 function formatRouteContext(state: StoryState): string {
-  const { traumaTags, difficulty, futureNotes } = state;
+  const { traumaTags, difficulty } = state;
+  getStoryStateInfo(state);
   return `• Trauma tags: ${traumaTags.join(', ')}
-• Difficulty: ${difficulty}
-• Future notes: ${formatFutureNotes(futureNotes)}`;
+• Difficulty: ${difficulty}`;
 }
 
 // /**
@@ -2264,7 +2294,7 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
     if (flag.place) details.push(`Location: ${flag.place}`);
 
     return [
-      `• ${flag.isMajorEvent ? '[MAJOR] ' : ''}[${flag.type}] ${flag.fact}`,
+      `• Page ${flag.page} ${flag.isMajorEvent ? '[MAJOR] ' : ''}[${flag.type}] ${flag.fact}`,
       ...details.map(d => `  - ${d}`)
     ].join('\n');
   }).join('\n');
@@ -2272,15 +2302,24 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
   const recentMajorEvents = plotFlags
     .filter(flag => flag.isMajorEvent)
     .sort((a, b) => a.page - b.page)
-    .slice(-5); // TODO: config
+    .slice(-MAX_RECENT_MAJOR_EVENTS);
 
   if (recentMajorEvents.length) {
     const majorEventsFormatted = recentMajorEvents.map(flag => {
       const location = flag.place ? ` (${flag.place})` : '';
-      return `• [${flag.type}] ${flag.fact}${location}`;
+      return `• Page ${flag.page} [${flag.type}] ${flag.fact}${location}`;
     }).join('\n');
 
-    return `${formatted}\n\nRecent Major Events (avoid repeating similar major beats):\n${majorEventsFormatted}`;
+    // Recent Major Events (avoid repeating similar major beats too soon):
+    // • Page 18 [DISCOVERY] Ethan finds the basement key
+    // • Page 21 [REVELATION] Sarah learns her father is alive
+    // • Page 24 [BETRAYAL] Marcus secretly contacted the cult
+    return `${formatted}\n\nRecent Major Events (avoid repeating similar major beats too soon):\n${majorEventsFormatted}
+
+Major-event pacing:
+- Review recent major events before introducing a new major event.
+- If multiple major events occurred recently, prefer fallout, consequences, investigation, tension, or character reactions before introducing another major event.
+- Do not create major events solely to escalate the plot.`;
   }
 
   return formatted;
@@ -2605,7 +2644,7 @@ Initial State:
 - difficulty should reflect how hostile the world is to this MC at the start.
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
-- futureNotes: any important notes for future AI turns which are not included in current turn (initial state, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
+- futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
 - plotFlags: significant plot development that affect the overall story trajectory (max 1 per page).
 - inventory: if any, what items MC brings, can include the amount, traits, and where it located (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.

@@ -1,4 +1,4 @@
-import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
+import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
 import { type CharacterMemory, characterStatuses, type NarrativeFlags, potentialTwistTypes, relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods } from "../types/story.js";
@@ -66,9 +66,10 @@ export const CHARACTER_NARRATIVE_FLAGS_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
-function getTagUpdatesSchema<T extends TagItem>(): AIJsonProperty {
+function getTagUpdatesSchema<T extends TagItem>(description?: string): AIJsonProperty {
   return {
     type: 'object',
+    description,
     properties: {
       add:    { type: 'array', items: { type: 'string' } },
       remove: { type: 'array', items: { type: 'string' } },
@@ -90,8 +91,8 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
 };
 
 export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, AIJsonProperty> = {
-  traumaTagUpdates: getTagUpdatesSchema<string>(),
-  futureNoteUpdates: getTagUpdatesSchema<FutureNote>(),
+  traumaTagUpdates: getTagUpdatesSchema<string>(`Max ${MAX_TRAUMA_TAGS} items — representing haunting experiences that can be referenced by the story and affect MC's psychological profile.`),
+  futureNoteUpdates: getTagUpdatesSchema<FutureNote>(`Max ${MAX_FUTURE_NOTES} items — important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc).`),
   factUpdates: {
     type: 'array',
     items: {
