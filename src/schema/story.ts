@@ -1,11 +1,12 @@
-import { FACT_KEY_FORMAT, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
-import { relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
+import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
+import { CharacterMemory, characterStatuses, NarrativeFlags, potentialTwistTypes, relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration } from "../types/story.js";
 import type { ThreadUpdates } from "../types/thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
+import { genders } from "../types/user.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
@@ -49,6 +50,19 @@ export const INJURY_SCHEMA: AIJsonProperty = {
     decayPerPage:  { type: 'number', description: 'The rate at which the injury decays per page' },
   } satisfies Record<keyof Injury, AIJsonProperty>,
   required: ['bodyPart', 'description', 'severity', 'decayPerPage', 'pageAcquired'] satisfies (keyof Injury)[],
+  additionalProperties: false
+};
+
+export const CHARACTER_NARRATIVE_FLAGS_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: {
+    isSuspicious: { type: 'boolean' },
+    isMissing: { type: 'boolean' },
+    isDead: { type: 'boolean' },
+    hasSecret: { type: 'boolean' },
+    potentialTwist: { type: 'string', enum: [...potentialTwistTypes] }
+  } satisfies Record<keyof NarrativeFlags, AIJsonProperty>,
+  required: ['isSuspicious', 'isMissing', 'isDead', 'hasSecret', 'potentialTwist'] satisfies (keyof NarrativeFlags)[],
   additionalProperties: false
 };
 
@@ -136,9 +150,27 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     properties: {
       newCharacters: {
         type: 'array',
-        // TODO: object schema
         description: 'New characters introduced if any.',
-        items: { type: 'object' },
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            role: { type: 'string' },
+            gender: { type: "string", enum: [...genders] },
+            status: { type: 'string', enum: [...characterStatuses] },
+            relationshipToMC: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
+            bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
+            visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
+            secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
+            narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
+            injuries: { type: 'array', items: { type: 'object' } },
+            relationships: { type: 'array', items: { type: 'object' } },
+            pastInteractions: { type: 'array', items: { type: 'object' } },
+            introducedAtPage: { type: 'integer' }
+          } satisfies Record<keyof CharacterMemory, AIJsonProperty>,
+          required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets', 'introducedAtPage'] satisfies (keyof CharacterMemory)[],
+          additionalProperties: false
+        },
       },
       updatedCharacters: {
         type: 'array',

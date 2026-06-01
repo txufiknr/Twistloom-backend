@@ -193,7 +193,7 @@ export type CharacterMemory = {
 };
 
 // export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
-export type InitialCharacterMemory = Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio' | 'visualDescription' | 'secrets'>;
+export type InitialCharacterMemory = Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio' | 'visualDescription' | 'secrets' | 'narrativeFlags'>;
 
 /**
  * Character update structure for AI output

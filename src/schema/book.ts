@@ -6,7 +6,7 @@ import type { PlotFlag, PlotFlagType, ActionTranslation, CuriosityLevel, FearLev
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, endingTypes, factTypes, flagLevels, futureNoteTags, plotFlagTypes, storyPhases } from "../types/story.js";
 import { genders, type KnownGender } from "../types/user.js";
-import { INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { CHARACTER_NARRATIVE_FLAGS_SCHEMA, INJURY_SCHEMA, INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
 import { FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
@@ -173,6 +173,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
         visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
         secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
+        narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
       } satisfies Record<keyof InitialCharacterMemory, AIJsonProperty>,
       required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof InitialCharacterMemory)[],
       additionalProperties: false

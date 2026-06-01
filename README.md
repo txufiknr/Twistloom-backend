@@ -13,6 +13,8 @@
 
 A sophisticated psychological thriller branching story engine backend that delivers immersive, AI-powered interactive narratives. Built with cutting-edge TypeScript and modern web technologies, this platform creates dynamic, choice-driven stories where readers' decisions shape the outcome through intelligent character psychology, environmental storytelling, and multi-layered horror mechanics. The system leverages advanced AI providers to generate compelling content that adapts to user choices while maintaining narrative consistency and psychological depth.
 
+Twistloom is not merely a branching story platform. It is a multiverse storytelling engine where the same decision can lead to different realities, making every reader's journey potentially unique.
+
 ## 🌐 URLs
 
 - **Backend API**: https://twistloom-backend.vercel.app
@@ -46,49 +48,70 @@ A sophisticated psychological thriller branching story engine backend that deliv
 
 ## 🚀 Features
 
-### **Story Generation & Management**
-- **Dynamic Story Creation**: AI-powered psychological thriller generation with adaptive narratives
-- **Branching Narratives**: Multiple story paths based on user choices with meaningful consequences
-- **Character Development**: Dynamic character profiles and relationships with psychological depth
-- **World Building**: Persistent locations and environmental storytelling with immersive details
-- **Psychological Profiling**: Character behavior tracking and adaptation with trauma systems
-- **Page-Based States**: Individual story state per page with comprehensive tracking
-- **Branching Logic**: Parent-child page relationships with complex narrative structures
-- **Character Memory**: Persistent character interactions with relationship development
-- **Place Tracking**: Location-based narrative elements with environmental consistency
-- **Trauma System**: Psychological stress tracking with dynamic difficulty progression
+### **Story Generation & Multiverse Narrative Engine**
+
+* **AI-Powered Psychological Thrillers**: Dynamically generated stories designed around tension, uncertainty, and psychological horror
+* **Multiverse Story Architecture**: Every choice can produce multiple alternative futures rather than a single predetermined outcome
+* **Unique Reader Experiences**: Two readers making the same decisions may still experience different story outcomes and twists
+* **Alternative Fate Generation**: Multiple AI-generated continuations are created for a single action, allowing parallel narrative possibilities
+* **Meaningful Consequences**: Choices influence character psychology, relationships, world state, and future narrative opportunities
+* **Dynamic Character Development**: Evolving character personalities, motivations, relationships, and hidden agendas
+* **Persistent World Building**: Locations, events, discoveries, and environmental changes remain consistent across branches
+* **Psychological Profiling**: Tracks fear, trust, paranoia, trauma, and other hidden psychological variables
+* **Replayable Narratives**: Readers can revisit the same story and uncover entirely different paths, revelations, and endings
+* **Emergent Storytelling**: Narrative outcomes are generated rather than scripted, enabling unexpected twists and discoveries
+
+### **Branching & State Management**
+
+* **Page-Based Story States**: Every page stores its own narrative state for precise reconstruction
+* **Parent-Child Page Relationships**: Flexible branching architecture supporting complex narrative trees
+* **Branch-Aware Progression**: Independent state evolution across diverging story paths
+* **Character Memory System**: Persistent tracking of relationships, interactions, and emotional history
+* **Location Tracking**: Consistent environmental storytelling with location-aware narrative generation
+* **Trauma & Psychological Systems**: Dynamic mental state progression influencing future story events
+* **Alternative Fate Persistence**: Multiple possible outcomes can coexist from the same decision point
+* **Deterministic Reconstruction**: Any branch can be reconstructed exactly from stored state history
 
 ### **Asynchronous Candidate Generation**
-- **GitHub Workflow Processing**: Daily or on-demand GitHub Actions for reliable async task processing
-- **Timeout Prevention**: Eliminates Vercel 5-minute timeout limitations through scheduled background processing
-- **Strategy Pattern**: Deployment-aware generation (vercel/github-action/cron) with optimized timeouts
-- **Distributed Locking**: Prevents concurrent generation on same page with automatic cleanup
-- **State Preservation**: Database-driven state management for context consistency
-- **Progress Tracking**: Real-time SSE events for generation progress monitoring
-- **Retry Logic**: Automatic retry with exponential backoff for failed generations
-- **Multi-Level Generation**: Fire-and-forget deeper level pre-generation for instant user experience
-- **Database-driven**: Direct database-driven pending generation tracking (no job queue)
+
+* **Background Multiverse Expansion**: Alternative futures are generated asynchronously before readers reach them
+* **GitHub Workflow Processing**: Daily or on-demand GitHub Actions for reliable async generation
+* **Timeout Prevention**: Eliminates Vercel execution limits through background processing
+* **Deployment-Aware Strategy Pattern**: Automatic adaptation between Vercel, GitHub Actions, and cron environments
+* **Distributed Locking**: Prevents duplicate generation and concurrent branch conflicts
+* **Pending Generation Tracking**: Database-driven generation management without external job queues
+* **Real-Time Progress Updates**: SSE-based progress monitoring for generation status
+* **Automatic Retry Logic**: Exponential backoff and recovery for failed generation attempts
+* **Multi-Level Pre-Generation**: Future story branches are generated ahead of time for near-instant reader progression
+* **Scalable Branch Expansion**: Supports large branching structures without impacting reader performance
 
 ### **Advanced AI Systems**
-- **Multi-Provider Support**: Fallback across multiple AI providers for reliability and performance
-- **Context Management**: Intelligent story context summarization for coherent narrative progression
-- **Type-Safe Responses**: Structured AI output validation with comprehensive error handling
-- **Rate Limiting**: Built-in request throttling and caching for optimal performance
-- **Prompt Engineering**: Structured prompt engineering with multi-provider fallback strategies
+
+* **Multi-Provider AI Support**: Automatic fallback across providers for reliability and availability
+* **Adaptive AI Configuration**: Generation parameters dynamically adjust based on story progression and psychological state
+* **Context-Aware Storytelling**: Intelligent narrative context management for long-running stories
+* **Structured JSON Generation**: Type-safe AI responses with validation and recovery mechanisms
+* **Prompt Evaluation Pipeline**: Self-review and evaluation stages for higher narrative quality
+* **Rate Limiting & Caching**: Optimized AI utilization and performance management
+* **Psychological Narrative Modeling**: AI generation guided by hidden emotional and psychological state systems
 
 ### **Branch Traversal Algorithm**
-- **Intelligent State Reconstruction**: Advanced algorithm for reconstructing story states from any branch point
-- **Hybrid Delta + Checkpoint System**: Combines state snapshots with incremental deltas for optimal performance
-- **90% Performance Improvement**: State reconstruction reduced from 50-200ms to 5-20ms
-- **Multi-Level Fallback**: Direct, hybrid, and basic reconstruction methods for reliability
-- **Intelligent Caching**: LRU cache with 85%+ hit rate for active users
+
+* **Intelligent State Reconstruction**: Rebuild any story state from any branch point
+* **Hybrid Delta + Checkpoint Architecture**: Combines snapshots and incremental changes for efficient reconstruction
+* **90% Performance Improvement**: State reconstruction reduced from 50–200ms to 5–20ms
+* **Multi-Level Recovery Strategy**: Direct, hybrid, and fallback reconstruction paths
+* **Branch-Aware Navigation**: Supports traversal across complex narrative trees and alternative realities
+* **High-Performance Caching**: LRU caching with 85%+ hit rates for active readers
 
 ### **State Management System**
-- **Automatic Snapshots**: Intelligent checkpoint creation every 5 pages or at major events
-- **Incremental Deltas**: Compressed storage of state changes between snapshots
-- **Smart Cleanup**: Automatic optimization while preserving major checkpoints
-- **70% Database Load Reduction**: Optimized queries for state reconstruction
-- **Type-Safe Application**: Reliable state reconstruction with comprehensive error handling
+
+* **Automatic Story Snapshots**: Intelligent checkpoint creation during major narrative events
+* **Incremental State Deltas**: Efficient storage of only what changes between pages
+* **Branch-Specific Evolution**: Each timeline evolves independently while preserving shared history
+* **Smart Cleanup & Optimization**: Automatic maintenance while preserving important checkpoints
+* **70% Database Load Reduction**: Optimized retrieval and reconstruction algorithms
+* **Type-Safe State Application**: Reliable and deterministic state rebuilding
 
 ## 🛠️ Development Scripts
 
@@ -145,90 +168,70 @@ pnpm typecheck      # Run TypeScript type checking
 
 ## 🧠 AI Prompt System
 
-The application uses a sophisticated AI prompt system located in `src/utils/prompt.ts`:
+Twistloom uses a sophisticated prompt orchestration system located in `src/utils/prompt.ts`, designed specifically for branching psychological thriller narratives and multiverse storytelling.
 
 ### **Core Capabilities**
-- **Story Initialization**: Complete book creation with AI-generated metadata
-- **Dynamic Page Generation**: Context-aware story progression
-- **Character AI**: Intelligent character behavior and dialogue
-- **Place Management**: Location-based narrative elements
-- **Psychological Modeling**: Character state tracking and adaptation
+
+* **Story Initialization**: Complete AI-generated books, metadata, themes, and narrative foundations
+* **Dynamic Page Generation**: Context-aware continuation based on reader decisions
+* **Alternative Fate Generation**: Multiple plausible futures generated from the same decision point
+* **Character Intelligence**: Personality-aware dialogue, motivations, secrets, and behavioral evolution
+* **Location Management**: Persistent environmental storytelling and world consistency
+* **Psychological Modeling**: Hidden emotional state tracking influencing future narrative outcomes
+
+### **Multiverse Narrative Generation**
+
+Unlike traditional branching fiction where each choice maps to a single consequence:
+
+```
+Open the door
+    └── Fixed Outcome
+```
+
+Twistloom generates multiple possible futures:
+
+```
+Open the door
+    ├── The room is empty
+    ├── A missing friend is waiting
+    ├── Something is already inside
+    └── The room should not exist
+```
+
+This allows:
+
+* Different readers to experience different stories despite making identical choices
+* Increased replayability and narrative discovery
+* Emergent storytelling beyond predefined branching trees
+* Unique psychological twists and alternative realities
+* Large-scale narrative diversity without hand-authoring every path
 
 ### **Prompt Features**
-- **Multi-Provider Fallback**: Automatic provider switching on failures
-- **Context Summarization**: Intelligent story history management
-- **Type-Safe Generation**: Structured JSON response validation
-- **Dynamic Branching**: User choice-based story paths
-- **Character Memory**: Persistent character interaction tracking
 
-### **Psychological Thriller Writing Guidelines**
-
-The AI follows strict psychological horror principles to create compelling, unsettling narratives:
-
-#### **🎭 Narrative Philosophy**
-```
-• You constantly create twists on top of twists
-• You deliberately break reader expectations
-• You do not aim to satisfy as reader—you aim to unsettle them
-• You can turn an ordinary moment into horror within a single sentence
-• You escalate tension quickly and unpredictably
-```
-
-#### **👥 Character Rules**
-```
-• No character is safe—remove important characters suddenly
-• Lovable characters may betray, disappear, or turn hostile
-• Relationships are unstable and unreliable
-```
-
-#### **🧠 Psychological Manipulation**
-```
-• Main character is unreliable—let them misunderstand situations
-• Withhold critical information
-• Imply more than explain
-• Blur reality vs imagination
-```
-
-#### **😱 Horror Mechanics**
-```
-• Introduce riddles without clear answers
-• Leave some elements unresolved
-• Fear from uncertainty, not explanation
-• Start normal → shift wrong → spiral
-```
-
-#### **🚫 Forbidden Patterns**
-```
-• Overly formal or polished language
-• Long perfectly structured paragraphs
-• Explaining everything clearly
-• Consistent sentence structure across the page
-```
-
-#### **⚡ Hard Rules**
-```
-• Never fully explain everything
-• Never make story feel safe or predictable
-• Never confirm reality unless it creates deeper twist
-• Always leave lingering doubt
-• Make writing feel slightly imperfect, emotional, and alive
-```
+* **Multi-Provider Fallback**: Automatic provider switching and failover
+* **Context Summarization**: Intelligent long-story memory management
+* **Structured JSON Output**: Strict schema validation and recovery
+* **Branch-Aware Context**: Narrative awareness of current timeline and divergence points
+* **Character Memory**: Persistent emotional and relational history
+* **State-Aware Generation**: Prompts adapt to reconstructed story state
+* **Psychological Continuity**: Hidden emotional systems influence future content generation
 
 ### **Advanced Prompt Engineering**
-- **Structured Rules**: Clear, enforceable guidelines for AI consistency
-- **Psychological Depth**: Multi-layered character and narrative development
-- **Tension Management**: Progressive escalation and release techniques
-- **Reader Psychology**: Designed to create maximum psychological impact
-- **State-Aware Generation**: Prompts adapt to current story state and reconstruction needs
-- **Branch-Aware Context**: Context management optimized for branching narratives
 
-## 🤖 AI Algorithm Flow
+* **Structured Narrative Constraints**: Enforce story consistency while preserving creativity
+* **Psychological Depth Modeling**: Multi-layered emotional and behavioral generation
+* **Dynamic Tension Management**: Escalation and release patterns optimized for thriller storytelling
+* **Reader Expectation Manipulation**: Designed to create uncertainty, surprise, and suspense
+* **Alternative Fate Diversity Controls**: Ensures generated futures meaningfully diverge rather than repeating variations of the same outcome
+* **Branch Consistency Verification**: Maintains continuity within each timeline while allowing multiverse divergence
+
+## 🤖 AI Orchestration Flow
 
 ### **Smart Provider-Model Fallback System**
 
 Twistloom implements a sophisticated AI provider ranking and fallback system that ensures maximum reliability and performance for story generation:
 
-#### **🧠 Algorithm Flow**
+#### **🧠 Orchestration Flow**
 
 1. **Provider Ranking**: Based on `AI_CHAT_MODELS_WRITING` configuration
    ```typescript
@@ -257,7 +260,7 @@ Twistloom implements a sophisticated AI provider ranking and fallback system tha
 - **Usage Tracking**: Daily usage monitoring per provider
 - **Type Safety**: Structured response parsing with validation
 - **Logging**: Comprehensive success/failure tracking
-- **Context Awareness**: Different models for different tasks (writing vs summarizing)
+- **Context Awareness**: Different models for different tasks (theme generation vs writing vs evaluating)
 
 This intelligent system ensures **99.9% uptime** for story generation while maintaining **optimal performance** and **cost efficiency** through smart provider selection and fallback strategies.
 
@@ -512,7 +515,8 @@ OPENAI_API_KEY=...
 NVIDIA_API_KEY=...
 
 # Rate Limiting
-REDIS_URL=...
+UPSTASH_REDIS_REST_URL=...
+UPSTASH_REDIS_REST_TOKEN=...
 ```
 
 ## 📊 Architecture Highlights

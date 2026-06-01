@@ -289,7 +289,14 @@ const firstBookOutputFormat: string = `{
       "secrets": "Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).",
       "relationshipToMC": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
-      "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc)."
+      "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc).",
+      "narrativeFlags": {
+        "isSuspicious": <boolean>,
+        "isMissing": <boolean>,
+        "isDead": <boolean>,
+        "hasSecret": <boolean>,
+        "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
+      }
     }
   ],
   "initialFacts": [
@@ -443,10 +450,10 @@ const nextPageOutputFormat: string = `{
           }
         ],
         "narrativeFlags": {
-          "isSuspicious": false,
-          "isMissing": false,
-          "isDead": false,
-          "hasSecret": false,
+          "isSuspicious": <boolean>,
+          "isMissing": <boolean>,
+          "isDead": <boolean>,
+          "hasSecret": <boolean>,
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
         "introducedAtPage": <number>,
@@ -1905,7 +1912,14 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): st
 
   return `${base}
 Generate ${candidateCount} alternate-fate continuations — parallel timelines in the multiverse.
-Each continuation must follow all the same narrative rules, but diverge into a distinct, unexpected outcome.${bleedInstruction}`;
+Each continuation must follow all the same narrative rules, but diverge into a distinct, unexpected outcome.${bleedInstruction}
+
+Multiple possible futures example:
+Open the door
+    ├── Empty, but echoes of his voice linger
+    ├── A missing friend waits in the dark
+    ├── Something breathes inside
+    └── The room shouldn't exist`;
 }
 
 /**
@@ -2528,6 +2542,7 @@ Initial Characters:
 - At least one should have a relationship that can be corrupted.
 - Bio must include one trait that could become a source of threat or betrayal.
 - Don't introduce character (including MC) with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
+- narrativeFlags: set to match behavior and twist setup.
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
@@ -2758,11 +2773,14 @@ export async function initializeBook(
               relationships: [],
               pastInteractions: [],
               narrativeFlags: {
-                isSuspicious: false,
-                isMissing: false,
-                isDead: false,
-                hasSecret: false,
-                potentialTwist: 'none'
+                ...{
+                  isSuspicious: false,
+                  isMissing: false,
+                  isDead: false,
+                  hasSecret: false,
+                  potentialTwist: 'none'
+                },
+                ...char.narrativeFlags
               },
               introducedAtPage: 1,
               injuries: []

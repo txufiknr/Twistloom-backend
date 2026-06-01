@@ -7,8 +7,6 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[x] Action destinationPageIds: string[]
-[x] 2 destination at once
 
 
 {
