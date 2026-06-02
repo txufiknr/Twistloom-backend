@@ -281,7 +281,17 @@ const firstBookOutputFormat: string = `{
         "decayPerPage": <number between 0.0 and 1.0>
       }
     ],
-    "futureNotes": ["..."]
+    "futureNotes": [
+      {
+        key: <string>,
+        note: "...",
+        isMajor: <boolean>,
+        addedAtPage <number>,
+        targetPhase: "One of: ${formatOneOf(Object.keys(storyPhases))}",
+        targetPageRange: "{pageNumberMin}-{pageNumberMax}",
+        tag: "One of: ${formatOneOf(futureNoteTags)}"
+      }
+    ]
   },
   "initialPlace": {
     "name": "Location Name",
