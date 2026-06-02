@@ -17,7 +17,8 @@
  * 6. Backend verifies JWT cookie using verifyNextAuthToken()
  */
 
-import { Router } from 'express';
+import type { Router as RouterType } from "express";
+import { Router } from "express";
 import { OAuth2Client } from 'google-auth-library';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, userAuth } from '../db/schema.js';
@@ -41,7 +42,7 @@ import type { DBUserForAuth } from '../types/schema.js';
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { validateUsername, sanitizeUsername } from '../utils/username.js';
 
-const router = Router();
+const router: RouterType = Router();
 
 // Google OAuth client for token verification
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);

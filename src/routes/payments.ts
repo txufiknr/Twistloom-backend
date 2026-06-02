@@ -20,7 +20,7 @@
  * - GET /payments/transactions - Get user transaction history
  */
 
-import type { Request, Response } from "express";
+import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import type Stripe from "stripe";
 import { eq, sql, and, desc } from "drizzle-orm";
@@ -82,7 +82,7 @@ export function handleInsufficientCreditsError(
   });
 }
 
-const router = Router();
+const router: RouterType = Router();
 
 /**
  * Handles customer.subscription.created webhook event

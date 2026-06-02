@@ -6,7 +6,7 @@ import authRouter from "./auth.js";
 import paymentsRouter from "./payments.js";
 import { APP_NAME, VERSION } from "../config/constants.js";
 
-const router = express.Router();
+const router: express.Router = express.Router();
 
 // Health check endpoint
 router.get("/", (_req, res) => {

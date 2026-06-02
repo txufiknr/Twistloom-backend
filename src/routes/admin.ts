@@ -19,7 +19,7 @@
  * - GET /admin/system/health - System health status
  */
 
-import type { Request, Response } from "express";
+import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { requireAuth } from "../middleware/nextauth.js";
 import { handleApiError, handleValidationError } from "../utils/error.js";
@@ -29,7 +29,7 @@ import { getBookFromDB, getPageFromDB } from "../services/book.js";
 // import { getStateSnapshot } from "../services/snapshots.bak.js";
 import { getStoryState } from "../services/story.js";
 
-const router = Router();
+const router: RouterType = Router();
 
 // /**
 //  * GET /admin/books/:bookId/snapshots

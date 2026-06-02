@@ -2,7 +2,7 @@
  * Serverless-compatible Express setup
  */
 
-import express from "express";
+import express, { type Express } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { rateLimitByUser } from "./middleware/rate-limit.js";
@@ -11,7 +11,7 @@ import routes from "./routes/index.js";
 import { APP_NAME, VERSION } from "./config/constants.js";
 
 // Initialize Express app
-const app = express();
+const app: Express = express();
 
 // Allow multiple origins: production frontend and local development
 const allowedOrigins = new Set([

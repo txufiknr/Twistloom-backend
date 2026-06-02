@@ -39,7 +39,7 @@
  * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
  */
 
-import type { Request, Response } from "express";
+import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
@@ -85,7 +85,7 @@ import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 
-const router = Router();
+const router: RouterType = Router();
 
 /**
  * POST /api/books

@@ -39,7 +39,7 @@
  * - POST /user/checkin - Perform daily check-in and claim free credits
  */
 
-import type { Request, Response } from "express";
+import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
@@ -59,7 +59,7 @@ import { imageUpload, uploadUserProfile } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
 
-const router = Router();
+const router: RouterType = Router();
 
 /**
  * GET /user
