@@ -2725,7 +2725,7 @@ export async function initializeBook(
     }
   }
 
-  try {
+  // try {
     // Emit book initialization start event and persist initial progress
     await onProgress?.({ type: 'book_initialization_start' });
     await onGenerationProgress('book_initialization');
@@ -2966,12 +2966,12 @@ export async function initializeBook(
       aiComment
     } satisfies CreateBookResponse;
 
-  } catch (error) {
-    console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error: getErrorMessage(error) });
-    // Attempt to mark book generation status as failed
-    await onGenerationProgress({ status: 'failed', error: getErrorMessage(error) });
-    throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
-  }
+  // } catch (error) {
+  //   console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error });
+  //   // Attempt to mark book generation status as failed
+  //   await onGenerationProgress({ status: 'failed', error: getErrorMessage(error) });
+  //   throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
+  // }
 }
 
 /**
