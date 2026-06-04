@@ -25,25 +25,10 @@ const winner = Promise.any([
   groqLlama(),
 ]);
 
-Migrate neon postgres 18 to use uuidv7()? 
--- No extension needed in Postgres 18
-import { sql } from 'drizzle-orm';
-import { pgTable, uuid, text } from 'drizzle-orm/pg-core';
-
-export const users = pgTable('users', {
-  // Uses PostgreSQL 18's native core uuidv7() function
-  id: uuid('id')
-    .primaryKey()
-    .default(sql`uuidv7()`), 
-    
-  name: text('name').notNull(),
-});
+[x] Migrate neon postgres 18 to use uuidv7()
 
 uuid_extract_timestamp(uuid) to easily extract the creation date directly from the identifier without needing a separate created_at column.
 
-Enriched page:
-- PageNav = Record<page, pageId, plotFlag -> fact & isMajorEvent>
-- prevPageIds: PageNav[];
 
 Reader:
 Navigate to page: tombol: time travel & navigate

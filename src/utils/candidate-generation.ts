@@ -127,7 +127,7 @@ export function hasPendingCandidates(page: UserStoryPage): boolean {
  * ```
  */
 export function getPendingActionsCount(page: UserStoryPage): number {
-  return page.actions.filter(action => !action.destinationPageIds.length).length;
+  return page.actions.filter(action => !action.destinationPageIds?.length).length;
 }
 
 /**
@@ -188,8 +188,8 @@ export async function validateCandidateGeneration(
   }
 
   // Early exit: skip if no actions need generation
-  const pendingActions = page.actions.filter(action => !action.destinationPageIds.length);
-  
+  console.log(`[validateCandidateGeneration] 👉 Examining ${page.actions.length} actions from page ${page.page}:`, page.actions.map(a => a.text));
+  const pendingActions = page.actions.filter(action => !action.destinationPageIds?.length);
   if (pendingActions.length === 0) {
     return {
       canGenerate: false,
@@ -258,7 +258,7 @@ export function validatePageForJobEnqueue(page: UserStoryPage, currentBook: Book
   }
   
   // Early exit: skip if no actions need generation
-  const pendingActions = page.actions.filter(action => !action.destinationPageIds.length);
+  const pendingActions = page.actions.filter(action => !action.destinationPageIds?.length);
   
   if (pendingActions.length === 0) {
     return {
@@ -430,7 +430,7 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
   // const selectedAction = mapActionToSelectedAction(action, currentPage.id, currentPage.page, );
   const actionedPage: CandidateGenerationPage = { ...currentPage, action };
 
-  if (existing.length > 0) {
+  if (existing?.length) {
     if (skipIfAlreadyHasDestinations !== false || existing.length >= limit) {
       // Default path: reuse what's there
       console.log(`[generateCandidatePage] ✅ Using ${existing.length} pre-generated pages`);
@@ -476,11 +476,13 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
     } catch (error) {
       // Check if this is a duplicate destination error (action already has pageId)
       if ((error as ErrorWithCustomProperties).code === 'ACTION_ALREADY_HAS_DESTINATION') {
-        console.log(`[generateCandidatePage] ⏭️ Action "${action.text}" already has ${action.destinationPageIds.length} destination pages, retrieving existing pages`);
+        console.log(`[generateCandidatePage] ⏭️ Action "${action.text}" already has ${action.destinationPageIds?.length} destination pages, retrieving existing pages`);
         // The action already has a destination, so get the existing page
-        for (const existingPageId of action.destinationPageIds) {
-          const existingPage = await getStoryPageById(userId, bookId, existingPageId);
-          if (existingPage) newPages.push(existingPage);
+        if (action.destinationPageIds?.length) {
+          for (const existingPageId of action.destinationPageIds) {
+            const existingPage = await getStoryPageById(userId, bookId, existingPageId);
+            if (existingPage) newPages.push(existingPage);
+          }
         }
         if (newPages.length) {
           console.log(`[generateCandidatePage] ✅ Retrieved ${newPages.length} existing pages for action "${action.text}"`);
@@ -829,7 +831,7 @@ export async function ensureCandidatesForPageWithStrategy(
     const initialDBActions = currentDBPage.actions;
 
     // Re-check pending actions after acquiring lock (another instance might have processed them)
-    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destinationPageIds.length);
+    const recheckedPendingDBActions = initialDBActions.filter(action => !action.destinationPageIds?.length);
     if (recheckedPendingDBActions.length === 0) {
       console.log(`[ensureCandidatesForPage] ⏩ Actions already processed by another instance`);
       return currentPage;
@@ -886,7 +888,7 @@ export async function ensureCandidatesForPageWithStrategy(
     ): void {
       // Use action index map for O(1) lookup and update
       const existingIndex = actionIndexMap.get(action.text);
-      const destinationPageIds = dedupe([...action.destinationPageIds, ...candidatePages.map(p => p.id)]);
+      const destinationPageIds = dedupe([...(action.destinationPageIds ?? []), ...candidatePages.map(p => p.id)]);
       const updatedAction: Action = { ...action, destinationPageIds };
 
       if (existingIndex !== undefined) {
@@ -979,7 +981,7 @@ export async function ensureCandidatesForPageWithStrategy(
         writeChain = writeChain.then(async () => {
           // By the time this runs, ALL synchronous mutations so far have happened,
           // so updatedDBActions always reflects the most complete in-memory state.
-          const currentPending = updatedDBActions.filter(a => !a.destinationPageIds.length).length;
+          const currentPending = updatedDBActions.filter(a => !a.destinationPageIds?.length).length;
           const letter = generateActionLetter(action);
           await dbWrite.update(pages)
             .set({ actions: updatedDBActions, pendingGenerationCount: currentPending })
@@ -1116,7 +1118,7 @@ export async function ensureCandidatesForPageWithStrategy(
         
         // Collect successfully generated candidate pages from updated actions
         for (const action of updatedDBActions) {
-          if (!action.destinationPageIds.length) continue;
+          if (!action.destinationPageIds?.length) continue;
           for (const candidatePageId of action.destinationPageIds) {
             // The candidate page is already in the action's destination
             // We need to fetch the full page data or use what we have
@@ -1167,7 +1169,7 @@ export async function ensureCandidatesForPageWithStrategy(
     }
 
     // Recompute final pending state AFTER all mutations
-    const pendingAfter = updatedDBActions.filter(a => !a.destinationPageIds.length).length;
+    const pendingAfter = updatedDBActions.filter(a => !a.destinationPageIds?.length).length;
     const succeededCount = updatedDBActions.length - pendingAfter;
     console.log(`[ensureCandidatesForPageWithStrategy] ✅ Pre-generated pages: ${succeededCount}/${updatedDBActions.length} actions${pendingAfter > 0 ? '' : ' (COMPLETED)'}`);
     if (pendingAfter > 0) console.warn(`[ensureCandidatesForPageWithStrategy] ⚠️ ${pendingAfter} still pending for candidate page generation`);
@@ -1346,7 +1348,7 @@ export async function triggerCandidateGenerationWorkflow(params: {
  * @returns Promise resolving to true if it's generating, false otherwise
  */
 async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
-  const totalPendingActions = dbPage.pendingGenerationCount ?? dbPage.actions.filter(a => !a.destinationPageIds.length).length;
+  const totalPendingActions = dbPage.pendingGenerationCount ?? dbPage.actions.filter(a => !a.destinationPageIds?.length).length;
   const isDone = totalPendingActions === 0;
   const { isGeneratingStartedAt } = dbPage;
 

@@ -9,7 +9,6 @@ import { generateBookCreationPrompt } from "../utils/prompt.js";
 import { requireEnv } from "../utils/env.js";
 import { getActivePromptCount, savePromptToCache, deactivateExpiredPrompts, deactivateLowQualityPrompts } from "../services/prompt-cache.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
-import { getErrorMessage } from "../utils/error.js";
 import type { AIResponse } from "../types/ai-chat.js";
 
 // /**

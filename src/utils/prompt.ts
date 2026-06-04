@@ -2837,7 +2837,9 @@ export async function initializeBook(
     }, { client });
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
-    const { place } = firstUserPage;
+    const { place, actions } = firstUserPage;
+
+    console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
 
     // 6. Create initial story state with generated psychological profile
     // const futureNoteKeys: string[] = [];
@@ -3097,7 +3099,7 @@ async function determineBranchIdForPage(params: {
   // for this exact action, bail out so the caller can reuse the existing pages
   // rather than creating duplicates.
   const currentAction = freshActionedPage.actions.find((a) => a.text === action.text);
-  if ((currentAction?.destinationPageIds.length ?? 0) >= MAX_CANDIDATE_PAGE_PER_ACTION) {
+  if ((currentAction?.destinationPageIds?.length ?? 0) >= MAX_CANDIDATE_PAGE_PER_ACTION) {
     throw createNonRetryableError(
       `Action "${action.text}" already has ${MAX_CANDIDATE_PAGE_PER_ACTION} destination pages (at limit)`,
       "ACTION_ALREADY_HAS_DESTINATION"
@@ -3107,7 +3109,7 @@ async function determineBranchIdForPage(params: {
   // Inherit parent branchId only when no sibling action has a destination yet.
   // The moment any sibling gains a destination (another action's page was written
   // first), this branch must diverge so we don't stomp the existing timeline.
-  const siblingHasDestination = freshActionedPage.actions.some((a) => a.destinationPageIds.length > 0);
+  const siblingHasDestination = freshActionedPage.actions.some((a) => a.destinationPageIds?.length);
   return siblingHasDestination ? generateBranchId() : parentBranchId;
 }
 

@@ -695,7 +695,7 @@ export async function visitBookPage(
       return {};
     }
   
-    action = parentDbPage.actions.filter(a => a.destinationPageIds.some(p => p === pageId))[0];
+    action = parentDbPage.actions.filter(a => a.destinationPageIds?.some(p => p === pageId))[0];
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);
       handleNotFoundError(res, `Action for this page not found in the parent page`);

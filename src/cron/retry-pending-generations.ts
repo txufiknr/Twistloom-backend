@@ -243,7 +243,7 @@ async function processPageGeneration(params: {
     // Count actions without complete destination before regeneration
     const systemUserId = requireEnv('SYSTEM_USER_ID');
     const actionsBefore = dbPage.actions || [];
-    const pendingBefore = actionsBefore.filter(action => !action.destinationPageIds.length).length;
+    const pendingBefore = actionsBefore.filter(action => !action.destinationPageIds?.length).length;
 
     hasNoPendingActions = hasNoPendingActions || pendingBefore === 0;
 
@@ -268,7 +268,7 @@ async function processPageGeneration(params: {
 
     // Count actions without complete destination after regeneration
     const actionsAfter = updatedPage.actions || [];
-    const pendingAfter = actionsAfter.filter(action => !action.destinationPageIds.length).length;
+    const pendingAfter = actionsAfter.filter(action => !action.destinationPageIds?.length).length;
 
     const successCount = pendingBefore - pendingAfter;
     const durationMs = Date.now() - startedAt;

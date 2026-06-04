@@ -810,7 +810,7 @@ export type Action = {
   /** Consequence hint for the action (for AI guidance) */
   hint: ActionHint;
   /** Destination meta for the action */
-  destinationPageIds: string[];
+  destinationPageIds?: string[];
 };
 
 export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint'> & {

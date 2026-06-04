@@ -1079,7 +1079,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
 }): Promise<EnrichedStoryPage | null> {
   const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, sourceNav } = options;
   const allActions = dbPage.actions;
-  const visibleActions = allActions.filter(action => !!action.destinationPageIds.length);
+  const visibleActions = allActions.filter(action => !!action.destinationPageIds?.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, bookId } = dbPage;
 

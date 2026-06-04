@@ -1,5 +1,5 @@
 CREATE TABLE "action_progress" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"page_id" uuid NOT NULL,
 	"action_text" text NOT NULL,
 	"status" text DEFAULT 'started' NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE "action_progress" (
 );
 --> statement-breakpoint
 CREATE TABLE "auth_sessions" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"user_agent" text,
 	"ip_address" text,
@@ -44,7 +44,7 @@ CREATE TABLE "book_generations" (
 );
 --> statement-breakpoint
 CREATE TABLE "book_translations" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"book_id" uuid NOT NULL,
 	"language" text NOT NULL,
 	"title" text,
@@ -60,7 +60,7 @@ CREATE TABLE "book_translations" (
 );
 --> statement-breakpoint
 CREATE TABLE "books" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"slug" text,
 	"title" text NOT NULL,
@@ -93,7 +93,7 @@ CREATE TABLE "deleted_images" (
 );
 --> statement-breakpoint
 CREATE TABLE "page_translations" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"page_id" uuid NOT NULL,
 	"language" text NOT NULL,
 	"translated_text" text NOT NULL,
@@ -109,7 +109,7 @@ CREATE TABLE "page_translations" (
 );
 --> statement-breakpoint
 CREATE TABLE "pages" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"parent_id" uuid,
 	"branch_id" text DEFAULT 'main' NOT NULL,
@@ -135,7 +135,7 @@ CREATE TABLE "pages" (
 );
 --> statement-breakpoint
 CREATE TABLE "story_prompts" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"content" text NOT NULL,
 	"ai_provider" text,
 	"ai_model" text,
@@ -181,7 +181,7 @@ CREATE TABLE "story_states" (
 );
 --> statement-breakpoint
 CREATE TABLE "subscription_transactions" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"subscription_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
 	"type" text NOT NULL,
@@ -195,7 +195,7 @@ CREATE TABLE "subscription_transactions" (
 );
 --> statement-breakpoint
 CREATE TABLE "subscriptions" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"stripe_subscription_id" text NOT NULL,
 	"stripe_customer_id" text NOT NULL,
@@ -213,7 +213,7 @@ CREATE TABLE "subscriptions" (
 );
 --> statement-breakpoint
 CREATE TABLE "transactions" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"type" text NOT NULL,
 	"credits" integer NOT NULL,
@@ -238,7 +238,7 @@ CREATE TABLE "usage" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_action_hints" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"page_id" uuid NOT NULL,
 	"action_text" text NOT NULL,
@@ -247,7 +247,7 @@ CREATE TABLE "user_action_hints" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_activity_logs" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"activity_type" text NOT NULL,
 	"target_type" text,
@@ -282,7 +282,7 @@ CREATE TABLE "user_cache" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_checkins" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"date" text NOT NULL,
 	"credits_claimed" integer NOT NULL,
@@ -292,7 +292,7 @@ CREATE TABLE "user_checkins" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_comments" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
 	"page_id" uuid,
@@ -303,7 +303,7 @@ CREATE TABLE "user_comments" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_completed_books" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
 	"page_id" uuid NOT NULL,
@@ -336,7 +336,7 @@ CREATE TABLE "user_likes" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_notifications" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"type" text NOT NULL,
 	"title" text NOT NULL,
@@ -348,7 +348,7 @@ CREATE TABLE "user_notifications" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_page_progress" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
 	"actioned_page_id" uuid NOT NULL,
@@ -361,7 +361,7 @@ CREATE TABLE "user_page_progress" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_prompt_history" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"prompt_id" uuid NOT NULL,
 	"viewed_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -372,7 +372,7 @@ CREATE TABLE "user_prompt_history" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_purchased_books" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
 	"credits_price" integer NOT NULL,
@@ -381,7 +381,7 @@ CREATE TABLE "user_purchased_books" (
 );
 --> statement-breakpoint
 CREATE TABLE "user_sessions" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
 	"book_id" uuid NOT NULL,
 	"page_id" uuid NOT NULL,
@@ -420,7 +420,7 @@ CREATE TABLE "users" (
 );
 --> statement-breakpoint
 CREATE TABLE "webhook_deliveries" (
-	"id" uuid PRIMARY KEY NOT NULL,
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"event_id" text NOT NULL,
 	"event_type" text NOT NULL,
 	"delivered_at" timestamp DEFAULT now() NOT NULL,

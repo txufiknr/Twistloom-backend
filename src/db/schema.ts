@@ -10,7 +10,6 @@ import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryInteg
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
-import { generateId } from "../utils/uuid.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
@@ -18,7 +17,8 @@ import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/s
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
 /** Pre-defined columns */
-const id = () => uuid("id").primaryKey().$defaultFn(generateId);
+// const id = () => uuid("id").primaryKey().$defaultFn(generateId);
+const id = () => uuid("id").primaryKey().default(sql`uuidv7()`);
 const userId = () => uuid("user_id").notNull();
 const bookId = (onDelete: UpdateDeleteAction = "cascade") => uuid("book_id").notNull().references(() => books.id, { onDelete });
 const pageId = (onDelete: UpdateDeleteAction = "cascade") => uuid("page_id").notNull().references(() => pages.id, { onDelete });
