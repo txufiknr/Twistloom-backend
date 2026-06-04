@@ -177,7 +177,7 @@ async function main(): Promise<void> {
     console.log(`[trending-scores] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error("[trending-scores] ❌ Trending scores update failed:", getErrorMessage(error));
+    console.error("[trending-scores] ❌ Trending scores update failed:", error);
     process.exit(1);
   }
 }
@@ -192,7 +192,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[trending-scores] Uncaught exception", getErrorMessage(error));
+  console.error("[trending-scores] Uncaught exception", error);
   process.exit(1);
 });
 

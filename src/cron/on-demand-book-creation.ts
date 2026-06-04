@@ -329,7 +329,7 @@ async function main(): Promise<void> {
     console.log(`[book-creation] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error('[book-creation] ❌ Fatal error:', getErrorMessage(error));
+    console.error('[book-creation] ❌ Fatal error:', error);
     process.exit(1);
   }
 }

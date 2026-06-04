@@ -102,7 +102,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[generate-originals] Uncaught exception", getErrorMessage(error));
+  console.error("[generate-originals] Uncaught exception", error);
   process.exit(1);
 });
 

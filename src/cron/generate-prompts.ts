@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     console.log(`[weekly-prompt] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error('[weekly-prompt] ❌ Fatal error:', getErrorMessage(error));
+    console.error('[weekly-prompt] ❌ Fatal error:', error);
     process.exit(1);
   }
 }
