@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     console.log(`[cleanup] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error("[cleanup] ❌ Cleanup job failed:", getErrorMessage(error));
+    console.error("[cleanup] ❌ Cleanup job failed:", error);
     process.exit(1);
   }
 }
@@ -101,7 +101,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[cleanup] Uncaught exception", getErrorMessage(error));
+  console.error("[cleanup] Uncaught exception", error);
   process.exit(1);
 });
 

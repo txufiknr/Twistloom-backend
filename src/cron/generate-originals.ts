@@ -87,7 +87,7 @@ async function main(): Promise<void> {
     console.log(`[generate-originals] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error("[generate-originals] ❌ Original generation job failed:", getErrorMessage(error));
+    console.error("[generate-originals] ❌ Original generation job failed:", error);
     process.exit(1);
   }
 }

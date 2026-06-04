@@ -264,7 +264,7 @@ async function main(): Promise<void> {
     console.log(`[auto-translate-id] ✅ Completed in ${durationMs}ms`);
     process.exit(0);
   } catch (error) {
-    console.error("[auto-translate-id] ❌ Auto-translation failed:", getErrorMessage(error));
+    console.error("[auto-translate-id] ❌ Auto-translation failed:", error);
     process.exit(1);
   }
 }
@@ -279,7 +279,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[auto-translate-id] Uncaught exception", getErrorMessage(error));
+  console.error("[auto-translate-id] Uncaught exception", error);
   process.exit(1);
 });
 
