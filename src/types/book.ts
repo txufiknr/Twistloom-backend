@@ -1,6 +1,6 @@
 import type { InitialCharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { InitialPlaceMemory } from "./places.js";
-import type { Action, ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, StoryPageNav } from "./story.js";
 import type { DBBookTranslations, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -112,7 +112,8 @@ export interface EnrichedBookData {
   keywords: string[] | null;
   status: string | null;
   trendingScore: number | null;
-  totalPages: number | null;
+  // totalPages: number | null;
+  totalPages: number;
   language: string | null;
   topPick: Date | null;
   isOriginal: boolean;
@@ -271,7 +272,8 @@ export type VisitBookPageResult = {
   visitDetails?: BookPageVisit,
   book?: EnrichedBookData,
   dbPage?: DBPage,
-  sourceAction?: Action // should be defined for page number > 1
+  sourceAction?: SelectedAction, // should be defined for page number > 1
+  sourceNav?: StoryPageNav,
 };
 
 /**

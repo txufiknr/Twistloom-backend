@@ -1,5 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
-import { type CharacterMemory, characterStatuses, type NarrativeFlags, potentialTwistTypes, relationshipStatuses, relationshipTypes, type CharacterUpdates, type Injury, type InventoryItem, type RelationshipUpdate } from "../types/character.js";
+import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import type { CharacterMemory, NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury } from "../types/character.js";
 import { placeMoods, placeTypes, placeWeathers, type NewPlace, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
@@ -27,30 +28,54 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   additionalProperties: false
 } };
 
-export const INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
+export const INITIAL_INVENTORY_ITEM_PROPERTIES: Record<keyof InitialInventoryItem, AIJsonProperty> = {
+  name:   { type: 'string', description: 'Name of the inventory item' },
+  traits: { type: 'object', description: 'Traits or properties of the inventory item' },
+  amount: { type: 'integer', description: 'Quantity of the inventory item' },
+  where:  { type: 'string', description: 'Where the inventory item is located' },
+};
+
+export const INITIAL_INVENTORY_ITEM_KEYS: (keyof InitialInventoryItem)[] = ['name', 'amount', 'where'];
+
+export const INITIAL_INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
   type: 'object',
+  properties: INITIAL_INVENTORY_ITEM_PROPERTIES,
+  required: INITIAL_INVENTORY_ITEM_KEYS,
+  additionalProperties: false
+};
+
+export const INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
+  ...INITIAL_INVENTORY_ITEM_SCHEMA,
   properties: {
-    name:   { type: 'string', description: 'Name of the inventory item' },
-    traits: { type: 'object', description: 'Traits or properties of the inventory item' },
-    amount: { type: 'integer', description: 'Quantity of the inventory item' },
-    where:  { type: 'string', description: 'Where the inventory item is located' },
-  } satisfies Record<keyof InventoryItem, AIJsonProperty>,
-  required: ['name', 'amount', 'where'] satisfies (keyof InventoryItem)[],
+    ...INITIAL_INVENTORY_ITEM_PROPERTIES,
+    pageAcquired: { type: 'integer', description: 'Page number when the item was acquired' }
+  } satisfies Record<keyof Omit<InventoryItem, 'place'>, AIJsonProperty>,
+  required: [...INITIAL_INVENTORY_ITEM_KEYS, 'pageAcquired'] satisfies (keyof InventoryItem)[],
+};
+
+export const INITIAL_INJURY_PROPERTIES: Record<keyof InitialInjury, AIJsonProperty> = {
+  bodyPart:      { type: 'string', description: 'Body part that was injured' },
+  description:   { type: 'string', description: 'Description of the injury' },
+  consequences:  { type: 'string', description: 'Consequences of the injury that can affect the storyline' },
+  severity:      { type: 'number', description: 'Severity of the injury (0-1)' },
+  decayPerPage:  { type: 'number', description: 'Rate at which the injury decays per page' },
+};
+
+export const INITIAL_INJURY_KEYS: (keyof InitialInjury)[] = ['bodyPart', 'description', 'severity', 'decayPerPage'];
+export const INITIAL_INJURY_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: INITIAL_INJURY_PROPERTIES,
+  required: INITIAL_INJURY_KEYS,
   additionalProperties: false
 };
 
 export const INJURY_SCHEMA: AIJsonProperty = {
-  type: 'object',
+  ...INITIAL_INJURY_SCHEMA,
   properties: {
-    bodyPart:      { type: 'string', description: 'The body part that was injured' },
-    description:   { type: 'string', description: 'A description of the injury' },
-    consequences:  { type: 'string', description: 'The consequences of the injury that can affect the storyline' },
-    pageAcquired:  { type: 'integer', description: 'The page number when the injury was acquired' },
-    severity:      { type: 'number', description: 'The severity of the injury (0-1)' },
-    decayPerPage:  { type: 'number', description: 'The rate at which the injury decays per page' },
-  } satisfies Record<keyof Injury, AIJsonProperty>,
-  required: ['bodyPart', 'description', 'severity', 'decayPerPage', 'pageAcquired'] satisfies (keyof Injury)[],
-  additionalProperties: false
+    ...INITIAL_INJURY_PROPERTIES,
+    pageAcquired: { type: 'integer', description: 'Page number when the item was acquired' }
+  } satisfies Record<keyof Omit<Injury, 'place'>, AIJsonProperty>,
+  required: [...INITIAL_INJURY_KEYS, 'pageAcquired'] satisfies (keyof Injury)[],
 };
 
 export const CHARACTER_NARRATIVE_FLAGS_SCHEMA: AIJsonProperty = {
@@ -82,9 +107,9 @@ function getTagUpdatesSchema<T extends TagItem>(description?: string): AIJsonPro
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {
   text: { type: 'string', description: `Main story page content. First-person central ("I") POV as MC. Max ${MAX_WORDS_PER_PAGE} words.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
-  place: { type: 'string', description: 'Current place where the story is taking place' },
+  place: { type: 'string', description: 'Current place name' },
   timeOfDay: { type: 'string', description: `Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'` },
-  charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Names of the characters present in this page besides MC' },
+  charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this page besides MC' },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
   importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page' },
   actions: STORY_ACTION_SCHEMA
@@ -218,7 +243,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     additionalProperties: false
   },
   flagUpdates: { type: 'object', description: 'Updates to psychological flags (trust, fear, guilt, curiosity). Omit if no update.' },
-  addPlotFlag: { type: 'object', description: 'A crucial and significant plot development that affects the overall story trajectory.' },
+  addPlotFlag: { type: 'object', description: 'What already happened — Significant plot development that impact narrative trajectory.' },
   viableEnding: { type: 'object', description: 'An ending plan for the story. Omit if no update.' },
 
   // Provide full to overwrite current. Can omit or empty if no changes.
@@ -243,7 +268,7 @@ export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Ar
  * Schema definition for PageTranslation type
  */
 export const CANDIDATE_GENERATION_SCHEMA_DEFINITION = {
-  generatedPages: { type: 'array', description: 'Alternative fate sourced from the same action', items: {
+  generatedPages: { type: 'array', description: 'Generated story pages — alternative fates sourced from the same action', items: {
     type: 'object',
     properties: STORY_GENERATION_SCHEMA_DEFINITION,
     required: STORY_GENERATION_REQUIRED_FIELDS,

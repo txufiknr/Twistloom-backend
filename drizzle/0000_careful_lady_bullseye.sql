@@ -123,7 +123,7 @@ CREATE TABLE "pages" (
 	"key_events" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"important_objects" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"actions" jsonb DEFAULT '[]'::jsonb NOT NULL,
-	"delta" jsonb NOT NULL,
+	"delta" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"ai_provider" text,
 	"ai_model" text,
 	"pending_generation_count" integer DEFAULT 0 NOT NULL,
@@ -354,6 +354,7 @@ CREATE TABLE "user_page_progress" (
 	"actioned_page_id" uuid NOT NULL,
 	"next_page_id" uuid NOT NULL,
 	"action" jsonb NOT NULL,
+	"is_paid" boolean,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "user_page_progress_user_book_page_unique" UNIQUE("user_id","book_id","actioned_page_id")

@@ -772,8 +772,12 @@ export async function reconstructStoryState(
         
         if (selectedAction) {
           currentState.actionsHistory.push({
-            ...selectedAction,
+            text: selectedAction.text,
+            type: selectedAction.type,
+            hint: selectedAction.hint,
             page: parentPage.page, // Page where action was taken, not destination
+            pageId: parentPage.id, // Page where action was taken, not destination
+            nextPageId: page.id,
           });
         } else {
           console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);

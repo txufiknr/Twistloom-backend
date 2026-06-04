@@ -7,6 +7,75 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
+[x] prompt: print injury & plot flag place & pageAcquired
+[x] infer next page generation place & pageAcquired
+
+Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
+Provider Abstraction Layer:
+interface AIProvider {
+  generate(request: AIRequest): Promise<AIResponse>;
+  stream(request: AIRequest): AsyncIterable<string>;
+}
+
+Deprecate place strategy utils
+Consider generate multiverse in parallel instead of 1 big request
+Request racing:
+const winner = Promise.any([
+  geminiFlash(),
+  groqLlama(),
+]);
+
+Migrate neon postgres 18 to use uuidv7()? 
+-- No extension needed in Postgres 18
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, text } from 'drizzle-orm/pg-core';
+
+export const users = pgTable('users', {
+  // Uses PostgreSQL 18's native core uuidv7() function
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`uuidv7()`), 
+    
+  name: text('name').notNull(),
+});
+
+uuid_extract_timestamp(uuid) to easily extract the creation date directly from the identifier without needing a separate created_at column.
+
+Enriched page:
+- PageNav = Record<page, pageId, plotFlag -> fact & isMajorEvent>
+- prevPageIds: PageNav[];
+
+Reader:
+Navigate to page: tombol: time travel & navigate
+
+Future note:
+- RULES_FUTURE_NOTES ngga usah "Future Notes"
+- type ensure ada "location"
+
+
+
+[generate-originals] ⚠️ createBookCore failed on attempt 2: Book initialization failed: Cannot read properties of undefined (reading 'length')
+[generate-originals] 🔁 Retrying with a new theme...
+[generate-originals] 💭 Generating creative theme... (attempt 3/3)
+
+Create first book: 
+- Title idea & mc name ngga masuk di prompt (instructions)
+- futureNotes.addedAtPage, plotFlags.page, injuries.pageAcquired, character, place, etc infer aja
+- getTagUpdatesSchema tambah prop isObject & object schema (DRY both story & book) 
+
+Prompt:
+- Ensure "previous pages:" include place & mood
+- story thread: active clues, active mysteries
+- story summary bullet points
+- The most stable content should always appear first.
+- instructions and output specifications at the top is the industry best practice for prompt caching.
+- task at bottom
+- buat system prompt static semua
+
+[ ] titleIdea buat mandatory aja, jadiin input juga
+[ ] updateBookGenerationStatus -> update bookGenerations aiProvider & aiModel
+[ ] ai-chat add metrics: requestStart, firstTokenReceived, generationFinished (TTFT: 1.3s, Generation: 5.8s, Total: 7.1s)
+
 
 unstable
 → narration may contain paranoia

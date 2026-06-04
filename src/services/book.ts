@@ -19,7 +19,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, PublicStats } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, Action, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, ActionedStoryPage, StoryGeneration } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, StoryPageNav, Action } from "../types/story.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -35,9 +35,10 @@ import { sanitizeText, generateSlug } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { extractStateDelta, getStoryStateInfo } from "../utils/story.js";
+import { getStoryStateInfo } from "../utils/story.js";
 import { getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
+import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 
 /**
  * LRU cache for enriched book data
@@ -221,10 +222,10 @@ export async function insertStoryPage(
   options: { client?: DBClient } = {},
 ): Promise<PersistedStoryPage> {
   const { client = dbWrite } = options;
-  const { bookId, branchId, parentId, selectedAction } = pageMeta;
+  const { bookId, branchId, parentId } = pageMeta;
 
   // Validation runs the same regardless of mode
-  if (parentId && selectedAction) {
+  if (parentId) {
     const parentPage = await getPageFromDB(parentId, { client });
     if (!parentPage) throw new Error(`Parent page ${parentId} not found`);
   }
@@ -243,7 +244,7 @@ export async function insertStoryPage(
     keyEvents: page.keyEvents || [],
     importantObjects: page.importantObjects || [],
     actions: page.actions,
-    stateDelta: extractStateDelta(page),
+    stateDelta: pageNumber > 1 ? page.stateDelta : {},
     aiProvider: page.aiProvider || null,
     aiModel: page.aiModel || null,
     createdAt: new Date(),
@@ -356,8 +357,8 @@ export async function persistPageWithState(params: {
   newState: StoryState;
   aiProvider: AIChatProvider | 'none';
   aiModel: string;
-  actionedPage: ActionedStoryPage;
-  selectedAction: Action;
+  actionedPage: CandidateGenerationPage;
+  action: Action;
   branchId: string;
   usedBranchIds: Set<string>; // must be passed in for within-call collision safety on retry
   context?: string;
@@ -371,7 +372,7 @@ export async function persistPageWithState(params: {
     aiProvider,
     aiModel,
     actionedPage,
-    selectedAction,
+    action,
     usedBranchIds,
     context = "persistPageWithState",
   } = params;
@@ -391,13 +392,24 @@ export async function persistPageWithState(params: {
       return await dbWrite.transaction(async (tx) => {
         const pageMeta: StoryPageMeta = {
           bookId: actionedPage.bookId,
-          parentId: actionedPage.id,
           branchId: currentBranchId,
-          selectedAction,
+          parentId: actionedPage.id,
         };
 
         // insertStoryPage detects tx client → skips internal retry → bubbles original error
         const newPage = await insertStoryPage(userId, expectedPageNumber, pageToInsert, pageMeta, { client: tx });
+        const selectedAction: SelectedAction = {
+          text: action.text,
+          type: action.type,
+          hint: action.hint,
+          page: actionedPage.page,
+          pageId: actionedPage.id,
+          nextPageId: newPage.id
+        };
+
+        // Add chosen action to history (removed existing entries with same page number)
+        newState.actionsHistory = newState.actionsHistory.filter(action => action.page !== actionedPage.page);
+        newState.actionsHistory.push(selectedAction);
 
         // If this throws, the transaction auto-rolls back — no orphan page
         await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });
@@ -840,7 +852,7 @@ export async function getPageFromDB(pageId: string, options: {
  * @param pageId - The page's unique identifier
  * @returns Promise resolving to user's selected action or null if not found
  */
-export async function getPageActionsFromDB(userId: string, bookId: string, pageId: string): Promise<Action[]> {
+export async function getPageActionsFromDB(userId: string, bookId: string, pageId: string): Promise<SelectedAction[]> {
   const userProgress = await dbRead
     .select()
     .from(userPageProgress)
@@ -920,7 +932,7 @@ async function completePageWithSelectedAction(dbPage: DBPage, userId: string): P
  * console.log(`Next page: ${userPage.actions[0].nextPageNumber}`);
  * ```
  */
-export async function mapToUserStoryPage(dbPage: DBPage, userId: string, selectedActions?: Action[]): Promise<UserStoryPage> {
+export async function mapToUserStoryPage(dbPage: DBPage, userId: string, selectedActions?: SelectedAction[]): Promise<UserStoryPage> {
   const persistedPage = mapToPersistedStoryPage(dbPage);
   selectedActions ??= await getPageActionsFromDB(userId, persistedPage.bookId, persistedPage.id);
 
@@ -1052,7 +1064,8 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * // With source action for page navigation
  * const pageWithSource = await mapToEnrichedPage(dbPage, {
  *   userId: 'user123',
- *   sourceAction: selectedAction
+ *   sourceAction: selectedAction,
+ *   sourceNav: storyPageNav
  * });
  * ```
  */
@@ -1061,9 +1074,10 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
   bookLanguage?: string,
   headerLanguage?: string | null,
   translate?: boolean,
-  sourceAction?: Action
+  sourceAction?: SelectedAction,
+  sourceNav?: StoryPageNav,
 }): Promise<EnrichedStoryPage | null> {
-  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction } = options;
+  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, sourceNav } = options;
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter(action => !!action.destinationPageIds.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
@@ -1156,6 +1170,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction,
+    sourceNav,
     translation,
     shownActionHint,
     context,

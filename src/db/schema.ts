@@ -6,7 +6,7 @@ import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } fro
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, ActionHistory, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -66,7 +66,7 @@ export const pages = pgTable(
     keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
     importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
-    stateDelta: jsonb("delta").$type<StateDelta>().notNull(), // Incremental delta (chronological)
+    stateDelta: jsonb("delta").$type<StateDelta>().notNull().default(sql`'{}'::jsonb`), // Incremental delta (chronological)
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
     pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
@@ -143,7 +143,7 @@ export const storyStates = pgTable(
     characters: jsonb("characters").$type<Record<string, CharacterMemory>>().notNull().default(sql`'{}'::jsonb`), // Character records
     places: jsonb("places").$type<Record<string, PlaceMemory>>().notNull().default(sql`'{}'::jsonb`), // Place records
     threads: jsonb("threads").$type<StoryThread[]>().notNull().default(sql`'[]'::jsonb`), // Ongoing narrative threads
-    actionsHistory: jsonb("actions_history").$type<ActionHistory[]>().notNull().default(sql`'[]'::jsonb`), // History of user actions
+    actionsHistory: jsonb("actions_history").$type<SelectedAction[]>().notNull().default(sql`'[]'::jsonb`), // History of actions leading to this state
     injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     isMajorEvent: boolean("is_major_event").notNull().default(false),
@@ -447,7 +447,8 @@ export const userPageProgress = pgTable(
     bookId: bookId("cascade"),
     actionedPageId: uuid("actioned_page_id").notNull(), // page which action selected from
     nextPageId: uuid("next_page_id").notNull(), // action's destination page ID
-    action: jsonb("action").$type<Action>().notNull(),
+    action: jsonb("action").$type<SelectedAction>().notNull(),
+    isPaid: boolean("is_paid"),
     createdAt,
     updatedAt,
   },

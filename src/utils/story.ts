@@ -1,12 +1,13 @@
 import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, Action, ActionedStoryPage, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate } from "../types/story.js";
-import type { Injury, InventoryItem } from "../types/character.js";
-import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action } from "../types/story.js";
+import type { Injury, InventoryItem } from "../types/character.js";
+import type { ThreadUpdates, StoryThread } from "../types/thread.js";
+import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 
 /**
  * Extract state delta from generated page for database storage
@@ -22,14 +23,19 @@ import { deepEqualSimple } from "../utils/parser.js";
  * const delta = extractStateDelta(generatedPage);
  * ```
  */
-export function extractStateDelta(generation: StoryGeneration): StateDelta {
-  const { place } = generation;
+export function extractStateDelta(generation: StoryGeneration, expectedPageNumber: number, futureNoteKeys: string[]): StateDelta {
+  if (expectedPageNumber === 1) return {};
+  const { place, futureNoteUpdates } = generation;
+
   return {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
-    futureNoteUpdates: generation.futureNoteUpdates,
+    futureNoteUpdates: futureNoteUpdates ? {
+      add: mapFutureNoteWithKey(futureNoteUpdates.add, expectedPageNumber, futureNoteKeys),
+      remove: futureNoteUpdates.remove,
+    } satisfies TagUpdates<FutureNote> : undefined,
     factUpdates: generation.factUpdates,
-    addPlotFlag: generation.addPlotFlag ? { ...generation.addPlotFlag, place } : undefined,
+    addPlotFlag: generation.addPlotFlag ? { ...generation.addPlotFlag, page: expectedPageNumber, place } : undefined,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
     placeUpdates: generation.placeUpdates,
@@ -37,9 +43,19 @@ export function extractStateDelta(generation: StoryGeneration): StateDelta {
     viableEnding: generation.viableEnding,
     isMajorEvent: generation.isMajorEvent,
     contextHistory: generation.contextHistory,
-    inventory: generation.inventory,
-    injuries: generation.injuries,
+    // Tag with current place for context
+    inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, place }) : inventory),
+    injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, place }) : injury),
   } satisfies Record<keyof StateDeltaGeneration, unknown>;
+}
+
+export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, expectedPageNumber: number, futureNoteKeys: string[]): FutureNote[] {
+  return notes?.map(note => {
+    const tag = note.tag || 'other';
+    const key = generateUniqueId(tag, futureNoteKeys);
+    futureNoteKeys.push(key);
+    return { ...note, addedAtPage: expectedPageNumber, key };
+  }) ?? [];
 }
 
 /**
@@ -289,21 +305,35 @@ function removeHealedInjuries(injuries: Injury[]): Injury[] {
  * // This advancedState is used as base for generating page 2
  * ```
  */
-export async function advanceStoryState(state: StoryState, actionedPage: Pick<ActionedStoryPage, 'page' | 'actions' | 'selectedAction'>): Promise<StoryState> {
+export async function advanceStoryState(state: StoryState, actionedPage: Pick<CandidateGenerationPage, 'page' | 'actions' | 'action'>): Promise<StoryState> {
   // Find the index of selected action to get the letter
-  const { actions: allActions, selectedAction } = actionedPage;
-  const selectedIndex = allActions.findIndex(action => action.text === selectedAction.text);
+  const { actions: allActions, action, page } = actionedPage;
+  const selectedIndex = allActions.findIndex(action => action.text === action.text);
   const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
 
-  console.log(`[advanceStoryState] ⚡ Advancing story state from page ${actionedPage.page} for selecting: ${selectedLetter}. ${selectedAction.text} (type: ${selectedAction.type})`);
+  console.log(`[advanceStoryState] ⚡ Advancing story state from page ${page} for selecting: ${selectedLetter}. ${action.text} (type: ${action.type})`);
   const updatedState = structuredClone(state);
 
   // Remove any existing entries with the same page number to avoid duplicates
-  updatedState.actionsHistory = updatedState.actionsHistory.filter(action => action.page !== updatedState.page);
+  // updatedState.actionsHistory = updatedState.actionsHistory.filter(action => action.page !== updatedState.page);
 
-  // Add chosen action to history and increment page number
-  updatedState.actionsHistory.push({...actionedPage.selectedAction, page: updatedState.page});
+  // Add chosen action to history
+  // updatedState.actionsHistory.push({
+  //   text: action.text,
+  //   type: action.type,
+  //   hint: action.hint,
+  //   page: updatedState.page,
+  //   pageId
+  // });
+
+  // Increment page number
   updatedState.page++;
+
+  // Sanity check to ensure page number was incremented correctly
+  if (updatedState.page !== page + 1) {
+    console.error(`[advanceStoryState] ❌ Page number mismatch after incrementing. Expected: ${page + 1}, Actual: ${updatedState.page}`);
+    updatedState.page = page + 1;
+  }
 
   // Remove any items which has zero amount
   if (updatedState.inventory && updatedState.inventory.length > 0) {
@@ -323,7 +353,7 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ac
   });
 
   // Update psychological flags based on action type
-  updateFlags(updatedState, actionedPage.selectedAction);
+  updateFlags(updatedState, actionedPage.action);
 
   // Escalate story tension and hidden state
   updateHiddenState(updatedState);
@@ -335,6 +365,25 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ac
   updateAdvancedEndingSystems(updatedState);
 
   return updatedState;
+}
+
+/**
+ * Generates a unique key by appending an incrementing numeric suffix.
+ * @param key - The base string (e.g., "location")
+ * @param existingKeys - Array of keys that already exist
+ * @returns A unique string guaranteed not to be in existingKeys (e.g., "location_1")
+ */
+export function generateUniqueId(key: string, existingKeys: string[]): string {
+  const existingSet = new Set(existingKeys);
+  let counter = 1;
+  
+  while (true) {
+    const candidateId = `${key}_${counter}`;
+    if (!existingSet.has(candidateId)) {
+      return candidateId;
+    }
+    counter++;
+  }
 }
 
 /**

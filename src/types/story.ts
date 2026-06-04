@@ -1,7 +1,7 @@
 import type { DBClient } from "../db/client.js";
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, InventoryItem, RelationshipUpdate } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates } from "./places.js";
 import type { DBNewPage, DBPage, DBPageTranslations, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
@@ -289,7 +289,7 @@ export const plotFlagTypes = [
 export type PlotFlagType = typeof plotFlagTypes[number];
 
 /** A plot flag representing a significant narrative event. */
-export interface PlotFlag {
+export type PlotFlag = {
   /** Page number where the flag was added. */
   page: number;
   /** Description of the flagged event. */
@@ -301,6 +301,8 @@ export interface PlotFlag {
   /** Indicates whether the flagged event is a major plot point. */
   isMajorEvent: boolean;
 }
+
+export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'place'>;
 
 export const factTypes = {
   character: "About characters, including status, goals, traits, conditions, locations, and major developments.",
@@ -342,6 +344,8 @@ export type FutureNote = {
   /** Optional target page number for when this note should become relevant */
   targetPageRange?: string;
 };
+
+export type FutureNoteGeneration = Omit<FutureNote, 'key' | 'addedAtPage'>;
 
 export const futureNoteTags = ['relationship', 'clue', 'character', 'place', 'other'] as const;
 export type FutureNoteTag = typeof futureNoteTags[number];
@@ -709,8 +713,8 @@ export type StoryPage = {
 };
 
 export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> & {
-  /** Optional selected action that triggered this page generation (for duplicate prevention) */
-  selectedAction?: Action;
+  // /** Optional selected action that triggered this page generation (for duplicate prevention) */
+  // selectedAction?: SelectedAction;
 };
 
 /**
@@ -758,17 +762,24 @@ export type StateDelta = {
   difficulty?: Difficulty;
 };
 
-export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
+// export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
+export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty' | 'futureNoteUpdates'> & {
+  futureNoteUpdates?: {
+    add?: FutureNoteGeneration[];
+    remove?: string[];
+  }
+};
 export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel' | 'stateDelta'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
-export type UserStoryPage = PersistedStoryPage & { selectedActions: Action[] };
-export type ActionedStoryPage = PersistedStoryPage & { selectedAction: Action };
+export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
+export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
 export type EnrichedStoryPage = Partial<UserStoryPage> & { 
   originalActionsCount: number, 
   translation?: DBPageTranslations,
-  sourceAction?: Action,
+  sourceAction?: SelectedAction,
+  sourceNav?: StoryPageNav,
   shownActionHint: string[],
   context?: {
     /** Current story phase classification */
@@ -780,13 +791,16 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
     /** AI-summarized context of the story until this page */
     contextHistory: string;
     /** History of actions made until this page */
-    actionsHistory: ActionHistory[];
+    actionsHistory: SelectedAction[];
     /** All known places so far */
     places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
     /** All known characters so far */
     characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
   }
 };
+
+export type StoryPageNav = Record<number, StoryPageNavItem>;
+export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlag?: PlotFlag; };
 
 export type Action = {
   /** Action text (serves as unique identifier) */
@@ -797,16 +811,21 @@ export type Action = {
   hint: ActionHint;
   /** Destination meta for the action */
   destinationPageIds: string[];
-  // destination: {
-  //   branchId?: string;
-  //   pageId?: string;
-  // };
-  // /** Internal sentinel flag to prevent infinite retry loops for fallback actions */
-  // _isFallback?: boolean;
+};
+
+export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint'> & {
+  /** Action source */
+  pageId: string;
+  /** Action source page number */
+  page: number;
+  /** Action destination */
+  nextPageId: string;
+  // /** Whether this selection is paid (not primary selection) */
+  // isPaid?: boolean;
 };
 
 export type ActionGeneration = Omit<Action, 'destinationPageIds'>;
-export type ActionHistory = Action & { page: number }
+// export type ActionHistory = Action & { page: number };
 export type ActionTranslation = {
   /** Original action text (serves as unique identifier) */
   originalText: string;
@@ -918,7 +937,7 @@ export type StoryState = {
   places: Record<string, PlaceMemory>;
 
   /** History of all user actions made throughout the story */
-  actionsHistory: ActionHistory[];
+  actionsHistory: SelectedAction[];
 
   /**
    * AI-summarized context of the entire story from page 1 to current
@@ -1034,15 +1053,18 @@ export type StoryStateInfo = {
 
 export type StoryStateSource = 'original' | 'reconstructed';
 
-export type InitialStoryState = Partial<Pick<StoryState,
-  'flags' |
-  'difficulty' |
-  'viableEnding' |
-  'traumaTags' |
-  'plotFlags' |
-  'inventory' |
-  'injuries' |
-  'futureNotes'>>;
+export type InitialStoryState = Partial<Pick<
+  StoryState,
+    'flags' |
+    'difficulty' |
+    'viableEnding' |
+    'traumaTags' |
+    'plotFlags' |
+    'inventory'
+  > & {
+    'injuries': InitialInjury[];
+    'futureNotes': FutureNoteGeneration[];
+  }>;
 
 export const storyPhases = {
   EARLY: `Priority: mystery seeding, unreliability introduction, character grounding.

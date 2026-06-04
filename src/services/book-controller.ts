@@ -24,14 +24,14 @@ import { books, users } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
-import { getEnrichedBook, getPageActionsFromDB, getPageFromDB } from "./book.js";
+import { getEnrichedBook, getPageActionsFromDB, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
-import { computeVisitStats, markPageVisited } from "./story.js";
-import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
+import { computeVisitStats, getPreviousPages, markPageVisited } from "./story.js";
+import { BOOK_MAX_PAGES, FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Response } from "express";
 import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { DBBookTranslations } from "../types/schema.js";
-import type { Action } from "../types/story.js";
+import type { Action, ActionedStoryPage, SelectedAction, StoryPageNav, StoryPageNavItem } from "../types/story.js";
 
 /**
  * Builds an enriched book select object with all required fields
@@ -683,7 +683,10 @@ export async function visitBookPage(
   // Get parent page and selected action (if it's not page 1)
   let action: Action | undefined;
   let shouldConsumeCredits = false;
+  let selectedAction: SelectedAction | undefined;
 
+  const sourceNav: StoryPageNav = {};
+  
   if (pageNumber > 1) {
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
@@ -699,10 +702,19 @@ export async function visitBookPage(
       return {};
     }
 
-    const isActionMatch = !action || action.destinationPageIds.some(p => p === pageId);
-    if (!isActionMatch) {
-      console.error(`[visitBookPage] ❌ Action destination pageId mismatch`);
-      return { dbPage, book };
+    const { text, hint, type } = action;
+    selectedAction = { text, hint, type, nextPageId: pageId, pageId: parentPageId!, page: parentDbPage.page };
+
+    const actionedPage: ActionedStoryPage = { ...mapToPersistedStoryPage(dbPage), selectedAction };
+    const previousPages = await getPreviousPages(actionedPage, userId, bookId, book.totalPages || BOOK_MAX_PAGES);
+    for (const prev of previousPages) {
+      if (prev.selectedActions.length) {
+        sourceNav[prev.page] = {
+          pageId: prev.id,
+          selectedAction: prev.selectedActions.at(-1)!, // Get the last action selected on each previous page for navigation source tracking
+          plotFlag: prev.stateDelta.addPlotFlag
+        } satisfies StoryPageNavItem;
+      }
     }
 
     // Users can go back and select any action they like in page 1
@@ -733,5 +745,6 @@ export async function visitBookPage(
     action,
     shouldConsumeCredits
   });
-  return { dbPage, book, visitDetails, sourceAction: action };
+
+  return { dbPage, book, visitDetails, sourceAction: selectedAction, sourceNav };
 }

@@ -1,7 +1,7 @@
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql } from "drizzle-orm";
 import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
-import type { StoryProgress, Action, SetActiveSessionParams, ActionedStoryPage, UserStoryPage, UserSession, StoryState, StoryStateSource } from "../types/story.js";
+import type { StoryProgress, Action, SetActiveSessionParams, UserStoryPage, UserSession, StoryState, StoryStateSource, SelectedAction, PersistedStoryPage } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
 import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToUserStoryPage } from "./book.js";
@@ -293,13 +293,13 @@ export async function insertStoryState(
 async function markPageVisitedWithClient(params: {
   userId: string,
   bookId: string,
-  pageId: string,
-  pageNumber: number,
+  pageId: string, // visited page id
+  pageNumber: number, // visited page number
   branchId: string,
   totalPages: number | null,
   visitCount: number,
   stats: Pick<EnrichedBookData, 'stats'>['stats'],
-  actionedPageId?: string,
+  actionedPageId?: string, // previous actioned page id
   action?: Action,
   client: DBClient
 }): Promise<BookPageVisit> {
@@ -328,10 +328,12 @@ async function markPageVisitedWithClient(params: {
     }
 
     // Insert page progress record
+    const actionedPageNumber = pageNumber - 1;
     const progress = await insertUserPageProgress({
       userId,
       bookId,
       actionedPageId,
+      actionedPageNumber,
       nextPageId: pageId,
       action,
       client,
@@ -765,20 +767,23 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
   };
 }
 
-export async function insertUserPageProgress(data: DBNewUserPageProgress & { client?: DBClient }): Promise<DBUserPageProgress | null> {
+export async function insertUserPageProgress(data: Omit<DBNewUserPageProgress, 'action'> & { action: Action, actionedPageNumber: number, client?: DBClient }): Promise<DBUserPageProgress | null> {
   try {
-    const { action, nextPageId, client = dbWrite } = data;
+    const { action, actionedPageId, actionedPageNumber, nextPageId, client = dbWrite } = data;
     if (!action.destinationPageIds.some(p => p === nextPageId)) {
       throw new Error("Action destination pageId does not match nextPageId");
     }
 
+    const selectedAction = mapActionToSelectedAction(action, actionedPageId, actionedPageNumber, nextPageId);
+    const progressData: DBNewUserPageProgress = { ...data, action: selectedAction };
+
     const [newPageProgress] = await client
       .insert(userPageProgress)
-      .values(data)
+      .values(progressData)
       .onConflictDoUpdate({
         target: [userPageProgress.userId, userPageProgress.bookId, userPageProgress.actionedPageId],
         set: {
-          action: data.action,
+          action: progressData.action,
           updatedAt: new Date(),
         }
       })
@@ -794,7 +799,7 @@ export async function insertUserPageProgress(data: DBNewUserPageProgress & { cli
 /**
  * Gets previous pages by traversing the parent chain
  * 
- * This function retrieves the last MAX_PAGE_HISTORY pages by:
+ * This function retrieves the previous pages by:
  * 1. Starting from the current page (from actionedPage)
  * 2. Traversing backwards using parentId to get previous pages
  * 3. Using userPageProgress to track which action the user selected to reach each page
@@ -812,17 +817,18 @@ export async function insertUserPageProgress(data: DBNewUserPageProgress & { cli
  * ```
  */
 export async function getPreviousPages(
-  actionedPage: ActionedStoryPage,
+  actionedPage: Pick<PersistedStoryPage, 'page' | 'parentId'>,
   userId: string,
-  bookId: string
-): Promise<UserStoryPage[]> {
+  bookId: string,
+  limit: number = MAX_PAGE_HISTORY
+): Promise<UserStoryPage[]> { // TODO: harusnya return ActionedStoryPage[]
   try {
     const previousPages: UserStoryPage[] = [];
-    const expectedPreviousPagesCount = Math.min(MAX_PAGE_HISTORY, actionedPage.page - 1);
+    const expectedPreviousPagesCount = Math.min(limit, actionedPage.page - 1);
     let currentPageId = actionedPage.parentId;
     
     // Traverse backwards through the parent chain
-    while (currentPageId && previousPages.length < MAX_PAGE_HISTORY) {
+    while (currentPageId && previousPages.length < limit) {
       const userPage = await getUserPage(currentPageId, userId, { bookIdentifier: bookId, client: dbWrite });
       if (!userPage) break;
       
@@ -902,4 +908,15 @@ export function computeVisitStats(params: {
   const visitorPercentage = Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
 
   return { nthVisit, visitorPercentage, totalBookReaders };
+}
+
+export function mapActionToSelectedAction(action: Action, actionedPageId: string, actionedPageNumber: number, nextPageId: string): SelectedAction {
+  return {
+    text: action.text,
+    hint: action.hint,
+    type: action.type,
+    pageId: actionedPageId,
+    page: actionedPageNumber,
+    nextPageId
+  };
 }

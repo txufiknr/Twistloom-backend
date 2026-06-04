@@ -19,9 +19,9 @@
 import { getBook, getBookFromDB, getPageFromDB, getStoryPageById, mapToPersistedStoryPage, mapToUserStoryPage } from '../services/book.js';
 import { MAX_BRANCHING_PREGENERATION_DEPTH, MAX_BRANCHING_RETRIES } from '../config/story.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
-import type { UserStoryPage, Action, ActionedStoryPage, PersistedStoryPage } from '../types/story.js';
+import type { UserStoryPage, Action, PersistedStoryPage } from '../types/story.js';
 import type { Book } from '../types/book.js';
-import type { ActionProgressCallback, CandidateGenerationPageValidation, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
+import type { ActionProgressCallback, CandidateGenerationPage, CandidateGenerationPageValidation, CandidateGenerationResult, CandidateGenerationStrategy, CandidateGenerationValidation, GenerateCandidatePageParams, GenerateCandidatesInParallelParams, GenerateCandidatesOptions, GenerateCandidatesWithStrategyParams, GenerationStrategy } from '../types/candidate-generation.js';
 import { getErrorMessage } from './error.js';
 import { dbWrite } from '../db/client.js';
 import { pages } from '../db/schema.js';
@@ -413,7 +413,6 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
   }
 
   const letter = String.fromCharCode(65 + currentPage.actions.findIndex(a => a.text === action.text));
-  const actionedPage: ActionedStoryPage = { ...currentPage, selectedAction: action };
   const nextPageNumber = currentPage.page + 1;
 
   console.log(`[generateCandidatePage] 📖 Should generate for "${currentBook.title}" page ${nextPageNumber} from action: ${letter}. ${action.text} (type: ${action.type})`);
@@ -427,6 +426,9 @@ export async function generateCandidatePages(params: GenerateCandidatePageParams
   const bookId = currentBook.id;
   const newPages: PersistedStoryPage[] = [];
   const limit = MAX_CANDIDATE_PAGE_PER_ACTION;
+
+  // const selectedAction = mapActionToSelectedAction(action, currentPage.id, currentPage.page, );
+  const actionedPage: CandidateGenerationPage = { ...currentPage, action };
 
   if (existing.length > 0) {
     if (skipIfAlreadyHasDestinations !== false || existing.length >= limit) {

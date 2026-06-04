@@ -7,7 +7,7 @@
  * This enables personalized storytelling based on individual player behavior patterns.
  */
 
-import type { StoryState, StyleInput, PsychologicalProfileMetrics, ActionHistory, TrustLevel, GuiltLevel, MemoryIntegrity, ActionType } from '../types/story.js';
+import type { StoryState, StyleInput, PsychologicalProfileMetrics, TrustLevel, GuiltLevel, MemoryIntegrity, ActionType, SelectedAction } from '../types/story.js';
 import { getStoryStateInfo } from './story.js';
 import { normalize } from './parser.js';
 
@@ -33,7 +33,7 @@ const ACTION_INFLUENCES: Record<ActionType, Partial<PsychologicalProfileMetrics>
 /**
  * Calculates base psychological traits from action history
  */
-function calculateBaseTraits(actionsHistory: ActionHistory[]): Pick<PsychologicalProfileMetrics, 'curiosity' | 'fear' | 'aggression' | 'denial'> {
+function calculateBaseTraits(actionsHistory: SelectedAction[]): Pick<PsychologicalProfileMetrics, 'curiosity' | 'fear' | 'aggression' | 'denial'> {
   const traits = {
     curiosity: 0,
     fear: 0,

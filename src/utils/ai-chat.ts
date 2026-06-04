@@ -10,14 +10,16 @@ import { classifyGenAIError, getErrorMessage } from "./error.js";
 import { parseAISafely } from "./parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
-import { type GenerateContentConfig, Type, type GenerateContentParameters, type GenerateContentResponse, type Schema } from "@google/genai";
+import { Type } from "@google/genai";
 import type Groq from 'groq-sdk';
-import type { ChatCompletionCreateParamsBase, ChatCompletion as OpenAIChatCompletion } from 'openai/resources/chat/completions.js';
+import type OpenAI from 'openai/resources/chat/completions.js';
+import type Cerebras from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { Cohere } from "cohere-ai";
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
-import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
+import type { GenerateContentConfig, GenerateContentParameters, GenerateContentResponse, Schema } from "@google/genai";
 import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
+import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
+import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -123,7 +125,7 @@ export async function githubPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
-  return promptWithFallback<OpenAIChatCompletion>(
+  return promptWithFallback<OpenAI.ChatCompletion>(
     'github',
     prompt,
     options,
@@ -136,6 +138,8 @@ export async function githubPrompt(
           { role: 'system', content: systemPromptWithDocuments },
           { role: 'user', content: prompt },
         ],
+        // Instructs OpenAI to retain the calculated KV cache for a full day
+        prompt_cache_retention: "24h",
         max_tokens: config.maxOutputToken,
         temperature: config.temperature,
         top_p: config.topP,
@@ -154,7 +158,7 @@ export async function githubPrompt(
             }
           }
         } : { type: 'json_object' }) : undefined,
-      } satisfies ChatCompletionCreateParamsNonStreaming);
+      } satisfies OpenAI.ChatCompletionCreateParamsNonStreaming);
     },
     (response) => {
       const content = response.choices?.[0]?.message?.content;
@@ -383,7 +387,7 @@ export async function groqPrompt(
             }
           }
         } : { type: 'json_object' }) : undefined,
-      } satisfies ChatCompletionCreateParamsBase).withResponse();
+      } satisfies GroqCompletion.ChatCompletionCreateParamsNonStreaming).withResponse();
 
       // Log rate limit information from response headers
       const remaining = response.headers.get('x-ratelimit-remaining-requests');
@@ -396,15 +400,9 @@ export async function groqPrompt(
       return data;
     },
     (response) => {
-      if (!response.choices || response.choices.length === 0) {
-        console.warn('[groq] ❓ No choices in response');
-        return null;
-      }
-
-      const choice = response.choices[0];
-      const content = choice.message?.content;
-      if (typeof content !== 'string' || !content.trim()) {
-        console.warn('[groq] ❓ No valid content in response');
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        console.warn('[groq] ❓ No content in response');
         return null;
       }
       return content.trim();
@@ -533,7 +531,7 @@ export async function cerebrasPrompt(
   prompt: string,
   options?: Partial<PromptWithFallbackOptions>
 ): Promise<AIResponse<string> | null> {
-  return promptWithFallback<ChatCompletion.ChatCompletionResponse>(
+  return promptWithFallback<Cerebras.ChatCompletion.ChatCompletionResponse>(
     'cerebras',
     prompt,
     options,
@@ -566,10 +564,10 @@ export async function cerebrasPrompt(
             }
           }
         } : { type: 'json_object' }) : undefined,
-      } satisfies ChatCompletionCreateParamsBase) as ChatCompletion.ChatCompletionResponse;
+      } satisfies Cerebras.ChatCompletionCreateParamsNonStreaming) as Cerebras.ChatCompletion.ChatCompletionResponse;
     },
     (response) => {
-      const content = response.choices?.[0]?.message?.content;
+      const content = response.choices[0]?.message?.content;
       if (!content) {
         console.warn('[cerebras] ❓ No content in response');
         return null;
@@ -648,7 +646,7 @@ export async function mistralPrompt(
       } satisfies ChatCompletionRequest);
     },
     (response) => {
-      const content = response.choices?.[0]?.message?.content;
+      const content = response.choices[0]?.message?.content;
       if (!content) {
         console.warn('[mistral] ❓ No content in response');
         return null;
@@ -730,7 +728,7 @@ export async function nvidiaPrompt(
       return await res.json().catch(() => null) as NvidiaChatCompletionResponse;
     },
     (response) => {
-      const content = response.choices?.[0]?.message?.content;
+      const content = response.choices[0]?.message?.content;
       if (!content) {
         console.warn('[nvidia] ❓ No content in response');
         return null;

@@ -10,12 +10,12 @@ import { getErrorMessage } from "./error.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
 import { convertToGeminiSchema, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import { type GenerateContentConfig, Type, type GenerateContentParameters, type Schema } from "@google/genai";
-import type { Cohere } from "cohere-ai";
-import type { ChatCompletion, ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingCerebras } from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
-import type { ChatCompletionStreamRequest } from "@mistralai/mistralai/models/components";
-import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingOpenAI } from "openai/resources/index.mjs";
-import type { ChatCompletionCreateParamsStreaming as ChatCompletionCreateParamsStreamingGroq } from "groq-sdk/resources/chat/completions.mjs";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
+import type { Cohere } from "cohere-ai";
+import type Cerebras from "@cerebras/cerebras_cloud_sdk/resources";
+import type * as Mistral from "@mistralai/mistralai/models/components";
+import type * as OpenAI from "openai/resources";
+import type * as Groq from "groq-sdk/resources/chat/completions";
 
 /**
  * SSE-enabled AI streaming function that yields chunks immediately
@@ -305,7 +305,7 @@ async function* githubStreamGenerator(
         }
       }
     } : { type: 'json_object' }) : undefined,
-  } satisfies ChatCompletionCreateParamsStreamingOpenAI, { signal });
+  } satisfies OpenAI.ChatCompletionCreateParamsStreaming, { signal });
   
   for await (const chunk of stream) {
     if (signal?.aborted) return;
@@ -386,7 +386,7 @@ async function* groqStreamGenerator(
         }
       }
     } : { type: 'json_object' }) : undefined,
-  } satisfies ChatCompletionCreateParamsStreamingGroq, { signal });
+  } satisfies Groq.ChatCompletionCreateParamsStreaming, { signal });
   
   for await (const chunk of stream) {
     if (signal?.aborted) return;
@@ -476,18 +476,18 @@ async function* cerebrasStreamGenerator(
         }
       }
     } : { type: 'json_object' }) : undefined,
-  } satisfies ChatCompletionCreateParamsStreamingCerebras, { signal });
+  } satisfies Cerebras.ChatCompletionCreateParamsStreaming, { signal });
   
   for await (const chunk of stream) {
     if (signal?.aborted) return;
-    const chunkTyped = chunk as ChatCompletion.ChatChunkResponse | ChatCompletion.ErrorChunkResponse;
+    const chunkTyped = chunk as Cerebras.ChatCompletion.ChatChunkResponse | Cerebras.ChatCompletion.ErrorChunkResponse;
     if ('choices' in chunkTyped) {
-      const choices = chunkTyped.choices as Array<ChatCompletion.ChatChunkResponse.Choice> | null;
+      const choices = chunkTyped.choices as Array<Cerebras.ChatCompletion.ChatChunkResponse.Choice> | null;
       const delta = choices?.[0]?.delta?.content || '';
       if (delta) yield delta;
     } else if ('error' in chunkTyped) {
       // Handle error chunk - log and skip without terminating stream
-      const { error, status_code } = chunkTyped as ChatCompletion.ErrorChunkResponse;
+      const { error, status_code } = chunkTyped as Cerebras.ChatCompletion.ErrorChunkResponse;
       const errorMessage = error?.message || 'Unknown Cerebras error';
       console.warn(`[cerebras] ⚠️ Error chunk (${status_code}):`, errorMessage);
       // Skip this chunk and continue streaming
@@ -532,7 +532,7 @@ async function* mistralStreamGenerator(
         }
       }
     } : { type: 'json_object' }) : undefined,
-  } satisfies ChatCompletionStreamRequest, { signal });
+  } satisfies Mistral.ChatCompletionStreamRequest, { signal });
   
   for await (const chunk of stream) {
     if (signal?.aborted) return;

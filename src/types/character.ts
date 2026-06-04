@@ -227,7 +227,13 @@ export type InventoryItem = {
   amount?: number;
   /** The location or context of the item (e.g., "in backpack", "on the table", "worn by the character") */
   where?: string;
+  /** The page number where the item was acquired */
+  pageAcquired?: number;
+  /** Place where the item acquired (optional). */
+  place?: string;
 }
+
+export type InitialInventoryItem = Omit<InventoryItem, 'pageAcquired' | 'place'>;
 
 /** Represents an injury sustained by a character */
 export type Injury = {
@@ -235,15 +241,19 @@ export type Injury = {
   bodyPart?: string;
   /** Description of the injury */
   description?: string;
-  /** The page number where the injury was acquired */
-  pageAcquired?: number;
   /** Severity level of the injury (0.0-1.0), decays overtime */
   severity?: number;
   /** Severity decay rate per page (0.0-1.0) */
   decayPerPage?: number;
   /** Consequences of the injury, e.g. "Cannot run fast" */
   consequences?: string;
+  /** The page number where the injury was acquired */
+  pageAcquired?: number;
+  /** Place where the injury acquired (optional). */
+  place?: string;
 };
+
+export type InitialInjury = Omit<Injury, 'pageAcquired' | 'place'>;
 
 export const injurySeverities = [
   "mild",

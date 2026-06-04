@@ -1,5 +1,5 @@
 {
-  "id": "0f18a87a-9129-4e87-8123-4a546b1c14fa",
+  "id": "534c23df-e493-4881-b361-4d09672ef6f5",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1335,7 +1335,8 @@
           "name": "delta",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'{}'::jsonb"
         },
         "ai_provider": {
           "name": "ai_provider",
@@ -4111,6 +4112,12 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
+        },
+        "is_paid": {
+          "name": "is_paid",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

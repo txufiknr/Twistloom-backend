@@ -180,7 +180,6 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
   }
 
   try {
-    
     // Lazy imports for better memory usage and startup time
     const { dbRead } = await import("../db/client.js");
     const { books } = await import("../db/schema.js");

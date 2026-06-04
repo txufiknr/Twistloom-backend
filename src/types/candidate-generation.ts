@@ -196,3 +196,5 @@ export type CandidatePagesGeneration = {
   generatedPages: StoryGeneration[];
   output?: string;
 };
+
+export type CandidateGenerationPage = PersistedStoryPage & { action: Action };
