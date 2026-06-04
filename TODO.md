@@ -72,6 +72,7 @@ Prompt:
 - task at bottom
 - buat system prompt static semua
 
+[ ] titleIdea tambah ke creation context
 [ ] titleIdea buat mandatory aja, jadiin input juga
 [ ] updateBookGenerationStatus -> update bookGenerations aiProvider & aiModel
 [ ] ai-chat add metrics: requestStart, firstTokenReceived, generationFinished (TTFT: 1.3s, Generation: 5.8s, Total: 7.1s)

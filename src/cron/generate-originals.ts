@@ -19,7 +19,7 @@ import { requireEnv } from "../utils/env.js";
 export async function generateOriginalBook(): Promise<void> {
   const startedAt = Date.now();
 
-  try {
+  // try {
     console.log("[generate-originals] 🎨 Starting Twistloom Original generation...");
 
     // Loop step 1-2: generate theme and try to create book; on failure regenerate theme and retry
@@ -69,10 +69,10 @@ export async function generateOriginalBook(): Promise<void> {
 
     const durationMs = Date.now() - startedAt;
     console.log(`[generate-originals] ✅ Completed in ${durationMs}ms`);
-  } catch (error) {
-    console.error("[generate-originals] ❌ Failed to generate original book:", getErrorMessage(error));
-    throw error;
-  }
+  // } catch (error) {
+  //   console.error("[generate-originals] ❌ Failed to generate original book:", getErrorMessage(error));
+  //   throw error;
+  // }
 }
 
 /**
