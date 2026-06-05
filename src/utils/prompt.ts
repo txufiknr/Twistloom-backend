@@ -1125,9 +1125,13 @@ function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
-CREATION CONTEXT:
-- Theme: "${theme}"
-- MC Candidate: ${getMainCharacterInfo(mcCandidate) ?? `Character should be inferred from theme. Keep the generated one if it already fits.`}
+STORY THEME:
+"""
+${theme}
+"""
+
+MAIN CHARACTER (MC):
+${getMainCharacterInfo(mcCandidate) ?? `Character should be inferred from theme. Keep the generated one if it already fits.`}
 
 EXPECTED JSON SCHEMA:
 ${firstBookOutputFormat}
