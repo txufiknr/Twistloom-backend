@@ -46,6 +46,7 @@ export const INITIAL_INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
 
 export const INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
   ...INITIAL_INVENTORY_ITEM_SCHEMA,
+  description: 'Set amount to 0 to remove item.',
   properties: {
     ...INITIAL_INVENTORY_ITEM_PROPERTIES,
     pageAcquired: { type: 'integer', description: 'Page number when the item was acquired' }
@@ -91,6 +92,18 @@ export const CHARACTER_NARRATIVE_FLAGS_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
+export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    traits: { type: 'object' },
+    amount: { type: 'integer' },
+    where: { type: 'string', description: 'e.g., "in the corner of the room"' },
+  } satisfies Record<keyof InitialInventoryItem, AIJsonProperty>,
+  required: ['name'] satisfies (keyof InitialInventoryItem)[],
+  additionalProperties: false
+};
+
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
   name: { type: 'string', description: 'Place name as it appears in the narrative' },
   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
@@ -98,10 +111,14 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
   locationHint: { type: 'string', description: 'Spatial relationship to other places' },
-  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place, e.g. "MC discovered the place", "first meeting with Character A"' },
+  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place (e.g., "MC discovered the place", "first meeting with Character A")' },
+  keyObjects: {
+    type: 'array',
+    description: 'Important story related objects (e.g., wooden chair, cupboard, large mirror, etc)',
+    items: PLACE_KEY_OBJECT_SCHEMA
+  },
   knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
-  sensoryDetails: { type: 'object', description: 'Optional sensory details for consistent atmosphere' },
-  weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
+  traits: { type: 'object', description: 'Any details for narrative consistency (e.g., sensory details, etc)' },
 };
 
 export const { keyEvents: placeEvents, ...placeProperties } = INITIAL_PLACE_PROPERTIES;
@@ -128,27 +145,22 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
-// properties: {
-//   name: { type: 'string', description: 'Place name as it appears in the narrative' },
-//   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
-//   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
-//   locationHint: { type: 'string', description: 'Spatial relationship to other places' },
-//   visitCount: { type: 'integer', description: 'Number of times the place has been visited. One for first visit.' },
-//   lastVisitedAtPage: { type: 'integer', description: 'The page number when the place was last visited. Current page for first visit.' },
-//   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
-//   events: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place, e.g. "MC discovered the place", "first meeting with Character A"' },
-//   knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
-//   sensoryDetails: { type: 'object', description: 'Optional sensory details for consistent atmosphere' },
-//   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
-//   currentMood: { type: 'string', enum: [...placeMoods], description: 'Current emotional atmosphere' },
-// } satisfies Record<keyof PlaceMemory, AIJsonProperty>,
-// required: ['name', 'type', 'context', 'lastVisitedAtPage', 'familiarity'] satisfies (keyof PlaceMemory)[],
-
 export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   ...INITIAL_PLACE_SCHEMA,
   properties: {
     ...placeProperties,
     addKeyEvents: placeEvents,
+    keyObjects: {
+      type: 'array',
+      description: 'Important story related objects (e.g., wooden chair, cupboard, large mirror, etc). Empty array if no changes.',
+      items: {
+        ...PLACE_KEY_OBJECT_SCHEMA,
+        properties: {
+          ...PLACE_KEY_OBJECT_SCHEMA.properties,
+          amount: { type: 'integer', description: 'Set amount to 0 to remove object.' },
+        }
+      }
+    },
     visitCount: { type: 'integer', description: 'Number of times the place has been visited. One for first visit.' },
     lastVisitedAtPage: { type: 'integer', description: 'The page number when the place was last visited. Current page for first visit.' },
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
@@ -207,6 +219,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   text: { type: 'string', description: `Main story page content. First-person central ("I") POV as MC. Max ${MAX_WORDS_PER_PAGE} words.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   place: { type: 'string', description: 'Current place name' },
+  weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
   timeOfDay: { type: 'string', description: `Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'` },
   charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this page besides MC' },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
@@ -329,7 +342,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
 
   // Provide full to overwrite current. Can omit or empty if no changes.
   contextHistory: { type: 'string', description: `Summary of important story context from page 1 up to this point. Focus on key facts, relationships, and developments for story continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
-  inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: 'Items added to or removed from inventory on this page. Empty array if no changes.' },
+  inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Empty array if no changes.` },
   injuries: { type: 'array', items: INJURY_SCHEMA, description: 'Injuries sustained on this page. Injuries severity are automatically decaying. Empty array if no changes.' },
 }
 

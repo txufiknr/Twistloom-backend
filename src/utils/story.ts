@@ -239,9 +239,9 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, p
   processThreadUpdates(newState, threadUpdates);
 
   // Apply inventory updates (full replacements, remove which has amount of 0)
-  if (inventory && inventory.length > 0) newState.inventory = cleanUpInventory(inventory);
+  if (inventory?.length) newState.inventory = cleanUpInventory(inventory);
   // Apply injury updates (full replacements, remove which has severity of 0)
-  if (injuries && injuries.length > 0) newState.injuries = removeHealedInjuries(injuries);
+  if (injuries?.length) newState.injuries = removeHealedInjuries(injuries);
 
   return newState;
 }
@@ -251,7 +251,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, p
  * @param inventory 
  * @returns 
  */
-function cleanUpInventory(inventory: InventoryItem[]): InventoryItem[] {
+export function cleanUpInventory(inventory: InventoryItem[]): InventoryItem[] {
   return inventory.filter(item => item.amount !== 0);
 }
 

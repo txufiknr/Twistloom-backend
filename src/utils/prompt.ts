@@ -223,6 +223,7 @@ const firstBookOutputFormat: string = `{
     "text": "...",
     "mood": "One of: ${formatOneOf(moods)}",
     "place": "Location Name",
+    "weather": "One of: ${formatOneOf(placeWeathers)}",
     "timeOfDay": "e.g. 'night', '2 AM', or 'unknown'",
     "charactersPresent": ["Must match names in initialCharacters"],
     "keyEvents": [],
@@ -298,17 +299,18 @@ const firstBookOutputFormat: string = `{
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
     "locationHint": "...",
-    "events": ["..."],
+    "keyEvents": ["..."],
+    "keyObjects": [
+      {
+        "name": "...",
+        "traits": {"...": "..."},
+        "amount": <number>,
+        "where": "..."
+      }
+    ],
     "knownCharacters": {
       "<Name>": "<Context or interaction>"
-    },
-    "sensoryDetails": {
-      "smell": "...",
-      "sound": "...",
-      "visual": "...",
-      "feeling": "..."
-    },
-    "weather": "One of: ${formatOneOf(placeWeathers)}"
+    }
   },
   "initialCharacters": [
     {
@@ -402,6 +404,7 @@ const nextPageOutputFormat: string = `{
   "text": "...",
   "mood": "One of: ${formatOneOf(moods)}",
   "place": "...",
+  "weather": "One of: ${formatOneOf(placeWeathers)}",
   "timeOfDay": "...",
   "charactersPresent": [],
   "keyEvents": [],
@@ -527,19 +530,20 @@ const nextPageOutputFormat: string = `{
     "newPlaces": [
       {
         "name": "...",
-        "type": "...",
+        "type": "One of: ${formatOneOf(placeTypes)}",
         "context": "...",
         "locationHint": "...",
         "familiarity": <number between 0.0 and 1.0>,
         "currentMood": "One of: ${formatOneOf(placeMoods)}",
-        "sensoryDetails": {
-          "smell": "...",
-          "sound": "...",
-          "visual": "...",
-          "feeling": "..."
-        },
-        "weather": "One of: ${formatOneOf(placeWeathers)}",
-        "events": ["..."],
+        "keyEvents": ["..."],
+        "keyObjects": [
+          {
+            "name": "...",
+            "traits": {"...": "..."},
+            "amount": <number>,
+            "where": "..."
+          }
+        ],
         "knownCharacters": {
           "<Name>": "<Context or interaction>"
         },
@@ -554,13 +558,12 @@ const nextPageOutputFormat: string = `{
         "familiarity": <number between 0.0 and 1.0>,
         "currentMood": "One of: ${formatOneOf(placeMoods)}",
         "addKeyEvents": ["..."],
+        "keyObjects": [],
         "visitCount": <number>,
         "lastVisitedAtPage": <number>,
         "knownCharacters": {
           "<Name>": "<Context or interaction>"
-        },
-        "sensoryDetails": {},
-        "weather": "One of: ${formatOneOf(placeWeathers)}",
+        }
       }
     ]
   },
@@ -1393,10 +1396,12 @@ function getEndingArchetypesText(): string {
 function formatPreviousPageEntry(page: UserStoryPage): string {
   const pageText = formatPageTextForPrompt(page.text);
   const place = page.place || 'unknown';
+  const weather = page.weather || 'unknown';
   const timeOfDay = page.timeOfDay || 'unknown';
   
   // Base page information
-  let entry = `• Page ${page.page} (place: ${place}, timeOfDay: ${timeOfDay})\n  ${pageText}`;
+  // TODO: omit unknown
+  let entry = `• Page ${page.page} (place: ${place}, weather: ${weather}, timeOfDay: ${timeOfDay})\n  ${pageText}`;
 
   // Add action information if present
   const action = page.selectedActions?.at(-1); // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
@@ -1961,13 +1966,14 @@ Open the door
  * @returns Formatted string with current situation details
  */
 function formatCurrentSituationForPrompt(page: CandidateGenerationPage): string {
-  const { mood, place, timeOfDay, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
+  const { mood, place, weather, timeOfDay, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
   const situation: string[] = [];
   
   // Basic situation elements
   situation.push(`Place: ${place || 'unknown'}`);
   situation.push(`Time: ${timeOfDay || 'unknown'}`);
   situation.push(`Mood: ${mood || 'unknown'}`);
+  situation.push(`Weather: ${weather || 'unknown'}`);
   
   // Add characters if present
   if (charactersPresent.length > 0) {

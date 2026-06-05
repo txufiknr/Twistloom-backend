@@ -8,7 +8,7 @@ import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
-import type { PlaceMemory } from "../types/places.js";
+import type { PlaceMemory, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
@@ -62,7 +62,8 @@ export const pages = pgTable(
     text: text("text").notNull(), // 60 words max, first-person POV
     mood: text("mood"), // Current emotional atmosphere
     place: text("place"), // Current place where the story is taking place
-    timeOfDay: text("time_of_day"),
+    weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
+    timeOfDay: text("time_of_day"), // Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'
     charactersPresent: jsonb("characters").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Characters present in the page
     keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
     importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page

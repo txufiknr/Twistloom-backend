@@ -6,6 +6,7 @@ import {
   FAMILIARITY_MAX_VISITS} from "../config/story.js";
 import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
 import type { PastEvent, StoryState } from "../types/story.js";
+import { cleanUpInventory } from "./story.js";
 
 /**
  * Creates a new place with default values
@@ -62,9 +63,11 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
   if (update.lastVisitedAtPage !== undefined) updated.lastVisitedAtPage = update.lastVisitedAtPage;
   if (update.familiarity !== undefined) updated.familiarity = update.familiarity;
   if (update.currentMood !== undefined) updated.currentMood = update.currentMood;
-  if (update.weather) updated.weather = update.weather;
 
   const { keyEvents = [], knownCharacters = {} } = existing;
+
+  // Apply keyObjects updates (full replacements, remove which has amount of 0)
+  if (update.keyObjects?.length) updated.keyObjects = cleanUpInventory(update.keyObjects);
   
   // Merge event tags with sliding window
   if (update.addKeyEvents) {
@@ -79,9 +82,9 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
     };
   }
   
-  // Update sensory details if provided
-  if (update.sensoryDetails) {
-    updated.sensoryDetails = {...existing.sensoryDetails, ...update.sensoryDetails};
+  // Update traits if provided
+  if (update.traits) {
+    updated.traits = {...existing.traits, ...update.traits};
   }
   
   return updated;
@@ -130,6 +133,17 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * sensory details, character history, events, and atmospheric information
  * for inclusion in AI prompts.
  * 
+ * Focuses on narrative continuity rather than atmospheric detail.
+ * Prioritizes:
+ * - Place identity
+ * - Familiarity
+ * - Recency
+ * - Important events
+ * - Character associations
+ *
+ * Note: Weather, mood, and sensory details are intentionally omitted to
+ * reduce prompt bloat and avoid stale contextual information.
+ * 
  * @param state - Current story state
  * @returns Formatted string for prompt inclusion
  * 
@@ -138,12 +152,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * const placeText = formatPlacesForPrompt(state);
  * ```
  * 
- * Output example:
- * 
- * • Old River (river)
- *   - Familiarity: 0.8
- *   - Visited: 3 times
- *   - Last visited: page 12
+ * • Old River (river) - Familiarity: 0.8
+ *   - Visited 3 times (Last visited: page 12)
  *   - Context: narrow river behind the school
  *   - Location: 500 meters south of the school
  *   - Key events:
@@ -153,10 +163,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *     • Lisa (first met here)
  *     • Tom (saved from drowning here)
  * 
- * • Abandoned Church (building)
- *   - Familiarity: 0.6
- *   - Visited: 2 times
- *   - Last visited: page 18
+ * • Abandoned Church (building) [CURRENT] - Familiarity: 0.6
+ *   - Visited 2 times (Last visited: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
  *     • Page 24: Hidden tunnel discovered
@@ -164,68 +172,65 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *   - Associated characters:
  *     • Marcus (first met here)
  */
-export function formatPlacesForPrompt(state?: StoryState): string {
-  const allPlaces = state ? Object.values(state.places) : [];
-  
-  if (allPlaces.length === 0) {
-    return "No specific places established yet.";
-  }
-  
-  return allPlaces
-    .sort((a, b) => b.lastVisitedAtPage - a.lastVisitedAtPage) // Sort by most recent visit first
-    .map(place => {
-      const details = [];
-      
-      // Basic context
-      details.push(`  Context: ${place.context}`);
-      
-      // Location hint if available
-      if (place.locationHint) {
-        details.push(`  Location: ${place.locationHint}`);
-      }
-      
-      // Sensory details (combine all available senses)
-      // TODO: is it really good to omit sensory category?
-      const sensoryDetails = [];
-      if (place.sensoryDetails) {
-        if (place.sensoryDetails.sound) sensoryDetails.push(place.sensoryDetails.sound);
-        if (place.sensoryDetails.visual) sensoryDetails.push(place.sensoryDetails.visual);
-        if (place.sensoryDetails.feeling) sensoryDetails.push(place.sensoryDetails.feeling);
-        if (place.sensoryDetails.smell) sensoryDetails.push(place.sensoryDetails.smell);
-      }
-      if (sensoryDetails.length > 0) {
-        details.push(`  Sensory: ${sensoryDetails.join(', ')}`);
-      }
-      
-      // Events that occurred at this place
-      // TODO: print as nested points & group with page number (e.page):
-      // example:
-      // - Page 1: MC discovered the place, first meeting with Character A
-      // - Page 20: Character A murdered in this place
-      if (place.keyEvents && place.keyEvents.length > 0) {
-        details.push(`  Key events: ${place.keyEvents.map(e => e.event).join(', ')}`);
-      }
-      
-      // Known characters with detailed interaction history
-      const characterEntries = Object.entries(place.knownCharacters || {});
-      if (characterEntries.length > 0) {
-        details.push(`  Characters encountered:`);
-        characterEntries.forEach(([name, context]) => {
-          details.push(`    - ${name} (${context})`);
+export function formatPlacesForPrompt(
+  state?: StoryState,
+): string {
+  // TODO: tampilin keyObjects & traits
+  const places = state ? Object.values(state.places) : [];
+
+  if (!places.length) return 'No known places.';
+
+  const currentPage = state?.page;
+
+  const sortedPlaces = [...places].sort((a, b) => {
+    const aCurrent = a.lastVisitedAtPage === currentPage ? 1 : 0;
+    const bCurrent = b.lastVisitedAtPage === currentPage ? 1 : 0;
+
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent;
+
+    if (a.lastVisitedAtPage !== b.lastVisitedAtPage) {
+      return b.lastVisitedAtPage - a.lastVisitedAtPage;
+    }
+
+    return b.familiarity - a.familiarity;
+  });
+
+  return sortedPlaces.map(place => {
+    const lines: string[] = [];
+    const currentMarker = place.lastVisitedAtPage === currentPage ? ' [CURRENT]' : '';
+
+    lines.push(`• ${place.name} (${place.type})${currentMarker} - Familiarity: ${place.familiarity.toFixed(1)}`);
+    lines.push(`  - Visited ${place.visitCount ?? 1} time${(place.visitCount ?? 1) > 1 ? 's' : ''} (Last visited: page ${place.lastVisitedAtPage})`);
+    lines.push(`  - Context: ${place.context}`);
+
+    if (place.locationHint) {
+      lines.push(`  - Location: ${place.locationHint}`);
+    }
+
+    if (place.keyEvents?.length) {
+      lines.push('  - Key events:');
+
+      place.keyEvents
+        .slice(-MAX_PLACE_EVENTS)
+        .sort((a, b) => a.page - b.page)
+        .forEach(event => {
+          lines.push(
+            `    • Page ${event.page}: ${event.event}`
+          );
         });
-      }
-      
-      // Build the main line with comprehensive info
-      const currentPage = state?.page;
-      const visitStatus = place.lastVisitedAtPage === currentPage ? ' (CURRENT)' : ` (last visited page ${place.lastVisitedAtPage})`;
-      const familiarityInfo = place.familiarity ? ` [familiarity: ${place.familiarity.toFixed(1)}]` : '';
-      
-      // Combine mood and weather in the main line for atmosphere
-      const atmosphere = [place.currentMood, place.weather].filter(Boolean).join(', ');
-      
-      return `· ${place.name} (${place.type}) - ${atmosphere} - visited ${place.visitCount} times${visitStatus}${familiarityInfo}\n${details.join('\n')}`;
-    })
-    .join('\n');
+    }
+
+    const characters = Object.entries(place.knownCharacters ?? {});
+    if (characters.length) {
+      lines.push('  - Associated characters:');
+
+      characters.sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
+        lines.push(`    • ${name}${context ? ` (${context})` : ''}`);
+      });
+    }
+
+    return lines.join('\n');
+  }).join('\n\n');
 }
 
 /**

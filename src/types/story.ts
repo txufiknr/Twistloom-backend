@@ -2,7 +2,7 @@ import type { DBClient } from "../db/client.js";
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
-import type { PlaceMemory, PlaceUpdates } from "./places.js";
+import type { PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBPageTranslations, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
 
@@ -715,6 +715,8 @@ export type StoryPage = {
   mood?: Mood;
   /** Current place where the story is taking place */
   place?: string;
+  /** Current weather conditions at the place */
+  weather?: PlaceWeather;
   /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
   timeOfDay?: string;
   /** Characters present in the page */

@@ -1,3 +1,4 @@
+import type { InitialInventoryItem } from "./character.js";
 import type { PastEvent } from "./story.js";
 
 /**
@@ -104,24 +105,24 @@ export type PlaceMemory = {
   context: string;
   /** Spatial relationship to other places */
   locationHint?: string;
-  
   /** Visit tracking metrics */
   visitCount?: number;
   lastVisitedAtPage: number;
+  /** Familiarity scale */
   familiarity: number; // 0-1, important for reuse priority
-  
   /** Emotional and narrative associations */
-  keyEvents?: PastEvent[]; // ["MC discovered the place", "first meeting with Character A"]
-  
+  keyEvents?: PastEvent[]; // [{page: 1, event: "MC discovered the place"}, {page: 3, event: "first meeting with Character A"}]
+  keyObjects?: InitialInventoryItem[]; // wooden chair, cupboard, large mirror, etc
   /** Characters encountered here with context */
   knownCharacters?: Record<string, string>;
-  
-  /** Optional sensory details for consistent atmosphere */
-  sensoryDetails?: SensoryDetails;
-  /** Current weather conditions at the place */
-  weather?: PlaceWeather;
+  // /** Optional sensory details for consistent atmosphere */
+  // sensoryDetails?: SensoryDetails;
+  // /** Current weather conditions at the place */
+  // weather?: PlaceWeather;
   /** Current emotional atmosphere of the place */
   currentMood?: PlaceMood;
+  /** The traits of the item (e.g., sensory details, etc) */
+  traits?: Record<string, string>;
 };
 
 /**
