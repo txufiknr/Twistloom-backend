@@ -2,9 +2,9 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter } from "../types/character.js";
 import { type NewPlace, placeMoods, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
-import { actionHintTypes, factTypes, moods } from "../types/story.js";
+import { actionHintTypes, factTypes, moods, storyPhases } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration } from "../types/story.js";
 import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates } from "../types/thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -115,6 +115,19 @@ export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
+export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: {
+    note: { type: 'string' },
+    isMajor: { type: 'boolean', description: 'Whether the note is a major plot point or minor detail' },
+    tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
+    targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
+    targetPageRange: { type: 'string', description: 'When this note should become relevant (optional): "<min>-<max>"' },
+  } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
+  required: ['note'] satisfies (keyof FutureNoteGeneration)[],
+  additionalProperties: false
+};
+
 // properties: {
 //   name: { type: 'string', description: 'Place name as it appears in the narrative' },
 //   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
@@ -166,9 +179,10 @@ export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
 
 export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
   type: 'object',
+  description: 'Relationship between side characters',
   properties: {
-    source: { type: 'string', description: 'Character name initiating the relationship change' },
-    target: { type: 'string', description: 'Target character name' },
+    source: { type: 'string', description: 'Character name initiating the relationship change. Only side characters. No need to describe feeling from MC (POV).' },
+    target: { type: 'string', description: 'Target character name. Only side characters. Use `relationshipToMC` if targetting MC.' },
     type: { type: 'string', enum: [...relationshipTypes] },
     status: { type: 'string', enum: [...relationshipStatuses] },
   } satisfies Record<keyof RelationshipUpdate, AIJsonProperty>,
@@ -176,12 +190,13 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
-function getTagUpdatesSchema<T extends TagItem>(description?: string): AIJsonProperty {
+function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, items?: AIJsonProperty}): AIJsonProperty {
+  const { description, items } = params;
   return {
     type: 'object',
     description,
     properties: {
-      add:    { type: 'array', items: { type: 'string' } },
+      add:    { type: 'array', items: items ?? { type: 'string' } },
       remove: { type: 'array', items: { type: 'string' } },
     } satisfies Record<keyof TagUpdates<T>, AIJsonProperty>,
     required: ['add', 'remove'] satisfies (keyof TagUpdates<T>)[],
@@ -201,8 +216,13 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
 };
 
 export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, AIJsonProperty> = {
-  traumaTagUpdates: getTagUpdatesSchema<string>(`Max ${MAX_TRAUMA_TAGS} items — representing haunting experiences that can be referenced by the story and affect MC's psychological profile.`),
-  futureNoteUpdates: getTagUpdatesSchema<FutureNote>(`Max ${MAX_FUTURE_NOTES} items — important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc).`),
+  traumaTagUpdates: getTagUpdatesSchema<string>({
+    description: `Max ${MAX_TRAUMA_TAGS} items — representing haunting experiences that can be referenced by the story and affect MC's psychological profile.`
+  }),
+  futureNoteUpdates: getTagUpdatesSchema<FutureNote>({
+    description: `Max ${MAX_FUTURE_NOTES} items — important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc).`,
+    items: FUTURE_NOTE_SCHEMA
+  }),
   factUpdates: {
     type: 'array',
     items: {

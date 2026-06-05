@@ -1,11 +1,11 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
-import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, FutureNoteGeneration, InitialPlotFlag } from "../types/story.js";
+import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, InitialPlotFlag } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
-import { difficulties, endingTypes, factTypes, flagLevels, plotFlagTypes, storyPhases } from "../types/story.js";
+import { difficulties, endingTypes, factTypes, flagLevels, plotFlagTypes } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
-import { INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
 import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
@@ -124,18 +124,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       futureNotes: {
         type: 'array',
         description: `Forward-looking narrative obligations ("what should happen later") — Foreshadowing notes for future AI turns (max ${MAX_FUTURE_NOTES}).`,
-        items: {
-          type: 'object',
-          properties: {
-            note: { type: 'string', description: 'Text of the future note' },
-            isMajor: { type: 'boolean', description: 'Whether the note is a major plot point or minor detail' },
-            targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
-            targetPageRange: { type: 'string', description: 'When this note should become relevant ({pageNumberMin}-{pageNumberMax})', enum: [...Object.keys(storyPhases)] },
-            tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
-          } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
-          required: ['note'] satisfies (keyof FutureNoteGeneration)[],
-          additionalProperties: false
-        }
+        items: FUTURE_NOTE_SCHEMA
       },
       plotFlags: {
         type: 'array',

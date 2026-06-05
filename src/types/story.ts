@@ -1354,3 +1354,13 @@ export type StateReconstructionDeps = {
   /** Get story state by page ID (DB + cache fallback) */
   getStoryState?: (pageId: string) => Promise<StoryState | null>;
 };
+
+/** Represents a past interaction between characters */
+export type PastEvent = {
+  /** The page number of the interaction */
+  page: number;
+  /** The interaction between characters */
+  event: string;
+  /** The place where the interaction occurred. */
+  place?: string;
+};

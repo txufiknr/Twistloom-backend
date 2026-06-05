@@ -7,7 +7,7 @@ import {
   FAMILIARITY_EVENT_BONUS,
   FAMILIARITY_MAX_VISITS} from "../config/story.js";
 import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
-import type { StoryState } from "../types/story.js";
+import type { PastEvent, StoryState } from "../types/story.js";
 
 /**
  * Creates a new place with default values
@@ -30,6 +30,7 @@ export function createPlace(params: NewPlace, currentPage: number): PlaceMemory 
     visitCount: 1,
     lastVisitedAtPage: currentPage,
     moodHistory: params.currentMood ? [params.currentMood] : undefined,
+    events: params.events ? params.events.map<PastEvent>(e => ({ page: currentPage, event: e })) : undefined,
     knownCharacters: params.knownCharacters ? Object.fromEntries(
       Object.entries(params.knownCharacters).map(([key, value]) => [
         key,
@@ -85,7 +86,7 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
   
   // Merge event tags with sliding window
   if (update.addEvents) {
-    updated.events = [...events, ...update.addEvents].slice(-MAX_PLACE_EVENTS);
+    updated.events = [...events, ...update.addEvents.map<PastEvent>(e => ({ page, event: e }))].slice(-MAX_PLACE_EVENTS);
   }
   
   // Merge known characters (Record<string, [{ page: number, interaction: string }]>)
@@ -159,15 +160,33 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * @example
  * ```typescript
  * const placeText = formatPlacesForPrompt(state);
- * // Output example:
- * // · Old River (river) - eerie, rainy - visited 3 times (last visited page 12) [familiarity: 0.8]
- * //   Context: narrow river behind the school
- * //   Location: 500 meters behind the school (south)
- * //   Sensory: cold water rushing, distant thunder, damp earth smell
- * //   Mood history: safe -> eerie -> threatening
- * //   Events: discovered body, first meeting with Lisa
- * //   Characters: Lisa (page 15: first meeting here), Tom (page 8: saved from drowning)
  * ```
+ * 
+ * Output example:
+ * 
+ * • Old River (river)
+ *   - Familiarity: 0.8
+ *   - Visited: 3 times
+ *   - Last visited: page 12
+ *   - Context: narrow river behind the school
+ *   - Location: 500 meters south of the school
+ *   - Key events:
+ *     • Page 3: Body discovered
+ *     • Page 14: First meeting with Lisa
+ *   - Associated characters:
+ *     • Lisa (first met here)
+ *     • Tom (saved from drowning here)
+ * 
+ * • Abandoned Church (building)
+ *   - Familiarity: 0.6
+ *   - Visited: 2 times
+ *   - Last visited: page 18
+ *   - Context: abandoned stone church outside town
+ *   - Key events:
+ *     • Page 24: Hidden tunnel discovered
+ *     • Page 30: Cult symbol found
+ *   - Associated characters:
+ *     • Marcus (first met here)
  */
 export function formatPlacesForPrompt(state?: StoryState): string {
   const allPlaces = state ? Object.values(state.places) : [];
@@ -190,6 +209,7 @@ export function formatPlacesForPrompt(state?: StoryState): string {
       }
       
       // Sensory details (combine all available senses)
+      // TODO: is it really good to omit sensory category?
       const sensoryDetails = [];
       if (place.sensoryDetails) {
         if (place.sensoryDetails.sound) sensoryDetails.push(place.sensoryDetails.sound);
@@ -203,12 +223,16 @@ export function formatPlacesForPrompt(state?: StoryState): string {
       
       // Mood history for atmospheric development
       if (place.moodHistory && place.moodHistory.length > 0) {
-        details.push(`  Mood history: ${place.moodHistory.join(' -> ')}`);
+        details.push(`  Mood history: ${place.moodHistory.join(' → ')}`);
       }
       
       // Events that occurred at this place
+      // TODO: print as nested points & group with page number (e.page):
+      // example:
+      // - Page 1: MC discovered the place, first meeting with Character A
+      // - Page 20: Character A murdered in this place
       if (place.events && place.events.length > 0) {
-        details.push(`  Events: ${place.events.join(', ')}`);
+        details.push(`  Events: ${place.events.map(e => e.event).join(', ')}`);
       }
       
       // Known characters with detailed interaction history
@@ -268,11 +292,11 @@ export function calculatePlaceFamiliarity(place: PlaceMemory, currentPage: numbe
   
   // Event significance bonus
   const significantEvents = events.filter(e => 
-    e.includes("betray") || 
-    e.includes("death") || 
-    e.includes("discover") ||
-    e.includes("trauma") ||
-    e.includes("meet")
+    e.event.includes("betray") || 
+    e.event.includes("death") || 
+    e.event.includes("discover") ||
+    e.event.includes("trauma") ||
+    e.event.includes("meet")
   ).length;
   familiarity += significantEvents * FAMILIARITY_EVENT_BONUS;
   

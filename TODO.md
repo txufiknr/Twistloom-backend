@@ -12,6 +12,7 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
+[ ] Consider generate multiverse in parallel instead of 1 big request
 [ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
 Provider Abstraction Layer:
 interface AIProvider {
@@ -19,12 +20,6 @@ interface AIProvider {
   stream(request: AIRequest): AsyncIterable<string>;
 }
 
-[ ] Consider generate multiverse in parallel instead of 1 big request
-Request racing:
-const winner = Promise.any([
-  geminiFlash(),
-  groqLlama(),
-]);
 
 Reader:
 Navigate to page: tombol: time travel & navigate

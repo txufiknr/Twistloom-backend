@@ -1,4 +1,5 @@
 import type { PastInteraction } from "./character.js";
+import type { PastEvent } from "./story.js";
 
 /**
  * Available place types for categorizing locations
@@ -111,10 +112,13 @@ export type PlaceMemory = {
   familiarity: number; // 0-1, important for reuse priority
   
   /** Emotional and narrative associations */
+  // TODO: kayanya gaperlu
   moodHistory?: PlaceMood[];
-  events?: string[]; // ["MC discovered the place", "first meeting with Character A"]
+  // TODO: ganti key event
+  events?: PastEvent[]; // ["MC discovered the place", "first meeting with Character A"]
   
   /** Characters encountered here with meaningful historical context */
+  // TODO: jadiin simple Record<string, string> aja
   knownCharacters?: Record<string, PastInteraction[]>;
   
   /** Optional sensory details for consistent atmosphere */
@@ -136,7 +140,7 @@ export type PlaceMemory = {
  * - Initial lastVisitedAtPage (always current page)
  * - Initial moodHistory (starts with current mood)
  */
-export type NewPlace = Omit<PlaceMemory, 'moodHistory' | 'visitCount' | 'lastVisitedAtPage' | 'knownCharacters'> & { knownCharacters?: Record<string, string> };
+export type NewPlace = Omit<PlaceMemory, 'moodHistory' | 'visitCount' | 'lastVisitedAtPage' | 'knownCharacters' | 'events'> & { knownCharacters?: Record<string, string>, events?: string[] };
 
 /**
  * Place update structure for AI output

@@ -34,7 +34,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, MemoryIntegrity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, MemoryIntegrity, PastEvent, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -1658,7 +1658,6 @@ function formatFutureNotes(
 
     const body = notes.map((n) => {
       const lines = [`  - ${n.key}: ${n.note}${n.isMajor ? ' (MAJOR)' : ''}`];
-      // if (n.targetPageRange) lines.push(`    • Payoff: pages ${n.targetPageRange}`);
       if (n.targetPageRange) lines.push(`    • Payoff: ${[n.targetPhase, n.targetPageRange ? `pages ${n.targetPageRange}` : ''].filter(Boolean).join(' - ')}`);
       return lines.join('\n');
     }).join('\n');
@@ -2639,6 +2638,10 @@ Initial Characters:
 - bio: must include one trait that could become a source of threat or betrayal.
 - narrativeFlags: set to match behavior and twist setup.
 
+Initial Relationships:
+- Only between side characters (excluding MC). If initial characters is less than two, omit it.
+- For relationship which targetting MC, put it in character's relationshipToMC.
+
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - charactersPresent: names of side characters in the scene besides MC. Must match names used in initialCharacters.
@@ -2892,7 +2895,7 @@ export async function initializeBook(
           visitCount: 1,
           lastVisitedAtPage: 1,
           moodHistory: initialPlace.currentMood ? [initialPlace.currentMood] : [],
-          events: initialPlace.events || [],
+          events: initialPlace.events?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
           knownCharacters: initialPlace.knownCharacters
             ? Object.fromEntries(
                 Object.entries(initialPlace.knownCharacters).map(([key, value]) => [
