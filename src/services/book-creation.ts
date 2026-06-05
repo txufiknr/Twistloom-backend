@@ -189,7 +189,7 @@ export async function createBookCore(
   params: CreateBookParams,
   onProgress?: ProgressCallback
 ): Promise<CreateBookResponse> {
-  const { userId, theme, mcCandidate, generateCoverImage, isOriginal, context = "book_creation" } = params;
+  const { userId, theme, mcCandidate: initialMCCandidate, generateCoverImage, isOriginal, context = "book_creation" } = params;
 
   // STEP 1: Skip credit consumption for internal cron jobs
   const isInternal = isOriginal || userId === process.env.SYSTEM_USER_ID;
@@ -197,9 +197,9 @@ export async function createBookCore(
 
   try {
     // STEP 2: Validate book creation parameters (before credit consumption)
-    const { aiResult } = await createBookValidate(theme, mcCandidate, generateCoverImage, onProgress);
-    const { comment: aiComment, language, titleIdea } = aiResult || {};
-    const initializeParams: InitializeBookParams = { ...params, aiComment, language, titleIdea };
+    const { aiResult } = await createBookValidate(theme, initialMCCandidate, generateCoverImage, onProgress);
+    const { comment: aiComment, language, titleIdea, mcCandidate } = aiResult || {};
+    const initializeParams: InitializeBookParams = { ...params, aiComment, language, titleIdea, mcCandidate };
 
     let result: CreateBookResponse;
     if (isInternal) {

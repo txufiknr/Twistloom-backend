@@ -216,7 +216,7 @@ const firstBookOutputFormat: string = `{
   "mainCharacter": {
     "name": "Full Name",
     "age": <integer between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
-    "gender": "One of: ${formatOneOf(genders)}",
+    "gender": "One of: 'male', 'female'",
     "bio": "Trait-forward description. Include at least one psychological vulnerability."
   },
   "firstPage": {
@@ -2621,7 +2621,7 @@ function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcC
 Main Character (MC):
 ${getMainCharacterInfo(mcCandidate) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
 - If MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.`}
-- bio: ${mcCandidate?.bio ? 'enhance it' : 'infer from theme if provided'}, must include at least one psychological trait that will be used against them.
+- bio: ${mcCandidate?.bio ? 'enhance it' : 'infer from theme if provided'}. Must include at least one psychological trait that will be used against them.
 
 Initial Place:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.

@@ -8,7 +8,7 @@ export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 
 export const MAX_CHARACTERS = 6;
 export const MIN_CHARACTER_AGE = 13;
-export const MAX_CHARACTER_AGE = 25;
+export const MAX_CHARACTER_AGE = 27;
 export const MAX_CHARACTER_SECRETS = 3;
 export const MAX_PLACES = 6;
 export const MAX_ACTIVE_THREADS = 5;

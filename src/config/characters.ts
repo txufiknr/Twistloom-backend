@@ -85,7 +85,7 @@ export const CHARACTER_NAMES = {
   ],
 
   femaleLastNames: [
-    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Vance', 'Blackwood', 'Petrova', 'Hart',
+    'Rose', 'Hazel', 'Ivy', 'Ruby', 'Dawn', 'Skye', 'Blackwood', 'Petrova', 'Hart',
     'Bloom', 'Winters', 'Summers', 'Bliss', 'Grace', 'Hope', 'Joy', 'Faith', 'Love', 'Star',
     'Angel', 'Dream', 'Moon', 'Sun', 'Cloud', 'Rain', 'Storm', 'Blaze', 'Frost', 'Snow', 'Voss',
     'Meadow', 'Brook', 'River', 'Ocean', 'Wave', 'Breeze', 'Dew', 'Mist', 'Crystal', 'Pearl',

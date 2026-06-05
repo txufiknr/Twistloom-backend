@@ -447,13 +447,9 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   
   const name = `${randomName} ${randomLastName}`;
   const age = candidate?.age ?? Math.floor(Math.random() * (MAX_CHARACTER_AGE - MIN_CHARACTER_AGE + 1)) + MIN_CHARACTER_AGE;
+  const bio = candidate?.bio ?? generateRandomCharacterBio(gender);
 
-  return {
-    name,
-    age,
-    gender,
-    bio: generateRandomCharacterBio(gender),
-  };
+  return { name, age, gender, bio };
 }
 
 function generateRandomCharacterBio(gender: KnownGender): string {

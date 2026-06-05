@@ -19,7 +19,7 @@ import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResu
 import type { ProgressCallback } from '../types/sse.js';
 import type { Response } from "express";
 import type { ErrorResponse } from './error.js';
-import { BOOK_TITLE_LENGTH } from '../config/story.js';
+import { BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -186,6 +186,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
     comment: '',
     language: 'en',
     titleIdea: '',
+    mcCandidate: {}
   };
 
   try {
@@ -202,6 +203,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           'comment',
           'language',
           'titleIdea',
+          'mcCandidate',
         ] satisfies (keyof AIValidationResult)[],
         fallbackField: 'suggestion',
         baseOptions: {
@@ -222,7 +224,10 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 - suggestion: 1-sentence (how to fix the issue, or empty string if theme is valid)
 - comment: max 250 chars (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
 - language: detected language code of theme input (ISO 639-1)
-- titleIdea: Book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
+- titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
+- mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
+  - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
+  - bio: infer from theme if provided. Must include at least one psychological trait that will be used against them.
 
 Comment structure (only if theme is valid):
 - Use creative & thriller-themed wording
@@ -246,19 +251,13 @@ Comment example (use your own wording):
   "suggestion": "...",
   "comment": "...",
   "language": "<ISO 639-1 language code>",
-  "titleIdea": "..."
-}
-  
-If the theme is valid and safe, return:
-{
-  "isViolating": false,
-  "category": "NONE",
-  "confidence": 1.0,
-  "detectedItems": [],
-  "suggestion": "",
-  "comment": "Your complimentary comment (follow comment structure & example)",
-  "language": "<ISO 639-1 language code>",
-  "titleIdea": "..."
+  "titleIdea": "...",
+  "mcCandidate": {
+    "name": "Full Name",
+    "age": <integer between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
+    "gender": "One of: 'male', 'female'",
+    "bio": "Trait-forward description. Include at least one psychological vulnerability."
+  }
 }`,
     });
 

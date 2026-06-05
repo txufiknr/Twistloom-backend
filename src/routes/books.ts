@@ -73,7 +73,6 @@ import type { DBNewBook, DBNewBookGeneration, DBUpdateBook } from "../types/sche
 import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidate-generation.js";
 import { GITHUB_REPO_CONFIG } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent } from "../utils/sse.js";
-import { cleanupObject } from "../utils/parser.js";
 import type { StoryMC } from "../types/character.js";
 import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
@@ -84,6 +83,7 @@ import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/bo
 import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
+import { generateRandomCharacter } from "../utils/characters.js";
 
 const router: RouterType = Router();
 
@@ -401,24 +401,25 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
  */
 router.post("/async", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate, generateCoverImage } = req.body;
+    const { theme, mcCandidate: initialMCCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
 
     // STEP 1: VALIDATE THEME
-    const { aiResult } = await createBookValidate(theme, mcCandidate, generateCoverImage, undefined);
-    const { comment: aiComment, language, titleIdea } = aiResult || {};
+    const { aiResult } = await createBookValidate(theme, initialMCCandidate, generateCoverImage, undefined);
+    const { comment: aiComment, language, titleIdea, mcCandidate } = aiResult || {};
 
     // STEP 2: GENERATE BOOK ID
     const bookId = generateId();
     
     // STEP 3: DRAFTING INITIAL DATA
-    const mc: StoryMC = {
-      name: '',
-      age: 0,
-      gender: '',
-      bio: '',
-      ...cleanupObject(mcCandidate),
-    };
+    // const mc: StoryMC = {
+    //   name: '',
+    //   age: MAX_CHARACTER_AGE,
+    //   gender: 'female',
+    //   bio: '',
+    //   ...cleanupObject(mcCandidate ?? {}),
+    // };
+    const mc: StoryMC = generateRandomCharacter(mcCandidate);
 
     const initialBookData: DBNewBook = {
       id: bookId,

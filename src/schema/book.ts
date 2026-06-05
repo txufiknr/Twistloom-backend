@@ -14,27 +14,50 @@ import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES
  * Matches the flat object pattern used in the codebase (see schema/story.ts)
  * instead of nested JSON Schema format.
  */
+export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: 'Inferred main character who perfectly fit with the story theme',
+  properties: {
+    name: { type: 'string' },
+    age: { type: 'integer', description: `Between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}` },
+    gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
+    bio: { type: 'string', description: 'Trait-forward description. Include at least one psychological vulnerability.' },
+  } satisfies Record<keyof StoryMC, AIJsonProperty>,
+  required: ['name', 'age', 'gender', 'bio'] satisfies (keyof StoryMC)[],
+  additionalProperties: false
+};
+
 export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER', 'NONE'];
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
 export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonProperty> = {
-  isViolating: { type: 'boolean' },
-  category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES },
+  isViolating: { type: 'boolean', description: 'If theme is valid and safe, output false' },
+  category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES, description: 'If theme is valid and safe, output "NONE"' },
   confidence: { type: 'number' },
-  detectedItems: { type: 'array', items: {
-    type: 'object',
-    properties: {
-      type: { type: 'string', enum: THEME_VALIDATION_DETECTED_ITEM_TYPES },
-      value: { type: 'string' },
-      context: { type: 'string' },
-      reason: { type: 'string' },
-    } satisfies Record<keyof AIDetectedItem, AIJsonProperty>,
-    required: ['type', 'value', 'context', 'reason'] satisfies (keyof AIDetectedItem)[],
-    additionalProperties: false
-  } },
+  detectedItems: {
+    type: 'array',
+    description: 'If theme is valid and safe, output empty array',
+    items: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: THEME_VALIDATION_DETECTED_ITEM_TYPES },
+        value: { type: 'string' },
+        context: { type: 'string' },
+        reason: { type: 'string' },
+      } satisfies Record<keyof AIDetectedItem, AIJsonProperty>,
+      required: ['type', 'value', 'context', 'reason'] satisfies (keyof AIDetectedItem)[],
+      additionalProperties: false
+    }
+  },
   suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Empty string if theme is valid.' },
-  comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
+  // comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
+  comment: { type: 'string', description: 'Your complimentary comment (follow comment structure & example). Empty string if theme is invalid.' },
   language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
-  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` }
+  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` },
+  // mcCandidate: MAIN_CHARACTER_SCHEMA
+  mcCandidate: {
+    ...MAIN_CHARACTER_SCHEMA,
+    description: `${MAIN_CHARACTER_SCHEMA.description}. Output empty object "{}" if theme is invalid.`
+  }
 };
 
 export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
@@ -151,17 +174,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
   initialPlace: INITIAL_PLACE_SCHEMA,
   initialCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
-  mainCharacter: {
-    type: 'object',
-    properties: {
-      name: { type: 'string' },
-      age: { type: 'integer', description: `Between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}` },
-      gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
-      bio: { type: 'string' },
-    } satisfies Record<keyof StoryMC, AIJsonProperty>,
-    required: ['name', 'age', 'gender', 'bio'] satisfies (keyof StoryMC)[],
-    additionalProperties: false
-  }
+  mainCharacter: MAIN_CHARACTER_SCHEMA
 } satisfies Record<keyof BookCreationResponse, AIJsonProperty>;
 
 export const BOOK_CREATION_REQUIRED_FIELDS = [

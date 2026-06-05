@@ -8,6 +8,8 @@
  * across the application.
  */
 
+import type { StoryMCCandidate } from "./character.js";
+
 /**
  * Theme validation error categories
  * 
@@ -155,7 +157,8 @@ export type AIValidationResult = {
   language: string;
   /** Book title idea for the story based on the theme */
   titleIdea: string;
-  // TODO: add mcCandidate
+  /** Inferred main character who perfectly fit with the story theme */
+  mcCandidate: StoryMCCandidate;
 }
 
 /**
