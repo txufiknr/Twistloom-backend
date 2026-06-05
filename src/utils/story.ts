@@ -4,7 +4,7 @@ import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -27,26 +27,28 @@ export function extractStateDelta(generation: StoryGeneration, expectedPageNumbe
   if (expectedPageNumber === 1) return {};
   const { place, futureNoteUpdates } = generation;
 
-  return {
+  const stateDelta: StateDelta = {
     flagUpdates: generation.flagUpdates,
     traumaTagUpdates: generation.traumaTagUpdates,
     futureNoteUpdates: futureNoteUpdates ? {
+      ...futureNoteUpdates,
       add: mapFutureNoteWithKey(futureNoteUpdates.add, expectedPageNumber, futureNoteKeys),
-      remove: futureNoteUpdates.remove,
     } satisfies TagUpdates<FutureNote> : undefined,
     factUpdates: generation.factUpdates,
-    addPlotFlag: generation.addPlotFlag ? { ...generation.addPlotFlag, page: expectedPageNumber, place } : undefined,
     characterUpdates: generation.characterUpdates,
     relationshipUpdates: generation.relationshipUpdates,
     placeUpdates: generation.placeUpdates,
     threadUpdates: generation.threadUpdates,
     viableEnding: generation.viableEnding,
-    isMajorEvent: generation.isMajorEvent,
+    isMajorEvent: generation.addPlotFlag?.isMajorEvent,
     contextHistory: generation.contextHistory,
+    addPlotFlag: generation.addPlotFlag,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, place }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, place }) : injury),
-  } satisfies Record<keyof StateDeltaGeneration, unknown>;
+  } satisfies Record<keyof StateDeltaGeneration | 'isMajorEvent', unknown>;
+
+  return stateDelta;
 }
 
 export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, expectedPageNumber: number, futureNoteKeys: string[]): FutureNote[] {
@@ -74,8 +76,8 @@ export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, 
  * // Returns: { psychologicalProfileUpdates, hiddenStateUpdates, ... }
  * ```
  */
-export function calculatePsychologicalDeltas(baseState: StoryState, newState: StoryState): Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'> {
-  const deltas: Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'> = {};
+export function calculatePsychologicalDeltas(baseState: StoryState, newState: StoryState): PsychologicalStateDelta {
+  const deltas: PsychologicalStateDelta = {};
 
   // Check for psychological profile changes
   if (!deepEqualSimple(baseState.psychologicalProfile, newState.psychologicalProfile)) {
@@ -95,7 +97,7 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
       profileUpdates.manipulationAffinity = newState.psychologicalProfile.manipulationAffinity;
     }
     
-    if (Object.keys(profileUpdates).length > 0) {
+    if (Object.keys(profileUpdates).length) {
       deltas.psychologicalProfileUpdates = profileUpdates;
     }
   }
@@ -121,7 +123,7 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
       hiddenUpdates.profileShift = newState.hiddenState.profileShift;
     }
     
-    if (Object.keys(hiddenUpdates).length > 0) {
+    if (Object.keys(hiddenUpdates).length) {
       deltas.hiddenStateUpdates = hiddenUpdates;
     }
   }
@@ -134,6 +136,12 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
   // Check for difficulty changes
   if (baseState.difficulty !== newState.difficulty) {
     deltas.difficulty = newState.difficulty;
+  }
+
+  if (Object.keys(deltas).length) {
+    console.log(`[calculatePsychologicalDeltas] ✅ Calculated psychological state delta:`, deltas);
+  } else {
+    console.warn(`[calculatePsychologicalDeltas] ⚠️ No psychological state update`);
   }
 
   return deltas;
@@ -171,7 +179,7 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
  * // finalState now includes both user-driven and AI-driven changes
  * ```
  */
-export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): StoryState {
+export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, place?: string): StoryState {
   const {
     flagUpdates,
     traumaTagUpdates,
@@ -224,9 +232,9 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta): 
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
-  processPlotFlagUpdates(newState, addPlotFlag);
+  processPlotFlagUpdates(newState, addPlotFlag, place);
   processFactUpdates(newState, factUpdates);
-  processCharacterUpdates(newState, characterUpdates, relationshipUpdates);
+  processCharacterUpdates(newState, characterUpdates, relationshipUpdates, place);
   processPlaceUpdates(newState, placeUpdates);
   processThreadUpdates(newState, threadUpdates);
 
@@ -694,12 +702,12 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
  * });
  * ```
  */
-export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: PlotFlag): void {
+export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: InitialPlotFlag, place?: string): void {
   if (!addPlotFlag) return;
 
   // Validate / normalise type
   const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-  const normalized: PlotFlag = { ...addPlotFlag, type: validType };
+  const normalized: PlotFlag = { ...addPlotFlag, page: state.page, place, type: validType };
 
   // Guard against duplicates (same page + type + fact).
   // This mirrors the deduplication in processTagUpdates and provides a safety
@@ -770,7 +778,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   if (!threadUpdates) return;
 
   // Create new threads
-  if (threadUpdates.newThreads && threadUpdates.newThreads.length > 0) {
+  if (threadUpdates.newThreads?.length) {
     for (const newThread of threadUpdates.newThreads) {
       const thread: StoryThread = {
         title: newThread.title,
@@ -790,7 +798,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   }
 
   // Update existing threads
-  if (threadUpdates.updateThreads && threadUpdates.updateThreads.length > 0) {
+  if (threadUpdates.updateThreads?.length) {
     for (const update of threadUpdates.updateThreads) {
       const existingThread = state.threads.find(t => t.title === update.title);
       if (existingThread) {
@@ -806,7 +814,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   }
 
   // Add clues to existing threads
-  if (threadUpdates.addClues && threadUpdates.addClues.length > 0) {
+  if (threadUpdates.addClues?.length) {
     for (const clueUpdate of threadUpdates.addClues) {
       const existingThread = state.threads.find(t => t.title === clueUpdate.thread);
       if (existingThread) {
@@ -823,7 +831,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   }
 
   // Close/resolve threads
-  if (threadUpdates.closeThreads && threadUpdates.closeThreads.length > 0) {
+  if (threadUpdates.closeThreads?.length) {
     for (const thread of threadUpdates.closeThreads) {
       const existingThread = state.threads.find(t => t.title === thread);
       if (existingThread) {

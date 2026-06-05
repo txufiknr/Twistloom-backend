@@ -640,7 +640,7 @@ async function reconstructStoryStateFromParentChain(
     for (let i = 1; i < pageChain.length; i++) {
       const page = pageChain[i];
       console.log(`[reconstructStoryStateFromParentChain] 🧩 Applying state delta from page ${page.page}`);
-      currentState = applyStateDelta(currentState, page.stateDelta);
+      currentState = applyStateDelta(currentState, page.stateDelta, page.place ?? undefined);
     }
 
     // Ensure reconstructed state matches current page

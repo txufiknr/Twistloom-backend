@@ -6,7 +6,7 @@ import {
   FAMILIARITY_RECENCY_WEIGHT,
   FAMILIARITY_EVENT_BONUS,
   FAMILIARITY_MAX_VISITS} from "../config/story.js";
-import type { PlaceMemory, PlaceUpdate, PlaceUpdates, NewPlace } from "../types/places.js";
+import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
 import type { StoryState } from "../types/story.js";
 
 /**
@@ -27,9 +27,15 @@ import type { StoryState } from "../types/story.js";
 export function createPlace(params: NewPlace, currentPage: number): PlaceMemory {
   return {
     ...params,
-    visitCount: params.visitCount ?? 1,
-    lastVisitedAtPage: params.lastVisitedAtPage ?? currentPage,
-    moodHistory: params.moodHistory ?? (params.currentMood ? [params.currentMood] : []),
+    visitCount: 1,
+    lastVisitedAtPage: currentPage,
+    moodHistory: params.currentMood ? [params.currentMood] : undefined,
+    knownCharacters: params.knownCharacters ? Object.fromEntries(
+      Object.entries(params.knownCharacters).map(([key, value]) => [
+        key,
+        [{ page: currentPage, interaction: value }]
+      ])
+    ) : undefined,
   } satisfies PlaceMemory;
 }
 
@@ -52,7 +58,7 @@ export function createPlace(params: NewPlace, currentPage: number): PlaceMemory 
  * });
  * ```
  */
-export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMemory {
+export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: number): PlaceMemory {
   const updated = { ...existing };
   
   // Update basic properties if provided
@@ -73,20 +79,26 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate): PlaceMe
   } = existing;
   
   // Merge mood history with sliding window
-  if (update.moodHistory) {
-    updated.moodHistory = [...moodHistory, ...update.moodHistory].slice(-MAX_PLACE_MOOD_HISTORY);
+  if (update.currentMood && moodHistory.at(-1) !== update.currentMood) {
+    updated.moodHistory = [...moodHistory, update.currentMood].slice(-MAX_PLACE_MOOD_HISTORY);
   }
   
   // Merge event tags with sliding window
-  if (update.events) {
-    updated.events = [...events, ...update.events].slice(-MAX_PLACE_EVENTS);
+  if (update.addEvents) {
+    updated.events = [...events, ...update.addEvents].slice(-MAX_PLACE_EVENTS);
   }
   
-  // Merge known characters (Record<string, { page: number, context: string }>)
+  // Merge known characters (Record<string, [{ page: number, interaction: string }]>)
+  // TODO: merge to array
   if (update.knownCharacters) {
     updated.knownCharacters = {
       ...knownCharacters,
-      ...update.knownCharacters,
+      ...Object.fromEntries(
+        Object.entries(update.knownCharacters).map(([key, value]) => [
+          key,
+          [{ page, interaction: value }] // TODO: this should merge (append) into array of the same key, not replacing
+        ])
+      ),
     };
   }
   
@@ -129,7 +141,7 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
     if (!update.name) continue;
     const existing = state.places[update.name];
     if (existing) {
-      state.places[update.name] = updatePlace(existing, update);
+      state.places[update.name] = updatePlace(existing, update, state.page);
     }
   }
 }

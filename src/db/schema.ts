@@ -3,17 +3,18 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
-import type { BookGenerationStatus, StoryGenerationStep, BookStatus } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
-import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
+import type { ResourceTimestamp } from "../types/api.js";
+import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
 /** Pre-defined columns */
@@ -22,7 +23,7 @@ const id = () => uuid("id").primaryKey().default(sql`uuidv7()`);
 const userId = () => uuid("user_id").notNull();
 const bookId = (onDelete: UpdateDeleteAction = "cascade") => uuid("book_id").notNull().references(() => books.id, { onDelete });
 const pageId = (onDelete: UpdateDeleteAction = "cascade") => uuid("page_id").notNull().references(() => pages.id, { onDelete });
-const gender = text("gender").$type<Gender>();
+const gender = text("gender").$type<Gender>(); // 'male', 'female', 'unknown'
 const date = text("date").notNull(); // YYYY-MM-DD format
 const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
@@ -74,7 +75,7 @@ export const pages = pgTable(
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
-  },
+  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | ResourceTimestamp, unknown>,
   (t) => [
     // Index for book pagination
     index("pages_book_page_idx").on(t.bookId, t.page),
@@ -150,7 +151,7 @@ export const storyStates = pgTable(
     source: text("source").$type<StoryStateSource>().notNull().default("original"),
     createdAt,
     updatedAt,
-  },
+  } satisfies Record<keyof StoryState | 'bookId' | 'source' | ResourceTimestamp, unknown>,
   (t) => [
     // Primary key: state is unique per page (branch-based architecture)
     primaryKey({ columns: [t.pageId] }),
@@ -343,7 +344,7 @@ export const books = pgTable(
     creditsPrice: integer("credits_price"),
     createdAt,
     updatedAt,
-  },
+  } satisfies Record<keyof Omit<Book, 'stats'> | keyof BookStats | ResourceTimestamp, unknown>,
   (t) => [
     // Optimize trending sorting by pre-calculated score (cron-based with time decay)
     index("books_trending_score_idx").on(t.trendingScore.desc()),

@@ -9,41 +9,31 @@
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 [x] prompt: print injury & plot flag place & pageAcquired
 [x] infer next page generation place & pageAcquired
+[ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
+[ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
-Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
+[ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
 Provider Abstraction Layer:
 interface AIProvider {
   generate(request: AIRequest): Promise<AIResponse>;
   stream(request: AIRequest): AsyncIterable<string>;
 }
 
-Deprecate place strategy utils
-Consider generate multiverse in parallel instead of 1 big request
+[ ] Consider generate multiverse in parallel instead of 1 big request
 Request racing:
 const winner = Promise.any([
   geminiFlash(),
   groqLlama(),
 ]);
 
-[x] Migrate neon postgres 18 to use uuidv7()
-
-uuid_extract_timestamp(uuid) to easily extract the creation date directly from the identifier without needing a separate created_at column.
-
-
 Reader:
 Navigate to page: tombol: time travel & navigate
-
-Future note:
-- RULES_FUTURE_NOTES ngga usah "Future Notes"
-- type ensure ada "location"
-
-
 
 [generate-originals] ⚠️ createBookCore failed on attempt 2: Book initialization failed: Cannot read properties of undefined (reading 'length')
 [generate-originals] 🔁 Retrying with a new theme...
 [generate-originals] 💭 Generating creative theme... (attempt 3/3)
 
-Create first book: 
+Create first book:
 - Title idea & mc name ngga masuk di prompt (instructions)
 - futureNotes.addedAtPage, plotFlags.page, injuries.pageAcquired, character, place, etc infer aja
 - getTagUpdatesSchema tambah prop isObject & object schema (DRY both story & book) 

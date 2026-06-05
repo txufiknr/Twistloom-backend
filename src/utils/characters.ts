@@ -1,6 +1,6 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -92,7 +92,7 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
  * });
  * ```
  */
-export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate): CharacterMemory {
+export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate, page: number, place?: string): CharacterMemory {
   const updated = { ...existing };
   
   // Update basic properties if provided
@@ -106,15 +106,15 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.relationshipToMC) updated.relationshipToMC = update.relationshipToMC;
   
   // Merge relationships (replace entire array if provided)
-  if (update.relationships) {
-    updated.relationships = update.relationships;
-  }
+  // if (update.relationships) {
+  //   updated.relationships = update.relationships;
+  // }
   
   // Merge past interactions with sliding window
   if (update.pastInteractions) {
     updated.pastInteractions = [
       ...existing.pastInteractions,
-      ...update.pastInteractions
+      ...update.pastInteractions.map<PastInteraction>(i => ({ page, interaction: i, place }))
     ].slice(-MAX_PAST_INTERACTIONS);
   }
     
@@ -146,10 +146,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
  * 
  * @example
  * ```typescript
- * updateRelationship(lina, {
- *   target: "Raka",
- *   status: "fearful"
- * });
+ * updateRelationship("Lina", { target: "Raka", status: "fearful" });
  * ```
  */
 export function updateRelationship(character: CharacterMemory, update: RelationshipUpdate): CharacterMemory {
@@ -165,15 +162,13 @@ export function updateRelationship(character: CharacterMemory, update: Relations
       type: update.type || updated.relationships[existingIndex].type,
       status: update.status
     };
-  } else {
+  } else if (updated.relationships.length < 3) {
     // Create new relationship (limit to max 3)
-    if (updated.relationships.length < 3) {
-      updated.relationships.push({
-        target: update.target,
-        type: update.type || "knows",
-        status: update.status
-      });
-    }
+    updated.relationships.push({
+      target: update.target,
+      type: update.type || "knows",
+      status: update.status
+    });
   }
   
   return updated;
@@ -198,16 +193,24 @@ export function processCharacterUpdates(
   state: StoryState,
   characterUpdates?: CharacterUpdates,
   relationshipUpdates?: RelationshipUpdate[],
+  place?: string
 ): void {
   if (!characterUpdates && !relationshipUpdates) return;
   
   // Process character updates if they exist
   if (characterUpdates) {
     const { newCharacters = [], updatedCharacters = [] } = characterUpdates;
+    const { page } = state;
   
     // Add new characters
     for (const character of newCharacters) {
-      state.characters[character.name] = character;
+      state.characters[character.name] = {
+        ...character,
+        introducedAtPage: page,
+        injuries: character.injuries,
+        pastInteractions: character.pastInteractions?.map<PastInteraction>(i => ({ page, interaction: i, place })) ?? [],
+        relationships: [], // Will be processed later via `relationshipUpdates`
+      };
     }
     
     // Update existing characters
@@ -215,7 +218,7 @@ export function processCharacterUpdates(
       if (!update.name) continue;
       const existing = state.characters[update.name];
       if (existing) {
-        state.characters[update.name] = updateCharacter(existing, update);
+        state.characters[update.name] = updateCharacter(existing, update, page, place);
       }
     }
   }

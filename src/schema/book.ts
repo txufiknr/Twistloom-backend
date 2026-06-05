@@ -1,13 +1,12 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
-import { characterStatuses, type InitialCharacterMemory, type StoryMC, type StoryMCTranslation } from "../types/character.js";
-import { placeMoods, placeTypes, type InitialPlaceMemory } from "../types/places.js";
+import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
 import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, FutureNoteGeneration, InitialPlotFlag } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
-import { difficulties, endingTypes, factTypes, flagLevels, futureNoteTags, plotFlagTypes, storyPhases } from "../types/story.js";
-import { genders, type KnownGender } from "../types/user.js";
-import { CHARACTER_NARRATIVE_FLAGS_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
-import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, RELATIONSHIP_TO_MC_LENGTH, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { difficulties, endingTypes, factTypes, flagLevels, plotFlagTypes, storyPhases } from "../types/story.js";
+import { type KnownGender } from "../types/user.js";
+import { INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -32,7 +31,7 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
     required: ['type', 'value', 'context', 'reason'] satisfies (keyof AIDetectedItem)[],
     additionalProperties: false
   } },
-  suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue, or empty string if theme is valid' },
+  suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Empty string if theme is valid.' },
   comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
   language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
   titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` }
@@ -109,7 +108,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
             isMajor: { type: 'boolean', description: 'Whether the note is a major plot point or minor detail' },
             targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
             targetPageRange: { type: 'string', description: 'When this note should become relevant ({pageNumberMin}-{pageNumberMax})', enum: [...Object.keys(storyPhases)] },
-            tag: { type: 'string', description: 'Category for organizing the note', enum: [...futureNoteTags] },
+            tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
           } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
           required: ['note'] satisfies (keyof FutureNoteGeneration)[],
           additionalProperties: false
@@ -149,37 +148,9 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       additionalProperties: false
     }
   },
-  initialPlace: {
-    type: 'object',
-    properties: {
-      name: { type: 'string' },
-      type: { type: 'string', enum: [...placeTypes] },
-      currentMood: { type: 'string', enum: [...placeMoods] },
-      context: { type: 'string' },
-      familiarity: { type: 'number' },
-    } satisfies Record<keyof InitialPlaceMemory, AIJsonProperty>,
-    required: ['name', 'type', 'currentMood', 'context', 'familiarity'] satisfies (keyof InitialPlaceMemory)[],
-    additionalProperties: false
-  },
-  initialCharacters: {
-    type: 'array',
-    items: {
-      type: 'object',
-      properties: {
-        name: { type: 'string' },
-        role: { type: 'string' },
-        gender: { type: "string", enum: [...genders] },
-        status: { type: 'string', enum: [...characterStatuses] },
-        relationshipToMC: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
-        bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
-        visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
-        secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
-        narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
-      } satisfies Record<keyof InitialCharacterMemory, AIJsonProperty>,
-      required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof InitialCharacterMemory)[],
-      additionalProperties: false
-    }
-  },
+  initialPlace: INITIAL_PLACE_SCHEMA,
+  initialCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA },
+  initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
   mainCharacter: {
     type: 'object',
     properties: {
@@ -204,6 +175,7 @@ export const BOOK_CREATION_REQUIRED_FIELDS = [
   'initialState',
   'initialPlace',
   'initialCharacters',
+  'initialRelationships',
   'initialFacts',
   'mainCharacter'
 ] satisfies Array<keyof BookCreationResponse>;

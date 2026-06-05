@@ -744,7 +744,7 @@ export async function reconstructStoryState(
           // is semantically wrong: each retry would re-apply the same delta to the
           // same base, giving correct output only because it's now pure. Keeping it
           // simple and direct is clearer and avoids any future confusion.
-          currentState = applyStateDelta(currentState, delta);
+          currentState = applyStateDelta(currentState, delta, page.place);
           deltasApplied++;
 
           console.log(`[reconstructStoryState] 🔄 Applied delta ${i - snapshotInfo.snapshotIndex}/${snapshotInfo.deltasNeeded} (page ${page.page})`);

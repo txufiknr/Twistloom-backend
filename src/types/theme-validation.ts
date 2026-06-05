@@ -155,6 +155,7 @@ export type AIValidationResult = {
   language: string;
   /** Book title idea for the story based on the theme */
   titleIdea: string;
+  // TODO: add mcCandidate
 }
 
 /**

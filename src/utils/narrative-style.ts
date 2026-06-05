@@ -20,8 +20,8 @@ function calculateBaseMetrics(input: StyleInput) {
   const { sanity, tension, entropy, traumaTags, profile } = input;
   
   return {
-    /** Longer sentences when sane, shorter when fracturing */
-    sentenceLength: 0.3 + sanity * 0.5,
+    // /** Longer sentences when sane, shorter when fracturing */
+    // sentenceLength: 0.3 + sanity * 0.5,
     /** Increases as sanity decreases and entropy rises */
     fragmentation: (1 - sanity) * 0.8 + entropy * 0.3,
     /** Driven by tension and accumulated trauma */
@@ -51,7 +51,7 @@ function applyPsychologicalAdjustments(base: ReturnType<typeof calculateBaseMetr
   const physicalAdjustment = profile.physicalState * 0.15;
   
   return {
-    sentenceLength: base.sentenceLength,
+    // sentenceLength: base.sentenceLength,
     fragmentation: base.fragmentation + cognitiveAdjustment,
     repetition: base.repetition + traumaAdjustment,
     contradiction: base.contradiction + trustAdjustment,
@@ -89,7 +89,7 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
   const adjusted = applyPsychologicalAdjustments(base, input.profile);
   
   return {
-    sentenceLength: normalize(adjusted.sentenceLength),
+    // sentenceLength: normalize(adjusted.sentenceLength),
     fragmentation: normalize(adjusted.fragmentation),
     repetition: normalize(adjusted.repetition),
     contradiction: normalize(adjusted.contradiction),
@@ -217,11 +217,12 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
 
   // 1. Mode-specific base instructions
   let instructions: string;
+
+  // TODO: is this good? I want consistent writing style and sentence length variations
   
   switch (mode) {
     case "grounded":
       instructions = `
-- Use clear, simple sentences.
 - Minimal fragmentation.
 - Describe events directly.
 - Slight unease but logical flow.`;
@@ -229,7 +230,6 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
       
     case "uneasy":
       instructions = `
-- Mix short and medium sentences.
 - Occasionally break sentences or thoughts.
 - Use light repetition for tension.
 - Allow small contradictions in thoughts.
@@ -238,7 +238,6 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
       
     case "fractured":
       instructions = `
-- Use short, fragmented sentences.
 - Frequently interrupt thoughts with em dashes (—).
 - Repeat key words or phrases.
 - Let MC doubt what they see.
@@ -252,9 +251,9 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   }
   
   // 2. Add vector-specific refinements
+  // - Sentence length: ${vector.sentenceLength.toFixed(2)} (short ↔ mixed ↔ longer)
   const vectorInstructions = `
 Current style metrics:
-- Sentence length: ${vector.sentenceLength.toFixed(2)} (short ↔ mixed ↔ longer)
 - Fragmentation: ${vector.fragmentation.toFixed(2)} (broken thoughts, interruptions)
 - Repetition: ${vector.repetition.toFixed(2)} (emotional echo, recurring phrases)
 - Contradiction: ${vector.contradiction.toFixed(2)} (self-doubt, thought reversals)
@@ -281,7 +280,6 @@ Psychological context for creative guidance:
 - Physical state: ${profile.physicalState.toFixed(2)} (${profile.physicalState > 0.6 ? 'vulnerable/injured' : profile.physicalState > 0.3 ? 'some strain' : 'physically capable'})
 - Social context: ${profile.socialContext.toFixed(2)} (${profile.socialContext > 0.6 ? 'well-connected' : profile.socialContext > 0.3 ? 'some connections' : 'isolated'})
 - Cognitive state: ${profile.cognitiveState.toFixed(2)} (${profile.cognitiveState > 0.6 ? 'clear thinking' : profile.cognitiveState > 0.3 ? 'some confusion' : 'fragmented perception'})
-- Story phase: ${phase}
 
 Creative suggestions:
 ${profile.trust < 0.4 ? '- Consider themes of betrayal, deception, or unreliable narrators\n' : ''}

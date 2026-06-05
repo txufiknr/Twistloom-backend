@@ -172,8 +172,8 @@ export type StyleInput = {
  * Each dimension affects how the story feels and is written
  */
 export type StyleVector = {
-  /** Sentence length: short ↔ mixed ↔ longer */
-  sentenceLength: number;
+  // /** Sentence length: short ↔ mixed ↔ longer */
+  // sentenceLength: number;
   /** Fragmentation: broken thoughts, interrupted sentences */
   fragmentation: number;
   /** Repetition: emotional echo, recurring phrases */
@@ -233,9 +233,33 @@ export type ActionHint = {
 export type FlagLevel = 'low' | 'medium' | 'high';
 export const flagLevels: FlagLevel[] = ['low', 'medium', 'high'];
 
+/**
+ * Level of trust the main character has toward others/environment.
+ * - 'low': distrustful, suspicious, unlikely to rely on others
+ * - 'medium': cautious but open to cooperation
+ * - 'high': trusting, likely to depend on others or form bonds
+ */
 export type TrustLevel = FlagLevel;
+/**
+ * Level of fear influencing perception and behavior.
+ * - 'low': calm, clear-headed, minimal threat response
+ * - 'medium': wary, tentative, occasional panic or avoidance
+ * - 'high': terrified, prone to flight/freeze and impaired judgment
+ */
 export type FearLevel = FlagLevel;
+/**
+ * Level of guilt from past actions affecting choices.
+ * - 'low': little remorse, guilt-free or justified feelings
+ * - 'medium': nagging regret, influences decisions
+ * - 'high': overwhelming guilt, may seek redemption or self-punishment
+ */
 export type GuiltLevel = FlagLevel;
+/**
+ * Level of curiosity driving investigation and risk-taking.
+ * - 'low': avoids exploration, prefers safety and routine
+ * - 'medium': cautiously inquisitive, investigates when prompted
+ * - 'high': actively seeks answers, takes risks to discover truth
+ */
 export type CuriosityLevel = FlagLevel;
 
 /**
@@ -309,7 +333,7 @@ export const factTypes = {
   relationship: "Describing relationships, trust, loyalty, hostility, romance, or other connections between characters.",
   inventory: "About items, objects, evidence, weapons, documents, ownership, possession, or condition.",
   location: "About places, buildings, rooms, landmarks, accessibility, security, or location status.",
-  // organization: "About groups, companies, governments, factions, cults, teams, or institutions.",
+  organization: "About groups, companies, governments, factions, cults, teams, or institutions.",
   world: "About the broader world state, environment, weather, disasters, laws, politics, infrastructure, or global conditions.",
   mystery: "Related to investigations, clues, suspects, evidence, revelations, secrets, or unresolved questions.",
   knowledge: "Describing what a character knows, believes, suspects, remembers, or has learned. Represents character knowledge rather than objective truth.",
@@ -338,7 +362,7 @@ export type FutureNote = {
   /** Page number where the note was added */
   addedAtPage?: number;
   /** Optional tag for categorizing the note (e.g. 'relationship', 'clue') */
-  tag?: FutureNoteTag;
+  tag?: FactType;
   /** Optional target story phase for when this note should become relevant */
   targetPhase?: StoryPhase;
   /** Optional target page number for when this note should become relevant */
@@ -346,9 +370,6 @@ export type FutureNote = {
 };
 
 export type FutureNoteGeneration = Omit<FutureNote, 'key' | 'addedAtPage'>;
-
-export const futureNoteTags = ['relationship', 'clue', 'character', 'place', 'other'] as const;
-export type FutureNoteTag = typeof futureNoteTags[number];
 
 /** An ending of a story with optional text and type. */
 export type Ending = {
@@ -734,7 +755,7 @@ export type StateDelta = {
   /** Updates to future notes (add/remove) based on story progression */
   futureNoteUpdates?: TagUpdates<FutureNote>;
   /** Updates to plot flags (add) for story progression */
-  addPlotFlag?: PlotFlag;
+  addPlotFlag?: InitialPlotFlag;
   /** What durable facts about the story world changed */
   factUpdates?: FactUpdate[];
   /** Updates to characters (new and existing) with changes */
@@ -756,14 +777,17 @@ export type StateDelta = {
   /** Represents injuries sustained by the MC */
   injuries?: Injury[];
 
+  /** Psychological state */
   psychologicalProfileUpdates?: Partial<PsychologicalProfile>;
   hiddenStateUpdates?: Partial<HiddenState>;
   memoryIntegrity?: MemoryIntegrity;
   difficulty?: Difficulty;
 };
 
+export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
+
 // export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
-export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty' | 'futureNoteUpdates'> & {
+export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent'> & {
   futureNoteUpdates?: {
     add?: FutureNoteGeneration[];
     remove?: string[];
@@ -775,7 +799,7 @@ export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
-export type EnrichedStoryPage = Partial<UserStoryPage> & { 
+export type EnrichedStoryPage = Partial<UserStoryPage> & {
   originalActionsCount: number, 
   translation?: DBPageTranslations,
   sourceAction?: SelectedAction,
@@ -800,7 +824,7 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
 };
 
 export type StoryPageNav = Record<number, StoryPageNavItem>;
-export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlag?: PlotFlag; };
+export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlag?: InitialPlotFlag; };
 
 export type Action = {
   /** Action text (serves as unique identifier) */

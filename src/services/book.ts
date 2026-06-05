@@ -1245,7 +1245,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     mc: dbBook.mc,
     topPick: dbBook.topPick || undefined,
     isOriginal: dbBook.isOriginal ?? false,
-    branchesCount: dbBook.branchesCount || 0,
+    creditsPrice: dbBook.creditsPrice || 0,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   };

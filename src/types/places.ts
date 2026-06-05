@@ -125,16 +125,6 @@ export type PlaceMemory = {
   currentMood?: PlaceMood;
 };
 
-export type InitialPlaceMemory = Pick<PlaceMemory, 'name' | 'type' | 'context' | 'familiarity' | 'currentMood'>;
-
-/**
- * Place update structure for AI output
- * 
- * When AI modifies existing places, it provides updates in this format
- * to maintain place development and narrative consistency.
- */
-export type PlaceUpdate = Partial<PlaceMemory>;
-
 /**
  * Place creation structure for AI output
  * 
@@ -146,8 +136,19 @@ export type PlaceUpdate = Partial<PlaceMemory>;
  * - Initial lastVisitedAtPage (always current page)
  * - Initial moodHistory (starts with current mood)
  */
-// export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'moodHistory'>;
-export type NewPlace = PlaceMemory;
+export type NewPlace = Omit<PlaceMemory, 'moodHistory' | 'visitCount' | 'lastVisitedAtPage' | 'knownCharacters'> & { knownCharacters?: Record<string, string> };
+
+/**
+ * Place update structure for AI output
+ * 
+ * When AI modifies existing places, it provides updates in this format
+ * to maintain place development and narrative consistency.
+ */
+export type PlaceUpdate = Partial<Omit<NewPlace, 'events'> & {
+  addEvents?: string[];
+  visitCount?: number;
+  lastVisitedAtPage?: number;
+}>;
 
 /**
  * Complete place updates structure for AI JSON output

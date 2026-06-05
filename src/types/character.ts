@@ -91,13 +91,7 @@ export type CharacterRelationship = {
 export type RelationshipUpdate = {
   /** Source character initiating the relationship change (excluding MC) */
   source: string;
-  /** Target character being related to (excluding MC) */
-  target: string;
-  /** New relationship type (optional) */
-  type?: RelationshipType;
-  /** New relationship status */
-  status: RelationshipStatus;
-};
+} & CharacterRelationship;
 
 /**
  * Available character statuses for tracking narrative relationships
@@ -193,7 +187,7 @@ export type CharacterMemory = {
 };
 
 // export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
-export type InitialCharacterMemory = Pick<CharacterMemory, 'name' | 'role' | 'gender' | 'status' | 'relationshipToMC' | 'bio' | 'visualDescription' | 'secrets' | 'narrativeFlags'>;
+export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & { pastInteractions?: string[], injuries: InitialInjury[] };
 
 /**
  * Character update structure for AI output
@@ -203,7 +197,7 @@ export type InitialCharacterMemory = Pick<CharacterMemory, 'name' | 'role' | 'ge
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Partial<Omit<CharacterMemory, 'introducedAtPage'>>;
+export type CharacterUpdate = Partial<NewCharacter>;
 
 /**
  * Complete character updates structure for AI JSON output
@@ -213,7 +207,7 @@ export type CharacterUpdate = Partial<Omit<CharacterMemory, 'introducedAtPage'>>
  */
 export type CharacterUpdates = {
   /** New characters introduced in this page */
-  newCharacters?: CharacterMemory[];
+  newCharacters?: NewCharacter[];
   /** Updates to existing characters */
   updatedCharacters?: CharacterUpdate[];
 };

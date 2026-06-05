@@ -20,7 +20,7 @@ export const threadStatuses = [
  */
 export const threadPriorities = [
   "main",        // Primary story driver
-  "secondary",  // Important supporting thread
+  "secondary",   // Important supporting thread
   "minor"        // Background detail thread
 ] as const;
 
@@ -98,26 +98,28 @@ export interface StoryThread {
  */
 export interface ThreadUpdates {
   /** New threads to create (max 1-2 per page) */
-  newThreads?: Array<Pick<StoryThread, 'title' | 'question' | 'priority' | 'truth' | 'importance'>>;
-  
+  newThreads?: NewThread[];
   /** Updates to existing threads by title */
-  updateThreads?: Array<{
-    title: string;
-    status?: ThreadStatus;
-    priority?: ThreadPriority;
-    truth?: ThreadTruth;
-    importance?: number;
-    urgency?: number;
-    resolution?: string;
-  }>;
-  
+  updateThreads?: UpdateThread[];
   /** Clues to add to existing threads by title */
-  addClues?: Array<{
-    thread: string;
-    clue: string;
-    isFalse?: boolean;
-  }>;
-  
+  addClues?: ThreadClue[];
   /** Threads to close/resolve by title */
   closeThreads?: string[];
 }
+
+export type NewThread = Pick<StoryThread, 'title' | 'question' | 'priority' | 'truth' | 'importance'>;
+export type UpdateThread = {
+  title: string;
+  status?: ThreadStatus;
+  priority?: ThreadPriority;
+  truth?: ThreadTruth;
+  importance?: number;
+  urgency?: number;
+  resolution?: string;
+};
+
+export type ThreadClue = {
+  thread: string;
+  clue: string;
+  isFalse?: boolean;
+};

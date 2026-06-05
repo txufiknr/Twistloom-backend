@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, futureNoteTags, storyPhases } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -23,7 +23,7 @@ import { generateBranchId, getStoryStateWithBranch } from "../services/story-bra
 import { CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
-import { threadPriorities, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
+import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import { stripEmptyLines } from "./parser.js";
@@ -36,7 +36,7 @@ import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../type
 import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, MemoryIntegrity, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import type { CharacterMemory, Injury, InventoryItem, StoryMCCandidate } from "../types/character.js";
+import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
@@ -91,8 +91,8 @@ PAGE FORMAT:
 - Write narrative style and tone in target language.
 - Ensure each continuation page maintains a consistent narrative style that flows smoothly from the previous page based on chosen action.
 - End at a moment of tension or revelation — never resolution.
-- Multiple short paragraphs (1-4 sentences each).
-- Each sentence/short paragraph on a separate line — Goosebumps style spacing for tension.
+- Multiple short paragraphs (1-4 sentences each). At least 4 paragraphs.
+- Each short paragraph on a separate line — Goosebumps style spacing for tension.
 - No markdown except italic by surrounding a word or phrase with a single asterisk (*) if needed.
 
 BRANCHING STORY RULES:
@@ -287,7 +287,7 @@ const firstBookOutputFormat: string = `{
         "isMajor": <boolean>,
         "targetPhase": "One of: ${formatOneOf(Object.keys(storyPhases))}",
         "targetPageRange": "<min>-<max>",
-        "tag": "One of: ${formatOneOf(futureNoteTags)}"
+        "tag": "One of: ${formatOneOf(Object.keys(factTypes))}"
       }
     ]
   },
@@ -296,7 +296,19 @@ const firstBookOutputFormat: string = `{
     "type": "One of: ${formatOneOf(placeTypes)}",
     "currentMood": "One of: ${formatOneOf(placeMoods)}",
     "context": "One evocative sentence.",
-    "familiarity": <number between 0.0 and 1.0>
+    "familiarity": <number between 0.0 and 1.0>,
+    "locationHint": "...",
+    "events": ["..."],
+    "knownCharacters": {
+      "<Name>": "<Context or interaction>"
+    },
+    "sensoryDetails": {
+      "smell": "...",
+      "sound": "...",
+      "visual": "...",
+      "feeling": "..."
+    },
+    "weather": "One of: ${formatOneOf(placeWeathers)}"
   },
   "initialCharacters": [
     {
@@ -314,7 +326,25 @@ const firstBookOutputFormat: string = `{
         "isDead": <boolean>,
         "hasSecret": <boolean>,
         "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
-      }
+      },
+      "injuries": [
+        {
+          "bodyPart": "...",
+          "description": "...",
+          "consequences": "...",
+          "severity": <number between 0.0 and 1.0>,
+          "decayPerPage": <number between 0.0 and 1.0>,
+        }
+      ],
+      "pastInteractions": ["..."]
+    }
+  ],
+  "initialRelationships": [
+    {
+      "source": "<Name 1>",
+      "target": "<Name 2>",
+      "type": "One of: ${formatOneOf(relationshipTypes)}",
+      "status": "One of: ${formatOneOf(relationshipStatuses)}"
     }
   ],
   "initialFacts": [
@@ -410,7 +440,7 @@ const nextPageOutputFormat: string = `{
       {
         "note": "...",
         "isMajor": <boolean>,
-        "tag": "One of: ${formatOneOf(futureNoteTags)}",
+        "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
         "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
         "targetPageRange": "Optional. '<min>-<max>'"
       }
@@ -453,19 +483,7 @@ const nextPageOutputFormat: string = `{
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "secrets": "...",
         "relationshipToMC": "...",
-        "relationships": [
-          {
-            "target": "...",
-            "type": "One of: ${formatOneOf(relationshipTypes)}",
-            "status": "One of: ${formatOneOf(relationshipStatuses)}"
-          }
-        ],
-        "pastInteractions": [
-          {
-            "page": <number>,
-            "interaction": "..."
-          }
-        ],
+        "pastInteractions": ["..."],
         "narrativeFlags": {
           "isSuspicious": <boolean>,
           "isMissing": <boolean>,
@@ -473,7 +491,6 @@ const nextPageOutputFormat: string = `{
           "hasSecret": <boolean>,
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
-        "introducedAtPage": <number>,
         "injuries": []
       }
     ],
@@ -487,13 +504,6 @@ const nextPageOutputFormat: string = `{
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "secrets": "...",
         "relationshipToMC": "...",
-        "relationships": [
-          {
-            "target": "...",
-            "type": "One of: ${formatOneOf(relationshipTypes)}",
-            "status": "One of: ${formatOneOf(relationshipStatuses)}"
-          }
-        ],
         "pastInteractions": [
           {
             "page": <number>,
@@ -507,8 +517,8 @@ const nextPageOutputFormat: string = `{
   },
   "relationshipUpdates": [
     {
-      "source": "...",
-      "target": "...",
+      "source": "<Name 1>",
+      "target": "<Name 2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}"
     }
@@ -520,6 +530,7 @@ const nextPageOutputFormat: string = `{
         "type": "...",
         "context": "...",
         "locationHint": "...",
+        "familiarity": <number between 0.0 and 1.0>,
         "currentMood": "One of: ${formatOneOf(placeMoods)}",
         "sensoryDetails": {
           "smell": "...",
@@ -528,19 +539,10 @@ const nextPageOutputFormat: string = `{
           "feeling": "..."
         },
         "weather": "One of: ${formatOneOf(placeWeathers)}",
-        "events": [],
+        "events": ["..."],
         "knownCharacters": {
-          "<name>": [
-            {
-              "page": <number>,
-              "interaction": "..."
-            }
-          ]
+          "<Name>": "<Context or interaction>"
         },
-        "visitCount": 1,
-        "lastVisitedAtPage": <number>,
-        "familiarity": <number between 0.0 and 1.0>,
-        "moodHistory": []
       }
     ],
     "updatedPlaces": [
@@ -549,22 +551,16 @@ const nextPageOutputFormat: string = `{
         "type": "One of: ${formatOneOf(placeTypes)}",
         "context": "...",
         "locationHint": "...",
+        "familiarity": <number between 0.0 and 1.0>,
         "currentMood": "One of: ${formatOneOf(placeMoods)}",
-        "events": [],
+        "addEvents": ["..."],
         "visitCount": <number>,
         "lastVisitedAtPage": <number>,
-        "familiarity": <number between 0.0 and 1.0>,
-        "moodHistory": [],
         "knownCharacters": {
-          "<name>": [
-            {
-              "page": <number>,
-              "interaction": "..."
-            }
-          ]
+          "<Name>": "<Context or interaction>"
         },
         "sensoryDetails": {},
-        "weather": "One of: ${formatOneOf(placeWeathers)}"
+        "weather": "One of: ${formatOneOf(placeWeathers)}",
       }
     ]
   },
@@ -1714,25 +1710,32 @@ CONTINUATION GUIDANCE (for selected action):
  * ];
  * const formatted = formatActiveThreads(threads);
  * // Returns:
- * // • Lisa's Identity
- * //   Question: Who is Lisa really?
- * //   Status: developing
+ * // • Lisa's Identity: "Who is Lisa really?" (developing)
+ * //   Clues: She knows my mother, She wasn't in yearbook
  * //   Priority: high
  * //   Urgency: 0.85
- * //   Clues: She knows my mother, She wasn't in yearbook
  * ```
  */
 function formatActiveThreads(threads: StoryThread[]): string {
-  if (!threads || threads.length === 0) {
-    return 'No active threads yet.';
-  }
+  if (!threads || threads.length === 0) return 'No active threads yet.';
 
-  return threads.map(t => `• ${t.title}
-  Question: ${t.question}
-  Status: ${t.status}
+  // Sort by priority > urgency
+  threads.sort((a, b) => {
+    const priorityOrder: Record<ThreadPriority, number> = { main: 3, secondary: 2, minor: 1 };
+    const priorityA = priorityOrder[a.priority] || 0;
+    const priorityB = priorityOrder[b.priority] || 0;
+
+    if (priorityA !== priorityB) {
+      return priorityB - priorityA;
+    }
+
+    return b.urgency - a.urgency;
+  });
+
+  return threads.map(t => `• ${t.title}: "${t.question}" (${t.status})
+  Clues: ${t.clues.length > 0 ? t.clues.slice(-3).join(", ") : "No clues yet"}
   Priority: ${t.priority}
-  Urgency: ${t.urgency.toFixed(2)}
-  Clues: ${t.clues.length > 0 ? t.clues.slice(-2).join(", ") : "No clues yet"}`).join("\n");
+  Urgency: ${t.urgency.toFixed(2)}`).join("\n");
 }
 
 /**
@@ -1839,7 +1842,7 @@ ${atThreadLimit ? `- Collapse or close one thread before introducing new ones` :
 
   // Late phase: Focus on resolution
   return `
-${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} active threads limit)` : `- Do NOT introduce new threads`}
+- Do NOT introduce new threads${atThreadLimit ? ` (at ${MAX_ACTIVE_THREADS} active threads limit)` : ''}
 - Focus on resolving existing threads
 - Prioritize high-urgency threads
 - Reveal false clues as misdirection before resolving
@@ -1918,7 +1921,8 @@ ${buildEndingRules(state)}`;
  * //    feeling or hallucination — but keep it subtle.'
  */
 function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): string {
-  const { page, maxPage, memoryIntegrity } = state;
+  const { page, maxPage, memoryIntegrity, flags } = state;
+  const { trust, curiosity } = flags;
   const remainingPages = maxPage - page;
 
   const pageLabel = remainingPages > 0
@@ -1931,7 +1935,7 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): st
 
   // Only inject the cross-timeline bleed instruction when memory is degraded.
   // Stable memory → clean parallel timelines, no narrative leakage.
-  const bleedInstruction = memoryIntegrity !== 'stable'
+  const bleedInstruction = memoryIntegrity !== 'stable' || trust === 'low' || curiosity === 'high'
     ? `\nOccasionally, let a faint echo bleed across timelines — a déjà vu, a half-remembered feeling or hallucination — but keep it subtle.`
     : '';
 
@@ -1992,7 +1996,7 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   return `HARD RULES:
 - Continue directly from selected action. Example: "I [verb]."
 - Continue from current situation.
-- Pay close attention to the historical context and story canons. Ensure the storyline connects perfectly.
+- Pay close attention to the historical context and story canons. Ensure the storyline and every elements connects perfectly.
 - Keep consistent writing style and language.
 
 THEME REMINDER:
@@ -2273,6 +2277,8 @@ function formatRouteContext(state: StoryState): string {
  *
  * Shows plot flags and the most recent major events so the AI can avoid
  * generating similar major beats in close succession.
+ * 
+ * @todo add examples
  *
  * @param plotFlags Story plot flags
  * @param limit Maximum number of recent major events to include
@@ -2309,12 +2315,12 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
 
   if (recentMajorEvents.length) {
     const majorEventsFormatted = recentMajorEvents.map(flag => {
-      const location = flag.place ? ` (${flag.place})` : '';
+      const location = flag.place ? ` (place: ${flag.place})` : '';
       return `• Page ${flag.page} [${flag.type}] ${flag.fact}${location}`;
     }).join('\n');
 
     // Recent Major Events (avoid repeating similar major beats too soon):
-    // • Page 18 [DISCOVERY] Ethan finds the basement key
+    // • Page 18 [DISCOVERY] Ethan finds the basement key (place: Sarah's house)
     // • Page 21 [REVELATION] Sarah learns her father is alive
     // • Page 24 [BETRAYAL] Marcus secretly contacted the cult
     return `${formatted}\n\nRecent Major Events (avoid repeating similar major beats too soon):\n${majorEventsFormatted}
@@ -2767,6 +2773,7 @@ export async function initializeBook(
       firstPage: generatedFirstPage,
       initialPlace,
       initialCharacters,
+      initialRelationships,
       initialFacts,
       mainCharacter: mc,
       language
@@ -2858,16 +2865,8 @@ export async function initializeBook(
           initialCharacters.map((char) => [
             char.name,
             {
-              name: char.name,
-              gender: char.gender,
-              role: char.role,
-              bio: char.bio,
-              visualDescription: char.visualDescription,
-              status: char.status,
-              secrets: char.secrets,
-              relationshipToMC: char.relationshipToMC,
-              relationships: [],
-              pastInteractions: [],
+              ...char,
+              pastInteractions: char.pastInteractions?.map<PastInteraction>(i => ({ page: 1, interaction: i, place })) ?? [],
               narrativeFlags: {
                 ...{
                   isSuspicious: false,
@@ -2879,22 +2878,25 @@ export async function initializeBook(
                 ...char.narrativeFlags
               },
               introducedAtPage: 1,
-              injuries: []
+              relationships: initialRelationships.filter(r => r.source === char.name).map<CharacterRelationship>(r => ({...r}))
             } satisfies CharacterMemory
           ])
         ) : {},
       places: initialPlace ? {
         [initialPlace.name]: {
-          name: initialPlace.name,
-          type: initialPlace.type,
-          context: initialPlace.context || '',
+          ...initialPlace,
           visitCount: 1,
           lastVisitedAtPage: 1,
-          familiarity: initialPlace.familiarity,
           moodHistory: initialPlace.currentMood ? [initialPlace.currentMood] : [],
-          events: [],
-          knownCharacters: {},
-          currentMood: initialPlace.currentMood,
+          events: initialPlace.events || [],
+          knownCharacters: initialPlace.knownCharacters
+            ? Object.fromEntries(
+                Object.entries(initialPlace.knownCharacters).map(([key, value]) => [
+                  key,
+                  [{ page: 1, interaction: value, place }]
+                ])
+              )
+            : undefined,
         } satisfies PlaceMemory
       } : {},
       factsHistory: initialFacts && initialFacts.length > 0 ?
@@ -3163,6 +3165,8 @@ async function prepareNextPageGenerationSetup(
 /**
  * Shared logic to calculate state deltas, apply them, correct mismatches, 
  * and merge psychological states cleanly.
+ * 
+ * @todo need to check - it seems psychological state never resulted by generation, thus never updates
  */
 function resolvePageDelta(
   generatedStoryPage: StoryGeneration,
@@ -3173,7 +3177,7 @@ function resolvePageDelta(
   fateIndex?: number
 ) {
   const stateDelta = extractStateDelta(generatedStoryPage, expectedPageNumber, advancedState.futureNotes.map(note => note.key));
-  const newState = applyStateDelta(advancedState, stateDelta);
+  const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage.place);
 
   // Provided story state might mismatch, but still respect what provided
   if (newState.page !== expectedPageNumber) {

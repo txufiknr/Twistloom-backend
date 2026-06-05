@@ -18,3 +18,5 @@ export type ResourceName =
   | 'items'          // Generic collection (fallback)
   | 'users'          // Collection of users
   | 'transactions';  // Collection of transactions
+
+  export type ResourceTimestamp = 'createdAt' | 'updatedAt';

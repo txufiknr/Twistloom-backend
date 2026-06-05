@@ -1,5 +1,5 @@
-import type { InitialCharacterMemory, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
-import type { InitialPlaceMemory } from "./places.js";
+import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
+import type { NewPlace } from "./places.js";
 import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, StoryPageNav } from "./story.js";
 import type { DBBookTranslations, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
@@ -44,6 +44,7 @@ export interface BookStats {
   readCount: number;
   completeCount: number;
   commentsCount: number;
+  /** Total unique branches (maintained by database triggers) */
   branchesCount: number;
 }
 
@@ -90,8 +91,8 @@ export type Book = {
   topPick?: Date;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal: boolean;
-  /** Total unique branches (maintained by database triggers) */
-  branchesCount: number;
+  /** Credits to pay to continue reading */
+  creditsPrice: number;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
@@ -112,7 +113,6 @@ export interface EnrichedBookData {
   keywords: string[] | null;
   status: string | null;
   trendingScore: number | null;
-  // totalPages: number | null;
   totalPages: number;
   language: string | null;
   topPick: Date | null;
@@ -161,9 +161,11 @@ export type BookCreationResponse = {
   /** Initial state for the story */
   initialState: InitialStoryState;
   /** Initial place memory setup */
-  initialPlace: InitialPlaceMemory;
+  initialPlace: NewPlace;
   /** Initial character memories setup (excluding MC) */
-  initialCharacters: InitialCharacterMemory[];
+  initialCharacters: NewCharacter[];
+  /** Initial character relationships setup (excluding MC) */
+  initialRelationships: RelationshipUpdate[];
   /** Initial facts discovered in first page */
   initialFacts: InitialFact[];
 };
