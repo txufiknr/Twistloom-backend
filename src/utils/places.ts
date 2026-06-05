@@ -152,13 +152,18 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * const placeText = formatPlacesForPrompt(state);
  * ```
  * 
- * • Old River (river) - Familiarity: 0.8
+ * • Old River (river) [CURRENT] - Familiarity: 0.8
  *   - Visited 3 times (Last visited: page 12)
  *   - Context: narrow river behind the school
  *   - Location: 500 meters south of the school
+ *   - Traits:
+ *     • Smell: ...
  *   - Key events:
  *     • Page 3: Body discovered
  *     • Page 14: First meeting with Lisa
+ *   - Key objects:
+ *     • 1x Large Mirror (in the corner of the room)
+ *       → traits: color: black
  *   - Associated characters:
  *     • Lisa (first met here)
  *     • Tom (saved from drowning here)
@@ -175,7 +180,6 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
 export function formatPlacesForPrompt(
   state?: StoryState,
 ): string {
-  // TODO: tampilin keyObjects & traits
   const places = state ? Object.values(state.places) : [];
 
   if (!places.length) return 'No known places.';
@@ -207,23 +211,39 @@ export function formatPlacesForPrompt(
       lines.push(`  - Location: ${place.locationHint}`);
     }
 
+    const traits = Object.entries(place.traits ?? {});
+    if (traits.length) {
+      lines.push('  - Traits:');
+      traits.forEach(([traitName, traitValue]) => {
+        lines.push(`    • ${traitName}: ${traitValue}`);
+      });
+    }
+
     if (place.keyEvents?.length) {
       lines.push('  - Key events:');
-
       place.keyEvents
         .slice(-MAX_PLACE_EVENTS)
         .sort((a, b) => a.page - b.page)
         .forEach(event => {
-          lines.push(
-            `    • Page ${event.page}: ${event.event}`
-          );
+          lines.push(`    • Page ${event.page}: ${event.event}`);
         });
+    }
+
+    const keyObjects = place.keyObjects?.filter(i => i.amount);
+    if (keyObjects?.length) {
+      lines.push('  - Key objects:');
+      keyObjects.forEach(item => {
+        lines.push(`    • ${item.amount}x ${item.name} (${item.where})`);
+        if (item.traits && Object.keys(item.traits).length > 0) {
+          const traitEntries = Object.entries(item.traits).map(([key, value]) => `${key}: ${value}`);
+          lines.push(`      → traits: ${traitEntries.join(', ')}`);
+        }
+      });
     }
 
     const characters = Object.entries(place.knownCharacters ?? {});
     if (characters.length) {
       lines.push('  - Associated characters:');
-
       characters.sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
         lines.push(`    • ${name}${context ? ` (${context})` : ''}`);
       });
