@@ -553,7 +553,7 @@ const nextPageOutputFormat: string = `{
         "locationHint": "...",
         "familiarity": <number between 0.0 and 1.0>,
         "currentMood": "One of: ${formatOneOf(placeMoods)}",
-        "addEvents": ["..."],
+        "addKeyEvents": ["..."],
         "visitCount": <number>,
         "lastVisitedAtPage": <number>,
         "knownCharacters": {
@@ -2894,16 +2894,7 @@ export async function initializeBook(
           ...initialPlace,
           visitCount: 1,
           lastVisitedAtPage: 1,
-          moodHistory: initialPlace.currentMood ? [initialPlace.currentMood] : [],
-          events: initialPlace.events?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
-          knownCharacters: initialPlace.knownCharacters
-            ? Object.fromEntries(
-                Object.entries(initialPlace.knownCharacters).map(([key, value]) => [
-                  key,
-                  [{ page: 1, interaction: value, place }]
-                ])
-              )
-            : undefined,
+          keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
         } satisfies PlaceMemory
       } : {},
       factsHistory: initialFacts && initialFacts.length > 0 ?

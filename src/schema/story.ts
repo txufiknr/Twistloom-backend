@@ -98,13 +98,13 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
   locationHint: { type: 'string', description: 'Spatial relationship to other places' },
-  events: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place, e.g. "MC discovered the place", "first meeting with Character A"' },
+  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place, e.g. "MC discovered the place", "first meeting with Character A"' },
   knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
   sensoryDetails: { type: 'object', description: 'Optional sensory details for consistent atmosphere' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
 };
 
-export const { events: placeEvents, ...placeProperties } = INITIAL_PLACE_PROPERTIES;
+export const { keyEvents: placeEvents, ...placeProperties } = INITIAL_PLACE_PROPERTIES;
 
 export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['name', 'type', 'currentMood', 'context', 'familiarity'];
 
@@ -141,7 +141,6 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
 //   sensoryDetails: { type: 'object', description: 'Optional sensory details for consistent atmosphere' },
 //   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
 //   currentMood: { type: 'string', enum: [...placeMoods], description: 'Current emotional atmosphere' },
-//   moodHistory: { type: 'array', items: { type: 'string', enum: [...placeMoods] }, description: 'A history of moods associated with the place. Contains only current mood for first visit.' },
 // } satisfies Record<keyof PlaceMemory, AIJsonProperty>,
 // required: ['name', 'type', 'context', 'lastVisitedAtPage', 'familiarity'] satisfies (keyof PlaceMemory)[],
 
@@ -149,13 +148,13 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   ...INITIAL_PLACE_SCHEMA,
   properties: {
     ...placeProperties,
-    addEvents: placeEvents,
+    addKeyEvents: placeEvents,
     visitCount: { type: 'integer', description: 'Number of times the place has been visited. One for first visit.' },
     lastVisitedAtPage: { type: 'integer', description: 'The page number when the place was last visited. Current page for first visit.' },
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
-  // required: [...INITIAL_PLACE_KEYS, 'addEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
-  // required: [...Object.keys(placeProperties), 'addEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
-  required: ['name', 'type', 'currentMood', 'context', 'familiarity', 'addEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
+  // required: [...INITIAL_PLACE_KEYS, 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
+  // required: [...Object.keys(placeProperties), 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
+  required: ['name', 'type', 'currentMood', 'context', 'familiarity', 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
 };
 
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {

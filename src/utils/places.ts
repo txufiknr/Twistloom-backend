@@ -1,7 +1,5 @@
 import { 
-  MAX_PLACE_MOOD_HISTORY, 
   MAX_PLACE_EVENTS, 
-  MAX_PAST_INTERACTIONS,
   FAMILIARITY_RECENCY_DECAY,
   FAMILIARITY_RECENCY_WEIGHT,
   FAMILIARITY_EVENT_BONUS,
@@ -29,14 +27,7 @@ export function createPlace(params: NewPlace, currentPage: number): PlaceMemory 
     ...params,
     visitCount: 1,
     lastVisitedAtPage: currentPage,
-    moodHistory: params.currentMood ? [params.currentMood] : undefined,
-    events: params.events ? params.events.map<PastEvent>(e => ({ page: currentPage, event: e })) : undefined,
-    knownCharacters: params.knownCharacters ? Object.fromEntries(
-      Object.entries(params.knownCharacters).map(([key, value]) => [
-        key,
-        [{ page: currentPage, interaction: value }]
-      ])
-    ) : undefined,
+    keyEvents: params.keyEvents ? params.keyEvents.map<PastEvent>(e => ({ page: currentPage, event: e })) : undefined,
   } satisfies PlaceMemory;
 }
 
@@ -73,33 +64,18 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
   if (update.currentMood !== undefined) updated.currentMood = update.currentMood;
   if (update.weather) updated.weather = update.weather;
 
-  const {
-    moodHistory = [],
-    events = [],
-    knownCharacters = {}
-  } = existing;
-  
-  // Merge mood history with sliding window
-  if (update.currentMood && moodHistory.at(-1) !== update.currentMood) {
-    updated.moodHistory = [...moodHistory, update.currentMood].slice(-MAX_PLACE_MOOD_HISTORY);
-  }
+  const { keyEvents = [], knownCharacters = {} } = existing;
   
   // Merge event tags with sliding window
-  if (update.addEvents) {
-    updated.events = [...events, ...update.addEvents.map<PastEvent>(e => ({ page, event: e }))].slice(-MAX_PLACE_EVENTS);
+  if (update.addKeyEvents) {
+    updated.keyEvents = [...keyEvents, ...update.addKeyEvents.map<PastEvent>(e => ({ page, event: e }))].slice(-MAX_PLACE_EVENTS);
   }
   
-  // Merge known characters (Record<string, [{ page: number, interaction: string }]>)
-  // TODO: merge to array
+  // Merge known characters
   if (update.knownCharacters) {
     updated.knownCharacters = {
       ...knownCharacters,
-      ...Object.fromEntries(
-        Object.entries(update.knownCharacters).map(([key, value]) => [
-          key,
-          [{ page, interaction: value }] // TODO: this should merge (append) into array of the same key, not replacing
-        ])
-      ),
+      ...update.knownCharacters
     };
   }
   
@@ -221,37 +197,21 @@ export function formatPlacesForPrompt(state?: StoryState): string {
         details.push(`  Sensory: ${sensoryDetails.join(', ')}`);
       }
       
-      // Mood history for atmospheric development
-      if (place.moodHistory && place.moodHistory.length > 0) {
-        details.push(`  Mood history: ${place.moodHistory.join(' → ')}`);
-      }
-      
       // Events that occurred at this place
       // TODO: print as nested points & group with page number (e.page):
       // example:
       // - Page 1: MC discovered the place, first meeting with Character A
       // - Page 20: Character A murdered in this place
-      if (place.events && place.events.length > 0) {
-        details.push(`  Events: ${place.events.map(e => e.event).join(', ')}`);
+      if (place.keyEvents && place.keyEvents.length > 0) {
+        details.push(`  Key events: ${place.keyEvents.map(e => e.event).join(', ')}`);
       }
       
       // Known characters with detailed interaction history
       const characterEntries = Object.entries(place.knownCharacters || {});
       if (characterEntries.length > 0) {
         details.push(`  Characters encountered:`);
-        characterEntries.forEach(([name, interactions]) => {
-          if (interactions && interactions.length > 0) {
-            // Sort interactions by page number for chronological display
-            const sortedInteractions = interactions
-              .slice(-MAX_PAST_INTERACTIONS)
-              .sort((a, b) => a.page - b.page);
-            details.push(`    - ${name} (encountered ${interactions.length} time${interactions.length > 1 ? 's' : ''}):`);
-            sortedInteractions.forEach(interaction => {
-              details.push(`      Page ${interaction.page}: ${interaction.interaction}`);
-            });
-          } else {
-            details.push(`    - ${name} (no recorded interactions)`);
-          }
+        characterEntries.forEach(([name, context]) => {
+          details.push(`    - ${name} (${context})`);
         });
       }
       
@@ -279,7 +239,7 @@ export function formatPlacesForPrompt(state?: StoryState): string {
  * @returns Familiarity score between 0 and 1
  */
 export function calculatePlaceFamiliarity(place: PlaceMemory, currentPage: number): number {
-  const { visitCount = 0, events = [] } = place;
+  const { visitCount = 0, keyEvents = [] } = place;
   let familiarity = 0;
   
   // Base familiarity from visit count (diminishing returns)
@@ -291,7 +251,7 @@ export function calculatePlaceFamiliarity(place: PlaceMemory, currentPage: numbe
   familiarity += recencyBonus * FAMILIARITY_RECENCY_WEIGHT;
   
   // Event significance bonus
-  const significantEvents = events.filter(e => 
+  const significantEvents = keyEvents.filter(e => 
     e.event.includes("betray") || 
     e.event.includes("death") || 
     e.event.includes("discover") ||
