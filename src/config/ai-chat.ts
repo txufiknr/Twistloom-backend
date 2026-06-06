@@ -1,7 +1,7 @@
 import type { AIChatConfig } from "../types/ai-chat.js";
 
 export const DEFAULT_MAX_OUTPUT_TOKEN: number = 3000;
-export const DEFAULT_MAX_EVALUATION_OUTPUT_TOKEN: number = 5000;
+export const EVALUATION_SCORING_OUTPUT_TOKEN: number = 2000;
 
 /**
  * NVIDIA API request timeout in milliseconds
@@ -36,25 +36,6 @@ export const AI_CHAT_CONFIG_DEFAULT: Readonly<AIChatConfig> = {
   /** Maximum number of tokens to generate in the response */
   maxOutputToken: DEFAULT_MAX_OUTPUT_TOKEN,
   /** Stop sequences to control output generation */
-  stopSequences: DEFAULT_STOP_SEQUENCES,
-};
-
-/**
- * AI chat parameters optimized for story context summarization
- * 
- * These settings prioritize consistency, accuracy, and conciseness for
- * maintaining narrative coherence across story progression.
- */
-export const AI_CHAT_CONFIG_SUMMARIZE: Readonly<AIChatConfig> = {
-  /** Lower temperature for more consistent and predictable summaries */
-  temperature: 0.3,
-  /** Higher topP for more diverse but still focused output */
-  topP: 0.85,
-  /** Top-k sampling for balanced token selection */
-  topK: 30,
-  /** Large token limit for more accurate context */
-  maxOutputToken: 2500,
-  /** Standard stop sequences for clean output termination */
   stopSequences: DEFAULT_STOP_SEQUENCES,
 };
 

@@ -1,6 +1,6 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
-import { AI_CHAT_CONFIG_DEFAULT, DEFAULT_MAX_EVALUATION_OUTPUT_TOKEN } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
 import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
@@ -898,7 +898,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             const response = await aiPrompt<AIJsonEvaluation<T>>(evaluatorPrompt, {
               ...options,
               modelSelection: AI_CHAT_MODELS_EVALUATION,
-              config: {...config, maxOutputToken: DEFAULT_MAX_EVALUATION_OUTPUT_TOKEN },
+              config: {...config, maxOutputToken: config.maxOutputToken + EVALUATION_SCORING_OUTPUT_TOKEN },
               systemPrompt,
               context: evaluationContext,
 

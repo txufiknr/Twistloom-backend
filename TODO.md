@@ -12,7 +12,6 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
-
 [ ] Consider generate multiverse in parallel instead of 1 big request
 [ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
 [ ] Provider Abstraction Layer:
@@ -23,13 +22,12 @@ interface AIProvider {
 
 Prompt:
 - story thread: active clues, active mysteries
-- story summary bullet points
-- The most stable content should always appear first.
+- story summary (contextHistory) format bullet points
+- The most stable content should always appear first → task at bottom
 - instructions and output specifications at the top is the industry best practice for prompt caching.
-- task at bottom
 - buat system prompt static semua
 
-[ ] titleIdea buat mandatory aja, jadiin input juga
+[ ] titleIdea buat mandatory aja, jadiin input cron juga
 [ ] updateBookGenerationStatus -> update bookGenerations aiProvider & aiModel
 [ ] ai-chat add metrics: requestStart, firstTokenReceived, generationFinished (TTFT: 1.3s, Generation: 5.8s, Total: 7.1s)
 
@@ -44,11 +42,10 @@ The protagonist is psychologically unstable.
 Interpret ambiguous situations in a threatening way.
 Increase paranoia and uncertainty.
 
-Theme validation tambah title idea, pass ke initallze book & github workflow dynamic job title
-Generate originals tambah custom input book title & mc name
-
-Paid book: VIP 500+ followers, must be > 30 days old account, ✅ Verified email required
-Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
+[ ] pass title idea ke initallze book & github workflow dynamic job title
+[ ] Generate originals tambah custom input book title & mc name
+[ ] Paid book: VIP 500+ followers, must be > 30 days old account, ✅ Verified email required
+[ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
 
 
 {

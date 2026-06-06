@@ -1,4 +1,4 @@
-import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases } from "../types/story.js";
@@ -225,7 +225,7 @@ const firstBookOutputFormat: string = `{
     "place": "Location Name",
     "weather": "One of: ${formatOneOf(placeWeathers)}",
     "timeOfDay": "e.g. 'night', '2 AM', or 'unknown'",
-    "charactersPresent": ["Must match names in initialCharacters"],
+    "charactersPresent": [],
     "keyEvents": [],
     "importantObjects": [],
     "actions": [
@@ -2514,9 +2514,9 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
  * - Those should be handled through prompting.
  * 
  * Core Philosophy:
- * - Story Phase -> Major influence on creativity
- * - Action Type -> Minor influence on creativity
- * - Twists / Revelations -> Temporary creativity boost
+ * - Story Phase → Major influence on creativity
+ * - Action Type → Minor influence on creativity
+ * - Twists / Revelations → Temporary creativity boost
  * 
  * This will produce more consistent thriller stories, because the psychological effects will
  * come from prompt engineering and story-state system rather than from large sampling swings
@@ -2657,7 +2657,7 @@ Initial Relationships:
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
-- charactersPresent: names of side characters in the scene besides MC. Must match names used in initialCharacters.
+- charactersPresent: names of side characters in the scene besides MC. Must match names in initialCharacters.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - importantObjects: objects introduced or used this page that may have future narrative significance.
 
@@ -3381,7 +3381,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       requiredFields: CANDIDATE_GENERATION_REQUIRED_FIELDS,
       fallbackField: 'output',
       baseOptions: {
-        config,
+        config: { ...config, maxOutputToken: DEFAULT_MAX_OUTPUT_TOKEN * candidateCount },
         modelSelection: AI_CHAT_MODELS_WRITING,
         context: 'story-page-candidates',
         logPrompts: true,
