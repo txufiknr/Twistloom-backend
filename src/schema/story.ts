@@ -1,7 +1,7 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter } from "../types/character.js";
-import { type NewPlace, placeMoods, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
+import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods, storyPhases } from "../types/story.js";
 import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration } from "../types/story.js";
@@ -46,9 +46,9 @@ export const INITIAL_INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
 
 export const INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
   ...INITIAL_INVENTORY_ITEM_SCHEMA,
-  description: 'Set amount to 0 to remove item.',
   properties: {
     ...INITIAL_INVENTORY_ITEM_PROPERTIES,
+    amount: { type: 'integer', description: 'Quantity of the inventory item. Set amount to 0 to remove item.' },
     pageAcquired: { type: 'integer', description: 'Page number when the item was acquired' }
   } satisfies Record<keyof Omit<InventoryItem, 'place'>, AIJsonProperty>,
   required: [...INITIAL_INVENTORY_ITEM_KEYS, 'pageAcquired'] satisfies (keyof InventoryItem)[],
@@ -107,7 +107,6 @@ export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
   name: { type: 'string', description: 'Place name as it appears in the narrative' },
   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
-  currentMood: { type: 'string', enum: [...placeMoods], description: 'Current emotional atmosphere' },
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
   locationHint: { type: 'string', description: 'Spatial relationship to other places' },
@@ -118,12 +117,13 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
     items: PLACE_KEY_OBJECT_SCHEMA
   },
   knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
-  traits: { type: 'object', description: 'Any details for narrative consistency (e.g., sensory details, etc)' },
+  // sensoryDetails: include only senses present and relevant to the scene.
+  traits: { type: 'object', description: 'Any details for narrative consistency (e.g., facing, feeling, sensory details, etc)' },
 };
 
 export const { keyEvents: placeEvents, ...placeProperties } = INITIAL_PLACE_PROPERTIES;
 
-export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['name', 'type', 'currentMood', 'context', 'familiarity'];
+export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['name', 'type', 'context', 'familiarity'];
 
 export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
   type: 'object',
@@ -136,7 +136,7 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
     note: { type: 'string' },
-    isMajor: { type: 'boolean', description: 'Whether the note is a major plot point or minor detail' },
+    isMajor: { type: 'boolean', description: 'Whether the note contains a major event that significantly impacts story trajectory. Major events include: death, betrayal, major secrets revealed, critical evidence discovered, key relationship changes, significant story direction pivots.' },
     tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
     targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
     targetPageRange: { type: 'string', description: 'When this note should become relevant (optional): "<min>-<max>"' },
@@ -166,7 +166,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
   // required: [...INITIAL_PLACE_KEYS, 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
   // required: [...Object.keys(placeProperties), 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
-  required: ['name', 'type', 'currentMood', 'context', 'familiarity', 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
+  required: ['name', 'type', 'context', 'familiarity', 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
 };
 
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
@@ -337,9 +337,6 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   addPlotFlag: { type: 'object', description: 'What already happened — Significant plot development that impact narrative trajectory.' },
   viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
 
-  // Whether this page contains a major event that significantly impacts story trajectory. Major events include: a) major secrets revealed, b) critical evidence discovered, c) key relationship changes, d) significant story direction pivots.
-  // isMajorEvent: { type: 'boolean', description: 'Same as addPlotFlag.isMajorEvent, or false if no addPlotFlag' },
-
   // Provide full to overwrite current. Can omit or empty if no changes.
   contextHistory: { type: 'string', description: `Summary of important story context from page 1 up to this point. Focus on key facts, relationships, and developments for story continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Empty array if no changes.` },
@@ -369,7 +366,7 @@ export const CANDIDATE_GENERATION_SCHEMA_DEFINITION = {
     required: STORY_GENERATION_REQUIRED_FIELDS,
     additionalProperties: false
   } },
-  output: { type: 'string', description: "Concise comment or verdict" }
+  output: { type: 'string', description: "Concise comment or verdict about the divergence" }
 } satisfies Record<keyof CandidatePagesGeneration, AIJsonProperty>;
 
 export const CANDIDATE_GENERATION_REQUIRED_FIELDS = ['generatedPages'] satisfies Array<keyof CandidatePagesGeneration>;

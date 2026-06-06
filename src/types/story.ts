@@ -1,4 +1,3 @@
-import type { DBClient } from "../db/client.js";
 import type { AIChatProvider } from "./ai-chat.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
@@ -19,19 +18,26 @@ export const moods = [
   "calm",
   "uneasy",
   "fear",
-  "eerie", // unsettling, strange atmosphere
-  "tense", // high tension, anticipation of danger
-  "dread", // deep feeling of impending doom
-  "panic", // overwhelming fear and urgency
-  "confusion", // disorientation, unclear reality
-  "suspicious", // distrust, feeling of being watched
-  "hopeless", // no escape, despair
-  "relief", // temporary safety or resolution
-  "sad", // grief, loss, melancholy
-  "distorted", // warped perception, unreality
-  "urgency", // time pressure, immediate need to act
-  "shock", // sudden revelation or horror
-  "other" // catch-all for unique emotional states
+  "eerie",        // unsettling, strange atmosphere
+  "tense",        // high tension, anticipation of danger
+  "dread",        // deep feeling of impending doom
+  "panic",        // overwhelming fear and urgency
+  "confusion",    // disorientation, unclear reality
+  "suspicious",   // distrust, feeling of being watched
+  "hopeless",     // no escape, despair
+  "relief",       // temporary safety or resolution
+  "sad",          // grief, loss, melancholy
+  "distorted",    // wrong, altered, warped perception, unreality
+  "urgency",      // time pressure, immediate need to act
+  "shock",        // sudden revelation or horror
+  "safe",         // feels secure, protected
+  "threatening",  // dangerous, hostile
+  "familiar",     // known, comfortable
+  "unfamiliar",   // new, unknown
+  "sacred",       // special, meaningful
+  "contaminated", // corrupted, tainted
+  "neutral",      // no strong atmosphere
+  "other"         // catch-all for unique emotional states
 ];
 
 /**
@@ -740,6 +746,8 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
   // selectedAction?: SelectedAction;
 };
 
+export type StoryPageScene = Pick<StoryPage, 'place' | 'weather' | 'mood'>;
+
 /**
  * State delta representing incremental changes between pages
  * 
@@ -1310,8 +1318,6 @@ export type SetActiveSessionParams = {
   pageId: string;
   /** Previous page ID (optional, for tracking navigation) */
   previousPageId?: string;
-  /** Use dbWrite to avoid read replica stale */
-  client?: DBClient;
 };
 
 /**

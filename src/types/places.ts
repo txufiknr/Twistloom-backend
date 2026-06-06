@@ -1,5 +1,5 @@
 import type { InitialInventoryItem } from "./character.js";
-import type { PastEvent } from "./story.js";
+import type { Mood, PastEvent } from "./story.js";
 
 /**
  * Available place types for categorizing locations
@@ -25,28 +25,28 @@ export const placeTypes = [
  */
 export type PlaceType = typeof placeTypes[number];
 
-/**
- * Available emotional atmospheres for places
- * 
- * These moods track how places feel to the MC and can
- * influence narrative tone and psychological effects.
- */
-export const placeMoods = [
-  "safe",         // Feels secure, protected
-  "threatening",  // Dangerous, hostile
-  "eerie",        // Unsettling, strange
-  "familiar",     // Known, comfortable
-  "unfamiliar",   // New, unknown
-  "distorted",    // Wrong, altered
-  "sacred",       // Special, meaningful
-  "contaminated", // Corrupted, tainted
-  "neutral"       // No strong atmosphere
-] as const;
+// /**
+//  * Available emotional atmospheres for places
+//  * 
+//  * These moods track how places feel to the MC and can
+//  * influence narrative tone and psychological effects.
+//  */
+// export const placeMoods = [
+//   "safe",         // Feels secure, protected
+//   "threatening",  // Dangerous, hostile
+//   "eerie",        // Unsettling, strange
+//   "familiar",     // Known, comfortable
+//   "unfamiliar",   // New, unknown
+//   "distorted",    // Wrong, altered
+//   "sacred",       // Special, meaningful
+//   "contaminated", // Corrupted, tainted
+//   "neutral"       // No strong atmosphere
+// ] as const;
 
-/**
- * Union type of all possible place mood values
- */
-export type PlaceMood = typeof placeMoods[number];
+// /**
+//  * Union type of all possible place mood values
+//  */
+// export type PlaceMood = typeof placeMoods[number];
 
 /**
  * Available weather conditions for places
@@ -73,22 +73,22 @@ export const placeWeathers = [
  */
 export type PlaceWeather = typeof placeWeathers[number];
 
-/**
- * Sensory details for immersive place descriptions
- * 
- * These optional details help the AI create consistent
- * atmospheric descriptions across multiple visits.
- */
-export type SensoryDetails = {
-  /** Smell characteristics of the place */
-  smell?: string;
-  /** Sound environment of the place */
-  sound?: string;
-  /** Visual appearance and lighting */
-  visual?: string;
-  /** Physical sensations (temperature, texture) */
-  feeling?: string;
-};
+// /**
+//  * Sensory details for immersive place descriptions
+//  * 
+//  * These optional details help the AI create consistent
+//  * atmospheric descriptions across multiple visits.
+//  */
+// export type SensoryDetails = {
+//   /** Smell characteristics of the place */
+//   smell?: string;
+//   /** Sound environment of the place */
+//   sound?: string;
+//   /** Visual appearance and lighting */
+//   visual?: string;
+//   /** Physical sensations (temperature, texture) */
+//   feeling?: string;
+// };
 
 /**
  * Complete place memory structure for narrative consistency
@@ -107,7 +107,13 @@ export type PlaceMemory = {
   locationHint?: string;
   /** Visit tracking metrics */
   visitCount?: number;
+  /** Last visited by main character */
   lastVisitedAtPage: number;
+  /** Emotional atmosphere of the place on last visit */
+  lastWeather?: PlaceWeather;
+  lastMood?: Mood;
+  /** The traits of the item (e.g., facing, feeling, sensory details, etc) */
+  traits?: Record<string, string>;
   /** Familiarity scale */
   familiarity: number; // 0-1, important for reuse priority
   /** Emotional and narrative associations */
@@ -119,10 +125,6 @@ export type PlaceMemory = {
   // sensoryDetails?: SensoryDetails;
   // /** Current weather conditions at the place */
   // weather?: PlaceWeather;
-  /** Current emotional atmosphere of the place */
-  currentMood?: PlaceMood;
-  /** The traits of the item (e.g., sensory details, etc) */
-  traits?: Record<string, string>;
 };
 
 /**
@@ -135,7 +137,8 @@ export type PlaceMemory = {
  * - Initial visitCount (always 1 for new places)
  * - Initial lastVisitedAtPage (always current page)
  */
-export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'keyEvents'> & { keyEvents?: string[] };
+export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'lastWeather' | 'lastMood' | 'keyEvents'> & { keyEvents?: string[] };
+// export type InitialPlace = Omit<NewPlace, 'locationHint'>;
 
 /**
  * Place update structure for AI output

@@ -32,7 +32,7 @@ import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
 import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
-import { type PlaceMemory, placeMoods, placeTypes, placeWeathers } from "../types/places.js";
+import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, MemoryIntegrity, PastEvent, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
@@ -295,10 +295,9 @@ const firstBookOutputFormat: string = `{
   "initialPlace": {
     "name": "Location Name",
     "type": "One of: ${formatOneOf(placeTypes)}",
-    "currentMood": "One of: ${formatOneOf(placeMoods)}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
-    "locationHint": "...",
+    "locationHint": "",
     "keyEvents": ["..."],
     "keyObjects": [
       {
@@ -532,9 +531,8 @@ const nextPageOutputFormat: string = `{
         "name": "...",
         "type": "One of: ${formatOneOf(placeTypes)}",
         "context": "...",
-        "locationHint": "...",
         "familiarity": <number between 0.0 and 1.0>,
-        "currentMood": "One of: ${formatOneOf(placeMoods)}",
+        "locationHint": "...",
         "keyEvents": ["..."],
         "keyObjects": [
           {
@@ -556,7 +554,6 @@ const nextPageOutputFormat: string = `{
         "context": "...",
         "locationHint": "...",
         "familiarity": <number between 0.0 and 1.0>,
-        "currentMood": "One of: ${formatOneOf(placeMoods)}",
         "addKeyEvents": ["..."],
         "keyObjects": [],
         "visitCount": <number>,
@@ -612,6 +609,14 @@ const nextPageOutputFormat: string = `{
       "viabilityAfter": <number between 0.0 and 1.0>
     }
   }
+}`;
+
+const multiNextPageOutputFormat: string = `{
+  "generatedPages": [
+    ${nextPageOutputFormat},
+    ${nextPageOutputFormat}
+  ],
+  "output": "..."
 }`;
 
 function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
@@ -834,20 +839,19 @@ placeUpdates.newPlaces
 ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
-  - locationHint: spatial relationship to known places, e.g. "500 meters behind school (south)." — must be consistent to build a "world map"
+  - locationHint: spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
-  - currentMood & weather: set to match atmosphere.
-  - sensoryDetails: include only senses present and relevant to the scene.
   - knownCharacters: include relevant characters (beside MC) with meaningful context.
-  - events: any important event happening in the scene.
+  - keyEvents: any important event happening in the scene.
+  - keyObjects: any important objects to remember in the scene.
   - Might need to update other places' locationHint to link with this new place.`
 : `  - New places should not be introduced. If the MC is somewhere new, question whether it's necessary.`}
 
 placeUpdates.updatedPlaces
   - Only update on revisit or significant event.
   - Don't increment visitCount if it's the same place as in previous page.
-  - Include only changed fields: currentMood, weather, add events (1 contextual sentence: betrayal, discovery, death, trauma, etc), visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), sensoryDetails, knownCharacters (with meaningful context update).
-${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted — update mood, weather, and sensoryDetails to reflect it.` : ''}
+  - Include only changed fields: addKeyEvents (1 contextual sentence: betrayal, discovery, death, trauma, etc), keyObjects, visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), knownCharacters (with meaningful context update).
+${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}
 
 threadUpdates.newThreads
 ${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`
@@ -985,7 +989,7 @@ ${formatNextPageNarrativePrompt(params)}
 
 ---
 EXPECTED JSON SCHEMA:
-${nextPageOutputFormat}
+${candidateCount > 1 ? multiNextPageOutputFormat : nextPageOutputFormat}
 
 FIELD INSTRUCTIONS:
 ${buildNextPageFieldInstructions(state, action)}
@@ -1395,13 +1399,15 @@ function getEndingArchetypesText(): string {
  */
 function formatPreviousPageEntry(page: UserStoryPage): string {
   const pageText = formatPageTextForPrompt(page.text);
-  const place = page.place || 'unknown';
-  const weather = page.weather || 'unknown';
-  const timeOfDay = page.timeOfDay || 'unknown';
+  const sceneInfo = [
+    page.place ? `place: ${page.place}` : '',
+    page.timeOfDay ? `time: ${page.timeOfDay}` : '',
+    page.mood ? `mood: ${page.mood}` : '',
+    page.weather ? `weather: ${page.weather}` : '',
+  ].filter(Boolean).join(', ')
   
   // Base page information
-  // TODO: omit unknown
-  let entry = `• Page ${page.page} (place: ${place}, weather: ${weather}, timeOfDay: ${timeOfDay})\n  ${pageText}`;
+  let entry = `• Page ${page.page} (${sceneInfo})\n  ${pageText}`;
 
   // Add action information if present
   const action = page.selectedActions?.at(-1); // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
@@ -1720,7 +1726,7 @@ CONTINUATION GUIDANCE (for selected action):
  * // Returns:
  * // • Lisa's Identity: "Who is Lisa really?" (developing)
  * //   Clues: She knows my mother, She wasn't in yearbook
- * //   Priority: high
+ * //   Priority: main
  * //   Urgency: 0.85
  * ```
  */
@@ -1970,10 +1976,10 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage): string 
   const situation: string[] = [];
   
   // Basic situation elements
-  situation.push(`Place: ${place || 'unknown'}`);
-  situation.push(`Time: ${timeOfDay || 'unknown'}`);
-  situation.push(`Mood: ${mood || 'unknown'}`);
-  situation.push(`Weather: ${weather || 'unknown'}`);
+  if (place) situation.push(`Place: ${place}`);
+  if (timeOfDay) situation.push(`Time: ${timeOfDay}`);
+  if (mood) situation.push(`Mood: ${mood}`);
+  if (weather) situation.push(`Weather: ${weather}`);
   
   // Add characters if present
   if (charactersPresent.length > 0) {
@@ -2635,6 +2641,7 @@ ${getMainCharacterInfo(mcCandidate) ?? `- Infer a character whose personality ma
 Initial Place:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
 - context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
+- locationHint: no other places. Empty string for now.
 
 Initial Characters:
 - It's meant for characters beside MC (the POV). Don't include MC here.
@@ -2740,7 +2747,7 @@ export async function initializeBook(
     }
   }
 
-  // try {
+  try {
     // Emit book initialization start event and persist initial progress
     await onProgress?.({ type: 'book_initialization_start' });
     await onGenerationProgress('book_initialization');
@@ -2965,11 +2972,7 @@ export async function initializeBook(
       targetType: 'book',
       targetId: book.id,
       metadata: { theme: theme.trim() },
-      ipAddress: req?.ip,
-      userAgent: req?.get('user-agent'),
-      platform: req?.get('x-platform'),
-      appVersion: req?.get('x-app-version'),
-    });
+    }, { req });
 
     // 13. Return complete book setup
     await onGenerationProgress('complete');
@@ -2980,12 +2983,11 @@ export async function initializeBook(
       aiComment
     } satisfies CreateBookResponse;
 
-  // } catch (error) {
-  //   console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme, error });
-  //   // Attempt to mark book generation status as failed
-  //   await onGenerationProgress({ status: 'failed', error: getErrorMessage(error) });
-  //   throw new Error(`Book initialization failed: ${getErrorMessage(error)}`, { cause: error });
-  // }
+  } catch (error) {
+    console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme });
+    await onGenerationProgress({ status: 'failed', error: String(error) });
+    throw error;
+  }
 }
 
 /**
@@ -3181,7 +3183,7 @@ function resolvePageDelta(
   fateIndex?: number
 ) {
   const stateDelta = extractStateDelta(generatedStoryPage, expectedPageNumber, advancedState.futureNotes.map(note => note.key));
-  const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage.place);
+  const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage);
 
   // Provided story state might mismatch, but still respect what provided
   if (newState.page !== expectedPageNumber) {
@@ -3384,7 +3386,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         documents
       }
     } satisfies AIPromptForJson<CandidatePagesGeneration>,
-    jsonStructure: nextPageOutputFormat,
+    jsonStructure: multiNextPageOutputFormat,
     fieldInstructions,
     thinkThenOutput,
     evaluatorPrompt,

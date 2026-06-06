@@ -11,6 +11,7 @@
  * - Type-safe operations
  */
 
+import type { Request } from "express";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or } from "drizzle-orm";
@@ -216,13 +217,20 @@ export async function updateUserLastActivity(userId: string, client: DBClient = 
  * - Logs errors for debugging
  * - Can be called from any route handler
  */
-export async function logUserActivity(params: DBNewUserActivityLog & { client?: DBClient }): Promise<void> {
-  const { userId, client = dbWrite } = params;
+export async function logUserActivity(params: DBNewUserActivityLog, options?: { req?: Pick<Request, 'ip' | 'get'>, client?: DBClient }): Promise<void> {
+  const { userId } = params;
+  const { req, client = dbWrite } = options ?? {};
   const isInternal = userId === process.env.SYSTEM_USER_ID;
   if (isInternal) return;
 
   try {
-    await client.insert(userActivityLogs).values(params);
+    await client.insert(userActivityLogs).values({
+      ...params,
+      ipAddress: req?.ip,
+      userAgent: req?.get('user-agent'),
+      platform: req?.get('x-platform'),
+      appVersion: req?.get('x-app-version'),
+    });
     await updateUserLastActivity(userId, client);
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow

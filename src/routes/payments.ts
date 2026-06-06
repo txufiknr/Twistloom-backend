@@ -1042,7 +1042,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
 
     try {
       // Consume credits using the service function
-      const creditResult = await consumeCredits(userId, costKey as CreditCostKey, { context, metadata });
+      const creditResult = await consumeCredits(userId, costKey as CreditCostKey, { context, metadata, req });
 
       // Store idempotency result if key provided (TTL: 5 minutes)
       // This ensures idempotency even if the operation fails

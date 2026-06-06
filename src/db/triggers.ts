@@ -184,15 +184,6 @@ async function ensureBookReadCountTrigger(): Promise<void> {
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_sessions_read_trigger ON user_sessions;
     `);
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_page_progress_insert_trigger ON user_page_progress;
-    `);
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_page_progress_update_trigger ON user_page_progress;
-    `);
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_sessions_insert_trigger ON user_sessions;
-    `);
     
     // Create the trigger on user_sessions
     await dbWrite.execute(`
@@ -370,9 +361,6 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
     
     // Drop existing triggers if they exist
     await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_sessions_visit_trigger ON user_sessions;
-    `);
-    await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_page_progress_visit_trigger ON user_page_progress;
     `);
     
@@ -496,9 +484,6 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
     `);
     
     // Drop existing triggers if they exist
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_page_progress_complete_trigger ON user_page_progress;
-    `);
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_completed_books_complete_trigger ON user_completed_books;
     `);
@@ -658,12 +643,11 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION update_pending_generation_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- Count actions with empty destinationPageIds (excluding fallback actions)
+        -- Count actions with missing or empty destinationPageIds
         NEW.pending_generation_count = (
           SELECT COUNT(*)
           FROM jsonb_array_elements(NEW.actions) AS action
-          WHERE jsonb_typeof(action->'destinationPageIds') = 'array' 
-            AND jsonb_array_length(action->'destinationPageIds') = 0
+          WHERE COALESCE(jsonb_array_length(action->'destinationPageIds'), 0) = 0
         );
         RETURN NEW;
       END;

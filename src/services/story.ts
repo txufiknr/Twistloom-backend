@@ -4,7 +4,7 @@ import { storyStates, userSessions, userPageProgress, pages } from "../db/schema
 import type { StoryProgress, Action, SetActiveSessionParams, UserStoryPage, UserSession, StoryState, StoryStateSource, SelectedAction, PersistedStoryPage } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
-import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToUserStoryPage } from "./book.js";
+import { getBook, getPageActionsFromDB, getPageFromDB, getStoryPageById, insertUserCompletedBook, mapToPersistedStoryPage, mapToUserStoryPage } from "./book.js";
 import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
@@ -14,6 +14,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { applyStateDelta } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
 import { ucfirst } from "../utils/formatter.js";
+import type { Request } from "express";
 
 /**
  * Retrieves the current session for a user including both bookId, current pageId, branchId, and status
@@ -162,8 +163,15 @@ export async function getStoryProgress(userId: string, bookId?: string, pageId?:
  * // User's active session now points to the new page and activity is tracked
  * ```
  */
-export async function setActiveSession(params: SetActiveSessionParams): Promise<DBUserSession | null> {
-  const { userId, bookId, pageId, previousPageId, client = dbWrite } = params;
+export async function setActiveSession(params: SetActiveSessionParams, options?: {
+  /** Use dbWrite to avoid read replica stale */
+  client?: DBClient;
+  /** Express request object for tracking */
+  req?: Request;
+}): Promise<DBUserSession | null> {
+  const { userId, bookId, pageId, previousPageId } = params;
+  const { req, client = dbWrite } = options ?? {};
+
   const [result] = await client
     .insert(userSessions)
     .values({
@@ -190,8 +198,7 @@ export async function setActiveSession(params: SetActiveSessionParams): Promise<
     targetType: 'book',
     targetId: bookId,
     metadata: { pageId, previousPageId },
-    client,
-  });
+  }, { client, req });
   
   console.log(`[setActiveSession] 🌟 Session activated:`, { userId, bookId, pageId, previousPageId });
   return result;
@@ -301,25 +308,13 @@ async function markPageVisitedWithClient(params: {
   stats: Pick<EnrichedBookData, 'stats'>['stats'],
   actionedPageId?: string, // previous actioned page id
   action?: Action,
-  client: DBClient
-}): Promise<BookPageVisit> {
-  const {
-    userId,
-    bookId,
-    pageId,
-    pageNumber,
-    branchId,
-    totalPages,
-    visitCount,
-    stats,
-    actionedPageId,
-    action,
-    client
-  } = params;
+}, options: { client: DBClient, req: Request }): Promise<BookPageVisit> {
+  const { userId, bookId, pageId, pageNumber, branchId, totalPages, visitCount, stats, actionedPageId, action } = params;
+  const { client, req } = options;
 
   // Update active session to point to the new page
   // Trigger on user_sessions will automatically increment visitCount for all pages including page 1
-  const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId, client });
+  const session = await setActiveSession({ userId, bookId, pageId, previousPageId: actionedPageId }, { client, req });
 
   // Insert user page progress for pages > 1 (for branch reconstruction)
   if (pageNumber > 1) {
@@ -397,15 +392,9 @@ export async function markPageVisited(params: {
   actionedPageId?: string, // omit for page 1
   action?: Action // omit for page 1
   shouldConsumeCredits?: boolean // whether to consume credits for choosing a different action (only applicable for page 2 onwards)
-}): Promise<BookPageVisit> {
-  const {
-    userId,
-    book,
-    visitedPage,
-    actionedPageId,
-    action,
-    shouldConsumeCredits = false
-  } = params;
+}, options: { req: Request }): Promise<BookPageVisit> {
+  const { userId, book, visitedPage, actionedPageId, action, shouldConsumeCredits = false } = params;
+  const { req } = options;
 
   console.log(`[markPageVisited] 👣 Mark page visited:`, { visitedPage, actionedPageId, action, shouldConsumeCredits });
 
@@ -440,8 +429,10 @@ export async function markPageVisited(params: {
             visitCount,
             stats,
             actionedPageId,
-            action,
-            client: tx
+            action
+          }, {
+            client: tx,
+            req
           });
         },
         {
@@ -464,8 +455,10 @@ export async function markPageVisited(params: {
         visitCount,
         stats,
         actionedPageId,
-        action,
-        client: dbWrite
+        action
+      }, {
+        client: dbWrite,
+        req
       });
     }
 
@@ -638,9 +631,9 @@ async function reconstructStoryStateFromParentChain(
     
     // Start from index 1 (skip the base state page) and apply each page's delta
     for (let i = 1; i < pageChain.length; i++) {
-      const page = pageChain[i];
+      const page = mapToPersistedStoryPage(pageChain[i]);
       console.log(`[reconstructStoryStateFromParentChain] 🧩 Applying state delta from page ${page.page}`);
-      currentState = applyStateDelta(currentState, page.stateDelta, page.place ?? undefined);
+      currentState = applyStateDelta(currentState, page.stateDelta, page);
     }
 
     // Ensure reconstructed state matches current page

@@ -12,29 +12,16 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
+
 [ ] Consider generate multiverse in parallel instead of 1 big request
 [ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
-Provider Abstraction Layer:
+[ ] Provider Abstraction Layer:
 interface AIProvider {
   generate(request: AIRequest): Promise<AIResponse>;
   stream(request: AIRequest): AsyncIterable<string>;
 }
 
-
-Reader:
-Navigate to page: tombol: time travel & navigate
-
-[generate-originals] ⚠️ createBookCore failed on attempt 2: Book initialization failed: Cannot read properties of undefined (reading 'length')
-[generate-originals] 🔁 Retrying with a new theme...
-[generate-originals] 💭 Generating creative theme... (attempt 3/3)
-
-Create first book:
-- Title idea & mc name ngga masuk di prompt (instructions)
-- futureNotes.addedAtPage, plotFlags.page, injuries.pageAcquired, character, place, etc infer aja
-- getTagUpdatesSchema tambah prop isObject & object schema (DRY both story & book) 
-
 Prompt:
-- Ensure "previous pages:" include place & mood
 - story thread: active clues, active mysteries
 - story summary bullet points
 - The most stable content should always appear first.
@@ -42,7 +29,6 @@ Prompt:
 - task at bottom
 - buat system prompt static semua
 
-[ ] titleIdea tambah ke creation context
 [ ] titleIdea buat mandatory aja, jadiin input juga
 [ ] updateBookGenerationStatus -> update bookGenerations aiProvider & aiModel
 [ ] ai-chat add metrics: requestStart, firstTokenReceived, generationFinished (TTFT: 1.3s, Generation: 5.8s, Total: 7.1s)

@@ -754,11 +754,7 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       activityType: 'liked',
       targetType,
       targetId,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
+    }, { req });
 
     // Invalidate caches when liking a book
     if (targetType === 'book') {
@@ -1002,11 +998,7 @@ router.post("/favorites", requireAuth, async (req: Request, res: Response) => {
       activityType: 'favorited',
       targetType: 'book',
       targetId: bookId,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
+    }, { req });
 
     // Invalidate user profile cache (savedBooksCount changed)
     await invalidateUserProfileCache(userId);
@@ -1283,11 +1275,7 @@ router.post("/comments", requireAuth, async (req: Request, res: Response) => {
       targetType: 'comment',
       targetId: comment.id,
       metadata: { bookId, parentCommentId },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
+    }, { req });
 
     // Invalidate explore cache if parent comment (commentsCount changes)
     if (!parentCommentId) {
@@ -1619,11 +1607,7 @@ router.post("/users/:id/follow", requireAuth, async (req: Request, res: Response
       activityType: 'followed',
       targetType: 'user',
       targetId: followingIdStr,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
+    }, { req });
 
     // Invalidate user profile cache (followersCount changed)
     await invalidateUserProfileCache(followingIdStr);

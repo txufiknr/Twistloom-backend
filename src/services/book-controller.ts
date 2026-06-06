@@ -28,7 +28,7 @@ import { getEnrichedBook, getPageActionsFromDB, getPageFromDB, mapToPersistedSto
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { computeVisitStats, getPreviousPages, markPageVisited } from "./story.js";
 import { BOOK_MAX_PAGES, FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { DBBookTranslations } from "../types/schema.js";
 import type { Action, ActionedStoryPage, SelectedAction, StoryPageNav, StoryPageNavItem } from "../types/story.js";
@@ -208,7 +208,7 @@ export function getSimilarBookSelect(targetKeywords: string[], currentUserId: st
   const baseSelect = getEnrichedBookSelect(currentUserId, language);
   
   // Construct the similarity calculation SQL fragment for reuse in SELECT and ORDER BY
-  // TODO: add `books.keywordsText` column (updated via trigger) to eliminate heavy CTE calculations
+  // TODO: add `books.keywordsText` column to eliminate heavy CTE calculations
   const targetKeywordsJson = sql.raw(`'${JSON.stringify(targetKeywords).replace(/'/g, "''")}'::jsonb`);
   const similarityCalculation = sql<number>`
     (
@@ -646,11 +646,12 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
  * ```
  */
 export async function visitBookPage(
-  res: Response,
-  params: VisitBookPageParams
+  params: VisitBookPageParams,
+  options: { req: Request, res: Response }
 ): Promise<VisitBookPageResult> {
   const { userId, pageId, bookIdentifier, skipVisit = false, takeAction = false, consumeCredits = false, language } = params;
   const isUserTakeAction = !!userId && !skipVisit && takeAction;
+  const { req, res } = options;
 
   // Get page
   const dbPage = await getPageFromDB(pageId, { bookIdentifier });
@@ -744,7 +745,7 @@ export async function visitBookPage(
     actionedPageId: parentPageId ?? undefined,
     action,
     shouldConsumeCredits
-  });
+  }, { req });
 
   return { dbPage, book, visitDetails, sourceAction: selectedAction, sourceNav };
 }

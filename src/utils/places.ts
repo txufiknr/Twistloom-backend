@@ -5,7 +5,7 @@ import {
   FAMILIARITY_EVENT_BONUS,
   FAMILIARITY_MAX_VISITS} from "../config/story.js";
 import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
-import type { PastEvent, StoryState } from "../types/story.js";
+import type { PastEvent, StoryPageScene, StoryState } from "../types/story.js";
 import { cleanUpInventory } from "./story.js";
 
 /**
@@ -15,7 +15,6 @@ import { cleanUpInventory } from "./story.js";
  * @param type - Type of place for categorization
  * @param context - Short human-readable description
  * @param currentPage - Current page number for tracking
- * @param currentMood - Initial emotional atmosphere
  * @returns New place memory structure
  * 
  * @example
@@ -23,12 +22,14 @@ import { cleanUpInventory } from "./story.js";
  * const place = createPlace("old_river", "Old River", "river", "narrow river behind the school", 5, "eerie");
  * ```
  */
-export function createPlace(params: NewPlace, currentPage: number): PlaceMemory {
+export function createPlace(params: NewPlace, currentPage: number, scene?: StoryPageScene): PlaceMemory {
   return {
     ...params,
     visitCount: 1,
     lastVisitedAtPage: currentPage,
     keyEvents: params.keyEvents ? params.keyEvents.map<PastEvent>(e => ({ page: currentPage, event: e })) : undefined,
+    lastWeather: scene?.weather,
+    lastMood: scene?.mood,
   } satisfies PlaceMemory;
 }
 
@@ -47,11 +48,10 @@ export function createPlace(params: NewPlace, currentPage: number): PlaceMemory 
  * const updated = updatePlace(existing, {
  *   visitCount: 3,
  *   events: ["Character A betray MC"],
- *   currentMood: "threatening"
  * });
  * ```
  */
-export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: number): PlaceMemory {
+export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: number, scene?: StoryPageScene): PlaceMemory {
   const updated = { ...existing };
   
   // Update basic properties if provided
@@ -59,10 +59,13 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
   if (update.type) updated.type = update.type;
   if (update.context) updated.context = update.context;
   if (update.locationHint) updated.locationHint = update.locationHint;
+  if (update.familiarity !== undefined) updated.familiarity = update.familiarity;
   if (update.visitCount !== undefined) updated.visitCount = update.visitCount;
   if (update.lastVisitedAtPage !== undefined) updated.lastVisitedAtPage = update.lastVisitedAtPage;
-  if (update.familiarity !== undefined) updated.familiarity = update.familiarity;
-  if (update.currentMood !== undefined) updated.currentMood = update.currentMood;
+  if (update.name === scene?.place) {
+    updated.lastWeather = scene?.weather;
+    updated.lastMood = scene?.mood;
+  }
 
   const { keyEvents = [], knownCharacters = {} } = existing;
 
@@ -104,7 +107,7 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
  * processPlaceUpdates(state, storyPage);
  * ```
  */
-export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates): void {
+export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, scene?: StoryPageScene): void {
   const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
 
   // Early exit: if no updates to process
@@ -112,7 +115,7 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
   
   // Add new places into place memory
   for (const newPlace of newPlaces) {
-    const place = createPlace(newPlace, state.page);
+    const place = createPlace(newPlace, state.page, scene);
     state.places[place.name] = place;
   }
   
@@ -121,7 +124,7 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
     if (!update.name) continue;
     const existing = state.places[update.name];
     if (existing) {
-      state.places[update.name] = updatePlace(existing, update, state.page);
+      state.places[update.name] = updatePlace(existing, update, state.page, scene);
     }
   }
 }
@@ -129,8 +132,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
 /**
  * Formats places for prompt injection with comprehensive narrative information
  * 
- * Creates a rich, detailed string representation of places including weather,
- * sensory details, character history, events, and atmospheric information
+ * Creates a rich, detailed string representation of places including context,
+ * location hint, key events, key objects, traits, and associated characters
  * for inclusion in AI prompts.
  * 
  * Focuses on narrative continuity rather than atmospheric detail.
@@ -141,9 +144,6 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * - Important events
  * - Character associations
  *
- * Note: Weather, mood, and sensory details are intentionally omitted to
- * reduce prompt bloat and avoid stale contextual information.
- * 
  * @param state - Current story state
  * @returns Formatted string for prompt inclusion
  * 
@@ -152,8 +152,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * const placeText = formatPlacesForPrompt(state);
  * ```
  * 
- * • Old River (river) [CURRENT] - Familiarity: 0.8
- *   - Visited 3 times (Last visited: page 12)
+ * • Old River (river) [CURRENT] - familiarity: 0.8
+ *   - Visited 3 times (last visited: page 12, last mood: threatening, last weather: misty)
  *   - Context: narrow river behind the school
  *   - Location: 500 meters south of the school
  *   - Traits:
@@ -168,8 +168,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *     • Lisa (first met here)
  *     • Tom (saved from drowning here)
  * 
- * • Abandoned Church (building) [CURRENT] - Familiarity: 0.6
- *   - Visited 2 times (Last visited: page 30)
+ * • Abandoned Church (building) [CURRENT] - familiarity: 0.6
+ *   - Visited 2 times (last visited: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
  *     • Page 24: Hidden tunnel discovered
@@ -203,8 +203,8 @@ export function formatPlacesForPrompt(
     const lines: string[] = [];
     const currentMarker = place.lastVisitedAtPage === currentPage ? ' [CURRENT]' : '';
 
-    lines.push(`• ${place.name} (${place.type})${currentMarker} - Familiarity: ${place.familiarity.toFixed(1)}`);
-    lines.push(`  - Visited ${place.visitCount ?? 1} time${(place.visitCount ?? 1) > 1 ? 's' : ''} (Last visited: page ${place.lastVisitedAtPage})`);
+    lines.push(`• ${place.name} (${place.type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)}`);
+    lines.push(`  - Visited ${place.visitCount ?? 1} time${(place.visitCount ?? 1) > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
     lines.push(`  - Context: ${place.context}`);
 
     if (place.locationHint) {

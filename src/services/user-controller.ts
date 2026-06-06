@@ -295,11 +295,7 @@ export async function setReferrerForNewUser(
       targetType: 'user',
       targetId: referrer.userId,
       metadata: { referrerUsername },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
+    }, { req });
 
     // Invalidate caches for both users
     await Promise.all([

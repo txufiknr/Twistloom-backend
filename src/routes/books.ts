@@ -401,8 +401,9 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
  */
 router.post("/async", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate: initialMCCandidate, generateCoverImage } = req.body;
+    const { theme: themeInput, mcCandidate: initialMCCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
+    const theme = themeInput.trim();
 
     // STEP 1: VALIDATE THEME
     const { aiResult } = await createBookValidate(theme, initialMCCandidate, generateCoverImage, undefined);
@@ -412,13 +413,6 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
     const bookId = generateId();
     
     // STEP 3: DRAFTING INITIAL DATA
-    // const mc: StoryMC = {
-    //   name: '',
-    //   age: MAX_CHARACTER_AGE,
-    //   gender: 'female',
-    //   bio: '',
-    //   ...cleanupObject(mcCandidate ?? {}),
-    // };
     const mc: StoryMC = generateRandomCharacter(mcCandidate);
 
     const initialBookData: DBNewBook = {
@@ -461,7 +455,7 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       },
       {
         context: "book_creation_async",
-        metadata: { theme: theme.trim(), bookId }
+        metadata: { theme, bookId }
       }
     );
 
@@ -481,15 +475,8 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       activityType: 'book_creation_started',
       targetType: 'book',
       targetId: bookId,
-      metadata: { 
-        theme: theme.trim(),
-        method: 'async',
-      },
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      platform: req.get('x-platform'),
-      appVersion: req.get('x-app-version'),
-    });
+      metadata: { theme, method: 'async' }
+    }, { req });
   } catch (error) {
     console.error('[POST /api/books/async] ❌ Failed to start book creation:', error);
     handleBookCreationError(res, error, "Failed to start book creation");
@@ -2300,7 +2287,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     const consumeCredits = credits === 'true'; // Should consume credits
     const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
 
-    const { visitDetails, book, dbPage, sourceAction, sourceNav } = await visitBookPage(res, {
+    const { visitDetails, book, dbPage, sourceAction, sourceNav } = await visitBookPage({
       userId,
       pageId: pageId as string,
       bookIdentifier,
@@ -2308,7 +2295,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
       takeAction,
       consumeCredits,
       language: headerLanguage
-    });
+    }, { req, res });
 
     // Response already sent by `visitBookPage` internally
     if (!dbPage || !book) return;
@@ -2731,7 +2718,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
       targetType: 'action',
       targetId: pageId,
       metadata: { actionText, bookId: dbBook.id }
-    });
+    }, { req });
 
     // // Get updated user credit balance
     // const userResult = await dbRead
@@ -2854,7 +2841,7 @@ router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Resp
       targetType: 'book',
       targetId: dbBook.id,
       metadata: { creditsPrice: dbBook.creditsPrice }
-    });
+    }, { req });
 
     console.log(`[POST /purchase] ✅ User ${userId} purchased book "${dbBook.title}" for ${dbBook.creditsPrice} credits`);
 

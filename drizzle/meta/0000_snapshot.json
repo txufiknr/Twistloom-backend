@@ -1,5 +1,5 @@
 {
-  "id": "8799ba93-53c1-41e5-9670-4352aa86cfc7",
+  "id": "40eb677e-7cad-48f8-9c84-b02ab3ff23e0",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -686,7 +686,8 @@
           "name": "language",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'en'"
         },
         "hook": {
           "name": "hook",
@@ -737,8 +738,8 @@
           "name": "status",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
-          "default": "'active'"
+          "notNull": true,
+          "default": "'draft'"
         },
         "mc": {
           "name": "mc",
@@ -1299,6 +1300,12 @@
         },
         "place": {
           "name": "place",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weather": {
+          "name": "weather",
           "type": "text",
           "primaryKey": false,
           "notNull": false

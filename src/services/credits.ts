@@ -17,6 +17,7 @@
  * ```
  */
 
+import type { Request } from "express";
 import { type DBTransaction, dbWrite, dbRead } from "../db/client.js";
 import { users, transactions, userNotifications } from "../db/schema.js";
 import { CREDIT_COSTS, type CreditCostKey } from "../config/credits.js";
@@ -39,6 +40,8 @@ interface ConsumeCreditsOptions {
   tx?: DBTransaction;
   /** Optional correlation ID to link this transaction with refunds */
   correlationId?: string;
+  /** Optional express request object for tracking */
+  req?: Request;
 }
 
 /**
@@ -91,7 +94,7 @@ export async function consumeCredits(
   const cost = CREDIT_COSTS[costKey];
   if (cost <= 0) throw new Error(`Invalid credit cost: ${costKey} must be greater than 0`);
 
-  const { context, correlationId, metadata, tx: trx } = options;
+  const { context, correlationId, metadata, tx: trx, req } = options;
 
   // Log to ensure consume credits operation is truly safe
   if (!trx) console.warn(`[consumeCredits] ⚠️ Called without database transaction provided:`, { costKey, context, correlationId });
@@ -116,7 +119,7 @@ export async function consumeCredits(
       transactionId: result.transactionId, // Also include in metadata
       userMetadata: metadata || {} // Separate user metadata to prevent overwrites
     }
-  });
+  }, { req });
 
   return result;
 }
@@ -256,6 +259,7 @@ export async function addCredits(
   options: ConsumeCreditsOptions = {}
 ): Promise<number> {
   if (amount <= 0) throw new Error(`Invalid credit amount: ${amount} must be greater than 0`);
+  const { context, metadata = {}, tx: trx, req } = options;
 
   // Important: Use the provided `tx` when available for atomic operations.
   const execute = async (tx: DBTransaction) => {
@@ -284,33 +288,30 @@ export async function addCredits(
       type: 'reward',
       credits: amount, // Positive for addition
       amountUsd: null, // Credit additions don't have USD amount
-      context: options.context,
-      metadata: options.metadata ?? null,
+      context,
+      metadata,
       createdAt: new Date()
     });
 
     return currentCredits + amount;
   };
 
-  const result = options.tx
-    ? await execute(options.tx)
-    : await dbWrite.transaction(execute);
+  const result = trx ? await execute(trx) : await dbWrite.transaction(execute);
 
-  // Only log activity when we own the transaction. When called from within an
-  // external transaction (options.tx provided), the caller is responsible for
-  // any post-commit side effects to avoid polluting the outer transaction scope.
-  if (!options.tx) {
+  // Only log activity when we own the transaction. When external transaction
+  // (options.tx) provided, the caller is responsible for user activity logging.
+  if (!trx) {
     await logUserActivity({
       userId,
       activityType: 'credits_added',
-      targetType: options.context ? 'credit_action' : null,
+      targetType: context ? 'credit_action' : null,
       targetId: null,
       metadata: {
         amount,
-        context: options.context,
-        userMetadata: options.metadata || {}
+        context,
+        userMetadata: metadata
       }
-    });
+    }, { req });
   }
 
   return result;

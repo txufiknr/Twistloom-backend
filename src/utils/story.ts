@@ -4,7 +4,7 @@ import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryPageScene } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -179,7 +179,7 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
  * // finalState now includes both user-driven and AI-driven changes
  * ```
  */
-export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, place?: string): StoryState {
+export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, scene?: StoryPageScene): StoryState {
   const {
     flagUpdates,
     traumaTagUpdates,
@@ -232,10 +232,10 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, p
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
-  processPlotFlagUpdates(newState, addPlotFlag, place);
+  processPlotFlagUpdates(newState, addPlotFlag, scene?.place);
   processFactUpdates(newState, factUpdates);
-  processCharacterUpdates(newState, characterUpdates, relationshipUpdates, place);
-  processPlaceUpdates(newState, placeUpdates);
+  processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.place);
+  processPlaceUpdates(newState, placeUpdates, scene);
   processThreadUpdates(newState, threadUpdates);
 
   // Apply inventory updates (full replacements, remove which has amount of 0)

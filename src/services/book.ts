@@ -411,6 +411,10 @@ export async function persistPageWithState(params: {
         newState.actionsHistory = newState.actionsHistory.filter(action => action.page !== actionedPage.page);
         newState.actionsHistory.push(selectedAction);
 
+        // Ensure new state matches the new page
+        newState.page = newPage.page;
+        newState.pageId = newPage.id;
+
         // If this throws, the transaction auto-rolls back — no orphan page
         await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });
 
@@ -550,32 +554,42 @@ async function generateUniqueSlug(title: string, alternativeTitles?: string[]): 
  */
 export async function insertBook(book: DBNewBook, options: { client?: DBClient, alternativeTitles?: string[] } = {}): Promise<DBBook> {
   const { client = dbWrite, alternativeTitles } = options;
-  // Generate unique slug from title (may use alternative title)
+
+  // Generate unique slug from title (may use alternative title to avoid duplicate)
   const { slug: uniqueSlug, title: chosenTitle } = await generateUniqueSlug(book.title, alternativeTitles);
   
-  const newBookData: DBNewBook = {
+  // Compose final book data to be inserted
+  const newBookData: DBNewBook = { // DBNewBook = typeof books.$inferInsert;
     ...book,
     id: book.id ?? generateId(),
     slug: uniqueSlug,
     title: sanitizeText(chosenTitle),
     hook: book.hook ? sanitizeText(book.hook) : null,
     summary: book.summary ? sanitizeText(book.summary) : null,
+    // TODO: keywordsText, or auto-generated via schema?
+    // keywordsText: array_to_string(
+    //   ARRAY(
+    //     SELECT jsonb_array_elements_text(keywords)
+    //   ),
+    //   ' '
+    // ),
     status: 'active' satisfies BookStatus,
     mc: book.mc satisfies StoryMC,
     createdAt: new Date(),
     updatedAt: new Date()
   };
 
-  const result = await client.insert(books).values(newBookData).returning();
-  const insertedBook = result[0];
-  console.log(`[insertBook] 📔 Inserted book with slug "${uniqueSlug}":`, insertedBook);
+  const [result] = await client.insert(books).values(newBookData).returning();
+  const { id, slug, title, totalPages, language, hook, summary, isOriginal, keywords, status, mc, creditsPrice } = result;
+
+  console.log(`[insertBook] 📔 Book "${chosenTitle}" inserted:`, { id, slug, title, totalPages, language, hook, summary, isOriginal, keywords, status, mc, creditsPrice });
   
   // Invalidate cache for this book (by both ID and slug)
-  invalidateBookCache(insertedBook.id);
-  invalidateEnrichedBookCache(insertedBook.id);
-  invalidateEnrichedBookCache(insertedBook.slug!);
+  invalidateBookCache(id);
+  invalidateEnrichedBookCache(id);
+  invalidateEnrichedBookCache(slug!);
   
-  return insertedBook;
+  return result;
 }
 
 /**
