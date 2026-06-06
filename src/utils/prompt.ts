@@ -2761,7 +2761,7 @@ export async function initializeBook(
       configs: {
         schema: BOOK_CREATION_SCHEMA_DEFINITION,
         requiredFields: BOOK_CREATION_REQUIRED_FIELDS,
-        fallbackField: 'title',
+        fallbackField: 'summary',
         baseOptions: {
           config: AI_CHAT_CONFIG_DEFAULT,
           modelSelection: AI_CHAT_MODELS_WRITING,
@@ -2777,8 +2777,10 @@ export async function initializeBook(
     }, onProgress, onGenerationProgress);
 
     // 3. Validate AI response
+    // TODO: investigate why
     if (!response.result) {
-      throw new Error('Failed to generate book: AI response result is undefined');
+      console.log(`[initializeBook] 🧠 AI response:`, response);
+      throw new Error('Failed to generate book: AI response.result is undefined');
     }
 
     // STEP 4: FINALIZING
@@ -2984,8 +2986,9 @@ export async function initializeBook(
     } satisfies CreateBookResponse;
 
   } catch (error) {
-    console.error(`[initializeBook] ❌ Failed to initialize book:`, { userId, theme });
-    await onGenerationProgress({ status: 'failed', error: String(error) });
+    const errorMessage = getErrorMessage(error);
+    console.error(`[initializeBook] ❌ Failed to initialize book:`, errorMessage);
+    await onGenerationProgress({ status: 'failed', error: errorMessage });
     throw error;
   }
 }
@@ -3524,6 +3527,13 @@ Do NOT mention this checklist.` : '';
     onProgress,
     onGenerationProgress,
   );
+
+  if (!response.result) {
+    console.log(`[executePromptForJSON] 🧠 Response provider:`, response.provider);
+    console.log(`[executePromptForJSON] 🧠 Response model:`, response.model);
+    console.log(`[executePromptForJSON] 🧠 Response finishReason:`, response.finishReason);
+    console.log(`[executePromptForJSON] 🧠 Response output:`, response.output);
+  }
 
   return response;
 }
