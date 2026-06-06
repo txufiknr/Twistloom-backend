@@ -46,7 +46,7 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, ne } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
@@ -59,7 +59,7 @@ import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGe
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
-import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
+import { getEnrichedBookSelect, getSimilarBookSelectOverlap, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { lastUpdatedFilterOptions } from "../types/book.js";
@@ -1121,12 +1121,11 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
 
     // Resolve book by identifier (slug first, then UUID)
     const book = await resolveBook(bookId);
-    if (!book) {
-      return handleNotFoundError(res, "Book not found");
-    }
+    if (!book) return handleNotFoundError(res, "Book not found");
+    const targetKeywords = book.keywords;
 
     // Get similar books with enriched data
-    const similarBooksSelect = getSimilarBookSelect(book.keywords, currentUserId, req.headerLanguage);
+    const similarBooksSelect = getSimilarBookSelectOverlap(targetKeywords, currentUserId, req.headerLanguage);
     const similarBooks = await dbRead
       .select(similarBooksSelect)
       .from(books)
@@ -1134,15 +1133,17 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
       .where(
         and(
           // Exclude the target book itself
-          sql`${books.id} != ${book.id}`,
-          // Only include books with keywords
-          sql`jsonb_array_length(${books.keywords}) > 0`,
+          ne(books.id, bookId),
           // Only include active books
-          eq(books.status, 'active')
+          eq(books.status, 'active'),
+          // Avoid scanning unrelated books entirely (required)
+          sql`${books.keywords} && ${targetKeywords}`
         )
       )
-      // .orderBy(desc(sql`similarityScore`))
-      .orderBy(desc(similarBooksSelect.similarityScoreExpr))
+      .orderBy(
+        desc(similarBooksSelect.similarityScoreExpr),
+        desc(books.trendingScore)
+      )
       .limit(limit);
 
     res.json({

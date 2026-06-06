@@ -490,16 +490,12 @@ export function buildSearchConditions(
   let sanitizedSearch: string | undefined;
   if (search) {
     const validation = validateSearchQuery(search);
-    if (!validation.isValid) {
-      throw new Error(validation.error);
-    }
+    if (!validation.isValid) throw new Error(validation.error);
     sanitizedSearch = validation.sanitized;
   }
 
   // If no search and no language filter, return undefined
-  if (!sanitizedSearch && !language) {
-    return undefined;
-  }
+  if (!sanitizedSearch && !language) return undefined;
 
   const conditions: any[] = [];
 
@@ -519,17 +515,20 @@ export function buildSearchConditions(
       sql`${booksTable.summary} ILIKE ${searchPattern}`
     ];
 
-    // Search in keywords (JSONB array)
-    // Use jsonb_array_elements_text to expand array and search each element
-    const keywordSearchCondition = sql`
-      EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements_text(${booksTable.keywords}) as keyword
-        WHERE keyword ILIKE ${searchPattern}
-      )
-    `;
+    // Search in keywords (native PostgreSQL text[])
+    // Use unnest() to expand array and search each element
+    const keywordSearchCondition = sql`EXISTS (
+      SELECT 1
+      FROM unnest(${booksTable.keywords}) AS keyword
+      WHERE keyword ILIKE ${searchPattern}
+    )`;
 
-    conditions.push(or(...textSearchConditions, keywordSearchCondition));
+    conditions.push(
+      or(
+        ...textSearchConditions,
+        keywordSearchCondition
+      )
+    );
   }
 
   // Combine all conditions with AND
@@ -611,7 +610,8 @@ export function calculateRelevance(
  * - Title contains: 0.20 (title is most important field)
  * - Hook exact match: 0.15 (hook is the "elevator pitch")
  * - Hook contains: 0.10
- * - Keywords match: 0.12 (user-defined tags, highly relevant)
+ * - Keywords exact match: 0.12 (user-defined tags, highly relevant)
+ * - Keywords contains: 0.08
  * - Summary contains: 0.08 (summary provides context)
  * 
  * @param query - Search query
@@ -623,9 +623,9 @@ export function createRelevanceExpression(
   booksTable: any
 ): any {
   if (!query) return sql`0`;
-  
+
   const queryLower = query.toLowerCase();
-  
+
   // Calculate relevance using CASE statements in SQL
   // Uses word boundary matching for better precision
   return sql`
@@ -641,11 +641,11 @@ export function createRelevanceExpression(
     END::real +
     CASE
       WHEN EXISTS (
-        SELECT 1 FROM jsonb_array_elements_text(${booksTable.keywords}) as kw
+        SELECT 1 FROM unnest(${booksTable.keywords}) AS kw
         WHERE LOWER(kw) = ${queryLower}
       ) THEN 0.12
       WHEN EXISTS (
-        SELECT 1 FROM jsonb_array_elements_text(${booksTable.keywords}) as kw
+        SELECT 1 FROM unnest(${booksTable.keywords}) AS kw
         WHERE kw ILIKE ${'%' + queryLower + '%'}
       ) THEN 0.08
       ELSE 0

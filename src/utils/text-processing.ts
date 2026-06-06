@@ -1,3 +1,4 @@
+import { dedupe } from "./parser.js";
 import { correctDoubleQuotes } from "./quote.js";
 
 /**
@@ -365,4 +366,8 @@ export function generateSlug(text: string): string {
 
 export function sanitizeText(text: string): string {
   return correctDoubleQuotes(sanitizeTextForDB(text.trim()));
+}
+
+export function sanitizeKeywords(keywords: string[]): string[] {
+  return dedupe(keywords?.map(k => k.trim().toLowerCase()).filter(Boolean) ?? []);
 }

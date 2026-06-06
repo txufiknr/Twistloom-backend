@@ -195,57 +195,151 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
 }
 
 /**
- * Builds an enriched similar books select object with similarity score
+ * Builds an enriched similar books select object with similarity score.
  * 
- * Extends getEnrichedBookSelect to include Jaccard similarity score for ranking.
- * 
- * @param targetKeywords - Keywords array from the target book for similarity calculation
- * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
- * @param language - Optional language code to include translation data (e.g., "es", "fr")
- * @returns Select object with enriched book fields and similarity score
+ * Similarity is calculated as the number of shared keywords
+ * between the target book and candidate book.
+ *
+ * This approach is significantly faster than per-row Jaccard
+ * calculations while producing nearly identical recommendation
+ * quality for genre/theme tags.
+ *
+ * IMPORTANT:
+ * - Requires books.keywords to be text[]
+ * - Requires GIN index on books.keywords
+ * - Candidate filtering should use:
+ *   sql`${books.keywords} && ${targetKeywords}`
+ *
+ * @param targetKeywords Keywords from the target book
+ * @param currentUserId Optional current user ID
+ * @param language Optional translation language
  */
-export function getSimilarBookSelect(targetKeywords: string[], currentUserId: string | null = null, language: string | null = null) {
+export function getSimilarBookSelectOverlap(
+  targetKeywords: string[],
+  currentUserId: string | null = null,
+  language: string | null = null
+) {
   const baseSelect = getEnrichedBookSelect(currentUserId, language);
-  
-  // Construct the similarity calculation SQL fragment for reuse in SELECT and ORDER BY
-  // TODO: add `books.keywordsText` column to eliminate heavy CTE calculations
-  const targetKeywordsJson = sql.raw(`'${JSON.stringify(targetKeywords).replace(/'/g, "''")}'::jsonb`);
-  const similarityCalculation = sql<number>`
-    (
-      WITH book_elems AS (
-        SELECT DISTINCT jsonb_array_elements_text(${books.keywords}) AS elem
-      ),
-      target_elems AS (
-        SELECT DISTINCT elem
-        FROM jsonb_array_elements_text(${targetKeywordsJson}) AS elem
-      ),
-      intersection_count AS (
-        SELECT COUNT(*)::float AS count
-        FROM book_elems b
-        INNER JOIN target_elems t ON b.elem = t.elem
-      ),
-      union_count AS (
-        SELECT COUNT(*)::float AS count
-        FROM (
-          SELECT elem FROM book_elems
-          UNION
-          SELECT elem FROM target_elems
-        ) u
-      )
-      SELECT i.count / NULLIF(u.count, 0)
-      FROM intersection_count i, union_count u
-    )
-  `;
-  
+  const similarityScore = sql<number>`(
+    SELECT COUNT(*)
+    FROM unnest(${books.keywords}) AS keyword
+    WHERE keyword = ANY(${targetKeywords})
+  )`;
+
   return {
     ...baseSelect,
 
-    // Calculate Jaccard similarity using jsonb array operations
-    // J(A, B) = |A ∩ B| / |A ∪ B|
-    // Work entirely with jsonb and text values, never cast to text[]
-    similarityScore: similarityCalculation,
-    // Also include the calculation for ORDER BY reference
-    similarityScoreExpr: similarityCalculation,
+    /**
+     * Number of shared keywords.
+     *
+     * Example:
+     * Target:    ["thriller", "crime", "mystery"]
+     * Candidate: ["thriller", "crime", "horror"]
+     *
+     * Score = 2
+     */
+    similarityScore,
+
+    /**
+     * Exposed separately for ORDER BY reuse.
+     */
+    similarityScoreExpr: similarityScore,
+  };
+}
+
+/**
+ * Builds an enriched similar books select object using Jaccard
+ * similarity on keyword arrays.
+ *
+ * Jaccard similarity measures the ratio of shared keywords
+ * to total unique keywords:
+ *
+ * Example:
+ *
+ * Target:
+ * ["thriller", "crime", "mystery"]
+ *
+ * Candidate:
+ * ["thriller", "crime", "horror"]
+ *
+ * Intersection:
+ * ["thriller", "crime"]
+ * => 2
+ *
+ * Union:
+ * ["thriller", "crime", "mystery", "horror"]
+ * => 4
+ *
+ * Similarity:
+ * 2 / 4 = 0.5
+ *
+ * Advantages:
+ * - Produces a normalized score between 0 and 1
+ * - Penalizes books with many unrelated keywords
+ * - Useful when keyword counts vary significantly
+ * - More mathematically rigorous
+ *
+ * Disadvantages:
+ * - More CPU-intensive than simple overlap count
+ * - Requires array expansion (unnest/intersect/union)
+ * - Harder to explain and tune
+ * - Usually provides little recommendation improvement
+ *   for small AI-generated keyword sets
+ *
+ * Recommendation:
+ * Prefer {@link getSimilarBookSelectOverlap} for production unless
+ * testing shows meaningful ranking improvements.
+ *
+ * @param targetKeywords Keywords from the target book
+ * @param currentUserId Optional current user ID
+ * @param language Optional translation language
+ */
+export function getSimilarBookSelectJaccard(
+  targetKeywords: string[],
+  currentUserId: string | null = null,
+  language: string | null = null
+) {
+  const baseSelect = getEnrichedBookSelect(currentUserId, language);
+  const similarityScore = sql<number>`(
+    WITH intersection_count AS (
+      SELECT COUNT(*)::float AS count
+      FROM (
+        SELECT unnest(${books.keywords})
+        INTERSECT
+        SELECT unnest(${targetKeywords}::text[])
+      ) i
+    ),
+    union_count AS (
+      SELECT COUNT(*)::float AS count
+      FROM (
+        SELECT unnest(${books.keywords})
+        UNION
+        SELECT unnest(${targetKeywords}::text[])
+      ) u
+    )
+    SELECT
+      i.count / NULLIF(u.count, 0)
+    FROM intersection_count i, union_count u
+  )`;
+
+  return {
+    ...baseSelect,
+
+    /**
+     * Jaccard similarity score.
+     * 
+     * J(A, B) = |A ∩ B| / |A ∪ B|
+     *
+     * Range:
+     * 0.0 → no shared keywords
+     * 1.0 → identical keyword sets
+     */
+    similarityScore,
+
+    /**
+     * Exposed separately for ORDER BY reuse.
+     */
+    similarityScoreExpr: similarityScore,
   };
 }
 
@@ -288,19 +382,20 @@ export function buildTimeFilterCondition(lastUpdated?: string) {
 /**
  * Builds tags filter condition with OR logic (books matching ANY tag)
  * 
+ * Uses PostgreSQL array overlap operator (&&) which is
+ * optimized by the GIN index on books.keywords.
+ * 
+ * Example:
+ * tags = ["thriller", "crime"]
+ * matches books containing either tag.
+ * 
  * @param tags - Array of tag strings to filter by
  * @returns SQL condition or null if no tags
  */
 export function buildTagsFilterCondition(tags: string[]) {
-  if (!tags || tags.length === 0) {
-    return null;
-  }
+  if (!tags || tags.length === 0) return null;
 
-  const tagConditions = tags.map(tag => 
-    sql`${books.keywords} @> ${JSON.stringify([tag])}::jsonb`
-  );
-
-  return or(...tagConditions);
+  return sql`${books.keywords} && ${tags}`;
 }
 
 /**

@@ -643,11 +643,16 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION update_pending_generation_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- Count actions with missing or empty destinationPageIds
+        -- Count actions that do not have a valid non-empty
+        -- destinationPageIds array. Missing, null, malformed,
+        -- or empty values are considered pending generation.
         NEW.pending_generation_count = (
           SELECT COUNT(*)
           FROM jsonb_array_elements(NEW.actions) AS action
-          WHERE COALESCE(jsonb_array_length(action->'destinationPageIds'), 0) = 0
+          WHERE NOT (
+            jsonb_typeof(action->'destinationPageIds') = 'array'
+            AND jsonb_array_length(action->'destinationPageIds') > 0
+          )
         );
         RETURN NEW;
       END;

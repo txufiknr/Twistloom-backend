@@ -1,5 +1,5 @@
 {
-  "id": "40eb677e-7cad-48f8-9c84-b02ab3ff23e0",
+  "id": "520723c8-57a4-42c4-830c-95526c53152a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -36,10 +36,10 @@
         },
         "destination_page_ids": {
           "name": "destination_page_ids",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "error": {
           "name": "error",
@@ -530,10 +530,10 @@
         },
         "keywords": {
           "name": "keywords",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "mc": {
           "name": "mc",
@@ -729,10 +729,10 @@
         },
         "keywords": {
           "name": "keywords",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "status": {
           "name": "status",
@@ -1121,17 +1121,17 @@
         },
         "key_events": {
           "name": "key_events",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "important_objects": {
           "name": "important_objects",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "actions": {
           "name": "actions",
@@ -1318,24 +1318,24 @@
         },
         "characters": {
           "name": "characters",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "key_events": {
           "name": "key_events",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "important_objects": {
           "name": "important_objects",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "actions": {
           "name": "actions",
@@ -1801,10 +1801,10 @@
         },
         "trauma_tags": {
           "name": "trauma_tags",
-          "type": "jsonb",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": "ARRAY[]::text[]"
         },
         "future_notes": {
           "name": "future_notes",

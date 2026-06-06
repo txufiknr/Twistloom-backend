@@ -24,21 +24,21 @@ import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
 import { formatCharactersForPrompt } from "../utils/characters.js";
-import type { AIChatProvider, AIDocument } from "../types/ai-chat.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
-import { sanitizeText, generateSlug } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
-import type { StoryMC } from "../types/character.js";
-import type { ImageUploadSource } from "../types/image.js";
 import { getStoryStateInfo } from "../utils/story.js";
 import { getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
+import type { AIChatProvider, AIDocument } from "../types/ai-chat.js";
+import type { StoryMC } from "../types/character.js";
+import type { ImageUploadSource } from "../types/image.js";
 
 /**
  * LRU cache for enriched book data
@@ -566,13 +566,7 @@ export async function insertBook(book: DBNewBook, options: { client?: DBClient, 
     title: sanitizeText(chosenTitle),
     hook: book.hook ? sanitizeText(book.hook) : null,
     summary: book.summary ? sanitizeText(book.summary) : null,
-    // TODO: keywordsText, or auto-generated via schema?
-    // keywordsText: array_to_string(
-    //   ARRAY(
-    //     SELECT jsonb_array_elements_text(keywords)
-    //   ),
-    //   ' '
-    // ),
+    keywords: book.keywords ? sanitizeKeywords(book.keywords) : undefined,
     status: 'active' satisfies BookStatus,
     mc: book.mc satisfies StoryMC,
     createdAt: new Date(),
@@ -1656,12 +1650,12 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
  * 
  * Behavior:
  * - Uses database-level aggregation to count keyword frequencies
- * - Expands JSONB arrays and groups by keyword
+ * - Expands native PostgreSQL text[] arrays and groups by keyword
  * - Returns most popular tags sorted by frequency
  * - Filters out empty arrays and null values
  * 
  * Performance:
- * - Uses PostgreSQL's jsonb_array_elements for efficient array expansion
+ * - Uses PostgreSQL's unnest() for efficient array expansion
  * - Aggregates at database level (O(n log n) vs O(n) in-memory)
  * - Single query instead of query + in-memory processing
  * 
@@ -1675,14 +1669,14 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
   try {
     // Use database-level aggregation for efficient keyword counting
     const result = await dbRead.execute(sql`
-      SELECT keyword, COUNT(*) as count
+      SELECT keyword, COUNT(*) AS count
       FROM (
-        SELECT jsonb_array_elements_text(${books.keywords}) as keyword
+        SELECT unnest(${books.keywords}) AS keyword
         FROM ${books}
-        WHERE ${books.keywords} IS NOT NULL 
-          AND jsonb_array_length(${books.keywords}) > 0
+        WHERE cardinality(${books.keywords}) > 0
       ) expanded
-      WHERE keyword IS NOT NULL AND keyword != ''
+      WHERE keyword IS NOT NULL
+        AND keyword != ''
       GROUP BY keyword
       ORDER BY count DESC
       LIMIT ${limit}
@@ -1690,7 +1684,8 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
 
     // Extract tag names from result
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tags = result.rows.map((row: any) => row.keyword);
+    const tags = result.rows.map((row: any) => row.keyword as string);
+
     return tags;
   } catch (error) {
     console.error('[getPopularTags] Failed to fetch popular tags:', getErrorMessage(error));
