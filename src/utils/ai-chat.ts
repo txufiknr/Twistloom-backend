@@ -7,7 +7,7 @@ import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure } from './ai-logger.js';
 import { classifyGenAIError, getErrorMessage } from "./error.js";
-import { parseAISafely } from "./parser.js";
+import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
 import { Type } from "@google/genai";
@@ -950,6 +950,10 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
           }
         }
 
+        // TODO: to ensure:
+        // 1. Best-effort on parsing evaluation resulr
+        // 2. If stil fail, try parse original AI response (unevaluated)
+
         // Parse the output into the expected type T
         let parsedResult: T;
         
@@ -970,7 +974,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         
         return {
           ...result,
-          result: parsedResult
+          result: parsedResult // TODO: ensure parsedResult is defined
         } satisfies AIResponse<T>;
       } catch (parseError) {
         console.warn(`[${provider}] ⚠️ Failed to parse as type T, trying next provider:`, parseError);

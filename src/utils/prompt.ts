@@ -250,12 +250,7 @@ const firstBookOutputFormat: string = `{
     "viableEnding": {
       "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
       "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
-      "outline": [
-        {
-          "text": "...",
-          "isDone": <boolean>
-        }
-      ]
+      "outline": ["...", "..."]
     },
     "traumaTags": [],
     "plotFlags": [
@@ -1949,7 +1944,7 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): st
 
   // Only inject the cross-timeline bleed instruction when memory is degraded.
   // Stable memory → clean parallel timelines, no narrative leakage.
-  const bleedInstruction = memoryIntegrity !== 'stable' || trust === 'low' || curiosity === 'high'
+  const bleedInstruction = (memoryIntegrity !== 'stable' || trust === 'low' || curiosity === 'high') && Math.random() > 0.5
     ? `\nOccasionally, let a faint echo bleed across timelines — a déjà vu, a half-remembered feeling or hallucination — but keep it subtle.`
     : '';
 
@@ -2880,6 +2875,7 @@ export async function initializeBook(
         inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, place })) || [],
         injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, place })) || [],
         futureNotes: mapFutureNoteWithKey(generatedInitialState.futureNotes, 1, []),
+        viableEnding: generatedInitialState.viableEnding ? { ...generatedInitialState.viableEnding, outline: generatedInitialState.viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
       },
       hiddenState: createInitialHiddenState(),
       characters: initialCharacters && initialCharacters.length > 0 ? 

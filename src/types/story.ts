@@ -386,15 +386,17 @@ export type Ending = {
   /** Outline hint for the ending (optional). */
   outline?: StoryOutline[];
   /** Optional note about changes to the ending plan based on story progression */
-  changeNote?: {
-    /** Details of the change that triggered the ending mutation */
-    reason: string;
-    viabilityBefore: number;
-    viabilityAfter: number;
-  }
+  changeNote?: EndingChangeNote;
 }
 
-export type InitialEnding = Omit<Ending, 'changeNote'>;
+/** Details of the change that triggered the ending mutation */
+export type EndingChangeNote = {
+  reason: string;
+  viabilityBefore: number; // 0-1
+  viabilityAfter: number; // 0-1
+};
+
+export type InitialEnding = Omit<Ending, 'outline' | 'changeNote'> & { outline: string[] };
 
 export type StoryOutline = {
   text: string;
@@ -1091,13 +1093,13 @@ export type InitialStoryState = Partial<Pick<
   StoryState,
     'flags' |
     'difficulty' |
-    'viableEnding' |
     'traumaTags' |
     'plotFlags' |
     'inventory'
   > & {
-    'injuries': InitialInjury[];
-    'futureNotes': FutureNoteGeneration[];
+    injuries: InitialInjury[];
+    futureNotes: FutureNoteGeneration[];
+    viableEnding: InitialEnding;
   }>;
 
 export const storyPhases = {

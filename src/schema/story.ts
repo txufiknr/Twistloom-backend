@@ -366,7 +366,7 @@ export const CANDIDATE_GENERATION_SCHEMA_DEFINITION = {
     required: STORY_GENERATION_REQUIRED_FIELDS,
     additionalProperties: false
   } },
-  output: { type: 'string', description: "Concise comment or verdict about the divergence" }
+  output: { type: 'string', description: "Concise review about the divergence (max 250 chars)" }
 } satisfies Record<keyof CandidatePagesGeneration, AIJsonProperty>;
 
 export const CANDIDATE_GENERATION_REQUIRED_FIELDS = ['generatedPages'] satisfies Array<keyof CandidatePagesGeneration>;

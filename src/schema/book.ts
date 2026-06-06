@@ -1,7 +1,7 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
 import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
-import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, InitialPlotFlag } from "../types/story.js";
+import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, InitialPlotFlag, Ending, EndingChangeNote } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, endingTypes, factTypes, flagLevels, plotFlagTypes } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
@@ -60,12 +60,28 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
   }
 };
 
-export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
+export const INITIAL_VIABLE_ENDING_PROPERTIES: Record<keyof InitialEnding, AIJsonProperty> = {
+  text: { type: 'string', description: `Write the story ending plan in ${VIABLE_ENDING_LENGTH}. Be specific to MC and theme.` },
+  type: { type: 'string', enum: Object.keys(endingTypes) as EndingType[] },
+  outline: {
+    type: 'array',
+    description: 'A roadmap to reach the ending. 1-2 sentence per item.',
+    items: { type: 'string' }
+  }
+};
+
+export const INITIAL_VIABLE_ENDING_SCHEMA: AIJsonProperty = {
   type: 'object',
   description: 'A viable doom ending plan based on current story trajectory and theme.',
+  properties: INITIAL_VIABLE_ENDING_PROPERTIES,
+  required: ['text', 'type'] satisfies (keyof InitialEnding)[],
+  additionalProperties: false
+};
+
+export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
+  ...INITIAL_VIABLE_ENDING_SCHEMA,
   properties: {
-    text: { type: 'string', description: `Write the story ending plan in ${VIABLE_ENDING_LENGTH}. Be specific to MC and theme.` },
-    type: { type: 'string', enum: Object.keys(endingTypes) as EndingType[] },
+    ...INITIAL_VIABLE_ENDING_PROPERTIES,
     outline: {
       type: 'array',
       description: 'A roadmap to reach the ending. 1-2 sentence per item. Align done count with current phase.',
@@ -79,10 +95,19 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
         additionalProperties: false
       }
     },
-  } satisfies Record<keyof InitialEnding, AIJsonProperty>,
-  required: ['text', 'type'] satisfies (keyof InitialEnding)[],
-  additionalProperties: false
-};
+    changeNote: {
+      type: 'object',
+      description: 'Note about ending plan shift or changes.',
+      properties: {
+        reason: { type: 'string', description: `Concise. 1-2 sentence.` },
+        viabilityBefore: { type: 'number', description: '0-1' },
+        viabilityAfter: { type: 'number', description: '0-1' },
+      } satisfies Record<keyof EndingChangeNote, AIJsonProperty>,
+      required: ['reason'] satisfies (keyof EndingChangeNote)[],
+      additionalProperties: false
+    }
+  } satisfies Record<keyof Ending, AIJsonProperty>
+}
 
 /**
  * Common schema definition for BookCreationResponse type
@@ -119,7 +144,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
         additionalProperties: false
       },
       difficulty: { type: 'string', enum: [...difficulties] },
-      viableEnding: VIABLE_ENDING_SCHEMA,
+      viableEnding: INITIAL_VIABLE_ENDING_SCHEMA,
       traumaTags: { type: 'array', items: { type: 'string' } },
       futureNotes: {
         type: 'array',
