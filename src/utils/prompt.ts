@@ -2851,13 +2851,10 @@ export async function initializeBook(
     }
 
     // 5. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, {
-      ...generatedFirstPage,
-      aiProvider: response.provider || 'none',
-      aiModel: response.model || 'none',
-    }, {
+    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, {
       bookId,
       branchId: 'main',
+      aiResponseProvider: response
     }, { client });
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
@@ -3325,8 +3322,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     generatedStoryPage,
     fullStateDelta,
     newState,
-    aiProvider: response.provider ?? "none",
-    aiModel: response.model ?? "none",
+    aiResponseProvider: response,
     actionedPage,
     action,
     branchId,
@@ -3449,8 +3445,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         generatedStoryPage,
         fullStateDelta,
         newState,
-        aiProvider: response.provider ?? "none",
-        aiModel: response.model ?? "none",
+        aiResponseProvider: response,
         actionedPage,
         action,
         branchId,

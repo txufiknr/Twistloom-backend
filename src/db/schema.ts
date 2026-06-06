@@ -13,7 +13,7 @@ import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
-import type { ResourceTimestamp } from "../types/api.js";
+import type { ResourceAIProvider, ResourceTimestamp } from "../types/api.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
@@ -74,12 +74,14 @@ export const pages = pgTable(
     stateDelta: jsonb("delta").$type<StateDelta>().notNull().default(sql`'{}'::jsonb`), // Incremental delta (chronological)
     aiProvider: text("ai_provider").$type<AIChatProvider | 'none'>(),
     aiModel: text("ai_model"),
+    aiEvalProvider: text("ai_eval_provider").$type<AIChatProvider | 'none'>(),
+    aiEvalModel: text("ai_eval_model"),
     pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
     isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }), // When candidate generation started. `null` means not generating.
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
-  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | ResourceTimestamp, unknown>,
+  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | ResourceAIProvider | ResourceTimestamp, unknown>,
   (t) => [
     // Index for book pagination
     index("pages_book_page_idx").on(t.bookId, t.page),

@@ -12,6 +12,11 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
+ensure ensriched page has valid values for:
+- selectedActions
+- sourceAction
+- sourceNav
+
 v2:
 pnpm add jsonrepair jaison @isdk/json-repair @apidevtools/json-schema-ref-parser
 
@@ -23,25 +28,6 @@ pnpm add jsonrepair jaison @isdk/json-repair @apidevtools/json-schema-ref-parser
 
 node_modules/.pnpm/jaison@2.1.1/node_modules/jaison/index.ts:2:33 - error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
 
-2 export { default, jaison } from './lib/index.ts';
-                                  ~~~~~~~~~~~~~~~~
-
-node_modules/.pnpm/jaison@2.1.1/node_modules/jaison/lib/tokenizer.ts:181:30 - error TS2454: Variable 'tokenValue' is used before being assigned.
-
-181         const innerContent = tokenValue.slice(1, -1); // Remove outer quotes
-                                 ~~~~~~~~~~
-
-node_modules/.pnpm/jaison@2.1.1/node_modules/jaison/lib/tokenizer.ts:205:20 - error TS2454: Variable 'tokenValue' is used before being assigned.
-
-205             value: tokenValue
-                       ~~~~~~~~~~
-
-
-Found 3 errors in 2 files.
-
-Errors  Files
-     1  node_modules/.pnpm/jaison@2.1.1/node_modules/jaison/index.ts:2
-     2  node_modules/.pnpm/jaison@2.1.1/node_modules/jaison/lib/tokenizer.ts:181
 
 The 5-stage parse pipeline
 Stage | Strategy | Why

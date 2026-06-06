@@ -818,6 +818,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     config = AI_CHAT_CONFIG_DEFAULT,
     outputAsJson = false,
     outputJsonFallbackField,
+    outputJsonStructure,
+    outputJsonRequired,
     systemPrompt = PROMPT_SYSTEM,
     documents,
     context = 'ai',
@@ -920,10 +922,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
               // CRITICAL: evaluation call should exclude the evaluatorPromptBuilder to prevent the recursive loop
             }, undefined);
 
-            const { result: evaluationResult } = response;
-
-            // Emit evaluation complete event
-            await onProgress?.({ type: 'ai_evaluation_complete' });
+            const { result: evaluationResult, provider: evalProvider, model: evalModel } = response;
 
             if (evaluationResult) {
               const { scoreBefore, scoreAfter, actionFlags, integrityFlags } = evaluationResult;
@@ -937,6 +936,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
               }
               return {
                 ...result,
+                evalProvider,
+                evalModel,
                 result: evaluationResult.output
               } satisfies AIResponse<T>;
             } else if (logEvaluationResult) {
@@ -944,14 +945,19 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             }
           } catch (evalError) {
             console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, getErrorMessage(evalError));
-            // Ensure we still emit evaluation complete to keep progress lifecycle consistent
-            await onProgress?.({ type: 'ai_evaluation_complete' });
-            // continue to parsing original generated result
+            // Continue to parsing original generated result
+          } finally {
+            try {
+              // Ensure we emit evaluation complete to keep progress lifecycle consistent
+              await onProgress?.({ type: 'ai_evaluation_complete' });
+            } catch {
+              // Never let a progress callback mask a real evaluation error
+            }
           }
         }
 
-        // TODO: to ensure:
-        // 1. Best-effort on parsing evaluation resulr
+        // TODO: to ensure when `evaluatorPrompt` provided:
+        // 1. Best-effort on parsing evaluation result (above)
         // 2. If stil fail, try parse original AI response (unevaluated)
 
         // Parse the output into the expected type T
@@ -963,8 +969,10 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             ...result,
             result: undefined
           };
-          parsedResult = parseAISafely(compatibleResponse, {
+          parsedResult = await parseAISafely(compatibleResponse, {
             logContext: `${provider}-${context}`,
+            schema: outputJsonStructure,
+            requiredFields: outputJsonRequired,
             fallbackField: outputJsonFallbackField
           }) as T;
         } else {

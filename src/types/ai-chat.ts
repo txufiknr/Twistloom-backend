@@ -36,6 +36,10 @@ export interface AIResponse<T> {
   provider: AIChatProvider | 'none';
   /** Specific model used to generate the response (e.g., 'gpt-4o', 'gemini-2.5-flash') */
   model?: string;
+  /** Which AI provider evaluate the response */
+  evalProvider?: AIChatProvider | 'none';
+  /** Specific model used to evaluate the response (e.g., 'gpt-4o', 'gemini-2.5-flash') */
+  evalModel?: string;
   /** The generated text content from the AI */
   output: string;
   /** The parsed content into expected type */
@@ -45,6 +49,8 @@ export interface AIResponse<T> {
   /** Reason why the generation stopped (e.g., 'stop', 'length', 'content_filter') */
   finishReason?: string;
 }
+
+export type AIResponseProvider = Pick<AIResponse<unknown>, 'model' | 'provider' | 'evalModel' | 'evalProvider'>;
 
 export type AIModelSelection = Partial<Record<AIChatProvider, string[]>>;
 

@@ -1,4 +1,5 @@
-import type { AIChatProvider } from "./ai-chat.js";
+import type { AIResponseProvider } from "./ai-chat.js";
+import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
@@ -737,15 +738,20 @@ export type StoryPage = {
   actions: Action[];
   /** Changes to the story state */
   stateDelta: StateDelta;
-  /** AI provider used for generating the page content */
-  aiProvider?: AIChatProvider | 'none';
-  /** AI model used for generating the page content */
-  aiModel?: string;
+  // /** AI provider used for generating the page content */
+  // aiProvider?: AIChatProvider | 'none';
+  // /** AI model used for generating the page content */
+  // aiModel?: string;
+  // /** AI provider used for evaluating the page content */
+  // aiEvalProvider?: AIChatProvider | 'none';
+  // /** AI model used for evaluating the page content */
+  // aiEvalModel?: string;
 };
 
 export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> & {
   // /** Optional selected action that triggered this page generation (for duplicate prevention) */
   // selectedAction?: SelectedAction;
+  aiResponseProvider: AIResponseProvider;
 };
 
 export type StoryPageScene = Pick<StoryPage, 'place' | 'weather' | 'mood'>;
@@ -805,10 +811,10 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
     remove?: string[];
   }
 };
-export type StoryPageGeneration = Omit<StoryPage, 'aiProvider' | 'aiModel' | 'stateDelta'>;
+export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
 
-export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'createdAt' | 'updatedAt'>;
+export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | ResourceAIProvider | ResourceTimestamp>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
 export type EnrichedStoryPage = Partial<UserStoryPage> & {

@@ -36,7 +36,7 @@ import { getStoryStateInfo } from "../utils/story.js";
 import { getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
-import type { AIChatProvider, AIDocument } from "../types/ai-chat.js";
+import type { AIDocument, AIResponseProvider } from "../types/ai-chat.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 
@@ -222,13 +222,20 @@ export async function insertStoryPage(
   options: { client?: DBClient } = {},
 ): Promise<PersistedStoryPage> {
   const { client = dbWrite } = options;
-  const { bookId, branchId, parentId } = pageMeta;
+  const { bookId, branchId, parentId, aiResponseProvider } = pageMeta;
 
   // Validation runs the same regardless of mode
   if (parentId) {
     const parentPage = await getPageFromDB(parentId, { client });
     if (!parentPage) throw new Error(`Parent page ${parentId} not found`);
   }
+
+  const {
+    provider: aiProvider = 'none',
+    model: aiModel = 'none',
+    evalProvider: aiEvalProvider = 'none',
+    evalModel: aiEvalModel = 'none',
+  } = aiResponseProvider;
 
   const newPageData: DBNewPage = {
     userId,
@@ -245,8 +252,10 @@ export async function insertStoryPage(
     importantObjects: page.importantObjects || [],
     actions: page.actions,
     stateDelta: pageNumber > 1 ? page.stateDelta : {},
-    aiProvider: page.aiProvider || null,
-    aiModel: page.aiModel || null,
+    aiProvider,
+    aiModel,
+    aiEvalProvider,
+    aiEvalModel,
     createdAt: new Date(),
     updatedAt: new Date()
   };
@@ -355,8 +364,7 @@ export async function persistPageWithState(params: {
   generatedStoryPage: StoryGeneration;
   fullStateDelta: StateDelta;
   newState: StoryState;
-  aiProvider: AIChatProvider | 'none';
-  aiModel: string;
+  aiResponseProvider: AIResponseProvider;
   actionedPage: CandidateGenerationPage;
   action: Action;
   branchId: string;
@@ -369,8 +377,7 @@ export async function persistPageWithState(params: {
     generatedStoryPage,
     fullStateDelta,
     newState,
-    aiProvider,
-    aiModel,
+    aiResponseProvider,
     actionedPage,
     action,
     usedBranchIds,
@@ -380,8 +387,6 @@ export async function persistPageWithState(params: {
   const pageToInsert: StoryPage = {
     ...generatedStoryPage,
     stateDelta: fullStateDelta,
-    aiProvider,
-    aiModel,
   };
 
   const MAX_BRANCH_RETRIES = 3;
@@ -394,6 +399,7 @@ export async function persistPageWithState(params: {
           bookId: actionedPage.bookId,
           branchId: currentBranchId,
           parentId: actionedPage.id,
+          aiResponseProvider,
         };
 
         // insertStoryPage detects tx client → skips internal retry → bubbles original error
@@ -986,6 +992,8 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     stateDelta: dbPage.stateDelta || {},
     aiProvider: dbPage.aiProvider || 'none',
     aiModel: dbPage.aiModel || 'none',
+    aiEvalProvider: dbPage.aiEvalProvider || 'none',
+    aiEvalModel: dbPage.aiEvalModel || 'none',
     createdAt: dbPage.createdAt,
     updatedAt: dbPage.updatedAt,
   } satisfies PersistedStoryPage;
@@ -1021,9 +1029,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     importantObjects: dbPage.importantObjects || [],
     actions: dbPage.actions || [],
     stateDelta: dbPage.stateDelta || {},
-    aiProvider: dbPage.aiProvider || 'none',
-    aiModel: dbPage.aiModel || 'none',
-  } satisfies StoryPage;
+  } satisfies Record<keyof StoryPage, unknown>;
 }
 
 /**
@@ -1158,7 +1164,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
   }
 
   // Return enriched page with only frontend-relevant fields
-  // Exclude backend-specific fields: userId, aiProvider, aiModel, pendingGenerationCount
+  // Exclude backend-specific fields: userId, aiProvider, aiModel, aiEvalProvider, aiEvalModel, pendingGenerationCount
   const enrichedPage: EnrichedStoryPage = {
     id: dbPage.id,
     page: dbPage.page,

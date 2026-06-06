@@ -19,4 +19,9 @@ export type ResourceName =
   | 'users'          // Collection of users
   | 'transactions';  // Collection of transactions
 
-  export type ResourceTimestamp = 'createdAt' | 'updatedAt';
+export type ResourceTimestamp = 'createdAt' | 'updatedAt';
+export type ResourceAIProvider =
+  | 'aiProvider'
+  | 'aiModel'
+  | 'aiEvalProvider'
+  | 'aiEvalModel';
