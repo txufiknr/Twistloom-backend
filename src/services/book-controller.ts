@@ -26,7 +26,7 @@ import { dbRead } from "../db/client.js";
 import { createRelevanceExpression } from "../utils/search.js";
 import { getEnrichedBook, getPageActionsFromDB, getPageFromDB, mapToPersistedStoryPage } from "./book.js";
 import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
-import { computeVisitStats, getPreviousPages, markPageVisited } from "./story.js";
+import { computeVisitStats, getPreviousPages, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { BOOK_MAX_PAGES, FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Request, Response } from "express";
 import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
@@ -767,8 +767,7 @@ export async function visitBookPage(
       return {};
     }
 
-    const { text, hint, type } = action;
-    selectedAction = { text, hint, type, nextPageId: pageId, pageId: parentPageId!, page: parentDbPage.page };
+    selectedAction = mapActionToSelectedAction(action, parentPageId!, parentDbPage.page, pageId);
 
     const actionedPage: ActionedStoryPage = { ...mapToPersistedStoryPage(dbPage), selectedAction };
     const previousPages = await getPreviousPages(actionedPage, userId, bookId, book.totalPages || BOOK_MAX_PAGES);
@@ -776,6 +775,7 @@ export async function visitBookPage(
       if (prev.selectedActions.length) {
         sourceNav[prev.page] = {
           pageId: prev.id,
+          // TODO: harusnya pake sourceAction?
           selectedAction: prev.selectedActions.at(-1)!, // Get the last action selected on each previous page for navigation source tracking
           plotFlag: prev.stateDelta.addPlotFlag
         } satisfies StoryPageNavItem;
@@ -786,7 +786,7 @@ export async function visitBookPage(
     if (pageNumber > FREE_ACTION_SELECTION_UNTIL_PAGE + 1) {
       // Validate user's action choice: check if user already chose a different action on previous page
       const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
-      if (selectedActions.length > 0) {
+      if (selectedActions.length) {
         if (!selectedActions.some((a) => a.text === action!.text)) {
           if (!consumeCredits) {
             // User already chose a different action on this page; can't continue except they pay credits

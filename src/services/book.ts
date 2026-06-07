@@ -1746,3 +1746,13 @@ export async function insertUserCompletedBook(
     return null;
   }
 }
+
+/**
+ * Creates a PostgreSQL text[] literal from a JS string array.
+ *
+ * Required because PostgreSQL array operators (&&, @>, <@)
+ * expect actual arrays, not record tuples.
+ */
+export function keywordsToTextArray(keywords: string[]) {
+  return sql`ARRAY[${sql.join(keywords.map(v => sql`${v}`), sql`, `)}]::text[]`;
+}

@@ -12,32 +12,16 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
-ensure ensriched page has valid values for:
-- selectedActions
-- sourceAction
-- sourceNav
-
-v2:
-pnpm add jsonrepair jaison @isdk/json-repair @apidevtools/json-schema-ref-parser
-
+[ ] ensure enriched page has valid values for sourceNav
+[x] buat cron action candidate generation tiap 4 jam aja
 [ ] Place Traits pastiin record<string, string>
-[ ] Previous pages >3 tampilin major plot flag aja
+[ ] Previous pages >3 tampilin major plot flag aja (all) + indicator "(MAJOR)" (gausah "PLOT FLAGS:")
 [x] Initial viable ending gausah isDone, langsung string[]
 [x] Generatedpages output concise max 250 chars
-[ ] can we handle Tokenisation-level corruption (stage 3) with our own typescrit helper function without using `jaison`?
-
-node_modules/.pnpm/jaison@2.1.1/node_modules/jaison/index.ts:2:33 - error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled.
+[ ] can we handle Tokenisation-level corruption (stage 3) with our own typescript helper function without using `jaison`?
 
 
-The 5-stage parse pipeline
-Stage | Strategy | Why
-1 | Native JSON.parse | Zero-cost fast path for clean output
-2 | jsonrepair → parse | Truncation, trailing commas, single quotes, unquoted keys, markdown fences
-3 | jaison | Tokenisation-level corruption
-4 | Heuristic fix → parse | Lightweight pre-fix gives native parse another shot
-5 | Heuristic fix → jsonrepair | Belt-and-suspenders: pre-fixing can unlock repairs the library alone couldn't
 
-[ ] npm package to reliably parse corrupted json string
 [ ] Consider generate multiverse in parallel instead of 1 big request
 [ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
 [ ] Provider Abstraction Layer:
