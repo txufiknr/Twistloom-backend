@@ -818,7 +818,7 @@ export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'bra
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
 export type EnrichedStoryPage = Partial<UserStoryPage> & {
-  originalActionsCount: number, 
+  originalActionsCount: number,
   translation?: DBPageTranslations,
   sourceAction?: SelectedAction,
   sourceNav?: StoryPageNav,

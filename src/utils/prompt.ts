@@ -772,6 +772,10 @@ addPlotFlag
   - Use for major revelations, important discoveries, critical relationship changes, irreversible decisions, or major shifts in story direction.
   - fact: describe the newly established story fact clearly and specifically.
   - isMajorEvent: true only for irreversible events or major turning points with lasting consequences.
+  - Major-event pacing:
+    → Review recent major events before introducing a new major event.
+    → If multiple major events occurred recently, prefer fallout, consequences, investigation, tension, or character reactions before introducing another major event.
+    → Do NOT create major events solely to escalate the plot.
 
 contextHistory
   - Running sumary from page 1 until now — key plot developments, hard facts, major events.
@@ -1392,7 +1396,7 @@ function getEndingArchetypesText(): string {
  * @param action - The action taken on this page if any
  * @returns Formatted string for this page entry
  */
-function formatPreviousPageEntry(page: UserStoryPage): string {
+function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): string {
   const pageText = formatPageTextForPrompt(page.text);
   const sceneInfo = [
     page.place ? `place: ${page.place}` : '',
@@ -1403,6 +1407,10 @@ function formatPreviousPageEntry(page: UserStoryPage): string {
   
   // Base page information
   let entry = `• Page ${page.page} (${sceneInfo})\n  ${pageText}`;
+
+  if (plotFlag) {
+    entry += `\n  → Plot flag: ${formatPlotFlag(plotFlag, { showPageHeader: false })}`;
+  }
 
   // Add action information if present
   const action = page.selectedActions?.at(-1); // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
@@ -1446,12 +1454,48 @@ function formatPreviousPageEntry(page: UserStoryPage): string {
  *   → Hint for page 5: "The map shows a hidden passage beneath the school" (type: discovery)
  * ```
  */
-function formatPreviousPagesForPrompt(previousPages: UserStoryPage[]): string {
+function formatPreviousPagesForPrompt(previousPages: UserStoryPage[], plotFlags: PlotFlag[]): string {
   if (previousPages.length === 0) return 'No previous pages yet.';
 
-  return previousPages
-    .map(formatPreviousPageEntry)
-    .join('\n');
+  // Step 1: Extract 'page' values into a Set for fast O(1) lookups
+  const pageNumbers = new Set(previousPages.map(p => p.page));
+
+  // Step 2: Filter plot flags for older pages
+  const filterredPlotFlags = [];
+
+  if (plotFlags.length) {
+    const sorted = [...plotFlags].sort((a, b) => a.page - b.page);
+    const seen = new Set<string>();
+  
+    const filterred = sorted.filter(flag => {
+      // Skip plot flags for shown previous pages
+      if (pageNumbers.has(flag.page)) return false;
+
+      // Skip duplicate plot flags
+      const key = `${flag.page}|${flag.type}|${flag.fact}`;
+      if (seen.has(key)) {
+        console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+
+    filterredPlotFlags.push(...filterred);
+  }
+  
+  // const formattedPlotFlags = plotFlags.sort((a, b) => a.page - b.page).filter(f => !previousPages.some(p => p.page === f.page)).map(f => formatPlotFlag(f));
+  // const formattedPreviousPages = previousPages.sort((a, b) => a.page - b.page).map(formatPreviousPageEntry);
+  const formattedPlotFlags = filterredPlotFlags.sort((a, b) => a.page - b.page).map(f => formatPlotFlag(f));
+  const formattedPreviousPages = previousPages.sort((a, b) => a.page - b.page).map(p => {
+    const plotFlag = plotFlags.find(f => f.page === p.page); // Only 1 plot flag per page
+    return formatPreviousPageEntry(p, plotFlag);
+  });
+
+  return [
+    ...formattedPlotFlags,
+    ...formattedPreviousPages
+  ].join('\n');
 }
 
 /**
@@ -2020,14 +2064,13 @@ MAIN CHARACTER (POV): ${getMainCharacterInfo(mc, state)!}
 STORY CONTEXT:
 ${contextHistory || 'No story context yet.'}
 
-PLOT FLAGS:
-${formatPlotFlags(plotFlags)}
+${formatRecentMajorEvents(plotFlags)}
 
 CURRENT FACTS:
 ${formatCurrentFacts(factsHistory)}
 
 PREVIOUS PAGES:
-${formatPreviousPagesForPrompt(previousPages)}
+${formatPreviousPagesForPrompt(previousPages, plotFlags)}
 
 CURRENT PAGE:
 • Page ${page.page}: ${formatPageTextForPrompt(page.text)}
@@ -2265,42 +2308,23 @@ function formatRouteContext(state: StoryState): string {
  * @param limit Maximum number of recent major events to include
  * @returns Formatted major events section
  */
-function formatPlotFlags(plotFlags: PlotFlag[]): string {
-  if (!plotFlags.length) return 'No plot flags yet';
-
-  const sorted = [...plotFlags].sort((a, b) => a.page - b.page);
-  const seen = new Set<string>();
-
-  const formatted = sorted.filter(flag => {
-    const key = `${flag.page}|${flag.type}|${flag.fact}`;
-    if (seen.has(key)) {
-      console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
-      return false;
-    }
-    seen.add(key);
-    return true;
-  }).map(formatPlotFlag).join('\n');
-
+function formatRecentMajorEvents(plotFlags: PlotFlag[]): string {
   const recentMajorEvents = plotFlags
     .filter(flag => flag.isMajorEvent)
     .sort((a, b) => a.page - b.page)
     .slice(-MAX_RECENT_MAJOR_EVENTS);
 
-  if (recentMajorEvents.length) {
-    const majorEventsFormatted = recentMajorEvents.map(formatPlotFlag).join('\n');
-    return `${formatted}\n\nRecent Major Events (avoid repeating similar major beats too soon):\n${majorEventsFormatted}
-
-Major-event pacing:
-- Review recent major events before introducing a new major event.
-- If multiple major events occurred recently, prefer fallout, consequences, investigation, tension, or character reactions before introducing another major event.
-- Do NOT create major events solely to escalate the plot.`;
-  }
-
-  return formatted;
+  if (!recentMajorEvents.length) return 'No recent major events.';
+  const majorEventsFormatted = recentMajorEvents.map(f => {
+    return formatPlotFlag(f, { showSceneInfo: false, showMajorFlag: false });
+  }).join('\n');
+  return `Recent Major Events (avoid repeating similar major beats too soon):\n${majorEventsFormatted}`;
 }
 
-function formatPlotFlag(flag: PlotFlag): string {
-  return `• Page ${flag.page} [${flag.type}] ${flag.fact}${flag.place ? ` (place: ${flag.place})` : ''}`;
+function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, showPageHeader?: boolean, showMajorFlag?: boolean }): string {
+  const { showSceneInfo = true, showPageHeader = true, showMajorFlag = true } = options ?? {};
+  const pageHeader = showPageHeader ? `• Page ${flag.page} ${showSceneInfo && flag.place ? `(place: ${flag.place})\n  ` : ''}` : '';
+  return `${pageHeader}[${flag.type}] ${flag.fact}${showMajorFlag && flag.isMajorEvent ? ` (MAJOR)` : ''}`;
 }
 
 /**

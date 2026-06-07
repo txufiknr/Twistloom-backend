@@ -12,13 +12,14 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
-[ ] ensure enriched page has valid values for sourceNav
-[x] buat cron action candidate generation tiap 4 jam aja
+[x] Previous pages >3 tampilin major plot flag aja (all) + indicator "(MAJOR)" (gausah "PLOT FLAGS:")
+[ ] buat getPreviousPages return ActionedStoryPage[]
+[ ] ensure enriched page has valid values for sourceNav (pake sourceAction?)
 [ ] Place Traits pastiin record<string, string>
-[ ] Previous pages >3 tampilin major plot flag aja (all) + indicator "(MAJOR)" (gausah "PLOT FLAGS:")
+[ ] can we handle Tokenisation-level corruption (stage 3) with our own typescript helper function without using `jaison`?
+[x] buat cron action candidate generation tiap 4 jam aja
 [x] Initial viable ending gausah isDone, langsung string[]
 [x] Generatedpages output concise max 250 chars
-[ ] can we handle Tokenisation-level corruption (stage 3) with our own typescript helper function without using `jaison`?
 
 
 
