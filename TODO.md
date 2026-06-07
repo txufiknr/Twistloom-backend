@@ -20,7 +20,7 @@
 [x] buat cron action candidate generation tiap 4 jam aja
 [x] Initial viable ending gausah isDone, langsung string[]
 [x] Generatedpages output concise max 250 chars
-
+[ ] book type add: translation?: BookTranslation;
 
 
 [ ] Consider generate multiverse in parallel instead of 1 big request

@@ -819,22 +819,24 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   sourceAction?: SelectedAction,
   sourceNav?: StoryPageNav,
   shownActionHint: string[],
-  context?: {
-    /** Current story phase classification */
-    phase: StoryPhase;
-    /** Collection of items and resources present in the world at the current page */
-    inventory: InventoryItem[];
-    /** Represents injuries sustained by the MC */
-    injuries: Injury[];
-    /** AI-summarized context of the story until this page */
-    contextHistory: string;
-    /** History of actions made until this page */
-    actionsHistory: SelectedAction[];
-    /** All known places so far */
-    places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
-    /** All known characters so far */
-    characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
-  }
+  context?: EnrichedStoryPageContext
+};
+
+export type EnrichedStoryPageContext = {
+  /** Current story phase classification */
+  phase: StoryPhase;
+  /** Collection of items and resources present in the world at the current page */
+  inventory: InventoryItem[];
+  /** Represents injuries sustained by the MC */
+  injuries: Injury[];
+  /** AI-summarized context of the story until this page */
+  contextHistory: string;
+  /** History of actions made until this page */
+  actionsHistory: SelectedAction[];
+  /** All known places so far */
+  places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
+  /** All known characters so far */
+  characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
 };
 
 export type StoryPageNav = Record<number, StoryPageNavItem>;

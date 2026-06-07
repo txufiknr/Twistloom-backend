@@ -19,7 +19,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, PublicStats } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, StoryPageNav, Action } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, StoryPageNav, Action, EnrichedStoryPageContext } from "../types/story.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -1135,7 +1135,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
   }
 
   // Extract context from story state if available
-  let context: EnrichedStoryPage['context'];
+  let context: EnrichedStoryPageContext | undefined;
   if (storyState) {
     const { places, characters, injuries, inventory, contextHistory, actionsHistory } = storyState;
     const { phase } = getStoryStateInfo(storyState);
@@ -1156,7 +1156,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
         role: character.role,
         bio: character.bio
       }))
-    };
+    } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }
 
   if (dbPage.page > 1 && !sourceAction) {
