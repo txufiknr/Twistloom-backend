@@ -1405,12 +1405,9 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
     page.weather && page.weather !== 'unknown' ? `weather: ${page.weather}` : '',
   ].filter(Boolean).join(', ')
   
-  // Base page information
+  // Base page and plot flag information
   let entry = `• Page ${page.page} (${sceneInfo})\n  ${pageText}`;
-
-  if (plotFlag) {
-    entry += `\n  → Plot flag: ${formatPlotFlag(plotFlag, { showPageHeader: false })}`;
-  }
+  if (plotFlag) entry += `\n  → Plot flag: ${formatPlotFlag(plotFlag, { showPageHeader: false })}`;
 
   // Add action information if present
   const action = page.selectedActions?.at(-1); // Latest selected action // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
@@ -1429,95 +1426,127 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
 }
 
 /**
- * Formats previous pages and plot flags for prompt display
- * 
- * Takes an array of previous pages with actions and formats them
- * for inclusion in AI prompts to provide narrative context.
- * 
- * @param previousPages - Array of previous pages with actions from service
- * @returns Formatted string with previous pages content
- * 
+ * Formats previous story pages and plot flags into a compact narrative context
+ * for AI generation.
+ *
+ * Context is split into two sections:
+ *
+ * 1. Earlier Plot Events
+ *    - Compressed historical memory.
+ *    - Contains plot flags from pages no longer included in recent page history.
+ *    - Major plot flags are retained longer than minor ones.
+ *    - Duplicate plot flags are removed.
+ *
+ * 2. Recent Narrative Context
+ *    - Full page text for the most recent pages.
+ *    - Includes scene metadata, selected actions, hints, and page plot flags.
+ *
+ * This strategy preserves important long-term story developments while
+ * prioritizing recent narrative continuity for the AI model.
+ *
+ * @param currentPage - Current page being generated
+ * @param previousPages - Previous pages ordered arbitrarily
+ * @param plotFlags - Story plot flags accumulated so far
+ * @param maxDisplayed - Maximum number of recent pages to include
+ *
+ * @returns Formatted prompt context string
+ *
  * @example
- * ```typescript
- * const formatted = formatPreviousPagesForPrompt([{ page: DBPage, action: Action }, ...]);
- * ```
- * 
- * Example output:
- * ```
- * • Page 1 (place: Ethan's room)
- *   [mystery_started] Ethan's friend is missing (MAJOR)
- * • Page 2 (place: old river)
- *   [clue_found] Ethan found a dead body (MAJOR)
- * • Page 3 (place: classroom, timeOfDay: morning)
- *   I walked into the empty classroom, the chalkboards still covered in yesterday's equations. Sarah was already there, sitting by the window with that mysterious book I'd seen her reading.
- *   → Selected action: "Ask about the book" (type: dialogue)
- *   → Hint for page 4: "Sarah will reveal the book contains ancient symbols" (type: mystery)
- * • Page 4 (place: classroom, timeOfDay: morning)
- *   The symbols glowed faintly as Sarah traced them with her finger. "These aren't just drawings," she whispered, "they're a map."
- *   → Selected action: "Examine the map closely" (type: investigate)
- *   → Hint for page 5: "The map shows a hidden passage beneath the school" (type: discovery)
- * ```
+ * • Page 1 [mystery_started] Ethan's friend is missing (MAJOR)
+ * • Page 2 [clue_found] Ethan found a dead body (MAJOR)
+ * • Page 3 (place: classroom, time: morning)
+ *   I walked into the empty classroom, the chalkboards still covered in
+ *   yesterday's equations. Sarah was already there.
+ *   → Selected action: Ask about the book (type: dialogue)
+ *   → Hint for page 4: Sarah will reveal the book contains ancient symbols (type: mystery)
+ * • Page 4 (place: classroom, time: morning)
+ *   The symbols glowed faintly as Sarah traced them with her finger.
+ *   → Plot flag: [artifact_revealed] The symbols form a map (MAJOR)
+ *   → Selected action: Examine the map closely (type: investigate)
+ *   → Hint for page 5: The map shows a hidden passage beneath the school (type: discovery)
  */
-function formatPreviousPagesForPrompt(currentPage: number, previousPages: UserStoryPage[], plotFlags: PlotFlag[], maxDisplayed: number = MAX_PAGE_HISTORY): string {
+function formatPreviousPagesForPrompt(
+  currentPage: number,
+  previousPages: UserStoryPage[],
+  plotFlags: PlotFlag[],
+  maxDisplayed: number = MAX_PAGE_HISTORY,
+): string {
   if (previousPages.length === 0) return 'No previous pages yet.';
 
-  const filterredPreviousPages = previousPages.slice(-maxDisplayed).sort((a, b) => a.page - b.page);
+  const recentPages = previousPages.slice(-maxDisplayed).sort((a, b) => a.page - b.page);
+  const displayedPages = new Set(recentPages.map(page => page.page));
+  const extendedFlagCutoff = currentPage - (maxDisplayed * 2); // For skipping minor events on older pages
+  const seenPlotFlags = new Set<string>();
 
-  // Step 1: Extract 'page' values into a Set for fast O(1) lookups
-  // const pageNumbers = new Set(filterredPreviousPages.map(p => p.page));
+  const olderPlotFlags = [...plotFlags].sort((a, b) => {
+    if (a.page !== b.page) return a.page - b.page;
 
-  // Step 2: Filter plot flags for older pages
-  const filterredPlotFlags = [];
+    return Number(b.isMajorEvent) - Number(a.isMajorEvent);
+  }).filter(flag => {
+    // Already represented by recent page context
+    if (displayedPages.has(flag.page)) return false;
 
-  if (plotFlags.length) {
-    const sorted = [...plotFlags].sort((a, b) => a.page - b.page);
-    const seen = new Set<string>();
-  
-    const filterred = sorted.filter(flag => {
-      // Skip plot flags which shown on previous pages
-      // if (pageNumbers.has(flag.page)) return false;
+    // Remove very old minor events
+    if (flag.page < extendedFlagCutoff && !flag.isMajorEvent) return false;
 
-      // currentPage = 10
-      // maxDisplayed = 3
-      // pages displayed: 7,8,9
-      // flags displayed: 4,5,6 (major & minor)
-      // if (flag.page >= 7) return false;
-      if (flag.page >= currentPage - maxDisplayed) return false;
-      // TODO: but if...
-      // currentPage = 2
-      // pages displayed: 1
-      // flags displayed: none
-      // if (flag.page >= 2 - 3) return false;
-      // if (1 >= -1) return false; // will pass through, so both plot flag for page 1 and previous page 1 displayed???
-      
-      // Skip minor plot flags in older pages
-      // if (flag.page below 10-6 = 4) -> 1,2,3 (only major events)
-      if (flag.page < currentPage - maxDisplayed * 2 && !flag.isMajorEvent) return false;
+    // Deduplicate
+    const key = `${flag.page}|${flag.type}|${flag.fact}`;
+    if (seenPlotFlags.has(key)) {
+      console.warn(`[formatPreviousPagesForPrompt] 👀 Duplicate plot flag removed:`, flag);
+      return false;
+    }
 
-      // Skip duplicate plot flags
-      const key = `${flag.page}|${flag.type}|${flag.fact}`;
-      if (seen.has(key)) {
-        console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-
-    filterredPlotFlags.push(...filterred);
-  }
-  
-  // const formattedPlotFlags = plotFlags.sort((a, b) => a.page - b.page).filter(f => !previousPages.some(p => p.page === f.page)).map(f => formatPlotFlag(f));
-  // const formattedPreviousPages = filterredPreviousPages.sort((a, b) => a.page - b.page).map(formatPreviousPageEntry);
-  const formattedPlotFlags = filterredPlotFlags.map(f => formatPlotFlag(f));
-  const formattedPreviousPages = filterredPreviousPages.map(p => {
-    const plotFlag = plotFlags.find(f => f.page === p.page); // Only 1 plot flag per page
-    return formatPreviousPageEntry(p, plotFlag);
+    seenPlotFlags.add(key);
+    return true;
   });
 
+  const plotFlagsByPage = new Map<number, PlotFlag[]>();
+  for (const flag of plotFlags) {
+    const existing = plotFlagsByPage.get(flag.page);
+
+    if (existing) {
+      existing.push(flag);
+    } else {
+      plotFlagsByPage.set(flag.page, [flag]);
+    }
+  }
+
+  const formattedOlderFlags = olderPlotFlags.map(flag =>
+    formatPlotFlag(flag, { showSceneInfo: false }),
+  );
+
+  const formattedRecentPages = recentPages.map(page => {
+    const pageFlags = plotFlagsByPage.get(page.page) ?? [];
+
+    return formatPreviousPageEntry(
+      page,
+      // One most major plot flag
+      pageFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent))[0],
+    );
+  });
+
+  // const sections: string[] = [];
+
+  // if (formattedOlderFlags.length > 0) {
+  //   sections.push(
+  //     [
+  //       'EARLIER PLOT EVENTS:',
+  //       ...formattedOlderFlags,
+  //     ].join('\n'),
+  //   );
+  // }
+
+  // sections.push(
+  //   [
+  //     'RECENT PAGES:',
+  //     ...formattedRecentPages,
+  //   ].join('\n'),
+  // );
+
+  // return sections.join('\n\n');
   return [
-    ...formattedPlotFlags,
-    ...formattedPreviousPages
+    ...formattedOlderFlags,
+    ...formattedRecentPages,
   ].join('\n');
 }
 

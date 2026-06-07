@@ -293,23 +293,18 @@ export type PsychologicalFlags = {
  * and narrative events that drive the story forward.
  */
 export const plotFlagTypes = [
-  // TODO: should I add 'dark_discovery' plot flag type?
-  "clue_found",         // Discovery of important information or evidence
-  "secret_revealed",    // Hidden truth comes to light
-  "betrayal_witnessed", // Character betrayal observed or experienced
-  "mystery_started",    // New storyline or puzzle begins
-  "threat_identified",  // Danger or antagonist becomes clear
-  "alliance_formed",    // Partnership or cooperation established
-  "conflict_escalated", // Tension or confrontation increases
-  "sacrifice_made",     // Character gives up something important
-  "truth_hidden",       // Information deliberately concealed
-  "deception_detected", // Lie or manipulation uncovered
-  "escape_attempted",   // Character tries to flee or avoid situation
-  "confrontation",      // Direct face-off between characters
-  "revelation",         // Major truth or discovery revealed
-  "loss_experienced",   // Significant setback or damage occurs
-  "hope_found",         // Positive development or opportunity emerges
-  "other"               // Catch-all for unique plot developments
+  "mystery_started", // A new mystery, question, puzzle, or investigation begins.
+  "clue_found", // Information that helps solve a mystery.
+  "discovery", // Something important is uncovered, but not necessarily explanatory.
+  "revelation", // A truth becomes known.
+  "threat_emerged", // Danger becomes present or understood.
+  "conflict_escalated", // Tension increases.
+  "alliance_formed", // Relationship becomes cooperative.
+  "betrayal", // Trust is broken.
+  "obstacle_encountered", // Forward progress blocked.
+  "loss_experienced", // Something important is lost.
+  "turning_point", // Major story direction change.
+  "other"
 ] as const;
 
 /**
