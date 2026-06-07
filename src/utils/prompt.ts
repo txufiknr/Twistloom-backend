@@ -1413,7 +1413,7 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
   }
 
   // Add action information if present
-  const action = page.selectedActions?.at(-1); // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
+  const action = page.selectedActions?.at(-1); // Latest selected action // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
   if (action) {
     if (action.text) {
       const actionText = `"${action.text}"`;
@@ -1429,7 +1429,7 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
 }
 
 /**
- * Formats previous pages for prompt display
+ * Formats previous pages and plot flags for prompt display
  * 
  * Takes an array of previous pages with actions and formats them
  * for inclusion in AI prompts to provide narrative context.
@@ -1444,6 +1444,10 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
  * 
  * Example output:
  * ```
+ * • Page 1 (place: Ethan's room)
+ *   [mystery_started] Ethan's friend is missing (MAJOR)
+ * • Page 2 (place: old river)
+ *   [clue_found] Ethan found a dead body (MAJOR)
  * • Page 3 (place: classroom, timeOfDay: morning)
  *   I walked into the empty classroom, the chalkboards still covered in yesterday's equations. Sarah was already there, sitting by the window with that mysterious book I'd seen her reading.
  *   → Selected action: "Ask about the book" (type: dialogue)
@@ -1454,11 +1458,13 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
  *   → Hint for page 5: "The map shows a hidden passage beneath the school" (type: discovery)
  * ```
  */
-function formatPreviousPagesForPrompt(previousPages: UserStoryPage[], plotFlags: PlotFlag[]): string {
+function formatPreviousPagesForPrompt(currentPage: number, previousPages: UserStoryPage[], plotFlags: PlotFlag[], maxDisplayed: number = MAX_PAGE_HISTORY): string {
   if (previousPages.length === 0) return 'No previous pages yet.';
 
+  const filterredPreviousPages = previousPages.slice(-maxDisplayed).sort((a, b) => a.page - b.page);
+
   // Step 1: Extract 'page' values into a Set for fast O(1) lookups
-  const pageNumbers = new Set(previousPages.map(p => p.page));
+  // const pageNumbers = new Set(filterredPreviousPages.map(p => p.page));
 
   // Step 2: Filter plot flags for older pages
   const filterredPlotFlags = [];
@@ -1468,8 +1474,25 @@ function formatPreviousPagesForPrompt(previousPages: UserStoryPage[], plotFlags:
     const seen = new Set<string>();
   
     const filterred = sorted.filter(flag => {
-      // Skip plot flags for shown previous pages
-      if (pageNumbers.has(flag.page)) return false;
+      // Skip plot flags which shown on previous pages
+      // if (pageNumbers.has(flag.page)) return false;
+
+      // currentPage = 10
+      // maxDisplayed = 3
+      // pages displayed: 7,8,9
+      // flags displayed: 4,5,6 (major & minor)
+      // if (flag.page >= 7) return false;
+      if (flag.page >= currentPage - maxDisplayed) return false;
+      // TODO: but if...
+      // currentPage = 2
+      // pages displayed: 1
+      // flags displayed: none
+      // if (flag.page >= 2 - 3) return false;
+      // if (1 >= -1) return false; // will pass through, so both plot flag for page 1 and previous page 1 displayed???
+      
+      // Skip minor plot flags in older pages
+      // if (flag.page below 10-6 = 4) -> 1,2,3 (only major events)
+      if (flag.page < currentPage - maxDisplayed * 2 && !flag.isMajorEvent) return false;
 
       // Skip duplicate plot flags
       const key = `${flag.page}|${flag.type}|${flag.fact}`;
@@ -1485,9 +1508,9 @@ function formatPreviousPagesForPrompt(previousPages: UserStoryPage[], plotFlags:
   }
   
   // const formattedPlotFlags = plotFlags.sort((a, b) => a.page - b.page).filter(f => !previousPages.some(p => p.page === f.page)).map(f => formatPlotFlag(f));
-  // const formattedPreviousPages = previousPages.sort((a, b) => a.page - b.page).map(formatPreviousPageEntry);
-  const formattedPlotFlags = filterredPlotFlags.sort((a, b) => a.page - b.page).map(f => formatPlotFlag(f));
-  const formattedPreviousPages = previousPages.sort((a, b) => a.page - b.page).map(p => {
+  // const formattedPreviousPages = filterredPreviousPages.sort((a, b) => a.page - b.page).map(formatPreviousPageEntry);
+  const formattedPlotFlags = filterredPlotFlags.map(f => formatPlotFlag(f));
+  const formattedPreviousPages = filterredPreviousPages.map(p => {
     const plotFlag = plotFlags.find(f => f.page === p.page); // Only 1 plot flag per page
     return formatPreviousPageEntry(p, plotFlag);
   });
@@ -2043,7 +2066,7 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   const { book, advancedState: state, actionedPage: page, previousPages } = params;
   const { mc, summary } = book;
   const { actions } = page;
-  const { contextHistory, plotFlags, factsHistory } = state;
+  const { page: currentPage, contextHistory, plotFlags, factsHistory } = state;
   const stateInfo = getStoryStateInfo(state);
   const { phase, phaseGoal } = stateInfo;
 
@@ -2070,7 +2093,7 @@ CURRENT FACTS:
 ${formatCurrentFacts(factsHistory)}
 
 PREVIOUS PAGES:
-${formatPreviousPagesForPrompt(previousPages, plotFlags)}
+${formatPreviousPagesForPrompt(currentPage, previousPages, plotFlags)}
 
 CURRENT PAGE:
 • Page ${page.page}: ${formatPageTextForPrompt(page.text)}

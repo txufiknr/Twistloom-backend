@@ -293,6 +293,7 @@ export type PsychologicalFlags = {
  * and narrative events that drive the story forward.
  */
 export const plotFlagTypes = [
+  // TODO: should I add 'dark_discovery' plot flag type?
   "clue_found",         // Discovery of important information or evidence
   "secret_revealed",    // Hidden truth comes to light
   "betrayal_witnessed", // Character betrayal observed or experienced
