@@ -195,6 +195,88 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
 }
 
 /**
+ * Calculation Modes:
+ * 1. Keyword overlap score using unnest + ANY — optimal for tiny arrays (≤10 tags).
+ * 2. Jaccard Similarity Formula: J(A, B) = |A ∩ B| / |A ∪ B|
+ *    Range:
+ *    0.0 → no shared keywords
+ *    1.0 → identical keyword sets
+ * 
+ * Jaccard vs Overlap:
+ * Jaccard penalises books with more tags
+ * (e.g. a 9-keyword book sharing 5 keywords scores lower than a 5-keyword book sharing 5).
+ * Raw overlap count tends to produce better "more like this" results
+ * for browsable content like Twistloom.
+ * 
+ * Jaccard similarity measures the ratio of shared keywords to total
+ * unique keywords: J(A, B) = |A ∩ B| / |A ∪ B|
+ *
+ * Requires:
+ * - books.keywords: text[]
+ * - GIN index on books.keywords (for the && pre-filter in .where())
+ * 
+ * @param targetKeywords Keywords from the target book
+ * @param mode Prefer 'overlap' for production unless testing shows meaningful ranking improvements
+ */
+export function buildKeywordsSimilarityScore(
+  targetKeywords: string[],
+  mode: 'overlap' | 'jaccard' = 'overlap'
+) {
+  // Parameterized: produces ARRAY[$1, $2, ...]::text[] — no sql.raw, no manual escaping
+  const targetArray = sql`ARRAY[${sql.join(targetKeywords.map((k) => sql`${k}`), sql`, `)}]::text[]`;
+
+  // Single-pass Jaccard: one UNION ALL + one GROUP BY derives both counts.
+  // COALESCE to 0 guards against empty arrays (shouldn't occur after the && pre-filter,
+  // but prevents NULL bleed into ORDER BY if dirty data ever bypasses the filter).
+  if (mode === 'jaccard') {
+    /**
+     * Jaccard similarity score.
+     * 
+     * Example:
+     *   Target:    ['thriller', 'crime', 'mystery']
+     *   Candidate: ['thriller', 'crime', 'horror']
+     *   ∩ = ['thriller', 'crime'] → 2
+     *   ∪ = ['thriller', 'crime', 'mystery', 'horror'] → 4
+     *   Score = 2 / 4 = 0.5
+     */
+    return sql<number>`(
+      SELECT COALESCE(
+        COUNT(*) FILTER (WHERE in_candidate AND in_target_set)::float /
+        NULLIF(COUNT(*), 0),
+        0
+      )
+      FROM (
+        SELECT
+          kw,
+          bool_or(NOT from_target) AS in_candidate,
+          bool_or(from_target)     AS in_target_set
+        FROM (
+          SELECT unnest(${books.keywords}) AS kw, false AS from_target
+          UNION ALL
+          SELECT unnest(${targetArray})    AS kw, true  AS from_target
+        ) combined
+        GROUP BY kw
+      ) deduped
+    )`;
+  }
+
+  /**
+   * Number of shared keywords.
+   *
+   * Example:
+   * Target:    ["thriller", "crime", "mystery"]
+   * Candidate: ["thriller", "crime", "horror"]
+   *
+   * Score = 2
+   */
+  return sql<number>`(
+    SELECT COUNT(*)::int
+    FROM unnest(${books.keywords}) AS kw
+    WHERE kw = ANY(${targetArray})
+  )`;
+}
+
+/**
  * Builds an enriched similar books select object with similarity score.
  * 
  * Similarity is calculated as the number of shared keywords
@@ -207,138 +289,25 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
  * IMPORTANT:
  * - Requires books.keywords to be text[]
  * - Requires GIN index on books.keywords
- * - Candidate filtering should use:
- *   sql`${books.keywords} && ${targetKeywords}`
+ * - Candidate filtering should use: sql`${books.keywords} && ${targetKeywords}`
  *
  * @param targetKeywords Keywords from the target book
  * @param currentUserId Optional current user ID
  * @param language Optional translation language
  */
-export function getSimilarBookSelectOverlap(
+export function getSimilarBookSelect(
   targetKeywords: string[],
   currentUserId: string | null = null,
-  language: string | null = null
+  language: string | null = null,
+  mode: 'overlap' | 'jaccard' = 'overlap'
 ) {
   const baseSelect = getEnrichedBookSelect(currentUserId, language);
-  const similarityScore = sql<number>`(
-    SELECT COUNT(*)
-    FROM unnest(${books.keywords}) AS keyword
-    WHERE keyword = ANY(${targetKeywords})
-  )`;
+  const similarityScore = buildKeywordsSimilarityScore(targetKeywords, mode);
 
   return {
     ...baseSelect,
-
-    /**
-     * Number of shared keywords.
-     *
-     * Example:
-     * Target:    ["thriller", "crime", "mystery"]
-     * Candidate: ["thriller", "crime", "horror"]
-     *
-     * Score = 2
-     */
     similarityScore,
-
-    /**
-     * Exposed separately for ORDER BY reuse.
-     */
-    similarityScoreExpr: similarityScore,
-  };
-}
-
-/**
- * Builds an enriched similar books select object using Jaccard
- * similarity on keyword arrays.
- *
- * Jaccard similarity measures the ratio of shared keywords
- * to total unique keywords:
- *
- * Example:
- *
- * Target:
- * ["thriller", "crime", "mystery"]
- *
- * Candidate:
- * ["thriller", "crime", "horror"]
- *
- * Intersection:
- * ["thriller", "crime"]
- * => 2
- *
- * Union:
- * ["thriller", "crime", "mystery", "horror"]
- * => 4
- *
- * Similarity:
- * 2 / 4 = 0.5
- *
- * Advantages:
- * - Produces a normalized score between 0 and 1
- * - Penalizes books with many unrelated keywords
- * - Useful when keyword counts vary significantly
- * - More mathematically rigorous
- *
- * Disadvantages:
- * - More CPU-intensive than simple overlap count
- * - Requires array expansion (unnest/intersect/union)
- * - Harder to explain and tune
- * - Usually provides little recommendation improvement
- *   for small AI-generated keyword sets
- *
- * Recommendation:
- * Prefer {@link getSimilarBookSelectOverlap} for production unless
- * testing shows meaningful ranking improvements.
- *
- * @param targetKeywords Keywords from the target book
- * @param currentUserId Optional current user ID
- * @param language Optional translation language
- */
-export function getSimilarBookSelectJaccard(
-  targetKeywords: string[],
-  currentUserId: string | null = null,
-  language: string | null = null
-) {
-  const baseSelect = getEnrichedBookSelect(currentUserId, language);
-  const similarityScore = sql<number>`(
-    WITH intersection_count AS (
-      SELECT COUNT(*)::float AS count
-      FROM (
-        SELECT unnest(${books.keywords})
-        INTERSECT
-        SELECT unnest(${targetKeywords}::text[])
-      ) i
-    ),
-    union_count AS (
-      SELECT COUNT(*)::float AS count
-      FROM (
-        SELECT unnest(${books.keywords})
-        UNION
-        SELECT unnest(${targetKeywords}::text[])
-      ) u
-    )
-    SELECT
-      i.count / NULLIF(u.count, 0)
-    FROM intersection_count i, union_count u
-  )`;
-
-  return {
-    ...baseSelect,
-
-    /**
-     * Jaccard similarity score.
-     * 
-     * J(A, B) = |A ∩ B| / |A ∪ B|
-     *
-     * Range:
-     * 0.0 → no shared keywords
-     * 1.0 → identical keyword sets
-     */
-    similarityScore,
-
-    /**
-     * Exposed separately for ORDER BY reuse.
-     */
+    // Reuse the same expression reference for ORDER BY
     similarityScoreExpr: similarityScore,
   };
 }

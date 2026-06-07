@@ -339,8 +339,8 @@ export const books = pgTable(
     imageId, // ImageKit file ID for deletion
     trendingScore: real("trending_score").default(0),
     isOriginal: boolean("is_original").notNull().default(false),
-    // keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // e.g. ['thriller', 'action', 'crime', 'horror', 'killer', 'murder', 'mystery', 'suspense']
-    keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['thriller', 'action', 'crime', 'horror', 'killer', 'murder', 'mystery', 'suspense']
+    // keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['reality-bending', 'psychological-horror', 'unreliable-narrator', 'time-loop-feel', 'paranormal', 'forgotten-trauma']
     status: text("status").$type<BookStatus>().notNull().default('draft'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book

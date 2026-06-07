@@ -59,7 +59,7 @@ import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGe
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
-import { getEnrichedBookSelect, getSimilarBookSelectOverlap, buildBookQuery, visitBookPage } from "../services/book-controller.js";
+import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { lastUpdatedFilterOptions } from "../types/book.js";
@@ -1078,10 +1078,8 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
 /**
  * GET /api/books/:id/similar
  * 
- * Retrieves similar books based on keyword Jaccard similarity.
+ * Retrieves similar books based on keyword tags similarity.
  * Uses PostgreSQL's native array operations to calculate similarity scores.
- * 
- * Jaccard Similarity Formula: J(A, B) = |A ∩ B| / |A ∪ B|
  * 
  * Returns books with highest keyword overlap, sorted by similarity score.
  * Includes author information and user-specific engagement flags.
@@ -1125,7 +1123,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
     const targetKeywords = book.keywords;
 
     // Get similar books with enriched data
-    const similarBooksSelect = getSimilarBookSelectOverlap(targetKeywords, currentUserId, req.headerLanguage);
+    const similarBooksSelect = getSimilarBookSelect(targetKeywords, currentUserId, req.headerLanguage);
     const similarBooks = await dbRead
       .select(similarBooksSelect)
       .from(books)
