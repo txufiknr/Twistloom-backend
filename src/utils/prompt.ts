@@ -1397,8 +1397,8 @@ function formatPreviousPageEntry(page: UserStoryPage): string {
   const sceneInfo = [
     page.place ? `place: ${page.place}` : '',
     page.timeOfDay ? `time: ${page.timeOfDay}` : '',
-    page.mood ? `mood: ${page.mood}` : '',
-    page.weather ? `weather: ${page.weather}` : '',
+    page.mood && page.mood !== 'other' ? `mood: ${page.mood}` : '',
+    page.weather && page.weather !== 'unknown' ? `weather: ${page.weather}` : '',
   ].filter(Boolean).join(', ')
   
   // Base page information
@@ -2251,44 +2251,15 @@ function formatRouteContext(state: StoryState): string {
 // }
 
 /**
- * Formats plot flags for prompt display
- * 
- * Creates a formatted string of plot flags as bullet points
- * for inclusion in AI prompts to track story progression.
- * 
- * @param state - Story state containing plot flags
- * @returns Formatted string with plot flags as bullet points
- */
-// function formatPlotFlags(plotFlags: PlotFlag[]): string {
-//   if (plotFlags.length === 0) return 'No plot flags yet';
-  
-//   // Sort by page number for chronological display
-//   // Deduplicate identical page+type+fact while preserving chronological order
-//   const sortedFlags = [...plotFlags].sort((a, b) => a.page - b.page);
-
-//   const seen = new Set<string>();
-//   const deduped: PlotFlag[] = [];
-
-//   for (const flag of sortedFlags) {
-//     const key = `${flag.page}|${flag.type}|${flag.fact}`;
-//     if (seen.has(key)) {
-//       console.warn(`[formatPlotFlags] 👀 Duplicate plot flag removed in page ${flag.page}: ${flag.fact} (type: ${flag.type})`);
-//       continue;
-//     }
-//     seen.add(key);
-//     deduped.push(flag);
-//   }
-
-//   return deduped.map(flag => `• Page ${flag.page} [${flag.type}]: ${flag.fact}${flag.isMajorEvent ? ' (MAJOR)' : ''}`).join('\n');
-// }
-
-/**
  * Formats plot flags and recent major events for anti-repetition guidance.
  *
  * Shows plot flags and the most recent major events so the AI can avoid
  * generating similar major beats in close succession.
  * 
- * @todo add examples
+ * @example
+ * • Page 18 [DISCOVERY] Ethan finds the basement key (place: Sarah's house)
+ * • Page 21 [REVELATION] Sarah learns her father is alive
+ * • Page 24 [BETRAYAL] Marcus secretly contacted the cult
  *
  * @param plotFlags Story plot flags
  * @param limit Maximum number of recent major events to include
@@ -2308,15 +2279,7 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
     }
     seen.add(key);
     return true;
-  }).map(flag => {
-    const details: string[] = [];
-    if (flag.place) details.push(`Location: ${flag.place}`);
-
-    return [
-      `• Page ${flag.page} ${flag.isMajorEvent ? '[MAJOR] ' : ''}[${flag.type}] ${flag.fact}`,
-      ...details.map(d => `  - ${d}`)
-    ].join('\n');
-  }).join('\n');
+  }).map(formatPlotFlag).join('\n');
 
   const recentMajorEvents = plotFlags
     .filter(flag => flag.isMajorEvent)
@@ -2324,24 +2287,20 @@ function formatPlotFlags(plotFlags: PlotFlag[]): string {
     .slice(-MAX_RECENT_MAJOR_EVENTS);
 
   if (recentMajorEvents.length) {
-    const majorEventsFormatted = recentMajorEvents.map(flag => {
-      const location = flag.place ? ` (place: ${flag.place})` : '';
-      return `• Page ${flag.page} [${flag.type}] ${flag.fact}${location}`;
-    }).join('\n');
-
-    // Recent Major Events (avoid repeating similar major beats too soon):
-    // • Page 18 [DISCOVERY] Ethan finds the basement key (place: Sarah's house)
-    // • Page 21 [REVELATION] Sarah learns her father is alive
-    // • Page 24 [BETRAYAL] Marcus secretly contacted the cult
+    const majorEventsFormatted = recentMajorEvents.map(formatPlotFlag).join('\n');
     return `${formatted}\n\nRecent Major Events (avoid repeating similar major beats too soon):\n${majorEventsFormatted}
 
 Major-event pacing:
 - Review recent major events before introducing a new major event.
 - If multiple major events occurred recently, prefer fallout, consequences, investigation, tension, or character reactions before introducing another major event.
-- Do not create major events solely to escalate the plot.`;
+- Do NOT create major events solely to escalate the plot.`;
   }
 
   return formatted;
+}
+
+function formatPlotFlag(flag: PlotFlag): string {
+  return `• Page ${flag.page} [${flag.type}] ${flag.fact}${flag.place ? ` (place: ${flag.place})` : ''}`;
 }
 
 /**
