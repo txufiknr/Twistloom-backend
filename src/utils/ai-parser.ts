@@ -212,7 +212,7 @@ function toRootSchema(
  * });
  */
 export async function parseAISafely<T extends Record<string, unknown>>(
-  response: AIResponse<T>,
+  response: Pick<AIResponse<T>, 'output' | 'provider'>,
   options: ParseAIOptions<T> = {},
 ): Promise<T> {
   const { output, provider } = response;

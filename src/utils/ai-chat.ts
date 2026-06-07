@@ -948,7 +948,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
             // Continue to parsing original generated result
           } finally {
             try {
-              // Ensure we emit evaluation complete to keep progress lifecycle consistent
+              // Ensure we emit evaluation complete regardless of outcome to keep
+              // progress lifecycle consistent (best-effort)
               await onProgress?.({ type: 'ai_evaluation_complete' });
             } catch {
               // Never let a progress callback mask a real evaluation error
@@ -956,33 +957,31 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
           }
         }
 
-        // TODO: to ensure when `evaluatorPrompt` provided:
-        // 1. Best-effort on parsing evaluation result (above)
-        // 2. If stil fail, try parse original AI response (unevaluated)
-
         // Parse the output into the expected type T
+        // 1. Best-effort on parsing evaluation result when `evaluatorPrompt` provided (above)
+        // 2. If stil fail, try parse original AI response (unevaluated)
         let parsedResult: T;
         
         if (outputAsJson) {
           // For JSON-like output, try to parse as object using parseAISafely
-          const compatibleResponse: AIResponse<Record<string, unknown>> = {
-            ...result,
-            result: undefined
-          };
-          parsedResult = await parseAISafely(compatibleResponse, {
+          parsedResult = await parseAISafely(result, {
             logContext: `${provider}-${context}`,
             schema: outputJsonStructure,
             requiredFields: outputJsonRequired,
             fallbackField: outputJsonFallbackField
           }) as T;
         } else {
-          // For non-JSON output, treat as string
+          // Non-JSON mode — treat the raw output string as the result directly.
           parsedResult = result.output as T;
+        }
+
+        if (!parsedResult) {
+          throw new Error(`Can't parse ${outputAsJson ? 'JSON' : 'string'} output, got falsy result`);
         }
         
         return {
           ...result,
-          result: parsedResult // TODO: ensure parsedResult is defined
+          result: parsedResult
         } satisfies AIResponse<T>;
       } catch (parseError) {
         console.warn(`[${provider}] ⚠️ Failed to parse as type T, trying next provider:`, parseError);
