@@ -64,9 +64,6 @@ export const pages = pgTable(
     place: text("place"), // Current place where the story is taking place
     weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
     timeOfDay: text("time_of_day"), // Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'
-    // charactersPresent: jsonb("characters").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Characters present in the page
-    // keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
-    // importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
     charactersPresent: text("characters").array().notNull().default(sql`ARRAY[]::text[]`),
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
     importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),

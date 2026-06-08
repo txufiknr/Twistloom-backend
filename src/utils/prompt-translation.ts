@@ -2,157 +2,54 @@ import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_TRANSLATION, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import type { AIDocument, AIPromptForJson, AIResponse } from "../types/ai-chat.js";
 import { SUMMARY_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
-import type { ActionTranslation, StoryState } from "../types/story.js";
+import type { ActionTranslation } from "../types/story.js";
 import type { BookTranslation, PageTranslation, PageTranslationBulk, PageTranslationBulkResponse, BookTranslationBulkResponse, BookTranslationBulk, PageToTranslate, BookToTranslate, Book } from "../types/book.js";
 import { BOOK_TRANSLATION_REQUIRED_FIELDS, BOOK_TRANSLATION_SCHEMA_DEFINITION, BULK_BOOK_TRANSLATION_REQUIRED_FIELDS, BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION, PAGE_TRANSLATION_REQUIRED_FIELDS, PAGE_TRANSLATION_SCHEMA_DEFINITION, BULK_PAGE_TRANSLATION_REQUIRED_FIELDS, BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION } from "../schema/book.js";
-import { executePromptForJSON } from "./prompt.js";
+import { executePromptForJSON, getMainCharacterInfo } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
 
 /**
  * For translating book meta (title, hook, summary) and page text
  */
-const PROMPT_SYSTEM_TRANSLATION = `
-You are an expert literary translator specializing in thriller, suspense, mystery, horror, and young-adult fiction.
+const PROMPT_SYSTEM_TRANSLATION = `You are an expert literary translator specializing in thriller, suspense, mystery, horror, and young-adult fiction.
 
-Your task is to translate a story into the target language while preserving the author's original storytelling experience.
+Translate the story into the target language while preserving the author's original storytelling experience.
 
 PRIMARY GOAL:
-
 - Produce a natural, professionally localized story text that feels as if it were originally written by a skilled thriller novelist in the target language.
 - Readers should never feel they are reading a translation.
 
----
-STORY CONTENT:
+PRESERVE EXACTLY:
+- Story facts, events, clues, foreshadowing, and continuity.
+- Narrative perspective and tense.
+- Character personalities, voices, relationships, and intentions.
+- Dialogue meaning, emotion, subtext, and formality level.
+- Suspense, atmosphere, pacing, and emotional impact.
+- Names, locations, objects, terminology, lore, and canon.
 
-Do NOT add, remove, alter, reinterpret, summarize, censor, or expand any plot information.
+STORYTELLING STYLE:
+- Preserve the original pacing, atmosphere, tension, suspense, emotional intensity, and narrative momentum.
+- Maintain cliffhangers, mystery, dread, fear, anticipation, sudden reveals, and other thriller or horror storytelling techniques.
+- Translation should evoke the same emotional experience as the original.
 
-PRESERVE exactly:
-- Events
-- Facts
-- Character actions
-- Character intentions
-- Clues
-- Dialogue meaning
-- Story progression
-- Foreshadowing
-- Mystery elements
+LOCALIZATION:
+- Translate idioms and colloquial expressions naturally. Prefer equivalent emotional impact over literal wording.
+- Maintain consistent translations for recurring names, places, objects, organizations, and key terminology.
+- Translate, do not rewrite. Improve only linguistic naturalness, never story content.
 
----
-NARRATIVE PERSPECTIVE:
+PROHIBITED (DO NOT):
+- Add, remove, alter, summarize, reinterpret, or censor information.
+- Explain the translation.
+- Add notes, commentary, footnotes, or warnings.
+- Change names, locations, lore, worldbuilding, or canon.`;
 
-Preserve the original perspective exactly. NEVER change narrator perspective.
-Examples:
-- First person remains first person
-- Second person remains second person
-- Third person remains third person
+const PROMPT_SYSTEM_PAGE_TRANSLATION: string = `${PROMPT_SYSTEM_TRANSLATION}
 
----
-VERB TENSE:
-
-Preserve narrative tense consistency. Do NOT randomly switch tenses.
-Examples:
-- Past tense narration stays past tense
-- Present tense narration stays present tense
-
----
-CHARACTER VOICE:
-
-Preserve each character's personality and speaking style. AVOID making all characters sound alike.
-Examples:
-- Confident characters remain confident
-- Nervous characters remain nervous
-- Children sound like children
-- Teenagers sound like teenagers
-- Villains retain their distinctive voice
-
----
-SUSPENSE, THRILLER & HORROR STORYTELLING:
-
-- Preserve pacing, tension, atmosphere, emotional impact, and narrative momentum with high priority.
-- Maintain short dramatic sentences, abrupt transitions, cliffhangers, sudden reveals, mystery, dread, curiosity, fear, anxiety, isolation, shock, anticipation, and emotional escalation.
-- Favor clarity and readability without weakening suspense.
-- If a passage feels abrupt, unsettling, tense, or suspenseful in the source language, it should feel equally so in the translation.
-- Never dilute tension, suspense, atmosphere, or emotional immediacy.
-
----
-LOCALIZATION RULES:
-
-- Translate idioms, expressions, and colloquialisms naturally when needed.
-- Prefer equivalent emotional impact over literal wording.
-
----
-PROHIBITED ACTIONS (DO NOT):
-
-- Rewrite the story
-- Explain the translation
-- Improve/modernize/simplify the plot
-- Add commentary/notes/footnotes/warnings
-- Localize names
-- Change locations
-- Alter worldbuilding
-- Modify lore
-- Change story canon`;
-
-/**
- * For page text translation, including story context, pacing, continuity, dialogue
- */
-const PROMPT_SYSTEM_PAGE_TRANSLATION = `${PROMPT_SYSTEM_TRANSLATION}
-
----
-PAGE FORMATTING RULES:
-
-Preserve exactly:
-- Paragraph breaks
-- Line breaks
-- Dialogue formatting
-- Quotation style when appropriate
-- Emphasis structure
-- Scene transitions
-
-Do NOT merge or split paragraphs unnecessarily.
-
----
-INTERACTIVE STORY REQUIREMENTS:
-
-This page belongs to a branching interactive narrative. Future pages may depend on exact details from this page. NEVER introduce contradictions.
-
-Preserve:
-- Continuity
-- Clues
-- Object names
-- Character names
-- Important terminology
-- Recurring phrases when possible
-
----
-DIALOGUE:
-
-- Translate dialogue naturally.
-- Dialogue should sound like real native speakers while preserving intent, emotion, personality, and subtext.
-- Do NOT translate word-for-word when doing so would sound unnatural.
-
----
-LANGUAGE REGISTER:
-
-Preserve the original level of formality and social tone. Do NOT make dialogue more formal, literary, or sophisticated than the original.
-Examples:
-- Casual speech remains casual
-- Formal speech remains formal
-- Slang remains appropriately informal
-- Emotional dialogue remains emotionally natural
-
----
-REVIEW & FIX SILENTLY:
-
-Before returning, verify that:
-1. All story information is preserved.
-2. Tone matches the original.
-3. Character voices remain distinct.
-4. Suspense level is maintained.
-5. Narrative perspective is unchanged.
-6. Tense consistency is preserved.
-7. Formatting is preserved.
-8. The translation reads like native fiction, not machine translation.`;
+PAGE RULES:
+- Preserve paragraph breaks, line breaks, dialogue formatting, scene transitions, and emphasis structure.
+- This page belongs to a branching interactive narrative. Future pages may depend on exact details from this page.
+- Translate dialogue naturally for native speakers while preserving intent, emotion, personality, subtext, and level of formality.
+- Do not make dialogue more formal, literary, or sophisticated than the original.`;
 
 // ============================================================================
 // BOOK TRANSLATION
@@ -308,6 +205,16 @@ export async function translateBooksBulk(
 // PAGE TRANSLATION
 // ============================================================================
 
+const pageTranslationReview: string = `
+□ All story information preserved.
+□ Tone matches the original.
+□ Character voices remain distinct.
+□ Suspense level maintained.
+□ Narrative perspective unchanged.
+□ Tense consistency preserved.
+□ Formatting preserved.
+□ Output reads like native fiction, not translation.`;
+
 const pageTranslationOutputFormat: string = `{
   "text": "Translated page text",
   "place": "Translated place name",
@@ -387,13 +294,11 @@ TRANSLATION GUIDELINES:
  */
 export async function translatePage(
   page: PageToTranslate,
-  // book: Pick<Book, 'title' | 'summary' | 'mc'>,
-  // state: StoryState,
   targetLanguage: string
 ): Promise<AIResponse<PageTranslation>> {
+  // TODO: add previous page text (translated) for context
   const prompt = `TASK: Translate the following page content to ${formatLanguage(targetLanguage)}.\n\n${formatPagePrompt(page)}`;
   const hasAsterisks = page.text.includes('*');
-  // TODO: add to document for context: previousPageSummary, pageContent
   const response = await executePromptForJSON<PageTranslation>({
     prompt,
     configs: {
@@ -404,22 +309,13 @@ export async function translatePage(
         config: AI_CHAT_CONFIG_DEFAULT,
         modelSelection: AI_CHAT_MODELS_WRITING,
         systemPrompt: PROMPT_SYSTEM_PAGE_TRANSLATION,
-        documents: [
-          {
-            title: 'STORY CONTEXT',
-            snippet: `
-Story title:
-Story synopsis:
-Target language: ${targetLanguage}
-            `.trim()
-          }
-        ],
         context: 'page-translation',
         logPrompts: true,
       }
     } satisfies AIPromptForJson<PageTranslation>,
     jsonStructure: pageTranslationOutputFormat,
     fieldInstructions: buildPageTranslationFieldInstructions(hasAsterisks),
+    thinkThenOutput: pageTranslationReview
   });
 
   if (!response.result) {
@@ -490,6 +386,7 @@ export async function translatePagesBulk(
     } satisfies AIPromptForJson<PageTranslationBulk>,
     jsonStructure: bulkPageTranslationOutputFormat,
     fieldInstructions: buildPageTranslationFieldInstructions(hasAsterisks, true),
+    thinkThenOutput: pageTranslationReview
   });
 
   if (!response.result) {
@@ -529,24 +426,40 @@ export async function translatePagesBulk(
 
 function formatPageDocument(page: PageToTranslate, index: number): AIDocument {
   return {
-    title: `Page ${index + 1}: ${page.place || 'Unknown Location'}`,
-    snippet: `Page ID: ${page.id}\n${formatPagePrompt(page)}`
+    title: `Page ${index + 1}`,
+    snippet: `Page ID: ${page.id}\n\n${formatPagePrompt(page)}`
   };
 }
 
 function formatBookDocument(book: BookToTranslate, index: number): AIDocument {
   return {
     title: `Book ${index + 1}: ${book.title}`,
-    snippet: `Book ID: ${book.id}\n${formatBookPrompt(book)}`
+    snippet: `Book ID: ${book.id}\n\n${formatBookPrompt(book)}`
   };
 }
 
 function formatPagePrompt(page: PageToTranslate): string {
-  return `Text:\n"""\n${page.text}\n"""
+  const { book, state } = page;
+  return `TITLE: ${book.title}
+SYNOPSIS: ${book.summary}
+MAIN CHARACTER (MC): ${getMainCharacterInfo(book.mc, state)}
+
+---
+TO TRANSLATE:
+
+Text:
+"""
+${page.text}
+"""
+
 Place: ${page.place || 'unknown'}
+Time: ${page.timeOfDay || 'unknown'}
+Mood: ${page.mood || 'unknown'}
+Weather: ${page.weather || 'unknown'}
 Key Events: ${page.keyEvents?.join(', ') || 'none'}
 Important Objects: ${page.importantObjects?.join(', ') || 'none'}
-Actions: ${page.actions?.map(a => a.text)?.join('; ') || 'none'}`;
+Actions: ${page.actions?.map(a => a.text)?.join('; ') || 'none'}
+Context History: ${state.contextHistory || 'none'}`;
 }
 
 function formatBookPrompt(book: BookToTranslate): string {

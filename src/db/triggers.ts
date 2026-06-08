@@ -643,15 +643,22 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION update_pending_generation_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- Count actions that do not have a valid non-empty
-        -- destinationPageIds array. Missing, null, malformed,
-        -- or empty values are considered pending generation.
+        -- Count actions that do NOT have a valid, non-empty destinationPageIds array.
+        -- Explicitly handles all falsy cases:
+        --   - key absent         → action->'destinationPageIds' IS NULL
+        --   - key is JSON null   → jsonb_typeof = 'null'
+        --   - key is not array   → jsonb_typeof <> 'array'
+        --   - array is empty     → jsonb_array_length = 0
+        --
+        -- Without the IS NULL guard, NOT (NULL = 'array' AND ...) → NOT NULL → NULL,
+        -- which is falsy in WHERE, causing absent keys to never be counted.
         NEW.pending_generation_count = (
           SELECT COUNT(*)
           FROM jsonb_array_elements(NEW.actions) AS action
-          WHERE NOT (
-            jsonb_typeof(action->'destinationPageIds') = 'array'
-            AND jsonb_array_length(action->'destinationPageIds') > 0
+          WHERE (
+            (action->'destinationPageIds') IS NULL
+            OR jsonb_typeof(action->'destinationPageIds') <> 'array'
+            OR jsonb_array_length(action->'destinationPageIds') = 0
           )
         );
         RETURN NEW;
@@ -675,9 +682,11 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
         EXECUTE FUNCTION update_pending_generation_count();
     `);
 
+    // No "OF actions" — fire on ALL updates so manual writes to
+    // pending_generation_count are always overridden by the actual count.
     await dbWrite.execute(`
       CREATE TRIGGER pages_update_pending_count_trigger
-        BEFORE UPDATE OF actions ON pages
+        BEFORE UPDATE ON pages
         FOR EACH ROW
         EXECUTE FUNCTION update_pending_generation_count();
     `);
@@ -687,6 +696,26 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
     console.error("❌ Failed to create pending generation count trigger:", getErrorMessage(error));
     throw error;
   }
+}
+
+async function backfillPendingGenerationCount(): Promise<void> {
+  const { dbWrite } = await import("../db/client.js");
+
+  await dbWrite.execute(`
+    UPDATE pages
+    SET pending_generation_count = (
+      SELECT COUNT(*)
+      FROM jsonb_array_elements(actions) AS action
+      WHERE (
+        (action->'destinationPageIds') IS NULL
+        OR jsonb_typeof(action->'destinationPageIds') <> 'array'
+        OR jsonb_array_length(action->'destinationPageIds') = 0
+      )
+    )
+    WHERE true; -- triggers are BEFORE triggers, so they don't run on this UPDATE
+                -- we must compute it explicitly here
+  `);
+  console.log("✅ Backfilled pending_generation_count for all existing rows");
 }
 
 /**
@@ -718,6 +747,9 @@ export async function ensureTriggers(): Promise<void> {
     // Drop all existing triggers first to ensure clean state
     await dropAllTriggers();
 
+    // Pre-fill correct pending generation count values
+    await backfillPendingGenerationCount();
+    
     // Create user session exclusivity trigger
     await ensureUserSessionTrigger();
 

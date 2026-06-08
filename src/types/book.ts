@@ -321,13 +321,17 @@ export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<
 export type PageTranslation = {
   text: string;
   place: string;
+  time: string;
+  mood: string;
+  weather: string;
   keyEvents: string[];
   importantObjects: string[];
   actions: ActionTranslation[];
-}
+  contextHistory: string;
+};
 
-// export type PageToTranslate = Pick<DBPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
-export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
+// export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
+export type PageToTranslate = PersistedStoryPage & { state: StoryState } & { book: Pick<Book, 'title' | 'summary' | 'mc'> };
 export type PageTranslationWithID = PageTranslation & { pageId: string };
 export type PageTranslationBulk = { translations: PageTranslationWithID[] };
 export type PageTranslationBulkResponse = PageTranslationBulk & Pick<AIResponse<PageTranslationBulk>, 'provider' | 'model'>;

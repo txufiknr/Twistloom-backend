@@ -247,8 +247,12 @@ export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies 
 export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   text: { type: 'string' },
   place: { type: 'string' },
+  time: { type: 'string' },
+  mood: { type: 'string' },
+  weather: { type: 'string' },
   keyEvents: { type: 'array', items: { type: 'string' } },
   importantObjects: { type: 'array', items: { type: 'string' } },
+  contextHistory: { type: 'string' },
   actions: { type: 'array', items: {
     type: 'object',
     properties: {

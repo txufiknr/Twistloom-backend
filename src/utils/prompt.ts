@@ -1576,7 +1576,7 @@ function formatPreviousPagesForPrompt(
  *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18 at School
  *     → Consequence (medium): Cannot run fast"
  */
-function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: StoryState): string | null {
+export function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: StoryState): string | null {
   if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
   const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
   
