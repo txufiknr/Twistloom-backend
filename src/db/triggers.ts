@@ -623,117 +623,117 @@ async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
   }
 }
 
-/**
- * Creates trigger to auto-update pendingGenerationCount based on actions
- *
- * This trigger fires BEFORE INSERT OR UPDATE on pages table:
- * 1. When actions column is changed
- * 2. Counts actions where destination.pageId is null
- * 3. Updates pendingGenerationCount with that count
- * 4. Ensures SSOT for pending generation tracking
- *
- * Idempotency:
- * - Uses CREATE OR REPLACE FUNCTION
- * - Safe to run multiple times without errors
- */
-async function ensurePendingGenerationCountTrigger(): Promise<void> {
-  try {
-    // Create the trigger function
-    await dbWrite.execute(`
-      CREATE OR REPLACE FUNCTION update_pending_generation_count()
-      RETURNS TRIGGER AS $$
-      BEGIN
-        -- Count actions that do NOT have a valid, non-empty destinationPageIds array.
-        -- Explicitly handles all falsy cases:
-        --   - key absent         → action->'destinationPageIds' IS NULL
-        --   - key is JSON null   → jsonb_typeof = 'null'
-        --   - key is not array   → jsonb_typeof <> 'array'
-        --   - array is empty     → jsonb_array_length = 0
-        --
-        -- Without the IS NULL guard, NOT (NULL = 'array' AND ...) → NOT NULL → NULL,
-        -- which is falsy in WHERE, causing absent keys to never be counted.
-        NEW.pending_generation_count = (
-          SELECT COUNT(*)
-          FROM jsonb_array_elements(NEW.actions) AS action
-          WHERE (
-            (action->'destinationPageIds') IS NULL
-            OR jsonb_typeof(action->'destinationPageIds') <> 'array'
-            OR jsonb_array_length(action->'destinationPageIds') = 0
-          )
-        );
-        RETURN NEW;
-      END;
-      $$ LANGUAGE plpgsql;
-    `);
+// /**
+//  * Creates trigger to auto-update pendingGenerationCount based on actions
+//  *
+//  * This trigger fires BEFORE INSERT OR UPDATE on pages table:
+//  * 1. When actions column is changed
+//  * 2. Counts actions where destination.pageId is null
+//  * 3. Updates pendingGenerationCount with that count
+//  * 4. Ensures SSOT for pending generation tracking
+//  *
+//  * Idempotency:
+//  * - Uses CREATE OR REPLACE FUNCTION
+//  * - Safe to run multiple times without errors
+//  */
+// async function ensurePendingGenerationCountTrigger(): Promise<void> {
+//   try {
+//     // Create the trigger function
+//     await dbWrite.execute(`
+//       CREATE OR REPLACE FUNCTION update_pending_generation_count()
+//       RETURNS TRIGGER AS $$
+//       BEGIN
+//         -- Count actions that do NOT have a valid, non-empty destinationPageIds array.
+//         -- Explicitly handles all falsy cases:
+//         --   - key absent         → action->'destinationPageIds' IS NULL
+//         --   - key is JSON null   → jsonb_typeof = 'null'
+//         --   - key is not array   → jsonb_typeof <> 'array'
+//         --   - array is empty     → jsonb_array_length = 0
+//         --
+//         -- Without the IS NULL guard, NOT (NULL = 'array' AND ...) → NOT NULL → NULL,
+//         -- which is falsy in WHERE, causing absent keys to never be counted.
+//         NEW.pending_generation_count = (
+//           SELECT COUNT(*)
+//           FROM jsonb_array_elements(NEW.actions) AS action
+//           WHERE (
+//             (action->'destinationPageIds') IS NULL
+//             OR jsonb_typeof(action->'destinationPageIds') <> 'array'
+//             OR jsonb_array_length(action->'destinationPageIds') = 0
+//           )
+//         );
+//         RETURN NEW;
+//       END;
+//       $$ LANGUAGE plpgsql;
+//     `);
 
-    // Drop existing triggers if they exist
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS pages_insert_pending_count_trigger ON pages;
-    `);
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS pages_update_pending_count_trigger ON pages;
-    `);
+//     // Drop existing triggers if they exist
+//     await dbWrite.execute(`
+//       DROP TRIGGER IF EXISTS pages_insert_pending_count_trigger ON pages;
+//     `);
+//     await dbWrite.execute(`
+//       DROP TRIGGER IF EXISTS pages_update_pending_count_trigger ON pages;
+//     `);
 
-    // Create the triggers
-    await dbWrite.execute(`
-      CREATE TRIGGER pages_insert_pending_count_trigger
-        BEFORE INSERT ON pages
-        FOR EACH ROW
-        EXECUTE FUNCTION update_pending_generation_count();
-    `);
+//     // Create the triggers
+//     await dbWrite.execute(`
+//       CREATE TRIGGER pages_insert_pending_count_trigger
+//         BEFORE INSERT ON pages
+//         FOR EACH ROW
+//         EXECUTE FUNCTION update_pending_generation_count();
+//     `);
 
-    // No "OF actions" — fire on ALL updates so manual writes to
-    // pending_generation_count are always overridden by the actual count.
-    await dbWrite.execute(`
-      CREATE TRIGGER pages_update_pending_count_trigger
-        BEFORE UPDATE ON pages
-        FOR EACH ROW
-        EXECUTE FUNCTION update_pending_generation_count();
-    `);
+//     // No "OF actions" — fire on ALL updates so manual writes to
+//     // pending_generation_count are always overridden by the actual count.
+//     await dbWrite.execute(`
+//       CREATE TRIGGER pages_update_pending_count_trigger
+//         BEFORE UPDATE ON pages
+//         FOR EACH ROW
+//         EXECUTE FUNCTION update_pending_generation_count();
+//     `);
 
-    console.log("✅ Pending generation count trigger created successfully!");
-  } catch (error) {
-    console.error("❌ Failed to create pending generation count trigger:", getErrorMessage(error));
-    throw error;
-  }
-}
+//     console.log("✅ Pending generation count trigger created successfully!");
+//   } catch (error) {
+//     console.error("❌ Failed to create pending generation count trigger:", getErrorMessage(error));
+//     throw error;
+//   }
+// }
 
-/**
- * One-time backfill to correct pending_generation_count for rows that were
- * written before the trigger fix. Safe to re-run (idempotent), but should
- * only be called once from a migration script.
- *
- * Note: the BEFORE UPDATE trigger WILL fire for each updated row and recompute
- * pending_generation_count from actions, which produces the same result as the
- * explicit SET expression. The explicit computation is kept for clarity and to
- * ensure correctness even if the trigger is temporarily disabled.
- */
-export async function backfillPendingGenerationCount(): Promise<void> {
-  const { dbWrite } = await import("../db/client.js");
+// /**
+//  * One-time backfill to correct pending_generation_count for rows that were
+//  * written before the trigger fix. Safe to re-run (idempotent), but should
+//  * only be called once from a migration script.
+//  *
+//  * Note: the BEFORE UPDATE trigger WILL fire for each updated row and recompute
+//  * pending_generation_count from actions, which produces the same result as the
+//  * explicit SET expression. The explicit computation is kept for clarity and to
+//  * ensure correctness even if the trigger is temporarily disabled.
+//  */
+// export async function backfillPendingGenerationCount(): Promise<void> {
+//   const { dbWrite } = await import("../db/client.js");
 
-  await dbWrite.execute(`
-    UPDATE pages
-    SET pending_generation_count = (
-      SELECT COUNT(*)
-      FROM jsonb_array_elements(actions) AS action
-      WHERE (
-        (action->'destinationPageIds') IS NULL
-        OR jsonb_typeof(action->'destinationPageIds') <> 'array'
-        OR jsonb_array_length(action->'destinationPageIds') = 0
-      )
-    )
-    WHERE pending_generation_count != (
-      SELECT COUNT(*)
-      FROM jsonb_array_elements(actions) AS action
-      WHERE (
-        (action->'destinationPageIds') IS NULL
-        OR jsonb_typeof(action->'destinationPageIds') <> 'array'
-        OR jsonb_array_length(action->'destinationPageIds') = 0
-      )
-    )
-  `);
-  console.log("✅ Backfilled pending_generation_count for mismatched rows");
-}
+//   await dbWrite.execute(`
+//     UPDATE pages
+//     SET pending_generation_count = (
+//       SELECT COUNT(*)
+//       FROM jsonb_array_elements(actions) AS action
+//       WHERE (
+//         (action->'destinationPageIds') IS NULL
+//         OR jsonb_typeof(action->'destinationPageIds') <> 'array'
+//         OR jsonb_array_length(action->'destinationPageIds') = 0
+//       )
+//     )
+//     WHERE pending_generation_count != (
+//       SELECT COUNT(*)
+//       FROM jsonb_array_elements(actions) AS action
+//       WHERE (
+//         (action->'destinationPageIds') IS NULL
+//         OR jsonb_typeof(action->'destinationPageIds') <> 'array'
+//         OR jsonb_array_length(action->'destinationPageIds') = 0
+//       )
+//     )
+//   `);
+//   console.log("✅ Backfilled pending_generation_count for mismatched rows");
+// }
 
 /**
  * Creates all necessary database triggers
@@ -764,8 +764,8 @@ export async function ensureTriggers(): Promise<void> {
     // Drop all existing triggers first to ensure clean state
     await dropAllTriggers();
 
-    // Pre-fill correct pending generation count values
-    await backfillPendingGenerationCount();
+    // // Pre-fill correct pending generation count values
+    // await backfillPendingGenerationCount();
     
     // Create user session exclusivity trigger
     await ensureUserSessionTrigger();
@@ -781,8 +781,15 @@ export async function ensureTriggers(): Promise<void> {
     // Create user favorites cleanup trigger
     await ensureUserFavoritesCleanupTrigger();
 
-    // Create pending generation count trigger
-    await ensurePendingGenerationCountTrigger();
+    // Clean up legacy triggers
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS pages_insert_pending_count_trigger ON pages;
+      DROP TRIGGER IF EXISTS pages_update_pending_count_trigger ON pages;
+      DROP FUNCTION IF EXISTS update_pending_generation_count();
+    `);
+
+    // // Create pending generation count trigger
+    // await ensurePendingGenerationCountTrigger();
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);

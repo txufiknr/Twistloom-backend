@@ -15,6 +15,20 @@
       "when": 1780797722301,
       "tag": "0001_shocking_squadron_sinister",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780901434577,
+      "tag": "0002_sharp_power_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1780901463735,
+      "tag": "0003_famous_thanos",
+      "breakpoints": true
     }
   ]
 }

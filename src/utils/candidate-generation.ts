@@ -984,7 +984,7 @@ export async function ensureCandidatesForPageWithStrategy(
           const currentPending = updatedDBActions.filter(a => !a.destinationPageIds?.length).length;
           const letter = generateActionLetter(action);
           await dbWrite.update(pages)
-            .set({ actions: updatedDBActions, pendingGenerationCount: currentPending })
+            .set({ actions: updatedDBActions })
             .where(eq(pages.id, page.id));
           console.log(`[ensureCandidatesForPageWithStrategy] 💾 Persisted completed action: ${letter}. ${action.text} (${currentPending} still pending)`);
         });
@@ -1178,7 +1178,6 @@ export async function ensureCandidatesForPageWithStrategy(
     const [updatedPage] = await dbWrite.update(pages)
       .set({
         actions: updatedDBActions,
-        pendingGenerationCount: pendingAfter,
         isGeneratingStartedAt: null,
         updatedAt: new Date()
       })

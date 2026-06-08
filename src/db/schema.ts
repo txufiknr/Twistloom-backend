@@ -73,7 +73,20 @@ export const pages = pgTable(
     aiModel: text("ai_model"),
     aiEvalProvider: text("ai_eval_provider").$type<AIChatProvider | 'none'>(),
     aiEvalModel: text("ai_eval_model"),
-    pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
+    // pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
+    pendingGenerationCount: integer("pending_generation_count").notNull().generatedAlwaysAs(
+      // Remove .default(0) — generated columns can't have defaults.
+      // The expression always returns 0 for an empty actions array anyway.
+      sql`(
+        jsonb_array_length(actions) -
+        jsonb_array_length(
+          jsonb_path_query_array(
+            actions,
+            '$[*] ? (exists(@.destinationPageIds) && @.destinationPageIds.type() == "array" && @.destinationPageIds.size() > 0)'
+          )
+        )
+      )`,
+    ),
     isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }), // When candidate generation started. `null` means not generating.
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
