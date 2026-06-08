@@ -7,8 +7,6 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[x] prompt: print injury & plot flag place & pageAcquired
-[x] infer next page generation place & pageAcquired
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
@@ -19,13 +17,12 @@
 [visit] 👓 Prefetching "The Static Between Us" page 2
 [mapToEnrichedPage] ❌ Source action should be exists for page 2
 
+[x] Prompt ACTION TYPES: exclude "custom"
+[ ] Translate prompt: keep the tone & tense (ikut chatgpt)
 [ ] buat getPreviousPages return ActionedStoryPage[]
 [ ] ensure enriched page has valid values for sourceNav (pake sourceAction?)
 [ ] Place Traits pastiin record<string, string>
-[ ] can we handle Tokenisation-level corruption (stage 3) with our own typescript helper function without using `jaison`?
 [ ] book type add: translation?: BookTranslation;
-
-
 [ ] Consider generate multiverse in parallel instead of 1 big request
 [ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
 [ ] Provider Abstraction Layer:

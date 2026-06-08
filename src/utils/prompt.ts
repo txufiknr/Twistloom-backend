@@ -1297,7 +1297,8 @@ OUTPUT FORMAT (strict JSON, no extra text):
  * @returns Formatted string of all action types
  */
 function getActionTypesText(): string {
-  return Object.entries(actionTypes)
+  const { custom, ...filteredActionTypes } = actionTypes;
+  return Object.entries(filteredActionTypes)
     .map(([key, value]) => `- ${key}: ${value}`)
     .join('\n');
 }
