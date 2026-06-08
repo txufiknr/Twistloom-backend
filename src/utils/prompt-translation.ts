@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_TRANSLATION, AI_CHAT_MODELS_WRITING } from "../config/ai
 import type { AIDocument, AIPromptForJson, AIResponse } from "../types/ai-chat.js";
 import { SUMMARY_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
 import type { ActionTranslation } from "../types/story.js";
-import type { BookTranslation, PageTranslation, PageTranslationBulk, PageTranslationBulkResponse, BookTranslationBulkResponse, BookTranslationBulk, PageToTranslate, BookToTranslate, Book } from "../types/book.js";
+import type { BookTranslation, PageTranslation, PageTranslationBulk, PageTranslationBulkResponse, BookTranslationBulkResponse, BookTranslationBulk, PageToTranslate, BookToTranslate } from "../types/book.js";
 import { BOOK_TRANSLATION_REQUIRED_FIELDS, BOOK_TRANSLATION_SCHEMA_DEFINITION, BULK_BOOK_TRANSLATION_REQUIRED_FIELDS, BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION, PAGE_TRANSLATION_REQUIRED_FIELDS, PAGE_TRANSLATION_SCHEMA_DEFINITION, BULK_PAGE_TRANSLATION_REQUIRED_FIELDS, BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { executePromptForJSON, getMainCharacterInfo } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
@@ -18,6 +18,20 @@ Translate the story into the target language while preserving the author's origi
 PRIMARY GOAL:
 - Produce a natural, professionally localized story text that feels as if it were originally written by a skilled thriller novelist in the target language.
 - Readers should never feel they are reading a translation.
+
+TRANSLATION GUIDELINES:
+- Maintain first-person central (MC = narrator) POV throughout
+- Preserve psychological thriller atmosphere, tension, and horror elements
+- Use natural, idiomatic language in the target language
+- Keep the same emotional tone (fear, dread, suspense, etc.)
+- Ensure action choices remain meaningful and intriguing
+
+TRANSLATION GUIDELINES:
+- Maintain the psychological thriller tone and atmosphere
+- Preserve the mystery and intrigue of the original text
+- Use natural, idiomatic language in the target language
+- Keep the same level of intensity and suspense
+- Ensure cultural appropriateness for the target language
 
 PRESERVE EXACTLY:
 - Story facts, events, clues, foreshadowing, and continuity.
@@ -98,14 +112,7 @@ const bookTranslationFieldInstructions: string = `
 - hook: Translate the hook. Maintain the intrigue and psychological tension.
 - summary: Translate the summary. Keep it ${SUMMARY_LENGTH}, preserving the psychological thriller atmosphere.
 - keywords: Translate keywords. Provide ${KEYWORDS_COUNT} relevant tags in the target language.
-- mc.bio: Translate main character's bio.
-
-TRANSLATION GUIDELINES:
-- Maintain the psychological thriller tone and atmosphere
-- Preserve the mystery and intrigue of the original text
-- Use natural, idiomatic language in the target language
-- Keep the same level of intensity and suspense
-- Ensure cultural appropriateness for the target language`;
+- mc.bio: Translate main character's bio.`;
 
 /**
  * Translates book metadata to target language using AI
@@ -265,18 +272,15 @@ const bulkPageTranslationOutputFormat: string = `{
 const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk: boolean = false): string => {
   const asteriskInstruction = hasAsterisks ? 'Keep text styling using asterisks (if any).' : '';
   return `${isBulk ? `- pageId: Don't change. Should match to its source page.` : ''}
-- text: Translate the page narrative. ${asteriskInstruction}
-- place: Translate the place name. Keep it atmospheric and descriptive.
+- text: Translate page narrative. ${asteriskInstruction}
+- place: Translate place name. Keep it atmospheric and descriptive.
+- timeOfDay: Translate time of day.
+- mood: Translate current mood.
+- weather: Translate current weather.
 - keyEvents: Translate key events. Preserve the sequence and importance.
 - importantObjects: Translate important objects. Keep them relevant to the story.
-- actions: Include both the original text (unchanged) and the translated text.
-
-TRANSLATION GUIDELINES:
-- Maintain first-person central (MC = narrator) POV throughout
-- Preserve psychological thriller atmosphere, tension, and horror elements
-- Use natural, idiomatic language in the target language
-- Keep the same emotional tone (fear, dread, suspense, etc.)
-- Ensure action choices remain meaningful and intriguing`;
+- contextHistory: Translate story summary until current page — key plot developments, hard facts, major events.
+- actions: Include both the original text (unchanged) and the translated text.`;
 };
 
 /**

@@ -16,9 +16,11 @@ import { eq, and, sql, ne } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { translateBooksBulk, translatePagesBulk } from "../utils/prompt-translation.js";
 import { MAX_BOOKS_PER_TRANSLATION_RUN, MAX_PAGES_PER_TRANSLATION_RUN, BOOKS_PER_BULK_TRANSLATION, PAGES_PER_BULK_TRANSLATION } from "../config/translation.js";
-import type { DBBook, DBPage } from "../types/schema.js";
-import type { BookToTranslate, PageToTranslate } from "../types/book.js";
-import { mapBookFromDb, mapToPersistedStoryPage } from "../services/book.js";
+import { getBook, mapBookFromDb, mapToPersistedStoryPage } from "../services/book.js";
+import { getStoryStateWithBranch } from "../services/story-branch.js";
+import type { DBBook, DBNewBookTranslations, DBNewPageTranslations, DBPage } from "../types/schema.js";
+import type { BookToTranslate, BookTranslation, PageToTranslate, PageTranslation } from "../types/book.js";
+import type { ResourceTranslatorProvider, ResourceTranslatorType } from "../types/api.js";
 
 const TARGET_LANGUAGE = 'id'; // Indonesian (ISO 639-1)
 
@@ -33,34 +35,33 @@ async function translateBooksToIndonesianBulk(books: DBBook[]): Promise<void> {
 
     const booksWithIds: BookToTranslate[] = books.map(mapBookFromDb);
 
-    const { provider, model, translations } = await translateBooksBulk(booksWithIds, TARGET_LANGUAGE);
-    const providerName = `${provider}${model ? ` (${model})` : ''}`;
+    const { provider: providerName, model: aiModel, translations } = await translateBooksBulk(booksWithIds, TARGET_LANGUAGE);
+    const providerType: ResourceTranslatorType = 'ai';
 
     // Insert or update translations in bulk
     for (const translation of translations) {
+      const translationValues = {
+        title: translation.title,
+        hook: translation.hook,
+        summary: translation.summary,
+        keywords: translation.keywords,
+        mc: translation.mc,
+        providerType,
+        providerName,
+        aiModel,
+        updatedAt: new Date(),
+      } satisfies Record<keyof BookTranslation | ResourceTranslatorProvider | 'updatedAt', unknown>;
+
       await dbWrite
         .insert(bookTranslations)
         .values({
           bookId: translation.bookId,
           language: TARGET_LANGUAGE,
-          title: translation.title,
-          hook: translation.hook,
-          summary: translation.summary,
-          keywords: translation.keywords,
-          providerType: 'ai',
-          providerName,
-        })
+          ...translationValues
+        } satisfies DBNewBookTranslations)
         .onConflictDoUpdate({
           target: [bookTranslations.bookId, bookTranslations.language],
-          set: {
-            title: translation.title,
-            hook: translation.hook,
-            summary: translation.summary,
-            keywords: translation.keywords,
-            providerType: 'ai',
-            providerName,
-            updatedAt: new Date(),
-          },
+          set: translationValues,
         });
     }
 
@@ -80,37 +81,49 @@ async function translatePagesToIndonesianBulk(pages: DBPage[]): Promise<void> {
   try {
     console.log(`[auto-translate-id] 📄 Translating ${pages.length} pages to Indonesian in bulk...`);
 
-    const pagesWithIds: PageToTranslate[] = pages.map(mapToPersistedStoryPage);
-    const { provider, model, translations } = await translatePagesBulk(pagesWithIds, TARGET_LANGUAGE);
-    const providerName = `${provider}${model ? ` (${model})` : ''}`;
+    const pagesWithIds: PageToTranslate[] = [];
+    
+    for (const p of pages) {
+      const page = mapToPersistedStoryPage(p);
+      const book = await getBook(p.bookId);
+      const state = await getStoryStateWithBranch(p.bookId, p.id);
+      if (!book || !state) continue; // Skip if book or state not found
+
+      const pageToTranslate: PageToTranslate = { ...page, state, book };
+      pagesWithIds.push(pageToTranslate);
+    };
+
+    const { provider: providerName, model: aiModel, translations } = await translatePagesBulk(pagesWithIds, TARGET_LANGUAGE);
+    const providerType: ResourceTranslatorType = 'ai';
 
     // Insert or update translations in bulk
     for (const translation of translations) {
+      const translationValues = {
+        text: translation.text,
+        place: translation.place,
+        timeOfDay: translation.timeOfDay,
+        mood: translation.mood,
+        weather: translation.weather,
+        keyEvents: translation.keyEvents,
+        importantObjects: translation.importantObjects,
+        contextHistory: translation.contextHistory,
+        actions: translation.actions,
+        providerType,
+        providerName,
+        aiModel,
+        updatedAt: new Date(),
+      } satisfies Record<keyof PageTranslation | ResourceTranslatorProvider | 'updatedAt', unknown>;
+
       await dbWrite
         .insert(pageTranslations)
         .values({
           pageId: translation.pageId,
           language: TARGET_LANGUAGE,
-          text: translation.text,
-          place: translation.place,
-          keyEvents: translation.keyEvents,
-          importantObjects: translation.importantObjects,
-          actions: translation.actions,
-          providerType: 'ai',
-          providerName,
-        })
+          ...translationValues
+        } satisfies DBNewPageTranslations)
         .onConflictDoUpdate({
           target: [pageTranslations.pageId, pageTranslations.language],
-          set: {
-            text: translation.text,
-            place: translation.place,
-            keyEvents: translation.keyEvents,
-            importantObjects: translation.importantObjects,
-            actions: translation.actions,
-            providerType: 'ai',
-            providerName,
-            updatedAt: new Date(),
-          },
+          set: translationValues,
         });
     }
 

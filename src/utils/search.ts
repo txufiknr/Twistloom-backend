@@ -142,21 +142,23 @@ export function validateLanguageCode(language: string | undefined): { isValid: b
   // If no language provided, it's valid
   if (!language) return { isValid: true };
 
-  const trimmed = language.trim();
-  
-  // Check if it's a valid ISO 639-1 code (2-3 letters)
-  const isoPattern = /^[a-z]{2,3}$/;
-  if (!isoPattern.test(trimmed)) {
-    return {
-      isValid: false,
-      error: 'Invalid language code. Must be 2-3 letter ISO 639-1 code (e.g., en, es, fr)'
-    };
-  }
-
+  const isValid = isValidLanguageCode(language);
   return {
-    isValid: true,
-    sanitized: trimmed.toLowerCase()
+    isValid,
+    error: isValid ? undefined : 'Invalid language code. Must be 2-3 letter ISO 639-1 code (e.g., en, es, fr)',
+    sanitized: isValid ? language.trim().toLowerCase() : undefined
   };
+}
+
+/**
+ * Validates language code format (ISO 639-1)
+ * 
+ * @param languageCode - Language code to validate
+ * @returns Whether the language code is valid
+ */
+export function isValidLanguageCode(languageCode: string): boolean {
+  // Check if it's a valid ISO 639-1 code (2-3 letters)
+  return /^[a-z]{2,3}$/.test(languageCode);
 }
 
 /**

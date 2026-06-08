@@ -1,9 +1,9 @@
 import type { AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
-import type { Book } from "./book.js";
+import type { Book, PageTranslation } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
-import type { DBNewPage, DBPage, DBPageTranslations, DBUserSession } from "./schema.js";
+import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./thread.js";
 
 /**
@@ -815,7 +815,7 @@ export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedActi
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
 export type EnrichedStoryPage = Partial<UserStoryPage> & {
   originalActionsCount: number,
-  translation?: DBPageTranslations,
+  translation?: PageTranslation,
   sourceAction?: SelectedAction,
   sourceNav?: StoryPageNav,
   shownActionHint: string[],

@@ -13,7 +13,7 @@ import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread } from "../types/thread.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
-import type { ResourceAIProvider, ResourceTimestamp } from "../types/api.js";
+import type { ResourceAIProvider, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
 import { BOOK_MIN_PAGES } from "../config/story.js";
 import { FIRST_TIME_CREDITS } from "../config/credits.js";
 
@@ -1072,11 +1072,11 @@ export const bookTranslations = pgTable(
     title: text("title"), // Translated book title
     hook: text("hook"), // Translated book hook
     summary: text("summary"), // Translated book summary
-    // keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Translated keywords
     keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`),
     mc: jsonb("mc").$type<StoryMCTranslation>().notNull().default(sql`'{}'::jsonb`), // Translated main character info
-    providerType: text("provider_type").$type<'ai' | 'translator'>(), // AI or translator
-    providerName: text("provider_name"), // Provider and model name
+    providerType: text("provider_type").$type<ResourceTranslatorType>(), // AI or translator
+    providerName: text("provider_name"), // Provider name
+    aiModel: text("ai_model"), // AI model name
     createdAt,
     updatedAt,
   },
@@ -1113,13 +1113,16 @@ export const pageTranslations = pgTable(
     language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
     text: text("translated_text").notNull(), // Translated page text
     place: text("place"), // Current place where the story is taking place
-    // keyEvents: jsonb("key_events").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Key events that occurred in the page
-    // importantObjects: jsonb("important_objects").$type<string[]>().notNull().default(sql`'[]'::jsonb`), // Important objects mentioned in the page
+    timeOfDay: text("time_of_day"),
+    mood: text("mood"),
+    weather: text("weather"),
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
     importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
+    contextHistory: text("context_history"),
     actions: jsonb("actions").$type<ActionTranslation[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
-    providerType: text("provider_type").$type<'ai' | 'translator'>(), // AI or translator
-    providerName: text("provider_name"),
+    providerType: text("provider_type").$type<ResourceTranslatorType>(), // AI or translator
+    providerName: text("provider_name"), // Provider name
+    aiModel: text("ai_model"), // AI model name
     createdAt,
     updatedAt,
   },

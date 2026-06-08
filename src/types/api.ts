@@ -19,6 +19,8 @@ export type ResourceName =
   | 'users'          // Collection of users
   | 'transactions';  // Collection of transactions
 
+export type ResourceTranslatorType = 'ai' | 'translator';
+export type ResourceTranslatorProvider = 'providerType' | 'providerName' | 'aiModel';
 export type ResourceTimestamp = 'createdAt' | 'updatedAt';
 export type ResourceAIProvider =
   | 'aiProvider'

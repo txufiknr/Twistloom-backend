@@ -1,7 +1,7 @@
 import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { NewPlace } from "./places.js";
 import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, StoryPageNav } from "./story.js";
-import type { DBBookTranslations, DBPage, DBUserSession } from "./schema.js";
+import type { DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
@@ -131,7 +131,7 @@ export interface EnrichedBookData {
   lastPage?: string | null;
   firstPageId: string;
   firstPageText: string;
-  translation: DBBookTranslations | null
+  translation: BookTranslation | null
 }
 
 /**
@@ -303,9 +303,9 @@ export type BookSlugGenerationResult = {
  * Book translation structure for AI generation
  */
 export type BookTranslation = {
-  title: string;
-  hook: string;
-  summary: string;
+  title?: string | null;
+  hook?: string | null;
+  summary?: string | null;
   keywords: string[];
   mc: StoryMCTranslation;
 }
@@ -320,18 +320,18 @@ export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<
  */
 export type PageTranslation = {
   text: string;
-  place: string;
-  time: string;
-  mood: string;
-  weather: string;
+  place?: string | null;
+  timeOfDay?: string | null;
+  mood?: string | null;
+  weather?: string | null;
   keyEvents: string[];
   importantObjects: string[];
   actions: ActionTranslation[];
-  contextHistory: string;
+  contextHistory?: string | null;
 };
 
 // export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
-export type PageToTranslate = PersistedStoryPage & { state: StoryState } & { book: Pick<Book, 'title' | 'summary' | 'mc'> };
+export type PageToTranslate = PersistedStoryPage & { state: StoryState } & { book: Book };
 export type PageTranslationWithID = PageTranslation & { pageId: string };
 export type PageTranslationBulk = { translations: PageTranslationWithID[] };
 export type PageTranslationBulkResponse = PageTranslationBulk & Pick<AIResponse<PageTranslationBulk>, 'provider' | 'model'>;

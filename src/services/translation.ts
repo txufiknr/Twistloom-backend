@@ -22,11 +22,13 @@ import { getErrorMessage } from "../utils/error.js";
 import { eq, and } from "drizzle-orm";
 import { LRUCache } from "lru-cache";
 import { translateTexts } from "../utils/translation.js";
-import type { DBPage, DBPageTranslations } from "../types/schema.js";
+import type { DBBookTranslations, DBPage, DBPageTranslations } from "../types/schema.js";
 import type { ActionTranslation } from "../types/story.js";
+import type { BookTranslation, PageTranslation } from "../types/book.js";
+import { isValidLanguageCode } from "../utils/search.js";
 
 // Global translation cache instance using lru-cache package
-const translationCache = new LRUCache<string, DBPageTranslations>({
+const translationCache = new LRUCache<string, PageTranslation>({
   max: 1000, // Maximum number of items
   ttl: 1000 * 60 * 60, // 1 hour TTL
   allowStale: false,
@@ -50,7 +52,7 @@ interface GetPageTranslationParams {
  */
 export interface PageTranslationResult {
   /** Complete page translation data if successful */
-  translation?: DBPageTranslations;
+  translation?: PageTranslation;
   /** Error information if translation failed */
   error?: {
     message: string;
@@ -119,7 +121,7 @@ export async function getPageTranslation({
 
   try {
     // Check database for existing translation (second fastest path)
-    const [translation] = await dbRead
+    const [dbTranslation] = await dbRead
       .select()
       .from(pageTranslations)
       .where(
@@ -130,15 +132,16 @@ export async function getPageTranslation({
       )
       .limit(1);
 
-    if (translation) {
+    if (dbTranslation) {
+      const translation = mapToPageTranslation(dbTranslation);
       // Cache the result for future requests
       translationCache.set(cacheKey, translation);
       return { translation };
     }
 
-    // No existing translation, translate all fields efficiently using LibreTranslate API
-    const newTranslation = await translatePageWithLibre({ page, bookLanguage, targetLanguage, cacheKey });
-    return { translation: newTranslation };
+    // No existing translation, translate all fields using LibreTranslate API
+    const translation = await translatePageWithLibre({ page, bookLanguage, targetLanguage, cacheKey });
+    return { translation };
   } catch (error) {
     // Log translation error but return error metadata to allow graceful fallback
     const errorMessage = getErrorMessage(error);
@@ -209,7 +212,7 @@ async function translatePageWithLibre({
   bookLanguage,
   targetLanguage,
   cacheKey
-}: GetPageTranslationParams & { cacheKey: string }): Promise<DBPageTranslations> {
+}: GetPageTranslationParams & { cacheKey: string }): Promise<PageTranslation> {
   // Collect all texts to translate in bulk
   const textsToTranslate: string[] = [page.text];
   const textIndices: { [key: string]: number } = { text: 0 };
@@ -248,19 +251,13 @@ async function translatePageWithLibre({
 
   // Extract translated values from the result array using pre-calculated indices
   const translatedText = translatedTexts[0];
-  const translatedPlace = placeIndex !== undefined ? translatedTexts[placeIndex] : undefined;
-  const translatedKeyEvents = keyEventsStartIndex !== undefined 
-    ? translatedTexts.slice(keyEventsStartIndex, keyEventsStartIndex + (page.keyEvents?.length || 0))
-    : [];
-  const translatedImportantObjects = importantObjectsStartIndex !== undefined
-    ? translatedTexts.slice(importantObjectsStartIndex, importantObjectsStartIndex + (page.importantObjects?.length || 0))
-    : [];
-  const translatedActions: ActionTranslation[] = actionsStartIndex !== undefined
-    ? page.actions!.map((action, i) => ({
-        originalText: action.text,
-        text: translatedTexts[actionsStartIndex! + i]
-      }))
-    : [];
+  const translatedPlace = placeIndex ? translatedTexts[placeIndex] : undefined;
+  const translatedKeyEvents = keyEventsStartIndex ? translatedTexts.slice(keyEventsStartIndex, keyEventsStartIndex + (page.keyEvents?.length || 0)) : [];
+  const translatedImportantObjects = importantObjectsStartIndex ? translatedTexts.slice(importantObjectsStartIndex, importantObjectsStartIndex + (page.importantObjects?.length || 0)) : [];
+  const translatedActions: ActionTranslation[] = actionsStartIndex ? page.actions!.map((action, i) => ({
+    originalText: action.text,
+    text: translatedTexts[actionsStartIndex! + i]
+  })) : [];
 
   // Persist new translation to database
   const [newTranslation] = await dbWrite.insert(pageTranslations).values({
@@ -268,29 +265,45 @@ async function translatePageWithLibre({
     language: targetLanguage,
     text: translatedText,
     place: translatedPlace,
+    // TODO: timeOfDay: translatedTimeOfDay,
+    // TODO: mood: translatedMood,
+    // TODO: weather: translatedWeather,
     keyEvents: translatedKeyEvents,
     importantObjects: translatedImportantObjects,
+    // TODO: contextHistory: translatedContextHistory,
     actions: translatedActions,
     providerType: 'translator',
     providerName: 'libre',
     updatedAt: new Date()
   }).returning();
 
-  // Cache the result for future requests
-  translationCache.set(cacheKey, newTranslation);
-
-  return newTranslation;
+  const translation = mapToPageTranslation(newTranslation);
+  translationCache.set(cacheKey, translation); // Cache the result for future requests
+  return translation;
 }
 
-/**
- * Validates language code format (ISO 639-1)
- * 
- * @param languageCode - Language code to validate
- * @returns Whether the language code is valid
- */
-function isValidLanguageCode(languageCode: string): boolean {
-  // Basic validation for ISO 639-1 (2-letter codes)
-  return /^[a-z]{2}$/.test(languageCode.toLowerCase());
+export function mapToPageTranslation(dbPageTranslations: DBPageTranslations): PageTranslation {
+  return {
+    text: dbPageTranslations.text,
+    place: dbPageTranslations.place,
+    timeOfDay: dbPageTranslations.timeOfDay,
+    mood: dbPageTranslations.mood,
+    weather: dbPageTranslations.weather,
+    keyEvents: dbPageTranslations.keyEvents,
+    importantObjects: dbPageTranslations.importantObjects,
+    actions: dbPageTranslations.actions,
+    contextHistory: dbPageTranslations.contextHistory,
+  } satisfies Record<keyof PageTranslation, unknown>;
+}
+
+export function mapToBookTranslation(dbBookTranslations: DBBookTranslations): BookTranslation {
+  return {
+    title: dbBookTranslations.title,
+    hook: dbBookTranslations.hook,
+    summary: dbBookTranslations.summary,
+    keywords: dbBookTranslations.keywords,
+    mc: dbBookTranslations.mc,
+  } satisfies Record<keyof BookTranslation, unknown>;
 }
 
 /**

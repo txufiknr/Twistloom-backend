@@ -1,5 +1,5 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
-import type { BookCreationResponse, BookTranslation, PageTranslation } from "../types/book.js";
+import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
 import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
 import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, InitialPlotFlag, Ending, EndingChangeNote } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
@@ -233,11 +233,11 @@ export const BOOK_TRANSLATION_REQUIRED_FIELDS = ['title', 'hook', 'summary', 'ke
 export const BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
-    properties: { bookId: { type: 'string' }, ...BOOK_TRANSLATION_SCHEMA_DEFINITION },
-    required: ['bookId', 'title', 'hook', 'summary', 'keywords', 'mc'] satisfies (keyof BookTranslation | 'bookId')[],
+    properties: { bookId: { type: 'string' }, ...BOOK_TRANSLATION_SCHEMA_DEFINITION } satisfies Record<keyof BookTranslationWithID, AIJsonProperty>,
+    required: ['bookId', 'title', 'hook', 'summary', 'keywords', 'mc'] satisfies (keyof BookTranslationWithID)[],
     additionalProperties: false
   } }
-} satisfies Record<keyof { translations: BookTranslation[] }, AIJsonProperty>;
+} satisfies Record<keyof BookTranslationBulk, AIJsonProperty>;
 
 export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies Array<keyof { translations: BookTranslation[] }>;
 
@@ -247,7 +247,7 @@ export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies 
 export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   text: { type: 'string' },
   place: { type: 'string' },
-  time: { type: 'string' },
+  timeOfDay: { type: 'string' },
   mood: { type: 'string' },
   weather: { type: 'string' },
   keyEvents: { type: 'array', items: { type: 'string' } },
@@ -272,10 +272,10 @@ export const PAGE_TRANSLATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Ar
 export const BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
-    properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION },
-    required: ['pageId', 'text', 'place', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslation | 'pageId')[],
+    properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION } satisfies Record<keyof PageTranslationWithID, AIJsonProperty>,
+    required: ['pageId', 'text', 'place', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslationWithID)[],
     additionalProperties: false
   } }
-} satisfies Record<keyof { translations: PageTranslation[] }, AIJsonProperty>;
+} satisfies Record<keyof PageTranslationBulk, AIJsonProperty>;
 
 export const BULK_PAGE_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies Array<keyof { translations: PageTranslation[] }>;

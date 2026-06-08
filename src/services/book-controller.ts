@@ -29,8 +29,7 @@ import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { computeVisitStats, getPreviousPages, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { BOOK_MAX_PAGES, FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Request, Response } from "express";
-import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
-import type { DBBookTranslations } from "../types/schema.js";
+import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, ActionedStoryPage, SelectedAction, StoryPageNav, StoryPageNavItem } from "../types/story.js";
 
 /**
@@ -171,26 +170,21 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       ) fp
     )`,
     // Translation data from bookTranslations table when language is provided and differs from book's original language
+    // TODO: should I decouple this to `getBookTranslation` implementing LRU cache?
     translation: language
-      ? sql<DBBookTranslations | null>`(
+      ? sql<BookTranslation | null>`(
           SELECT jsonb_build_object(
-            'id', bt.id,
-            'bookId', bt.book_id,
-            'language', bt.language,
             'title', bt.title,
             'hook', bt.hook,
             'summary', bt.summary,
             'keywords', bt.keywords,
-            'providerType', bt.provider_type,
-            'providerName', bt.provider_name,
-            'createdAt', bt.created_at,
-            'updatedAt', bt.updated_at
+            'mc', bt.mc
           )
           FROM book_translations bt
           WHERE bt.book_id = books.id AND bt.language = ${language} AND ${language} <> ${books.language}
           LIMIT 1
         )`
-      : sql<DBBookTranslations | null>`null`,
+      : sql<BookTranslation | null>`null`,
   } satisfies Record<keyof EnrichedBookData, unknown>;
 }
 

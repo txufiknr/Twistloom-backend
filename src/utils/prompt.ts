@@ -778,7 +778,7 @@ addPlotFlag
     → Do NOT create major events solely to escalate the plot.
 
 contextHistory
-  - Running sumary from page 1 until now — key plot developments, hard facts, major events.
+  - Running summary from page 1 until now — key plot developments, hard facts, major events.
   - Incorporate the overall story context while keeping all essential narrative elements.
   - Use "MC" to indicate the first-person narrator.
   - Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.
@@ -1297,8 +1297,8 @@ OUTPUT FORMAT (strict JSON, no extra text):
  * @returns Formatted string of all action types
  */
 function getActionTypesText(): string {
-  const { custom, ...filteredActionTypes } = actionTypes;
-  return Object.entries(filteredActionTypes)
+  return Object.entries(actionTypes)
+    .filter(([key]) => key !== 'custom')
     .map(([key, value]) => `- ${key}: ${value}`)
     .join('\n');
 }
