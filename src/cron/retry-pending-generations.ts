@@ -53,9 +53,9 @@ export async function retryPendingGenerations(): Promise<string[]> {
   const { dbRead, dbWrite } = await import("../db/client.js");
   const { pages, books, userSessions } = await import("../db/schema.js");
   const { eq, gt, lt, desc, asc, and, sql } = await import("drizzle-orm");
-  const { getPageFromDB } = await import("../services/book.js");
-  const { mapToUserStoryPage } = await import("../services/book.js");
-  
+  const { getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
+  const systemUserId = requireEnv('SYSTEM_USER_ID');
+
   // Subquery to get the most recent active session for each book
   const mostRecentSession = dbRead
     .select({
@@ -119,14 +119,15 @@ export async function retryPendingGenerations(): Promise<string[]> {
         console.warn(`[retryPendingGenerations] ⚠️ Page ${pageData.id} not found, skipping`);
         continue;
       }
-      
-      // Convert null fields to undefined for type compatibility
-      const systemUserId = requireEnv('SYSTEM_USER_ID');
-      const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
-      const pendingBefore = pageData.pendingGenerationCount || 0;
+
+      // Use freshly fetched dbPage.pendingGenerationCount rather than the
+      // stale value from the batch query — another process may have generated
+      // candidates in the window between the SELECT and this fetch.
+      const pendingBefore = dbPage.pendingGenerationCount;
       const hasNoPendingActions = pendingBefore === 0;
 
-      // Use shared page generation logic
+      const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
+
       const generationResult = await processPageGeneration({
         dbPage,
         pageForGeneration,
@@ -174,8 +175,7 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     console.log(`[processSpecificPage] 🎯 Processing manual trigger: book=${bookId}, page=${pageId}, user=${triggeredBy}`);
 
     // Lazy imports for better memory usage and startup time
-    const { getPageFromDB } = await import("../services/book.js");
-    const { mapToUserStoryPage } = await import("../services/book.js");
+    const { getPageFromDB, mapToUserStoryPage } = await import("../services/book.js");
 
     // Fetch full page data
     const dbPage = await getPageFromDB(pageId, { bookIdentifier: bookId });
@@ -187,7 +187,7 @@ async function processSpecificPage(bookId: string, pageId: string, triggeredBy?:
     // Convert null fields to undefined for type compatibility
     const systemUserId = requireEnv('SYSTEM_USER_ID');
     const pageForGeneration = await mapToUserStoryPage(dbPage, systemUserId, []);
-    const pendingBefore = dbPage.pendingGenerationCount || 0;
+    const pendingBefore = dbPage.pendingGenerationCount;
 
     // Force candidate generation for manual trigger (always generate, even if no pending actions)
     const generationResult = await processPageGeneration({

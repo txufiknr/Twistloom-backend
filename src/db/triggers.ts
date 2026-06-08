@@ -698,7 +698,17 @@ async function ensurePendingGenerationCountTrigger(): Promise<void> {
   }
 }
 
-async function backfillPendingGenerationCount(): Promise<void> {
+/**
+ * One-time backfill to correct pending_generation_count for rows that were
+ * written before the trigger fix. Safe to re-run (idempotent), but should
+ * only be called once from a migration script.
+ *
+ * Note: the BEFORE UPDATE trigger WILL fire for each updated row and recompute
+ * pending_generation_count from actions, which produces the same result as the
+ * explicit SET expression. The explicit computation is kept for clarity and to
+ * ensure correctness even if the trigger is temporarily disabled.
+ */
+export async function backfillPendingGenerationCount(): Promise<void> {
   const { dbWrite } = await import("../db/client.js");
 
   await dbWrite.execute(`
@@ -712,10 +722,17 @@ async function backfillPendingGenerationCount(): Promise<void> {
         OR jsonb_array_length(action->'destinationPageIds') = 0
       )
     )
-    WHERE true; -- triggers are BEFORE triggers, so they don't run on this UPDATE
-                -- we must compute it explicitly here
+    WHERE pending_generation_count != (
+      SELECT COUNT(*)
+      FROM jsonb_array_elements(actions) AS action
+      WHERE (
+        (action->'destinationPageIds') IS NULL
+        OR jsonb_typeof(action->'destinationPageIds') <> 'array'
+        OR jsonb_array_length(action->'destinationPageIds') = 0
+      )
+    )
   `);
-  console.log("✅ Backfilled pending_generation_count for all existing rows");
+  console.log("✅ Backfilled pending_generation_count for mismatched rows");
 }
 
 /**
