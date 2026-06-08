@@ -2287,7 +2287,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     const consumeCredits = credits === 'true'; // Should consume credits
     const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
 
-    const { visitDetails, book, dbPage, sourceAction, sourceNav } = await visitBookPage({
+    const { visitDetails, book, dbPage, sourceAction, sourceNav, isUserTakeAction } = await visitBookPage({
       userId,
       pageId: pageId as string,
       bookIdentifier,
@@ -2304,7 +2304,15 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     const bookLanguage = book.language || 'en';
     
     // Return enriched page with only frontend-relevant fields
-    const page = await mapToEnrichedPage(dbPage, { userId, bookLanguage, headerLanguage, translate, sourceAction, sourceNav });
+    const page = await mapToEnrichedPage(dbPage, {
+      userId,
+      bookLanguage,
+      headerLanguage,
+      translate,
+      sourceAction,
+      sourceNav,
+      isUserTakeAction
+    });
     if (!page) return handleApiError(res, "Failed to get enriched page");
 
     // Generate ETag from page updatedAt + userId + translation params (different content per user/language)

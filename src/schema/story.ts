@@ -3,7 +3,7 @@ import { characterStatuses, potentialTwistTypes, relationshipStatuses, relations
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, moods, storyPhases } from "../types/story.js";
-import type { AIJsonEvaluation, AIJsonProperty, AIPromptOptions } from "../types/ai-chat.js";
+import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration } from "../types/story.js";
 import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates } from "../types/thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
@@ -373,6 +373,20 @@ export const CANDIDATE_GENERATION_REQUIRED_FIELDS = ['generatedPages'] satisfies
 
 export function buildEvaluationSchemaDefinition<T extends Record<string, unknown>>(options: AIPromptOptions): Record<keyof AIJsonEvaluation<T>, AIJsonProperty> {
   const { outputJsonStructure, outputJsonRequired } = options;
+  const scoringBreakdownSchema: AIJsonProperty = {
+    type: "array",
+    description: 'Detailed breakdown of scores by dimension',
+    items: {
+      type: 'object',
+      properties: {
+        dimension: { type: 'string' },
+        score: { type: 'number' }
+      } satisfies Record<keyof AIJsonScoreBreakdown, AIJsonProperty>,
+      required: ["dimension", "score"] satisfies (keyof AIJsonScoreBreakdown)[],
+      additionalProperties: false
+    }
+  };
+
   return {
     output: {
       type: 'object',
@@ -380,12 +394,73 @@ export function buildEvaluationSchemaDefinition<T extends Record<string, unknown
       required: outputJsonRequired,
       additionalProperties: outputJsonStructure ? false : undefined
     },
-    // TODO: object schema
-    scoreBefore: { type: 'object' },
-    scoreAfter: { type: 'object' },
-    // TODO: object schema
-    actionFlags: { type: 'array', items: { type: 'object' } },
-    integrityFlags: { type: 'array', items: { type: 'object' } },
+    scoreBefore: {
+      type: 'object',
+      description: 'Scoring evaluation of the original content before any corrections',
+      properties: {
+        total: { type: 'number', description: 'Total score across all dimensions (0-100)' },
+        breakdown: scoringBreakdownSchema,
+        passed: { type: 'boolean', description: 'Whether the content passed minimum quality thresholds' },
+        issues: { type: 'array', description: 'List of identified issues with suggested improvements', items: {
+          type: 'object',
+          properties: {
+            dimension: { type: 'string', description: 'Which scoring dimension this issue affects' },
+            issue: { type: 'string', description: 'Description of the specific problem identified' },
+            suggestion: { type: 'string', description: 'Suggested fix or improvement approach' },
+          } satisfies Record<keyof AIJsonEvaluationIssue, AIJsonProperty>,
+          required: ['dimension', 'issue', 'suggestion'] satisfies (keyof AIJsonEvaluationIssue)[],
+          additionalProperties: false
+        } },
+      } satisfies Record<keyof AIJsonScoreBefore, AIJsonProperty>,
+      required: ['total', 'breakdown', 'passed', 'issues'] satisfies (keyof AIJsonScoreBefore)[],
+      additionalProperties: false
+    },
+    scoreAfter: {
+      type: 'object',
+      description: 'Scoring evaluation of the content after corrections were applied',
+      properties: {
+        total: { type: 'number', description: 'Total score across all dimensions (0-100)' },
+        breakdown: scoringBreakdownSchema,
+        passed: { type: 'boolean', description: 'Whether the corrected content passed minimum quality thresholds' },
+        fixes: { type: 'array', description: 'List of actual changes made during correction', items: {
+          type: 'object',
+          properties: {
+            dimension: { type: 'string', description: 'Which scoring dimension this fix affected' },
+            change: { type: 'string', description: 'Description of the specific change made' },
+          } satisfies Record<keyof AIJsonEvaluationFix, AIJsonProperty>,
+          required: ['dimension', 'change'] satisfies (keyof AIJsonEvaluationFix)[],
+          additionalProperties: false
+        } },
+      } satisfies Record<keyof AIJsonScoreAfter, AIJsonProperty>,
+      required: ['total', 'breakdown', 'passed', 'fixes'] satisfies (keyof AIJsonScoreAfter)[],
+      additionalProperties: false
+    },
+    actionFlags: {
+      type: 'array',
+      description: 'Quality flags for action choices (not scored, but flagged for issues)',
+      items: {
+        type: 'object',
+        properties: {
+          actionIndex: { type: 'number', description: 'Index of the action in the actions array (0-based)' },
+          issue: { type: 'string', description: 'Description of the issue with this action choice' },
+        } satisfies Record<keyof AIJsonActionFlag, AIJsonProperty>,
+        required: ['actionIndex', 'issue'] satisfies (keyof AIJsonActionFlag)[],
+        additionalProperties: false
+      }
+    },
+    integrityFlags: {
+      type: 'array',
+      description: 'Integrity flags for JSON structure and data validation',
+      items: {
+        type: 'object',
+        properties: {
+          field: { type: 'string', description: 'Which field or property has the integrity issue' },
+          issue: { type: 'string', description: 'Description of the specific integrity problem' },
+        } satisfies Record<keyof AIJsonIntegrityFlag, AIJsonProperty>,
+        required: ['field', 'issue'] satisfies (keyof AIJsonIntegrityFlag)[],
+        additionalProperties: false
+      }
+    },
   } satisfies Record<keyof AIJsonEvaluation<T>, AIJsonProperty>;
 }
 

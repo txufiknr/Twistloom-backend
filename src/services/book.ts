@@ -18,8 +18,8 @@ import { and, eq, asc, or, desc, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, PublicStats } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, StoryPageNav, Action, EnrichedStoryPageContext } from "../types/story.js";
+import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext } from "../types/story.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -1085,15 +1085,8 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  * });
  * ```
  */
-export async function mapToEnrichedPage(dbPage: DBPage, options: {
-  userId?: string,
-  bookLanguage?: string,
-  headerLanguage?: string | null,
-  translate?: boolean,
-  sourceAction?: SelectedAction,
-  sourceNav?: StoryPageNav,
-}): Promise<EnrichedStoryPage | null> {
-  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, sourceNav } = options;
+export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOptions): Promise<EnrichedStoryPage | null> {
+  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, sourceNav, isUserTakeAction } = options;
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter(action => !!action.destinationPageIds?.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
@@ -1159,7 +1152,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: {
     } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }
 
-  if (dbPage.page > 1 && !sourceAction) {
+  if (isUserTakeAction && dbPage.page > 1 && !sourceAction) {
     console.error(`[mapToEnrichedPage] ❌ Source action should be exists for page ${dbPage.page}`);
   }
 

@@ -274,8 +274,19 @@ export type VisitBookPageResult = {
   visitDetails?: BookPageVisit,
   book?: EnrichedBookData,
   dbPage?: DBPage,
+} & TakeActionValidity;
+
+export type EnrichedPageOptions = {
+  userId?: string,
+  bookLanguage?: string,
+  headerLanguage?: string | null,
+  translate?: boolean
+} & TakeActionValidity;
+
+export type TakeActionValidity = {
   sourceAction?: SelectedAction, // should be defined for page number > 1
   sourceNav?: StoryPageNav,
+  isUserTakeAction?: boolean;
 };
 
 /**

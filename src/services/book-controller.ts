@@ -742,7 +742,7 @@ export async function visitBookPage(
     // No user visit track for prefetch (not actual navigation)
     const { nthVisit, visitorPercentage } = computeVisitStats({ rawVisitCount: dbPage.visitCount, readerCount: book.stats.readCount, addOne: false });
     const visitDetails: BookPageVisit = { nthVisit, visitorPercentage, readerUserId: userId };
-    return { dbPage, book, visitDetails };
+    return { dbPage, book, visitDetails, isUserTakeAction };
   }
 
   // Get parent page and selected action (if it's not page 1)
@@ -811,5 +811,5 @@ export async function visitBookPage(
     shouldConsumeCredits
   }, { req });
 
-  return { dbPage, book, visitDetails, sourceAction: selectedAction, sourceNav };
+  return { dbPage, book, visitDetails, sourceAction: selectedAction, sourceNav, isUserTakeAction };
 }

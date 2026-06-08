@@ -191,12 +191,7 @@ export type AIJsonEvaluation<T> = {
    * These identify problems with user choice options that don't affect the
    * main content score but need attention for good user experience.
    */
-  actionFlags: Array<{
-    /** Index of the action in the actions array (0-based) */
-    actionIndex: number;
-    /** Description of the issue with this action choice */
-    issue: string;
-  }>;
+  actionFlags: AIJsonActionFlag[];
   
   /**
    * Integrity flags for JSON structure and data validation
@@ -204,46 +199,64 @@ export type AIJsonEvaluation<T> = {
    * These identify structural problems, type mismatches, or constraint violations
    * that need to be fixed for the content to be technically valid.
    */
-  integrityFlags: Array<{
-    /** Which field or property has the integrity issue */
-    field: string;
-    /** Description of the specific integrity problem */
-    issue: string;
-  }>;
+  integrityFlags: AIJsonIntegrityFlag[];
+};
+
+export type AIJsonActionFlag = {
+  /** Index of the action in the actions array (0-based) */
+  actionIndex: number;
+  /** Description of the issue with this action choice */
+  issue: string;
+};
+
+export type AIJsonIntegrityFlag = {
+  /** Which field or property has the integrity issue */
+  field: string;
+  /** Description of the specific integrity problem */
+  issue: string;
 };
 
 export type AIJsonScoreBefore = {
   /** Total score across all dimensions (0-100) */
   total: number;
   /** Detailed breakdown of scores by dimension */
-  breakdown: Record<string, number>,
+  breakdown: AIJsonScoreBreakdown[],
   /** Whether the content passed minimum quality thresholds */
   passed: boolean;
   /** List of identified issues with suggested improvements */
-  issues: Array<{
-    /** Which scoring dimension this issue affects */
-    dimension: string;
-    /** Description of the specific problem identified */
-    issue: string;
-    /** Suggested fix or improvement approach */
-    suggestion: string;
-  }>;
-}
+  issues: AIJsonEvaluationIssue[];
+};
 
 export type AIJsonScoreAfter = {
   /** Total score across all dimensions (0-100) */
   total: number;
   /** Detailed breakdown of scores by dimension */
-  breakdown: Record<string, number>,
+  breakdown: AIJsonScoreBreakdown[],
   /** Whether the corrected content passed minimum quality thresholds */
   passed: boolean;
   /** List of actual changes made during correction */
-  fixes: Array<{
-    /** Which scoring dimension this fix affected */
-    dimension: string;
-    /** Description of the specific change made */
-    change: string;
-  }>;
+  fixes: AIJsonEvaluationFix[];
+};
+
+export type AIJsonScoreBreakdown = {
+  dimension: string;
+  score: number;
+};
+
+export type AIJsonEvaluationIssue = {
+  /** Which scoring dimension this issue affects */
+  dimension: string;
+  /** Description of the specific problem identified */
+  issue: string;
+  /** Suggested fix or improvement approach */
+  suggestion: string;
+};
+
+export type AIJsonEvaluationFix = {
+  /** Which scoring dimension this fix affected */
+  dimension: string;
+  /** Description of the specific change made */
+  change: string;
 };
 
 /**

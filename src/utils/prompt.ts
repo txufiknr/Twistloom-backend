@@ -1096,31 +1096,32 @@ OUTPUT FORMAT (strict JSON, no extra text):
   "output": { ...reconstructed and corrected page JSON },
   "scoreBefore": {
     "total": <number>,
-    "breakdown": {
-      "tension": <number>,
-      "coherence": <number>,
-      "style": <number>,
-      "progression": <number>,
-      "illusion": <number>,
-      "consistency": <number>
-    },
+    "breakdown": [
+      { "dimension": "tension", "score": <number> },
+      { "dimension": "coherence", "score": <number> },
+      { "dimension": "style", "score": <number> },
+      { "dimension": "progression", "score": <number> },
+      { "dimension": "illusion", "score": <number> },
+      { "dimension": "consistency", "score": <number> }
+    ],
     "passed": <boolean>,
     "issues": [{ "dimension": "...", "issue": "...", "suggestion": "..." }]
   },
   "scoreAfter": {
     "total": <number>,
-    "breakdown": {
-      "tension": <number>,
-      "coherence": <number>,
-      "style": <number>,
-      "progression": <number>,
-      "illusion": <number>,
-      "consistency": <number>
-    },
+    "breakdown": [
+      { "dimension": "tension", "score": <number> },
+      { "dimension": "coherence", "score": <number> },
+      { "dimension": "style", "score": <number> },
+      { "dimension": "progression", "score": <number> },
+      { "dimension": "illusion", "score": <number> },
+      { "dimension": "consistency", "score": <number> }
+    ],
     "passed": <boolean>,
     "fixes": [{ "dimension": "...", "change": "..." }]
   },
-  "choiceFlags": [{ "actionIndex": <number>, "issue": "..." }]
+  "actionFlags": [{ "actionIndex": <number>, "issue": "..." }],
+  "integrityFlags": [{ "field": "...", "issue": "..." }]
 }`;
 
   return prompt.split('---').map(stripEmptyLines).join('\n\n---\n');
@@ -1262,27 +1263,27 @@ OUTPUT FORMAT (strict JSON, no extra text):
   "output": { ...reconstructed and corrected book initialization JSON },
   "scoreBefore": {
     "total": <number>,
-    "breakdown": {
-      "hookQuality": <number>,
-      "firstPageQuality": <number>,
-      "mcAndCharacterFit": <number>,
-      "worldAndSetupCoherence": <number>,
-      "initialStateCalibration": <number>,
-      "metadataQuality": <number>
-    },
+    "breakdown": [
+      { "dimension": "hookQuality", "score": <number> },
+      { "dimension": "firstPageQuality", "score": <number> },
+      { "dimension": "mcAndCharacterFit", "score": <number> },
+      { "dimension": "worldAndSetupCoherence", "score": <number> },
+      { "dimension": "initialStateCalibration", "score": <number> },
+      { "dimension": "metadataQuality", "score": <number> }
+    ],
     "passed": <boolean>,
     "issues": [{ "dimension": "...", "issue": "...", "suggestion": "..." }]
   },
   "scoreAfter": {
     "total": <number>,
-    "breakdown": {
-      "hookQuality": <number>,
-      "firstPageQuality": <number>,
-      "mcAndCharacterFit": <number>,
-      "worldAndSetupCoherence": <number>,
-      "initialStateCalibration": <number>,
-      "metadataQuality": <number>
-    },
+    "breakdown": [
+      { "dimension": "hookQuality", "score": <number> },
+      { "dimension": "firstPageQuality", "score": <number> },
+      { "dimension": "mcAndCharacterFit", "score": <number> },
+      { "dimension": "worldAndSetupCoherence", "score": <number> },
+      { "dimension": "initialStateCalibration", "score": <number> },
+      { "dimension": "metadataQuality", "score": <number> }
+    ],
     "passed": <boolean>,
     "fixes": [{ "dimension": "...", "change": "..." }]
   },

@@ -12,14 +12,17 @@
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
-[x] Previous pages >3 tampilin major plot flag aja (all) + indicator "(MAJOR)" (gausah "PLOT FLAGS:")
+[x] maybe need complete evaluation json schema
+[github] 💥 Model openai/gpt-4o failed, trying next model: UNKNOWN
+
+[x] kalau prefetch skip check source action:
+[visit] 👓 Prefetching "The Static Between Us" page 2
+[mapToEnrichedPage] ❌ Source action should be exists for page 2
+
 [ ] buat getPreviousPages return ActionedStoryPage[]
 [ ] ensure enriched page has valid values for sourceNav (pake sourceAction?)
 [ ] Place Traits pastiin record<string, string>
 [ ] can we handle Tokenisation-level corruption (stage 3) with our own typescript helper function without using `jaison`?
-[x] buat cron action candidate generation tiap 4 jam aja
-[x] Initial viable ending gausah isDone, langsung string[]
-[x] Generatedpages output concise max 250 chars
 [ ] book type add: translation?: BookTranslation;
 
 

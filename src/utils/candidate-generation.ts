@@ -1350,6 +1350,9 @@ export async function triggerCandidateGenerationWorkflow(params: {
 async function checkAndResetStuckGeneration(dbPage: DBPage): Promise<{ isGenerating: boolean, isDone: boolean, totalPendingActions: number }> {
   const totalPendingActions = dbPage.pendingGenerationCount ?? dbPage.actions.filter(a => !a.destinationPageIds?.length).length;
   const isDone = totalPendingActions === 0;
+
+  console.log(`[checkAndResetStuckGeneration] ${isDone ? '✅' : '👉'} totalPendingActions for page ${dbPage.id}:`, totalPendingActions, { pendingGenerationCount: dbPage.pendingGenerationCount, actions: dbPage.actions });
+
   const { isGeneratingStartedAt } = dbPage;
 
   // Early exit: if generation never started
