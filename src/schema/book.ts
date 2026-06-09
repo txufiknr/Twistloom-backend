@@ -5,7 +5,7 @@ import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltL
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, endingTypes, factTypes, flagLevels, plotFlagTypes } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
-import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
 import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
@@ -148,23 +148,10 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
       traumaTags: { type: 'array', items: { type: 'string' } },
       futureNotes: {
         type: 'array',
-        description: `Forward-looking narrative obligations ("what should happen later") — Foreshadowing notes for future AI turns (max ${MAX_FUTURE_NOTES}).`,
+        description: `Forward-looking narrative obligations for future AI turns (max ${MAX_FUTURE_NOTES}).`,
         items: FUTURE_NOTE_SCHEMA
       },
-      plotFlags: {
-        type: 'array',
-        description: 'Historical facts ("what already happened") — Significant story events or revelations that impact narrative trajectory.',
-        items: {
-          type: 'object',
-          properties: {
-            fact: { type: 'string' },
-            type: { type: 'string', enum: [...plotFlagTypes] satisfies PlotFlagType[] },
-            isMajorEvent: { type: 'boolean' },
-          } satisfies Record<keyof InitialPlotFlag, AIJsonProperty>,
-          required: ['fact', 'type'] satisfies (keyof InitialPlotFlag)[],
-          additionalProperties: false
-        }
-      },
+      plotFlags: PLOT_FLAGS_SCHEMA,
       inventory: { type: 'array', items: INITIAL_INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
     } satisfies Record<keyof InitialStoryState, AIJsonProperty>,

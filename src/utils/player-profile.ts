@@ -31,21 +31,31 @@ const ACTION_INFLUENCES: Record<ActionType, Partial<PsychologicalProfileMetrics>
 } as const;
 
 /**
- * Calculates base psychological traits from action history
+ * Calculates base psychological traits from action history.
+ * Uses an exponential moving average decay factor to emphasize recency
+ * and prevent late-game metric saturation.
  */
 function calculateBaseTraits(actionsHistory: SelectedAction[]): Pick<PsychologicalProfileMetrics, 'curiosity' | 'fear' | 'aggression' | 'denial'> {
   const traits = {
-    curiosity: 0,
-    fear: 0,
-    aggression: 0,
-    denial: 0
+    curiosity: 0.3,
+    fear: 0.2,
+    aggression: 0.1,
+    denial: 0.1
   };
   
   actionsHistory.forEach(action => {
     const influences = ACTION_INFLUENCES[action.type as keyof typeof ACTION_INFLUENCES] || ACTION_INFLUENCES.other;
     
+    // Smoothly decay existing values before applying updates to ensure long-term fluidity
+    traits.curiosity *= 0.9;
+    traits.fear *= 0.9;
+    traits.aggression *= 0.9;
+    traits.denial *= 0.9;
+    
     Object.entries(influences).forEach(([trait, influence]) => {
-      traits[trait as keyof typeof traits] += influence as number;
+      if (trait in traits) {
+        traits[trait as keyof typeof traits] += influence as number;
+      }
     });
   });
   
@@ -94,7 +104,7 @@ export function calculatePlayerProfile(state: StoryState): PsychologicalProfileM
   // Social context from character interactions
   const socialContext = calculateSocialEngagement(state.characters);
   
-  // Cognitive state from memory integrity
+  // Cognitive state from memory integrity (1.0 = clear thinking, 0.0 = completely corrupted perception)
   const cognitiveState = 1 - mapMemoryIntegrity(state.memoryIntegrity);
   
   return {
@@ -165,7 +175,7 @@ export function createStyleInput(state: StoryState): StyleInput {
   return {
     sanity: state.memoryIntegrity === 'stable' ? 1.0 : state.memoryIntegrity === 'fragmented' ? 0.5 : 0.2,
     tension: state.flags.fear === 'high' ? 0.8 : state.flags.fear === 'medium' ? 0.5 : 0.3,
-    entropy: (state.page / state.maxPage) * 0.5, // Increases with story progress
+    entropy: state.maxPage ? (state.page / state.maxPage) * 0.5 : 0.2, // Protected against division by zero
     traumaTags,
     profile: calculatePlayerProfile(state),
     page,

@@ -763,7 +763,7 @@ export type StateDelta = {
   /** Updates to future notes (add/remove) based on story progression */
   futureNoteUpdates?: TagUpdates<FutureNote>;
   /** Updates to plot flags (add) for story progression */
-  addPlotFlag?: InitialPlotFlag;
+  addPlotFlags?: InitialPlotFlag[];
   /** What durable facts about the story world changed */
   factUpdates?: FactUpdate[];
   /** Updates to characters (new and existing) with changes */
@@ -842,7 +842,7 @@ export type EnrichedStoryPageContext = {
 };
 
 export type StoryPageNav = Record<number, StoryPageNavItem>;
-export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlag?: InitialPlotFlag; };
+export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlags?: InitialPlotFlag[]; };
 
 export type Action = {
   /** Action text (serves as unique identifier) */

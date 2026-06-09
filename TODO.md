@@ -11,18 +11,21 @@
 
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
-you think: "context.plotFlags need to be complete from page 1 to current"
+// you think: "context.plotFlags need to be complete from page 1 to current"
 
-but no, I was wrong, let's me clarify:
+// but no, I was wrong, let's me clarify:
 - `context.plotFlags`: plot flags for respective page (currently correct)
 - but maybe what I want is new `context.plotFlagHistory` which behave exactly like `context.actionsHistory` to track per-page plot flags
 - thus, in frontend, I can serve chronological page list with their selected actions and plot flags
 
 can you continue?
+just little update, I've changed `StoryPageNavItem.plotFlag` into plural
+export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlags?: InitialPlotFlag[]; };
+
+plot flag is generally 1 per page, but I standardize into array for LLM schema and future-proof
 
 ---
 
-please examine my implementation
 I put this in story page generation prompt:
 ```
 NARRATIVE STYLE:

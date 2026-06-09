@@ -20,8 +20,6 @@ function calculateBaseMetrics(input: StyleInput) {
   const { sanity, tension, entropy, traumaTags, profile } = input;
   
   return {
-    // /** Longer sentences when sane, shorter when fracturing */
-    // sentenceLength: 0.3 + sanity * 0.5,
     /** Increases as sanity decreases and entropy rises */
     fragmentation: (1 - sanity) * 0.8 + entropy * 0.3,
     /** Driven by tension and accumulated trauma */
@@ -41,8 +39,8 @@ function calculateBaseMetrics(input: StyleInput) {
  * Applies psychological adjustments to base metrics
  */
 function applyPsychologicalAdjustments(base: ReturnType<typeof calculateBaseMetrics>, profile: StyleInput['profile']) {
-  /** Cognitive state affects clarity and fragmentation */
-  const cognitiveAdjustment = profile.cognitiveState * 0.2;
+  /** Cognitive distortion increases as cognitiveState drops (Fixed mathematical inversion bug) */
+  const cognitiveDistortion = (1 - profile.cognitiveState) * 0.25;
   /** Trust affects contradiction (low trust = more self-doubt) */
   const trustAdjustment = (1 - profile.trust) * 0.15;
   /** Trauma affects repetition and sensory focus */
@@ -51,11 +49,10 @@ function applyPsychologicalAdjustments(base: ReturnType<typeof calculateBaseMetr
   const physicalAdjustment = profile.physicalState * 0.15;
   
   return {
-    // sentenceLength: base.sentenceLength,
-    fragmentation: base.fragmentation + cognitiveAdjustment,
+    fragmentation: base.fragmentation + cognitiveDistortion,
     repetition: base.repetition + traumaAdjustment,
     contradiction: base.contradiction + trustAdjustment,
-    clarity: base.clarity - cognitiveAdjustment,
+    clarity: base.clarity - cognitiveDistortion,
     pacing: base.pacing + physicalAdjustment,
     sensoryFocus: base.sensoryFocus + traumaAdjustment
   };
@@ -89,7 +86,6 @@ export function calculateStyleVector(input: StyleInput): StyleVector {
   const adjusted = applyPsychologicalAdjustments(base, input.profile);
   
   return {
-    // sentenceLength: normalize(adjusted.sentenceLength),
     fragmentation: normalize(adjusted.fragmentation),
     repetition: normalize(adjusted.repetition),
     contradiction: normalize(adjusted.contradiction),
@@ -151,11 +147,8 @@ export function determineNarrativeMode(vector: StyleVector, sanity: number, isEn
   
   // Style-based secondary indicators
   const highFragmentation = vector.fragmentation > 0.6;
-  const moderateFragmentation = vector.fragmentation > 0.3;
   const lowClarity = vector.clarity < 0.4;
-  const moderateClarity = vector.clarity < 0.6;
   const highContradiction = vector.contradiction > 0.5;
-  const moderateContradiction = vector.contradiction > 0.3;
   const lowPacing = vector.pacing < 0.4; // Slow, deliberate pacing
   const highRepetition = vector.repetition > 0.6; // Repetitive thoughts/phrases
   
@@ -180,7 +173,7 @@ export function determineNarrativeMode(vector: StyleVector, sanity: number, isEn
   // Triggered by moderate-low sanity OR moderate distress with sane-moderate sanity OR specific style indicators
   if (lowSanity || 
       (moderateSanity && distressScore > 0.4) ||
-      (highSanity && (moderateFragmentation || moderateContradiction || moderateClarity)) ||
+      (highSanity && (vector.fragmentation > 0.3 || vector.contradiction > 0.3 || vector.clarity < 0.6)) ||
       (highSanity && (highRepetition || lowPacing))) {
     return "uneasy";
   }
@@ -192,13 +185,12 @@ export function determineNarrativeMode(vector: StyleVector, sanity: number, isEn
 
 /**
  * Generates narrative style instructions for AI
- * 
- * Creates detailed, human-readable guidance that translates
- * style vectors into specific writing behaviors and techniques.
- * 
+ * Creates detailed, atmospheric guidance translating numerical metrics 
+ * into evocative writing directives. Eliminates token bloat by focusing 
+ * purely on execution, tailoring the prose style to weaponize the player's profile.
  * @param style - Complete narrative style configuration
- * @param enhancedInput - Optional enhanced input for multi-factor guidance
- * @param state - Optional story state to get phase information
+ * @param styleInput - Style input containing story state and player metrics
+ * @param state - Complete story state
  * @returns Human-readable instructions for AI
  * 
  * @example
@@ -215,85 +207,80 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   const { profile } = styleInput;
   const { phase } = getStoryStateInfo(state);
 
-  // 1. Mode-specific base instructions
-  let instructions: string;
+  const directives: string[] = [];
 
-  // TODO: is this good? I want consistent writing style and sentence length variations
-  
-  switch (mode) {
-    case "grounded":
-      instructions = `
-- Minimal fragmentation.
-- Describe events directly.
-- Slight unease but logical flow.`;
-      break;
-      
-    case "uneasy":
-      instructions = `
-- Occasionally break sentences or thoughts.
-- Use light repetition for tension.
-- Allow small contradictions in thoughts.
-- Emphasize growing unease and doubt.`;
-      break;
-      
-    case "fractured":
-      instructions = `
-- Frequently interrupt thoughts with em dashes (—).
-- Repeat key words or phrases.
-- Let MC doubt what they see.
-- Allow contradictions without resolving them.
-- Reduce clarity but maintain readability.
-- Emphasize psychological distress and confusion.`;
-      break;
-      
-    default:
-      instructions = `Develop naturally with appropriate tone for current context.`;
+  // 1. Core Narrative Mode Constraints (Voice & General Syntax Length)
+  if (mode === "grounded") {
+    directives.push(
+      "- VOICE: Grounded, clear, and objective. Maintain structured logical flow with natural transitions.",
+      "- SYNTAX: Rich, expressive sentences with eloquent vocabulary and comprehensive length variations."
+    );
+  } else if (mode === "uneasy") {
+    directives.push(
+      "- VOICE: Unsettled and destabilized. Weave an undercurrent of paranoia, quiet anxiety, and creeping doubt into descriptions.",
+      "- SYNTAX: Introduce sudden rhythm breaks, shorter clauses, and minor instances of internal second-guessing."
+    );
+  } else if (mode === "fractured") {
+    directives.push(
+      "- VOICE: Deeply fractured and psychologically compromised. The barrier between real events and internal terror has dissolved.",
+      "- SYNTAX: Use breathless, broken, and halting sentence fragments. Frequent em-dashes (—) and looping mental syntax are highly encouraged, while preserving structural prose readability."
+    );
+  }
+
+  // 2. Metric Vector Translations (Prose Dynamics)
+  if (vector.fragmentation > 0.6) {
+    directives.push("- FRAGMENTATION: Sever ideas mid-sentence; allow descriptive imagery to shatter or trail off uncompleted.");
+  }
+  if (vector.repetition > 0.6) {
+    directives.push("- REPETITION: Implement echoing recurring phrases or obsessive structural loops to trap the reader in the MC's fixation.");
+  }
+  if (vector.contradiction > 0.6) {
+    directives.push("- CONTRADICTION: Let the protagonist observe an immediate detail and rewrite it moments later out of sheer confusion (do not explain the anomaly away).");
+  }
+  if (vector.sensoryFocus > 0.6) {
+    directives.push("- SENSORY FOCUS: Hyper-fixate intensely on raw, visceral stimuli—the exact pitch of a sound, sudden light shifts, or sharp physical reactions.");
+  } else if (vector.sensoryFocus < 0.4) {
+    directives.push("- SENSORY FOCUS: Keep environmental descriptions abstract and surreal, as though the setting is obscured through a psychological lens.");
   }
   
-  // 2. Add vector-specific refinements
-  // - Sentence length: ${vector.sentenceLength.toFixed(2)} (short ↔ mixed ↔ longer)
-  const vectorInstructions = `
-Current style metrics:
-- Fragmentation: ${vector.fragmentation.toFixed(2)} (broken thoughts, interruptions)
-- Repetition: ${vector.repetition.toFixed(2)} (emotional echo, recurring phrases)
-- Contradiction: ${vector.contradiction.toFixed(2)} (self-doubt, thought reversals)
-- Clarity: ${vector.clarity.toFixed(2)} (how understandable narration is)
-- Pacing: ${vector.pacing.toFixed(2)} (fast vs slow narration)
-- Sensory focus: ${vector.sensoryFocus.toFixed(2)} (detail vs abstract descriptions)
+  if (vector.pacing > 0.6) {
+    directives.push("- PACING: Accelerate tension with urgent, snappy clauses to mimic a racing heartbeat.");
+  } else if (vector.pacing < 0.4) {
+    directives.push("- PACING: Intentionally stall the pacing; force sentences to feel heavy, lethargic, or numbly slow.");
+  }
 
-Apply these behaviors:
-- Break sentences when fragmentation is high (${vector.fragmentation.toFixed(2)})
-- Use repetition meaningfully when repetition is elevated (${vector.repetition.toFixed(2)})
-- Allow MC to misinterpret events when contradiction is high (${vector.contradiction.toFixed(2)})
-- Do not explain contradictions - let them stand
-- Adjust sentence length based on clarity needs (${vector.clarity.toFixed(2)})
-- Control pacing based on tension level (${vector.pacing.toFixed(2)})
-- Focus on ${vector.sensoryFocus > 0.6 ? 'detailed sensory descriptions' : 'more abstract narrative'}
-- CRITICAL: Never suddenly jump between styles - gradual evolution only`;
-  
-  // 3. Add psychological guidance
-  const multiFactorInstructions = `
-Psychological context for creative guidance:
-- Trust level: ${profile.trust.toFixed(2)} (${profile.trust > 0.7 ? 'trusting' : profile.trust > 0.4 ? 'cautious' : 'distrustful'})
-- Guilt level: ${profile.guilt.toFixed(2)} (${profile.guilt > 0.7 ? 'burdened by guilt' : profile.guilt > 0.4 ? 'some regrets' : 'clear conscience'})
-- Trauma weight: ${profile.traumaWeight.toFixed(2)} (${profile.traumaWeight > 0.6 ? 'heavily traumatized' : profile.traumaWeight > 0.3 ? 'some trauma' : 'minimal trauma'})
-- Physical state: ${profile.physicalState.toFixed(2)} (${profile.physicalState > 0.6 ? 'vulnerable/injured' : profile.physicalState > 0.3 ? 'some strain' : 'physically capable'})
-- Social context: ${profile.socialContext.toFixed(2)} (${profile.socialContext > 0.6 ? 'well-connected' : profile.socialContext > 0.3 ? 'some connections' : 'isolated'})
-- Cognitive state: ${profile.cognitiveState.toFixed(2)} (${profile.cognitiveState > 0.6 ? 'clear thinking' : profile.cognitiveState > 0.3 ? 'some confusion' : 'fragmented perception'})
+  // 3. Psychological Weaponization (Turning behavioral tendencies into structural writing traps)
+  if (profile.curiosity > 0.6) {
+    directives.push("- WEAPONIZE CURIOSITY: The player wants to discover things. Punish their exploration: force the prose to hyper-fixate on morbid details or disturbing structural anomalies in the surroundings, making them regret looking closer.");
+  }
+  if (profile.fear > 0.6) {
+    directives.push("- WEAPONIZE FEAR: Enforce absolute hyper-vigilance. Shape the narration so harmless shifting shadows, normal ambient noise, or neutral micro-expressions are tracked as imminent, personal threats.");
+  }
+  if (profile.aggression > 0.6) {
+    directives.push("- WEAPONIZE AGGRESSION: Color the voice with a sharp, hostile edge. Use violent, confrontational action verbs and an internal monologue that treats secondary characters and settings as targets to smash or overcome.");
+  }
+  if (profile.denial > 0.6) {
+    directives.push("- WEAPONIZE DENIAL: Force the protagonist to frantically rationalize surreal or outright terrifying anomalies using fragile, paper-thin logic that strains belief.");
+  }
+  if (profile.trust < 0.4) {
+    directives.push("- WEAPONIZE DISTRUST: Parse conversations and environmental actions with intense suspicion, actively dissecting spoken dialogue for indicators of ultimate deception or trap doors.");
+  }
+  if (profile.guilt > 0.6) {
+    directives.push("- WEAPONIZE GUILT: Saturate descriptions with themes of culpability, rot, or lingering punishment. The environment must look and act like an active physical manifestation of the protagonist's unresolved remorse.");
+  }
 
-Creative suggestions:
-${profile.trust < 0.4 ? '- Consider themes of betrayal, deception, or unreliable narrators\n' : ''}
-${profile.guilt > 0.6 ? '- Explore past mistakes haunting the present\n' : ''}
-${profile.traumaWeight > 0.6 ? '- Trauma may manifest as hallucinations, flashbacks, or distorted reality\n' : ''}
-${profile.physicalState > 0.6 ? '- Physical vulnerability can heighten psychological tension\n' : ''}
-${profile.socialContext < 0.4 ? '- Isolation can amplify paranoia and internal conflict\n' : ''}
-${profile.cognitiveState < 0.4 ? '- Question the reliability of memories and perceptions\n' : ''}
-${phase === 'EARLY' ? '- Establish mystery and plant seeds of doubt\n' : ''}
-${phase === 'MID' ? '- Escalate psychological pressure and complications\n' : ''}
-${phase === 'LATE' ? '- Bring tensions to a head, confront truths\n' : ''}
-${phase === 'FINALE' ? '- Deliver emotional and psychological payoff\n' : ''}`;
-  
-  return [instructions, vectorInstructions, multiFactorInstructions].map(stripEmptyLines).join('\n');
+  // 4. Story Phase Milestones
+  if (phase === 'EARLY') {
+    directives.push("- CONTEXT: Establish mystery. Focus on building an atmosphere of subtle unease and planting initial seeds of doubt.");
+  } else if (phase === 'MID') {
+    directives.push("- CONTEXT: Escalate pressure. Complicate the horror and warp the protagonist's grip on factual reality.");
+  } else if (phase === 'LATE' || phase === 'FINALE') {
+    directives.push("- CONTEXT: Psychological climax. Bring all tensions to a volatile flashpoint; allow the mental distortions to reach full parity.");
+  }
+
+  directives.push("- CRITICAL EVOLUTION: Writing transitions must build fluidly and organically across changes—never execute sudden, unearned stylistic jumps.");
+
+  return stripEmptyLines(directives.join('\n'));
 }
 
 /**

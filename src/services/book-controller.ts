@@ -790,7 +790,7 @@ export async function visitBookPage(
           pageId: prev.id,
           // TODO: harusnya pake sourceAction?
           selectedAction: prev.selectedActions.at(-1)!, // Get the last action selected on each previous page for navigation source tracking
-          plotFlag: prev.stateDelta.addPlotFlag
+          plotFlags: prev.stateDelta.addPlotFlags
         } satisfies StoryPageNavItem;
       }
     }

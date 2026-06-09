@@ -40,9 +40,9 @@ export function extractStateDelta(generation: StoryGeneration, expectedPageNumbe
     placeUpdates: generation.placeUpdates,
     threadUpdates: generation.threadUpdates,
     viableEnding: generation.viableEnding,
-    isMajorEvent: generation.addPlotFlag?.isMajorEvent,
+    isMajorEvent: generation.addPlotFlags?.some(p => p.isMajorEvent),
     contextHistory: generation.contextHistory,
-    addPlotFlag: generation.addPlotFlag,
+    addPlotFlags: generation.addPlotFlags,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, place }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, place }) : injury),
@@ -184,7 +184,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     flagUpdates,
     traumaTagUpdates,
     futureNoteUpdates,
-    addPlotFlag,
+    addPlotFlags,
     factUpdates,
     characterUpdates,
     relationshipUpdates,
@@ -232,7 +232,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
-  processPlotFlagUpdates(newState, addPlotFlag, scene?.place);
+  processPlotFlagUpdates(newState, addPlotFlags, scene?.place);
   processFactUpdates(newState, factUpdates);
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.place);
   processPlaceUpdates(newState, placeUpdates, scene);
@@ -699,7 +699,7 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
  * Validates that the plot flag type is one of the allowed types.
  * 
  * @param state - Current story state to update
- * @param addPlotFlag - Optional PlotFlag object with page, fact, and type
+ * @param addPlotFlags - Optional PlotFlag objects with page, fact, and type
  * 
  * @example
  * ```typescript
@@ -710,21 +710,23 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
  * });
  * ```
  */
-export function processPlotFlagUpdates(state: StoryState, addPlotFlag?: InitialPlotFlag, place?: string): void {
-  if (!addPlotFlag) return;
+export function processPlotFlagUpdates(state: StoryState, addPlotFlags?: InitialPlotFlag[], place?: string): void {
+  if (!addPlotFlags?.length) return;
 
-  // Validate / normalise type
-  const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-  const normalized: PlotFlag = { ...addPlotFlag, page: state.page, place, type: validType };
-
-  // Guard against duplicates (same page + type + fact).
-  // This mirrors the deduplication in processTagUpdates and provides a safety
-  // net against double-application from retries or repeated reconstruction.
-  const isDuplicate = state.plotFlags.some(f => f.page === normalized.page && f.type === normalized.type && f.fact === normalized.fact);
-  if (isDuplicate) return;
-
-  state.plotFlags.push(normalized);
-  if (normalized.isMajorEvent) state.isMajorEvent = true;
+  for (const addPlotFlag of addPlotFlags) {
+    // Validate / normalise type
+    const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
+    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, place, type: validType };
+  
+    // Guard against duplicates (same page + type + fact).
+    // This mirrors the deduplication in processTagUpdates and provides a safety
+    // net against double-application from retries or repeated reconstruction.
+    const isDuplicate = state.plotFlags.some(f => f.page === normalized.page && f.type === normalized.type && f.fact === normalized.fact);
+    if (isDuplicate) return;
+  
+    state.plotFlags.push(normalized);
+    if (normalized.isMajorEvent) state.isMajorEvent = true;
+  }
 }
 
 /**

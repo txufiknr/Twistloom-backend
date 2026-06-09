@@ -407,11 +407,11 @@ const nextPageOutputFormat: string = `{
     "add": [],
     "remove": []
   },
-  "addPlotFlag": {
+  "addPlotFlags": [{
     "fact": "...",
     "type": "One of: ${formatOneOf(plotFlagTypes)}",
     "isMajorEvent": <boolean>
-  },
+  }],
   "inventory": [
     {
       "name": "...",
@@ -766,8 +766,8 @@ factUpdates
     → Change a character's status, goal, relationship, possession, or knowledge.
     → Establish a mystery clue, suspect, or revelation.
 
-addPlotFlag
-  - Add ONLY for significant story developments that become established canon.
+addPlotFlags
+  - Add ONLY for significant story developments that become established canon (max 1 per page).
   - Do NOT add for temporary actions, routine events, minor clues, or short-lived details.
   - Use for major revelations, important discoveries, critical relationship changes, irreversible decisions, or major shifts in story direction.
   - fact: describe the newly established story fact clearly and specifically.

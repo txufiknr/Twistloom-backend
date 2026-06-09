@@ -2,9 +2,9 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
-import { actionHintTypes, factTypes, flagLevels, moods, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
+import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag } from "../types/story.js";
 import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates } from "../types/thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -143,6 +143,21 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
   } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
   required: ['note'] satisfies (keyof FutureNoteGeneration)[],
   additionalProperties: false
+};
+
+export const PLOT_FLAGS_SCHEMA: AIJsonProperty = {
+  type: 'array',
+  description: 'Significant story events or revelations that impact narrative trajectory (max 1 per page).',
+  items: {
+    type: 'object',
+    properties: {
+      fact: { type: 'string' },
+      type: { type: 'string', enum: [...plotFlagTypes] satisfies PlotFlagType[] },
+      isMajorEvent: { type: 'boolean' },
+    } satisfies Record<keyof InitialPlotFlag, AIJsonProperty>,
+    required: ['fact', 'type'] satisfies (keyof InitialPlotFlag)[],
+    additionalProperties: false
+  }
 };
 
 export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
@@ -346,8 +361,9 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     },
   },
 
+  addPlotFlags: PLOT_FLAGS_SCHEMA,
+
   // Optional objects, can omit or empty if no updates
-  addPlotFlag: { type: 'object', description: 'What already happened — Significant plot development that impact narrative trajectory.' },
   viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
 
   // Provide full to overwrite current. Can omit or empty if no changes.
