@@ -219,7 +219,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     characters:     { ...baseState.characters },
     places:         { ...baseState.places },
     // ── scalar delta overrides ───────────────────────────────────────────────
-    flags:          { ...baseState.flags, ...(flagUpdates ?? {}) },
+    flags:          { ...baseState.flags },
     isMajorEvent:   isMajorEvent ?? baseState.isMajorEvent,
     contextHistory: contextHistory || baseState.contextHistory,
     viableEnding: viableEnding ? { text: viableEnding.text || baseState.viableEnding?.text, type: viableEnding.type || baseState.viableEnding?.type } : baseState.viableEnding,
@@ -237,6 +237,14 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.place);
   processPlaceUpdates(newState, placeUpdates, scene);
   processThreadUpdates(newState, threadUpdates);
+
+  // Apply flag updates — each update contains a `type` and `level`.
+  if (flagUpdates?.length) {
+    newState.flags = { ...newState.flags };
+    for (const flagUpdate of flagUpdates) {
+      newState.flags[flagUpdate.type] = flagUpdate.level;
+    }
+  }
 
   // Apply inventory updates (full replacements, remove which has amount of 0)
   if (inventory?.length) newState.inventory = cleanUpInventory(inventory);

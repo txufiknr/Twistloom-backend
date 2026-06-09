@@ -2313,6 +2313,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
       sourceNav,
       isUserTakeAction
     });
+
     if (!page) return handleApiError(res, "Failed to get enriched page");
 
     // Generate ETag from page updatedAt + userId + translation params (different content per user/language)

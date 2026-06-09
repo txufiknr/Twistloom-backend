@@ -27,14 +27,14 @@ import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from
 import { createPasswordResetToken, resetPassword, verifyPasswordResetToken } from '../utils/password-reset.js';
 import { sendPasswordResetEmail, sendVerificationEmail } from '../utils/email.js';
 import { createEmailVerificationToken, verifyEmailToken, isEmailVerified } from '../utils/email-verification.js';
-import { handleApiError, handleUnauthorizedError, handleValidationError } from '../utils/error.js';
+import { handleApiError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from '../utils/error.js';
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
 import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices } from '../services/session-manager.js';
-import { cleanedUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
+import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { Request, Response } from "express";
 import type { DBUserForAuth } from '../types/schema.js';
 
@@ -43,23 +43,6 @@ const router: RouterType = Router();
 // Google OAuth client for ID token verification (used by both One Tap and OAuth flows)
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// ---------------------------------------------------------------------------
-// Shared Google auth handler
-//
-// Both /google-one-tap and /google-oauth accept a Google ID token, verify it,
-// and upsert the user. They are separate endpoints for logging/analytics
-// clarity, but share identical verification and response logic.
-// ---------------------------------------------------------------------------
-
-interface GoogleAuthResponse {
-  userId: string;
-  email: string;
-  name: string | null;
-  username: string;
-  image: string | null;
-  isNewUser: boolean;
-}
-
 /**
  * Verifies a Google ID token, upserts the user, and sends the user data
  * response. Used by both POST /google-one-tap and POST /google-oauth.
@@ -67,10 +50,7 @@ interface GoogleAuthResponse {
 async function handleGoogleAuth(idToken: string, req: Request, res: Response): Promise<void> {
   // Rate limiting based on IP address
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimitByIP(ip)) {
-    res.status(429).json({ error: 'Too many attempts. Please try again later.' });
-    return;
-  }
+  if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
 
   // Verify Google ID token (works for both One Tap credentials and standard OAuth id_token)
   const ticket = await googleClient.verifyIdToken({
@@ -79,10 +59,7 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
   });
 
   const payload = ticket.getPayload();
-  if (!payload || !payload.email) {
-    handleUnauthorizedError(res, 'Invalid token payload');
-    return;
-  }
+  if (!payload?.email) return handleUnauthorizedError(res, 'Invalid token payload');
 
   const { email, name, picture: image } = payload;
 
@@ -106,20 +83,10 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
     .limit(1);
 
   if (!user) {
-    handleApiError(res, 'Failed to retrieve user data');
-    return;
+    return handleApiError(res, 'Failed to retrieve user data');
   }
 
-  const response: GoogleAuthResponse = {
-    userId: user.userId,
-    email: user.email,
-    name: user.name,
-    username: user.username,
-    image: user.image,
-    isNewUser: user.isNewUser ?? false,
-  };
-
-  res.json(response);
+  res.json(user);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,9 +142,7 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
 router.post('/verify-credentials', async (req, res) => {
   try {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!checkRateLimitByIP(ip)) {
-      return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
-    }
+    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
 
     const { emailOrUsername, password } = req.body;
 
@@ -195,7 +160,7 @@ router.post('/verify-credentials', async (req, res) => {
     if (lockoutStatus.isLocked) {
       if (lockoutStatus.remainingTime === undefined) {
         await resetFailedLoginAttempts(userData.userId);
-        return res.status(429).json({ error: 'Account lock state inconsistent. Please try again.' });
+        return handleRateLimitError(res, 'Account lock state inconsistent. Please try again.');
       }
       const minutesRemaining = Math.ceil(lockoutStatus.remainingTime / 60000);
       return res.status(429).json({
@@ -216,22 +181,13 @@ router.post('/verify-credentials', async (req, res) => {
 
     await resetFailedLoginAttempts(userData.userId);
 
-    // Fetch isNewUser flag.
-    // Ideal: include isNewUser in getUserForAuth() to avoid this extra round-trip.
-    // It's a PK lookup so overhead is minimal, but consolidating is cleaner.
-    const [userExtra] = await dbRead
-      .select({ isNewUser: users.isNewUser })
-      .from(users)
-      .where(eq(users.userId, userData.userId))
-      .limit(1);
-
     res.json({
       userId: userData.userId,
       email: userData.email,
       name: userData.name,
       username: userData.username,
       image: userData.image,
-      isNewUser: userExtra?.isNewUser ?? false,
+      isNewUser: userData.isNewUser,
     } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean });
   } catch (error) {
     console.error('[POST /api/auth/verify-credentials] ❌ Credential verification error:', error);
@@ -303,7 +259,7 @@ router.post('/signup', async (req, res) => {
     }
 
     // User data validation
-    const userData = await cleanedUserData(req.body, { res, createNew: true });
+    const userData = await sanitizeUserData(req.body, { res, createNew: true });
     if (!userData) return;
 
     // Check if cleaned email is a temporary email address
@@ -595,10 +551,7 @@ router.post('/logout', async (req, res) => {
 router.post('/google-one-tap', async (req: Request, res: Response) => {
   try {
     const { idToken } = req.body;
-
-    if (!idToken) {
-      return handleValidationError(res, 'ID token is required');
-    }
+    if (!idToken) return handleValidationError(res, 'ID token is required');
 
     await handleGoogleAuth(idToken, req, res);
   } catch (error) {
@@ -663,10 +616,7 @@ router.post('/google-one-tap', async (req: Request, res: Response) => {
 router.post('/google-oauth', async (req: Request, res: Response) => {
   try {
     const { idToken } = req.body;
-
-    if (!idToken) {
-      return handleValidationError(res, 'ID token is required');
-    }
+    if (!idToken) return handleValidationError(res, 'ID token is required');
 
     await handleGoogleAuth(idToken, req, res);
   } catch (error) {

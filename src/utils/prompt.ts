@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -453,12 +453,12 @@ const nextPageOutputFormat: string = `{
       "reason": "..."
     }
   ],
-  "flagUpdates": {
-    "trust": "One of: low | medium | high",
-    "fear": "One of: low | medium | high",
-    "guilt": "One of: low | medium | high",
-    "curiosity": "One of: low | medium | high"
-  },
+  "flagUpdates": [
+    {
+      "type": "${formatOneOf(psychologicalFlagsTypes)}",
+      "level": "${formatOneOf(flagLevels)}"
+    }
+  ],
   "actions": [
     {
       "text": "First-person action or dialogue",
@@ -2245,6 +2245,7 @@ Example: High curiosity leads to discovering uncomfortable truths
 
 /**
  * Formats psychological flags for prompt display
+ * Answers: "What emotional resources currently dominate the player?"
  * 
  * Creates a formatted string of all psychological flags
  * with their current levels for AI guidance.
@@ -2262,6 +2263,7 @@ function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: Me
 
 /**
  * Formats psychological profile for prompt display
+ * Answers: "Given the state accumulated over time, what kind of person is emerging?"
  * 
  * Creates a formatted string of psychological profile
  * with archetype, stability, traits, manipulation affinity,

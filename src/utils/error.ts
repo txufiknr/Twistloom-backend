@@ -59,12 +59,12 @@ export function handleApiError(
   message: string,
   error?: unknown,
   statusCode?: number
-): Response {
+): void {
   // Log the full error for debugging
   if (error) console.error(error);
 
   // Build error response
-  // NOTE: getErrorMessage falls back to the message parameter if error is null/undefined,
+  // getErrorMessage falls back to the message parameter if error is null/undefined,
   // providing defensive programming to ensure we always have a meaningful error message.
   const errorResponse: ErrorResponse = {
     success: false,
@@ -81,7 +81,7 @@ export function handleApiError(
   }
 
   // Send error response
-  return res.status(statusCode ?? 500).json(errorResponse);
+  res.status(statusCode ?? 500).json(errorResponse);
 }
 
 /**
@@ -200,10 +200,10 @@ export function handleForbiddenError(
  */
 export function handleRateLimitError(
   res: Response,
-  message: string,
+  message?: string,
   error?: unknown
 ): void {
-  handleApiError(res, message, error, 429);
+  handleApiError(res, message ?? 'Too many attempts. Please try again later.', error, 429);
 }
 
 /**

@@ -1,246 +1,211 @@
 /**
  * NextAuth v5 Cookie-Based Authentication Middleware
- * 
- * This module provides middleware functions to verify NextAuth JWT tokens
- * sent via httpOnly cookies using @auth/express.
- * 
+ *
+ * Verifies Auth.js session cookies using @auth/express and resolves the
+ * request to a backend userId.
+ *
  * Architecture:
- * - Uses @auth/express's getSession() to verify Auth.js session cookies
- * - Automatically handles Auth.js v5's proprietary JWE encryption
- * - Provides both required and optional auth middleware
- * 
- * Implemented Next.js Rewrites to solve the 401 authentication issue:
- * With the rewrites, the browser sees requests going to twistloom-web.vercel.app/api/backend/...
- * instead of twistloom-backend.vercel.app/api/..., so it sends the NextAuth cookies automatically.
- * The backend receives the cookies and verifies them using the same AUTH_SECRET as NextAuth via @auth/express.
- * 
- * Note: Guest user functionality has been completely removed.
- * The system now only supports authenticated or unauthenticated users.
+ * - Uses @auth/express getSession() to decrypt/verify Auth.js JWE cookies
+ * - AUTH_SECRET must be shared between Next.js (frontend) and Express (backend)
+ * - Next.js rewrites proxy /api/backend/* requests, so the browser sends
+ *   cookies automatically (same-origin from the browser's perspective)
+ *
+ * User Creation Policy:
+ * Users are created in the backend database at sign-in time via the
+ * dedicated endpoints called from the NextAuth jwt() callback:
+ *   - POST /auth/google-oauth   — standard Google OAuth
+ *   - POST /auth/google-one-tap — Google One Tap
+ *   - POST /auth/signup         — email/password registration
+ *
+ * This middleware therefore operates primarily as a **lookup** — it finds
+ * the userId for the verified email. It retains a fallback creation path
+ * for edge cases (e.g., DB reset with valid cookies still in-flight), but
+ * this path is not expected to fire in normal operation.
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import type { AuthUser } from '../types/express.js';
 import { getSession, type Session, type User } from '@auth/express';
 import { handleUnauthorizedError } from '../utils/error.js';
-import type { AuthUser } from '../types/express.js';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 import { updateSessionMetadata } from '../services/session-manager.js';
 import { getUserIdByEmail, invalidateByEmail } from '../services/user.js';
 
-/**
- * In-flight request cache to prevent concurrent session verification
- * for the same email address
- * 
- * Maps email -> Promise<AuthUser | null>
- */
+// ---------------------------------------------------------------------------
+// In-flight request deduplication
+//
+// Prevents a race condition where two concurrent requests arriving just after
+// login both see a cache miss and race to create the same user.
+// Maps email → Promise<AuthUser | null> for in-progress verifications.
+// ---------------------------------------------------------------------------
 const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
 
+// ---------------------------------------------------------------------------
+// verifyNextAuthToken
+// ---------------------------------------------------------------------------
+
 /**
- * Verifies NextAuth session token from request cookies using @auth/express
- * 
- * This function uses @auth/express's getSession() to verify Auth.js session cookies.
- * It automatically handles Auth.js v5's proprietary JWE encryption and cookie parsing.
- * 
- * With Next.js rewrites, the browser sends cookies automatically since requests
- * appear to stay on the same domain (twistloom-web.vercel.app/api/backend/...).
- * 
- * Note:
- * - Requires Express cookie-parser middleware: `app.use(cookieParser());`
- * - AUTH_SECRET must be shared between Next.js frontend and Express backend
- * - No need for manual cookie parsing or JWT decryption - @auth/express handles it
- * - Auto-creates users for first-time OAuth login (Google)
- * - Updates session metadata (user agent, IP address) on each request
- * 
- * @param req - Express request object
- * @returns User data if token is valid, null otherwise
- * 
- * @example
- * ```typescript
- * const user = await verifyNextAuthToken(req);
- * if (!user) {
- *   return res.status(401).json({ error: 'Unauthorized' });
- * }
- * ```
+ * Verifies the Auth.js session cookie and returns the authenticated user.
+ *
+ * Flow:
+ *   1. Decrypt and verify the session cookie via @auth/express getSession()
+ *   2. Extract email from the verified session
+ *   3. Deduplicate concurrent requests for the same email
+ *   4. Look up userId in the DB (LRU-cached via getUserIdByEmail)
+ *   5. If not found: create user as a fallback for edge cases
+ *   6. Update session metadata (userAgent, IP) — fire-and-forget, non-blocking
+ *   7. Return AuthUser { id, email, name, sessionId }
+ *
+ * @returns AuthUser if the cookie is valid, null otherwise
  */
 export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null> {
-  try {
-    const secret = process.env.AUTH_SECRET;
-    if (!secret) {
-      console.error('[verifyNextAuthToken] 💀 AUTH_SECRET is not configured');
-      return null;
-    }
-
-    // Debug: Log incoming cookies
-    const cookies = req.headers.cookie;
-    if (!cookies) {
-      console.log('[verifyNextAuthToken] ⚠️ No cookies in request headers');
-    } else {
-      console.log('[verifyNextAuthToken] 🍪 Cookies present:', cookies);
-    }
-
-    // getSession automatically looks inside request headers for the Auth.js cookie
-    // and handles decryption/verification using the shared AUTH_SECRET
-    let session: Session | null = null;
-    try {
-      session = await getSession(req, {
-        providers: [], // Empty array since backend only verifies sessions, doesn't handle OAuth
-        trustHost: true, // Trust the domain forwarding headers sent by hosting environments (like Vercel, AWS, or Docker) instead of strictly checking the origin domain.
-        secret,
-      });
-    } catch (getSessionError) {
-      console.error('[verifyNextAuthToken] ❌ getSession error:', getSessionError);
-      return null;
-    }
-
-    if (!session?.user) {
-      // Posibilities:
-      // 1. The token expired: The maxAge of the Auth.js session cookie has passed.
-      // 2. The token is invalid: The Express backend is using a different AUTH_SECRET than Next.js, meaning it cannot decrypt the cookie.
-      // 3. The cookie is missing: If you didn't set up the Next.js Rewrites proxy (or custom domains), the browser stripped the cookie before it reached Express, leaving getSession() with nothing to parse.
-      console.log('[verifyNextAuthToken] ✨ No valid session found');
-      console.log('[verifyNextAuthToken] 📊 Session object:', JSON.stringify(session, null, 2));
-      return null;
-    }
-
-    console.log(`[verifyNextAuthToken] ✅ Session verified (expired: ${session.expires}):`, session.user);
-
-    // Validate and extract user data from session
-    const email = session.user.email as string | undefined;
-    const name = session.user.name as string | undefined;
-    const image = session.user.image as string | undefined;
-    const sessionId = (session.user as User & { sessionId?: string }).sessionId as string | undefined;
-
-    if (!email || typeof email !== 'string') {
-      console.error('[verifyNextAuthToken] ❌ Invalid session: missing or invalid email');
-      return null;
-    }
-
-    // Check if there's already an in-flight request for this email
-    // This prevents race conditions when multiple requests come in simultaneously after login
-    const existingRequest = inFlightRequests.get(email);
-    if (existingRequest) {
-      console.log('[verifyNextAuthToken] ⏳ Waiting for in-flight request for:', email);
-      return existingRequest;
-    }
-
-    // Create the verification promise
-    const verificationPromise = (async () => {
-      try {
-        // Check if user exists in database
-        let userId = await getUserIdByEmail(email);
-        
-        if (!userId) {
-          // First-time OAuth login - create user in database
-          console.log('[verifyNextAuthToken] 🆕 First-time OAuth login, creating user:', email);
-          userId = await createOrUpdateOAuthUser({email, name, image});
-          
-          // Invalidate cache for the new user
-          invalidateByEmail(email);
-        } else {
-          // Existing user - update profile data from OAuth provider asynchronously
-          // This prevents blocking concurrent requests during profile updates
-          console.log('[verifyNextAuthToken] 🔄 Updating existing user profile from OAuth:', email);
-          createOrUpdateOAuthUser({email, name, image})
-            .then(() => {
-              // Invalidate cache to ensure fresh data after update completes
-              invalidateByEmail(email);
-            })
-            .catch((error) => {
-              console.error('[verifyNextAuthToken] ❌ Failed to update user profile:', error);
-            });
-          
-          // Invalidate cache immediately to prevent stale data
-          invalidateByEmail(email);
-        }
-
-        // Update session metadata if sessionId is available
-        if (sessionId) {
-          try {
-            const userAgent = req.headers['user-agent'] || null;
-            const ipAddress = req.ip || req.socket.remoteAddress || null;
-            await updateSessionMetadata(sessionId, userAgent, ipAddress);
-          } catch (error) {
-            // Don't fail the request if metadata update fails
-            console.error('[verifyNextAuthToken] ❌ Failed to update session metadata:', error);
-          }
-        }
-
-        return {
-          id: userId,
-          email,
-          name,
-          sessionId,
-        };
-      } finally {
-        // Clean up the in-flight request cache
-        inFlightRequests.delete(email);
-      }
-    })();
-
-    // Store the promise in the cache
-    inFlightRequests.set(email, verificationPromise);
-
-    return verificationPromise;
-  } catch (error) {
-    console.error('[verifyNextAuthToken] ❌ Session verification error:', error);
+  const secret = process.env.AUTH_SECRET;
+  if (!secret) {
+    console.error('[nextauth] 💀 AUTH_SECRET is not configured');
     return null;
   }
+
+  // Debug: Log incoming cookies
+  // const cookies = req.headers.cookie;
+  // if (!cookies) {
+  //   console.log('[verifyNextAuthToken] ⚠️ No cookies in request headers');
+  // } else {
+  //   console.log('[verifyNextAuthToken] 🍪 Cookies present:', cookies);
+  // }
+
+  // ── 1. Verify session cookie ───────────────────────────────────────────────
+  let session: Session | null;
+  try {
+    session = await getSession(req, {
+      providers: [], // Backend only verifies; it doesn't handle OAuth flows
+      trustHost: true, // Trust the domain forwarding headers sent by hosting environments (like Vercel, AWS, or Docker) instead of strictly checking the origin domain.
+      secret,
+    });
+  } catch (error) {
+    console.error('[nextauth] ❌ getSession error:', error);
+    return null;
+  }
+
+  if (!session?.user?.email) {
+    // Common causes:
+    // • Cookie has expired (maxAge reached)
+    // • AUTH_SECRET mismatch between frontend and backend
+    // • Cookie was stripped by browser (missing Next.js rewrite)
+    console.log('[verifyNextAuthToken] ✨ No valid session found');
+    console.log('[verifyNextAuthToken] 📊 Session object:', JSON.stringify(session, null, 2));
+    return null;
+  }
+
+  // ── 2. Extract session fields ──────────────────────────────────────────────
+  const email     = session.user.email as string;
+  const name      = session.user.name  as string | undefined;
+  const image     = session.user.image as string | undefined;
+  const sessionId = (session.user as User & { sessionId?: string }).sessionId;
+
+  // ── 3. Deduplicate concurrent in-flight verifications ─────────────────────
+  const existing = inFlightRequests.get(email);
+  if (existing) return existing;
+
+  const verificationPromise = (async (): Promise<AuthUser | null> => {
+    try {
+      // ── 4. Resolve userId ──────────────────────────────────────────────────
+      let userId = await getUserIdByEmail(email);
+
+      if (!userId) {
+        // ── 5. Fallback: user missing from DB ────────────────────────────────
+        // Expected only in edge cases (DB reset, data inconsistency).
+        // In normal operation, users are created at sign-in time by the
+        // /auth/google-oauth or /auth/google-one-tap endpoints.
+        console.warn(`[nextauth] ⚠️ User not found for verified email: ${email} — creating fallback`);
+        userId = await createOrUpdateOAuthUser({ email, name, image });
+        // Invalidate LRU cache so the new userId is picked up on the next call
+        invalidateByEmail(email);
+      }
+
+      // ── 6. Update session metadata (fire-and-forget) ───────────────────────
+      // Non-blocking: a failure here should never fail the request.
+      if (sessionId) {
+        updateSessionMetadata(
+          sessionId,
+          req.headers['user-agent'] ?? null,
+          req.ip ?? req.socket.remoteAddress ?? null,
+        ).catch(err => {
+          console.error('[nextauth] ❌ Session metadata update failed:', err);
+        });
+      }
+
+      // ── 7. Return resolved user ────────────────────────────────────────────
+      return { id: userId, email, name, sessionId };
+
+    } finally {
+      // Always clean up the in-flight entry so the next request goes through
+      // the normal path (not stuck waiting for a stale promise).
+      inFlightRequests.delete(email);
+    }
+  })();
+
+  // Store the promise in the cache
+  inFlightRequests.set(email, verificationPromise);
+  return verificationPromise;
 }
 
+// ---------------------------------------------------------------------------
+// Middleware wrappers
+// ---------------------------------------------------------------------------
+
 /**
- * Middleware to require NextAuth authentication
- * Verifies the NextAuth JWT cookie and attaches user data to req.user
- * Returns 401 if authentication fails
- * 
+ * Requires a valid Auth.js session. Attaches req.user and req.userId.
+ * Returns 401 if the cookie is absent, expired, or invalid.
+ *
  * @param req - Express request object
  * @param res - Express response object
  * @param next - Express next middleware function
  * 
  * @example
- * ```typescript
- * router.get('/api/protected', requireAuth, async (req, res) => {
- *   const user = req.user!; // User is guaranteed to be authenticated
- *   res.json({ data: user.id });
+ * router.get('/protected', requireAuth, (req, res) => {
+ *   res.json({ userId: req.userId });
  * });
- * ```
  */
-export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+export async function requireAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const user = await verifyNextAuthToken(req);
-
-  if (!user) {
-    handleUnauthorizedError(res, 'Authentication required');
-    return;
-  }
+  if (!user) return handleUnauthorizedError(res, 'Authentication required');
 
   req.user = user;
-  req.userId = user.id; // Backward compatibility with existing routes
+  req.userId = user.id;
   next();
 }
 
 /**
- * Middleware to optionally verify NextAuth authentication
- * Attaches user data to req.user if token is valid, but allows request to proceed
- * Useful for endpoints that work for both authenticated and unauthenticated users
- * 
+ * Optionally verifies the session. Attaches req.user / req.userId when valid,
+ * but always calls next(). Use for endpoints that serve both guests and
+ * authenticated users with different response shapes.
+ *
  * @param req - Express request object
  * @param res - Express response object
  * @param next - Express next middleware function
  * 
  * @example
- * ```typescript
- * router.get('/api/public', optionalAuth, async (req, res) => {
+ * router.get('/public', optionalAuth, (req, res) => {
  *   if (req.user) {
  *     res.json({ message: `Hello ${req.user.name}` });
  *   } else {
- *     res.json({ message: 'Hello anonymous user' });
+ *     res.json({ message: 'Hello, guest' });
  *   }
  * });
- * ```
  */
-export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
+export async function optionalAuth(
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> {
   const user = await verifyNextAuthToken(req);
   if (user) {
     req.user = user;
-    req.userId = user.id; // Backward compatibility with existing routes
+    req.userId = user.id;
   }
   next();
 }

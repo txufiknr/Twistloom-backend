@@ -2,9 +2,9 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
-import { actionHintTypes, factTypes, moods, storyPhases } from "../types/story.js";
+import { actionHintTypes, factTypes, flagLevels, moods, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate } from "../types/story.js";
 import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates } from "../types/thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -332,8 +332,21 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     additionalProperties: false
   },
 
+  flagUpdates: {
+    type: 'array',
+    description: 'Updates to psychological flags (trust, fear, guilt, curiosity) if any.',
+    items: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: [...psychologicalFlagsTypes] },
+        level: { type: 'string', enum: [...flagLevels] },
+      } satisfies Record<keyof FlagUpdate, AIJsonProperty>,
+      required: ['type', 'level'] satisfies (keyof FlagUpdate)[],
+      additionalProperties: false
+    },
+  },
+
   // Optional objects, can omit or empty if no updates
-  flagUpdates: { type: 'object', description: 'Updates to psychological flags (trust, fear, guilt, curiosity). Omit if no update.' },
   addPlotFlag: { type: 'object', description: 'What already happened — Significant plot development that impact narrative trajectory.' },
   viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
 

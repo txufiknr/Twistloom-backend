@@ -12,21 +12,22 @@
  */
 
 import type { Request, Response } from "express";
+import type { DBNewUser, DBNewUserActivityLog, DBUserForAuth } from "../types/schema.js";
+import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
-import { eq, and, gt, ne, sql, desc, or } from "drizzle-orm";
+import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { getErrorMessage, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleConflictError, handleValidationError } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
-import type { DBNewUser, DBNewUserActivityLog, DBUserForAuth } from "../types/schema.js";
-import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
 import { LRUCache } from 'lru-cache';
 import { convertEmailToName, convertNameOrEmailToUsername, sanitizeUsername, validateUsername } from "../utils/username.js";
 import { normalizeGender } from "../utils/parser.js";
+import { MAX_USER_BIO_LENGTH } from "../config/user.js";
 
 /**
  * LRU cache for email -> userId mappings
@@ -286,7 +287,7 @@ export async function getActiveUsers(daysAgo: number = 30): Promise<string[]> {
  * - Cache miss: Queries database and caches result
  * 
  * Use this function for non-critical lookups where performance is important.
- * For authentication operations, use getUserForAuth instead.
+ * For authentication operations, use {@link getUserForAuth} instead.
  * 
  * @param email - User email address to look up
  * @returns User ID if found, null otherwise
@@ -321,19 +322,20 @@ export async function getUserIdByEmail(email: string): Promise<string | null> {
 }
 
 /**
- * Retrieves user data for authentication by email or username
+ * Retrieves user data for authentication by email or username.
  * 
  * This function queries the database to find a user by either email address
  * or username, returning all fields required for authentication including
  * the password hash. This is used during login and authentication flows.
  * 
- * Security considerations:
- * - NOT cached: Always queries database to ensure fresh authentication data
+ * Security Sonsiderations:
+ * - NOT cached: Always hits the DB to ensure password changes, bans, and deletions take effect immediately.
  * - Password changes take effect immediately
  * - Account deletions/bans prevent login immediately
  * - Suitable for security-critical authentication operations
  * 
- * Performance: Uses indexed lookups on email and username columns for fast queries.
+ * Performance:
+ * Uses indexed lookups on email and username columns for fast queries.
  * 
  * @param emailOrUsername - User email address or username to look up
  * @returns User object with authentication data if found, null otherwise
@@ -356,30 +358,26 @@ export async function getUserIdByEmail(email: string): Promise<string | null> {
  * }
  * ```
  */
-export async function getUserForAuth(emailOrUsername: string): Promise<DBUserForAuth | null> {
-  // Normalize lookup value (case-insensitive usernames/emails)
+export async function getUserForAuth(
+  emailOrUsername: string,
+): Promise<DBUserForAuth | null> {
   const lookup = sanitizeTextForDB(String(emailOrUsername).trim().toLowerCase());
 
-  // Find user by email or username
   const [user] = await dbRead
     .select({
-      userId: users.userId,
-      email: users.email,
-      username: users.username,
-      name: users.name,
-      image: users.image,
+      userId:       users.userId,
+      email:        users.email,
+      username:     users.username,
+      name:         users.name,
+      image:        users.image,
       passwordHash: users.passwordHash,
+      isNewUser:    users.isNewUser,
     })
     .from(users)
-    .where(
-      or(
-        eq(users.email, lookup),
-        eq(users.username, lookup)
-      )
-    )
+    .where(or(eq(users.email, lookup), eq(users.username, lookup)))
     .limit(1);
 
-  return user;
+  return user ?? null;
 }
 
 /**
@@ -765,52 +763,179 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
   }
 }
 
-export async function cleanedUserData(userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'image'>>, options?: { res?: Response, createNew?: boolean }): Promise<Omit<DBNewUser, 'userId'> | null> {
+/**
+ * Validates and sanitizes user data before a DB insert or update.
+ *
+ * createNew = true  (default, new user creation)
+ *   • Email uniqueness → HARD conflict: 409 if the email is already registered.
+ *   • Username uniqueness → SOFT conflict: calls {@link findUniqueUsername} and
+ *     appends a numeric suffix (-2, -3 …) automatically. Never returns a 409
+ *     for username alone; the user always gets a unique name.
+ *   • Final username is validated for format / reserved-word rules.
+ *
+ * createNew = false  (profile updates)
+ *   • No uniqueness checks — caller is responsible.
+ *   • Fields are still sanitized and the username is validated for format.
+ *
+ * Name/username are derived from the email when not explicitly provided.
+ */
+export async function sanitizeUserData(
+  userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'image'>>,
+  options?: { res?: Response; createNew?: boolean },
+): Promise<Omit<DBNewUser, 'userId'> | null> {
   const { name: providedName, email, username: providedUsername, gender, image } = userData;
   const { res, createNew = true } = options ?? {};
-  
+
   if (!email) {
     if (res) handleValidationError(res, 'Email is required');
     return null;
   }
 
-  const name = providedName ?? convertEmailToName(email);
-  const username = providedUsername ?? convertNameOrEmailToUsername(email, name);
-
-  const cleanName = sanitizeTextForDB(String(name).trim());
-  const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
-  const cleanUsername = sanitizeUsername(String(username));
-  const cleanImage = image ? sanitizeTextForDB(String(image)) : undefined;
+  // ── Core sanitization ──────────────────────────────────────────────────────
+  const cleanEmail       = sanitizeTextForDB(String(email).trim().toLowerCase());
+  const cleanImage       = image ? sanitizeTextForDB(String(image)) : undefined;
   const normalizedGender = normalizeGender(gender);
 
+  const resolvedName = providedName ?? convertEmailToName(email);
+  const cleanName    = sanitizeTextForDB(String(resolvedName).trim());
+
+  // Derive then normalise username (sanitizeUsername handles spaces, dots, etc.)
+  const usernameBase = providedUsername
+    ? sanitizeUsername(String(providedUsername))
+    : sanitizeUsername(convertNameOrEmailToUsername(email, resolvedName));
+
+  let cleanUsername = usernameBase;
+
+  // ── Uniqueness checks (new users only) ────────────────────────────────────
   if (createNew) {
-    // TODO: detect duplicate username in db, auto append number suffix to `cleanUsername`
-    // TODO: check for existing email (username should be already deduped)
-    const existing = await dbRead
+    // Email is a hard conflict — two accounts may not share an email.
+    const [emailConflict] = await dbRead
       .select({ userId: users.userId })
       .from(users)
-      .where(or(eq(users.email, cleanEmail), eq(users.username, cleanUsername)))
+      .where(eq(users.email, cleanEmail))
       .limit(1);
-  
-    if (existing && existing.length > 0) {
-      if (res) res.status(409).json({ error: 'Email or username already exists' });
+
+    if (emailConflict) {
+      if (res) handleConflictError(res, 'An account with this email already exists');
       return null;
     }
+
+    // Username is a soft conflict — auto-suffix until unique.
+    const uniqueUsername = await findUniqueUsername(usernameBase);
+    if (!uniqueUsername) {
+      // Requires 20+ collisions on the same base — practically impossible.
+      if (res) handleConflictError(res, 'Could not generate a unique username. Please choose a different name.');
+      return null;
+    }
+    cleanUsername = uniqueUsername;
   }
 
-  // TODO: should be valid by `sanitizeUsername`, should remove this?
-  const usernameValidation = validateUsername(cleanUsername);
-  if (!usernameValidation.valid) {
-    if (res) res.status(422).json({ error: 'Invalid username', details: usernameValidation.errors });
+  // ── Format validation on the final (possibly suffixed) username ───────────
+  // This replaces the "TODO: should be valid by sanitizeUsername" check.
+  // We still run it after deduplication so reserved-word and length rules
+  // are enforced on the real final value.
+  const validation = validateUsername(cleanUsername);
+  if (!validation.valid) {
+    if (res) res.status(422).json({ error: 'Invalid username', details: validation.errors });
     return null;
   }
-  
-  // Prepare user data for upsert (exclude timestamp fields from frontend)
+
   return {
-    name: cleanName,
-    email: cleanEmail,
+    name:     cleanName,
+    email:    cleanEmail,
     username: cleanUsername,
-    gender: normalizedGender,
-    ...(cleanImage ? {image: cleanImage} : {}),
+    gender:   normalizedGender,
+    ...(cleanImage ? { image: cleanImage } : {}),
   };
+}
+
+export function sanitizeUserBio(bio: string): string {
+  return sanitizeTextForDB(String(bio).trim()).slice(0, MAX_USER_BIO_LENGTH);
+}
+
+/**
+ * Validates and sanitizes a partial payload for profile updates.
+ * Handles format validation and hard-conflict checks for usernames.
+ * 
+ * @returns Sanitized update object, or null if an error response was sent.
+ */
+export async function sanitizeProfileUpdate(
+  userId: string,
+  // payload: { name?: any; bio?: any; image?: any; gender?: any; username?: any },
+  payload: Record<'name' | 'bio' | 'image' | 'gender' | 'username', unknown>,
+  res: Response
+): Promise<Partial<DBNewUser> | null> {
+  const updateData: Partial<DBNewUser> = {};
+
+  if (typeof payload.name === 'string' && payload.name) updateData.name = sanitizeTextForDB(payload.name.trim());
+  if (typeof payload.bio === 'string' && payload.bio) updateData.bio = sanitizeUserBio(payload.bio);
+  if (typeof payload.image === 'string' && payload.image) updateData.image = payload.image ? sanitizeTextForDB(payload.image.trim()) : null;
+  if (typeof payload.gender === 'string' && payload.gender) updateData.gender = normalizeGender(payload.gender) ?? null;
+  if (typeof payload.username === 'string' && payload.username) {
+    const cleanUsername = sanitizeUsername(String(payload.username));
+    const validation = validateUsername(cleanUsername);
+    
+    if (!validation.valid) {
+      res.status(422).json({ error: 'Invalid username', details: validation.errors });
+      return null;
+    }
+
+    // Hard conflict check: Ensure no *other* user has this username
+    const [conflict] = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(eq(users.username, cleanUsername))
+      .limit(1);
+
+    if (conflict && conflict.userId !== userId) {
+      handleConflictError(res, 'That username is already taken. Please choose another.');
+      return null;
+    }
+
+    updateData.username = cleanUsername;
+  }
+
+  return updateData;
+}
+
+/**
+ * Finds the first available username from a base string.
+ *
+ * Tries `baseUsername` first, then appends -2, -3, … up to `maxAttempts`.
+ * Uses a **single batched query** so the number of DB round-trips is always 1,
+ * regardless of how many candidates are checked.
+ *
+ * The base is truncated if needed so the full candidate (base + suffix) never
+ * exceeds the 30-character username limit.
+ *
+ * Returns `null` only if every candidate is taken (extremely unlikely).
+ *
+ * @example
+ * await findUniqueUsername('john-doe')
+ * // 'john-doe'   — if available
+ * // 'john-doe-2' — if 'john-doe' is already taken
+ * // 'john-doe-3' — if both above are taken, etc.
+ */
+export async function findUniqueUsername(
+  baseUsername: string,
+  maxAttempts = 20,
+): Promise<string | null> {
+  // Build every candidate string upfront
+  const candidates: string[] = [baseUsername];
+  for (let n = 2; n <= maxAttempts + 1; n++) {
+    const suffix = `-${n}`;
+    // Truncate base so the full candidate stays within the 30-char limit
+    const trimmedBase = baseUsername.slice(0, 30 - suffix.length);
+    candidates.push(`${trimmedBase}${suffix}`);
+  }
+
+  // One query to discover which candidates are already taken
+  const taken = await dbRead
+    .select({ username: users.username })
+    .from(users)
+    .where(inArray(users.username, candidates));
+
+  const takenSet = new Set(taken.map(u => u.username));
+
+  return candidates.find(c => !takenSet.has(c)) ?? null;
 }

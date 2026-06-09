@@ -275,6 +275,8 @@ export type CuriosityLevel = FlagLevel;
  * These flags track the MC's mental state and affect how
  * the world responds and events unfold.
  */
+export const psychologicalFlagsTypes = ['trust', 'fear', 'guilt', 'curiosity'];
+
 export type PsychologicalFlags = {
   /** Level of trust in other characters and environment */
   trust: TrustLevel;
@@ -763,7 +765,7 @@ export type StoryPageScene = Pick<StoryPage, 'place' | 'weather' | 'mood'>;
  */
 export type StateDelta = {
   /** Updates to psychological flags (trust, fear, guilt, curiosity) */
-  flagUpdates?: Partial<PsychologicalFlags>;
+  flagUpdates?: FlagUpdate[];
   /** Updates to trauma tags (add/remove) based on page events */
   traumaTagUpdates?: TagUpdates<string>;
   /** Updates to future notes (add/remove) based on story progression */
@@ -798,9 +800,13 @@ export type StateDelta = {
   difficulty?: Difficulty;
 };
 
+export type FlagUpdate = {
+  type: keyof PsychologicalFlags;
+  level: FlagLevel;
+};
+
 export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 
-// export type StateDeltaGeneration = Omit<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent'> & {
   futureNoteUpdates?: {
     add?: FutureNoteGeneration[];

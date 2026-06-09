@@ -298,6 +298,7 @@ ${phase === 'FINALE' ? '- Deliver emotional and psychological payoff\n' : ''}`;
 
 /**
  * Creates complete narrative style configuration
+ * Answers: "How should the story be written?"
  * 
  * Combines mode determination and instruction generation
  * into a single, comprehensive style configuration.

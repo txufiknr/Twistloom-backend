@@ -65,6 +65,7 @@ export type UserActivityType =
   'credits_consumed' |
   'credits_added' |
   'session_updated' |
+  'onboarding_complete' |
   'referrer_set';
 
 export interface CheckinRecord {

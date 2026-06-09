@@ -1,9 +1,9 @@
 /**
  * @overview User Controller Service
- * 
+ *
  * Provides enriched user profile queries with engagement metrics.
  * Centralizes user data selection logic with aggregated counts.
- * 
+ *
  * Features:
  * - User profile fields with engagement counts
  * - Optimized subqueries for book/read/like/favorite counts
@@ -16,16 +16,18 @@ import { users, userAuth } from '../db/schema.js';
 import { sql, eq } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
-import { cleanedUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity } from './user.js';
+import { sanitizeTextForDB } from '../utils/text-processing.js';
+import { sanitizeUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity, invalidateByEmail } from './user.js';
 import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
 import { REFERRAL_BONUS } from '../config/credits.js';
 import { awardCredits } from './credits.js';
 import type { Request, Response } from "express";
+import type { DBNewUser } from '../types/schema.js';
 
 /**
- * Returns enriched user select object with engagement metrics
+ * Returns enriched user select object with engagement metrics.
  * 
  * Provides user profile fields with aggregated counts for books, reads, likes, and favorites.
  * Uses correlated subqueries for performance with proper indexes.
@@ -52,57 +54,44 @@ import type { Request, Response } from "express";
 export function getEnrichedUserSelect() {
   return {
     // Basic user fields
-    userId: users.userId,
-    name: users.name,
-    username: users.username,
-    email: users.email,
-    bio: users.bio,
-    gender: users.gender,
-    image: users.image,
-    tier: users.tier,
-    credits: users.credits,
-    lastActive: users.lastActive,
-    createdAt: users.createdAt,
-    updatedAt: users.updatedAt,
+    userId:       users.userId,
+    name:         users.name,
+    username:     users.username,
+    email:        users.email,
+    bio:          users.bio,
+    gender:       users.gender,
+    image:        users.image,
+    tier:         users.tier,
+    credits:      users.credits,
+    lastActive:   users.lastActive,
+    createdAt:    users.createdAt,
+    updatedAt:    users.updatedAt,
     // Engagement metrics using SQL subqueries (indexed by userId)
     booksCount: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM books 
-      WHERE user_id = users.user_id
+      SELECT COUNT(*) FROM books WHERE user_id = users.user_id
     ), 0)`,
     readsCount: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM user_sessions 
-      WHERE user_id = users.user_id
+      SELECT COUNT(*) FROM user_sessions WHERE user_id = users.user_id
     ), 0)`,
     likedBooksCount: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM user_likes 
-      WHERE user_id = users.user_id AND target_type = 'book'
+      SELECT COUNT(*) FROM user_likes WHERE user_id = users.user_id AND target_type = 'book'
     ), 0)`,
     savedBooksCount: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM user_favorites 
-      WHERE user_id = users.user_id
+      SELECT COUNT(*) FROM user_favorites WHERE user_id = users.user_id
     ), 0)`,
     followersCount: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM user_follows 
-      WHERE following_id = users.user_id
+      SELECT COUNT(*) FROM user_follows WHERE following_id = users.user_id
     ), 0)`,
     likesReceived: sql<number>`COALESCE((
-      SELECT COUNT(*) 
-      FROM books 
+      SELECT COUNT(*) FROM books
       INNER JOIN user_likes ON books.id = user_likes.target_id
       WHERE books.user_id = users.user_id AND user_likes.target_type = 'book'
     ), 0)`,
     accountDaysOld: sql<number>`COALESCE((NOW()::date - ${users.createdAt}::date), 0)`,
     // Email verification comes from the user_auth table
     emailVerified: sql<Date | null>`(
-      SELECT ua.email_verified
-      FROM user_auth ua
-      WHERE ua.user_id = users.user_id
-      LIMIT 1
+      SELECT ua.email_verified FROM user_auth ua
+      WHERE ua.user_id = users.user_id LIMIT 1
     )`,
     // Whether the user has ever purchased credits (exists in `transactions`)
     havePurchased: sql<boolean>`EXISTS(
@@ -113,98 +102,120 @@ export function getEnrichedUserSelect() {
 }
 
 // ---------------------------------------------------------------------------
-// OAuth User Creation
+// createOrUpdateOAuthUser
 // ---------------------------------------------------------------------------
 
 /**
- * Creates or updates a user from OAuth provider data (e.g., Google)
- * 
- * This function handles first-time OAuth logins by creating a user record
- * in the database. If the user already exists (by email), it updates their
- * profile data from the OAuth provider.
- * 
- * @param email - User email from OAuth provider
- * @param name - User display name from OAuth provider (optional)
- * @param image - User profile image URL from OAuth provider (optional)
+ * Creates or updates a user from OAuth provider data (Google OAuth / One Tap).
+ *
+ * **Create path** (new user — email not in DB):
+ *   Calls {@link sanitizeUserData} with `createNew: true` which:
+ *     - Validates email uniqueness (hard 409 if taken)
+ *     - Auto-deduplicates username with numeric suffix if needed
+ *     - Validates username format
+ *   Wraps the insert in a transaction to also create the user_auth record.
+ *
+ * **Update path** (returning user — email already in DB):
+ *   Only updates `name` and `image` from the OAuth provider payload.
+ *   Does NOT touch `username` (may have been customised by the user),
+ *   `email` (immutable after creation), or any other fields.
+ *
+ * @param oAuthUser.email - User email from OAuth provider
+ * @param oAuthUser.name - User display name from OAuth provider (optional)
+ * @param oAuthUser.image - User profile image URL from OAuth provider (optional)
  * @returns The user ID (existing or newly created)
- * 
- * @example
- * ```typescript
- * // First-time Google login
- * const userId = await createOrUpdateOAuthUser('user@example.com', 'John Doe', 'https://google.com/photo.jpg');
- * 
- * // Returning user with updated profile
- * const userId = await createOrUpdateOAuthUser('user@example.com', 'John Smith', 'https://google.com/new-photo.jpg');
- * ```
  */
 export async function createOrUpdateOAuthUser(oAuthUser: {
-  email: string,
-  name?: string,
-  image?: string
+  email: string;
+  name?: string;
+  image?: string;
 }): Promise<string> {
-  // Check if user already exists by email
-  const userId = await getUserIdByEmail(oAuthUser.email);
+  const cleanEmail = sanitizeTextForDB(String(oAuthUser.email).trim().toLowerCase());
 
-  // Clean user data to upsert
-  const userData = await cleanedUserData(oAuthUser);
-  if (!userData) {
-    throw new Error('Failed to sanitize OAuth user data');
+  // ── Returning user path ────────────────────────────────────────────────────
+  const existingUserId = await getUserIdByEmail(cleanEmail);
+
+  if (existingUserId) {
+    // Only update fields that come from the OAuth provider and can legitimately
+    // change between sign-ins (display name, profile picture).
+    // username and email are intentionally excluded.
+    const updateData: Partial<Pick<DBNewUser, 'name' | 'image'>> = {};
+
+    const { name: updateName, image: updateImage } = await sanitizeUserData(oAuthUser, { createNew: false }) ?? {};
+    if (updateName) updateData.name = updateName;
+    if (updateImage) updateData.image = updateImage;
+
+    // if (oAuthUser.name) {
+    //   updateData.name = sanitizeTextForDB(String(oAuthUser.name).trim());
+    // }
+    // if (oAuthUser.image !== undefined) {
+    //   updateData.image = oAuthUser.image ? sanitizeTextForDB(String(oAuthUser.image)) : null;
+    // }
+
+    if (Object.keys(updateData).length) {
+      await dbWrite
+        .update(users)
+        .set({ ...updateData, lastActive: new Date(), updatedAt: new Date() })
+        .where(eq(users.userId, existingUserId));
+
+      console.log(`[user-controller] ✅ Updated existing OAuth user: ${existingUserId}`);
+
+      // Invalidate LRU cache so subsequent email→userId lookups are fresh
+      invalidateByEmail(cleanEmail);
+    }
+
+    return existingUserId;
   }
 
-  // const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
-  // const cleanName = sanitizeTextForDB(String(name));
-  // const cleanImage = image ? sanitizeTextForDB(String(image)) : null;
+  // ── New user path ──────────────────────────────────────────────────────────
+  // sanitizeUserData handles: email uniqueness (race-condition guard),
+  // username derivation, auto-deduplication, and format validation.
+  const newUserData = await sanitizeUserData(oAuthUser, { createNew: true });
 
-  if (userId) {
-    // User exists - update profile data from OAuth provider
-    await dbWrite
-      .update(users)
-      .set({
-        ...userData,
-        // ...(name && { name: sanitizeTextForDB(String(name)) }),
-        // ...(image && { image: sanitizeTextForDB(String(image)) }),
-        lastActive: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(users.userId, userId));
-    
-    console.log(`[user-controller] ✅ Updated existing user from OAuth: ${userId}`);
-    return userId;
+  // TODO: upload google image to imagekit via `uploadUserImage`
+
+  if (!newUserData) {
+    // sanitizeUserData already logged / responded; this path should be rare
+    // (would require a race condition between getUserIdByEmail and the insert).
+    throw new Error(`Failed to sanitize OAuth user data for ${cleanEmail}`);
   }
-  
-  // New user - create account from OAuth data
+
   const newUser = await dbWrite.transaction(async (tx) => {
-    // Create user record
-    const [user] = await tx.insert(users).values({
-      userId: generateId(),
-      ...userData,
-      // email: cleanEmail,
-      // name: cleanName,
-      // image: cleanImage || null,
-      isNewUser: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      lastActive: new Date(),
-    }).returning();
+    const [user] = await tx
+      .insert(users)
+      .values({
+        userId: generateId(),
+        ...newUserData,
+        isNewUser: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        lastActive: new Date(),
+      })
+      .returning();
 
-    // Create user_auth record
-    await tx.insert(userAuth).values({
-      userId: user.userId,
-    });
+    await tx.insert(userAuth).values({ userId: user.userId });
 
     return user;
   });
 
-  console.log(`[user-controller] ✅ Created new user from OAuth: ${newUser.userId}`);
+  // Ensure the LRU cache maps this email to the new userId immediately,
+  // so subsequent requests in the same warm instance don't re-query the DB.
+  invalidateByEmail(cleanEmail); // clears any stale null-result; next lookup caches the new id
+
+  console.log(`[user-controller] ✅ Created new OAuth user: ${newUser.userId}`);
   return newUser.userId;
 }
 
+// ---------------------------------------------------------------------------
+// setReferrerForNewUser  (unchanged from original)
+// ---------------------------------------------------------------------------
+
 /**
- * Sets a referrer for a newly created user (used at signup and by /user/referrer).
- * Performs validation, updates the user record, awards referral credits to both
- * parties, logs activity, invalidates caches, and updates last activity.
+ * Sets a referrer for a newly created user.
+ * Validates, updates the user record, awards referral credits to both parties,
+ * logs activity, invalidates caches, and updates last activity.
  *
- * Returns an object with `success` and either `referrerId` or `error`.
+ * Returns true on success, false on any validation / not-found error.
  */
 export async function setReferrerForNewUser(
   req: Request,
@@ -227,25 +238,19 @@ export async function setReferrerForNewUser(
       .limit(1);
 
     if (currentUser.length === 0) {
-      if (handleResponse) {
-        handleNotFoundError(res, "User not found");
-      }
+      if (handleResponse) handleNotFoundError(res, 'User not found');
       return false;
     }
 
     const user = currentUser[0];
 
     if (!user.isNewUser) {
-      if (handleResponse) {
-        handleValidationError(res, "Referrer can only be set for new users");
-      }
+      if (handleResponse) handleValidationError(res, 'Referrer can only be set for new users');
       return false;
     }
 
     if (user.referrerId) {
-      if (handleResponse) {
-        handleValidationError(res, "Referrer already set");
-      }
+      if (handleResponse) handleValidationError(res, 'Referrer already set');
       return false;
     }
 
@@ -258,16 +263,12 @@ export async function setReferrerForNewUser(
       .limit(1);
 
     if (!referrer) {
-      if (handleResponse) {
-        handleNotFoundError(res, "Referrer user not found");
-      }
+      if (handleResponse) handleNotFoundError(res, 'Referrer user not found');
       return false;
     }
 
     if (referrer.userId === userId) {
-      if (handleResponse) {
-        handleValidationError(res, "Cannot refer yourself");
-      }
+      if (handleResponse) handleValidationError(res, 'Cannot refer yourself');
       return false;
     }
 
@@ -284,42 +285,43 @@ export async function setReferrerForNewUser(
         notificationType: 'referral_bonus',
         notificationTitle: 'Referral Bonus',
         notificationMessage: `You received ${REFERRAL_BONUS} credits for referring a new user`,
-        metadata: { referredUserId: userId }
+        metadata: { referredUserId: userId },
       }),
       awardCredits(userId, REFERRAL_BONUS, {
         type: 'reward',
         notificationType: 'referral_bonus',
         notificationTitle: 'Referral Bonus',
         notificationMessage: `You received ${REFERRAL_BONUS} credits for using a referral code`,
-        metadata: { referrerId: referrer.userId }
-      })
+        metadata: { referrerId: referrer.userId },
+      }),
     ]);
 
     // Log activity
-    await logUserActivity({
-      userId,
-      activityType: 'referrer_set',
-      targetType: 'user',
-      targetId: referrer.userId,
-      metadata: { referrerUsername },
-    }, { req });
+    await logUserActivity(
+      {
+        userId,
+        activityType: 'referrer_set',
+        targetType: 'user',
+        targetId: referrer.userId,
+        metadata: { referrerUsername },
+      },
+      { req }
+    );
 
     // Invalidate caches for both users
     await Promise.all([
       invalidateUserProfileCache(userId),
-      invalidateUserProfileCache(referrer.userId)
+      invalidateUserProfileCache(referrer.userId),
     ]);
 
     // Update last activity
     await updateUserLastActivity(userId);
 
-    console.log(`[user] ✅ Applied referrer for ${userId} -> ${referrerUsername}`);
+    console.log(`[user-controller] ✅ Applied referrer ${userId} → ${referrerUsername}`);
     return true;
   } catch (error) {
-    console.error('[user] ❌ Failed to apply referrer:', error);
-    if (handleResponse) {
-      handleApiError(res, "Failed to apply referrer", error);
-    }
+    console.error('[user-controller] ❌ Failed to apply referrer:', error);
+    if (handleResponse) handleApiError(res, 'Failed to apply referrer', error);
     return false;
   }
 }

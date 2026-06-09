@@ -447,22 +447,22 @@ export async function uploadBookCover(
  * @example
  * ```typescript
  * // Upload from file (multipart)
- * const result = await uploadUserProfile(req.file, 'user-123');
+ * const result = await uploadUserImage(req.file, 'user-123');
  * 
  * // Upload from base64
- * const result = await uploadUserProfile(
+ * const result = await uploadUserImage(
  *   'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...',
  *   'user-123'
  * );
  * 
  * // Upload from URL
- * const result = await uploadUserProfile(
+ * const result = await uploadUserImage(
  *   'https://example.com/profile.jpg',
  *   'user-123'
  * );
  * ```
  */
-export async function uploadUserProfile(
+export async function uploadUserImage(
   imageSource: ImageUploadSource,
   userId: string
 ): Promise<ImageKit.Files.FileUploadResponse | null> {

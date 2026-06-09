@@ -7,10 +7,11 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
+[ ] upload google image to imagekit via `uploadUserImage`
 
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
-please review my story branch traversal & state reconstruction implementations in backend which helps frontend page navigation
+please review my story branch traversal & state reconstruction backend implementation which helps frontend's page navigation
 
 to focus:
 `getStoryStateWithBranch` function
@@ -26,23 +27,23 @@ example on page 3: [
   {2: { pageId: 'page456', selectedAction: { text: 'Open the door.', ... } }}
 ]
 
-but I think they're redundant, so I want to make `context` to be SSOT and remove `sourceNav` entirely
-
-complete and refine implementation of:
-`cleanedUserData`
-`sanitizeUsername`
-`convertNameOrEmailToUsername`
-`convertEmailToName`
+but I think `sourceNav` is redundant, so I want to make `context` to be SSOT and remove `sourceNav` entirely
 
 
 
-[ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
+please examine my implementation
+I put `NARRATIVE STYLE:\n${createNarrativeStyle(state).instructions}` in story page generation prompt
+narrative style instruction prompt is built based on reader's psychological profile
+can you ensure it's correct and effective in "guiding" the AI, without token bloat or restraining AI from being creative?
+and ensure this really "hit" the player's weakness optimally?
+Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
 
-{
-  "flagUpdates": [
-    { "type": "fear", "level": "High" }
-  ]
-}
+to focus:
+`createStyleInput` function
+`createNarrativeStyle` function
+`calculatePlayerProfile` function
+
+utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
 [ ] ensure enriched page has valid values for sourceNav (pake sourceAction?)
 [ ] storynav gausah, masukin page.context?.actionsHistory aja (ensure valid)

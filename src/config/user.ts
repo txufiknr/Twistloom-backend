@@ -1,0 +1,1 @@
+export const MAX_USER_BIO_LENGTH = 500;

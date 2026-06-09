@@ -1,5 +1,5 @@
 /**
- * @overview User Routes Module
+ * User Routes
  * 
  * Provides endpoints for managing user profile information, likes, favorites, and comments.
  * Implements CRUD operations for user profile storage and retrieval, plus social features.
@@ -39,146 +39,271 @@
  * - POST /user/checkin - Perform daily check-in and claim free credits
  */
 
-import type { Request, Response, Router as RouterType } from "express";
-import { Router } from "express";
-import { dbRead, dbWrite } from "../db/client.js";
-import { requireAuth } from "../middleware/nextauth.js";
-import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
+import type { Router as RouterType } from 'express';
+import type { Request, Response } from 'express';
 import type { DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType, User, UserActivityType } from "../types/user.js";
+import { Router } from 'express';
+import { dbRead, dbWrite } from '../db/client.js';
+import { requireAuth } from '../middleware/nextauth.js';
+import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, cleanedUserData } from "../services/user.js";
+import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUserSelect, setReferrerForNewUser } from "../services/user-controller.js";
-import { filterObjectEntries, normalizeGender } from "../utils/parser.js";
-import { imageUpload, uploadUserProfile } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
 
 const router: RouterType = Router();
 
 /**
- * GET /user
- * 
- * Retrieves the authenticated user's profile information.
- * Returns the complete user profile with liked and saved book counts, or null if no user exists.
- * 
- * @route GET /user
+ * GET /api/user
+ *
+ * Returns the authenticated user's full enriched profile, including engagement
+ * metrics (books count, reads count, likes received, etc.).
+ *
+ * @route GET /api/user
  * @description Get user profile with engagement counts
+ * 
+ * @example
+ * // Request
+ * GET /api/user
+ * 
+ * // Response
+ * {
+ *   user: {
+ *     userId: string;
+ *     name: string | null;
+ *     username: string;
+ *     email: string;
+ *     bio: string | null;
+ *     gender: string | null;
+ *     image: string | null;
+ *     tier: string;
+ *     credits: number;
+ *     isNewUser: boolean;
+ *     booksCount: number;
+ *     readsCount: number;
+ *     likedBooksCount: number;
+ *     savedBooksCount: number;
+ *     followersCount: number;
+ *     likesReceived: number;
+ *     accountDaysOld: number;
+ *     emailVerified: Date | null;
+ *     havePurchased: boolean;
+ *     lastActive: Date;
+ *     createdAt: Date;
+ *     updatedAt: Date;
+ *   }
+ * }
+ */
+router.get('/', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    const [user] = await dbRead
+      .select({
+        ...getEnrichedUserSelect(),
+        isNewUser: users.isNewUser,
+      })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!user) return handleNotFoundError(res, 'User not found');
+
+    res.json({ user });
+  } catch (error) {
+    console.error('[GET /api/user] ❌', error);
+    handleApiError(res, 'Failed to fetch user profile', error);
+  }
+});
+
+/**
+ * POST /api/user
+ * 
+ * Completes the onboarding flow for a new user. Sets isNewUser = false.
+ * Should be called exactly once, after the onboarding wizard is submitted.
+ *
+ * All fields are optional. If omitted, the existing auto-generated values
+ * (username derived from name/email, empty bio, etc.) are kept.
+ * 
+ * @route POST /api/user
+ * @description Create or replace user profile
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
- * @returns {Object} User profile response
+ * @body {Object} User profile data
+ * @body {string} [name] - User's display name
+ * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
+ * @body {string} [image] - User's profile image URL
+ * 
+ * @returns {Object} Creation/replacement response
  * @returns {boolean} success - Operation status
- * @returns {Object|null} data - User profile object or null
- * @returns {string} data.userId - User's unique identifier
- * @returns {string|null} data.name - User's display name
- * @returns {string|null} data.gender - User's gender
- * @returns {string|null} data.image - User's profile image URL
- * @returns {number} data.credits - User's available credits
- * @returns {number} data.totalLiked - Number of liked articles
- * @returns {number} data.totalSaved - Number of saved articles
- * @returns {number} data.totalReads - Number of read articles
- * @returns {string} data.lastActive - Last activity timestamp
- * @returns {string} data.createdAt - Account creation timestamp
- * @returns {string} data.updatedAt - Last update timestamp
+ * @returns {Object} data - Created/updated user profile
  * 
  * @example
  * // Request
- * GET /user
+ * POST /user
+ * Body: {
+ *   "name": "John Doe",
+ *   "gender": "male",
+ * }
  * 
  * // Response
  * {
- *   "user": {
+ *   "success": true,
+ *   "data": {
  *     "userId": "user123",
  *     "name": "John Doe",
  *     "gender": "male",
- *     "image": "https://ik.imagekit.io/abc123/profile.jpg",
- *     "totalLiked": 15,
- *     "totalSaved": 8,
- *     "totalReads": 100,
- *     "lastActive": "2023-01-15T10:30:00.000Z",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
  *     "updatedAt": "2023-01-01T00:00:00.000Z"
  *   }
  * }
  */
-router.get("/", optionalAuth, async (req: Request, res: Response) => {
+router.post('/', requireAuth, async (req: Request, res: Response) => {
   try {
-    const userId = req.userId;
-    
-    // If no userId (unauthenticated), return null user profile
-    if (!userId) {
-      res.set('Cache-Control', 'private, max-age=60, stale-while-revalidate=30');
-      return res.json({ user: null });
+    const userId = req.userId!;
+
+    const [current] = await dbRead
+      .select({ isNewUser: users.isNewUser, username: users.username })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!current) return handleNotFoundError(res, 'User not found');
+    if (!current.isNewUser) return handleValidationError(res, 'Onboarding already completed');
+
+    // 1. Sanitize payload via SSOT
+    const updateData = await sanitizeProfileUpdate(userId, req.body, res);
+    if (!updateData) return;
+
+    // 2. Append route-specific data
+    updateData.isNewUser = false;
+    updateData.updatedAt = new Date();
+
+    // 3. Apply update
+    await dbWrite
+      .update(users)
+      .set(updateData)
+      .where(eq(users.userId, userId));
+
+    // 4. Handle Referrer
+    if (req.body.referrer && typeof req.body.referrer === 'string') {
+      await setReferrerForNewUser(req, res, userId, req.body.referrer, { handleResponse: false });
     }
-    
-    const cacheKey = CACHE_KEYS.USER_PROFILE(userId);
-    
-    // Fetch function for cache
-    const fetchUserProfile = async () => {
-      const userWithCounts = await dbRead
-        .select(getEnrichedUserSelect())
-        .from(users)
-        .where(eq(users.userId, userId))
-        .limit(1);
 
-      const userData = userWithCounts.length > 0 ? userWithCounts[0] : null;
-
-      if (!userData) {
-        throw new Error("User profile not found");
-      }
-
-      // Format response to match frontend expectations
-      const formattedUser: User = {
-        id: userData.userId,
-        username: userData.username,
-        name: userData.name,
-        email: userData.email,
-        bio: userData.bio,
-        image: userData.image,
-        tier: userData.tier,
-        credits: userData.credits,
-        createdAt: userData.createdAt,
-        updatedAt: userData.updatedAt,
-        stats: {
-          booksCount: userData.booksCount,
-          readsCount: userData.readsCount,
-          likedBooksCount: userData.likedBooksCount,
-          savedBooksCount: userData.savedBooksCount,
-          followersCount: userData.followersCount,
-          likesReceived: userData.likesReceived,
-          accountDaysOld: userData.accountDaysOld,
-          emailVerified: userData.emailVerified,
-          havePurchased: userData.havePurchased,
-        },
-      };
-
-      return {
-        user: formattedUser,
-      };
-    };
-    
-    // Use cache with fallback to database
-    const result = await withCache(cacheKey, fetchUserProfile, CACHE_TTL.USER_PROFILE);
-    
-    // Add HTTP cache headers for CDN/edge caching
-    res.set('Cache-Control', 'private, max-age=60, stale-while-revalidate=30');
-    
-    res.json(result);
-
-    // Update user's last activity timestamp
+    await invalidateUserProfileCache(userId);
     await updateUserLastActivity(userId);
+    await logUserActivity(
+      { userId, activityType: 'onboarding_complete', targetType: 'user', targetId: userId },
+      { req }
+    );
+
+    res.json({
+      message:   'Onboarding complete',
+      isNewUser: false,
+      username:  (updateData.username as string | undefined) ?? current.username,
+    });
   } catch (error) {
-    if (getErrorMessage(error) === "User profile not found") {
-      return handleNotFoundError(res, "User profile not found");
+    console.error('[POST /api/user] ❌', error);
+    handleApiError(res, 'Failed to complete onboarding', error);
+  }
+});
+
+/**
+ * PUT /api/user
+ * 
+ * Partially updates the authenticated user's profile.
+ * Only provided fields are updated, existing fields remain unchanged.
+ * Supports multiple image upload methods: URL, base64, or multipart file.
+ * 
+ * @route PUT /api/user
+ * @description Partially update user profile
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * @header Content-Type - multipart/form-data for file uploads or application/json
+ * 
+ * @body {Object} Partial user profile data (for JSON requests)
+ * @body {string} [name] - User's display name (optional)
+ * @body {string} [bio] - User's bio/description (optional)
+ * @body {string} [gender] - User's gender (optional)
+ * @body {string} [imageUrl] - User's profile image URL to upload (optional)
+ * @body {File} [imageFile] - User's profile image file (multipart) (optional)
+ * 
+ * @returns {Object} Update response
+ * @returns {boolean} success - Operation status
+ * @returns {Object} data - Updated user profile
+ * @returns {string} uploadSource - Image upload method used
+ * @returns {boolean} imageUploaded - Whether image was uploaded
+ * @returns {boolean} oldImageQueuedForDeletion - Whether old image was queued for deletion
+ * 
+ * @example
+ * // Request with file upload
+ * PUT /user
+ * Headers: Content-Type: multipart/form-data
+ * Body: imageFile=<file>, name=John Doe
+ * 
+ * // Request with base64
+ * PUT /user
+ * Body: {
+ *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
+ *   "name": "John Doe"
+ * }
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "user": {
+ *     "userId": "user123",
+ *     "name": "John Doe",
+ *     "gender": "male",
+ *     "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-01T12:00:00.000Z"
+ *   },
+ *   "imageUploaded": true,
+ *   "uploadSource": "file",
+ *   "oldImageQueuedForDeletion": false
+ * }
+ */
+router.put('/', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    // 1. Sanitize payload via SSOT
+    const updateData = await sanitizeProfileUpdate(userId, req.body, res);
+    if (!updateData) return;
+
+    // Require at least one valid field to update
+    if (Object.keys(updateData).length === 0) {
+      return handleValidationError(res, 'At least one valid field must be provided');
     }
-    handleApiError(res, "Failed to retrieve user profile", error);
+
+    // 2. Append route-specific data
+    updateData.updatedAt = new Date();
+
+    // 3. Apply update
+    const [user] = await dbWrite
+      .update(users)
+      .set(updateData)
+      .where(eq(users.userId, userId))
+      .returning();
+
+    await invalidateUserProfileCache(userId);
+    await updateUserLastActivity(userId);
+
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('[PUT /api/user] ❌', error);
+    handleApiError(res, 'Failed to update profile', error);
   }
 });
 
@@ -311,247 +436,247 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * POST /user
- * 
- * Creates a new user profile or fully replaces an existing user's profile.
- * Uses upsert operation to handle both creation and replacement scenarios.
- * 
- * @route POST /user
- * @description Create or replace user profile
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @body {Object} User profile data
- * @body {string} [name] - User's display name
- * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
- * @body {string} [image] - User's profile image URL
- * 
- * @returns {Object} Creation/replacement response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Created/updated user profile
- * 
- * @example
- * // Request
- * POST /user
- * Body: {
- *   "name": "John Doe",
- *   "gender": "male",
- * }
- * 
- * // Response
- * {
- *   "success": true,
- *   "data": {
- *     "userId": "user123",
- *     "name": "John Doe",
- *     "gender": "male",
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T00:00:00.000Z"
- *   }
- * }
- */
-router.post("/", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const userData = await cleanedUserData(req.body, { res, createNew: false });
-    if (!userData) return;
+// /**
+//  * POST /user
+//  * 
+//  * Creates a new user profile or fully replaces an existing user's profile.
+//  * Uses upsert operation to handle both creation and replacement scenarios.
+//  * 
+//  * @route POST /user
+//  * @description Create or replace user profile
+//  * 
+//  * @header X-App-Version - Application version (for analytics)
+//  * @header X-Platform - Client platform (android/ios)
+//  * 
+//  * @body {Object} User profile data
+//  * @body {string} [name] - User's display name
+//  * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
+//  * @body {string} [image] - User's profile image URL
+//  * 
+//  * @returns {Object} Creation/replacement response
+//  * @returns {boolean} success - Operation status
+//  * @returns {Object} data - Created/updated user profile
+//  * 
+//  * @example
+//  * // Request
+//  * POST /user
+//  * Body: {
+//  *   "name": "John Doe",
+//  *   "gender": "male",
+//  * }
+//  * 
+//  * // Response
+//  * {
+//  *   "success": true,
+//  *   "data": {
+//  *     "userId": "user123",
+//  *     "name": "John Doe",
+//  *     "gender": "male",
+//  *     "createdAt": "2023-01-01T00:00:00.000Z",
+//  *     "updatedAt": "2023-01-01T00:00:00.000Z"
+//  *   }
+//  * }
+//  */
+// router.post("/", requireAuth, async (req: Request, res: Response) => {
+//   try {
+//     const userId = req.userId!;
+//     const userData = await cleanedUserData(req.body, { res, createNew: false });
+//     if (!userData) return;
 
-    // Perform upsert operation (create or replace)
-    const [user] = await dbWrite
-      .insert(users)
-      .values({ userId, ...userData })
-      .onConflictDoUpdate({
-        target: users.userId,
-        set: userData,
-      })
-      .returning();
+//     // Perform upsert operation (create or replace)
+//     const [user] = await dbWrite
+//       .insert(users)
+//       .values({ userId, ...userData })
+//       .onConflictDoUpdate({
+//         target: users.userId,
+//         set: userData,
+//       })
+//       .returning();
 
-    res.status(201).json({ user });
+//     res.status(201).json({ user });
 
-    // Invalidate user profile cache
-    await invalidateUserProfileCache(userId);
+//     // Invalidate user profile cache
+//     await invalidateUserProfileCache(userId);
 
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
-  } catch (error) {
-    handleApiError(res, "Failed to create/update user profile", error);
-  }
-});
+//     // Update user's last activity timestamp
+//     await updateUserLastActivity(userId);
+//   } catch (error) {
+//     handleApiError(res, "Failed to create/update user profile", error);
+//   }
+// });
 
-/**
- * PUT /user
- * 
- * Partially updates the authenticated user's profile.
- * Only provided fields are updated, existing fields remain unchanged.
- * Supports multiple image upload methods: URL, base64, or multipart file.
- * 
- * @route PUT /user
- * @description Partially update user profile
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * @header Content-Type - multipart/form-data for file uploads or application/json
- * 
- * @body {Object} Partial user profile data (for JSON requests)
- * @body {string} [name] - User's display name (optional)
- * @body {string} [bio] - User's bio/description (optional)
- * @body {string} [gender] - User's gender (optional)
- * @body {string} [imageUrl] - User's profile image URL to upload (optional)
- * @body {File} [imageFile] - User's profile image file (multipart) (optional)
- * 
- * @returns {Object} Update response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Updated user profile
- * @returns {string} uploadSource - Image upload method used
- * @returns {boolean} imageUploaded - Whether image was uploaded
- * @returns {boolean} oldImageQueuedForDeletion - Whether old image was queued for deletion
- * 
- * @example
- * // Request with file upload
- * PUT /user
- * Headers: Content-Type: multipart/form-data
- * Body: imageFile=<file>, name=John Doe
- * 
- * // Request with base64
- * PUT /user
- * Body: {
- *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
- *   "name": "John Doe"
- * }
- * 
- * // Response
- * {
- *   "success": true,
- *   "data": {
- *     "userId": "user123",
- *     "name": "John Doe",
- *     "gender": "male",
- *     "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T12:00:00.000Z"
- *   },
- *   "imageUploaded": true,
- *   "uploadSource": "file",
- *   "oldImageQueuedForDeletion": false
- * }
- */
-router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const { name, bio, gender, imageUrl, isNewUser } = req.body;
+// /**
+//  * PUT /user
+//  * 
+//  * Partially updates the authenticated user's profile.
+//  * Only provided fields are updated, existing fields remain unchanged.
+//  * Supports multiple image upload methods: URL, base64, or multipart file.
+//  * 
+//  * @route PUT /user
+//  * @description Partially update user profile
+//  * 
+//  * @header X-App-Version - Application version (for analytics)
+//  * @header X-Platform - Client platform (android/ios)
+//  * @header Content-Type - multipart/form-data for file uploads or application/json
+//  * 
+//  * @body {Object} Partial user profile data (for JSON requests)
+//  * @body {string} [name] - User's display name (optional)
+//  * @body {string} [bio] - User's bio/description (optional)
+//  * @body {string} [gender] - User's gender (optional)
+//  * @body {string} [imageUrl] - User's profile image URL to upload (optional)
+//  * @body {File} [imageFile] - User's profile image file (multipart) (optional)
+//  * 
+//  * @returns {Object} Update response
+//  * @returns {boolean} success - Operation status
+//  * @returns {Object} data - Updated user profile
+//  * @returns {string} uploadSource - Image upload method used
+//  * @returns {boolean} imageUploaded - Whether image was uploaded
+//  * @returns {boolean} oldImageQueuedForDeletion - Whether old image was queued for deletion
+//  * 
+//  * @example
+//  * // Request with file upload
+//  * PUT /user
+//  * Headers: Content-Type: multipart/form-data
+//  * Body: imageFile=<file>, name=John Doe
+//  * 
+//  * // Request with base64
+//  * PUT /user
+//  * Body: {
+//  *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
+//  *   "name": "John Doe"
+//  * }
+//  * 
+//  * // Response
+//  * {
+//  *   "success": true,
+//  *   "data": {
+//  *     "userId": "user123",
+//  *     "name": "John Doe",
+//  *     "gender": "male",
+//  *     "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+//  *     "createdAt": "2023-01-01T00:00:00.000Z",
+//  *     "updatedAt": "2023-01-01T12:00:00.000Z"
+//  *   },
+//  *   "imageUploaded": true,
+//  *   "uploadSource": "file",
+//  *   "oldImageQueuedForDeletion": false
+//  * }
+//  */
+// router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
+//   try {
+//     const userId = req.userId!;
+//     const { name, bio, gender, imageUrl, isNewUser } = req.body;
 
-    // Check if user exists
-    const existingUser = await dbRead
-      .select({ 
-        userId: users.userId,
-        name: users.name,
-        bio: users.bio,
-        gender: users.gender,
-        image: users.image,
-        imageId: users.imageId,
-        isNewUser: users.isNewUser,
-        createdAt: users.createdAt,
-        updatedAt: users.updatedAt
-      })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
+//     // Check if user exists
+//     const existingUser = await dbRead
+//       .select({ 
+//         userId: users.userId,
+//         name: users.name,
+//         bio: users.bio,
+//         gender: users.gender,
+//         image: users.image,
+//         imageId: users.imageId,
+//         isNewUser: users.isNewUser,
+//         createdAt: users.createdAt,
+//         updatedAt: users.updatedAt
+//       })
+//       .from(users)
+//       .where(eq(users.userId, userId))
+//       .limit(1);
 
-    if (existingUser.length === 0) {
-      return handleNotFoundError(res, "User profile not found");
-    }
+//     if (existingUser.length === 0) {
+//       return handleNotFoundError(res, "User profile not found");
+//     }
 
-    const user = existingUser[0];
-    let newImageUrl: string | undefined;
-    let newImageId: string | undefined;
-    let oldImageIdQueued = false;
+//     const user = existingUser[0];
+//     let newImageUrl: string | undefined;
+//     let newImageId: string | undefined;
+//     let oldImageIdQueued = false;
 
-    // Handle image upload from different sources
-    let imageSource: string | Buffer | { buffer: ArrayBuffer; originalname: string; mimetype: string } | undefined;
+//     // Handle image upload from different sources
+//     let imageSource: string | Buffer | { buffer: ArrayBuffer; originalname: string; mimetype: string } | undefined;
 
-    if (req.file) {
-      // Multipart file upload
-      imageSource = {
-        buffer: req.file.buffer as unknown as ArrayBuffer,
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype
-      };
-    } else if (imageUrl) {
-      // URL or base64 string upload
-      imageSource = imageUrl;
-    }
+//     if (req.file) {
+//       // Multipart file upload
+//       imageSource = {
+//         buffer: req.file.buffer as unknown as ArrayBuffer,
+//         originalname: req.file.originalname,
+//         mimetype: req.file.mimetype
+//       };
+//     } else if (imageUrl) {
+//       // URL or base64 string upload
+//       imageSource = imageUrl;
+//     }
 
-    // Process image upload if source is provided
-    if (imageSource) {
-      const uploadResult = await uploadUserProfile(imageSource, userId);
+//     // Process image upload if source is provided
+//     if (imageSource) {
+//       const uploadResult = await uploadUserProfile(imageSource, userId);
 
-      if (uploadResult) {
-        newImageUrl = uploadResult.url;
-        newImageId = uploadResult.fileId;
+//       if (uploadResult) {
+//         newImageUrl = uploadResult.url;
+//         newImageId = uploadResult.fileId;
 
-        // Queue old image for deletion if it exists
-        if (user.imageId) {
-          await dbWrite
-            .insert(deletedImages)
-            .values({
-              fileId: user.imageId,
-              createdAt: new Date(),
-            });
-          oldImageIdQueued = true;
-        }
-      } else {
-        return res.status(400).json({
-          success: false,
-          error: "Failed to upload profile image"
-        });
-      }
-    }
+//         // Queue old image for deletion if it exists
+//         if (user.imageId) {
+//           await dbWrite
+//             .insert(deletedImages)
+//             .values({
+//               fileId: user.imageId,
+//               createdAt: new Date(),
+//             });
+//           oldImageIdQueued = true;
+//         }
+//       } else {
+//         return res.status(400).json({
+//           success: false,
+//           error: "Failed to upload profile image"
+//         });
+//       }
+//     }
 
-    // Only include non-null and non-empty values for update
-    const updateData = filterObjectEntries({
-      name: name?.trim() || null,
-      bio: bio?.trim() || null,
-      gender: normalizeGender(gender),
-      image: newImageUrl || null,
-      imageId: newImageId || null,
-      isNewUser: isNewUser || false,
-    });
+//     // Only include non-null and non-empty values for update
+//     const updateData = filterObjectEntries({
+//       name: name?.trim() || null,
+//       bio: bio?.trim() || null,
+//       gender: normalizeGender(gender),
+//       image: newImageUrl || null,
+//       imageId: newImageId || null,
+//       isNewUser: isNewUser || false,
+//     });
 
-    // Only proceed if there are actual updates
-    if (Object.keys(updateData).length === 0) {
-      return res.json({
-        user,
-        imageUploaded: !!newImageUrl,
-        uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
-        oldImageQueuedForDeletion: oldImageIdQueued,
-      });
-    }
+//     // Only proceed if there are actual updates
+//     if (Object.keys(updateData).length === 0) {
+//       return res.json({
+//         user,
+//         imageUploaded: !!newImageUrl,
+//         uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+//         oldImageQueuedForDeletion: oldImageIdQueued,
+//       });
+//     }
 
-    // Perform partial update
-    const [updatedUser] = await dbWrite
-      .update(users)
-      .set({
-        ...updateData,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.userId, userId))
-      .returning();
+//     // Perform partial update
+//     const [updatedUser] = await dbWrite
+//       .update(users)
+//       .set({
+//         ...updateData,
+//         updatedAt: new Date(),
+//       })
+//       .where(eq(users.userId, userId))
+//       .returning();
 
-    res.json({
-      user: updatedUser,
-      imageUploaded: !!newImageUrl,
-      uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
-      oldImageQueuedForDeletion: oldImageIdQueued,
-    });
+//     res.json({
+//       user: updatedUser,
+//       imageUploaded: !!newImageUrl,
+//       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
+//       oldImageQueuedForDeletion: oldImageIdQueued,
+//     });
 
-    // Invalidate user profile cache
-    await invalidateUserProfileCache(userId);
-  } catch (error) {
-    handleApiError(res, "Failed to update user profile", error);
-  }
-});
+//     // Invalidate user profile cache
+//     await invalidateUserProfileCache(userId);
+//   } catch (error) {
+//     handleApiError(res, "Failed to update user profile", error);
+//   }
+// });
 
 /**
  * DELETE /user
@@ -2325,3 +2450,4 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
 });
 
 export default router;
+

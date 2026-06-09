@@ -3,7 +3,7 @@ import type { users, pages, storyStates, books, userSessions, userLikes, userFav
 /** Complete user data as stored in database */
 export type DBUser = typeof users.$inferSelect;
 export type DBNewUser = typeof users.$inferInsert;
-export type DBUserForAuth = Pick<DBUser, 'userId' | 'email' | 'username' | 'name' | 'image' | 'passwordHash'>;
+export type DBUserForAuth = Pick<DBUser, 'userId' | 'email' | 'username' | 'name' | 'image' | 'passwordHash' | 'isNewUser'>;
 
 /** User data with engagement counts */
 export type DBUserWithCounts = DBUser & {
