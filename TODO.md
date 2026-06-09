@@ -11,6 +11,42 @@
 
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
+you think: "context.plotFlags need to be complete from page 1 to current"
+
+but no, I was wrong, let's me clarify:
+- `context.plotFlags`: plot flags for respective page (currently correct)
+- but maybe what I want is new `context.plotFlagHistory` which behave exactly like `context.actionsHistory` to track per-page plot flags
+- thus, in frontend, I can serve chronological page list with their selected actions and plot flags
+
+can you continue?
+
+---
+
+please examine my implementation
+I put this in story page generation prompt:
+```
+NARRATIVE STYLE:
+${createNarrativeStyle(state).instructions}
+
+PSYCHOLOGICAL FLAGS (Accumulated):
+${formatPsychologicalFlags(flags, memoryIntegrity)}
+
+PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
+${formatPsychologicalProfile(psychologicalProfile)}
+```
+
+narrative style instruction prompt is built based on reader's psychological profile
+can you ensure it's correct and effective in "guiding" the AI, without token bloat or restraining AI from being creative?
+and ensure this really "hit" the player's weakness optimally?
+Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
+
+to focus:
+`createStyleInput` function
+`createNarrativeStyle` function
+`calculatePlayerProfile` function
+
+---
+
 db/schema.ts
 types/story.ts
 

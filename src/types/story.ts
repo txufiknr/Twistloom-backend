@@ -736,14 +736,6 @@ export type StoryPage = {
   actions: Action[];
   /** Changes to the story state */
   stateDelta: StateDelta;
-  // /** AI provider used for generating the page content */
-  // aiProvider?: AIChatProvider | 'none';
-  // /** AI model used for generating the page content */
-  // aiModel?: string;
-  // /** AI provider used for evaluating the page content */
-  // aiEvalProvider?: AIChatProvider | 'none';
-  // /** AI model used for evaluating the page content */
-  // aiEvalModel?: string;
 };
 
 export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> & {
