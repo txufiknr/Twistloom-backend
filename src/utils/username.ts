@@ -29,6 +29,7 @@ const RESERVED_USERNAMES = [
 export function sanitizeUsername(username: string): string {
   if (!username || typeof username !== 'string') return '';
   const cleaned = sanitizeTextForDB(username.trim());
+  // TODO: remove spaces
   return cleaned.toLowerCase();
 }
 
@@ -75,4 +76,14 @@ export function validateUsername(username: string): UsernameValidationResult {
   }
 
   return { valid: errors.length === 0, errors };
+}
+
+export function convertNameOrEmailToUsername(email: string, name: string): string {
+  // TODO: omit @ tail, lowercase, replace space with hypens
+  return `${email}${name}`;
+}
+
+export function convertEmailToName(email: string): string {
+  // TODO: omit @ tail, capitalize, replace dot with space
+  return email;
 }

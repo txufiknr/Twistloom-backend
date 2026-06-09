@@ -44,13 +44,13 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { requireAuth } from "../middleware/nextauth.js";
 import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
-import type { DBNewUser, DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
+import type { DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
 import type { LikeTargetType, User, UserActivityType } from "../types/user.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity } from "../services/user.js";
+import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, cleanedUserData } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUserSelect, setReferrerForNewUser } from "../services/user-controller.js";
@@ -355,33 +355,20 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
 router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, gender } = req.body;
-
-    // Prepare user data for upsert (exclude timestamp fields from frontend)
-    const userData: DBNewUser = {
-      userId,
-      name: name?.trim() || null,
-      gender: normalizeGender(gender),
-    };
+    const userData = await cleanedUserData(req.body, { res, createNew: false });
+    if (!userData) return;
 
     // Perform upsert operation (create or replace)
-    const [row] = await dbWrite
+    const [user] = await dbWrite
       .insert(users)
-      .values(userData)
+      .values({ userId, ...userData })
       .onConflictDoUpdate({
         target: users.userId,
-        set: {
-          name: userData.name,
-          gender: userData.gender,
-          lastActive: new Date(),
-          updatedAt: new Date(),
-        },
+        set: userData,
       })
       .returning();
 
-    res.status(201).json({
-      user: row,
-    });
+    res.status(201).json({ user });
 
     // Invalidate user profile cache
     await invalidateUserProfileCache(userId);

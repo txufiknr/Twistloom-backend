@@ -131,7 +131,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
         if (!userId) {
           // First-time OAuth login - create user in database
           console.log('[verifyNextAuthToken] 🆕 First-time OAuth login, creating user:', email);
-          userId = await createOrUpdateOAuthUser(email, name, image);
+          userId = await createOrUpdateOAuthUser({email, name, image});
           
           // Invalidate cache for the new user
           invalidateByEmail(email);
@@ -139,7 +139,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
           // Existing user - update profile data from OAuth provider asynchronously
           // This prevents blocking concurrent requests during profile updates
           console.log('[verifyNextAuthToken] 🔄 Updating existing user profile from OAuth:', email);
-          createOrUpdateOAuthUser(email, name, image)
+          createOrUpdateOAuthUser({email, name, image})
             .then(() => {
               // Invalidate cache to ensure fresh data after update completes
               invalidateByEmail(email);

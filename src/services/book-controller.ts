@@ -1,21 +1,21 @@
 /**
  * @overview Book Controller Service
- * 
+ *
  * Provides reusable query builders for book endpoints with enriched data.
  * Handles joins for author information, engagement metrics, and user-specific states.
- * 
+ *
  * Features:
  * - Author penName from users table
  * - Aggregate counts (likes, reads) from related tables
  * - User-specific flags (isLiked, isRead) based on authenticated user
  * - DRY query builders for consistent book data across endpoints
  * - Shared search, filter, and pagination logic
- * 
+ *
  * Performance:
  * - Uses SQL subqueries within SELECT for single-query execution
  * - Optimal for paginated results (O(n) where n = page size, not total books)
  * - Leverages existing database indexes on targetId, bookId, and userId
- * - PostgreSQL query planner optimizes correlated subqueries with indexes
+ * - PostgreSQL query planner optimises correlated subqueries with indexes
  * - Avoids N+1 query problem
  */
 
@@ -34,103 +34,118 @@ import type { Action, ActionedStoryPage, SelectedAction, StoryPageNav, StoryPage
 
 /**
  * Builds an enriched book select object with all required fields
- * 
+ *
  * Uses denormalized columns (likes_count, read_count) for O(1) performance on aggregate metrics.
  * User-specific flags (isLiked, isRead) still use EXISTS subqueries which are fast with indexes.
- * 
+ *
  * Performance Characteristics:
- * - likesCount and readCount: O(1) - direct column access (updated via triggers)
- * - isLiked and isRead: O(log n) - EXISTS subquery with proper indexes
- * - Overall: ~10-50ms for 100 books (vs 50-200ms with COUNT subqueries)
- * 
+ * - likesCount and readCount: O(1) — direct column access (updated via triggers)
+ * - isLiked and isRead: O(log n) — EXISTS subquery with proper indexes
+ * - Overall: ~10-50 ms for 100 books (vs 50-200 ms with COUNT subqueries)
+ *
  * Denormalization Benefits:
  * - Eliminates COUNT(*) subqueries for likes/reads
- * - Triggers keep counts synchronized automatically
+ * - Triggers keep counts synchronised automatically
  * - No cache invalidation needed
  * - Always consistent with source data
- * 
- * User-specific Flags:
- * - Still use EXISTS subqueries (fast with indexes on user_id, target_id/book_id)
- * - Cannot be denormalized without per-user tables
- * - Performance acceptable since only 2 subqueries per book
- * 
- * @param currentUserId - Optional current user ID for user-specific flags (isLiked, isRead)
- * @param language - Optional language code to include translation data (e.g., "es", "fr")
+ *
+ * Translation Strategy:
+ * The `translation` field uses a correlated subquery directly in the SELECT.
+ * This is intentional for list queries: each book row fetches its own translation
+ * in O(log n) via the (book_id, language) unique index, and the entire list lands
+ * in a single round-trip — far better than N separate `getBookTranslation()` calls
+ * with LRU-cache misses on cold paths.
+ *
+ * LRU-cache at the service layer (`getEnrichedBook`) is the right place for
+ * single-book fetches (e.g. book detail page), where the same book is repeatedly
+ * hit and the cache hit rate is high. For list queries the per-book cache benefit
+ * is negligible compared to the subquery cost saved by the single round-trip.
+ *
+ * The subquery returns NULL when the requested language matches the book's own
+ * language (`${language} <> ${books.language}`), so no translation object is
+ * returned for same-language requests — callers do not need to check this.
+ *
+ * @param currentUserId - Optional current user ID for user-specific flags
+ * @param language      - Optional language code to include translation data (e.g. "es", "fr")
  * @returns Select object with enriched book fields
  */
 export function getEnrichedBookSelect(currentUserId: string | null = null, language: string | null = null) {
   return {
     // Basic book fields
-    id: books.id,
-    userId: books.userId,
-    slug: books.slug,
-    title: books.title,
-    hook: books.hook,
-    summary: books.summary,
-    image: books.image,
-    keywords: books.keywords,
-    status: books.status,
+    id:           books.id,
+    userId:       books.userId,
+    slug:         books.slug,
+    title:        books.title,
+    hook:         books.hook,
+    summary:      books.summary,
+    image:        books.image,
+    keywords:     books.keywords,
+    status:       books.status,
     trendingScore: books.trendingScore,
-    totalPages: books.totalPages,
-    language: books.language,
-    topPick: books.topPick,
-    isOriginal: books.isOriginal,
+    totalPages:   books.totalPages,
+    language:     books.language,
+    topPick:      books.topPick,
+    isOriginal:   books.isOriginal,
     creditsPrice: books.creditsPrice,
-    createdAt: books.createdAt,
-    updatedAt: books.updatedAt,
-    mc: books.mc,
+    createdAt:    books.createdAt,
+    updatedAt:    books.updatedAt,
+    mc:           books.mc,
+
     // Author info
     author: {
-      id: users.userId,
-      email: users.email,
+      id:       users.userId,
+      email:    users.email,
       username: users.username,
-      name: users.penName || users.name,
-      image: users.image,
+      name:     users.penName || users.name,
+      image:    users.image,
     } satisfies Record<keyof BookAuthor, unknown>,
-    // Denormalized engagement metrics (O(1) performance, maintained by trigger)
+
+    // Denormalized engagement metrics (O(1), maintained by DB triggers)
     stats: {
-      likesCount: books.likesCount,
-      readCount: books.readCount,
+      likesCount:    books.likesCount,
+      readCount:     books.readCount,
       commentsCount: books.commentsCount,
       branchesCount: books.branchesCount,
       completeCount: books.completeCount,
     } satisfies Record<keyof BookStats, unknown>,
+
     // User-specific flags (indexed by userId and targetId/bookId)
-    isLiked: currentUserId 
+    isLiked: currentUserId
       ? sql<boolean>`EXISTS (
-          SELECT 1 
-          FROM user_likes 
+          SELECT 1
+          FROM user_likes
           WHERE user_id = ${currentUserId} AND target_type = 'book' AND target_id = books.id
         )`
       : sql<boolean>`false`,
     isRead: currentUserId
       ? sql<boolean>`EXISTS (
-          SELECT 1 
-          FROM user_sessions 
+          SELECT 1
+          FROM user_sessions
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
     isCompleted: currentUserId
       ? sql<boolean>`EXISTS (
-          SELECT 1 
-          FROM user_completed_books 
+          SELECT 1
+          FROM user_completed_books
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
     isPurchased: currentUserId
       ? sql<boolean>`EXISTS (
-          SELECT 1 
-          FROM user_purchased_books 
+          SELECT 1
+          FROM user_purchased_books
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`
       : sql<boolean>`false`,
-    // Last read tracking (optional fields for user session data) - combined lateral join for better performance
+
+    // Last read tracking — LATERAL subquery computed once, referenced twice
     lastReadAt: currentUserId
       ? sql<Date | null>`(
-          SELECT ls.updated_at 
+          SELECT ls.updated_at
           FROM LATERAL (
-            SELECT updated_at, page_id 
-            FROM user_sessions 
+            SELECT updated_at, page_id
+            FROM user_sessions
             WHERE user_id = ${currentUserId} AND book_id = books.id
             ORDER BY updated_at DESC
             LIMIT 1
@@ -139,49 +154,53 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       : sql<Date | null>`null`,
     lastPage: currentUserId
       ? sql<string | null>`(
-          SELECT ls.page_id::text 
+          SELECT ls.page_id::text
           FROM LATERAL (
-            SELECT updated_at, page_id 
-            FROM user_sessions 
+            SELECT updated_at, page_id
+            FROM user_sessions
             WHERE user_id = ${currentUserId} AND book_id = books.id
             ORDER BY updated_at DESC
             LIMIT 1
           ) ls
         )`
       : sql<string | null>`null`,
-    // First page data (page 1 of the book) - combined lateral join for better performance
+
+    // First page data (page 1 of the book) — combined LATERAL join for efficiency
     firstPageId: sql<string>`(
-      SELECT fp.id 
+      SELECT fp.id
       FROM LATERAL (
-        SELECT id, text 
-        FROM pages 
-        WHERE book_id = books.id AND page = 1 
+        SELECT id, text
+        FROM pages
+        WHERE book_id = books.id AND page = 1
         LIMIT 1
       ) fp
     )`,
-    // First page text content (page 1 of the book)
     firstPageText: sql<string>`(
-      SELECT fp.text 
+      SELECT fp.text
       FROM LATERAL (
-        SELECT id, text 
-        FROM pages 
-        WHERE book_id = books.id AND page = 1 
+        SELECT id, text
+        FROM pages
+        WHERE book_id = books.id AND page = 1
         LIMIT 1
       ) fp
     )`,
-    // Translation data from bookTranslations table when language is provided and differs from book's original language
-    // TODO: should I decouple this to `getBookTranslation` implementing LRU cache?
+
+    // Book translation — correlated subquery is the correct approach for list queries.
+    // Returns NULL when language is absent, not provided, or matches the book's own language.
+    // See JSDoc on `getEnrichedBookSelect` for the full strategy rationale.
     translation: language
       ? sql<BookTranslation | null>`(
           SELECT jsonb_build_object(
-            'title', bt.title,
-            'hook', bt.hook,
-            'summary', bt.summary,
+            'title',    bt.title,
+            'hook',     bt.hook,
+            'summary',  bt.summary,
             'keywords', bt.keywords,
-            'mc', bt.mc
+            'mc',       bt.mc
           )
           FROM book_translations bt
-          WHERE bt.book_id = books.id AND bt.language = ${language} AND ${language} <> ${books.language}
+          WHERE bt.book_id = books.id
+            AND bt.language = ${language}
+            AND ${language} <> ${books.language}
           LIMIT 1
         )`
       : sql<BookTranslation | null>`null`,
@@ -195,20 +214,20 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
  *    Range:
  *    0.0 → no shared keywords
  *    1.0 → identical keyword sets
- * 
+ *
  * Jaccard vs Overlap:
  * Jaccard penalises books with more tags
  * (e.g. a 9-keyword book sharing 5 keywords scores lower than a 5-keyword book sharing 5).
  * Raw overlap count tends to produce better "more like this" results
  * for browsable content like Twistloom.
- * 
+ *
  * Jaccard similarity measures the ratio of shared keywords to total
  * unique keywords: J(A, B) = |A ∩ B| / |A ∪ B|
  *
  * Requires:
  * - books.keywords: text[]
  * - GIN index on books.keywords (for the && pre-filter in .where())
- * 
+ *
  * @param targetKeywords Keywords from the target book
  * @param mode Prefer 'overlap' for production unless testing shows meaningful ranking improvements
  */
@@ -225,7 +244,7 @@ export function buildKeywordsSimilarityScore(
   if (mode === 'jaccard') {
     /**
      * Jaccard similarity score.
-     * 
+     *
      * Example:
      *   Target:    ['thriller', 'crime', 'mystery']
      *   Candidate: ['thriller', 'crime', 'horror']
@@ -272,7 +291,7 @@ export function buildKeywordsSimilarityScore(
 
 /**
  * Builds an enriched similar books select object with similarity score.
- * 
+ *
  * Similarity is calculated as the number of shared keywords
  * between the target book and candidate book.
  *
@@ -308,7 +327,7 @@ export function getSimilarBookSelect(
 
 /**
  * Builds time-based filter condition for lastUpdated parameter
- * 
+ *
  * @param lastUpdated - Time filter value: anytime|today|this-week|this-month|this-year
  * @returns SQL condition or null if anytime/invalid
  */
@@ -344,14 +363,14 @@ export function buildTimeFilterCondition(lastUpdated?: string) {
 
 /**
  * Builds tags filter condition with OR logic (books matching ANY tag)
- * 
+ *
  * Uses PostgreSQL array overlap operator (&&) which is
- * optimized by the GIN index on books.keywords.
- * 
+ * optimised by the GIN index on books.keywords.
+ *
  * Example:
  * tags = ["thriller", "crime"]
  * matches books containing either tag.
- * 
+ *
  * @param tags - Array of tag strings to filter by
  * @returns SQL condition or null if no tags
  */
@@ -363,8 +382,8 @@ export function buildTagsFilterCondition(tags: string[]) {
 
 /**
  * Builds language filter condition
- * 
- * @param language - ISO 639-1 language code (e.g., "en", "es")
+ *
+ * @param language - ISO 639-1 language code (e.g. "en", "es")
  * @returns SQL condition or null if no language
  */
 export function buildLanguageFilterCondition(language?: string) {
@@ -377,7 +396,7 @@ export function buildLanguageFilterCondition(language?: string) {
 
 /**
  * Builds age range filter condition for main character age
- * 
+ *
  * @param minAge - Minimum age (inclusive)
  * @param maxAge - Maximum age (inclusive)
  * @returns SQL condition or null if no age range
@@ -387,14 +406,13 @@ export function buildAgeRangeFilterCondition(minAge?: number, maxAge?: number) {
     return null;
   }
 
-  // Filter by books.mc->age field (JSONB)
   // Parentheses required to cast the extracted value, not the key string
   return sql`(${books.mc}->>'age')::int BETWEEN ${minAge} AND ${maxAge}`;
 }
 
 /**
  * Builds gender filter condition for main character gender
- * 
+ *
  * @param gender - Gender value (male/female)
  * @returns SQL condition or null if no gender
  */
@@ -403,13 +421,17 @@ export function buildGenderFilterCondition(gender?: string) {
     return null;
   }
 
-  // Filter by books.mc->gender field (JSONB)
   return sql`${books.mc}->>'gender' = ${gender}`;
 }
 
 /**
- * Builds search condition with ILIKE patterns for multiple fields
- * 
+ * Builds search condition with ILIKE patterns for title, hook, summary, and keywords.
+ *
+ * Note: `books.keywords` is `text[]` — ILIKE cannot be applied directly to an array.
+ * We use `array_to_string` to flatten the array for a substring match. This does NOT
+ * use the GIN index (ILIKE is never index-accelerated), but it is consistent with
+ * how title/hook/summary are searched and avoids a false-negative on keyword matches.
+ *
  * @param search - Search query string
  * @returns SQL condition or null if no search
  */
@@ -420,10 +442,11 @@ export function buildSearchCondition(search?: string) {
 
   const searchPattern = `%${search}%`;
   const searchConditions = [
-    sql`${books.title} ILIKE ${searchPattern}`,
-    sql`${books.hook} ILIKE ${searchPattern}`,
+    sql`${books.title}   ILIKE ${searchPattern}`,
+    sql`${books.hook}    ILIKE ${searchPattern}`,
     sql`${books.summary} ILIKE ${searchPattern}`,
-    sql`${books.keywords} ILIKE ${searchPattern}`
+    // FIX: books.keywords is text[] — cast to text before ILIKE
+    sql`array_to_string(${books.keywords}, ' ') ILIKE ${searchPattern}`,
   ];
 
   return or(...searchConditions);
@@ -431,19 +454,19 @@ export function buildSearchCondition(search?: string) {
 
 /**
  * Builds comprehensive book query with filtering, sorting, and search
- * 
+ *
  * Provides a unified interface for building book queries across endpoints.
- * Handles all filtering options, search relevance scoring, and specialized book sorting.
- * 
+ * Handles all filtering options, search relevance scoring, and specialised book sorting.
+ *
  * Sorting Hierarchy:
- * 1. Primary: Book-specific sorting (applyBookSorting) - handles popular, trending, top-picks, originals, newest
- * 2. Secondary: Contextual sorting - relevance for search, generic column sorting otherwise
- * 
+ * 1. Primary: Book-specific sorting (applyBookSorting) — handles popular, trending, top-picks, originals, newest
+ * 2. Secondary: Contextual sorting — relevance for search, generic column sorting otherwise
+ *
  * @param params - Query parameters object
  * @param booksTable - Drizzle books table reference
  * @param currentUserId - Optional current user ID for user-specific fields
  * @returns Object with query, countQuery, and finalCondition
- * 
+ *
  * @example
  * ```typescript
  * const { query, countQuery, finalCondition } = buildBookQuery({
@@ -465,7 +488,7 @@ export function buildBookQuery<T>(
     baseQuery: T;
     /** Base condition for the query (e.g., user filter, status filter) */
     baseCondition: ReturnType<typeof sql>;
-    /** Search query string (sanitized) */
+    /** Search query string (sanitised) */
     search?: string;
     /** Book-specific sort option (primary sort) */
     bookSortBy?: BookSortOption;
@@ -489,15 +512,15 @@ export function buildBookQuery<T>(
   }
 ) {
   const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, currentUserId } = params;
-  
+
   // Build filter conditions using shared helpers
-  const timeCondition = buildTimeFilterCondition(lastUpdated);
-  const languageCondition = buildLanguageFilterCondition(language);
-  const searchCondition = buildSearchCondition(search);
-  const tagsCondition = buildTagsFilterCondition(tags || []);
-  const ageRangeCondition = buildAgeRangeFilterCondition(minAge, maxAge);
-  const genderCondition = buildGenderFilterCondition(gender);
-  
+  const timeCondition      = buildTimeFilterCondition(lastUpdated);
+  const languageCondition  = buildLanguageFilterCondition(language);
+  const searchCondition    = buildSearchCondition(search);
+  const tagsCondition      = buildTagsFilterCondition(tags || []);
+  const ageRangeCondition  = buildAgeRangeFilterCondition(minAge, maxAge);
+  const genderCondition    = buildGenderFilterCondition(gender);
+
   // Combine all conditions with base condition
   const finalCondition = combineFilterConditions(
     baseCondition,
@@ -508,7 +531,7 @@ export function buildBookQuery<T>(
     ageRangeCondition,
     genderCondition
   );
-  
+
   // Apply secondary sorting: contextual sorting (before where to allow addSelect)
   let query = baseQuery;
   if (search) {
@@ -523,12 +546,12 @@ export function buildBookQuery<T>(
   // Apply where condition to main query
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   query = (query as any).where(finalCondition);
-  
+
   // Apply primary sorting: book-specific sorting (acts as category filter)
   if (bookSortBy) {
     query = applyBookSorting(query, bookSortBy, currentUserId);
   }
-  
+
   // Apply orderBy for search relevance
   if (search) {
     const relevanceExpression = createRelevanceExpression(search, books);
@@ -538,13 +561,13 @@ export function buildBookQuery<T>(
     // Apply generic column sorting only when no search
     query = applySorting(query, genericSortBy, sortOrder);
   }
-  
+
   // Build count query for pagination
   const countQuery = dbRead
     .select({ count: sql`COUNT(*)::int` })
     .from(books)
     .where(finalCondition);
-  
+
   return {
     query,
     countQuery,
@@ -554,36 +577,36 @@ export function buildBookQuery<T>(
 
 /**
  * Combines multiple filter conditions into a single AND condition
- * 
+ *
  * @param conditions - Array of SQL conditions (can include nulls/undefined)
  * @returns Combined AND condition, single condition, or always-true condition
  */
 export function combineFilterConditions(...conditions: (ReturnType<typeof sql> | null | undefined)[]) {
   const validConditions = conditions.filter((c): c is ReturnType<typeof sql> => c !== null && c !== undefined);
-  
-  if (validConditions.length === 0) return sql`1=1`; // Always true condition when no filters
+
+  if (validConditions.length === 0) return sql`1=1`;
   if (validConditions.length === 1) return validConditions[0];
-  
+
   return and(...validConditions);
 }
 
 /**
  * Applies book-specific sorting to a query based on sort option
- * 
+ *
  * @param query - Drizzle query builder
  * @param sortBy - Sort option (popular, newest, trending, top-picks, originals, reads, recommendations)
  * @param currentUserId - Optional current user ID for user-specific sorting (reads, recommendations)
  * @returns Modified query builder with sorting applied
- * 
- * Behavior:
+ *
+ * Behaviour:
  * - popular: Sorts by branchesCount/totalPages ratio (highest first)
  * - newest: Sorts by createdAt (latest first)
  * - trending: Sorts by weighted formula: readCount(0.5) + likesCount(0.3) + favoritedCount(0.2)
  * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
  * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
- * - reads: Filters to books user has read (from userSessions), sorts by lastReadAt (most recent first)
+ * - reads: Filters to books the user has read (from userSessions), sorts by lastReadAt (most recent first)
  * - recommendations: Recommends books based on user likes (similar books to what user liked)
- * 
+ *
  * @remarks
  * Uses `any` type for query parameter because Drizzle ORM query builder types
  * are extremely complex generic types that don't fit well into simple type constraints.
@@ -627,12 +650,11 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Sort by lastReadAt (most recent first)
       // Requires authentication
       if (!currentUserId) {
-        // If no user provided, return empty result (should be handled by requireAuth middleware)
         return query.where(sql`1=0`);
       }
       return query
         .where(sql`EXISTS (
-          SELECT 1 FROM user_sessions 
+          SELECT 1 FROM user_sessions
           WHERE user_id = ${currentUserId} AND book_id = books.id
         )`)
         .orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
@@ -643,23 +665,20 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Get books similar to what the user has liked using keyword similarity
       // Requires authentication
       if (!currentUserId) {
-        // If no user provided, return empty result (should be handled by requireAuth middleware)
         return query.where(sql`1=0`);
       }
-      
-      // Get user's liked books' keywords for similarity calculation
-      // Recommend books that have keyword overlap with user's liked books
+
       return query
         .where(sql`EXISTS (
-          SELECT 1 
+          SELECT 1
           FROM user_likes ul
           INNER JOIN books liked_books ON ul.target_id = liked_books.id
-          WHERE ul.user_id = ${currentUserId} 
-            AND ul.target_type = 'book' 
+          WHERE ul.user_id = ${currentUserId}
+            AND ul.target_type = 'book'
             AND liked_books.id != books.id
             AND books.keywords && liked_books.keywords
         )`)
-        .orderBy(desc(books.trendingScore)); // Sort by trending as fallback for recommendations
+        .orderBy(desc(books.trendingScore));
     }
 
     case 'newest':
@@ -671,30 +690,30 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
 
 /**
  * Visits a book page by validating navigation, recording progress, and calculating visit statistics
- * 
+ *
  * This function handles the complete flow of a user visiting a page:
  * 1. Validates the page exists and belongs to the specified book
  * 2. For non-root pages (page > 1), validates the navigation action from parent page
  * 3. Checks if user has already made a different choice on the parent page
  * 4. Records the visit and calculates visit statistics (nth visitor, visitor percentage)
- * 
+ *
  * @param res - Express response object for error handling
  * @param params - Parameters for the page visit
  * @param params.userId - The user's unique identifier
  * @param params.pageId - The page identifier to visit
  * @param params.bookIdentifier - Optional book identifier (slug or UUID) for validation
  * @returns Promise resolving to visit details, book data, and page data
- * 
- * Behavior:
+ *
+ * Behaviour:
  * - For page 1: No action validation required, marks as visited without action
  * - For page > 1: Validates action exists on parent page and user hasn't changed choice
  * - Returns early with error response if validation fails
  * - Calculates visit statistics using denormalized visitCount and readCount
- * 
+ *
  * Visit Statistics:
  * - nthVisit: The visit number for this page (e.g., "you're the 100th visitor")
  * - visitorPercentage: Percentage of book readers who have visited this page
- * 
+ *
  * @example
  * ```typescript
  * const { visitDetails, book, dbPage } = await visitBookPage(res, { userId, pageId, bookIdentifier });
@@ -745,7 +764,7 @@ export async function visitBookPage(
   let selectedAction: SelectedAction | undefined;
 
   const sourceNav: StoryPageNav = {};
-  
+
   if (pageNumber > 1) {
     const parentDbPage = parentPageId ? await getPageFromDB(parentPageId) : null;
     if (!parentDbPage) {
@@ -753,7 +772,7 @@ export async function visitBookPage(
       handleNotFoundError(res, `Previous page not found for pageNumber ${pageNumber}`);
       return {};
     }
-  
+
     action = parentDbPage.actions.filter(a => a.destinationPageIds?.some(p => p === pageId))[0];
     if (!action) {
       console.error(`[visit] ❌ Action for this page not found in the parent page:`, parentPageId);

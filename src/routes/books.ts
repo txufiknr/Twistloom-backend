@@ -2526,7 +2526,7 @@ router.get("/:identifier/:pageId/candidates/status", optionalAuth, async (req: R
     const { actions, updatedAt } = userPage;
 
     // Calculate completed/total from page actions (SSOT)
-    const actionsWithDestinations = actions.filter(a => !!a.destinationPageIds?.length);
+    const actionsWithDestinations = actions.filter(a => a.destinationPageIds?.length);
     const completedActions = actionsWithDestinations.length;
     const totalActions = actions.length;
     const progressEventFallback = actions.map((action) => {

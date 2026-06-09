@@ -11,20 +11,22 @@
  * - Type-safe operations
  */
 
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { getErrorMessage } from "../utils/error.js";
+import { getErrorMessage, handleValidationError } from "../utils/error.js";
 import { DAILY_CHECKIN_BONUS, DAILY_CHECKIN_DAYS, DAILY_CHECKIN_BIG_BONUS } from "../config/credits.js";
 import { getCurrentUTCDay } from "../utils/time.js";
 import { requireEnv } from "../utils/env.js";
-import type { DBNewUserActivityLog, DBUserForAuth } from "../types/schema.js";
+import type { DBNewUser, DBNewUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
 import { LRUCache } from 'lru-cache';
+import { convertEmailToName, convertNameOrEmailToUsername, sanitizeUsername, validateUsername } from "../utils/username.js";
+import { normalizeGender } from "../utils/parser.js";
 
 /**
  * LRU cache for email -> userId mappings
@@ -761,4 +763,54 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     console.error("[user] ❌ Failed to get check-in status:", getErrorMessage(error));
     throw error;
   }
+}
+
+export async function cleanedUserData(userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'image'>>, options?: { res?: Response, createNew?: boolean }): Promise<Omit<DBNewUser, 'userId'> | null> {
+  const { name: providedName, email, username: providedUsername, gender, image } = userData;
+  const { res, createNew = true } = options ?? {};
+  
+  if (!email) {
+    if (res) handleValidationError(res, 'Email is required');
+    return null;
+  }
+
+  const name = providedName ?? convertEmailToName(email);
+  const username = providedUsername ?? convertNameOrEmailToUsername(email, name);
+
+  const cleanName = sanitizeTextForDB(String(name).trim());
+  const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
+  const cleanUsername = sanitizeUsername(String(username));
+  const cleanImage = image ? sanitizeTextForDB(String(image)) : undefined;
+  const normalizedGender = normalizeGender(gender);
+
+  if (createNew) {
+    // TODO: detect duplicate username in db, auto append number suffix to `cleanUsername`
+    // TODO: check for existing email (username should be already deduped)
+    const existing = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(or(eq(users.email, cleanEmail), eq(users.username, cleanUsername)))
+      .limit(1);
+  
+    if (existing && existing.length > 0) {
+      if (res) res.status(409).json({ error: 'Email or username already exists' });
+      return null;
+    }
+  }
+
+  // TODO: should be valid by `sanitizeUsername`, should remove this?
+  const usernameValidation = validateUsername(cleanUsername);
+  if (!usernameValidation.valid) {
+    if (res) res.status(422).json({ error: 'Invalid username', details: usernameValidation.errors });
+    return null;
+  }
+  
+  // Prepare user data for upsert (exclude timestamp fields from frontend)
+  return {
+    name: cleanName,
+    email: cleanEmail,
+    username: cleanUsername,
+    gender: normalizedGender,
+    ...(cleanImage ? {image: cleanImage} : {}),
+  };
 }

@@ -17,7 +17,7 @@ import { dbWrite } from "./client.js";
 import { getErrorMessage } from "../utils/error.js";
 import { users } from "./schema.js";
 import { generateId } from "../utils/uuid.js";
-import { APP_NAME, APP_NAME_SLUG, APP_TAGLINE } from "../config/constants.js";
+import { APP_EMAIL, APP_NAME, APP_NAME_SLUG, APP_TAGLINE } from "../config/constants.js";
 import type { DBUser } from "../types/schema.js";
 const __filename = fileURLToPath(import.meta.url);
 
@@ -230,6 +230,7 @@ async function createInitialAdminUser(): Promise<DBUser | null> {
     .values({
       userId: generateId(),
       username: APP_NAME_SLUG,
+      email: APP_EMAIL,
       name: APP_NAME,
       penName: APP_NAME,
       bio: APP_TAGLINE,

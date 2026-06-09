@@ -16,8 +16,7 @@ import { users, userAuth } from '../db/schema.js';
 import { sql, eq } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
-import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { getUserIdByEmail, logUserActivity, updateUserLastActivity } from './user.js';
+import { cleanedUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity } from './user.js';
 import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
@@ -138,42 +137,50 @@ export function getEnrichedUserSelect() {
  * const userId = await createOrUpdateOAuthUser('user@example.com', 'John Smith', 'https://google.com/new-photo.jpg');
  * ```
  */
-export async function createOrUpdateOAuthUser(
+export async function createOrUpdateOAuthUser(oAuthUser: {
   email: string,
   name?: string,
   image?: string
-): Promise<string> {
+}): Promise<string> {
   // Check if user already exists by email
-  const userId = await getUserIdByEmail(email);
+  const userId = await getUserIdByEmail(oAuthUser.email);
+
+  // Clean user data to upsert
+  const userData = await cleanedUserData(oAuthUser);
+  if (!userData) {
+    throw new Error('Failed to sanitize OAuth user data');
+  }
+
+  // const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
+  // const cleanName = sanitizeTextForDB(String(name));
+  // const cleanImage = image ? sanitizeTextForDB(String(image)) : null;
 
   if (userId) {
     // User exists - update profile data from OAuth provider
     await dbWrite
       .update(users)
       .set({
-        ...(name && { name: sanitizeTextForDB(String(name)) }),
-        ...(image && { image: sanitizeTextForDB(String(image)) }),
+        ...userData,
+        // ...(name && { name: sanitizeTextForDB(String(name)) }),
+        // ...(image && { image: sanitizeTextForDB(String(image)) }),
         lastActive: new Date(),
         updatedAt: new Date(),
       })
       .where(eq(users.userId, userId));
     
-    console.log(`[user-controller] ✅ Updated existing OAuth user: ${userId}`);
+    console.log(`[user-controller] ✅ Updated existing user from OAuth: ${userId}`);
     return userId;
   }
-
+  
   // New user - create account from OAuth data
-    const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
-    const cleanName = name ? sanitizeTextForDB(String(name)) : null;
-    const cleanImage = image ? sanitizeTextForDB(String(image)) : null;
-
-    const newUser = await dbWrite.transaction(async (tx) => {
+  const newUser = await dbWrite.transaction(async (tx) => {
     // Create user record
-    const userRecord = await tx.insert(users).values({
+    const [user] = await tx.insert(users).values({
       userId: generateId(),
-      email: cleanEmail,
-      name: cleanName || null,
-      image: cleanImage || null,
+      ...userData,
+      // email: cleanEmail,
+      // name: cleanName,
+      // image: cleanImage || null,
       isNewUser: true,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -182,14 +189,14 @@ export async function createOrUpdateOAuthUser(
 
     // Create user_auth record
     await tx.insert(userAuth).values({
-      userId: userRecord[0].userId,
+      userId: user.userId,
     });
 
-    return userRecord;
+    return user;
   });
 
-  console.log(`[user-controller] ✅ Created new OAuth user: ${newUser[0].userId}`);
-  return newUser[0].userId;
+  console.log(`[user-controller] ✅ Created new user from OAuth: ${newUser.userId}`);
+  return newUser.userId;
 }
 
 /**

@@ -822,6 +822,8 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   context?: EnrichedStoryPageContext
 };
 
+export type TranslatedStoryPage = Omit<PersistedStoryPage, 'weather' | 'mood'> & { weather?: string; mood?: string; };
+
 export type EnrichedStoryPageContext = {
   /** Current story phase classification */
   phase: StoryPhase;
@@ -837,6 +839,8 @@ export type EnrichedStoryPageContext = {
   places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
   /** All known characters so far */
   characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
+  /** Collection of narrative flags and hints for the current page */
+  plotFlags: PlotFlag[];
 };
 
 export type StoryPageNav = Record<number, StoryPageNavItem>;

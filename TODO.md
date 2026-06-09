@@ -2,29 +2,55 @@
 [ ] Stripe switch to live
 [ ] Implement belief
 [ ] Implement corruption curve
-[ ] Kalau source action belum ada, insert dulu page progress parent page
+[ ] Kalau real take action request & source action belum ada, page ga boleh dilihat
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts)
+
+[ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
+
+please review my story branch traversal & state reconstruction implementations in backend which helps frontend page navigation
+
+to focus:
+`getStoryStateWithBranch` function
+`getStoryState` function
+`mapToEnrichedPage` function
+
+can you ensure in `mapToEnrichedPage`:
+`context.actionsHistory` is completed based on user's historical selected actions from page 1 sequentially to reach this page
+`context.plotFlags` is also complete from page 1 to current
+`sourceNav` has valid trace back selected actions & plot flag chronology?
+example on page 3: [
+  {1: { pageId: 'page123', selectedAction: { text: 'Run away.', ... }, plotFlag: { fact: 'Fact...' } }}
+  {2: { pageId: 'page456', selectedAction: { text: 'Open the door.', ... } }}
+]
+
+but I think they're redundant, so I want to make `context` to be SSOT and remove `sourceNav` entirely
+
+complete and refine implementation of:
+`cleanedUserData`
+`sanitizeUsername`
+`convertNameOrEmailToUsername`
+`convertEmailToName`
+
+
+
 [ ] claude review `NARRATIVE STYLE: ${createNarrativeStyle(state).instructions}`: utils/player-profile.ts & narrative-style.ts (types/story.ts)
 
-[x] maybe need complete evaluation json schema
-[github] 💥 Model openai/gpt-4o failed, trying next model: UNKNOWN
+{
+  "flagUpdates": [
+    { "type": "fear", "level": "High" }
+  ]
+}
 
-[x] kalau prefetch skip check source action:
-[visit] 👓 Prefetching "The Static Between Us" page 2
-[mapToEnrichedPage] ❌ Source action should be exists for page 2
-
-[x] Prompt ACTION TYPES: exclude "custom"
-[ ] Translate prompt: keep the tone & tense (ikut chatgpt)
-[ ] buat getPreviousPages return ActionedStoryPage[]
 [ ] ensure enriched page has valid values for sourceNav (pake sourceAction?)
+[ ] storynav gausah, masukin page.context?.actionsHistory aja (ensure valid)
+[ ] buat getPreviousPages return ActionedStoryPage[]
 [ ] Place Traits pastiin record<string, string>
 [ ] book type add: translation?: BookTranslation;
 [ ] Consider generate multiverse in parallel instead of 1 big request
-[ ] Roadmap docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
+[ ] Roadmap AI optimization docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
 [ ] Provider Abstraction Layer:
 interface AIProvider {
   generate(request: AIRequest): Promise<AIResponse>;
@@ -55,15 +81,8 @@ Increase paranoia and uncertainty.
 
 [ ] pass title idea ke initallze book & github workflow dynamic job title
 [ ] Generate originals tambah custom input book title & mc name
-[ ] Paid book: VIP 500+ followers, must be > 30 days old account, ✅ Verified email required
+[ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
 [ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
-
-
-{
-  "flagUpdates": [
-    { "flag_type": "fear", "level": "High" }
-  ]
-}
 
 
 [ ] userSettings schema

@@ -19,7 +19,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage } from "../types/story.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -33,7 +33,7 @@ import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
 import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getStoryStateInfo } from "../utils/story.js";
-import { getPageTranslation, shouldTranslate } from "./translation.js";
+import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIDocument, AIResponseProvider } from "../types/ai-chat.js";
@@ -1033,6 +1033,66 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
 }
 
 /**
+ * Applies a `PageTranslation` overlay on top of a `PersistedStoryPage` and returns
+ * an enriched page ready to serve to the client.
+ *
+ * This is the single entry-point for the page-translation pipeline in the request
+ * handler layer. It orchestrates:
+ * 1. Converting the raw `DBPage` to a typed `PersistedStoryPage`
+ * 2. Determining whether translation is needed (`shouldTranslate`)
+ * 3. Fetching/caching the translation (`getPageTranslation`)
+ * 4. Merging translated fields onto the page (`applyPageTranslation`)
+ *
+ * Falls back gracefully to the original page on any translation failure; callers
+ * should not need to handle translation errors separately.
+ *
+ * @param dbPage  - Raw database page record
+ * @param options - Enrichment options including language and translate flag
+ * @returns `PersistedStoryPage` with translated fields applied (or original if not needed)
+ *
+ * @example
+ * ```typescript
+ * const enrichedPage = await mapToEnrichedPage(dbPage, {
+ *   bookLanguage: book.language,
+ *   headerLanguage: req.headers['accept-language'],
+ *   translate: true,
+ * });
+ * res.json(enrichedPage);
+ * ```
+ */
+export async function mapToTranslatedPage(
+  dbPage: DBPage,
+  options: EnrichedPageOptions
+): Promise<TranslatedStoryPage> {
+  const page = mapToPersistedStoryPage(dbPage);
+
+  // Skip translation when not requested or book language is unavailable
+  if (!options.translate || !options.bookLanguage) return page;
+
+  const targetLanguage = shouldTranslate(options.bookLanguage, options.headerLanguage);
+  if (!targetLanguage) return page; // Same language — no translation needed
+
+  const pageToTranslate = await getPageToTranslate(dbPage);
+  if (!pageToTranslate) return page;
+
+  const { translation, error } = await getPageTranslation({
+    page: pageToTranslate,
+    bookLanguage: options.bookLanguage,
+    targetLanguage,
+  });
+
+  if (error) {
+    // Log and fall back silently — callers always get a usable page
+    console.warn(`[mapToTranslatedPage] ⚠️ Translation failed for page ${page.id}:`, error.message);
+    return page;
+  }
+
+  if (!translation) return page;
+
+  return applyPageTranslation(page, translation);
+}
+
+/**
  * Maps database page data to enriched page format with caching
  * 
  * This function transforms raw database page data into a frontend-ready format,
@@ -1088,7 +1148,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
 export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOptions): Promise<EnrichedStoryPage | null> {
   const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, sourceNav, isUserTakeAction } = options;
   const allActions = dbPage.actions;
-  const visibleActions = allActions.filter(action => !!action.destinationPageIds?.length);
+  const visibleActions = allActions.filter(action => action.destinationPageIds?.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
   const { id: pageId, bookId } = dbPage;
 
@@ -1101,6 +1161,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
   // Determine if translation is needed (synchronous check)
   const targetLanguage = translate ? shouldTranslate(bookLanguage, headerLanguage) : undefined;
+  const pageToTranslate = targetLanguage ? await getPageToTranslate(dbPage) : undefined;
 
   // Parallelize independent database queries and API calls
   const [selectedActions, storyState, translation, shownActionHint] = await Promise.all([
@@ -1111,8 +1172,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     getStoryStateFromPage(dbPage),
     
     // Handle translation if needed
-    targetLanguage ? getPageTranslation({
-      page: dbPage,
+    targetLanguage && pageToTranslate ? getPageTranslation({
+      page: pageToTranslate,
       bookLanguage,
       targetLanguage
     }).then(result => result.translation) : Promise.resolve(undefined),
@@ -1130,7 +1191,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // Extract context from story state if available
   let context: EnrichedStoryPageContext | undefined;
   if (storyState) {
-    const { places, characters, injuries, inventory, contextHistory, actionsHistory } = storyState;
+    const { places, characters, injuries, inventory, contextHistory, actionsHistory, plotFlags } = storyState;
     const { phase } = getStoryStateInfo(storyState);
     context = {
       phase,
@@ -1138,6 +1199,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       inventory,
       contextHistory,
       actionsHistory,
+      plotFlags,
+      // Filter only necessary fields for frontend
       places: Object.values(places).map(place => ({
         name: place.name,
         type: place.type,
@@ -1156,7 +1219,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     console.error(`[mapToEnrichedPage] ❌ Source action should be exists for page ${dbPage.page}`);
   }
 
-  // Return enriched page with only frontend-relevant fields
+  // Return only frontend-relevant fields
   // Exclude backend-specific fields: userId, aiProvider, aiModel, aiEvalProvider, aiEvalModel, pendingGenerationCount
   const enrichedPage: EnrichedStoryPage = {
     id: dbPage.id,
@@ -1167,7 +1230,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     text: dbPage.text,
     mood: dbPage.mood || undefined,
     place: dbPage.place || undefined,
-    weather: dbPage.weather || 'unknown',
+    weather: dbPage.weather || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     charactersPresent: dbPage.charactersPresent,
     keyEvents: dbPage.keyEvents,
