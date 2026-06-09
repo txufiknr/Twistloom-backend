@@ -610,7 +610,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
 
 //     // Process image upload if source is provided
 //     if (imageSource) {
-//       const uploadResult = await uploadUserProfile(imageSource, userId);
+//       const uploadResult = await uploadUserImage(imageSource, userId);
 
 //       if (uploadResult) {
 //         newImageUrl = uploadResult.url;

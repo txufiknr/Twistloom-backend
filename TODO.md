@@ -11,23 +11,116 @@
 
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
+db/schema.ts
+types/story.ts
+
 please review my story branch traversal & state reconstruction backend implementation which helps frontend's page navigation
 
 to focus:
-`getStoryStateWithBranch` function
-`getStoryState` function
-`mapToEnrichedPage` function
+- services/book.ts (`mapToEnrichedPage` function)
+- services/book-controller.ts (`visitBookPage` function)
+- services/story.ts (`getStoryState` and `getPreviousPages` function)
+- services/story-branch.ts (`getStoryStateWithBranch` function)
+
+my express API route:
+
+/**
+ * GET /api/books/:identifier/:pageId
+ * 
+ * Retrieves a specific page within a book.
+ * Accepts both slug and UUID v7 as book identifier.
+ * 
+ * Supports translation via Accept-Language header. If the requested language
+ * differs from the book's language, the page text will be translated and cached.
+ * 
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier (e.g., "main", "abc123")
+ * @header Accept-Language - Desired language code (e.g., "en", "es", "fr")
+ * @returns Page with actions and book metadata
+ */
+router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { headerLanguage } = req;
+    const { identifier, pageId } = req.params;
+    const { prefetch, translate: shouldTranslate, credits, actioning } = req.query;
+    const userId = req.userId;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier; // Book slug or id (uuid v7)
+    const skipVisit = !userId || prefetch === 'true' || req.method === 'HEAD'; // Skip for non-actual user navigation
+    const translate = shouldTranslate === 'true'; // Should translate to Accept-Language header
+    const consumeCredits = credits === 'true'; // Should consume credits
+    const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
+
+    const { visitDetails, book, dbPage, sourceAction, sourceNav, isUserTakeAction } = await visitBookPage({
+      userId,
+      pageId: pageId as string,
+      bookIdentifier,
+      skipVisit,
+      takeAction,
+      consumeCredits,
+      language: headerLanguage
+    }, { req, res });
+
+    // Response already sent by `visitBookPage` internally
+    if (!dbPage || !book) return;
+
+    // Handle translation if Accept-Language header is provided and differs from book language
+    const bookLanguage = book.language || 'en';
+    
+    // Return enriched page with only frontend-relevant fields
+    const page = await mapToEnrichedPage(dbPage, {
+      userId,
+      bookLanguage,
+      headerLanguage,
+      translate,
+      sourceAction,
+      sourceNav,
+      isUserTakeAction
+    });
+
+    if (!page) return handleApiError(res, "Failed to get enriched page");
+
+    // Generate ETag from page updatedAt + userId + translation params (different content per user/language)
+    const lastModified = dbPage.updatedAt;
+    const etagInput = `${lastModified.getTime()}-${userId}-${translate}-${headerLanguage || 'en'}`;
+    const etag = `"${etagInput}"`;
+
+    // Check If-None-Match header (ETag includes translation params)
+    const ifNoneMatch = req.get('If-None-Match');
+    if (ifNoneMatch === etag) {
+      return res.status(304).end();
+    }
+
+    // Set caching headers
+    res.set('Last-Modified', lastModified.toUTCString());
+    res.set('ETag', etag);
+    res.set('Cache-Control', 'public, max-age=60'); // 1 minute (pages update more frequently)
+
+    res.json({
+      page,
+      book,
+      visitDetails
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve page", error);
+  }
+});
 
 can you ensure in `mapToEnrichedPage`:
-`context.actionsHistory` is completed based on user's historical selected actions from page 1 sequentially to reach this page
-`context.plotFlags` is also complete from page 1 to current
-`sourceNav` has valid trace back selected actions & plot flag chronology?
+- `context.actionsHistory` is completed based on user's historical selected actions from page 1 sequentially to reach this page
+- `context.plotFlags` is also complete from page 1 to current
+- `sourceNav` has valid trace back selected actions & plot flag chronology?
+
 example on page 3: [
   {1: { pageId: 'page123', selectedAction: { text: 'Run away.', ... }, plotFlag: { fact: 'Fact...' } }}
   {2: { pageId: 'page456', selectedAction: { text: 'Open the door.', ... } }}
 ]
 
+and what are these for? are they redundant? (they're currently unused)
+- `getStoryProgress` function
+- `getStoryProgressWithBranch` function
+
 but I think `sourceNav` is redundant, so I want to make `context` to be SSOT and remove `sourceNav` entirely
+please provide me fully updated code with all comments intact (updated)
 
 
 

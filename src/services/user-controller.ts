@@ -18,6 +18,7 @@ import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { sanitizeUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity, invalidateByEmail } from './user.js';
+import { uploadUserImage } from './image.js';
 import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
 import { invalidateUserProfileCache } from './cache.js';
@@ -172,19 +173,34 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
   // username derivation, auto-deduplication, and format validation.
   const newUserData = await sanitizeUserData(oAuthUser, { createNew: true });
 
-  // TODO: upload google image to imagekit via `uploadUserImage`
-
   if (!newUserData) {
     // sanitizeUserData already logged / responded; this path should be rare
     // (would require a race condition between getUserIdByEmail and the insert).
     throw new Error(`Failed to sanitize OAuth user data for ${cleanEmail}`);
   }
 
+  // Persist Google/ OAuth profile image to ImageKit (if provided) and attach
+  // the resulting URL and fileId to the new user data before insert.
+  const newUserId = generateId();
+
+  if (oAuthUser.image) {
+    try {
+      const uploadResult = await uploadUserImage(oAuthUser.image, newUserId);
+      if (uploadResult) {
+        // Mutate sanitized user data to include image fields returned by ImageKit
+        newUserData.image = uploadResult.url;
+        newUserData.imageId = uploadResult.fileId;
+      }
+    } catch (err) {
+      console.error(`[user-controller] ❌ Failed to upload OAuth user image for ${cleanEmail}:`, err);
+    }
+  }
+
   const newUser = await dbWrite.transaction(async (tx) => {
     const [user] = await tx
       .insert(users)
       .values({
-        userId: generateId(),
+        userId: newUserId,
         ...newUserData,
         isNewUser: true,
         createdAt: new Date(),

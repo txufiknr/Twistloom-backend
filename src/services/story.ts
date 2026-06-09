@@ -814,7 +814,7 @@ export async function getPreviousPages(
   userId: string,
   bookId: string,
   limit: number = MAX_PAGE_HISTORY
-): Promise<UserStoryPage[]> { // TODO: harusnya return ActionedStoryPage[]
+): Promise<UserStoryPage[]> { // TODO: should return ActionedStoryPage[] for deterministic single `selectedAction` trace back per page
   try {
     const previousPages: UserStoryPage[] = [];
     const expectedPreviousPagesCount = Math.min(limit, actionedPage.page - 1);

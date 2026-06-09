@@ -469,9 +469,7 @@ export async function uploadUserImage(
   return uploadImageKit(imageSource, userId, {
     folder: 'users',
     tags: ['user-profile', `user-id:${userId}`],
-    customMetadata: {
-      userId,
-    },
+    customMetadata: { userId },
     filenamePrefix: 'profile',
   });
 }
