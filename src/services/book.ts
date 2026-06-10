@@ -30,7 +30,7 @@ import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
-import { sanitizeText, generateSlug, sanitizeKeywords, sanitizeTextForDB } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
@@ -225,8 +225,15 @@ export async function insertStoryPage(
   const { bookId, branchId, parentId, aiResponseProvider } = pageMeta;
 
   // Validation runs the same regardless of mode
-  if (parentId) {
-    const parentPage = await getPageFromDB(parentId, { client });
+  if (pageNumber > 1) {
+    if (!parentId) throw new Error(`Parent page required for page ${pageNumber}`);
+
+    const [parentPage] = await client
+      .select({ id: pages.id })
+      .from(pages)
+      .where(eq(pages.id, parentId))
+      .limit(1);
+
     if (!parentPage) throw new Error(`Parent page ${parentId} not found`);
   }
 
@@ -243,7 +250,7 @@ export async function insertStoryPage(
     branchId,
     parentId,
     page: pageNumber,
-    text: sanitizeTextForDB(page.text),
+    text: page.text,
     mood: page.mood,
     place: page.place,
     weather: page.weather,
@@ -301,9 +308,11 @@ export async function insertStoryPage(
       }
     );
   } catch (error) {
-    const errorMessage = getErrorMessage(error);
-    console.error(`[insertStoryPage] ❌ Failed to insert story page ${pageNumber}:`, errorMessage);
-    throw new Error(`Unable to insert story page: ${errorMessage}`, { cause: error });
+    // const errorMessage = getErrorMessage(error);
+    // console.error(`[insertStoryPage] ❌ Failed to insert story page ${pageNumber}:`, errorMessage);
+    // throw new Error(`Unable to insert story page: ${errorMessage}`, { cause: error });
+    console.error(`[insertStoryPage] ❌ Failed to insert story page ${pageNumber}:`, error);
+    throw error;
   }
 }
 
@@ -583,7 +592,7 @@ export async function insertBook(book: DBNewBook, options: { client?: DBClient, 
   const [result] = await client.insert(books).values(newBookData).returning();
   const { id, slug, title, totalPages, language, hook, summary, isOriginal, keywords, status, mc, creditsPrice } = result;
 
-  console.log(`[insertBook] 📔 Book "${chosenTitle}" inserted:`, { id, slug, title, totalPages, language, hook, summary, isOriginal, keywords, status, mc, creditsPrice });
+  console.log(`[insertBook] 📔 Book "${chosenTitle}" inserted:`, { id, slug, title, totalPages, language, hook, summary, isOriginal, keywords, status, mc, ...(creditsPrice ? {creditsPrice} : {}) });
   
   // Invalidate cache for this book (by both ID and slug)
   invalidateBookCache(id);
@@ -825,15 +834,13 @@ export async function getPageFromDB(pageId: string, options: {
     if (bookIdentifier) {
       bookId = isValidUuid(bookIdentifier) ? bookIdentifier : undefined;
       if (!bookId) {
-        const book = await client
+        const [book] = await client
           .select({ id: books.id })
           .from(books)
           .where(eq(books.slug, bookIdentifier))
           .limit(1);
 
-        if (book.length > 0) {
-          bookId = book[0].id;
-        }
+        if (book) bookId = book.id;
       }
   
       if (!bookId) throw new Error("Book not found");

@@ -26,7 +26,7 @@ import { formatPageTextForPrompt } from "./books.js";
 import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
-import { stripEmptyLines } from "./parser.js";
+import { filterObjectEntries, stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
@@ -346,7 +346,8 @@ const firstBookOutputFormat: string = `{
       "source": "<Name 1>",
       "target": "<Name 2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
-      "status": "One of: ${formatOneOf(relationshipStatuses)}"
+      "status": "One of: ${formatOneOf(relationshipStatuses)}",
+      "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
     }
   ],
   "initialFacts": [
@@ -2954,6 +2955,8 @@ export async function initializeBook(
       aiResponseProvider: response
     }, { client });
 
+    console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
+
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
     const { place, timeOfDay, actions } = firstUserPage;
 
@@ -2995,6 +2998,7 @@ export async function initializeBook(
                   type: r.type || "knows",
                   status: r.status || "neutral",
                   context: r.context,
+                  recognitionLevel: r.recognitionLevel,
                 } satisfies Record<keyof CharacterRelationship, string>;
               })
             } satisfies CharacterMemory
