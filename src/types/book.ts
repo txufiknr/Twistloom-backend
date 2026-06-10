@@ -1,6 +1,6 @@
 import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { NewPlace } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, StoryPageNav } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction } from "./story.js";
 import type { DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -285,7 +285,6 @@ export type EnrichedPageOptions = {
 
 export type TakeActionValidity = {
   sourceAction?: SelectedAction, // should be defined for page number > 1
-  sourceNav?: StoryPageNav,
   isUserTakeAction?: boolean;
 };
 

@@ -169,8 +169,8 @@ export type StyleInput = {
   profile: PsychologicalProfileMetrics;
   /** Current page number */
   page: number;
-  /** Whether story is in ending phase */
-  isEnding: boolean;
+  // /** Whether story is in ending phase */
+  // isEnding: boolean;
 };
 
 /**
@@ -179,8 +179,6 @@ export type StyleInput = {
  * Each dimension affects how the story feels and is written
  */
 export type StyleVector = {
-  // /** Sentence length: short ↔ mixed ↔ longer */
-  // sentenceLength: number;
   /** Fragmentation: broken thoughts, interrupted sentences */
   fragmentation: number;
   /** Repetition: emotional echo, recurring phrases */
@@ -325,13 +323,11 @@ export type PlotFlag = {
   fact: string;
   /** Type of the flag indicating its category. */
   type: PlotFlagType;
-  /** Place where the flagged event occurred (optional). */
-  place?: string;
   /** Indicates whether the flagged event is a major plot point. */
   isMajorEvent: boolean;
-}
+} & Pick<StoryScene, 'place' | 'timeOfDay'>
 
-export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'place'>;
+export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'place' | 'timeOfDay'>;
 
 export const factTypes = {
   character: "About characters, including status, goals, traits, conditions, locations, and major developments.",
@@ -684,6 +680,7 @@ export type PsychologicalProfile = {
   manipulationAffinity: ManipulationAffinity;
 };
 
+// TODO: redundant with `PsychologicalProfile`
 export type PsychologicalProfileMetrics = {
   /** Curiosity level from actions */
   curiosity: number;
@@ -705,6 +702,34 @@ export type PsychologicalProfileMetrics = {
   socialContext: number;
   /** Cognitive state: memory clarity and perception (0.0-1.0) */
   cognitiveState: number;
+  /** The emergent behavioral archetype characterizing the player's choices */
+  archetype?: PsychologicalProfileArchetype;
+  /** The player's psychological resilience classification */
+  stability?: PsychologicalProfileStability;
+  /** Direct core psychological vulnerability to leverage in choices */
+  primaryWeakness?: string;
+  /** Secondary or environmental vulnerability backing the narrative tension */
+  secondaryWeakness?: string;
+  /** The most effective mechanism of tension delivery for this specific profile */
+  manipulationAffinity?: PsychologicalProfileAffinity;
+};
+
+// TODO: redundant with `Archetype`
+export type PsychologicalProfileArchetype = 'truth_seeker' | 'paranoid_survivor' | 'defiant_combatant' | 'escapist';
+// TODO: redundant with `StabilityLevel`
+export type PsychologicalProfileStability = 'stable' | 'strained' | 'cracking' | 'shattered';
+// TODO: redundant with `ManipulationAffinity`
+export type PsychologicalProfileAffinity = 'contradiction' | 'uncertainty' | 'provocation' | 'illusion';
+
+export type StoryScene = {
+  /** Current emotional atmosphere */
+  mood?: Mood;
+  /** Current place where the story is taking place */
+  place?: string;
+  /** Current weather conditions at the place */
+  weather?: PlaceWeather;
+  /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
+  timeOfDay?: string;
 };
 
 /**
@@ -718,14 +743,6 @@ export type PsychologicalProfileMetrics = {
 export type StoryPage = {
   /** Main story page content (60-120 words, first-person POV) */
   text: string;
-  /** Current emotional atmosphere */
-  mood?: Mood;
-  /** Current place where the story is taking place */
-  place?: string;
-  /** Current weather conditions at the place */
-  weather?: PlaceWeather;
-  /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
-  timeOfDay?: string;
   /** Characters present in the page */
   charactersPresent?: string[];
   /** Key events that occurred in the page */
@@ -736,15 +753,13 @@ export type StoryPage = {
   actions: Action[];
   /** Changes to the story state */
   stateDelta: StateDelta;
-};
+} & StoryScene;
 
 export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> & {
   // /** Optional selected action that triggered this page generation (for duplicate prevention) */
   // selectedAction?: SelectedAction;
   aiResponseProvider: AIResponseProvider;
 };
-
-export type StoryPageScene = Pick<StoryPage, 'place' | 'weather' | 'mood'>;
 
 /**
  * State delta representing incremental changes between pages
@@ -815,7 +830,6 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   originalActionsCount: number,
   translation?: PageTranslation,
   sourceAction?: SelectedAction,
-  sourceNav?: StoryPageNav,
   shownActionHint: string[],
   context?: EnrichedStoryPageContext
 };
@@ -840,9 +854,6 @@ export type EnrichedStoryPageContext = {
   /** Collection of narrative flags and hints for the current page */
   plotFlags: PlotFlag[];
 };
-
-export type StoryPageNav = Record<number, StoryPageNavItem>;
-export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlags?: InitialPlotFlag[]; };
 
 export type Action = {
   /** Action text (serves as unique identifier) */
@@ -1095,44 +1106,40 @@ export type StoryStateInfo = {
 
 export type StoryStateSource = 'original' | 'reconstructed';
 
-export type InitialStoryState = Partial<Pick<
-  StoryState,
-    'flags' |
-    'difficulty' |
-    'traumaTags' |
-    'plotFlags' |
-    'inventory'
-  > & {
-    injuries: InitialInjury[];
-    futureNotes: FutureNoteGeneration[];
-    viableEnding: InitialEnding;
-  }>;
+export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' | 'traumaTags' | 'plotFlags' | 'inventory'> & {
+  injuries: InitialInjury[];
+  futureNotes: FutureNoteGeneration[];
+  viableEnding: InitialEnding;
+}>;
 
+/**
+ * Story Phase Directives
+ */
 export const storyPhases = {
-  EARLY: `Priority: mystery seeding, unreliability introduction, character grounding.
-Weight tension lightly. Prioritize intrigue over dread.`,
-  MID: `Priority: tension rhythm, thread balance, psychological escalation.
-Exploit established character and flag patterns. Vary build/release cycles.`,
-  LATE: `Priority: thread convergence, payoff setup, reality fracture.
-No new major threads. Begin collapsing open questions toward the viable ending.`,
-  FINALE: `Priority: ending delivery, full psychological collapse.
-No new characters. No new mysteries. Every active thread must resolve or deliberately shatter.
-Behave as NIGHTMARE difficulty regardless of setting.`,
+  EARLY: `(Intrigue & Seeding) — Ground the character and introduce the core mystery. Establish an atmosphere of subtle unease by planting initial seeds of unreliability and doubt. Keep tension light, prioritizing intrigue over outright dread.`,
+  MID: `(Escalation & Rhythm) — Warp the MC's grip on reality and actively escalate psychological pressure. Balance active threads using varied build-and-release tension cycles, exploiting established character patterns to complicate the horror.`,
+  LATE: `(Convergence & Fracture) — Drive tensions to a volatile flashpoint where mental distortions reach full parity. Introduce no new major threads; focus strictly on converging existing storylines and collapsing open questions toward the viable ending.`,
+  FINALE: `(Collapse & Resolution) — Execute full psychological and narrative collapse at maximum "NIGHTMARE" difficulty. Introduce no new characters or mysteries—every active thread must definitively resolve or deliberately shatter.`,
 };
 
 export const finalePhases = {
-  EARLY: `PHASE 1 → "FALSE SAFETY" (if fake_to_real ending)
-Goals: Resolve main tension, slow pacing, give emotional release
-Tone: Calm, hopeful, slightly uncanny
-Rules: No obvious horror, subtle unease only`,
-  MID: `PHASE 2 → "DISTORTION"
-Goals: Break reality slightly, create doubt
-Techniques: Repeated dialogue, impossible object, memory glitch, time inconsistency
-End with: Realization sentence ("I've been here before.")`,
-  END: `PHASE 3 → "IMPACT"
-Goals: Reveal truth, reframe entire story, hit psychologically
-Structure: Reveal → Recontextualization → Final haunting line
-Final line rule: Short, clear, haunting ("It was never outside.")`,
+  EARLY: `
+- Phase: FALSE SAFETY / ILLUSION OF RESOLUTION
+- Goals: Provide a false sense of closure. Resolve the surface-level tension, slow the pacing, and give the protagonist (and reader) emotional release.
+- Tone: Calm, hopeful, but underscored with a deeply buried, uncanny wrongness.
+- Rules: Absolutely NO obvious horror. The threat appears completely gone.`,
+
+  MID: `
+- Phase: THE CRACK / DISTORTION
+- Goals: Introduce the first undeniable proof that the safety is a lie, specifically setting up this ending: [{endingDescription}].
+- Techniques: Do not jump straight to the reveal. Introduce a small, fatal contradiction. A dropped word, a physical impossibility, a character breaking pattern, or a sudden horrifying realization of consequence.
+- End With: A quiet, internal realization sentence from the protagonist that something is terribly wrong.`,
+
+  END: `
+- Phase: IMPACT / PARADIGM SHIFT
+- Goals: Execute the final twist: [{endingDescription}]. Recontextualize the entire story and hit psychologically.
+- Structure: The Reveal → The Hopeless Recontextualization → The Final Haunting Line.
+- Rules: The final line must be short, clear, and haunting. It should confirm the horror of the new reality without over-explaining it.`
 };
 
 export type StoryPhase = keyof typeof storyPhases;

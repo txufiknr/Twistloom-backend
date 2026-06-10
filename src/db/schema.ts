@@ -73,10 +73,8 @@ export const pages = pgTable(
     aiModel: text("ai_model"),
     aiEvalProvider: text("ai_eval_provider").$type<AIChatProvider | 'none'>(),
     aiEvalModel: text("ai_eval_model"),
-    // pendingGenerationCount: integer("pending_generation_count").notNull().default(0), // Count of actions without pre-generated destinations
     pendingGenerationCount: integer("pending_generation_count").notNull().generatedAlwaysAs(
-      // Remove .default(0) — generated columns can't have defaults.
-      // The expression always returns 0 for an empty actions array anyway.
+      // Count of actions without pre-generated destinations
       sql`(
         jsonb_array_length(actions) -
         jsonb_array_length(

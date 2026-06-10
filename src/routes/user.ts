@@ -57,6 +57,7 @@ import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfile
 import { getEnrichedUserSelect, setReferrerForNewUser } from "../services/user-controller.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
+import { getStoryProgressWithBranch } from '../services/story-branch.js';
 
 const router: RouterType = Router();
 
@@ -2446,6 +2447,134 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to retrieve activity logs", error);
+  }
+});
+
+/**
+ * GET /api/user/progress
+ *
+ * Provides the authenticated user's current reading progress enriched with
+ * full branch context. Intended for:
+ *
+ *  1. Resume reading — the client navigates directly to the current book +
+ *     page without needing a separate book/page lookup.
+ *  2. Branch history viewer — branchPath exposes the user's chosen story
+ *     path from root to the current page, enabling "your journey so far"
+ *     and "explore alternative branches" UI.
+ * 
+ * Returns the authenticated user's current reading progress with full branch
+ * context. All top-level fields are nullable — a user with no active session
+ * receives the "empty" shape shown below rather than an error.
+ *
+ * @authentication Required (401 when unauthenticated)
+ *
+ * ---
+ * **Response shape** (`StoryProgressWithBranch`):
+ *
+ * | Field          | Type                        | Description                                         |
+ * |----------------|-----------------------------|-----------------------------------------------------|
+ * | `book`         | `EnrichedBookData \| null`  | Full book record for the active session             |
+ * | `page`         | `UserStoryPage \| null`     | Current page with text, actions, selectedActions    |
+ * | `state`        | `StoryState \| null`        | Accumulated story state (actionsHistory, plotFlags…)|
+ * | `session`      | `UserSession \| null`       | Active session linking user → book → page           |
+ * | `branchPath`   | `BranchPath \| null`        | Ordered pages from root to current (depth, pages[]) |
+ * | `branchStats`  | `BranchStats \| null`       | Depth + branching-factor analytics                  |
+ * | `siblings`     | `PersistedStoryPage[]`      | Alternative pages at the same depth (for "explore") |
+ *
+ * ---
+ * @example Response — active session, currently on page 7:
+ * ```json
+ * {
+ *   "book": {
+ *     "id": "01j2k3m4n5p6q7r8s9t0",
+ *     "title": "The Lost Kingdom",
+ *     "language": "en",
+ *     "totalPages": 24,
+ *     "stats": { "readCount": 312, "likesCount": 87 }
+ *   },
+ *   "page": {
+ *     "id": "01j2k3page7xxxxxxxx",
+ *     "page": 7,
+ *     "text": "The gate creaks open…",
+ *     "actions": [
+ *       { "text": "Step inside.", "type": "brave" },
+ *       { "text": "Turn back.",   "type": "cautious" }
+ *     ],
+ *     "selectedActions": [
+ *       { "text": "Step inside.", "page": 7, "pageId": "01j2k3page7xxxxxxxx" }
+ *     ]
+ *   },
+ *   "state": {
+ *     "actionsHistory": [
+ *       { "page": 1, "pageId": "page1id", "text": "Follow the stranger.", "nextPageId": "page2id" },
+ *       { "page": 2, "pageId": "page2id", "text": "Agree to help.",       "nextPageId": "page3id" },
+ *       { "page": 6, "pageId": "page6id", "text": "Take the key.",        "nextPageId": "page7id" }
+ *     ],
+ *     "plotFlags": [
+ *       { "page": 2, "fact": "MC accepted the quest.",     "type": "commitment",  "isMajorEvent": true  },
+ *       { "page": 5, "fact": "The key belongs to a vault.", "type": "discovery",  "isMajorEvent": false }
+ *     ],
+ *     "contextHistory": "The MC followed a stranger into the old district…"
+ *   },
+ *   "session": {
+ *     "bookId": "01j2k3m4n5p6q7r8s9t0",
+ *     "pageId": "01j2k3page7xxxxxxxx",
+ *     "previousPageId": "01j2k3page6xxxxxxxx",
+ *     "status": "active"
+ *   },
+ *   "branchPath": {
+ *     "depth": 7,
+ *     "pages": [
+ *       { "id": "page1id", "page": 1, "branchId": "main" },
+ *       { "id": "page2id", "page": 2, "branchId": "main" },
+ *       { "id": "page7id", "page": 7, "branchId": "branch-a3f" }
+ *     ]
+ *   },
+ *   "branchStats": {
+ *     "totalBranches": 3,
+ *     "branchingFactor": 1.4
+ *   },
+ *   "siblings": [
+ *     { "id": "page7alt1", "page": 7, "branchId": "branch-b9c", "text": "She ran instead…" }
+ *   ]
+ * }
+ * ```
+ *
+ * @example
+ * ```typescript
+ * const { book, page, session, branchPath, siblings } =
+ *   await fetch('/api/story/progress', {
+ *     headers: { Authorization: `Bearer ${token}` }
+ *   }).then(r => r.json());
+ *
+ * // Resume reading
+ * if (session && book && page) {
+ *   router.push(`/books/${book.slug}/${page.id}`);
+ * }
+ *
+ * // Show branch history
+ * const pathPageIds = branchPath?.pages.map(p => p.id) ?? [];
+ *
+ * // Show "other paths you could have taken"
+ * const alternateBranches = siblings.filter(s => s.id !== page?.id);
+ * ```
+ */
+router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { userId } = req;
+    const progress = userId ? await getStoryProgressWithBranch(userId) : {
+      book: null,
+      page: null,
+      state: null,
+      session: null,
+      branchPath: null,
+      branchStats: null,
+      siblings: []
+    };
+
+    res.json(progress);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve story progress", error);
   }
 });
 

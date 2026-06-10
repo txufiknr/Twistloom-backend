@@ -4,7 +4,7 @@ import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryPageScene } from "../types/story.js";
+import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread } from "../types/thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -179,7 +179,7 @@ export function calculatePsychologicalDeltas(baseState: StoryState, newState: St
  * // finalState now includes both user-driven and AI-driven changes
  * ```
  */
-export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, scene?: StoryPageScene): StoryState {
+export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, scene?: StoryScene): StoryState {
   const {
     flagUpdates,
     traumaTagUpdates,
@@ -232,7 +232,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
-  processPlotFlagUpdates(newState, addPlotFlags, scene?.place);
+  processPlotFlagUpdates(newState, addPlotFlags, scene);
   processFactUpdates(newState, factUpdates);
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.place);
   processPlaceUpdates(newState, placeUpdates, scene);
@@ -329,18 +329,6 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
 
   console.log(`[advanceStoryState] ⚡ Advancing story state from page ${page} for selecting: ${selectedLetter}. ${action.text} (type: ${action.type})`);
   const updatedState = structuredClone(state);
-
-  // Remove any existing entries with the same page number to avoid duplicates
-  // updatedState.actionsHistory = updatedState.actionsHistory.filter(action => action.page !== updatedState.page);
-
-  // Add chosen action to history
-  // updatedState.actionsHistory.push({
-  //   text: action.text,
-  //   type: action.type,
-  //   hint: action.hint,
-  //   page: updatedState.page,
-  //   pageId
-  // });
 
   // Increment page number
   updatedState.page++;
@@ -710,13 +698,15 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
  * });
  * ```
  */
-export function processPlotFlagUpdates(state: StoryState, addPlotFlags?: InitialPlotFlag[], place?: string): void {
+export function processPlotFlagUpdates(state: StoryState, addPlotFlags?: InitialPlotFlag[], scene?: StoryScene): void {
   if (!addPlotFlags?.length) return;
+
+  const { place, timeOfDay } = scene ?? {};
 
   for (const addPlotFlag of addPlotFlags) {
     // Validate / normalise type
     const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, place, type: validType };
+    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, place, timeOfDay, type: validType };
   
     // Guard against duplicates (same page + type + fact).
     // This mirrors the deduplication in processTagUpdates and provides a safety
@@ -1157,12 +1147,9 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
  * the profile reflects the MC's current psychological state.
  * 
  * @param state - Current story state to update
- * @returns Updated psychological profile
  */
-export function updatePsychologicalProfile(state: StoryState): PsychologicalProfile {
-  const newProfile = derivePsychologicalProfile(state);
-  state.psychologicalProfile = newProfile;
-  return newProfile;
+export function updatePsychologicalProfile(state: StoryState) {
+  state.psychologicalProfile = derivePsychologicalProfile(state);
 }
 
 /**
@@ -1182,11 +1169,11 @@ export function updatePsychologicalProfile(state: StoryState): PsychologicalProf
  * ```
  */
 export function determineOptimalEnding(state: StoryState): EndingType {
-  const { archetype, stability } = state.psychologicalProfile;
-  const { flags } = state;
+  const { flags, psychologicalProfile, hiddenState } = state;
+  const { archetype, stability } = psychologicalProfile;
 
   // Check for profile shift first (highest priority)
-  if (state.hiddenState.profileShift?.detected) {
+  if (hiddenState.profileShift?.detected) {
     const shiftedEnding = getShiftedEnding(state);
     if (shiftedEnding) {
       console.log(`[determineOptimalEnding] 🔄 Profile shift detected, using shifted ending: ${shiftedEnding}`);
@@ -1195,25 +1182,20 @@ export function determineOptimalEnding(state: StoryState): EndingType {
   }
   
   // Use original ending determination logic
+  // TODO: all available `endingTypes`
   switch (archetype) {
     // High curiosity leads to discovering uncomfortable truths
     case "the_explorer": return flags.curiosity === "high" ? "false_reality" : "fake_escape";
-
     // Avoidance leads to permanent consequences
     case "the_avoider": return "irreversible_loss";
-
     // Low fear = bold risks that backfire, High fear = desperate losses
     case "the_risk_taker": return flags.fear === "low" ? "fake_escape" : "irreversible_loss";
-
     // Unstable paranoia creates loops, stable paranoia creates false realities
     case "the_paranoid": return stability === "unstable" ? "loop" : "false_reality";
-
     // Guilt always leads to irreversible loss
     case "the_guilty": return "irreversible_loss";
-
     // Deniers get identity twists as their reality unravels
     case "the_denier": return stability === "unstable" ? "mental_fabrication" : "identity_twist";
-
     default: return state.viableEnding?.type ?? "ambiguity";
   }
 }
@@ -1235,8 +1217,7 @@ export function determineOptimalEnding(state: StoryState): EndingType {
  * ```
  */
 export function setupFakeToRealEnding(state: StoryState, triggerPage: number, executionType: "fake_relief_twist" | "loop_trap" | "identity_reveal"): void {
-  if (state.hiddenState.endingPlan) return;
-  state.hiddenState.endingPlan = {
+  state.hiddenState.endingPlan ??= {
     type: executionType,
     armed: true,
     triggerPage,
@@ -1504,9 +1485,7 @@ export function updateAdvancedEndingSystems(state: StoryState): void {
   const pageProgress = state.page / state.maxPage;
   
   // Detect profile shifts (late game behavior changes)
-  if (pageProgress > 0.6) {
-    detectProfileShift(state);
-  }
+  if (pageProgress > 0.6) detectProfileShift(state);
   
   // Auto-arm fake-to-real endings for certain archetypes
   if (pageProgress >= 0.7 && !state.hiddenState.endingPlan?.armed) {

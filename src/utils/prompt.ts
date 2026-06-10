@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clien
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY } from "../config/story.js";
+import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey } from "./story.js";
@@ -34,7 +34,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Archetype, Ending, FactHistory, FutureNote, ManipulationAffinity, MemoryIntegrity, PastEvent, PlotFlag, StabilityLevel, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Ending, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -767,15 +767,18 @@ factUpdates
     → Establish a mystery clue, suspect, or revelation.
 
 addPlotFlags
-  - Add ONLY for significant story developments that become established canon (max 1 per page).
-  - Do NOT add for temporary actions, routine events, minor clues, or short-lived details.
-  - Use for major revelations, important discoveries, critical relationship changes, irreversible decisions, or major shifts in story direction.
-  - fact: describe the newly established story fact clearly and specifically.
+  - Add ONLY for crucial story developments that impact narrative trajectory and become established canon (max 2 per page).
+  - Do NOT add for temporary actions, routine events, minor clues, short-lived details, or if no lasting story state changed.
+  - Use for major revelations, death, betrayal, irreversible decisions, or major shifts in story direction.
+  - fact: describe the newly established story fact clearly and specifically (subject + verb + object).
   - isMajorEvent: true only for irreversible events or major turning points with lasting consequences.
   - Major-event pacing:
     → Review recent major events before introducing a new major event.
     → If multiple major events occurred recently, prefer fallout, consequences, investigation, tension, or character reactions before introducing another major event.
     → Do NOT create major events solely to escalate the plot.
+  - Expected distribution:
+    → Most pages: 0-1 plot flags.
+    → Major turning points: up to 2 plot flags.
 
 contextHistory
   - Running summary from page 1 until now — key plot developments, hard facts, major events.
@@ -1344,40 +1347,11 @@ ACTION HINT:
 }
 
 /**
- * Formats manipulation affinity for inclusion in prompts
- * @param affinity - The specific manipulation affinity to format
- * @returns Formatted string of the specific manipulation affinity
- */
-function getManipulationAffinitiesText(affinity: ManipulationAffinity): string {
-  return manipulationAffinities[affinity as keyof typeof manipulationAffinities];
-}
-
-/**
- * Formats archetype-specific tactics for inclusion in prompts
- * @param archetype - The specific archetype to format
- * @returns Formatted string of the specific archetype tactics
- */
-function getArchetypeTacticsText(archetype: Archetype): string {
-  return archetypes[archetype as keyof typeof archetypes];
-}
-
-/**
- * Formats stability levels for inclusion in prompts
- * @param stability - The specific stability level to format
- * @returns Formatted string of the specific stability level
- */
-function getStabilityLevelsText(stability: StabilityLevel): string {
-  return stabilityLevels[stability as keyof typeof stabilityLevels];
-}
-
-/**
  * Formats ending archetypes for inclusion in prompts
  * @returns Formatted string of all ending archetypes
  */
 function getEndingArchetypesText(): string {
-  return Object.entries(endingTypes)
-    .map(([key, value]) => `- ${key}: ${value}`)
-    .join('\n');
+  return Object.entries(endingTypes).map(([key, value]) => `- ${key}: ${value}`).join('\n');
 }
 
 // ============================================================================
@@ -1398,7 +1372,7 @@ function getEndingArchetypesText(): string {
  * @param action - The action taken on this page if any
  * @returns Formatted string for this page entry
  */
-function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): string {
+function formatPreviousPageEntry(page: UserStoryPage, plotFlags?: PlotFlag[]): string {
   const pageText = formatPageTextForPrompt(page.text);
   const sceneInfo = [
     page.place ? `place: ${page.place}` : '',
@@ -1409,7 +1383,7 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlag?: PlotFlag): stri
   
   // Base page and plot flag information
   let entry = `• Page ${page.page} (${sceneInfo})\n  ${pageText}`;
-  if (plotFlag) entry += `\n  → Plot flag: ${formatPlotFlag(plotFlag, { showPageHeader: false })}`;
+  if (plotFlags) entry += `\n  → Plot flags: ${plotFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent)).map(plotFlag => formatPlotFlag(plotFlag, { showPageHeader: false })).join('; ')}`;
 
   // Add action information if present
   const action = page.selectedActions?.at(-1); // Latest selected action // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
@@ -1513,39 +1487,9 @@ function formatPreviousPagesForPrompt(
     }
   }
 
-  const formattedOlderFlags = olderPlotFlags.map(flag =>
-    formatPlotFlag(flag, { showSceneInfo: false }),
-  );
+  const formattedOlderFlags = olderPlotFlags.slice(-MAX_OLDER_PLOT_FLAGS).map(flag => formatPlotFlag(flag));
+  const formattedRecentPages = recentPages.map(page => formatPreviousPageEntry(page, plotFlagsByPage.get(page.page) ?? []));
 
-  const formattedRecentPages = recentPages.map(page => {
-    const pageFlags = plotFlagsByPage.get(page.page) ?? [];
-
-    return formatPreviousPageEntry(
-      page,
-      // One most major plot flag
-      pageFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent))[0],
-    );
-  });
-
-  // const sections: string[] = [];
-
-  // if (formattedOlderFlags.length > 0) {
-  //   sections.push(
-  //     [
-  //       'EARLIER PLOT EVENTS:',
-  //       ...formattedOlderFlags,
-  //     ].join('\n'),
-  //   );
-  // }
-
-  // sections.push(
-  //   [
-  //     'RECENT PAGES:',
-  //     ...formattedRecentPages,
-  //   ].join('\n'),
-  // );
-
-  // return sections.join('\n\n');
   return [
     ...formattedOlderFlags,
     ...formattedRecentPages,
@@ -2111,7 +2055,7 @@ THEME REMINDER:
 ${summary}
 
 CURRENT PHASE:
-${phase} — ${phaseGoal}
+${phase} ${phaseGoal}
 
 MAIN CHARACTER (POV): ${getMainCharacterInfo(mc, state)!}
 
@@ -2205,8 +2149,10 @@ ${formatEndingPrompt(state)}`;
  * ```
  */
 function buildEndingRules(state: StoryState): string {
-  const { psychologicalProfile, hiddenState } = state;
-  const { isFinale, finalePhase } = getStoryStateInfo(state);
+  const { psychologicalProfile, hiddenState, viableEnding } = state;
+  const { isFinale, finalePhase = 'EARLY' } = getStoryStateInfo(state);
+  const { profileShift } = hiddenState;
+  const { type = 'fake_escape' } = viableEnding ?? {};
 
   const endingRules = isFinale ? `
 - The story is approaching convergence
@@ -2215,7 +2161,7 @@ function buildEndingRules(state: StoryState): string {
 
 ENDING EXECUTION TEMPLATE (Last pages):
 
-${finalePhases[finalePhase!]}
+${finalePhases[finalePhase].replaceAll('{endingDescription}', endingTypes[type])}
 
 ENDING PRESSURE:
 • Increase chaos and urgency
@@ -2229,10 +2175,11 @@ ENDING PRESSURE:
 - Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect.
 
 If the current viable ending is no longer viable, re-determine or alter the viable ending based on:
+- Psychological profile (archetype and stability)
 - Profile archetype: ${psychologicalProfile.archetype}
 - Profile stability: ${psychologicalProfile.stability}
 - Psychological flags
-- Detected shift: ${hiddenState.profileShift?.detected === true ? state.hiddenState.profileShift!.shiftType : 'none'}
+- Detected shift: ${profileShift?.detected ? profileShift!.shiftType : 'none'}
 - Recommended ending type: ${determineOptimalEnding(state)}
 
 Example: High curiosity leads to discovering uncomfortable truths
@@ -2290,18 +2237,14 @@ function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: Me
  * Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
  */
 function formatPsychologicalProfile(profile: PsychologicalProfile): string {
-  return `• Archetype: ${profile.archetype}
-• Stability: ${profile.stability}
-• Traits: ${profile.dominantTraits.join(', ')}
+  const { archetype, stability, dominantTraits, manipulationAffinity } = profile;
 
-Archetype-specific tactics:
-${getArchetypeTacticsText(profile.archetype)}
-
-Stability impact:
-${getStabilityLevelsText(profile.stability)}
+  return `• Archetype: ${archetype} — Tactics: ${archetypes[archetype]}
+• Stability: ${stability} — Impact: ${stabilityLevels[stability]}
+• Traits: ${dominantTraits.join(', ')}
 
 Personalized horror (manipulation vector):
-${getManipulationAffinitiesText(profile.manipulationAffinity)}`;
+${manipulationAffinities[manipulationAffinity]}`;
 }
 
 /**
@@ -2356,9 +2299,9 @@ function formatRouteContext(state: StoryState): string {
  * generating similar major beats in close succession.
  * 
  * @example
- * • Page 18 [DISCOVERY] Ethan finds the basement key (place: Sarah's house)
- * • Page 21 [REVELATION] Sarah learns her father is alive
- * • Page 24 [BETRAYAL] Marcus secretly contacted the cult
+ * • Page 18 (place: Sarah's house): [discovery] Ethan finds the basement key
+ * • Page 21: [revelation] Sarah learns her father is alive
+ * • Page 24: [betrayal] Marcus secretly contacted the cult (MAJOR)
  *
  * @param plotFlags Story plot flags
  * @param limit Maximum number of recent major events to include
@@ -2379,7 +2322,8 @@ function formatRecentMajorEvents(plotFlags: PlotFlag[]): string {
 
 function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, showPageHeader?: boolean, showMajorFlag?: boolean }): string {
   const { showSceneInfo = true, showPageHeader = true, showMajorFlag = true } = options ?? {};
-  const pageHeader = showPageHeader ? `• Page ${flag.page} ${showSceneInfo && flag.place ? `(place: ${flag.place})\n  ` : ''}` : '';
+  const sceneInfo = showSceneInfo ? `${[flag.place && `place: ${flag.place}`, flag.timeOfDay && `time: ${flag.timeOfDay}`].filter(Boolean).join(', ')}` : '';
+  const pageHeader = showPageHeader ? `• Page ${flag.page}${sceneInfo ? ` (${sceneInfo})` : ''}:` : '';
   return `${pageHeader}[${flag.type}] ${flag.fact}${showMajorFlag && flag.isMajorEvent ? ` (MAJOR)` : ''}`;
 }
 
@@ -2701,7 +2645,7 @@ Initial State:
 - viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
-- plotFlags: significant plot development that affect the overall story trajectory (max 1 per page).
+- plotFlags: significant plot development that affect the overall story trajectory (max 2 per page).
 - inventory: if any, what items MC brings, can include the amount, traits, and where it located (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
 
@@ -2897,17 +2841,16 @@ export async function initializeBook(
     }, { client });
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
-    const { place, actions } = firstUserPage;
+    const { place, timeOfDay, actions } = firstUserPage;
 
     console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
 
     // 6. Create initial story state with generated psychological profile
-    // const futureNoteKeys: string[] = [];
     const initialState: StoryState = {
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
       ...{
         ...generatedInitialState,
-        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, place })) || [],
+        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, place, timeOfDay })) || [],
         inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, place })) || [],
         injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, place })) || [],
         futureNotes: mapFutureNoteWithKey(generatedInitialState.futureNotes, 1, []),

@@ -2287,7 +2287,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     const consumeCredits = credits === 'true'; // Should consume credits
     const takeAction = !!userId && actioning === 'true'; // Should insert to user page progress
 
-    const { visitDetails, book, dbPage, sourceAction, sourceNav, isUserTakeAction } = await visitBookPage({
+    const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } = await visitBookPage({
       userId,
       pageId: pageId as string,
       bookIdentifier,
@@ -2310,7 +2310,6 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
       headerLanguage,
       translate,
       sourceAction,
-      sourceNav,
       isUserTakeAction
     });
 

@@ -147,7 +147,7 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
 
 export const PLOT_FLAGS_SCHEMA: AIJsonProperty = {
   type: 'array',
-  description: 'Significant story events or revelations that impact narrative trajectory (max 1 per page).',
+  description: 'Significant facts that become established canon — future pages must remember (0-2 per page).',
   items: {
     type: 'object',
     properties: {

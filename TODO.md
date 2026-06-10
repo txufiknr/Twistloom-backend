@@ -11,18 +11,121 @@
 
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
-// you think: "context.plotFlags need to be complete from page 1 to current"
+---
 
-// but no, I was wrong, let's me clarify:
-- `context.plotFlags`: plot flags for respective page (currently correct)
-- but maybe what I want is new `context.plotFlagHistory` which behave exactly like `context.actionsHistory` to track per-page plot flags
-- thus, in frontend, I can serve chronological page list with their selected actions and plot flags
+utils/story.ts
+utils/player-profile.ts
+utils/narrative-style.ts
+types/story.ts
+
+I've updated the code, but:
+
+I think there are many fields that are not leveraged, like in `StyleInput` and `PsychologicalProfileMetrics`
+
+and I see so many type redundancies, such as (should be consolidated into the later):
+- `PsychologicalProfileMetrics` with `PsychologicalProfile`
+- `PsychologicalProfileArchetype` with `Archetype`
+- `PsychologicalProfileStability` with `StabilityLevel`
+- `PsychologicalProfileAffinity` with `ManipulationAffinity`
+- most of `calculatePlayerProfile` already calculated by `derivePsychologicalProfile` (which called in `advanceStoryState` before every AI page generation turn)
+
+and TODO comments to be addressed in both `player-profile.ts` and `narrative-style.ts`
 
 can you continue?
-just little update, I've changed `StoryPageNavItem.plotFlag` into plural
-export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlags?: InitialPlotFlag[]; };
 
-plot flag is generally 1 per page, but I standardize into array for LLM schema and future-proof
+---
+
+please examine my ending advancement implementation which called before every AI page generation turn
+what `state.hiddenState.endingPlan` do? currently it's looks like a dead code which not included in the AI prompt
+is it really necessary and benefits in prompt?
+if necessary, does the implementation & calculation correct?
+
+attach:
+types/story.ts
+
+to focus:
+`updateAdvancedEndingSystems` function
+`setupFakeToRealEnding` function
+`buildEndingRules` function (ensure effective rules prompt)
+
+/**
+ * Formats hidden state with influence descriptions
+ * 
+ * Creates a formatted string combining hidden state levels
+ * with their detailed influence descriptions for AI guidance.
+ * 
+ * @param hiddenState - Hidden state object
+ * @returns Formatted string for prompt inclusion
+ */
+function formatHiddenState(hiddenState: HiddenState): string {
+  const { truthLevel, threatProximity, realityStability } = hiddenState;
+  const truthInfluence = truthLevels[truthLevel as keyof typeof truthLevels];
+  const threatInfluence = threatProximities[threatProximity as keyof typeof threatProximities];
+  const realityInfluence = realityStabilities[realityStability as keyof typeof realityStabilities];
+  
+  return `• Truth level: ${truthLevel}${truthInfluence ? ` (${truthInfluence})` : ''}
+• Threat proximity: ${threatProximity}${threatInfluence ? ` (${threatInfluence})` : ''}
+• Reality stability: ${realityStability}${realityInfluence ? ` (${realityInfluence})` : ''}`;
+}
+
+/**
+ * Builds a complete prompt with all placeholders replaced by actual values
+ * 
+ * This function takes the main character profile and current story state,
+ * then replaces all template placeholders in the user prompt with real data.
+ * This enables personalized narrative generation based on character psychology
+ * and story progression.
+ * 
+ * @param mc - Main character profile containing name, gender, and psychological data
+ * @param state - Current story state with progression, flags, and hidden values
+ * @param action - Action taken by the user
+ * @returns Complete prompt string ready for AI generation
+ * 
+ * @example
+ * ```typescript
+ * const prompt = buildCompletePrompt(character, currentState);
+ * // Returns: "Continue this branching psychological thriller..." with all placeholders filled
+ * ```
+ */
+function buildEndingRules(state: StoryState): string {
+  const { psychologicalProfile, hiddenState } = state;
+  const { isFinale, finalePhase } = getStoryStateInfo(state);
+  const { profileShift } = hiddenState;
+
+  const endingRules = isFinale ? `
+- The story is approaching convergence
+- Viable ending is now inevitable regardless of action
+- Final pages: disturbing > satisfying
+
+ENDING EXECUTION TEMPLATE (Last pages):
+
+${finalePhases[finalePhase!]}
+
+ENDING PRESSURE:
+• Increase chaos and urgency
+• Collapse multiple mysteries
+• Introduce irreversible consequences
+• Don't fully explain everything`
+
+: `- Gradually steer story toward viable ending plan
+- IMPORTANT: NEVER SPOIL this ending plan
+- Plant small hints across pages; don't fully explain or reveal early
+- Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect.
+
+If the current viable ending is no longer viable, re-determine or alter the viable ending based on:
+- Profile archetype: ${psychologicalProfile.archetype}
+- Profile stability: ${psychologicalProfile.stability}
+- Psychological flags
+- Detected shift: ${profileShift?.detected ? profileShift!.shiftType : 'none'}
+- Recommended ending type: ${determineOptimalEnding(state)}
+
+Example: High curiosity leads to discovering uncomfortable truths
+- Profile archetype: "the_explorer"
+- Curiosity flag: "high"
+- Recommended ending type: "false_reality"`;
+
+  return endingRules.trim();
+}
 
 ---
 

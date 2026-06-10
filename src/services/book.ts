@@ -30,7 +30,7 @@ import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
-import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
+import { sanitizeText, generateSlug, sanitizeKeywords, sanitizeTextForDB } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
@@ -231,10 +231,10 @@ export async function insertStoryPage(
   }
 
   const {
-    provider: aiProvider = 'none',
-    model: aiModel = 'none',
-    evalProvider: aiEvalProvider = 'none',
-    evalModel: aiEvalModel = 'none',
+    provider: aiProvider,
+    model: aiModel,
+    evalProvider: aiEvalProvider,
+    evalModel: aiEvalModel,
   } = aiResponseProvider;
 
   const newPageData: DBNewPage = {
@@ -243,10 +243,11 @@ export async function insertStoryPage(
     branchId,
     parentId,
     page: pageNumber,
-    text: page.text,
+    text: sanitizeTextForDB(page.text),
     mood: page.mood,
-    place: page.place || "Unknown", // Default place if not provided
-    timeOfDay: page.timeOfDay || "unknown",
+    place: page.place,
+    weather: page.weather,
+    timeOfDay: page.timeOfDay,
     charactersPresent: page.charactersPresent || [],
     keyEvents: page.keyEvents || [],
     importantObjects: page.importantObjects || [],
@@ -258,7 +259,7 @@ export async function insertStoryPage(
     aiEvalModel,
     createdAt: new Date(),
     updatedAt: new Date()
-  };
+  } satisfies Record<keyof Omit<DBNewPage, 'id' | 'isGeneratingStartedAt' | 'visitCount'>, unknown>;
 
   if (isTransaction(client)) {
     // ── Transaction mode ────────────────────────────────────────────────────
@@ -1146,7 +1147,7 @@ export async function mapToTranslatedPage(
  * ```
  */
 export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOptions): Promise<EnrichedStoryPage | null> {
-  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, sourceNav, isUserTakeAction } = options;
+  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, isUserTakeAction } = options;
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter(action => action.destinationPageIds?.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
@@ -1243,7 +1244,6 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction,
-    sourceNav,
     translation,
     shownActionHint,
     context,

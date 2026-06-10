@@ -287,15 +287,15 @@ export function sanitizeTextForDB(text: string): string {
   
   // Step 5: Additional safety checks
   // If the text is extremely short after cleaning, it might have been corrupted
-  if (cleaned.length < 10 && text.length > 100) {
-    console.warn('Text became extremely short after sanitization, possible corruption detected');
+  if (cleaned.length < text.length / 10) {
+    console.warn('[sanitizeTextForDB] ⚠️ Text became extremely short after sanitization, possible corruption detected');
     return ''; // Return empty string to prevent corrupted data
   }
   
   // Check for excessive repetition (indicates corruption)
   const repeatedChars = cleaned.match(/(.)\1{10,}/g);
   if (repeatedChars && repeatedChars.length > 3) {
-    console.warn('Text contains excessive repeated characters, possible corruption detected');
+    console.warn('[sanitizeTextForDB] ⚠️ Text contains excessive repeated characters, possible corruption detected');
     return '';
   }
   

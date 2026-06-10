@@ -1,9 +1,9 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
 import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
-import type { PlotFlagType, ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, InitialPlotFlag, Ending, EndingChangeNote } from "../types/story.js";
+import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, Ending, EndingChangeNote } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
-import { difficulties, endingTypes, factTypes, flagLevels, plotFlagTypes } from "../types/story.js";
+import { difficulties, endingTypes, factTypes, flagLevels } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
 import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
 import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";

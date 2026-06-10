@@ -7,8 +7,7 @@
  * This enables personalized storytelling based on individual player behavior patterns.
  */
 
-import type { StoryState, StyleInput, PsychologicalProfileMetrics, TrustLevel, GuiltLevel, MemoryIntegrity, ActionType, SelectedAction } from '../types/story.js';
-import { getStoryStateInfo } from './story.js';
+import type { StoryState, StyleInput, PsychologicalProfileMetrics, TrustLevel, GuiltLevel, MemoryIntegrity, ActionType, SelectedAction, PsychologicalProfileArchetype, PsychologicalProfileStability, PsychologicalProfileAffinity } from '../types/story.js';
 import { normalize } from './parser.js';
 
 /**
@@ -37,20 +36,20 @@ const ACTION_INFLUENCES: Record<ActionType, Partial<PsychologicalProfileMetrics>
  */
 function calculateBaseTraits(actionsHistory: SelectedAction[]): Pick<PsychologicalProfileMetrics, 'curiosity' | 'fear' | 'aggression' | 'denial'> {
   const traits = {
-    curiosity: 0.3,
-    fear: 0.2,
-    aggression: 0.1,
-    denial: 0.1
+    curiosity: 0,
+    fear: 0,
+    aggression: 0,
+    denial: 0
   };
   
   actionsHistory.forEach(action => {
     const influences = ACTION_INFLUENCES[action.type as keyof typeof ACTION_INFLUENCES] || ACTION_INFLUENCES.other;
     
-    // Smoothly decay existing values before applying updates to ensure long-term fluidity
-    traits.curiosity *= 0.9;
-    traits.fear *= 0.9;
-    traits.aggression *= 0.9;
-    traits.denial *= 0.9;
+    // // Smoothly decay existing values before applying updates to ensure long-term fluidity
+    // traits.curiosity *= 0.9;
+    // traits.fear *= 0.9;
+    // traits.aggression *= 0.9;
+    // traits.denial *= 0.9;
     
     Object.entries(influences).forEach(([trait, influence]) => {
       if (trait in traits) {
@@ -106,18 +105,92 @@ export function calculatePlayerProfile(state: StoryState): PsychologicalProfileM
   
   // Cognitive state from memory integrity (1.0 = clear thinking, 0.0 = completely corrupted perception)
   const cognitiveState = 1 - mapMemoryIntegrity(state.memoryIntegrity);
+
+  const normalizedCuriosity = normalize(baseTraits.curiosity);
+  const normalizedFear = normalize(baseTraits.fear);
+  const normalizedAggression = normalize(baseTraits.aggression);
+  const normalizedDenial = normalize(baseTraits.denial);
+
+  // 1. Determine Dominant Archetype based on the highest underlying behavioral trait score
+  const archetype: PsychologicalProfileArchetype = (
+    [
+      ['truth_seeker', normalizedCuriosity],
+      ['paranoid_survivor', normalizedFear],
+      ['defiant_combatant', normalizedAggression],
+      ['escapist', normalizedDenial],
+    ] as const
+  ).reduce((max, current) => (current[1] > max[1] ? current : max))[0];
+
+  // 2. Determine stability status based on cognitive deterioration and accumulated trauma
+  let stability: PsychologicalProfileStability = 'stable';
+  if (cognitiveState > 0.7) {
+    stability = 'shattered';
+  } else if (cognitiveState > 0.4 || traumaWeight > 0.6) {
+    stability = 'cracking';
+  } else if (traumaWeight > 0.3) {
+    stability = 'strained';
+  }
+
+  // 3. Assign sharp, actionable weaknesses based on archetype to offer clear manipulation hooks
+  let primaryWeakness = 'need_for_answers';
+  switch (archetype) {
+    case 'truth_seeker':
+      primaryWeakness = 'need_for_answers';
+      break;
+    case 'paranoid_survivor':
+      primaryWeakness = 'fear_of_unknown';
+      break;
+    case 'defiant_combatant':
+      primaryWeakness = 'impulsive_retaliation';
+      break;
+    case 'escapist':
+      primaryWeakness = 'refusal_to_accept_reality';
+      break;
+  }
+
+  // 4. Assign contextual secondary weakness to drive highly specialized narrative conflict
+  let secondaryWeakness = 'fear_of_being_wrong';
+  if (guilt > 0.6) {
+    secondaryWeakness = 'haunted_by_past';
+  } else if (trust < 0.4) {
+    secondaryWeakness = 'inability_to_trust';
+  } else if (physicalState > 0.5) {
+    secondaryWeakness = 'physical_vulnerability';
+  }
+
+  // 5. Establish strategic manipulation affinity vector for targeted narrative exploitation
+  let manipulationAffinity: PsychologicalProfileAffinity = 'contradiction';
+  switch (archetype) {
+    case 'truth_seeker':
+      manipulationAffinity = 'contradiction';
+      break;
+    case 'paranoid_survivor':
+      manipulationAffinity = 'uncertainty';
+      break;
+    case 'defiant_combatant':
+      manipulationAffinity = 'provocation';
+      break;
+    case 'escapist':
+      manipulationAffinity = 'illusion';
+      break;
+  }
   
   return {
-    curiosity: normalize(baseTraits.curiosity),
-    fear: normalize(baseTraits.fear),
-    aggression: normalize(baseTraits.aggression),
-    denial: normalize(baseTraits.denial),
+    curiosity: normalizedCuriosity,
+    fear: normalizedFear,
+    aggression: normalizedAggression,
+    denial: normalizedDenial,
     trust,
     guilt,
     traumaWeight,
     physicalState,
     socialContext,
-    cognitiveState
+    cognitiveState,
+    archetype,
+    stability,
+    primaryWeakness,
+    secondaryWeakness,
+    manipulationAffinity
   };
 }
 
@@ -171,14 +244,45 @@ function calculateInjurySeverity(injuries: Array<{ severity?: number }>): number
  */
 export function createStyleInput(state: StoryState): StyleInput {
   const { page, traumaTags } = state;
-  const { isFinale } = getStoryStateInfo(state);
   return {
     sanity: state.memoryIntegrity === 'stable' ? 1.0 : state.memoryIntegrity === 'fragmented' ? 0.5 : 0.2,
     tension: state.flags.fear === 'high' ? 0.8 : state.flags.fear === 'medium' ? 0.5 : 0.3,
-    entropy: state.maxPage ? (state.page / state.maxPage) * 0.5 : 0.2, // Protected against division by zero
+
+    // entropy: state.maxPage ? (state.page / state.maxPage) * 0.5 : 0.2, // Protected against division by zero
+    entropy: (state.page / state.maxPage) * 0.5, // Increases with story progress
+
+    // TODO: but this means entropy is basically page progression, not actual entropy.
+    // This means:
+    // page 1 = low entropy
+    // page 50 = high entropy
+    // regardless of what happened.
+
+    // A better entropy signal might include:
+    // memoryIntegrity
+    // traumaTags
+    // contradictedFacts
+    // realityDistortions
+    // majorEvents
+
+    // For example:
+    // entropy =
+    //   pageProgress * 0.3 +
+    //   traumaFactor * 0.3 +
+    //   memoryDamage * 0.4;
+
+    // This makes the style react to story state instead of page count.
+
+    // OR:
+    // const entropy = normalize(
+    //   (state.page / state.maxPage) * 0.25 +
+    //   traumaWeight * 0.35 +
+    //   cognitiveState * 0.4
+    // );
+
+    // Now entropy represents actual psychological disorder.
+
     traumaTags,
     profile: calculatePlayerProfile(state),
-    page,
-    isEnding: isFinale
+    page
   };
 }

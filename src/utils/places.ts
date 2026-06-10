@@ -5,7 +5,7 @@ import {
   FAMILIARITY_EVENT_BONUS,
   FAMILIARITY_MAX_VISITS} from "../config/story.js";
 import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
-import type { PastEvent, StoryPageScene, StoryState } from "../types/story.js";
+import type { PastEvent, StoryScene, StoryState } from "../types/story.js";
 import { cleanUpInventory } from "./story.js";
 
 /**
@@ -22,7 +22,7 @@ import { cleanUpInventory } from "./story.js";
  * const place = createPlace("old_river", "Old River", "river", "narrow river behind the school", 5, "eerie");
  * ```
  */
-export function createPlace(params: NewPlace, currentPage: number, scene?: StoryPageScene): PlaceMemory {
+export function createPlace(params: NewPlace, currentPage: number, scene?: StoryScene): PlaceMemory {
   return {
     ...params,
     visitCount: 1,
@@ -51,7 +51,7 @@ export function createPlace(params: NewPlace, currentPage: number, scene?: Story
  * });
  * ```
  */
-export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: number, scene?: StoryPageScene): PlaceMemory {
+export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: number, scene?: StoryScene): PlaceMemory {
   const updated = { ...existing };
   
   // Update basic properties if provided
@@ -107,7 +107,7 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
  * processPlaceUpdates(state, storyPage);
  * ```
  */
-export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, scene?: StoryPageScene): void {
+export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, scene?: StoryScene): void {
   const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
 
   // Early exit: if no updates to process
