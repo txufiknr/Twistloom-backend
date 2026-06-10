@@ -54,6 +54,7 @@ CREATE TABLE "book_translations" (
 	"mc" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"provider_type" text,
 	"provider_name" text,
+	"ai_model" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "book_translations_book_language_unique" UNIQUE("book_id","language")
@@ -98,11 +99,16 @@ CREATE TABLE "page_translations" (
 	"language" text NOT NULL,
 	"translated_text" text NOT NULL,
 	"place" text,
+	"time_of_day" text,
+	"mood" text,
+	"weather" text,
 	"key_events" text[] DEFAULT ARRAY[]::text[] NOT NULL,
 	"important_objects" text[] DEFAULT ARRAY[]::text[] NOT NULL,
+	"context_history" text,
 	"actions" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"provider_type" text,
 	"provider_name" text,
+	"ai_model" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "page_translations_page_language_unique" UNIQUE("page_id","language")
@@ -127,7 +133,17 @@ CREATE TABLE "pages" (
 	"delta" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"ai_provider" text,
 	"ai_model" text,
-	"pending_generation_count" integer DEFAULT 0 NOT NULL,
+	"ai_eval_provider" text,
+	"ai_eval_model" text,
+	"pending_generation_count" integer GENERATED ALWAYS AS ((
+        jsonb_array_length(actions) -
+        jsonb_array_length(
+          jsonb_path_query_array(
+            actions,
+            '$[*] ? (exists(@.destinationPageIds) && @.destinationPageIds.type() == "array" && @.destinationPageIds.size() > 0)'
+          )
+        )
+      )) STORED NOT NULL,
 	"is_generating_started_at" timestamp with time zone,
 	"visit_count" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -395,9 +411,9 @@ CREATE TABLE "user_sessions" (
 --> statement-breakpoint
 CREATE TABLE "users" (
 	"user_id" uuid PRIMARY KEY NOT NULL,
-	"name" text,
-	"username" text,
-	"email" text,
+	"name" text NOT NULL,
+	"username" text NOT NULL,
+	"email" text NOT NULL,
 	"password_hash" text,
 	"stripe_customer_id" text,
 	"credits" integer DEFAULT 50 NOT NULL,

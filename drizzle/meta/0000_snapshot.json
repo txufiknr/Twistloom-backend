@@ -1,5 +1,5 @@
 {
-  "id": "520723c8-57a4-42c4-830c-95526c53152a",
+  "id": "8cd1a02f-2aa2-4825-8782-39d14ef87061",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -550,6 +550,12 @@
         },
         "provider_name": {
           "name": "provider_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ai_model": {
+          "name": "ai_model",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1119,6 +1125,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "time_of_day": {
+          "name": "time_of_day",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mood": {
+          "name": "mood",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weather": {
+          "name": "weather",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "key_events": {
           "name": "key_events",
           "type": "text[]",
@@ -1132,6 +1156,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "ARRAY[]::text[]"
+        },
+        "context_history": {
+          "name": "context_history",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "actions": {
           "name": "actions",
@@ -1148,6 +1178,12 @@
         },
         "provider_name": {
           "name": "provider_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ai_model": {
+          "name": "ai_model",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1363,12 +1399,27 @@
           "primaryKey": false,
           "notNull": false
         },
+        "ai_eval_provider": {
+          "name": "ai_eval_provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ai_eval_model": {
+          "name": "ai_eval_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pending_generation_count": {
           "name": "pending_generation_count",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": 0
+          "generated": {
+            "as": "(\n        jsonb_array_length(actions) -\n        jsonb_array_length(\n          jsonb_path_query_array(\n            actions,\n            '$[*] ? (exists(@.destinationPageIds) && @.destinationPageIds.type() == \"array\" && @.destinationPageIds.size() > 0)'\n          )\n        )\n      )",
+            "type": "stored"
+          }
         },
         "is_generating_started_at": {
           "name": "is_generating_started_at",
@@ -4714,19 +4765,19 @@
           "name": "name",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "username": {
           "name": "username",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "email": {
           "name": "email",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "password_hash": {
           "name": "password_hash",
