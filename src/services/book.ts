@@ -1258,7 +1258,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.values(characters).map(character => ({
         name: character.name,
-        knownName: character.knownName,
+        knownName: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.name : character.knownName,
         gender: character.gender,
         role: character.role,
         bio: character.bio
