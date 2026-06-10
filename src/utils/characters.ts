@@ -97,6 +97,8 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   
   // Update basic properties if provided
   if (update.name) updated.name = update.name;
+  if (update.knownName) updated.knownName = update.knownName;
+  if (update.recognitionLevel) updated.recognitionLevel = update.recognitionLevel;
   if (update.gender) updated.gender = update.gender;
   if (update.role) updated.role = update.role;
   if (update.bio) updated.bio = update.bio;
@@ -162,6 +164,7 @@ export function updateRelationship(character: CharacterMemory, update: Relations
       type: update.type || updated.relationships[existingIndex].type,
       status: update.status || updated.relationships[existingIndex].status,
       context: update.context || updated.relationships[existingIndex].context,
+      recognitionLevel: update.recognitionLevel || updated.relationships[existingIndex].recognitionLevel,
     };
   } else if (updated.relationships.length < MAX_CHARACTERS - 1) {
     // Create new relationship
@@ -170,6 +173,7 @@ export function updateRelationship(character: CharacterMemory, update: Relations
       type: update.type || "knows",
       status: update.status || "neutral",
       context: update.context,
+      recognitionLevel: update.recognitionLevel,
     });
   }
   
@@ -301,7 +305,7 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
 
   const sideCharactersFormatted = sideCharacters
     .map(character => {
-      const { name, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
+      const { name, knownName, recognitionLevel, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
 
       // Basic character information
       const statusFlags = [];
@@ -311,11 +315,12 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       if (narrativeFlags.hasSecret) statusFlags.push('secret');
       
       const flagString = statusFlags.length > 0 ? ` [${statusFlags.join(', ')}]` : '';
-      const mainInfo = `· ${name} (${role}) - ${gender}, ${status}${flagString}`;
-      const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status].filter(Boolean).join(' - ');
+      const mainInfo = `· ${knownName ?? name} (${role}) - ${gender}, ${status}${flagString}`;
+      const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status, relationshipToMC.recognitionLevel].filter(Boolean).join(' - ');
       const details = [];
       
       // Basic information
+      if (knownName && knownName !== name) details.push(`  Real name: "${name}" (Recognition: ${recognitionLevel})`);
       details.push(`  Bio: ${bio}`);
       details.push(`  Visual description: ${visualDescription}`);
       details.push(`  Introduced at page: ${introducedAtPage || '-'}`);
@@ -342,7 +347,7 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       if (relationships.length) {
         details.push(`  Relationships:`);
         relationships.forEach(r => {
-          const relationshipStatus = [r.type, r.status].filter(Boolean).join(' - ');
+          const relationshipStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
           details.push(`    - ${r.target}: ${relationshipStatus ? `(${relationshipStatus}) ` : ''}${r.context}`);
         });
       }

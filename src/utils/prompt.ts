@@ -1,6 +1,6 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
@@ -308,7 +308,9 @@ const firstBookOutputFormat: string = `{
   },
   "initialCharacters": [
     {
-      "name": "Full Name",
+      "name": "Full Name (real)",
+      "knownName": "Known Name (in narrative)",
+      "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
       "role": "e.g. 'schoolmate', 'neighbor'",
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
@@ -477,6 +479,8 @@ const nextPageOutputFormat: string = `{
     "newCharacters": [
       {
         "name": "...",
+        "knownName": "...",
+        "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
         "gender": "One of: ${formatOneOf(genders)}",
         "role": "...",
         "bio": "...",
@@ -502,6 +506,8 @@ const nextPageOutputFormat: string = `{
     "updatedCharacters": [
       {
         "name": "...",
+        "knownName": "...",
+        "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
         "gender": "One of: ${formatOneOf(genders)}",
         "role": "...",
         "bio": "...",
@@ -663,8 +669,19 @@ I remembered this.
 It ends badly if I go inside.`}
 
 ---
+PLACE RULES:
+- Use existing places whenever possible.
+- Reflect last mood and event history in descriptions.
+- Reflect traits and key objects consistently.
+- Familiar places feel more textured and real.
+- Apply trauma tags to atmosphere — a betrayal place stays tense.
+
+---
 CHARACTER RULES:
 - Respect character's bio (and visualDescription).
+- If MC don't know their name yet, NEVER refer to character using their actual name. Use descriptions, pronouns, roles, or aliases currently known by MC.
+- Consistently refer to character with knownName instead of name.
+- Never reveal hidden character data unless explicitly discovered.
 - Preserve dialect, tone, and personality consistently.
 - Reflect current status in behavior.
 - Use pastInteractions to subtly shape dialogue.
@@ -674,11 +691,12 @@ CHARACTER RULES:
 - Sometimes they also misunderstand, reinforcing illusion or false theory through dialog or action.
 
 ---
-PLACE RULES:
-- Use existing places whenever possible.
-- Reflect current mood and event history in descriptions.
-- Familiar places feel more textured and real.
-- Apply trauma tags to atmosphere — a betrayal place stays tense.
+CHARACTER RECOGNITION LEVEL:
+Notice how characters should refer to each other based on recognitionLevel.
+- 'never_seen': Character is unseen by the source character (e.g., "someone", "a figure").
+- 'seen': Use descriptions only. Never use any name (e.g., "the tall man", "the woman in red").
+- 'alias_known': Use alias or codename only (e.g., "The Janitor").
+- 'first_name_known' or 'full_name_known': Use known name normally.
 
 ${isLastPage ? '' : `---
 BRANCHING ACTIONS:
@@ -836,8 +854,10 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
 
 characterUpdates.updatedCharacters
   - Only include characters whose state actually changed this page.
-  - Include only changed fields: bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries, secrets.
+  - Include only changed fields: knownName, bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries, secrets.
   - bio: only gradually update character's bio if new information is revealed in this page.
+  - knownName: gradually update mysterious character's known name as the MC learns more about his/her real identity.
+  - recognitionLevel: how well does MC recognize this character at this point.
   ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.
   - secrets: remove any revealed secret.` : `  - Only update when bio, status, interactions, or relevance changes.`}
   - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})

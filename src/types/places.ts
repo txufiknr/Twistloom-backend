@@ -118,7 +118,8 @@ export type PlaceMemory = {
   familiarity: number; // 0-1, important for reuse priority
   /** Emotional and narrative associations */
   keyEvents?: PastEvent[]; // [{page: 1, event: "MC discovered the place"}, {page: 3, event: "first meeting with Character A"}]
-  keyObjects?: InitialInventoryItem[]; // wooden chair, cupboard, large mirror, etc
+  /** Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc) */
+  keyObjects?: InitialInventoryItem[];
   /** Characters encountered here with context */
   knownCharacters?: Record<string, string>;
   // /** Optional sensory details for consistent atmosphere */

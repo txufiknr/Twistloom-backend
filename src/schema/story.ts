@@ -1,5 +1,5 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
-import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
@@ -113,7 +113,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place (e.g., "MC discovered the place", "first meeting with Character A")' },
   keyObjects: {
     type: 'array',
-    description: 'Important story related objects (e.g., wooden chair, cupboard, large mirror, etc)',
+    description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc)',
     items: PLACE_KEY_OBJECT_SCHEMA
   },
   knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
@@ -167,7 +167,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
     addKeyEvents: placeEvents,
     keyObjects: {
       type: 'array',
-      description: 'Important story related objects (e.g., wooden chair, cupboard, large mirror, etc). Empty array if no changes.',
+      description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc). Empty array if no changes.',
       items: {
         ...PLACE_KEY_OBJECT_SCHEMA,
         properties: {
@@ -187,8 +187,10 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
-    name: { type: 'string' },
-    role: { type: 'string' },
+    name: { type: 'string', description: 'Real name, even if undisclosed yet.' },
+    knownName: { type: 'string', description: `Preferred alias, nick, or reference based on recognitionLevel.` },
+    recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
+    role: { type: 'string', description: 'Role or occupation known to the MC.' },
     gender: { type: "string", enum: [...genders] },
     status: { type: 'string', enum: [...characterStatuses] },
     relationshipToMC: {
@@ -197,8 +199,9 @@ export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
         type: { type: 'string', enum: [...relationshipTypes] },
         status: { type: 'string', enum: [...relationshipStatuses] },
         context: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
+        recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: 'How well does this character know MC.' },
       } satisfies Record<keyof CharacterRelationshipContext, AIJsonProperty>,
-      required: ['type', 'status', 'context'] satisfies (keyof CharacterRelationshipContext)[],
+      required: ['type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationshipContext)[],
       additionalProperties: false
     },
     bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
@@ -208,7 +211,7 @@ export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
     injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
     pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
   } satisfies Record<keyof NewCharacter, AIJsonProperty>,
-  required: ['name', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof NewCharacter)[],
+  required: ['name', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -221,6 +224,7 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
     type: { type: 'string', enum: [...relationshipTypes] },
     status: { type: 'string', enum: [...relationshipStatuses] },
     context: { type: 'string', description: 'Define relationship context' },
+    recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: 'How well does source know target' },
   } satisfies Record<keyof RelationshipUpdate, AIJsonProperty>,
   required: ['source', 'target', 'context'] satisfies (keyof RelationshipUpdate)[],
   additionalProperties: false

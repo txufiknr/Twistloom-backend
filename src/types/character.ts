@@ -91,7 +91,9 @@ export type CharacterRelationshipContext = {
   status: RelationshipStatus;
   /** Define relationship context */
   context: string;
-  // /** Trust level (0.0 - 1.0) */
+  /** Character recognition level */
+  recognitionLevel: CharacterRecognitionLevel;
+  // /** Trust level (0.0 - 1.0). But redundant with `RelationshipStatus.trusting`. */
   // trust: number;
 };
 
@@ -102,11 +104,33 @@ export type CharacterRelationshipContext = {
  * based on story events.
  */
 export type RelationshipUpdate =
-  Pick<CharacterRelationship, 'target' | 'context'> &
+  Pick<CharacterRelationship, 'target' | 'context' | 'recognitionLevel'> &
   Partial<Pick<CharacterRelationship, 'type' | 'status'>> & {
   /** Source character initiating the relationship change (excluding MC) */
   source: string;
 };
+
+/**
+ * Character Recognition Level
+ * This mirrors how humans actually learn people.
+ * 
+ * | Level              | Meaning                                | Allowed                            |
+ * | ------------------ | -------------------------------------- | ---------------------------------- |
+ * | `never_seen`       | Never encountered this character       | "someone", "a figure"              |
+ * | `seen`             | Encountered them but doesn't know name | "the tall man", "the woman in red" |
+ * | `alias_known`      | Knows a nickname/codename              | "The Janitor"                      |
+ * | `first_name_known` | Knows first name                       | "Elias"                            |
+ * | `full_name_known`  | Knows full identity                    | "Elias Voss"                       |
+ */
+export const characterRecognitionLevels = [
+  'never_seen',
+  'seen',
+  'alias_known',
+  'first_name_known',
+  'full_name_known'
+] as const;
+
+export type CharacterRecognitionLevel = typeof characterRecognitionLevels[number];
 
 /**
  * Available character statuses for tracking narrative relationships
@@ -173,11 +197,13 @@ export type NarrativeFlags = {
  * @interface CharacterMemory
  */
 export type CharacterMemory = {
-  /** Character's unique name identifier */
+  /** Character's unique name identifier (real name) */
   name: string;
+  /** Character's known name in narrative (e.g., "The Janitor") */
+  knownName?: string;
   /** Character's gender (male/female/unknown) */
   gender: Gender;
-  /** Character's role in the story */
+  /** Character's role or occupation in the story */
   role: string;
   /** Brief 1-sentence character description with hints */
   bio: string;
@@ -199,6 +225,8 @@ export type CharacterMemory = {
   injuries: Injury[];
   /** The page number at which the character was introduced */
   introducedAtPage: number;
+  /** How well does MC know this character */
+  recognitionLevel: CharacterRecognitionLevel;
 };
 
 export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & { pastInteractions?: string[], injuries: InitialInjury[] };

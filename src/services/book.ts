@@ -19,7 +19,7 @@ import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
-import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage } from "../types/story.js";
+import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
@@ -1248,13 +1248,14 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         name: place.name,
         type: place.type,
         context: place.context
-      })),
+      }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.values(characters).map(character => ({
         name: character.name,
+        knownName: character.knownName,
         gender: character.gender,
         role: character.role,
         bio: character.bio
-      }))
+      }) satisfies Record<keyof EnrichedStoryPageCharacter, unknown>)
     } satisfies Record<keyof EnrichedStoryPageContext, unknown>;
   }
 

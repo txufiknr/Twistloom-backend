@@ -2235,9 +2235,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
 
     const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId, req.headerLanguage);
-    if (!enrichedBook) {
-      return handleNotFoundError(res, "Book not found");
-    }
+    if (!enrichedBook) return handleNotFoundError(res, "Book not found");
 
     // Generate ETag from updatedAt + userId (user-specific columns: isLiked, isRead, lastReadAt, lastPage)
     const lastModified = enrichedBook.updatedAt;
@@ -2245,10 +2243,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes userId for user-specific data)
-    const ifNoneMatch = req.get('If-None-Match');
-    if (ifNoneMatch === etag) {
-      return res.status(304).end();
-    }
+    if (req.get('If-None-Match') === etag) return res.status(304).end();
 
     // Set caching headers
     res.set('Last-Modified', lastModified.toUTCString());
@@ -2321,10 +2316,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     const etag = `"${etagInput}"`;
 
     // Check If-None-Match header (ETag includes translation params)
-    const ifNoneMatch = req.get('If-None-Match');
-    if (ifNoneMatch === etag) {
-      return res.status(304).end();
-    }
+    if (req.get('If-None-Match') === etag) return res.status(304).end();
 
     // Set caching headers
     res.set('Last-Modified', lastModified.toUTCString());

@@ -8,30 +8,11 @@
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 [ ] upload google image to imagekit via `uploadUserImage`
-
-[ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
+[ ] enrichedbook: knownName
 
 ---
 
-utils/story.ts
-utils/player-profile.ts
-utils/narrative-style.ts
-types/story.ts
-
-I've updated the codes, but:
-
-I think there are many fields that are not leveraged, like in `StyleInput` and `PsychologicalProfileMetrics` types
-
-and I see so many type redundancies, such as (should be consolidated into the later):
-- `PsychologicalProfileMetrics` with `PsychologicalProfile`
-- `PsychologicalProfileArchetype` with `Archetype`
-- `PsychologicalProfileStability` with `StabilityLevel`
-- `PsychologicalProfileAffinity` with `ManipulationAffinity`
-- most of `calculatePlayerProfile` already calculated by `derivePsychologicalProfile` (which called in `advanceStoryState` before each AI page generation turn)
-
-and TODO comments to be checked and addressed in both `player-profile.ts` and `narrative-style.ts`
-
-can you continue?
+[ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
 ---
 
@@ -54,6 +35,10 @@ finally, can you enhance thriller story page prompting effectiveness?
 `formatHiddenState` function
 `determineOptimalEnding` function
 `getShiftedEnding` function
+
+
+derivePsychologicalProfile
+detectProfileShift
 
 ---
 

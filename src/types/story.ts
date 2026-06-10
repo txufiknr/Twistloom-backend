@@ -851,12 +851,15 @@ export type EnrichedStoryPageContext = {
   /** History of actions made until this page */
   actionsHistory: SelectedAction[];
   /** All known places so far */
-  places: Array<Pick<PlaceMemory, 'name' | 'type' | 'context'>>;
+  places: EnrichedStoryPagePlace[];
   /** All known characters so far */
-  characters: Array<Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>>;
+  characters: EnrichedStoryPageCharacter[];
   /** Collection of narrative flags and hints for the current page */
   plotFlags: PlotFlag[];
 };
+
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'name' | 'type' | 'context'>;
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'name' | 'knownName' | 'gender' | 'role' | 'bio'>;
 
 export type Action = {
   /** Action text (serves as unique identifier) */
