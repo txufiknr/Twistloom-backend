@@ -1,5 +1,5 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
-import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE } from "../config/story.js";
+import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
 import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
@@ -49,12 +49,12 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
 //  *   visualDescription: "tall, pale, messy black hair, hollow eyes",
 //  *   status: "trusting",
 //  *   narrativeFlags: { isSuspicious: false, isMissing: false, isDead: false, hasSecret: false, potentialTwist: "none" },
-//  *   relationshipToMC: "close friend"
+//  *   relationshipToMC: { type: "friend", context: "Childhood best friend, incredibly loyal." }
 //  * });
 //  * ```
 //  */
 // export function createCharacter(
-//   newCharacter: CharacterCreationParam
+//   newCharacter: NewCharacter
 // ): CharacterMemory {
 //   const { status, narrativeFlags } = newCharacter;
 //   return {
@@ -160,14 +160,16 @@ export function updateRelationship(character: CharacterMemory, update: Relations
     updated.relationships[existingIndex] = {
       ...updated.relationships[existingIndex],
       type: update.type || updated.relationships[existingIndex].type,
-      status: update.status
+      status: update.status || updated.relationships[existingIndex].status,
+      context: update.context || updated.relationships[existingIndex].context,
     };
-  } else if (updated.relationships.length < 3) {
-    // Create new relationship (limit to max 3)
+  } else if (updated.relationships.length < MAX_CHARACTERS - 1) {
+    // Create new relationship
     updated.relationships.push({
       target: update.target,
       type: update.type || "knows",
-      status: update.status
+      status: update.status || "neutral",
+      context: update.context,
     });
   }
   
@@ -317,7 +319,7 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       details.push(`  Bio: ${character.bio}`);
       details.push(`  Visual description: ${character.visualDescription}`);
       details.push(`  Introduced at page: ${character.introducedAtPage || '-'}`);
-      details.push(`  Relationship to MC: ${character.relationshipToMC}`);
+      details.push(`  Relationship to MC: ${character.relationshipToMC.type} - ${character.relationshipToMC.context} (status: ${character.relationshipToMC.status})`);
 
       // Character secrets with nested bullets (spoiler for AI, not shown to player)
       if (character.secrets.length > 0) {

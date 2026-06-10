@@ -689,37 +689,65 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
 }
 
 /**
- * Visits a book page by validating navigation, recording progress, and calculating visit statistics
+ * Visits a book page by validating navigation, recording progress, and
+ * calculating visit statistics.
  *
  * This function handles the complete flow of a user visiting a page:
  * 1. Validates the page exists and belongs to the specified book
- * 2. For non-root pages (page > 1), validates the navigation action from parent page
- * 3. Checks if user has already made a different choice on the parent page
- * 4. Records the visit and calculates visit statistics (nth visitor, visitor percentage)
+ * 2. For non-root pages (page > 1), validates the navigation action from
+ *    the parent page
+ * 3. Checks if the user has already made a different choice on the parent page
+ * 4. Records the visit and calculates visit statistics (nth visitor,
+ *    visitor percentage)
  *
- * @param res - Express response object for error handling
+ * Story context (actionsHistory, plotFlags, places, characters…) is NOT
+ * built here. It is served by `mapToEnrichedPage` directly from the
+ * persisted StoryState, which is the single source of truth.
+ *
  * @param params - Parameters for the page visit
- * @param params.userId - The user's unique identifier
- * @param params.pageId - The page identifier to visit
- * @param params.bookIdentifier - Optional book identifier (slug or UUID) for validation
- * @returns Promise resolving to visit details, book data, and page data
+ * @param params.userId           - The user's unique identifier
+ * @param params.pageId           - The page identifier to visit
+ * @param params.bookIdentifier   - Book slug or UUID for validation
+ * @param params.skipVisit        - Skip DB write (prefetch / HEAD requests)
+ * @param params.takeAction       - Whether this is a deliberate user action
+ * @param params.consumeCredits   - Allow spending credits to override a
+ *                                  prior choice
+ * @param params.language         - Accept-Language header value
+ * @param options.req             - Express request object
+ * @param options.res             - Express response object (used for early
+ *                                  error responses)
+ * @returns Promise resolving to visit details, book, page, sourceAction,
+ *          and isUserTakeAction flag. Returns `{}` when the response has
+ *          already been sent (error / not-found paths).
  *
  * Behaviour:
- * - For page 1: No action validation required, marks as visited without action
- * - For page > 1: Validates action exists on parent page and user hasn't changed choice
- * - Returns early with error response if validation fails
- * - Calculates visit statistics using denormalized visitCount and readCount
+ * - Page 1: No action validation required, marks as visited without action.
+ * - Page > 1: Validates action exists on parent page and that the user
+ *   hasn't previously chosen a different action (unless consumeCredits).
  *
  * Visit Statistics:
- * - nthVisit: The visit number for this page (e.g., "you're the 100th visitor")
- * - visitorPercentage: Percentage of book readers who have visited this page
+ * - nthVisit:           The ordinal visit count for this page.
+ * - visitorPercentage:  Percentage of total book readers who reached here.
  *
  * @example
  * ```typescript
- * const { visitDetails, book, dbPage } = await visitBookPage(res, { userId, pageId, bookIdentifier });
- * if (visitDetails) {
- *   console.log(`You're visitor #${visitDetails.nthVisit}`);
- * }
+ * const { visitDetails, book, dbPage, sourceAction, isUserTakeAction } =
+ *   await visitBookPage(
+ *     { userId, pageId, bookIdentifier, skipVisit, takeAction, consumeCredits, language },
+ *     { req, res }
+ *   );
+ *
+ * // Response already sent by visitBookPage on error paths
+ * if (!dbPage || !book) return;
+ *
+ * const page = await mapToEnrichedPage(dbPage, {
+ *   userId,
+ *   bookLanguage: book.language,
+ *   headerLanguage,
+ *   translate,
+ *   sourceAction,
+ *   isUserTakeAction,
+ * });
  * ```
  */
 export async function visitBookPage(
@@ -752,13 +780,13 @@ export async function visitBookPage(
   } else {
     console.log(`[visit] 👓 Prefetching "${book.title}" page ${pageNumber}:`, { pageId, branchId });
 
-    // No user visit track for prefetch (not actual navigation)
+    // No user visit tracking for prefetch (not actual navigation)
     const { nthVisit, visitorPercentage } = computeVisitStats({ rawVisitCount: dbPage.visitCount, readerCount: book.stats.readCount, addOne: false });
     const visitDetails: BookPageVisit = { nthVisit, visitorPercentage, readerUserId: userId };
     return { dbPage, book, visitDetails, isUserTakeAction };
   }
 
-  // Get parent page and selected action (if it's not page 1)
+  // Get parent page and resolve the selected action (if it's not page 1)
   let action: Action | undefined;
   let shouldConsumeCredits = false;
   let selectedAction: SelectedAction | undefined;
@@ -780,7 +808,7 @@ export async function visitBookPage(
 
     selectedAction = mapActionToSelectedAction(action, parentPageId!, parentDbPage.page, pageId);
 
-    // Users can go back and select any action they like in page 1
+    // Users can go back and select any action they like until FREE_ACTION_SELECTION_UNTIL_PAGE
     if (pageNumber > FREE_ACTION_SELECTION_UNTIL_PAGE + 1) {
       // Validate user's action choice: check if user already chose a different action on previous page
       const selectedActions = await getPageActionsFromDB(userId, book.id, parentPageId!);
@@ -799,7 +827,7 @@ export async function visitBookPage(
     }
   }
 
-  // Mark page as visited and persists chosen action
+  // Mark page as visited and persist chosen action
   const visitDetails = await markPageVisited({
     userId,
     book,

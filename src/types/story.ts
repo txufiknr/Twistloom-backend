@@ -600,23 +600,14 @@ export const archetypes = {
  * Available stability levels for psychological profiles
  * 
  * These define the current mental coherence and stability of the MC.
- * How psychologically compromised is the protagonist?
+ * Answers: "How psychologically compromised is the MC?"
  */
-// export const stabilityLevels = {
-//   /** Mentally coherent, rational thinking */
-//   "stable": "Mentally coherent, rational thinking → Subtle manipulation, gradual escalation",
-//   /** Under stress, showing cracks in composure */
-//   "cracking": "Under stress, showing cracks in composure → More direct psychological attacks, visible stress",
-//   /** Severely distressed, reality breakdown */
-//   "unstable": "Severely distressed, reality breakdown → Full psychological warfare, reality breakdown"
-// };
-
 export const stabilityLevels = {
-  /** Mentally coherent, rational thinking */
+  /** Mentally coherent, rational thinking → Subtle manipulation, gradual escalation */
   stable: "Mentally coherent and rational. Trusts perception and reasoning. → Interpret events objectively.",
-  /** Under stress, showing cracks in composure */
+  /** Under stress, showing cracks in composure → More direct psychological attacks, visible stress */
   cracking: "Under psychological stress. Experiencing paranoia, doubt, intrusive thoughts, or growing instability. → Interpret ambiguous events with growing suspicion.",
-  /** Severely distressed, reality breakdown */
+  /** Severely distressed, reality breakdown → Full psychological warfare, reality breakdown */
   unstable: "Severely psychologically compromised. Reality perception is unreliable, with possible delusions, hallucinations, or identity breakdown. → Unreliable perception. Increased paranoia, self-doubt, and distorted interpretations while preserving narrative coherence."
 } as const;
 
@@ -681,15 +672,8 @@ export type PsychologicalProfile = {
 };
 
 // TODO: redundant with `PsychologicalProfile`
+// TODO: `physicalState` should be based on actual `StoryState.injuries`
 export type PsychologicalProfileMetrics = {
-  /** Curiosity level from actions */
-  curiosity: number;
-  /** Fear level from actions */
-  fear: number;
-  /** Aggression level from actions */
-  aggression: number;
-  /** Denial level from actions */
-  denial: number;
   /** Trust level affecting social interactions and paranoia (0.0-1.0) */
   trust: number;
   /** Guilt level influencing self-perception and decisions (0.0-1.0) */
@@ -702,17 +686,17 @@ export type PsychologicalProfileMetrics = {
   socialContext: number;
   /** Cognitive state: memory clarity and perception (0.0-1.0) */
   cognitiveState: number;
-  /** The emergent behavioral archetype characterizing the player's choices */
-  archetype?: PsychologicalProfileArchetype;
-  /** The player's psychological resilience classification */
-  stability?: PsychologicalProfileStability;
-  /** Direct core psychological vulnerability to leverage in choices */
-  primaryWeakness?: string;
-  /** Secondary or environmental vulnerability backing the narrative tension */
-  secondaryWeakness?: string;
-  /** The most effective mechanism of tension delivery for this specific profile */
-  manipulationAffinity?: PsychologicalProfileAffinity;
-};
+  // /** The emergent behavioral archetype characterizing the player's choices */
+  // archetype?: PsychologicalProfileArchetype;
+  // /** The player's psychological resilience classification */
+  // stability?: PsychologicalProfileStability;
+  // /** Direct core psychological vulnerability to leverage in choices */
+  // primaryWeakness?: string;
+  // /** Secondary or environmental vulnerability backing the narrative tension */
+  // secondaryWeakness?: string;
+  // /** The most effective mechanism of tension delivery for this specific profile */
+  // manipulationAffinity?: PsychologicalProfileAffinity;
+} & PsychologicalProfileTraits;
 
 // TODO: redundant with `Archetype`
 export type PsychologicalProfileArchetype = 'truth_seeker' | 'paranoid_survivor' | 'defiant_combatant' | 'escapist';
@@ -720,6 +704,17 @@ export type PsychologicalProfileArchetype = 'truth_seeker' | 'paranoid_survivor'
 export type PsychologicalProfileStability = 'stable' | 'strained' | 'cracking' | 'shattered';
 // TODO: redundant with `ManipulationAffinity`
 export type PsychologicalProfileAffinity = 'contradiction' | 'uncertainty' | 'provocation' | 'illusion';
+
+export type PsychologicalProfileTraits = {
+  /** Curiosity level from actions */
+  curiosity: number;
+  /** Fear level from actions */
+  fear: number;
+  /** Aggression level from actions */
+  aggression: number;
+  /** Denial level from actions */
+  denial: number;
+};
 
 export type StoryScene = {
   /** Current emotional atmosphere */

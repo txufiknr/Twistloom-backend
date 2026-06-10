@@ -54,12 +54,18 @@ export type RelationshipType = typeof relationshipTypes[number];
  * 
  * These represent the emotional state that can change over time,
  * enabling plot developments and betrayals.
+ * 
+ * - "trusting": Helpful, shares items, believes the target's warnings.
+ * - "neutral": Passive, follows the group, doesn't interfere.
+ * - "suspicious": Questions the target, refuses to share info, acts paranoid.
+ * - "hostile": Actively dangerous, sets traps, alerts enemies.
  */
 export const relationshipStatuses = [
   "trusting",    // Positive, friendly, helpful, reliable connection
   "neutral",     // Indifferent, baseline state, background character
   "suspicious",  // Distrustful, hiding something, potentially hostile
-  "hostile"      // Actively opposed/working against target
+  "hostile",     // Actively opposed/working against target
+  "afraid"
 ] as const;
 
 /**
@@ -73,13 +79,18 @@ export type RelationshipStatus = typeof relationshipStatuses[number];
  * Represents a directional connection from one character to another,
  * with type and current emotional status.
  */
-export type CharacterRelationship = {
+export type CharacterRelationship = CharacterRelationshipContext & {
   /** Target character name (excluding MC, for MC use `relationshipToMC`) */
   target: string;
+};
+
+export type CharacterRelationshipContext = {
   /** Type of relationship connection */
   type: RelationshipType;
   /** Current emotional status of relationship */
   status: RelationshipStatus;
+  /** Define relationship context */
+  context: string;
 };
 
 /**
@@ -88,10 +99,12 @@ export type CharacterRelationship = {
  * Used to modify existing relationships or create new ones
  * based on story events.
  */
-export type RelationshipUpdate = {
+export type RelationshipUpdate =
+  Pick<CharacterRelationship, 'target' | 'context'> &
+  Partial<Pick<CharacterRelationship, 'type' | 'status'>> & {
   /** Source character initiating the relationship change (excluding MC) */
   source: string;
-} & CharacterRelationship;
+};
 
 /**
  * Available character statuses for tracking narrative relationships
@@ -173,7 +186,7 @@ export type CharacterMemory = {
   /** Secret or hint for AI guidance (spoiler) */
   secrets: string[];
   /** Relationship to main character */
-  relationshipToMC: string;
+  relationshipToMC: CharacterRelationshipContext;
   /** Directional relationships to other characters (max 3) */
   relationships: CharacterRelationship[];
   /** Recent important interactions (max MAX_PAST_INTERACTIONS, sliding window) */
@@ -186,7 +199,6 @@ export type CharacterMemory = {
   introducedAtPage: number;
 };
 
-// export type CharacterCreationParam = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'status' | 'narrativeFlags' | 'relationshipToMC'>;
 export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & { pastInteractions?: string[], injuries: InitialInjury[] };
 
 /**

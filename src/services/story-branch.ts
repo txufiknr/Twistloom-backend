@@ -48,6 +48,15 @@ export function generateBranchId(): string {
  * - Provides comprehensive fallback mechanisms for data integrity
  * - Maintains branch path context and action history reconstruction
  * 
+ * Note on actionsHistory and plotFlags:
+ * - actionsHistory is accumulated directly in StoryState by persistPageWithState on every
+ *   page generation — it is NOT part of StateDelta. Reconstruction via snapshots + deltas
+ *   therefore restores actionsHistory only up to the base snapshot. For a fully
+ *   accurate actionsHistory after reconstruction, the caller should prefer persisting
+ *   the reconstructed state (persistState: true) so future reads hit the DB directly.
+ * - plotFlags IS accumulated via StateDelta.addPlotFlag and will be fully restored
+ *   through delta application.
+ * 
  * @param pageId - Page identifier for the story state
  * @param options - Branch traversal options for cache and validation control
  * @returns Promise resolving to story state or null
@@ -130,11 +139,22 @@ export async function getStoryStateWithBranch(
 /**
  * Gets complete story progress with branch context
  * 
- * Enhanced version of getStoryProgress that includes:
- * 1. Standard story progress data
- * 2. Branch path information
- * 3. Branch statistics
- * 4. Sibling pages for navigation context
+ * This is a dedicated "resume reading" utility — it answers the question
+ * "where is this user in their story right now?" and is intended for use
+ * in a progress/resume endpoint (e.g. GET /api/story/progress), NOT in the
+ * per-page visit flow.
+ * 
+ * In the page-visit flow, story context (actionsHistory, plotFlags, etc.) is
+ * served directly from the StoryState embedded in EnrichedStoryPageContext,
+ * which is already the single source of truth.
+ * 
+ * This function enhances getStoryProgress (its internal dependency) by adding:
+ * 1. Branch path — ordered list of pages from root to the user's current page
+ * 2. Branch statistics — depth, branching factor for analytics/UI
+ * 3. Sibling pages — alternative branches for "explore other paths" UI
+ * 
+ * Currently unused — kept for the planned progress/resume and
+ * branch-navigation API endpoints.
  * 
  * @param userId - User identifier
  * @param options - Branch traversal options
@@ -145,7 +165,7 @@ export async function getStoryProgressWithBranch(
   options: TraversalOptions = {}
 ): Promise<StoryProgressWithBranch> {
   try {
-    // Get standard story progress
+    // Get standard story progress (current book, page, state, session)
     const standardProgress = await getStoryProgress(userId);
     
     if (!standardProgress.session || !standardProgress.page) {
@@ -157,7 +177,7 @@ export async function getStoryProgressWithBranch(
       };
     }
 
-    // Get branch information
+    // Augment with branch-specific data for branch-aware UI
     const [branchPath, branchStats, siblings] = await Promise.all([
       getBranchPath(standardProgress.page.id, options),
       getBranchStats(standardProgress.page.id).catch(() => null),

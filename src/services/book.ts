@@ -1053,7 +1053,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
  *
  * @example
  * ```typescript
- * const enrichedPage = await mapToEnrichedPage(dbPage, {
+ * const translatedPage = await mapToTranslatedPage(dbPage, {
  *   bookLanguage: book.language,
  *   headerLanguage: req.headers['accept-language'],
  *   translate: true,
@@ -1095,55 +1095,94 @@ export async function mapToTranslatedPage(
 
 /**
  * Maps database page data to enriched page format with caching
- * 
+ *
  * This function transforms raw database page data into a frontend-ready format,
  * including user-specific data (selected actions), translation support, and
  * story context. Uses LRU cache for performance when pages have complete actions.
- * 
+ *
  * **Caching Behavior:**
  * - Only caches pages with no incomplete actions (all actions have destinations)
  * - Pages with pending generation are not cached since they change frequently
  * - Cache key includes: pageId, userId, translate, headerLanguage
  * - Cache TTL: 2 minutes to balance freshness with performance
- * 
+ *
  * **User-Specific Data:**
  * - selectedActions: User's chosen actions for this page (varies per user)
  * - translation: Translated page if Accept-Language differs from book language
  * - context: Story state including places, characters, injuries, inventory
- * 
+ *
+ * **Story Context (Single Source of Truth):**
+ * `context.actionsHistory` and `context.plotFlags` are read directly from the
+ * persisted StoryState for this page. Because `persistPageWithState` accumulates
+ * both fields on every page generation, these arrays always represent the full
+ * chronological sequence from page 1 to the current page:
+ *
+ * ```
+ * actionsHistory[0] = action taken on page 1 → led to page 2
+ * actionsHistory[1] = action taken on page 2 → led to page 3
+ * …
+ * actionsHistory[n-2] = action taken on page n-1 → led to page n (current)
+ *
+ * plotFlags[0..k] = all narrative flags added from page 1 through current
+ * ```
+ *
+ * The convenience field `sourceAction` (the single action that led to the
+ * current page) is equivalent to `context.actionsHistory.at(-1)` but is
+ * provided explicitly so the frontend can display "You chose: …" without
+ * having to sort the history array.
+ *
  * **Performance Considerations:**
  * - Database queries: selectedActions (if authenticated), storyState
  * - Translation API call: Only when translation is requested and needed
  * - Cache hit: Returns immediately without database queries
- * 
+ *
  * @param dbPage - Raw page data from database
  * @param options - Configuration options for enrichment
- * @param options.userId - Optional current user ID for user-specific selectedActions
- * @param options.bookLanguage - Book's language code (default: 'en')
- * @param options.headerLanguage - Optional target language for translation
- * @param options.translate - Whether to enable translation (default: false)
- * @param options.sourceAction - Source action that led to this page (required for pages > 1)
+ * @param options.userId           - Optional current user ID for user-specific selectedActions
+ * @param options.bookLanguage     - Book's language code (default: 'en')
+ * @param options.headerLanguage   - Optional target language for translation
+ * @param options.translate        - Whether to enable translation (default: false)
+ * @param options.sourceAction     - Action that led to this page (required for pages > 1
+ *                                   when isUserTakeAction is true; used for the
+ *                                   "You chose: …" display)
+ * @param options.isUserTakeAction - Whether this is a real navigation action by the user
  * @returns Promise resolving to enriched page or null if mapping fails
- * 
+ *
  * @example
  * ```typescript
  * // Basic usage without translation
  * const page = await mapToEnrichedPage(dbPage, { userId: 'user123' });
- * 
+ *
  * // With translation to Spanish
- * const translatedPage = await mapToEnrichedPage(dbPage, {
+ * const page = await mapToEnrichedPage(dbPage, {
  *   userId: 'user123',
  *   bookLanguage: 'en',
  *   headerLanguage: 'es',
- *   translate: true
+ *   translate: true,
  * });
- * 
- * // With source action for page navigation
- * const pageWithSource = await mapToEnrichedPage(dbPage, {
- *   userId: 'user123',
- *   sourceAction: selectedAction,
- *   sourceNav: storyPageNav
+ *
+ * // Full page-visit usage (from the route handler)
+ * const page = await mapToEnrichedPage(dbPage, {
+ *   userId,
+ *   bookLanguage: book.language,
+ *   headerLanguage,
+ *   translate,
+ *   sourceAction,   // action that led here — mirrors context.actionsHistory.at(-1)
+ *   isUserTakeAction,
  * });
+ *
+ * // Accessing the full action + plot-flag chronology:
+ * page.context?.actionsHistory
+ * // [
+ * //   { page: 1, pageId: 'page123', text: 'Run away.',      nextPageId: 'page456', ... },
+ * //   { page: 2, pageId: 'page456', text: 'Open the door.', nextPageId: 'page789', ... },
+ * // ]
+ *
+ * page.context?.plotFlags
+ * // [
+ * //   { page: 1, fact: 'MC witnessed the murder.', type: 'revelation', isMajorEvent: true },
+ * //   { page: 2, fact: 'The door leads to the cellar.', type: 'discovery', isMajorEvent: false },
+ * // ]
  * ```
  */
 export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOptions): Promise<EnrichedStoryPage | null> {
@@ -1168,17 +1207,18 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   const [selectedActions, storyState, translation, shownActionHint] = await Promise.all([
     // Query user's chosen action for this page (if authenticated)
     userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
-    
-    // Get story state for context
+
+    // Get story state for context — actionsHistory and plotFlags are fully
+    // accumulated from page 1 to current by persistPageWithState
     getStoryStateFromPage(dbPage),
-    
+
     // Handle translation if needed
     targetLanguage && pageToTranslate ? getPageTranslation({
       page: pageToTranslate,
       bookLanguage,
       targetLanguage
     }).then(result => result.translation) : Promise.resolve(undefined),
-    
+
     // Fetch user's purchased action hints for this page (if authenticated)
     userId ? getUserActionHints(userId, dbPage.id) : Promise.resolve([])
   ]);
@@ -1189,7 +1229,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     console.warn(`[mapToEnrichedPage] ⚠️ Page translation failed`);
   }
 
-  // Extract context from story state if available
+  // Extract context from story state if available.
+  // actionsHistory: full sequence of actions taken from page 1 to reach this page.
+  // plotFlags:      all narrative flags accumulated from page 1 through current page.
   let context: EnrichedStoryPageContext | undefined;
   if (storyState) {
     const { places, characters, injuries, inventory, contextHistory, actionsHistory, plotFlags } = storyState;
@@ -1220,8 +1262,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     console.error(`[mapToEnrichedPage] ❌ Source action should be exists for page ${dbPage.page}`);
   }
 
-  // Return only frontend-relevant fields
-  // Exclude backend-specific fields: userId, aiProvider, aiModel, aiEvalProvider, aiEvalModel, pendingGenerationCount
+  // Return only frontend-relevant fields.
+  // Exclude backend-specific fields: userId, aiProvider, aiModel, aiEvalProvider,
+  // aiEvalModel, pendingGenerationCount.
+  // context is the SSOT for full action + plot-flag history; sourceAction is the
+  // convenience shortcut for the single action that led to this page.
   const enrichedPage: EnrichedStoryPage = {
     id: dbPage.id,
     page: dbPage.page,
@@ -1240,7 +1285,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     updatedAt: dbPage.updatedAt,
 
     // Enriched columns
-    actions: visibleActions, // Only actions that has destination page
+    actions: visibleActions, // Only actions that have a destination page
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction,

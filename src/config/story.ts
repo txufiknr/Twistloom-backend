@@ -6,7 +6,7 @@ export const MIN_CHARS_PER_PAGE = 200;
 export const MAX_WORDS_PER_PAGE = 120;
 export const MAX_WORDS_SUMMARIZED_CONTEXT = 300;
 
-export const MAX_CHARACTERS = 6;
+export const MAX_CHARACTERS = 6; // Only count side characters, excluding MC
 export const MIN_CHARACTER_AGE = 13;
 export const MAX_CHARACTER_AGE = 27;
 export const MAX_CHARACTER_SECRETS = 3;

@@ -1,6 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
 import { characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter } from "../types/character.js";
+import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
@@ -191,7 +191,16 @@ export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
     role: { type: 'string' },
     gender: { type: "string", enum: [...genders] },
     status: { type: 'string', enum: [...characterStatuses] },
-    relationshipToMC: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
+    relationshipToMC: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: [...relationshipTypes] },
+        status: { type: 'string', enum: [...relationshipStatuses] },
+        context: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
+      } satisfies Record<keyof CharacterRelationshipContext, AIJsonProperty>,
+      required: ['type', 'status', 'context'] satisfies (keyof CharacterRelationshipContext)[],
+      additionalProperties: false
+    },
     bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
     visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
     secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
@@ -211,8 +220,9 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
     target: { type: 'string', description: 'Target character name. Only side characters. Use `relationshipToMC` if targetting MC.' },
     type: { type: 'string', enum: [...relationshipTypes] },
     status: { type: 'string', enum: [...relationshipStatuses] },
+    context: { type: 'string', description: 'Define relationship context' },
   } satisfies Record<keyof RelationshipUpdate, AIJsonProperty>,
-  required: ['source', 'target', 'status'] satisfies (keyof RelationshipUpdate)[],
+  required: ['source', 'target', 'context'] satisfies (keyof RelationshipUpdate)[],
   additionalProperties: false
 };
 

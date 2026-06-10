@@ -1439,13 +1439,13 @@ export function detectProfileShift(state: StoryState): boolean {
  * ```
  */
 export function getShiftedEnding(state: StoryState): EndingType | undefined {
-  if (!state.hiddenState.profileShift?.detected) {
-    return state.viableEnding?.type;
-  }
+  const { hiddenState, viableEnding } = state;
+  const { profileShift } = hiddenState;
+
+  if (!profileShift?.detected) return viableEnding?.type;
   
-  const { shiftType } = state.hiddenState.profileShift;
-  
-  switch (shiftType) {
+  // TODO: all available `ProfileShiftType`
+  switch (profileShift.shiftType) {
     // "You stopped asking questions... but something kept answering anyway"
     case "curiosity_collapse": return "mental_fabrication";
     // "It didn't chase you because you were slow... it chased you because you finally understood"
@@ -1466,8 +1466,8 @@ export function getShiftedEnding(state: StoryState): EndingType | undefined {
     case "denial_break": return "false_reality";
     // "You betrayed your own instincts... and now you can't trust anything"
     case "trust_betrayal": return "fake_escape";
-      
-    default: return state.viableEnding?.type;
+    // Return current viable ending type
+    default: return viableEnding?.type;
   }
 }
 

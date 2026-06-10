@@ -313,7 +313,11 @@ const firstBookOutputFormat: string = `{
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
       "secrets": "Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).",
-      "relationshipToMC": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')",
+      "relationshipToMC": {
+        "type": "One of: ${formatOneOf(relationshipTypes)}",
+        "status": "One of: ${formatOneOf(relationshipStatuses)}",
+        "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')"
+      },
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
       "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc).",
       "narrativeFlags": {
@@ -479,7 +483,11 @@ const nextPageOutputFormat: string = `{
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "secrets": "...",
-        "relationshipToMC": "...",
+        "relationshipToMC": {
+          "type": "One of: ${formatOneOf(relationshipTypes)}",
+          "status": "One of: ${formatOneOf(relationshipStatuses)}",
+          "context": "..."
+        },
         "pastInteractions": ["..."],
         "narrativeFlags": {
           "isSuspicious": <boolean>,
@@ -500,7 +508,11 @@ const nextPageOutputFormat: string = `{
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "secrets": "...",
-        "relationshipToMC": "...",
+        "relationshipToMC": {
+          "type": "One of: ${formatOneOf(relationshipTypes)}",
+          "status": "One of: ${formatOneOf(relationshipStatuses)}",
+          "context": "..."
+        },
         "pastInteractions": [
           {
             "page": <number>,
@@ -2159,8 +2171,7 @@ function buildEndingRules(state: StoryState): string {
 - Viable ending is now inevitable regardless of action
 - Final pages: disturbing > satisfying
 
-ENDING EXECUTION TEMPLATE (Last pages):
-
+ENDING EXECUTION TEMPLATE (${finalePhase} finale):
 ${finalePhases[finalePhase].replaceAll('{endingDescription}', endingTypes[type])}
 
 ENDING PRESSURE:
@@ -2875,7 +2886,14 @@ export async function initializeBook(
                 ...char.narrativeFlags
               },
               introducedAtPage: 1,
-              relationships: initialRelationships.filter(r => r.source === char.name).map<CharacterRelationship>(r => ({...r}))
+              relationships: initialRelationships.filter(r => r.source === char.name).map<CharacterRelationship>(r => {
+                return {
+                  ...r,
+                  type: r.type || "knows",
+                  status: r.status || "neutral",
+                  context: r.context,
+                } satisfies Record<keyof CharacterRelationship, string>;
+              })
             } satisfies CharacterMemory
           ])
         ) : {},

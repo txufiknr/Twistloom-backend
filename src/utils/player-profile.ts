@@ -7,7 +7,8 @@
  * This enables personalized storytelling based on individual player behavior patterns.
  */
 
-import type { StoryState, StyleInput, PsychologicalProfileMetrics, TrustLevel, GuiltLevel, MemoryIntegrity, ActionType, SelectedAction, PsychologicalProfileArchetype, PsychologicalProfileStability, PsychologicalProfileAffinity } from '../types/story.js';
+import type { CharacterMemory } from '../types/character.js';
+import type { StoryState, StyleInput, PsychologicalProfileMetrics, TrustLevel, GuiltLevel, MemoryIntegrity, ActionType, SelectedAction, PsychologicalProfileTraits } from '../types/story.js';
 import { normalize } from './parser.js';
 
 /**
@@ -34,8 +35,8 @@ const ACTION_INFLUENCES: Record<ActionType, Partial<PsychologicalProfileMetrics>
  * Uses an exponential moving average decay factor to emphasize recency
  * and prevent late-game metric saturation.
  */
-function calculateBaseTraits(actionsHistory: SelectedAction[]): Pick<PsychologicalProfileMetrics, 'curiosity' | 'fear' | 'aggression' | 'denial'> {
-  const traits = {
+function calculateBaseTraits(actionsHistory: SelectedAction[]): PsychologicalProfileTraits {
+  const traits: PsychologicalProfileTraits = {
     curiosity: 0,
     fear: 0,
     aggression: 0,
@@ -111,69 +112,53 @@ export function calculatePlayerProfile(state: StoryState): PsychologicalProfileM
   const normalizedAggression = normalize(baseTraits.aggression);
   const normalizedDenial = normalize(baseTraits.denial);
 
-  // 1. Determine Dominant Archetype based on the highest underlying behavioral trait score
-  const archetype: PsychologicalProfileArchetype = (
-    [
-      ['truth_seeker', normalizedCuriosity],
-      ['paranoid_survivor', normalizedFear],
-      ['defiant_combatant', normalizedAggression],
-      ['escapist', normalizedDenial],
-    ] as const
-  ).reduce((max, current) => (current[1] > max[1] ? current : max))[0];
+  // // 1. Determine Dominant Archetype based on the highest underlying behavioral trait score
+  // const archetype: PsychologicalProfileArchetype = (
+  //   [
+  //     ['truth_seeker', normalizedCuriosity],
+  //     ['paranoid_survivor', normalizedFear],
+  //     ['defiant_combatant', normalizedAggression],
+  //     ['escapist', normalizedDenial],
+  //   ] as const
+  // ).reduce((max, current) => (current[1] > max[1] ? current : max))[0];
 
-  // 2. Determine stability status based on cognitive deterioration and accumulated trauma
-  let stability: PsychologicalProfileStability = 'stable';
-  if (cognitiveState > 0.7) {
-    stability = 'shattered';
-  } else if (cognitiveState > 0.4 || traumaWeight > 0.6) {
-    stability = 'cracking';
-  } else if (traumaWeight > 0.3) {
-    stability = 'strained';
-  }
+  // // 2. Determine stability status based on cognitive deterioration and accumulated trauma
+  // let stability: PsychologicalProfileStability = 'stable';
+  // if (cognitiveState > 0.7) {
+  //   stability = 'shattered';
+  // } else if (cognitiveState > 0.4 || traumaWeight > 0.6) {
+  //   stability = 'cracking';
+  // } else if (traumaWeight > 0.3) {
+  //   stability = 'strained';
+  // }
 
-  // 3. Assign sharp, actionable weaknesses based on archetype to offer clear manipulation hooks
-  let primaryWeakness = 'need_for_answers';
-  switch (archetype) {
-    case 'truth_seeker':
-      primaryWeakness = 'need_for_answers';
-      break;
-    case 'paranoid_survivor':
-      primaryWeakness = 'fear_of_unknown';
-      break;
-    case 'defiant_combatant':
-      primaryWeakness = 'impulsive_retaliation';
-      break;
-    case 'escapist':
-      primaryWeakness = 'refusal_to_accept_reality';
-      break;
-  }
+  // // 3. Assign sharp, actionable weaknesses based on archetype to offer clear manipulation hooks
+  // let primaryWeakness = 'need_for_answers';
+  // switch (archetype) {
+  //   case 'truth_seeker': primaryWeakness = 'need_for_answers'; break;
+  //   case 'paranoid_survivor': primaryWeakness = 'fear_of_unknown'; break;
+  //   case 'defiant_combatant': primaryWeakness = 'impulsive_retaliation'; break;
+  //   case 'escapist': primaryWeakness = 'refusal_to_accept_reality'; break;
+  // }
 
-  // 4. Assign contextual secondary weakness to drive highly specialized narrative conflict
-  let secondaryWeakness = 'fear_of_being_wrong';
-  if (guilt > 0.6) {
-    secondaryWeakness = 'haunted_by_past';
-  } else if (trust < 0.4) {
-    secondaryWeakness = 'inability_to_trust';
-  } else if (physicalState > 0.5) {
-    secondaryWeakness = 'physical_vulnerability';
-  }
+  // // 4. Assign contextual secondary weakness to drive highly specialized narrative conflict
+  // let secondaryWeakness = 'fear_of_being_wrong';
+  // if (guilt > 0.6) {
+  //   secondaryWeakness = 'haunted_by_past';
+  // } else if (trust < 0.4) {
+  //   secondaryWeakness = 'inability_to_trust';
+  // } else if (physicalState > 0.5) {
+  //   secondaryWeakness = 'physical_vulnerability';
+  // }
 
-  // 5. Establish strategic manipulation affinity vector for targeted narrative exploitation
-  let manipulationAffinity: PsychologicalProfileAffinity = 'contradiction';
-  switch (archetype) {
-    case 'truth_seeker':
-      manipulationAffinity = 'contradiction';
-      break;
-    case 'paranoid_survivor':
-      manipulationAffinity = 'uncertainty';
-      break;
-    case 'defiant_combatant':
-      manipulationAffinity = 'provocation';
-      break;
-    case 'escapist':
-      manipulationAffinity = 'illusion';
-      break;
-  }
+  // // 5. Establish strategic manipulation affinity vector for targeted narrative exploitation
+  // let manipulationAffinity: PsychologicalProfileAffinity = 'contradiction';
+  // switch (archetype) {
+  //   case 'truth_seeker': manipulationAffinity = 'contradiction'; break;
+  //   case 'paranoid_survivor': manipulationAffinity = 'uncertainty'; break;
+  //   case 'defiant_combatant': manipulationAffinity = 'provocation'; break;
+  //   case 'escapist': manipulationAffinity = 'illusion'; break;
+  // }
   
   return {
     curiosity: normalizedCuriosity,
@@ -186,11 +171,11 @@ export function calculatePlayerProfile(state: StoryState): PsychologicalProfileM
     physicalState,
     socialContext,
     cognitiveState,
-    archetype,
-    stability,
-    primaryWeakness,
-    secondaryWeakness,
-    manipulationAffinity
+    // archetype,
+    // stability,
+    // primaryWeakness,
+    // secondaryWeakness,
+    // manipulationAffinity
   };
 }
 
@@ -218,7 +203,8 @@ function mapMemoryIntegrity(memoryIntegrity: MemoryIntegrity): number {
 /**
  * Calculates social engagement based on character interactions
  */
-function calculateSocialEngagement(characters: Record<string, unknown>): number {
+function calculateSocialEngagement(characters: Record<string, CharacterMemory>): number {
+  // TODO: shouldn't it filter by positive `relationshipToMC`? e.g., type === "friend" OR status === "trusting"
   const characterCount = Object.keys(characters).length;
   if (characterCount === 0) return 0;
   return Math.min(1, characterCount * 0.15);
