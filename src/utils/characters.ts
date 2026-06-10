@@ -292,49 +292,46 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
   const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
 
   const { characters = {} } = state || {};
-  const sideCharacters = characters 
-    // Exclude character with same name as MC's, it's him/herself
-    ? Object.values(characters).filter(character => character.name !== mc.name)
-    : [];
+
+  // Exclude character with same name as MC's, it's him/herself
+  const sideCharacters = characters ? Object.values(characters).filter(character => character.name !== mc.name) : [];
   
   // Early return: still no side characters yet
-  if (sideCharacters.length === 0) {
-    return mcInfo;
-  }
+  if (!sideCharacters.length) return mcInfo;
 
   const sideCharactersFormatted = sideCharacters
     .map(character => {
+      const { name, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
+
       // Basic character information
       const statusFlags = [];
-      if (character.narrativeFlags.isSuspicious) statusFlags.push('suspicious');
-      if (character.narrativeFlags.isMissing) statusFlags.push('missing');
-      if (character.narrativeFlags.isDead) statusFlags.push('dead');
-      if (character.narrativeFlags.hasSecret) statusFlags.push('secret');
+      if (narrativeFlags.isSuspicious) statusFlags.push('suspicious');
+      if (narrativeFlags.isMissing) statusFlags.push('missing');
+      if (narrativeFlags.isDead) statusFlags.push('dead');
+      if (narrativeFlags.hasSecret) statusFlags.push('secret');
       
       const flagString = statusFlags.length > 0 ? ` [${statusFlags.join(', ')}]` : '';
-      const mainInfo = `· ${character.name} (${character.role}) - ${character.gender}, ${character.status}${flagString}`;
+      const mainInfo = `· ${name} (${role}) - ${gender}, ${status}${flagString}`;
+      const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status].filter(Boolean).join(' - ');
       const details = [];
       
       // Basic information
-      details.push(`  Bio: ${character.bio}`);
-      details.push(`  Visual description: ${character.visualDescription}`);
-      details.push(`  Introduced at page: ${character.introducedAtPage || '-'}`);
-      details.push(`  Relationship to MC: ${character.relationshipToMC.type} - ${character.relationshipToMC.context} (status: ${character.relationshipToMC.status})`);
+      details.push(`  Bio: ${bio}`);
+      details.push(`  Visual description: ${visualDescription}`);
+      details.push(`  Introduced at page: ${introducedAtPage || '-'}`);
+      details.push(`  Relationship to MC: ${relationshipToMCStatus ? `(${relationshipToMCStatus}) ` : ''}${relationshipToMC.context}`);
 
       // Character secrets with nested bullets (spoiler for AI, not shown to player)
-      if (character.secrets.length > 0) {
+      if (secrets.length) {
         details.push(`  Secrets (spoiler, don't reveal too early):`);
-        const secrets = Array.isArray(character.secrets) ? character.secrets : String(character.secrets).split(';').map(s => s.trim());
         secrets.forEach((secret) => {
           details.push(`    - ${secret}`);
         });
       }
 
       // Recent interactions with nested bullets
-      if (character.pastInteractions.length > 0) {
-        const recentInteractions = character.pastInteractions
-          .sort((a, b) => a.page - b.page)
-          .slice(-MAX_PAST_INTERACTIONS);
+      if (pastInteractions.length) {
+        const recentInteractions = pastInteractions.sort((a, b) => a.page - b.page).slice(-MAX_PAST_INTERACTIONS);
         details.push(`  Recent interactions:`);
         recentInteractions.forEach((i) => {
           details.push(`    - Page ${i.page}: ${i.interaction}`);
@@ -342,17 +339,18 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       }
       
       // Character relationships with nested bullets
-      if (character.relationships.length > 0) {
+      if (relationships.length) {
         details.push(`  Relationships:`);
-        character.relationships.forEach(r => {
-          details.push(`    - ${r.target} (${r.type} - ${r.status})`);
+        relationships.forEach(r => {
+          const relationshipStatus = [r.type, r.status].filter(Boolean).join(' - ');
+          details.push(`    - ${r.target}: ${relationshipStatus ? `(${relationshipStatus}) ` : ''}${r.context}`);
         });
       }
       
       // Detailed injuries section
-      if (character.injuries && character.injuries.length > 0) {
+      if (injuries?.length) {
         details.push(`  Injuries:`);
-        character.injuries.forEach((injury: Injury, index: number) => {
+        injuries.forEach((injury: Injury, index: number) => {
           const injuryParts = [];
           const severityLabel = getInjurySeverityLabel(injury);
           if (injury.description) injuryParts.push(injury.description);
@@ -368,13 +366,13 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       
       // Narrative flags (excluding injuries which are now separate)
       const narrativeInfo = [];
-      if (character.narrativeFlags.isSuspicious) narrativeInfo.push('suspicious');
-      if (character.narrativeFlags.isMissing) narrativeInfo.push('missing');
-      if (character.narrativeFlags.isDead) narrativeInfo.push('dead');
-      if (character.narrativeFlags.hasSecret) narrativeInfo.push('has secret');
+      if (narrativeFlags.isSuspicious) narrativeInfo.push('suspicious');
+      if (narrativeFlags.isMissing) narrativeInfo.push('missing');
+      if (narrativeFlags.isDead) narrativeInfo.push('dead');
+      if (narrativeFlags.hasSecret) narrativeInfo.push('has secret');
       
-      if (character.narrativeFlags.potentialTwist && character.narrativeFlags.potentialTwist !== 'none') {
-        narrativeInfo.push(`potential twist: ${character.narrativeFlags.potentialTwist}`);
+      if (narrativeFlags.potentialTwist && narrativeFlags.potentialTwist !== 'none') {
+        narrativeInfo.push(`potential twist: ${narrativeFlags.potentialTwist}`);
       }
       
       if (narrativeInfo.length > 0) {
@@ -383,11 +381,11 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       
       // Character status details
       const statusDetails = [];
-      if (character.status === 'dead') {
+      if (status === 'dead') {
         statusDetails.push('deceased');
-      } else if (character.status === 'missing') {
+      } else if (status === 'missing') {
         statusDetails.push('disappeared');
-      } else if (character.status === 'injured') {
+      } else if (status === 'injured') {
         statusDetails.push('injured');
       } else {
         statusDetails.push('healthy, active');

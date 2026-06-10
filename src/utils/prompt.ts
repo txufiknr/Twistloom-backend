@@ -2102,7 +2102,7 @@ function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): strin
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase } = stateInfo;
 
-  return `NARRATIVE STYLE:
+  return `NARRATIVE STYLE & PROSE ATMOSPHERE:
 ${createNarrativeStyle(state).instructions}
 
 PSYCHOLOGICAL FLAGS (Accumulated):

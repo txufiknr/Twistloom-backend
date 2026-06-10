@@ -686,24 +686,32 @@ export type PsychologicalProfileMetrics = {
   socialContext: number;
   /** Cognitive state: memory clarity and perception (0.0-1.0) */
   cognitiveState: number;
-  // /** The emergent behavioral archetype characterizing the player's choices */
-  // archetype?: PsychologicalProfileArchetype;
-  // /** The player's psychological resilience classification */
-  // stability?: PsychologicalProfileStability;
-  // /** Direct core psychological vulnerability to leverage in choices */
-  // primaryWeakness?: string;
+  /** Direct core psychological vulnerability to leverage in choices */
+  primaryWeakness?: string;
   // /** Secondary or environmental vulnerability backing the narrative tension */
   // secondaryWeakness?: string;
-  // /** The most effective mechanism of tension delivery for this specific profile */
-  // manipulationAffinity?: PsychologicalProfileAffinity;
 } & PsychologicalProfileTraits;
 
-// TODO: redundant with `Archetype`
-export type PsychologicalProfileArchetype = 'truth_seeker' | 'paranoid_survivor' | 'defiant_combatant' | 'escapist';
-// TODO: redundant with `StabilityLevel`
-export type PsychologicalProfileStability = 'stable' | 'strained' | 'cracking' | 'shattered';
-// TODO: redundant with `ManipulationAffinity`
-export type PsychologicalProfileAffinity = 'contradiction' | 'uncertainty' | 'provocation' | 'illusion';
+/**
+ * The player's dominant psychological vulnerability, synthesized from cumulative
+ * behavioral patterns and bridged from the current archetype.
+ *
+ * This is the single most targetable "button" for the story to exploit —
+ * the thing that produces the "this story knows exactly how I think" effect.
+ *
+ * Stored in PsychologicalProfileMetrics.primaryWeakness (typed as `string` in story.ts).
+ * The union here provides type-safe usage within this module.
+ *
+ * Intentionally different from ManipulationAffinity (which drives exploitation tactics):
+ * this label describes the player's core vulnerability, not the delivery mechanism.
+ */
+export type PrimaryWeakness =
+  | 'truth_seeking'    // Explorer/risk-taker: compulsively pursues answers regardless of cost
+  | 'fear_of_loss'     // Protector/healer: fiercely attached to people, objects, or safety
+  | 'need_for_control' // Aggressor: psychologically destabilized by helplessness
+  | 'trust_hunger'     // Social/trusting: deeply vulnerable to betrayal by relied-upon figures
+  | 'guilt'            // Guilty: haunted by past choices that resurface in the present
+  | 'avoidance';       // Paranoid/denier/avoider: retreats from hard truths, inevitabilities
 
 export type PsychologicalProfileTraits = {
   /** Curiosity level from actions */

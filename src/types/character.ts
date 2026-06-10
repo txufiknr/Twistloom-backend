@@ -91,6 +91,8 @@ export type CharacterRelationshipContext = {
   status: RelationshipStatus;
   /** Define relationship context */
   context: string;
+  // /** Trust level (0.0 - 1.0) */
+  // trust: number;
 };
 
 /**
