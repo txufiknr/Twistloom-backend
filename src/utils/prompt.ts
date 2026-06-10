@@ -308,8 +308,8 @@ const firstBookOutputFormat: string = `{
   },
   "initialCharacters": [
     {
-      "name": "Full Name (real)",
-      "knownName": "Known Name (in narrative)",
+      "name": "Real Name",
+      "knownName": "Narration Alias",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
       "role": "e.g. 'schoolmate', 'neighbor'",
       "gender": "One of: ${formatOneOf(genders)}",
@@ -678,12 +678,12 @@ PLACE RULES:
 
 ---
 CHARACTER RULES:
+- NEVER reveal hidden character data unless explicitly discovered.
+- NEVER refer to character using their real name.
+- If name is undisclosed, use descriptions, pronouns, roles, or known aliases.
 - Respect character's bio (and visualDescription).
-- If MC don't know their name yet, NEVER refer to character using their actual name. Use descriptions, pronouns, roles, or aliases currently known by MC.
-- Consistently refer to character with knownName instead of name.
-- Never reveal hidden character data unless explicitly discovered.
-- Preserve dialect, tone, and personality consistently.
 - Reflect current status in behavior.
+- Preserve dialect, tone, and personality consistently.
 - Use pastInteractions to subtly shape dialogue.
 - Reintroduce naturally after absence.
 - Characters may shift suddenly if narrativeFlags suggest it — never explain the change.
@@ -845,6 +845,7 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
   - No two characters has the same name.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
+  - knownName: mandatory narration alias. If MC know, use actual/nick name. Otherwise, use descriptions, pronouns, roles, or words interpreted by MC.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
   - visualDescription: visual description (e.g. height, skin color, eye color, hair, etc). Permanent physical attributes only, not ephemeral like clothing.
   - secrets: spoiler or hints of the character for AI narrative guidance (max ${MAX_CHARACTER_SECRETS}).

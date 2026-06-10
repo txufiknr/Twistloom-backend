@@ -187,8 +187,8 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
-    name: { type: 'string', description: 'Real name, even if undisclosed yet.' },
-    knownName: { type: 'string', description: `Preferred alias, nick, or reference based on recognitionLevel.` },
+    name: { type: 'string', description: 'True name, even if undisclosed yet.' },
+    knownName: { type: 'string', description: `Preferred alias, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
     recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
     role: { type: 'string', description: 'Role or occupation known to the MC.' },
     gender: { type: "string", enum: [...genders] },

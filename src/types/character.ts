@@ -65,6 +65,7 @@ export const relationshipStatuses = [
   "neutral",     // Indifferent, baseline state, background character
   "suspicious",  // Distrustful, hiding something, potentially hostile
   "hostile",     // Actively opposed/working against target
+  "stranger",    // Never met nor get to know
   "afraid"
 ] as const;
 
@@ -200,7 +201,7 @@ export type CharacterMemory = {
   /** Character's unique name identifier (real name) */
   name: string;
   /** Character's known name in narrative (e.g., "The Janitor") */
-  knownName?: string;
+  knownName: string;
   /** Character's gender (male/female/unknown) */
   gender: Gender;
   /** Character's role or occupation in the story */

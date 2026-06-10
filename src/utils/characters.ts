@@ -306,6 +306,8 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
   const sideCharactersFormatted = sideCharacters
     .map(character => {
       const { name, knownName, recognitionLevel, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
+      const useDifferentReference = knownName !== name;
+      const nameUnknown = useDifferentReference && ['never_seen', 'seen', 'alias_known'].includes(recognitionLevel);
 
       // Basic character information
       const statusFlags = [];
@@ -314,13 +316,13 @@ export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): stri
       if (narrativeFlags.isDead) statusFlags.push('dead');
       if (narrativeFlags.hasSecret) statusFlags.push('secret');
       
-      const flagString = statusFlags.length > 0 ? ` [${statusFlags.join(', ')}]` : '';
-      const mainInfo = `· ${knownName ?? name} (${role}) - ${gender}, ${status}${flagString}`;
+      const flagString = statusFlags.length ? ` [${statusFlags.join(', ')}]` : '';
+      const mainInfo = `· ${knownName} (${role}) - ${gender}, ${status}${flagString}`;
       const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status, relationshipToMC.recognitionLevel].filter(Boolean).join(' - ');
       const details = [];
       
       // Basic information
-      if (knownName && knownName !== name) details.push(`  Real name: "${name}" (Recognition: ${recognitionLevel})`);
+      if (useDifferentReference) details.push(`  Real name: "${name}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
       details.push(`  Bio: ${bio}`);
       details.push(`  Visual description: ${visualDescription}`);
       details.push(`  Introduced at page: ${introducedAtPage || '-'}`);
