@@ -12,7 +12,7 @@ import { getInjurySeverityLabel } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
 import { books } from "../db/schema.js";
 import { eq } from "drizzle-orm";
@@ -34,7 +34,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -1406,7 +1406,7 @@ function getEndingArchetypesText(): string {
  * @param action - The action taken on this page if any
  * @returns Formatted string for this page entry
  */
-function formatPreviousPageEntry(page: UserStoryPage, plotFlags?: PlotFlag[]): string {
+function formatPreviousPageEntry(page: ActionedStoryPage, plotFlags?: PlotFlag[]): string {
   const pageText = formatPageTextForPrompt(page.text);
   const sceneInfo = [
     page.place ? `place: ${page.place}` : '',
@@ -1420,7 +1420,7 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlags?: PlotFlag[]): s
   if (plotFlags) entry += `\n  → Plot flags: ${plotFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent)).map(plotFlag => formatPlotFlag(plotFlag, { showPageHeader: false })).join('; ')}`;
 
   // Add action information if present
-  const action = page.selectedActions?.at(-1); // Latest selected action // TODO: harusnya page ActionedStoryPage, jadi `selectedAction` deterministic
+  const { selectedAction: action } = page;
   if (action) {
     if (action.text) {
       const actionText = `"${action.text}"`;
@@ -1477,7 +1477,7 @@ function formatPreviousPageEntry(page: UserStoryPage, plotFlags?: PlotFlag[]): s
  */
 function formatPreviousPagesForPrompt(
   currentPage: number,
-  previousPages: UserStoryPage[],
+  previousPages: ActionedStoryPage[],
   plotFlags: PlotFlag[],
   maxDisplayed: number = MAX_PAGE_HISTORY,
 ): string {
@@ -3105,9 +3105,9 @@ async function prepareNextPageGenerationContext(params: BuildNextPageParams): Pr
   currentState: StoryState;
   advancedState: StoryState;
   expectedPageNumber: number;
-  previousPages: UserStoryPage[];
+  previousPages: ActionedStoryPage[];
 }> {
-  const { book, actionedPage, currentState: providedState } = params;
+  const { actionedPage, currentState: providedState } = params;
 
   if (!providedState) {
     console.warn(`[prepareNextPageGenerationContext] ⚠️ Base state not provided, will be reconstructed from current page`);
@@ -3131,7 +3131,13 @@ async function prepareNextPageGenerationContext(params: BuildNextPageParams): Pr
   }
 
   const expectedPreviousPagesCount = Math.min(MAX_PAGE_HISTORY, actionedPage.page - 1);
-  const previousPages = await getPreviousPages(actionedPage, book.userId, book.id);
+
+  const previousDBPages = await getPreviousPages(actionedPage);
+  const previousPages: ActionedStoryPage[] = previousDBPages.map<ActionedStoryPage>(p => {
+    const selectedAction = currentState.actionsHistory.find(a => a.pageId === p.id)!;
+    const page = mapToPersistedStoryPage(p);
+    return { ...page, selectedAction };
+  });
 
   if (previousPages.length !== expectedPreviousPagesCount) {
     console.log(`[prepareNextPageGenerationContext] ⚠️ Previous page count mismatch: expected ${expectedPreviousPagesCount}, got ${previousPages.length}`);

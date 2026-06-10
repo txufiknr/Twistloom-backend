@@ -1257,8 +1257,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         context: place.context
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.values(characters).map(character => ({
-        name: character.name,
-        knownName: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.name : character.knownName,
+        name: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.name : character.knownName,
         gender: character.gender,
         role: character.role,
         bio: character.bio
@@ -1614,9 +1613,7 @@ export async function getPublicBookStats(): Promise<PublicStats> {
   
   // Try to get from cache first
   const cached = publicBookStatsCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
+  if (cached) return cached;
 
   try {
     // Execute all four queries in parallel for faster response time
@@ -1625,26 +1622,18 @@ export async function getPublicBookStats(): Promise<PublicStats> {
       // Get total number of books (stories created) using SQL COUNT(*)
       // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
       // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
-      dbRead
-        .select({ count: sql<number>`count(*)::int` })
-        .from(books),
+      dbRead.select({ count: sql<number>`count(*)::int` }).from(books),
 
       // Get total number of unique branches using SUM of pre-calculated branchesCount
       // Using SUM of denormalized column is much faster than COUNT(DISTINCT branch_id) on pages table
-      dbRead
-        .select({ count: sql<number>`COALESCE(SUM(branches_count), 0)::int` })
-        .from(books),
+      dbRead.select({ count: sql<number>`COALESCE(SUM(branches_count), 0)::int` }).from(books),
 
       // Get total number of pages using SQL COUNT(*)
       // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
-      dbRead
-        .select({ count: sql<number>`count(*)::int` })
-        .from(pages),
+      dbRead.select({ count: sql<number>`count(*)::int` }).from(pages),
 
       // Get total number of users using SQL COUNT(*)
-      dbRead
-        .select({ count: sql<number>`count(*)::int` })
-        .from(users),
+      dbRead.select({ count: sql<number>`count(*)::int` }).from(users),
     ]);
 
     const stats: PublicStats = {
@@ -1691,17 +1680,15 @@ export async function getPublicBookStats(): Promise<PublicStats> {
 export async function getSimilarBooks(bookId: string, limit: number = 10): Promise<Array<DBBook & { similarityScore: number }>> {
   try {
     // Get the target book's keywords first
-    const targetBook = await dbRead
+    const [targetBook] = await dbRead
       .select({ keywords: books.keywords })
       .from(books)
       .where(eq(books.id, bookId))
       .limit(1);
 
-    if (!targetBook[0]) {
-      return [];
-    }
+    if (!targetBook) return [];
 
-    const targetKeywords = targetBook[0].keywords;
+    const targetKeywords = targetBook.keywords;
 
     // Query similar books using PostgreSQL Jaccard similarity calculation
     // Jaccard = |A ∩ B| / |A ∪ B|

@@ -12,9 +12,6 @@
 
 [ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
 
-[ ] ensure enriched page has valid values for sourceNav (pake sourceAction?)
-[ ] storynav gausah, masukin page.context?.actionsHistory aja (ensure valid)
-[ ] buat getPreviousPages return ActionedStoryPage[]
 [ ] Place Traits pastiin record<string, string>
 [ ] book type add: translation?: BookTranslation;
 [ ] Consider generate multiverse in parallel instead of 1 big request

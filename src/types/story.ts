@@ -859,7 +859,7 @@ export type EnrichedStoryPageContext = {
 };
 
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'name' | 'type' | 'context'>;
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'name' | 'knownName' | 'gender' | 'role' | 'bio'>;
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>;
 
 export type Action = {
   /** Action text (serves as unique identifier) */

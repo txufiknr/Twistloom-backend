@@ -798,35 +798,31 @@ export async function insertUserPageProgress(data: Omit<DBNewUserPageProgress, '
  * 3. Using userPageProgress to track which action the user selected to reach each page
  * 4. Mapping each page to UserStoryPage with the selected action included
  * 
- * @param actionedPage - Current actioned page containing page info
- * @param userId - User ID for tracking page progress
- * @param bookId - Book ID for filtering pages
- * @returns Promise resolving to array of UserStoryPage with selected actions
+ * @param page - Current actioned page containing page info
+ * @returns Promise resolving to array of DBPage
  * 
  * @example
  * ```typescript
- * const previousPages = await getPreviousPages(actionedPage, "user123", "book456");
- * // Returns: [UserStoryPage, ...] with selectedAction populated
+ * const previousPages = await getPreviousPages(actionedPage);
  * ```
  */
 export async function getPreviousPages(
-  actionedPage: Pick<PersistedStoryPage, 'page' | 'parentId'>,
-  userId: string,
-  bookId: string,
+  page: Pick<PersistedStoryPage, 'page' | 'parentId'>,
   limit: number = MAX_PAGE_HISTORY
-): Promise<UserStoryPage[]> { // TODO: should return ActionedStoryPage[] for deterministic single `selectedAction` trace back per page
+): Promise<DBPage[]> {
   try {
-    const previousPages: UserStoryPage[] = [];
-    const expectedPreviousPagesCount = Math.min(limit, actionedPage.page - 1);
-    let currentPageId = actionedPage.parentId;
+    const previousPages: DBPage[] = [];
+    const expectedPreviousPagesCount = Math.min(limit, page.page - 1);
+    let currentPageId = page.parentId;
     
     // Traverse backwards through the parent chain
     while (currentPageId && previousPages.length < limit) {
-      const userPage = await getUserPage(currentPageId, userId, { bookIdentifier: bookId, client: dbWrite });
-      if (!userPage) break;
+      // TODO: getPageFromDB aja
+      const dbPage = await getPageFromDB(currentPageId);
+      if (!dbPage) break;
       
-      previousPages.push(userPage);
-      currentPageId = userPage.parentId;
+      previousPages.push(dbPage);
+      currentPageId = dbPage.parentId;
     }
     
     // Reverse to get chronological order (oldest first)

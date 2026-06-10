@@ -1,6 +1,6 @@
 import type { Book } from "./book.js";
 import type { CandidateGenerationPage } from "./candidate-generation.js";
-import type { StoryState, UserStoryPage } from "./story.js";
+import type { ActionedStoryPage, StoryState } from "./story.js";
 
 export type GenerateBookCreationPromptParams = {
   /** Whether to include prompt generation logging information. */
@@ -35,6 +35,6 @@ export type BuildNextPagePromptParams = {
   book: Book,
   actionedPage: CandidateGenerationPage,
   advancedState: StoryState,
-  previousPages: UserStoryPage[],
+  previousPages: ActionedStoryPage[],
   candidateCount: number;
 }
