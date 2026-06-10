@@ -1172,7 +1172,19 @@ export function determineOptimalEnding(state: StoryState): EndingType {
   const { flags, psychologicalProfile, hiddenState } = state;
   const { archetype, stability } = psychologicalProfile;
 
-  // Check for profile shift first (highest priority)
+  // Highest priority: respect an active ending plan
+  if (hiddenState.endingPlan?.armed) {
+    // Map execution type to narrative ending type
+    switch (hiddenState.endingPlan.type) {
+      case "fake_relief_twist": return hiddenState.endingPlan.fakeToReal
+        ? (state.viableEnding?.type ?? "fake_escape")  // rug-pull: deliver the real ending
+        : "fake_escape";                                // build-up: steer toward false safety
+      case "loop_trap":        return "loop";
+      case "identity_reveal":  return "identity_twist";
+    }
+  }
+
+  // Second priority: profile shift mutation
   if (hiddenState.profileShift?.detected) {
     const shiftedEnding = getShiftedEnding(state);
     if (shiftedEnding) {
@@ -1180,23 +1192,16 @@ export function determineOptimalEnding(state: StoryState): EndingType {
       return shiftedEnding;
     }
   }
-  
-  // Use original ending determination logic
-  // TODO: all available `endingTypes`
+
+  // Base archetype logic
   switch (archetype) {
-    // High curiosity leads to discovering uncomfortable truths
-    case "the_explorer": return flags.curiosity === "high" ? "false_reality" : "fake_escape";
-    // Avoidance leads to permanent consequences
-    case "the_avoider": return "irreversible_loss";
-    // Low fear = bold risks that backfire, High fear = desperate losses
+    case "the_explorer":   return flags.curiosity === "high" ? "false_reality" : "fake_escape";
+    case "the_avoider":    return "irreversible_loss";
     case "the_risk_taker": return flags.fear === "low" ? "fake_escape" : "irreversible_loss";
-    // Unstable paranoia creates loops, stable paranoia creates false realities
-    case "the_paranoid": return stability === "unstable" ? "loop" : "false_reality";
-    // Guilt always leads to irreversible loss
-    case "the_guilty": return "irreversible_loss";
-    // Deniers get identity twists as their reality unravels
-    case "the_denier": return stability === "unstable" ? "mental_fabrication" : "identity_twist";
-    default: return state.viableEnding?.type ?? "ambiguity";
+    case "the_paranoid":   return stability === "unstable" ? "loop" : "false_reality";
+    case "the_guilty":     return "irreversible_loss";
+    case "the_denier":     return stability === "unstable" ? "mental_fabrication" : "identity_twist";
+    default:               return state.viableEnding?.type ?? "ambiguity";
   }
 }
 
@@ -1216,12 +1221,16 @@ export function determineOptimalEnding(state: StoryState): EndingType {
  * // Arms fake ending that triggers on page 8
  * ```
  */
-export function setupFakeToRealEnding(state: StoryState, triggerPage: number, executionType: "fake_relief_twist" | "loop_trap" | "identity_reveal"): void {
-  state.hiddenState.endingPlan ??= {
+export function setupFakeToRealEnding(
+  state: StoryState,
+  triggerPage: number,
+  executionType: "fake_relief_twist" | "loop_trap" | "identity_reveal"
+): void {
+  state.hiddenState.endingPlan = {
     type: executionType,
     armed: true,
     triggerPage,
-    fakeToReal: true
+    fakeToReal: false, // activated later when page >= triggerPage
   };
 }
 
@@ -1443,30 +1452,40 @@ export function getShiftedEnding(state: StoryState): EndingType | undefined {
   const { profileShift } = hiddenState;
 
   if (!profileShift?.detected) return viableEnding?.type;
-  
-  // TODO: all available `ProfileShiftType`
+
   switch (profileShift.shiftType) {
     // "You stopped asking questions... but something kept answering anyway"
-    case "curiosity_collapse": return "mental_fabrication";
-    // "It didn't chase you because you were slow... it chased you because you finally understood"
-    case "fear_spike": return "loop";
-    // "You weren't trying to survive anymore. You were trying to win. That's when it recognized you"
-    case "aggression_turn": return "identity_twist";
-    // "The explorer became the trapped - the ultimate irony"
-    case "archetype_collapse": return "possession";
+    case "curiosity_collapse":      return "mental_fabrication";
+    // "It didn't chase you because you were slow — it chased you because you understood"
+    case "fear_spike":              return "loop";
+    // "You weren't trying to survive anymore. You were trying to win."
+    case "aggression_turn":         return "identity_twist";
+    // "The explorer became the trapped"
+    case "archetype_collapse":      return "possession";
     // "When reality shattered, you found the truth in the pieces"
-    case "reality_breakdown": return "false_reality";
+    case "reality_breakdown":       return "false_reality";
     // "You finally stopped fighting... and accepted the lie as truth"
     case "manipulation_acceptance": return "mental_fabrication";
-    // "The curious became fearful - the perfect victim"
-    case "trait_inversion": return "loop";
+    // "The curious became fearful — the perfect victim"
+    case "trait_inversion":         return "loop";
     // "Fear turned to rage, and rage opened the wrong door"
-    case "fear_to_aggression": return "possession";
-    // "You thought you were escaping... but you were just running in circles"
-    case "denial_break": return "false_reality";
-    // "You betrayed your own instincts... and now you can't trust anything"
-    case "trust_betrayal": return "fake_escape";
-    // Return current viable ending type
+    case "fear_to_aggression":      return "possession";
+
+    // Previously missing — now handled:
+    // "You started lying and couldn't stop — even to yourself"
+    case "deception_onset":         return "identity_twist";
+    // "You pushed everyone away. No one was left to hear you scream."
+    case "social_withdrawal":       return "irreversible_loss";
+    // "The protector became the thing everyone needed protecting from"
+    case "protective_to_aggressive": return "possession";
+    // "You built something beautiful. Then you burned it."
+    case "creative_to_destructive": return "irreversible_loss";
+
+    // Handled here but currently never detected — keep them for when
+    // detectProfileShift gains those detection paths:
+    case "denial_break":            return "false_reality";
+    case "trust_betrayal":          return "fake_escape";
+
     default: return viableEnding?.type;
   }
 }
@@ -1483,18 +1502,24 @@ export function getShiftedEnding(state: StoryState): EndingType | undefined {
  */
 export function updateAdvancedEndingSystems(state: StoryState): void {
   const pageProgress = state.page / state.maxPage;
-  
+
   // Detect profile shifts (late game behavior changes)
   if (pageProgress > 0.6) detectProfileShift(state);
-  
-  // Auto-arm fake-to-real endings for certain archetypes
+
+  // Auto-arm fake-to-real plan for twist-eligible ending types
   if (pageProgress >= 0.7 && !state.hiddenState.endingPlan?.armed) {
     const ending = state.viableEnding?.type;
     const triggerPage = Math.max(state.page + 1, state.maxPage - 2);
-    
+
     if (ending === "fake_escape" || ending === "loop" || ending === "identity_twist") {
       setupFakeToRealEnding(state, triggerPage, "fake_relief_twist");
     }
+  }
+
+  // Transition: once we hit triggerPage, activate the rug-pull phase
+  const plan = state.hiddenState.endingPlan;
+  if (plan?.armed && !plan.fakeToReal && state.page >= plan.triggerPage) {
+    state.hiddenState.endingPlan = { ...plan, fakeToReal: true };
   }
 }
 

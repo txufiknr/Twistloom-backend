@@ -34,7 +34,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { Ending, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -2135,7 +2135,7 @@ ${formatPsychologicalProfile(psychologicalProfile)}
 Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
 
 HIDDEN STATE (Influence writing, don't reveal):
-${formatHiddenState(hiddenState)}
+${formatHiddenState(hiddenState, currentPage)}
 
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
@@ -2183,43 +2183,97 @@ ${formatEndingPrompt(state)}`;
  */
 function buildEndingRules(state: StoryState): string {
   const { psychologicalProfile, hiddenState, viableEnding } = state;
-  const { isFinale, finalePhase = 'EARLY' } = getStoryStateInfo(state);
-  const { profileShift } = hiddenState;
-  const { type = 'fake_escape' } = viableEnding ?? {};
+  const { isFinale, finalePhase = "EARLY" } = getStoryStateInfo(state);
+  const { profileShift, endingPlan } = hiddenState;
+  const { type = "fake_escape" } = viableEnding ?? {};
 
-  const endingRules = isFinale ? `
-- The story is approaching convergence
+  if (isFinale) {
+    return `- The story is approaching convergence
 - Viable ending is now inevitable regardless of action
 - Final pages: disturbing > satisfying
 
 ENDING EXECUTION TEMPLATE (${finalePhase} finale):
-${finalePhases[finalePhase].replaceAll('{endingDescription}', endingTypes[type])}
+${finalePhases[finalePhase].replaceAll("{endingDescription}", endingTypes[type])}
 
 ENDING PRESSURE:
-• Increase chaos and urgency
-• Collapse multiple mysteries
-• Introduce irreversible consequences
-• Don't fully explain everything`
+- Increase chaos and urgency
+- Collapse multiple mysteries
+- Introduce irreversible consequences
+- Don't fully explain everything`.trim();
+  }
 
-: `- Gradually steer story toward viable ending plan
+  // Non-finale: build toward the ending, possibly with an active trap
+  const trapDirective = buildEndingTrapDirective(endingPlan);
+
+  return `- Gradually steer story toward viable ending plan
 - IMPORTANT: NEVER SPOIL this ending plan
 - Plant small hints across pages; don't fully explain or reveal early
-- Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect.
-
-If the current viable ending is no longer viable, re-determine or alter the viable ending based on:
+- Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect
+${trapDirective ? `\n${trapDirective}\n` : ""}
+If the current viable ending is no longer viable, re-determine based on:
 - Psychological profile (archetype and stability)
 - Profile archetype: ${psychologicalProfile.archetype}
 - Profile stability: ${psychologicalProfile.stability}
 - Psychological flags
-- Detected shift: ${profileShift?.detected ? profileShift!.shiftType : 'none'}
+- Detected shift: ${profileShift?.detected ? profileShift.shiftType : "none"}
 - Recommended ending type: ${determineOptimalEnding(state)}
 
 Example: High curiosity leads to discovering uncomfortable truths
 - Profile archetype: "the_explorer"
 - Curiosity flag: "high"
-- Recommended ending type: "false_reality"`;
+- Recommended ending type: "false_reality"`.trim();
+}
 
-  return endingRules.trim();
+/**
+ * Translates an armed EndingPlan into concrete narrative direction for the AI.
+ * Returns null if no active plan, so the caller can cleanly omit it.
+ */
+function buildEndingTrapDirective(endingPlan?: EndingPlan): string | null {
+  if (!endingPlan?.armed) return null;
+
+  if (endingPlan.fakeToReal) {
+    // Trap is springing — tell the AI exactly what to execute
+    const executionGuide: Record<string, string> = {
+      fake_relief_twist:
+        "The MC has just been given false hope. Now destroy it.\n" +
+        "• Show the escape route closing\n" +
+        "• The 'safe' person reveals something wrong\n" +
+        "• The relief was the trap — make the reader feel the rug pulled",
+      loop_trap:
+        "The MC believes the ordeal is over. It isn't.\n" +
+        "• Introduce one detail that echoes the very beginning\n" +
+        "• Something familiar appears in the wrong context\n" +
+        "• End with the reader realizing the loop never broke",
+      identity_reveal:
+        "The MC believes they finally understand who they are. They are wrong.\n" +
+        "• Contradict a core assumption the MC has held all story\n" +
+        "• Show a detail that reframes every prior action in a darker light\n" +
+        "• The revelation should feel inevitable in hindsight",
+    };
+    const guide = executionGuide[endingPlan.type] ?? "Shatter the false resolution — the horror was always here.";
+    return `ACTIVE TRAP — EXECUTE NOW:\n${guide}`;
+  }
+
+  // Trap is armed but not yet springing — build the false calm
+  const buildUpGuide: Record<string, string> = {
+    fake_relief_twist:
+      "BUILD FALSE SAFETY: The MC should be moving toward something that looks like escape.\n" +
+      "• Reduce immediate threat slightly — don't remove tension, soften its edge\n" +
+      "• Let a character seem trustworthy for once\n" +
+      "• Plant one small 'almost normal' detail that feels like progress",
+    loop_trap:
+      "BUILD CYCLICAL FAMILIARITY: Plant echoes of earlier pages.\n" +
+      "• Repeat a sensory detail from a much earlier scene in a slightly wrong context\n" +
+      "• The MC should begin to feel 'this is almost over'\n" +
+      "• Don't close the loop yet — hint that closure is near",
+    identity_reveal:
+      "BUILD MISPLACED CERTAINTY: Let the MC feel they've understood something.\n" +
+      "• Reinforce a belief they hold about themselves or another character\n" +
+      "• Make the MC feel competent, observant, correct — just this once\n" +
+      "• The reader should feel safe. They are not.",
+  };
+  const buildUp = buildUpGuide[endingPlan.type] ?? "Steer toward false resolution — safety is the trap.";
+  return `ENDING TRAP ARMED — PREP PHASE:\n${buildUp}`;
 }
 
 /**
@@ -2383,15 +2437,43 @@ function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>): string
  * @param hiddenState - Hidden state object
  * @returns Formatted string for prompt inclusion
  */
-function formatHiddenState(hiddenState: HiddenState): string {
-  const { truthLevel, threatProximity, realityStability } = hiddenState;
+function formatHiddenState(hiddenState: HiddenState, currentPage: number): string {
+  const { truthLevel, threatProximity, realityStability, endingPlan, profileShift } = hiddenState;
   const truthInfluence = truthLevels[truthLevel as keyof typeof truthLevels];
   const threatInfluence = threatProximities[threatProximity as keyof typeof threatProximities];
   const realityInfluence = realityStabilities[realityStability as keyof typeof realityStabilities];
-  
-  return `• Truth level: ${truthLevel}${truthInfluence ? ` (${truthInfluence})` : ''}
-• Threat proximity: ${threatProximity}${threatInfluence ? ` (${threatInfluence})` : ''}
-• Reality stability: ${realityStability}${realityInfluence ? ` (${realityInfluence})` : ''}`;
+
+  const lines: string[] = [
+    `• Truth level: ${truthLevel}${truthInfluence ? ` (${truthInfluence})` : ""}`,
+    `• Threat proximity: ${threatProximity}${threatInfluence ? ` (${threatInfluence})` : ""}`,
+    `• Reality stability: ${realityStability}${realityInfluence ? ` (${realityInfluence})` : ""}`,
+  ];
+
+  if (endingPlan?.armed) {
+    if (endingPlan.fakeToReal) {
+      lines.push(
+        `• Ending trap: SPRINGING — false resolution has been set up; now shatter it. The horror lives behind the relief.`
+      );
+    } else {
+      const phasesRemaining = Math.max(0, endingPlan.triggerPage - currentPage);
+      const executionHint = {
+        fake_relief_twist: "manufacture false safety — let the MC feel escape is within reach",
+        loop_trap:         "create a sense of completion that subtly circles back to the start",
+        identity_reveal:   "let the MC believe they finally understand themselves — they are profoundly wrong",
+      }[endingPlan.type as string] ?? "steer toward a false sense of resolution";
+      lines.push(
+        `• Ending trap: ARMED (${phasesRemaining} page${phasesRemaining !== 1 ? "s" : ""} until trigger) — ${executionHint}`
+      );
+    }
+  }
+
+  if (profileShift?.detected) {
+    lines.push(
+      `• Behavioral shift: "${profileShift.shiftType}" detected at page ${profileShift.detectedAt} — horror should now exploit this new vulnerability`
+    );
+  }
+
+  return lines.join("\n");
 }
 
 /**
