@@ -7,10 +7,29 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] upload google image to imagekit via `uploadUserImage`
-[ ] enrichedbook: knownName
 
-[ ] claude review `getStoryProgress` and `getStoryProgressWithBranch`: services/story.ts & services/story-branch.ts (db/schema.ts) + about page.context?.actionsHistory
+---
+
+please examine my:
+- utils/prompt.ts
+- utils/ai-chat.ts
+- utils/ai-chat-stream.ts
+
+and learn LLM optimizations roadmap MD docs provided by chatgpt
+
+can you:
+- elaborate on optimization docs
+- elaborate on current implementation
+- provie me what are do-able actions to do to improve my implementation
+- tell me if you have any extra optimization plan besides in the docs
+
+finally, provide me:
+- gradual patches I can drop-in (easier/minor first)
+- updated & unified LLM optimizations roadmap MD docs to best reflect actual implementation in Twitloom (and mark actioned step as completed)
+
+please keep the unifed MD docs be comprehensive, verbose explanations, and easy to understand for beginners
+
+---
 
 [ ] Place Traits pastiin record<string, string>
 [ ] book type add: translation?: BookTranslation;

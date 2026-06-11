@@ -1,4 +1,4 @@
-import type { AIChatProvider, AIDocument, AIPromptOptions, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
@@ -8,14 +8,15 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess } from './ai-logger.js';
 import { getErrorMessage } from "./error.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
-import { convertToGeminiSchema, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
-import { type GenerateContentConfig, Type, type GenerateContentParameters, type Schema } from "@google/genai";
+import { formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
+import { type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 import type { Cohere } from "cohere-ai";
 import type Cerebras from "@cerebras/cerebras_cloud_sdk/resources";
 import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as OpenAI from "openai/resources";
 import type * as Groq from "groq-sdk/resources/chat/completions";
+import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
 
 /**
  * SSE-enabled AI streaming function that yields chunks immediately
@@ -177,6 +178,10 @@ export async function aiStreamSSE(
             try {
               // Send start event
               controller.enqueue(encoder.encode(createStartEvent(provider, model)));
+
+              const requestStartedAt = Date.now();
+              const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length;
+              let firstTokenAt: number | null = null;
               
               // Call the appropriate streaming provider
               let streamGenerator: AsyncGenerator<string> | null = null;
@@ -199,12 +204,14 @@ export async function aiStreamSSE(
                       controller.close();
                       return;
                     }
+
+                    // Track TTFT
+                    if (!firstTokenAt && chunk.length > 0) {
+                      firstTokenAt = Date.now();
+                    }
                     
                     // Handle backpressure
                     await handleBackpressure(controller);
-                    
-                    // Debug: Log chunk content
-                    console.log(`[${provider}] 🧩 SSE chunk:`, chunk);
                     
                     controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
                   }
@@ -212,6 +219,20 @@ export async function aiStreamSSE(
                   // Send end event
                   controller.enqueue(encoder.encode(createEndEvent(provider, model)));
                   providerSucceeded = true;
+
+                  // Log telemetry
+                  logGenerationTelemetry({
+                    provider,
+                    model,
+                    context: options.context,
+                    promptChars,
+                    estimatedPromptTokens: estimateTokens(promptChars),
+                    requestStartedAt,
+                    firstTokenAt,
+                    completedAt: Date.now(),
+                    ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
+                    generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
+                  });
 
                   // Resolve aiUsed promise with selected provider/model
                   try {
@@ -322,21 +343,22 @@ async function* geminiStreamGenerator(
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  
-  const responseSchema = outputAsJson ? {
-    type: Type.OBJECT,
-    properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
-      acc[key] = convertToGeminiSchema(value);
-      return acc;
-    }, {} as Record<string, Schema>) : undefined,
-    required: outputJsonRequired || []
-  } satisfies Schema : undefined;
-
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
   const response = await getGeminiClient().models.generateContentStream({
     model: options.models?.[0] || 'gemini-2.5-flash',
-    contents: [{ parts: [{ text: `${systemPromptWithDocuments}\n\n${prompt}` }] }],
-    config: { ...config, responseSchema } satisfies GenerateContentConfig,
+    contents: [{ parts: [{ text: prompt }] }],
+    config: {
+      ...config,
+      ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
+      responseJsonSchema: outputAsJson ? (outputJsonStructure ? {
+        type: "object",
+        properties: outputJsonStructure,
+        required: outputJsonRequired,
+        additionalProperties: false
+      } : { type: 'object' }) satisfies AIJsonProperty : undefined,
+      // System prompt in its own field — Gemini caches this automatically
+      systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
+    } satisfies GenerateContentConfig,
   } satisfies GenerateContentParameters);
   
   for await (const chunk of response) {

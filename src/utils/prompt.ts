@@ -1538,11 +1538,11 @@ function formatPreviousPagesForPrompt(
  * 
  * @example
  * // Basic character without state
- * "Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)"
+ * "Lisa Carter, female, 16 — Shy teenager with social anxiety."
  * 
  * @example
  * // Character with inventory and injuries
- * "Lisa Carter, female, 16 (bio: Shy teenager with social anxiety.)
+ * "Lisa Carter, female, 16 — Shy teenager with social anxiety.
  * - Inventory:
  *   - Cellphone (amount: 1, where: right pants pocket) - acquired: page 1
  *     → traits: color: black
@@ -1556,7 +1556,7 @@ function formatPreviousPagesForPrompt(
  */
 export function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: StoryState): string | null {
   if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
-  const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` (bio: ${mc.bio})` : ``}`.trim();
+  const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` — ${mc.bio}` : ``}`.trim();
   
   if (state) {
     let inventoryDetails: string | null = null;
@@ -2091,7 +2091,8 @@ ${summary}
 CURRENT PHASE:
 ${phase} ${phaseGoal}
 
-MAIN CHARACTER (POV): ${getMainCharacterInfo(mc, state)!}
+MAIN CHARACTER (POV):
+${getMainCharacterInfo(mc, state)!}
 
 STORY CONTEXT:
 ${contextHistory || 'No story context yet.'}
@@ -2145,10 +2146,10 @@ FUTURE NOTES:
 ${formatFutureNotes(futureNotes, currentPage, phase)}
 
 ---
-${RULES_ROUTE_MEMORY}
+${RULES_ROUTE_MEMORY}${futureNotes.length ? `
 
 ---
-${RULES_FUTURE_NOTES}
+${RULES_FUTURE_NOTES}` : ''}
 
 ---
 ${RULES_STORY_CONSISTENCY}
@@ -2410,7 +2411,7 @@ function formatRecentMajorEvents(plotFlags: PlotFlag[]): string {
 function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, showPageHeader?: boolean, showMajorFlag?: boolean }): string {
   const { showSceneInfo = true, showPageHeader = true, showMajorFlag = true } = options ?? {};
   const sceneInfo = showSceneInfo ? `${[flag.place && `place: ${flag.place}`, flag.timeOfDay && `time: ${flag.timeOfDay}`].filter(Boolean).join(', ')}` : '';
-  const pageHeader = showPageHeader ? `• Page ${flag.page}${sceneInfo ? ` (${sceneInfo})` : ''}:` : '';
+  const pageHeader = showPageHeader ? `• Page ${flag.page}${sceneInfo ? ` (${sceneInfo})` : ''}: ` : '';
   return `${pageHeader}[${flag.type}] ${flag.fact}${showMajorFlag && flag.isMajorEvent ? ` (MAJOR)` : ''}`;
 }
 
@@ -3605,7 +3606,15 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
-  const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
+  const supportsStructuredOutput = Boolean(configs.schema && configs.requiredFields?.length); // schema and required fields is specified
+
+  // When structured output is active, send only a compact field-list reminder
+  // instead of the full verbose JSON template. Saves ~1 000–2 000 tokens.
+  const outputFormatPart = supportsStructuredOutput
+    ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
+    : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
+
+  // const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 

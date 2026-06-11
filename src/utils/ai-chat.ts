@@ -1,4 +1,4 @@
-import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
@@ -120,6 +120,8 @@ async function promptWithFallback<T>(
  * @param prompt - User message body (article plus instructions; system rules are sent separately)
  * @param options.stopSequences - Optional stop sequences — for non–Q&A content use `['\\n\\n']` to mirror {@link geminiPrompt}
  * @returns Structured response or `null` if every model fails
+ * 
+ * @see structured JSON guide - https://developers.openai.com/api/docs/guides/structured-outputs
  */
 export async function githubPrompt(
   prompt: string,
@@ -155,7 +157,7 @@ export async function githubPrompt(
               properties: outputJsonStructure,
               required: outputJsonRequired,
               additionalProperties: false
-            }
+            } satisfies AIJsonProperty
           }
         } : { type: 'json_object' }) : undefined,
       } satisfies OpenAI.ChatCompletionCreateParamsNonStreaming);
@@ -185,62 +187,80 @@ export async function githubPrompt(
 }
 
 // Helper function to convert JSON schema to Gemini schema recursively
-export const convertToGeminiSchema = (jsonSchema: any): Schema => {
-  if (jsonSchema.type === 'array' && jsonSchema.items) {
-    return {
-      type: Type.ARRAY,
-      items: convertToGeminiSchema(jsonSchema.items),
-    };
-  } else if (jsonSchema.type === 'object' && jsonSchema.properties) {
-    return {
-      type: Type.OBJECT,
-      properties: Object.entries(jsonSchema.properties).reduce((acc, [k, v]) => {
-        acc[k] = convertToGeminiSchema(v);
-        return acc;
-      }, {} as Record<string, Schema>),
-      required: jsonSchema.required || [],
-    };
-  } else {
-    // Map JSON schema types to Gemini enum types
-    const typeMapping: Record<string, Type> = {
-      'string': Type.STRING,
-      'number': Type.NUMBER,
-      'integer': Type.INTEGER,
-      'boolean': Type.BOOLEAN,
-      'array': Type.ARRAY,
-      'object': Type.OBJECT,
-      'null': Type.NULL,
-    };
-    
-    const geminiType = typeMapping[jsonSchema.type] || Type.TYPE_UNSPECIFIED;
-    
-    const schema: Schema = {
-      type: geminiType,
-    };
-    
-    // Add enum values if specified
-    if (jsonSchema.enum && Array.isArray(jsonSchema.enum)) {
-      (schema as any).enum = jsonSchema.enum;
+const GEMINI_TYPE_MAP: Record<string, Type> = {
+  string: Type.STRING,
+  number: Type.NUMBER,
+  integer: Type.INTEGER,
+  boolean: Type.BOOLEAN,
+  object: Type.OBJECT,
+  array: Type.ARRAY,
+  null: Type.NULL,
+};
+
+export function convertToGeminiSchema(jsonSchema: any): Schema {
+  if (typeof jsonSchema === 'boolean') return { type: Type.TYPE_UNSPECIFIED };
+  if (!jsonSchema || typeof jsonSchema !== 'object') return { type: Type.TYPE_UNSPECIFIED };
+  if (jsonSchema.anyOf) return { anyOf: jsonSchema.anyOf.map(convertToGeminiSchema) } as Schema;
+  if (jsonSchema.oneOf) return { anyOf: jsonSchema.oneOf.map(convertToGeminiSchema) } as Schema;
+
+  let type = jsonSchema.type;
+
+  if (Array.isArray(type)) {
+    const nonNull = type.filter((t) => t !== 'null');
+
+    if (nonNull.length === 1) {
+      type = nonNull[0];
+    } else {
+      return {
+        anyOf: nonNull.map((t) => convertToGeminiSchema({ ...jsonSchema, type: t })),
+      } as Schema;
     }
-    
-    // Add format for string types (e.g., date-time, email, etc.)
-    if (jsonSchema.type === 'string' && jsonSchema.format) {
-      (schema as any).format = jsonSchema.format;
-    }
-    
-    // Add minimum/maximum for number types
-    if (jsonSchema.type === 'number' || jsonSchema.type === 'integer') {
-      if (typeof jsonSchema.minimum === 'number') {
-        (schema as any).minimum = jsonSchema.minimum;
-      }
-      if (typeof jsonSchema.maximum === 'number') {
-        (schema as any).maximum = jsonSchema.maximum;
-      }
-    }
-    
+  }
+
+  if (type === 'array') {
+    const schema: Schema = { type: Type.ARRAY };
+
+    if (jsonSchema.items) schema.items = convertToGeminiSchema(jsonSchema.items);
+    if (typeof jsonSchema.minItems === 'number') schema.minItems = jsonSchema.minItems;
+    if (typeof jsonSchema.maxItems === 'number') schema.maxItems = jsonSchema.maxItems;
+    if (jsonSchema.description) schema.description = jsonSchema.description;
+
     return schema;
   }
-};
+
+  if (type === 'object') {
+    const schema: Schema = {
+      type: Type.OBJECT,
+      properties: {},
+      required: jsonSchema.required ?? [],
+    };
+
+    if (jsonSchema.properties) {
+      schema.properties = Object.fromEntries(
+        Object.entries(jsonSchema.properties).map(([key, value]) => [
+          key,
+          convertToGeminiSchema(value),
+        ]),
+      );
+    }
+
+    if (jsonSchema.description) schema.description = jsonSchema.description;
+    if (jsonSchema.propertyOrdering) schema.propertyOrdering = jsonSchema.propertyOrdering;
+    // if (jsonSchema.additionalProperties) (schema as any).additionalProperties = convertToGeminiSchema(jsonSchema.additionalProperties);
+
+    return schema;
+  }
+
+  const schema: Schema = { type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED };
+
+  if (jsonSchema.description) schema.description = jsonSchema.description;
+  if (jsonSchema.enum) schema.enum = jsonSchema.enum;
+  if (jsonSchema.format) schema.format = jsonSchema.format;
+  if (typeof jsonSchema.minimum === 'number') schema.minimum = jsonSchema.minimum;
+  if (typeof jsonSchema.maximum === 'number') schema.maximum = jsonSchema.maximum;
+
+  return schema;
+}
 
 /**
  * Sends a prompt to Google Gemini and returns structured output.
@@ -262,20 +282,30 @@ export async function geminiPrompt(
     options,
     async (model, prompt, opts) => {
       const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const responseSchema = outputAsJson ? {
-        type: Type.OBJECT,
-        properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
-          acc[key] = convertToGeminiSchema(value);
-          return acc;
-        }, {} as Record<string, Schema>) : undefined,
-        required: outputJsonRequired || []
-      } satisfies Schema : undefined;
-
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
       const response = await getGeminiClient().models.generateContent({
         model,
-        contents: [{ parts: [{ text: `${systemPromptWithDocuments}\n\n${prompt}` }] }],
-        config: { ...config, responseSchema } satisfies GenerateContentConfig,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          ...config,
+          ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
+          // responseSchema: outputAsJson ? {
+          //   type: Type.OBJECT,
+          //   properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
+          //     acc[key] = convertToGeminiSchema(value);
+          //     return acc;
+          //   }, {} as Record<string, Schema>) : undefined,
+          //   required: outputJsonRequired || []
+          // } satisfies Schema : undefined,
+          responseJsonSchema: outputAsJson ? (outputJsonStructure ? {
+            type: "object",
+            properties: outputJsonStructure,
+            required: outputJsonRequired,
+            additionalProperties: false
+          } : { type: 'object' }) satisfies AIJsonProperty : undefined,
+          // System prompt in its own field — Gemini caches this automatically
+          systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
+        } satisfies GenerateContentConfig,
       } satisfies GenerateContentParameters);
       
       // Prompt-level safety block
@@ -340,7 +370,9 @@ export async function geminiPrompt(
  * @param options - Additional options including configurations, system prompt, models, etc.
  * @returns Normalized AI response with provider, model, output, usage, and finish reason,
  *          or null if all models fail
- *
+ * 
+ * @see structured JSON guide - https://console.groq.com/docs/structured-outputs
+ * 
  * @example
  * ```typescript
  * const response = await groqPrompt('Generate a story about psychological horror');
@@ -384,7 +416,7 @@ export async function groqPrompt(
               properties: outputJsonStructure,
               required: outputJsonRequired,
               additionalProperties: false
-            }
+            } satisfies AIJsonProperty
           }
         } : { type: 'json_object' }) : undefined,
       } satisfies GroqCompletion.ChatCompletionCreateParamsNonStreaming).withResponse();
@@ -475,7 +507,7 @@ export async function coherePrompt(
             properties: outputJsonStructure,
             required: outputJsonRequired,
             additionalProperties: false
-          } : undefined
+          } satisfies AIJsonProperty : undefined
         } satisfies Cohere.ResponseFormatV2 : undefined,
       } satisfies Cohere.V2ChatRequest);
     },
@@ -561,7 +593,7 @@ export async function cerebrasPrompt(
               properties: outputJsonStructure,
               required: outputJsonRequired,
               additionalProperties: false
-            }
+            } satisfies AIJsonProperty
           }
         } : { type: 'json_object' }) : undefined,
       } satisfies Cerebras.ChatCompletionCreateParamsNonStreaming) as Cerebras.ChatCompletion.ChatCompletionResponse;
@@ -640,7 +672,7 @@ export async function mistralPrompt(
               properties: outputJsonStructure,
               required: outputJsonRequired,
               additionalProperties: false
-            }
+            } satisfies AIJsonProperty
           }
         } : { type: 'json_object' }) : undefined,
       } satisfies ChatCompletionRequest);
@@ -676,10 +708,13 @@ export async function mistralPrompt(
  * @param stopSequences - Optional stop sequences to control output generation
  * @returns Normalized AI response with provider, model, output, usage, and finish reason,
  *          or null if all models fail
- *
+ * 
+ * @see structured JSON guide - https://docs.nvidia.com/nim/large-language-models/1.13.0/structured-generation.html
+ * @see docs - https://docs.api.nvidia.com/nim/reference/create_chat_completion_v1_chat_completions_post
+ * 
  * @example
  * ```typescript
- * const response = await nvidiaPrompt('Extract key Islamic concepts from this text');
+ * const response = await nvidiaPrompt('Generate a short thriller story');
  * if (response) {
  *   console.log(`Provider: ${response.provider}, Model: ${response.model}`);
  *   console.log(`Concepts: ${response.output}`);
@@ -695,11 +730,11 @@ export async function nvidiaPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { config = AI_CHAT_CONFIG_DEFAULT } = opts;
+      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+      const { maxOutputToken, temperature, topP, stopSequences } = config;
+
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', opts);
       const apiKey = requireEnv('NVIDIA_API_KEY');
-
-      // docs: https://docs.api.nvidia.com/nim/reference/create_chat_completion_v1_chat_completions_post
       const res = await fetch(`https://integrate.api.nvidia.com/v1/chat/completions`, {
         method: 'POST',
         headers: {
@@ -712,11 +747,25 @@ export async function nvidiaPrompt(
             { role: 'system', content: systemPromptWithDocuments },
             { role: 'user', content: prompt },
           ],
-          max_tokens: config.maxOutputToken,
-          temperature: config.temperature,
-          top_p: config.topP,
-          stop: config.stopSequences,
+          max_tokens: maxOutputToken,
+          temperature,
+          top_p: topP,
+          stop: stopSequences,
           stream: false,
+
+          // NVIDIA NIM Structured JSON Implementation
+          ...(outputAsJson ? {
+            extra_body: {
+              nvext: {
+                guided_json: (outputJsonStructure ? {
+                  type: "object",
+                  properties: outputJsonStructure,
+                  required: outputJsonRequired,
+                  additionalProperties: false
+                } : { type: "object" }) satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
+              }
+            }
+          } : {}),
         }),
       });
 
