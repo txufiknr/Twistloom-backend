@@ -145,16 +145,6 @@ Consequences — Delayed, subtle, escalating. Sometimes unfair or illogical. The
 
 Memory Corruption — Never state it directly. Let contradictions surface naturally. Make the reader quietly question previous pages.`;
 
-export const RULES_FUTURE_NOTES = `FUTURE NOTE RULES:
-
-Becoming Relevant:
-- Prioritize opportunities to advance these notes naturally.
-- Advancement does not require immediate resolution.
-
-For Later:
-- Keep these in mind for future planning.
-- Do not force them into the current page unless naturally justified.`;
-
 /**
  * Rules for maintaining narrative consistency despite psychological elements
  * 
@@ -186,6 +176,23 @@ Levels:
 - Nightmare: Constant pressure, no safe choices, broken reality
 
 Rules — Escalate naturally as page count increases. Near the ending, behave as at least High regardless of setting. Higher difficulty = more unreliable narration and reality distortion.`;
+
+export const RULES_FUTURE_NOTES = `FUTURE NOTE RULES:
+
+Becoming Relevant:
+- Prioritize opportunities to advance these notes naturally.
+- Advancement does not require immediate resolution.
+
+For Later:
+- Keep these in mind for future planning.
+- Do not force them into the current page unless naturally justified.`;
+
+export const RULES_PAGE_GENERATION = [
+  RULES_ROUTE_MEMORY,
+  RULES_STORY_CONSISTENCY,
+  RULES_DIFFICULTY_SCALING,
+  RULES_FUTURE_NOTES,
+].join('\n\n---\n');
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -1118,7 +1125,7 @@ TOTAL: 100 — Minimum passing score: 75
 ${isFinale ? `Finale adjustment: scoreBefore < 85 triggers correction. Standards are higher — this is the last impression.` : ''}
 
 ---
-CHOICE QUALITY (flag only — not scored):
+ACTIONS QUALITY (flag only — not scored):
 - Are choices meaningfully distinct in risk and emotional register?
 ${isEarlyPhase ? `- Do choices feel open and curious — not forcing immediate crisis?` : ''}
 ${isMidPhase ? `- Do choices reflect the player's established psychological decision patterns?` : ''}
@@ -1126,6 +1133,12 @@ ${isLatePhase || isFinale ? `- Do choices feel constrained, weighted, and conseq
 - Does at least one choice feel like a trap on closer inspection?
 - Do all choices appear plausibly reasonable on the surface?
 Flag any choice that fails — include in issues.
+
+---
+JSON INTEGRITY CHECKS (flag any violation):
+- familiarity is a decimal between 0.0 and 1.0
+- charactersPresent names exist in "KNOWN CHARACTERS"
+- All mandatory fields present and filled
 
 ---
 OUTPUT FORMAT (strict JSON, no extra text):
@@ -1164,6 +1177,11 @@ OUTPUT FORMAT (strict JSON, no extra text):
   return prompt.split('---').map(stripEmptyLines).join('\n\n---\n');
 }
 
+/**
+ * Note: Book creation threshold is higher than page generation (80 vs 75)
+ * a flawed initialization contaminates every page downstream.
+ * It is worth fixing more aggressively here.
+ */
 function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
   const { theme, mcCandidate } = params;
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
@@ -1242,16 +1260,16 @@ SCORING RUBRIC:
    Award points for:
    - Initial place context evocative and specific to the theme — not generic
    - Place familiarity appropriate to MC's established history with it
-   - charactersPresent on page 1 matches names in initialCharacters exactly
+   - charactersPresent matches names in initialCharacters exactly
    - timeOfDay and location consistent with the opening scene's mood
    Deduct points for:
    - Generic place descriptions (e.g. "a dark and eerie location")
-   - New character names in charactersPresent not present in initialCharacters
+   - Character names in charactersPresent not present in initialCharacters
    - Familiarity value contradicting MC's stated history with the place
 
 5. INITIAL STATE CALIBRATION (0-15) — Threshold: 11
    Award points for:
-   - Psychological flags reflect what actually happens on page 1 — not generic defaults
+   - Psychological flags reflect what actually happens — not generic defaults
    - Difficulty appropriate to how hostile the world is to this specific MC
    - viableEnding specific to this MC and theme — not a genre archetype template
    - totalPages within bounds, not multiples of 10, and proportional to theme complexity
@@ -1272,11 +1290,9 @@ SCORING RUBRIC:
    - Summary that reveals the viable ending or core twist
 
 TOTAL: 100 — Minimum passing score: 80
-Note: Book creation threshold is higher than page generation (80 vs 75) — a flawed initialization
-contaminates every page downstream. It is worth fixing more aggressively here.
 
 ---
-CHOICE QUALITY — FIRST PAGE ACTIONS (flag only — not scored):
+ACTIONS QUALITY — FIRST PAGE ACTIONS (flag only — not scored):
 - Are actions meaningfully distinct in risk and emotional register?
 - Do actions feel open and curious — not forcing immediate crisis on page 1?
 - Does at least one action feel subtly wrong or inadvisable?
@@ -1286,13 +1302,12 @@ Flag any action that fails — include in issues.
 
 ---
 JSON INTEGRITY CHECKS (flag any violation):
-- age is a number, not a range string
-- familiarity is a decimal between 0.0 and 1.0
 - totalPages is within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds
-- No trailing commas
-- All mandatory fields present and populated
+- MC's age is a number between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}
+- familiarity is a decimal between 0.0 and 1.0
 - charactersPresent names exist in initialCharacters
 - language is a valid ISO 639-1 code
+- All mandatory fields present and filled
 
 ---
 OUTPUT FORMAT (strict JSON, no extra text):
@@ -2144,18 +2159,6 @@ ${formatRouteContext(state)}
 
 FUTURE NOTES:
 ${formatFutureNotes(futureNotes, currentPage, phase)}
-
----
-${RULES_ROUTE_MEMORY}${futureNotes.length ? `
-
----
-${RULES_FUTURE_NOTES}` : ''}
-
----
-${RULES_STORY_CONSISTENCY}
-
----
-${RULES_DIFFICULTY_SCALING}
 
 ---
 ${formatThreadsPrompt(threads, stateInfo)}
@@ -3256,7 +3259,8 @@ async function prepareNextPageGenerationSetup(
   };
 
   const prompt = buildNextPagePrompt(promptParams);
-  const { systemPrompt, documents } = buildSystemPrompt(book, advancedState);
+  const { systemPrompt: coreSystemPrompt, documents } = buildSystemPrompt(book, advancedState);
+  const systemPrompt = `${coreSystemPrompt}\n\n---\n${RULES_PAGE_GENERATION}`;
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
   const config = determineAIConfig(advancedState, action);
@@ -3626,6 +3630,7 @@ ${stripEmptyLines(thinkThenOutput)}
 Only output the final corrected JSON.
 Do NOT mention this checklist.` : '';
 
+  // TODO: sort static > semi-static > dynamic  
   const finalPrompt = [
     prompt.trim(),
     outputFormatPart,

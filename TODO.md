@@ -8,6 +8,39 @@
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 
+[ ] const validated = ajv.validate(schema, aiResponse);
+https://www.npmjs.com/package/ajv
+
+[ ] json schema "minLength": 1
+{
+  "familiarity": {
+    "type": "number",
+    "minimum": 0,
+    "maximum": 1
+  }
+}
+
+---
+
+validate AI json integrity:
+
+import { z } from "zod";
+
+const UserSchema = z.object({
+  user_age: z.number().int().min(18).max(99),
+  username: z.string().min(3).max(15)
+});
+
+// After calling your LLM API (Groq, Cerebras, etc.)
+try {
+  const rawJson = JSON.parse(apiResponse.choices[0].message.content);
+  const validatedData = UserSchema.parse(rawJson); // Throws if constraints fail
+  console.log("Safe and validated data:", validatedData);
+} catch (error) {
+  console.error("LLM failed constraint validation. Retry or fallback needed.", error);
+}
+
+
 ---
 
 please examine my:

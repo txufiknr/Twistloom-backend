@@ -30,9 +30,9 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
 
 export const INITIAL_INVENTORY_ITEM_PROPERTIES: Record<keyof InitialInventoryItem, AIJsonProperty> = {
   name:   { type: 'string', description: 'Name of the inventory item' },
-  traits: { type: 'object', description: 'Traits or properties of the inventory item' },
-  amount: { type: 'integer', description: 'Quantity of the inventory item' },
-  where:  { type: 'string', description: 'Where the inventory item is located' },
+  traits: { type: 'object', description: 'Traits or properties of the item (key-value pairs)' },
+  amount: { type: 'integer', description: 'Quantity of the item' },
+  where:  { type: 'string', description: 'Where the item is located' },
 };
 
 export const INITIAL_INVENTORY_ITEM_KEYS: (keyof InitialInventoryItem)[] = ['name', 'amount', 'where'];
@@ -113,12 +113,11 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place (e.g., "MC discovered the place", "first meeting with Character A")' },
   keyObjects: {
     type: 'array',
-    description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc)',
+    description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror)',
     items: PLACE_KEY_OBJECT_SCHEMA
   },
   knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
-  // sensoryDetails: include only senses present and relevant to the scene.
-  traits: { type: 'object', description: 'Any details for narrative consistency (e.g., facing, feeling, sensory details, etc)' },
+  traits: { type: 'object', description: 'Any details present and relevant to the scene for narrative consistency (key-value pairs like sensory details, facing, feeling, etc)' },
 };
 
 export const { keyEvents: placeEvents, ...placeProperties } = INITIAL_PLACE_PROPERTIES;
@@ -167,7 +166,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
     addKeyEvents: placeEvents,
     keyObjects: {
       type: 'array',
-      description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc). Empty array if no changes.',
+      description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror). Empty array if no changes.',
       items: {
         ...PLACE_KEY_OBJECT_SCHEMA,
         properties: {
@@ -205,7 +204,7 @@ export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
       additionalProperties: false
     },
     bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
-    visualDescription: { type: 'string', description: "Character visual description (e.g. height, skin color, eye color, hair, etc)." },
+    visualDescription: { type: 'string', description: "Character visual description (e.g., height, skin color, eye color, hair)." },
     secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
     narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
     injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
@@ -249,7 +248,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   place: { type: 'string', description: 'Current place name' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
-  timeOfDay: { type: 'string', description: `Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'` },
+  timeOfDay: { type: 'string', description: `Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown')` },
   charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this page besides MC' },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
   importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page' },

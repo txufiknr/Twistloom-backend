@@ -6,7 +6,7 @@ import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValid
 import { difficulties, endingTypes, factTypes, flagLevels } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
 import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
-import { BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
  * Schema definition for AI validation response
@@ -51,7 +51,7 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
   suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Empty string if theme is valid.' },
   // comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
   comment: { type: 'string', description: 'Your complimentary comment (follow comment structure & example). Empty string if theme is invalid.' },
-  language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
+  language: { type: 'string', description: 'Detected language code (must be a valid ISO 639-1 code)' },
   titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` },
   // mcCandidate: MAIN_CHARACTER_SCHEMA
   mcCandidate: {
@@ -115,11 +115,11 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
  * This is the single source of truth for BookCreationResponse schema.
  * All helper functions reference this to avoid duplication.
  */
-export const BOOK_CREATION_SCHEMA_DEFINITION = {
+export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse, AIJsonProperty> = {
   title: { type: 'string' },
   alternativeTitles: { type: 'array', items: { type: 'string' } },
-  totalPages: { type: 'integer' },
-  language: { type: 'string', description: 'ISO 639-1 language code' },
+  totalPages: { type: 'integer', description: `Must be between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}` },
+  language: { type: 'string', description: 'Must be a valid ISO 639-1 code' },
   hook: { type: 'string' },
   summary: { type: 'string' },
   keywords: { type: 'array', items: { type: 'string' } },
@@ -176,7 +176,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION = {
   initialCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
   mainCharacter: MAIN_CHARACTER_SCHEMA
-} satisfies Record<keyof BookCreationResponse, AIJsonProperty>;
+};
 
 export const BOOK_CREATION_REQUIRED_FIELDS = [
   'title',
