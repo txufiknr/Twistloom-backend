@@ -1,6 +1,6 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
-import { CandidateGenerationPage } from "../types/candidate-generation.js";
+import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
@@ -331,14 +331,12 @@ export function filterRelevantCharacters(
  *   Narrative flags: missing, potential twist: not actually dead
  *   Status: disappeared
  */
-export function formatCharactersForPrompt(mc: StoryMC, state?: StoryState): string {
+export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
   const mcDetails = [];
   if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
 
   const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
   const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
-
-  const { characters = {} } = state || {};
 
   // Exclude character with same name as MC's, it's him/herself
   // TODO: sort by most recent interaction (via `character.pastInteractions` greatest `page`)

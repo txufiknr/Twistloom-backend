@@ -572,7 +572,7 @@ export type MemoryIntegrity = "stable" | "fragmented" | "corrupted";
  * Determines the intensity of psychological elements,
  * frequency of twists, and reliability of narration.
  */
-export const difficulties = ["low", "medium", "high", "nightmare"];
+export const difficulties = ["low", "medium", "high", "nightmare"] as const;
 export type Difficulty = typeof difficulties[number];
 
 /**

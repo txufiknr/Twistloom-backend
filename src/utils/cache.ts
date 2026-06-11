@@ -21,8 +21,10 @@
 import { and, eq, gt, like, or, sql } from "drizzle-orm";
 import { dbRead, dbWrite } from "../db/client.js";
 import { userCache } from "../db/schema.js";
-import { CACHE_TTL_MINUTES } from "../config/cache.js";
+import { CACHE_KEY_HASH_THRESHOLD, CACHE_TTL_MINUTES } from "../config/cache.js";
 import { getErrorMessage } from "./error.js";
+import { stableStringify } from "./parser.js";
+import { createHash } from "crypto";
 
 /**
  * Removes expired user cache entries using database-enforced TTL.
@@ -419,52 +421,52 @@ export async function invalidateStandardUsers(): Promise<void> {
 }
 
 /**
- * @summary Comprehensive cache invalidation for cluster-specific updates
- * @description Handles cluster detail cache and all affected user caches in one operation.
+ * @summary Comprehensive cache invalidation for book-specific updates
+ * @description Handles book detail cache and all affected user caches in one operation.
  * 
- * @param clusterId - The ID of cluster that was updated
- * @returns Promise that resolves when cluster-related cache invalidation completes
+ * @param bookId - The ID of book that was updated
+ * @returns Promise that resolves when book-related cache invalidation completes
  * 
  * @example
  * ```typescript
- * // After updating cluster metadata
- * await invalidateCachesForCluster('cluster-123');
+ * // After updating book metadata
+ * await invalidateCachesForBook('book-123');
  * 
  * // After trust level adjustment
- * await invalidateCachesForCluster('cluster-456');
+ * await invalidateCachesForBook('book-456');
  * 
  * // After embedding update
- * await invalidateCachesForCluster('cluster-789');
+ * await invalidateCachesForBook('book-789');
  * ```
  * 
  * Behavior:
  * - Multi-layered invalidation strategy for comprehensive coverage
- * - Handles both direct cluster cache and indirect user cache impacts
+ * - Handles both direct book cache and indirect user cache impacts
  * - Error-tolerant with logging for debugging
  * - Conservative approach ensures cache consistency
  * 
  * Invalidation:
- * - **Layer 1**: Direct cluster cache (cluster:{clusterId})
+ * - **Layer 1**: Direct book cache (book:{bookId})
  * - **Layer 2**: Standard users (latest, trending, global personalized)
  * - **Layer 3**: All personalized users (conservative pattern-based)
  * 
  * Use cases:
- * - Cluster metadata updates (title, summary, hero image)
+ * - Book metadata updates (title, summary, hook, keywords)
  * - Trust level refinements and adjustments
  * - Embedding vector updates
  * - Content quality improvements
- * - Cluster status changes
+ * - Book status changes
  * 
  * @note
  * - Conservative invalidation may cause unnecessary cache misses
- * - Consider performance impact during bulk cluster updates
+ * - Consider performance impact during bulk book updates
  * - Monitor error logs for cache invalidation issues
- * - Use for any cluster metadata or content changes
+ * - Use for any book metadata or content changes
  */
-export function invalidateCachesForCluster(clusterId: string) {
+export function invalidateCachesForBook(bookId: string) {
   try {
-    // 1) cluster detail cache key (if you have it)
-    void invalidateCacheKey(`cluster:${clusterId}`);
+    // 1) book detail cache key (if you have it)
+    void invalidateCacheKey(`book:${bookId}`);
   
     // 2) standard users
     void invalidateStandardUsers();
@@ -472,6 +474,34 @@ export function invalidateCachesForCluster(clusterId: string) {
     // 3) remove personalized caches (conservative)
     // invalidateCachePattern('user:personalized:%');
   } catch (err) {
-    console.error('[cache] ❌ Failed to invalidate user caches for cluster', clusterId, err);
+    console.error('[cache] ❌ Failed to invalidate user caches for book', bookId, err);
   }
+}
+
+/**
+ * Returns a stable DJB2-style hash (32-bit output) of the content that will be cached.
+ * Fast, deterministic, tiny implementation, good enough for cache key comparison.
+ * If the hash changes (e.g. story summary updated), we invalidate.
+ * 
+ * Use {@link hashContentSHA256} if you want collision safety.
+ */
+export function hashContentDJB2(content: string): string {
+  let h = 5381;
+  for (let i = 0; i < content.length; i++) {
+    // h = (h * 33) ^ content.charCodeAt(i); // uses floating-point arithmetic internally
+    h = ((h << 5) + h) ^ content.charCodeAt(i); // force 32-bit arithmetic every iteration
+  }
+  return (h >>> 0).toString(16);
+}
+
+export function hashContentSHA256(content: string): string {
+  // Another small improvement is to hash the UTF-8 bytes rather than the JavaScript string if you're using Node.
+  // That avoids any ambiguity around string encoding and is the standard approach.
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+export function createCacheKey(value: unknown): string {
+  const key = stableStringify(value);
+  if (key.length <= CACHE_KEY_HASH_THRESHOLD) return key;
+  return `sha256:${key.length}:${hashContentSHA256(key)}`;
 }

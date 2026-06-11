@@ -145,7 +145,6 @@ export const storyStates = pgTable(
     page: integer("page").notNull(),
     maxPage: integer("max_page").notNull(),
     flags: jsonb("flags").$type<PsychologicalFlags>().notNull(), // Psychological flags structure
-    // traumaTags: jsonb("trauma_tags").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     traumaTags: text("trauma_tags").array().notNull().default(sql`ARRAY[]::text[]`),
     futureNotes: jsonb("future_notes").$type<FutureNote[]>().notNull().default(sql`'[]'::jsonb`),
     factsHistory: jsonb("facts_history").$type<Record<string, FactHistory[]>>().notNull().default(sql`'{}'::jsonb`), // Chronological history of discovered facts

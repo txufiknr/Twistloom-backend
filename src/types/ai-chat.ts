@@ -60,17 +60,15 @@ export type AIModelSelection = Partial<Record<AIChatProvider, string[]>>;
  * These options control how prompts are processed and which providers
  * are available for fallback scenarios.
  */
-export interface AIPromptOptions {
+export type AIPromptOptions = Partial<AIPromptDocuments> & {
   /** Object of providers and their respective models to include in the fallback chain */
   modelSelection?: AIModelSelection;
-  /** Custom system prompt to override default behavior */
+  /** Custom system prompt to override default behavior (must be static) */
   systemPrompt?: string;
   /** Usage context string for logging and rate limiting (e.g., 'story-page') */
   context?: string;
   /** Additional configuration for the AI model */
   config?: AIChatConfig;
-  /** Documents to provide as context to the AI model */
-  documents?: AIDocument[];
   /** Whether to parse the output as JSON */
   outputAsJson?: boolean;
   /** JSON structure to use for parsing */
@@ -83,7 +81,14 @@ export interface AIPromptOptions {
   logPrompts?: boolean;
   /** Whether to log the evaluation result */
   logEvaluationResult?: boolean;
-}
+};
+
+export type AIPromptDocuments = {
+  /** Documents to provide as context to the AI model */
+  documents: AIDocument[];
+  /** Gemini context cache identifier (unique per documents) */
+  cachedContentId: string;
+};
 
 export type AIBaseTypeOptions = Omit<AIPromptOptions,
   'outputAsJson' |

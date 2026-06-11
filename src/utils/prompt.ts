@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
 import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -35,7 +35,7 @@ import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
-import type { AIChatConfig, AIChatConfigCaps, AIDocument, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
+import type { AIChatConfig, AIChatConfigCaps, AIPromptDocuments, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
@@ -205,10 +205,11 @@ export const RULES_PAGE_GENERATION = [
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-function buildSystemPrompt(book?: Book, state?: StoryState): { systemPrompt: string, documents: AIDocument[] } {
+function buildSystemPrompt(book?: Book, state?: StoryState, staticRules?: string): AIPromptDocuments & { systemPrompt: string } {
+  const bookMeta = buildBookMetaDocuments(book, state);
   return {
-    systemPrompt: PROMPT_SYSTEM,
-    documents: buildBookMetaDocuments(book, state)
+    systemPrompt: `${PROMPT_SYSTEM}${staticRules ? `\n\n${staticRules}` : ''}`,
+    ...bookMeta,
   };
 }
 
@@ -231,7 +232,7 @@ const firstBookOutputFormat: string = `{
     "mood": "One of: ${formatOneOf(moods)}",
     "place": "Location Name",
     "weather": "One of: ${formatOneOf(placeWeathers)}",
-    "timeOfDay": "e.g. 'night', '2 AM', or 'unknown'",
+    "timeOfDay": "e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range",
     "charactersPresent": [],
     "keyEvents": [],
     "importantObjects": [],
@@ -253,7 +254,7 @@ const firstBookOutputFormat: string = `{
       "guilt": "One of: low | medium | high",
       "curiosity": "One of: low | medium | high"
     },
-    "difficulty": "One of: low | medium | high | nightmare",
+    "difficulty": "One of: ${formatOneOf(difficulties)}",
     "viableEnding": {
       "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
       "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
@@ -3260,8 +3261,7 @@ async function prepareNextPageGenerationSetup(
   };
 
   const prompt = buildNextPagePrompt(promptParams);
-  const { systemPrompt: coreSystemPrompt, documents } = buildSystemPrompt(book, advancedState);
-  const systemPrompt = `${coreSystemPrompt}\n\n---\n${RULES_PAGE_GENERATION}`;
+  const systemPromptWithDocuments = buildSystemPrompt(book, advancedState, RULES_PAGE_GENERATION);
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
   const config = determineAIConfig(advancedState, action);
@@ -3274,8 +3274,7 @@ async function prepareNextPageGenerationSetup(
     generationContext,
     promptParams,
     prompt,
-    systemPrompt,
-    documents,
+    ...systemPromptWithDocuments,
     config,
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action),
     thinkThenOutput: buildNextPageReviewChecklist(advancedState),

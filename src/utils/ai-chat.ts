@@ -10,16 +10,16 @@ import { classifyGenAIError, getErrorMessage } from "./error.js";
 import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
-import { Type } from "@google/genai";
 import type Groq from 'groq-sdk';
 import type OpenAI from 'openai/resources/chat/completions.js';
 import type Cerebras from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { Cohere } from "cohere-ai";
-import type { GenerateContentConfig, GenerateContentParameters, GenerateContentResponse, Schema } from "@google/genai";
+import type { GenerateContentConfig, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
 import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
+import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -205,30 +205,39 @@ export async function geminiPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
+      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = opts;
+      // const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
+      const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? (outputJsonStructure ? {
+        type: "object",
+        properties: outputJsonStructure,
+        required: outputJsonRequired,
+        additionalProperties: false
+      } : { type: 'object' }) : undefined;
+
+      // Helper block to fulfill Gemini's minimum token requirement for explicit caching
+      const formattedDocuments = formatDocumentsToPrompt(documents);
+      const systemPromptWithDocuments = `${systemPrompt}\n\n${formattedDocuments}`;
+
+      const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
+        cachedContentId,
+        model,
+        systemPrompt,
+        formattedDocuments,
+      ) : null;
+
       const response = await getGeminiClient().models.generateContent({
         model,
         contents: [{ parts: [{ text: prompt }] }],
         config: {
           ...config,
           ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
-          // responseSchema: outputAsJson ? {
-          //   type: Type.OBJECT,
-          //   properties: outputJsonStructure ? Object.entries(outputJsonStructure).reduce((acc, [key, value]) => {
-          //     acc[key] = convertToGeminiSchema(value);
-          //     return acc;
-          //   }, {} as Record<string, Schema>) : undefined,
-          //   required: outputJsonRequired || []
-          // } satisfies Schema : undefined,
-          responseJsonSchema: outputAsJson ? (outputJsonStructure ? {
-            type: "object",
-            properties: outputJsonStructure,
-            required: outputJsonRequired,
-            additionalProperties: false
-          } : { type: 'object' }) satisfies AIJsonProperty : undefined,
-          // System prompt in its own field — Gemini caches this automatically
-          systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
+          // responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema) : undefined,
+          responseJsonSchema,
+          // Cache hit — send only the dynamic prompt
+          ...(cachedContent ? { cachedContent } : {
+            // Cache miss or unnecessary — do full request (Gemini caches this automatically)
+            systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
+          })
         } satisfies GenerateContentConfig,
       } satisfies GenerateContentParameters);
       
@@ -794,7 +803,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     outputJsonStructure,
     outputJsonRequired,
     systemPrompt = PROMPT_SYSTEM,
-    documents,
+    documents = [],
     context = 'ai',
     logPrompts = false,
     logEvaluationResult = false,
@@ -819,7 +828,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       if (!models || models.length === 0) continue; // Skip to next provider
 
       // Validate prompt length against provider's maximum limit
-      const totalPromptLength = systemPrompt.length + prompt.length;
+      const totalDocumentsLength = documents.reduce((sum, doc) => sum + `${doc.title ?? ''}${doc.snippet}`.length, 0);
+      const totalPromptLength = systemPrompt.length + prompt.length + totalDocumentsLength;
       const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
       if (totalPromptLength > maxPromptLength) {
         console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
@@ -880,7 +890,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
 
               // Pass generated raw output as document
               documents: [
-                ...(documents || []),
+                ...documents,
                 {
                   title: 'GENERATED JSON (from previous AI)',
                   snippet: result.output,
@@ -1029,7 +1039,7 @@ export function createAIOptionsWithSchema<T extends Record<string, unknown>>(
  * // Returns: "Story Context\nUser is in a dark forest...\n\nCharacter Info\nMain character: John..."
  * ```
  */
-function formatDocumentsToPrompt(documents?: AIDocument[]): string {
+export function formatDocumentsToPrompt(documents?: AIDocument[]): string {
   return documents 
     ? documents
         .filter((doc): doc is AIDocument => !!doc)
@@ -1061,8 +1071,7 @@ function formatDocumentsToPrompt(documents?: AIDocument[]): string {
  * ```
  */
 export function formatSystemPromptWithDocuments(provider: AIChatProvider, options: Pick<AIPromptOptions, 'systemPrompt' | 'documents' | 'logPrompts'>): string {
-  const { systemPrompt: customSystemPrompt, documents, logPrompts = false } = options;
-  const systemPrompt = customSystemPrompt ?? PROMPT_SYSTEM;
+  const { systemPrompt = PROMPT_SYSTEM, documents, logPrompts = false } = options;
   
   // Early return when no document or provider is Cohere's V2 API which
   // natively supports RAG via documents field.

@@ -35,8 +35,9 @@ import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
+import { createCacheKey } from "../utils/cache.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
-import type { AIDocument, AIResponseProvider } from "../types/ai-chat.js";
+import type { AIDocument, AIPromptDocuments, AIResponseProvider } from "../types/ai-chat.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
 
@@ -1383,14 +1384,25 @@ export function mapBookFromDb(dbBook: DBBook): Book {
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-export function buildBookMetaDocuments(book?: Book, state?: StoryState): AIDocument[] {
-  if (!book) return [];
-  
-  const bookMeta = { title: `BOOK META`, snippet: formatBookMetaForPrompt(book) };
-  const charactersMeta = { title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state) };
-  const placesMeta = { title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state) };
+export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'places' | 'page'>): AIPromptDocuments {
+  const documents: AIDocument[] = [];
 
-  return [bookMeta, charactersMeta, placesMeta];
+  if (book) {
+    documents.push({ title: `BOOK META`, snippet: formatBookMetaForPrompt(book) });
+    documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}) });
+  }
+  if (state) {
+    documents.push({ title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state.places, state.page) });
+  }
+
+  // Generate unique identifier per identical `book.id + state.characters + state.places`
+  const cachedContentId = createCacheKey([
+    book?.id,
+    state?.characters ? Object.values(state.characters) : undefined,
+    state?.places ? Object.values(state.places) : undefined,
+  ].filter(Boolean));
+
+  return { documents, cachedContentId };
 }
 
 /**
@@ -1481,7 +1493,7 @@ export async function generateCoverImages(book: Book, state?: StoryState, total?
     const taskPrompt = `Create compelling book cover for thriller novel - dramatic, clear minimum texts, high-impact design, cartoony Goosebumps style (not realistic). Focus on ${mcAppearance} ${mcAge} years-old ${mcGender} protagonist.`;
     const fullPrompt = formatSystemPromptWithDocuments('gemini', {
       systemPrompt: taskPrompt,
-      documents: bookMeta,
+      documents: bookMeta.documents,
       logPrompts: true
     });
     

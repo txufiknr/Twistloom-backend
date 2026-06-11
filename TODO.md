@@ -7,20 +7,18 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] system prompt: move known character & places to user prompt or semi-static (after output format)
+[ ] cohere track `meta.billed_units.input_tokens`
 
 [ ] const validated = ajv.validate(schema, aiResponse);
 https://www.npmjs.com/package/ajv
 
-[ ] json schema "minLength": 1
-{
-  "familiarity": {
-    "type": "number",
-    "minimum": 0,
-    "maximum": 1
-  }
-}
-
+---
+services/book.ts: buildBookMetaDocuments
+utils/cache.ts: hashContentDJB2, createCacheKey
+utils/gemini.ts
+utils/prompt.ts
+utils/ai-chat.ts
+utils/ai-chat-stream.ts
 ---
 
 validate AI json integrity:

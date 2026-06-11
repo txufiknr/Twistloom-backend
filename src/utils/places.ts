@@ -178,15 +178,13 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *     • Marcus (first met here)
  */
 export function formatPlacesForPrompt(
-  state?: StoryState,
+  places: Record<string, PlaceMemory>,
+  currentPage: number,
 ): string {
-  const places = state ? Object.values(state.places) : [];
+  const placeArray = Object.values(places);
+  if (!placeArray.length) return 'No known places.';
 
-  if (!places.length) return 'No known places.';
-
-  const currentPage = state?.page;
-
-  const sortedPlaces = [...places].sort((a, b) => {
+  const sortedPlaces = [...placeArray].sort((a, b) => {
     const aCurrent = a.lastVisitedAtPage === currentPage ? 1 : 0;
     const bCurrent = b.lastVisitedAtPage === currentPage ? 1 : 0;
 

@@ -1,6 +1,8 @@
 import { getGeminiClient } from './ai-clients.js';
 import { Type } from "@google/genai";
+// import { createHash } from 'crypto';
 import type { Schema } from "@google/genai";
+import { hashContentDJB2 } from './cache.js';
 
 interface GeminiCacheEntry {
   cacheId: string;         // Gemini cache resource name
@@ -22,49 +24,33 @@ const GEMINI_TYPE_MAP: Record<string, Type> = {
 
 
 // In-memory cache store (replace with Redis for multi-process setups)
-const storyCacheMap = new Map<string, GeminiCacheEntry>();
+const contentCacheMap = new Map<string, GeminiCacheEntry>();
 
 const CACHE_TTL_SECONDS = 3600; // 1 hour
 
 /**
- * Returns a stable hash of the content that will be cached.
- * If the hash changes (e.g. story summary updated), we invalidate.
- */
-function hashContent(content: string): string {
-  // Simple djb2 hash — good enough for cache key comparison.
-  // Replace with crypto.createHash('sha256') if you want collision safety.
-  let h = 5381;
-  for (let i = 0; i < content.length; i++) {
-    h = (h * 33) ^ content.charCodeAt(i);
-  }
-  return (h >>> 0).toString(16);
-}
-
-/**
- * Gets or creates a Gemini explicit cache for the given storyId.
+ * Gets or creates a Gemini explicit cache for the given cachedContentId.
  * The cache contains system instructions + semi-static story context.
  * 
  * Returns the cache name to pass as `cachedContent` in generateContent calls.
  */
 export async function getOrCreateGeminiCache(
-  storyId: string,
+  cachedContentId: string,
   model: string,
   systemInstruction: string,
   semiStaticContext: string, // book summary, MC base info, world summary
 ): Promise<string | null> {
   const prefixContent = systemInstruction + semiStaticContext;
-  const prefixHash = hashContent(prefixContent);
+  const prefixHash = hashContentDJB2(prefixContent);
   const now = Date.now();
 
-  const existing = storyCacheMap.get(storyId);
+  const existing = contentCacheMap.get(cachedContentId);
   // Cache is valid — reuse it
   if (existing && existing.prefixHash === prefixHash && existing.expiresAt > now + 60_000) return existing.cacheId;
 
   // Gemini requires minimum ~1 024 tokens to cache (32k chars is a safe lower bound)
   // If our prefix is too short, explicit caching won't engage — skip it gracefully.
-  if (prefixContent.length < 8_000) {
-    return null;
-  }
+  if (prefixContent.length < 8_000) return null;
 
   try {
     const ai = getGeminiClient();
@@ -82,14 +68,14 @@ export async function getOrCreateGeminiCache(
 
     if (!cache.name) return null;
 
-    storyCacheMap.set(storyId, {
+    contentCacheMap.set(cachedContentId, {
       cacheId: cache.name,
       prefixHash,
       createdAt: now,
       expiresAt: now + CACHE_TTL_SECONDS * 1000,
     });
 
-    console.log(`[gemini-cache] 💾 Created cache for story ${storyId}: ${cache.name}`);
+    console.log(`[gemini-cache] 💾 Created cache for story ${cachedContentId}: ${cache.name}`);
     return cache.name;
 
   } catch (err) {
@@ -99,8 +85,11 @@ export async function getOrCreateGeminiCache(
   }
 }
 
-export function invalidateGeminiCache(storyId: string): void {
-  storyCacheMap.delete(storyId);
+export async function invalidateGeminiCache(cachedContentId: string): Promise<void> {
+  const ai = getGeminiClient();
+  const existing = contentCacheMap.get(cachedContentId);
+  if (existing?.cacheId) await ai.caches.delete({ name: existing.cacheId });
+  contentCacheMap.delete(cachedContentId);
 }
 
 export function convertToGeminiSchema(jsonSchema: any): Schema {

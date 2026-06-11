@@ -248,7 +248,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   place: { type: 'string', description: 'Current place name' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
-  timeOfDay: { type: 'string', description: `Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown')` },
+  timeOfDay: { type: 'string', description: `Current time mark (e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range)` },
   charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this page besides MC' },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
   importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page' },

@@ -8,7 +8,7 @@ import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess } from './ai-logger.js';
 import { getErrorMessage } from "./error.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
-import { formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
+import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import { type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 import type { Cohere } from "cohere-ai";
@@ -17,6 +17,7 @@ import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as OpenAI from "openai/resources";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
+import { getOrCreateGeminiCache } from "./gemini.js";
 // import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
@@ -343,8 +344,8 @@ async function* geminiStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
-  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
+  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = options;
+  // const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
   const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? (outputJsonStructure ? {
     type: "object",
     properties: outputJsonStructure,
@@ -352,30 +353,30 @@ async function* geminiStreamGenerator(
     additionalProperties: false
   } : { type: 'object' }) : undefined;
 
-  // TODO: Implement Gemini explicit context caching
-  // // Build the semi-static portion (book summary + MC base — NOT recent pages or action)
-  // const semiStaticContext = buildGeminiSemiStaticContext(options);
+  // Helper block to fulfill Gemini's minimum token requirement for explicit caching
+  const formattedDocuments = formatDocumentsToPrompt(documents);
+  const systemPromptWithDocuments = `${systemPrompt}\n\n${formattedDocuments}`;
+  const model = options.models?.[0] || 'gemini-2.5-flash';
 
-  // const cachedContent = await getOrCreateGeminiCache(
-  //   options.storyId ?? '', // pass storyId through options
-  //   options.models?.[0] ?? 'gemini-2.5-flash',
-  //   systemPromptWithDocuments,
-  //   semiStaticContext,
-  // );
+  const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
+    cachedContentId,
+    model,
+    systemPrompt,
+    formattedDocuments,
+  ) : null;
 
   const response = await getGeminiClient().models.generateContentStream({
-    model: options.models?.[0] || 'gemini-2.5-flash',
+    model,
     contents: [{ parts: [{ text: prompt }] }],
     config: {
       ...config,
       ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
       responseJsonSchema,
       // Cache hit path — send only the dynamic prompt
-      // ...(cachedContent ? { cachedContent } : {
-        // Cache miss path — full request
-        // System prompt in its own field — Gemini caches this automatically
+      ...(cachedContent ? { cachedContent } : {
+        // Cache miss or unnecessary — do full request (Gemini caches this automatically)
         systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
-      // })
+      })
     } satisfies GenerateContentConfig,
   } satisfies GenerateContentParameters);
   
