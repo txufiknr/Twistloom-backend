@@ -13,13 +13,6 @@
 https://www.npmjs.com/package/ajv
 
 ---
-services/book.ts: buildBookMetaDocuments
-utils/cache.ts: hashContentDJB2, createCacheKey
-utils/gemini.ts
-utils/prompt.ts
-utils/ai-chat.ts
-utils/ai-chat-stream.ts
----
 
 validate AI json integrity:
 

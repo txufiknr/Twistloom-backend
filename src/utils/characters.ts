@@ -339,12 +339,21 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
   const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
 
   // Exclude character with same name as MC's, it's him/herself
-  // TODO: sort by most recent interaction (via `character.pastInteractions` greatest `page`)
-  const sideCharacters = characters ? Object.values(characters).filter(character => character.name !== mc.name) : [];
-  
+  const sideCharacters = characters ? Object.values(characters).filter(c => c.name !== mc.name) : [];
+
   // Early return: still no side characters yet
   if (!sideCharacters.length) return mcInfo;
 
+  // Sort side characters by most recent interaction or introduction.
+  sideCharacters.sort((a, b) => {
+    const latest = (ch: CharacterMemory) => {
+      const pages = (ch.pastInteractions || []).map((pi: PastInteraction) => pi.page).filter(Boolean);
+      const maxPast = pages.length ? Math.max(...pages) : undefined;
+      return (maxPast ?? ch.introducedAtPage ?? 0);
+    };
+    return latest(b) - latest(a);
+  });
+  
   const sideCharactersFormatted = sideCharacters
     .map(character => {
       const { name, knownName, recognitionLevel, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;

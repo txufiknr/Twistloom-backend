@@ -15,7 +15,7 @@
  * - Uses user_cache table with key/payload/updated_at schema
  * - SQL-level TTL enforcement for data consistency
  * - Upsert operations for atomic cache updates
- * - Flexible invalidation strategies (key, pattern, cluster-based)
+ * - Flexible invalidation strategies (key, pattern, book-based)
  */
 
 import { and, eq, gt, like, or, sql } from "drizzle-orm";
@@ -227,8 +227,8 @@ export async function setCachedUserRaw(
  * // Invalidate latest user cache
  * await invalidateCacheKey('user:latest:all');
  * 
- * // Invalidate cluster detail cache
- * await invalidateCacheKey('cluster:cluster-456');
+ * // Invalidate book detail cache
+ * await invalidateCacheKey('book:book-456');
  * ```
  * 
  * Behavior:
