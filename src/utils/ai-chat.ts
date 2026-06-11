@@ -186,82 +186,6 @@ export async function githubPrompt(
   );
 }
 
-// Helper function to convert JSON schema to Gemini schema recursively
-const GEMINI_TYPE_MAP: Record<string, Type> = {
-  string: Type.STRING,
-  number: Type.NUMBER,
-  integer: Type.INTEGER,
-  boolean: Type.BOOLEAN,
-  object: Type.OBJECT,
-  array: Type.ARRAY,
-  null: Type.NULL,
-};
-
-export function convertToGeminiSchema(jsonSchema: any): Schema {
-  if (typeof jsonSchema === 'boolean') return { type: Type.TYPE_UNSPECIFIED };
-  if (!jsonSchema || typeof jsonSchema !== 'object') return { type: Type.TYPE_UNSPECIFIED };
-  if (jsonSchema.anyOf) return { anyOf: jsonSchema.anyOf.map(convertToGeminiSchema) } as Schema;
-  if (jsonSchema.oneOf) return { anyOf: jsonSchema.oneOf.map(convertToGeminiSchema) } as Schema;
-
-  let type = jsonSchema.type;
-
-  if (Array.isArray(type)) {
-    const nonNull = type.filter((t) => t !== 'null');
-
-    if (nonNull.length === 1) {
-      type = nonNull[0];
-    } else {
-      return {
-        anyOf: nonNull.map((t) => convertToGeminiSchema({ ...jsonSchema, type: t })),
-      } as Schema;
-    }
-  }
-
-  if (type === 'array') {
-    const schema: Schema = { type: Type.ARRAY };
-
-    if (jsonSchema.items) schema.items = convertToGeminiSchema(jsonSchema.items);
-    if (typeof jsonSchema.minItems === 'number') schema.minItems = jsonSchema.minItems;
-    if (typeof jsonSchema.maxItems === 'number') schema.maxItems = jsonSchema.maxItems;
-    if (jsonSchema.description) schema.description = jsonSchema.description;
-
-    return schema;
-  }
-
-  if (type === 'object') {
-    const schema: Schema = {
-      type: Type.OBJECT,
-      properties: {},
-      required: jsonSchema.required ?? [],
-    };
-
-    if (jsonSchema.properties) {
-      schema.properties = Object.fromEntries(
-        Object.entries(jsonSchema.properties).map(([key, value]) => [
-          key,
-          convertToGeminiSchema(value),
-        ]),
-      );
-    }
-
-    if (jsonSchema.description) schema.description = jsonSchema.description;
-    if (jsonSchema.propertyOrdering) schema.propertyOrdering = jsonSchema.propertyOrdering;
-    // if (jsonSchema.additionalProperties) (schema as any).additionalProperties = convertToGeminiSchema(jsonSchema.additionalProperties);
-
-    return schema;
-  }
-
-  const schema: Schema = { type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED };
-
-  if (jsonSchema.description) schema.description = jsonSchema.description;
-  if (jsonSchema.enum) schema.enum = jsonSchema.enum;
-  if (jsonSchema.format) schema.format = jsonSchema.format;
-  if (typeof jsonSchema.minimum === 'number') schema.minimum = jsonSchema.minimum;
-  if (typeof jsonSchema.maximum === 'number') schema.maximum = jsonSchema.maximum;
-
-  return schema;
-}
-
 /**
  * Sends a prompt to Google Gemini and returns structured output.
  *
@@ -917,14 +841,15 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         logPrompts: shouldLogPrompts,
       };
       
+      // Provider-agnostic stack
       switch (provider) {
         case 'github': result = await githubPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
         case 'gemini': result = await geminiPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
-        case 'cohere': result = await coherePrompt(prompt, opts); break;     // ☑️ JSON object | ✅ document via RAG
+        case 'cohere': result = await coherePrompt(prompt, opts); break;     // ✅ JSON schema | ✅ document via RAG
         case 'mistral': result = await mistralPrompt(prompt, opts); break;   // ✅ JSON schema | ☑️ document via system prompt
         case 'groq': result = await groqPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
         case 'cerebras': result = await cerebrasPrompt(prompt, opts); break; // ✅ JSON schema | ☑️ document via system prompt
-        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ❌ No structured JSON (HTTP API limitation) | ☑️ document via system prompt
+        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ✅ JSON schema via extra_body | ☑️ document via system prompt
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, getErrorMessage(error));

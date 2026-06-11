@@ -17,6 +17,7 @@ import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as OpenAI from "openai/resources";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
+// import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
  * SSE-enabled AI streaming function that yields chunks immediately
@@ -344,20 +345,37 @@ async function* geminiStreamGenerator(
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
+  const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? (outputJsonStructure ? {
+    type: "object",
+    properties: outputJsonStructure,
+    required: outputJsonRequired,
+    additionalProperties: false
+  } : { type: 'object' }) : undefined;
+
+  // TODO: Implement Gemini explicit context caching
+  // // Build the semi-static portion (book summary + MC base — NOT recent pages or action)
+  // const semiStaticContext = buildGeminiSemiStaticContext(options);
+
+  // const cachedContent = await getOrCreateGeminiCache(
+  //   options.storyId ?? '', // pass storyId through options
+  //   options.models?.[0] ?? 'gemini-2.5-flash',
+  //   systemPromptWithDocuments,
+  //   semiStaticContext,
+  // );
+
   const response = await getGeminiClient().models.generateContentStream({
     model: options.models?.[0] || 'gemini-2.5-flash',
     contents: [{ parts: [{ text: prompt }] }],
     config: {
       ...config,
       ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
-      responseJsonSchema: outputAsJson ? (outputJsonStructure ? {
-        type: "object",
-        properties: outputJsonStructure,
-        required: outputJsonRequired,
-        additionalProperties: false
-      } : { type: 'object' }) satisfies AIJsonProperty : undefined,
-      // System prompt in its own field — Gemini caches this automatically
-      systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
+      responseJsonSchema,
+      // Cache hit path — send only the dynamic prompt
+      // ...(cachedContent ? { cachedContent } : {
+        // Cache miss path — full request
+        // System prompt in its own field — Gemini caches this automatically
+        systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },
+      // })
     } satisfies GenerateContentConfig,
   } satisfies GenerateContentParameters);
   

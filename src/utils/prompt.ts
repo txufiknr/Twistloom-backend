@@ -2721,6 +2721,7 @@ BRANCHING ACTIONS:
 ${getActionRulesText({ isFirstPage: true })}`;
 }
 
+// TODO: make static
 function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcCandidate' | 'titleIdea'>): string {
   const { mcCandidate, titleIdea } = params;
   return `Book Metadata:
@@ -3595,7 +3596,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
 }
 
 /**
- * Executes a prompt and returns structured JSON response
+ * Executes a prompt via AI multi-provider abstraction and returns structured JSON response.
  * 
  * This function is used for generating JSON data in a specific format.
  * 
@@ -3630,17 +3631,24 @@ ${stripEmptyLines(thinkThenOutput)}
 Only output the final corrected JSON.
 Do NOT mention this checklist.` : '';
 
-  // TODO: sort static > semi-static > dynamic  
+  // Cache optimized: sort static > semi-static > dynamic
+  // Output specifications and instructions at the top is the industry best practice for prompt caching
   const finalPrompt = [
-    prompt.trim(),
-    outputFormatPart,
+    // Static
+    // outputFormatPart, // Moved to system prompt below
+    // Semi-static
     fieldInstructionsPart,
-    thinkThenOutputPart
+    thinkThenOutputPart,
+    // Dynamic
+    prompt.trim(),
   ].join('\n\n---\n');
+
+  const options = createAIOptionsWithSchema<T>(configs);
+  options.systemPrompt = `${options.systemPrompt}\n\n---\n${outputFormatPart}`;
 
   const response = await aiPrompt<T>(
     finalPrompt,
-    createAIOptionsWithSchema<T>(configs),
+    options,
     evaluatorPrompt,
     onProgress,
     onGenerationProgress,

@@ -7,6 +7,7 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
+[ ] system prompt: move known character & places to user prompt or semi-static (after output format)
 
 [ ] const validated = ajv.validate(schema, aiResponse);
 https://www.npmjs.com/package/ajv
@@ -39,28 +40,6 @@ try {
 } catch (error) {
   console.error("LLM failed constraint validation. Retry or fallback needed.", error);
 }
-
-
----
-
-please examine my:
-- utils/prompt.ts
-- utils/ai-chat.ts
-- utils/ai-chat-stream.ts
-
-and learn LLM optimizations roadmap MD docs provided by chatgpt
-
-can you:
-- elaborate on optimization docs
-- elaborate on current implementation
-- provie me what are do-able actions to do to improve my implementation
-- tell me if you have any extra optimization plan besides in the docs
-
-finally, provide me:
-- gradual patches I can drop-in (easier/minor first)
-- updated & unified LLM optimizations roadmap MD docs to best reflect actual implementation in Twitloom (and mark actioned step as completed)
-
-please keep the unifed MD docs be comprehensive, verbose explanations, and easy to understand for beginners
 
 ---
 
@@ -101,7 +80,6 @@ Increase paranoia and uncertainty.
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
 [ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
 
-
 [ ] userSettings schema
 - interests: string[]
 - email notification settings
@@ -116,6 +94,11 @@ https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155
 
 future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)
+
+paid infra:
+[ ] purchase premium AI chat API keys
+[ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.
+[ ] migrate: serverless environment -> single, always-on server Vercel VPS alternative (like Render, Railway, or Fly.io) if you want a true, traditional single-instance server.
 
 by book creator:
 [ ] soundtrack based on mood

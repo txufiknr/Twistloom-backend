@@ -49,11 +49,9 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
     }
   },
   suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Empty string if theme is valid.' },
-  // comment: { type: 'string', description: 'Max 250 chars - complimentary comment about theme idea. Empty string if theme is invalid.' },
   comment: { type: 'string', description: 'Your complimentary comment (follow comment structure & example). Empty string if theme is invalid.' },
   language: { type: 'string', description: 'Detected language code (must be a valid ISO 639-1 code)' },
   titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` },
-  // mcCandidate: MAIN_CHARACTER_SCHEMA
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Output empty object "{}" if theme is invalid.`
