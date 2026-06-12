@@ -15,9 +15,10 @@ https://www.npmjs.com/package/ajv
 ---
 
 utils/ai-chat.ts
+utils/prompt.ts
+
 utils/ai-chat-stream.ts
 utils/gemini.ts
-utils/prompt.ts
 utils/characters.ts
 
 are my updates correct?

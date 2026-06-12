@@ -19,7 +19,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
-import { getOrCreateGeminiCache, invalidateGeminiCache } from "./gemini.js";
+import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -205,7 +205,7 @@ export async function geminiPrompt(
     prompt,
     options,
     async (model, prompt, opts) => {
-      const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = opts;
+      const { meta, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = opts;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
       const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
         type: "object",
@@ -223,6 +223,7 @@ export async function geminiPrompt(
         model,
         systemPrompt,
         formattedDocuments,
+        meta?.bookId,
       ) : null;
 
       const response = await getGeminiClient().models.generateContent({
@@ -246,12 +247,6 @@ export async function geminiPrompt(
         throw new Error(`Prompt blocked: ${response.promptFeedback.blockReason}`);
       }
 
-      // Clean up context cache after generation completed
-      // Note: clean up should be done after AI generation successful, because
-      // same book can have vast various amount of state combination per-parallel generation
-      // as this is an AI branching thriller narrative.
-      if (cachedContentId) await invalidateGeminiCache(cachedContentId);
-      
       return response;
     },
     (response) => {
@@ -833,6 +828,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     context = 'ai',
     logPrompts = false,
     logEvaluationResult = false,
+    meta
   } = options;
 
   // Define provider order from modelSelection or use empty array
@@ -875,6 +871,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         outputAsJson,
         systemPrompt,
         logPrompts: shouldLogPrompts,
+        meta
       };
       
       // Provider-agnostic stack

@@ -23,7 +23,7 @@ import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPag
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
-import { formatCharactersForPrompt, getMainCharacterInfo } from "../utils/characters.js";
+import { formatCharactersForPrompt } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
@@ -1384,12 +1384,11 @@ export function mapBookFromDb(dbBook: DBBook): Book {
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'places' | 'page' | 'inventory' | 'injuries'>): AIPromptDocuments {
+export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'places' | 'page'>): AIPromptDocuments {
   const documents: AIDocument[] = [];
 
   if (book) {
     documents.push({ title: `BOOK META`, snippet: formatBookMetaForPrompt(book) });
-    documents.push({ title: `MAIN CHARACTER (POV)`, snippet: getMainCharacterInfo(book.mc, state)! });
     documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}) });
   }
   if (state) {
@@ -1401,8 +1400,6 @@ export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'ch
     book?.id,
     state?.characters ? Object.values(state.characters) : undefined,
     state?.places ? Object.values(state.places) : undefined,
-    state?.inventory ? Object.values(state.inventory) : undefined,
-    state?.injuries ? Object.values(state.injuries) : undefined,
   ].filter(Boolean));
 
   return { documents, cachedContentId };

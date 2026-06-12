@@ -17,7 +17,7 @@ import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as OpenAI from "openai/resources";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
-import { getOrCreateGeminiCache, invalidateGeminiCache } from "./gemini.js";
+import { getOrCreateGeminiCache } from "./gemini.js";
 // import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
@@ -347,7 +347,7 @@ async function* geminiStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
-  const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = options;
+  const { meta, signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
   const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
     type: "object",
@@ -366,6 +366,7 @@ async function* geminiStreamGenerator(
     model,
     systemPrompt,
     formattedDocuments,
+    meta?.bookId,
   ) : null;
 
   const response = await getGeminiClient().models.generateContentStream({
@@ -393,12 +394,6 @@ async function* geminiStreamGenerator(
       if (text) yield text;
     }
   }
-
-  // Clean up context cache after generation completed
-  // Note: in serverless environments (Vercel), `contentCacheMap` resets on each cold start.
-  // The memory leak is only a concern for persistent server deployments. However, the Gemini-side
-  // cache accumulation (orphaned caches on Google's servers) applies in all environments.
-  if (cachedContentId) await invalidateGeminiCache(cachedContentId);
 }
 
 /**

@@ -69,14 +69,14 @@ const GEMINI_CACHE_TTL_SECONDS = 3600; // 1 hour
  */
 const REDIS_ENTRY_TTL_SECONDS = GEMINI_CACHE_TTL_SECONDS + 300; // 1 hr + 5 min
 
-// /**
-//  * Redis TTL for the book → cachedContentId reverse index.
-//  *
-//  * Long enough to span several Gemini cache refreshes (e.g. 8 hours) so we
-//  * can still find and delete the previous cache even across multiple
-//  * character/place updates in a single session.
-//  */
-// const REDIS_BOOK_INDEX_TTL_SECONDS = GEMINI_CACHE_TTL_SECONDS * 8; // 8 hours
+/**
+ * Redis TTL for the book → cachedContentId reverse index.
+ *
+ * Long enough to span several Gemini cache refreshes (e.g. 8 hours) so we
+ * can still find and delete the previous cache even across multiple
+ * character/place updates in a single session.
+ */
+const REDIS_BOOK_INDEX_TTL_SECONDS = GEMINI_CACHE_TTL_SECONDS * 8; // 8 hours
 
 /**
  * Minimum combined length of (systemInstruction + semiStaticContext) in chars
@@ -103,12 +103,12 @@ const EXPIRY_BUFFER_MS = 60_000; // 1 minute
 const redisEntryKey = (cachedContentId: string) =>
   `gemini:content-cache:${cachedContentId}`;
 
-// /**
-//  * Redis key for the book → current cachedContentId reverse index.
-//  * One record per book, updated on every new cache creation.
-//  */
-// const redisBookIndexKey = (bookId: string) =>
-//   `gemini:book-index:${bookId}`;
+/**
+ * Redis key for the book → current cachedContentId reverse index.
+ * One record per book, updated on every new cache creation.
+ */
+const redisBookIndexKey = (bookId: string) =>
+  `gemini:book-index:${bookId}`;
 
 // ─── L1 In-Memory Cache ───────────────────────────────────────────────────────
 //
@@ -119,8 +119,8 @@ const redisEntryKey = (cachedContentId: string) =>
 /** L1 cache: cachedContentId → GeminiCacheEntry */
 const l1Cache = new Map<string, GeminiCacheEntry>();
 
-// /** L1 book index: bookId → current cachedContentId */
-// const l1BookIndex = new Map<string, string>();
+/** L1 book index: bookId → current cachedContentId */
+const l1BookIndex = new Map<string, string>();
 
 // ─── Internal Read / Write Helpers ───────────────────────────────────────────
 
@@ -163,32 +163,32 @@ async function removeEntry(cachedContentId: string): Promise<void> {
   await deleteCache(redisEntryKey(cachedContentId));
 }
 
-// /**
-//  * Reads the current cachedContentId for a book from L1 then L2.
-//  * Returns null if no index entry exists (i.e. first cache for this book).
-//  */
-// async function readBookIndex(bookId: string): Promise<string | null> {
-//   // L1 hit
-//   const l1 = l1BookIndex.get(bookId);
-//   if (l1) return l1;
+/**
+ * Reads the current cachedContentId for a book from L1 then L2.
+ * Returns null if no index entry exists (i.e. first cache for this book).
+ */
+async function readBookIndex(bookId: string): Promise<string | null> {
+  // L1 hit
+  const l1 = l1BookIndex.get(bookId);
+  if (l1) return l1;
 
-//   // L2 hit
-//   const { data, hit } = await getFromCache<string>(redisBookIndexKey(bookId));
-//   if (hit && data) {
-//     l1BookIndex.set(bookId, data); // warm L1
-//     return data;
-//   }
+  // L2 hit
+  const { data, hit } = await getFromCache<string>(redisBookIndexKey(bookId));
+  if (hit && data) {
+    l1BookIndex.set(bookId, data); // warm L1
+    return data;
+  }
 
-//   return null;
-// }
+  return null;
+}
 
-// /**
-//  * Writes the current cachedContentId for a book to L2 (Redis) then L1.
-//  */
-// async function writeBookIndex(bookId: string, cachedContentId: string): Promise<void> {
-//   await setCache(redisBookIndexKey(bookId), cachedContentId, REDIS_BOOK_INDEX_TTL_SECONDS);
-//   l1BookIndex.set(bookId, cachedContentId);
-// }
+/**
+ * Writes the current cachedContentId for a book to L2 (Redis) then L1.
+ */
+async function writeBookIndex(bookId: string, cachedContentId: string): Promise<void> {
+  await setCache(redisBookIndexKey(bookId), cachedContentId, REDIS_BOOK_INDEX_TTL_SECONDS);
+  l1BookIndex.set(bookId, cachedContentId);
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -229,7 +229,7 @@ export async function getOrCreateGeminiCache(
   model: string,
   systemInstruction: string,
   semiStaticContext: string,
-  // bookId?: string,
+  bookId?: string,
 ): Promise<string | null> {
   const prefixContent = systemInstruction + semiStaticContext;
   const prefixHash = hashContentDJB2(prefixContent);
@@ -249,30 +249,15 @@ export async function getOrCreateGeminiCache(
   // Gemini rejects cache creation below ~1 024 tokens. Skip gracefully.
   if (prefixContent.length < GEMINI_CACHE_MIN_CHARS) return null;
 
-  // CONCERN: clean up should be done after AI generation successful, because
-  // same book can have vast various amount of state combination per-parallel generation
-  // as this is an AI branching thriller narrative.
-
-  // // ── 3. Clean up stale cache for this book ─────────────────────────────────
-  // // Evict the previous Gemini cache when characters/places change, so orphaned
-  // // caches don't accumulate on Google's servers.
-  // if (bookId) {
-  //   const previousId = await readBookIndex(bookId);
-  //   if (previousId && previousId !== cachedContentId) {
-  //     const previous = await readEntry(previousId);
-  //     if (previous?.cacheId) {
-  //       // Best-effort: deletion failure is not fatal — Gemini's TTL will eventually
-  //       // clean it up. We still evict from L1 + L2 so we stop referencing it.
-  //       await getGeminiClient()
-  //         .caches.delete({ name: previous.cacheId })
-  //         .catch((err) =>
-  //           console.warn(`[gemini-cache] ⚠️ Failed to delete stale cache ${previous.cacheId}:`, err)
-  //         );
-  //       console.log(`[gemini-cache] 🗑️ Evicted stale cache for book ${bookId}: ${previous.cacheId}`);
-  //     }
-  //     await removeEntry(previousId);
-  //   }
-  // }
+  // ── 3. Clean up stale cache for this book ─────────────────────────────────
+  // Evict the previous Gemini cache when characters/places change, so orphaned
+  // caches don't accumulate on Google's servers.
+  if (bookId) {
+    const previousId = await readBookIndex(bookId);
+    if (previousId && previousId !== cachedContentId) {
+      await invalidateGeminiCache(previousId);
+    }
+  }
 
   // ── 4. Create new Gemini context cache ────────────────────────────────────
   try {
@@ -302,13 +287,16 @@ export async function getOrCreateGeminiCache(
 
     // Write to L2 (Redis) then L1 — order matters for cross-instance consistency
     await writeEntry(cachedContentId, entry);
-    // if (bookId) await writeBookIndex(bookId, cachedContentId);
 
-    // console.log(`[gemini-cache] 🍪 Created cache ${bookId ? ` for book ${bookId}` : ''} (id: ${cachedContentId.slice(0, 12)}…): ${cache.name}`);
-    console.log(`[gemini-cache] 🍪 Created Gemini content cache (id: ${cachedContentId.slice(0, 12)}…): ${cache.name}`);
+    if (bookId) await writeBookIndex(bookId, cachedContentId);
+
+    console.log(`[gemini-cache] 🍪 Created Gemini content cache:`, {
+      bookId,
+      cachedContentId,
+      cacheName: cache.name,
+    });
 
     return cache.name;
-
   } catch (err) {
     // Non-fatal — caller falls back to a standard (non-cached) request
     console.warn(`[gemini-cache] ⚠️ Failed to create cache:`, err);
@@ -328,12 +316,15 @@ export async function getOrCreateGeminiCache(
 export async function invalidateGeminiCache(cachedContentId: string): Promise<void> {
   const existing = await readEntry(cachedContentId);
   if (existing?.cacheId) {
+    // Best-effort: Gemini's TTL will eventually clean it up.
     await getGeminiClient()
       .caches.delete({ name: existing.cacheId })
       .catch((err) =>
         console.warn(`[gemini-cache] ⚠️ Failed to delete cache ${existing.cacheId}:`, err)
       );
+    console.log(`[gemini-cache] ✨ Evicted cache: ${existing.cacheId}`);
   }
+  // Evict from L1 + L2 so we stop referencing it.
   await removeEntry(cachedContentId);
 }
 

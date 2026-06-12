@@ -8,6 +8,7 @@ import { BOOK_TRANSLATION_REQUIRED_FIELDS, BOOK_TRANSLATION_SCHEMA_DEFINITION, B
 import { executePromptForJSON } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
 import { getMainCharacterInfo } from "./characters.js";
+import { formatBookMetaForPrompt } from "./books.js";
 
 /**
  * For translating book meta (title, hook, summary) and page text
@@ -445,9 +446,12 @@ function formatBookDocument(book: BookToTranslate, index: number): AIDocument {
 
 function formatPagePrompt(page: PageToTranslate): string {
   const { book, state } = page;
-  return `TITLE: ${book.title}
-SYNOPSIS: ${book.summary}
-MAIN CHARACTER (POV): ${getMainCharacterInfo(book.mc, state)}
+  return `BOOK META:
+${formatBookMetaForPrompt(book)}
+
+---
+MAIN CHARACTER (POV):
+${getMainCharacterInfo({mc: book.mc, state})}
 
 ---
 TO TRANSLATE:

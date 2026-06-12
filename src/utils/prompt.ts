@@ -210,7 +210,11 @@ export const RULES_PAGE_GENERATION = [
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-function buildSystemPrompt(book?: Book, state?: StoryState, staticRules?: string): AIPromptDocuments & { systemPrompt: string } {
+function buildSystemPrompt(
+  book?: Book,
+  state?: Pick<StoryState, 'characters' | 'places' | 'page'>,
+  staticRules?: string
+): AIPromptDocuments & { systemPrompt: string } {
   const bookMeta = buildBookMetaDocuments(book, state);
   return {
     systemPrompt: `${PROMPT_SYSTEM}${staticRules ? `\n\n${staticRules}` : ''}`,
@@ -1201,7 +1205,7 @@ ${theme}
 """
 
 MAIN CHARACTER (MC):
-${getMainCharacterInfo(mcCandidate) ?? `Character should be inferred from theme. Keep the generated one if it already fits.`}
+${getMainCharacterInfo({mc: mcCandidate}) ?? `Character should be inferred from theme. Keep the generated one if it already fits.`}
 
 EXPECTED JSON SCHEMA:
 ${firstBookOutputFormat}
@@ -1996,18 +2000,18 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage): string 
   if (weather) situation.push(`Weather: ${weather}`);
   
   // Add characters if present
-  if (charactersPresent.length > 0) {
+  if (charactersPresent.length) {
     situation.push(`Characters present: ${charactersPresent.join(', ')}`);
   }
   
   // Add important objects if any
-  if (importantObjects.length > 0) {
+  if (importantObjects.length) {
     // situation.push(`Important objects: ${importantObjects.join(', ')}`);
     situation.push(`Important objects:\n${importantObjects.map(obj => `  · ${obj}`).join('\n')}`);
   }
   
   // Add key events if any
-  if (keyEvents.length > 0) {
+  if (keyEvents.length) {
     situation.push(`Key events:\n${keyEvents.map(event => `  · ${event}`).join('\n')}`);
   }
   
@@ -2015,14 +2019,20 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage): string 
 }
 
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage: page, previousPages } = params;
+  const { advancedState: state, actionedPage: page, previousPages, book } = params;
   const { actions } = page;
-  const { page: currentPage, contextHistory, plotFlags, factsHistory } = state;
-  const stateInfo = getStoryStateInfo(state);
-  const { phase, phaseGoal } = stateInfo;
+  const { page: currentPage, contextHistory, plotFlags, factsHistory, inventory, injuries } = state;
+  const { phase, phaseGoal } = getStoryStateInfo(state);
+
+  // MC current state: inventory + injuries change every few pages,
+  // so they live here in the dynamic prompt rather than in the cached documents.
+  const mcCurrentState = getMainCharacterInfo({mc: book.mc, state: { inventory, injuries }});
 
   return `CURRENT PHASE:
 ${phase} ${phaseGoal}
+
+MAIN CHARACTER (POV):
+${mcCurrentState}
 
 STORY CONTEXT:
 ${contextHistory || 'No story context yet.'}
@@ -2647,7 +2657,7 @@ function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcC
 - TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
 
 Main Character (MC):
-${getMainCharacterInfo(mcCandidate) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
+${getMainCharacterInfo({mc: mcCandidate}) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
 - If MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.`}
 - bio: ${mcCandidate?.bio ? 'enhance it' : 'infer from theme if provided'}. Must include at least one psychological trait that will be used against them.
 
@@ -3287,7 +3297,7 @@ function resolvePageDelta(
  * ```
  */
 export async function generateNextPage(params: BuildNextPageParams): Promise<PersistedStoryPage> {
-  const { userId, actionedPage, generateNewBranchId = false } = params;
+  const { book, userId, actionedPage, generateNewBranchId = false } = params;
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
@@ -3308,8 +3318,11 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         logPrompts: true,
         systemPrompt,
         documents,
-        cachedContentId
-      }
+        cachedContentId,
+        meta: {
+          bookId: book.id
+        }
+      },
     } satisfies AIPromptForJson<StoryGeneration>,
     jsonStructure: nextPageOutputFormat,
     fieldInstructions,
@@ -3385,7 +3398,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
  * caller can reuse the existing pages.
  */
 export async function generateNextPages(params: BuildNextPageParams): Promise<PersistedStoryPage[]> {
-  const { userId, actionedPage, generateNewBranchId = false, candidateCount: providedCandidateCount = DEFAULT_CANDIDATE_PAGE_PER_ACTION } = params;
+  const { book, userId, actionedPage, generateNewBranchId = false, candidateCount: providedCandidateCount = DEFAULT_CANDIDATE_PAGE_PER_ACTION } = params;
   
   // Fast path: Route to single page generation if only 1 is requested
   if (providedCandidateCount === 1) return [await generateNextPage(params)];
@@ -3415,7 +3428,10 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         logPrompts: true,
         systemPrompt,
         documents,
-        cachedContentId
+        cachedContentId,
+        meta: {
+          bookId: book.id
+        }
       }
     } satisfies AIPromptForJson<CandidatePagesGeneration>,
     jsonStructure: multiNextPageOutputFormat,

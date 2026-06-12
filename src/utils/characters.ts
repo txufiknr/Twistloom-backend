@@ -1,7 +1,7 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
 import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction } from "../types/character.js";
-import type { StoryState } from "../types/story.js";
+import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
 
@@ -225,7 +225,7 @@ export function processCharacterUpdates(
   }
 
   // Process relationship updates
-  if (relationshipUpdates && relationshipUpdates.length > 0) {
+  if (relationshipUpdates?.length) {
     for (const relUpdate of relationshipUpdates) {
       const sourceCharacter = state.characters[relUpdate.source];
       if (sourceCharacter) {
@@ -247,7 +247,7 @@ export function processCharacterUpdates(
  * 
  * @example
  * // Character with inventory and injuries
- * "Lisa Carter, female, 16 — Shy teenager with social anxiety.
+ * - Bio: Lisa Carter, female, 16 — Shy teenager with social anxiety.
  * - Inventory:
  *   - Cellphone (amount: 1, where: right pants pocket) - acquired: page 1
  *     → traits: color: black
@@ -257,65 +257,68 @@ export function processCharacterUpdates(
  *   - Deep cut (left arm, severity: 0.7) - acquired: page 5 at Haunted House
  *     → Consequence (high): Cannot lift heavy objects
  *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18 at School
- *     → Consequence (medium): Cannot run fast"
+ *     → Consequence (medium): Cannot run fast
  */
-export function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: Pick<StoryState, 'inventory' | 'injuries'>): string | null {
-  if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
-  const info = [mc.name, mc.gender, mc.age].filter(Boolean).join(', ');
-  const bio = `${info}${mc.bio ? ` — ${mc.bio}` : ''}`;
+export function getMainCharacterInfo(params: {
+  mc?: StoryMCCandidate | null,
+  state?: StoryMCState
+}): string | null {
+  const { mc, state } = params;
+  const { inventory = [], injuries = [] } = state ?? {};
+  const mcInfo: string[] = [];
 
-  if (state) {
-    let inventoryDetails: string | null = null;
-    let injuryDetails: string | null = null;
-    
-    // Format inventory items with detailed nested information
-    if (state.inventory.length > 0) {
-      const inventoryList = state.inventory.map(invItem => {
-        const parts = [];
-        parts.push(`${invItem.amount}x`);
-        parts.push(invItem.name);
-        
-        const details = [];
-        if (invItem.where) details.push(`where: ${invItem.where}`);
-        if (invItem.pageAcquired) details.push(`acquired: page ${invItem.pageAcquired}`);
-        
-        let inventoryLine = `  - ${parts.join(' ')}`;
-        if (details.length) inventoryLine += ` (${details.join(', ')})`;
-        if (invItem.traits && Object.keys(invItem.traits).length > 0) {
-          const traitEntries = Object.entries(invItem.traits).map(([key, value]) => `${key}: ${value}`);
-          inventoryLine += `\n    → traits: ${traitEntries.join(', ')}`;
-        }
-        return inventoryLine;
-      });
-      inventoryDetails = `\n${inventoryList.join('\n')}`;
-    }
-    
-    // Format detailed injury information with nested bullet points
-    if (state.injuries.length > 0) {
-      const injuryList = state.injuries.map(injury => {
-        const parts = [];
-        const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
-        if (injury.description) parts.push(injury.description);
-        if (injuryLocation) parts.push(`(${injuryLocation})`);
-        if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.place ? ` at ${injury.place}` : ''}`);
-
-        let injuryLine = `  - ${parts.join(' ')}`;
-        if (injury.consequences) {
-          const injurySeverity = getInjurySeverityLabel(injury);
-          injuryLine += `\n    → Consequences (${injurySeverity}): ${injury.consequences}`;
-        }
-        return injuryLine;
-      });
-      injuryDetails = `\n${injuryList.join('\n')}`;
-    }
-    
-    return [
-      bio,
-      inventoryDetails && `- Inventory: ${inventoryDetails}`,
-      injuryDetails && `- Injuries: ${injuryDetails}`
-    ].filter(Boolean).join('\n');
+  // Format main character's bio
+  if (mc && !Object.values(mc).every((i) => i === undefined)) {
+    const info = [mc.name, mc.gender, mc.age].filter(Boolean).join(', ');
+    mcInfo.push(`- Bio: ${info}${mc.bio ? ` — ${mc.bio}` : ''}`);
   }
-  return bio;
+
+  // Format inventory items with detailed nested information
+  if (inventory.length) {
+    const inventoryList = inventory.map(invItem => {
+      const parts = [];
+      parts.push(`${invItem.amount}x`);
+      parts.push(invItem.name);
+      
+      const details = [];
+      if (invItem.where) details.push(`where: ${invItem.where}`);
+      if (invItem.pageAcquired) details.push(`acquired: page ${invItem.pageAcquired}`);
+      
+      let inventoryLine = `  - ${parts.join(' ')}`;
+      if (details.length) inventoryLine += ` (${details.join(', ')})`;
+      if (invItem.traits && Object.keys(invItem.traits).length) {
+        const traitEntries = Object.entries(invItem.traits).map(([key, value]) => `${key}: ${value}`);
+        inventoryLine += `\n    → traits: ${traitEntries.join(', ')}`;
+      }
+      return inventoryLine;
+    });
+
+    const inventoryDetails = `\n${inventoryList.join('\n')}`;
+    mcInfo.push(`- Inventory: ${inventoryDetails}`);
+  }
+  
+  // Format detailed injury information with nested bullet points
+  if (injuries.length) {
+    const injuryList = injuries.map(injury => {
+      const parts = [];
+      const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
+      if (injury.description) parts.push(injury.description);
+      if (injuryLocation) parts.push(`(${injuryLocation})`);
+      if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.place ? ` at ${injury.place}` : ''}`);
+
+      let injuryLine = `  - ${parts.join(' ')}`;
+      if (injury.consequences) {
+        const injurySeverity = getInjurySeverityLabel(injury);
+        injuryLine += `\n    → Consequences (${injurySeverity}): ${injury.consequences}`;
+      }
+      return injuryLine;
+    });
+
+    const injuryDetails = `\n${injuryList.join('\n')}`;
+    mcInfo.push(`- Injuries: ${injuryDetails}`);
+  }
+  
+  return mcInfo.length ? mcInfo.join('\n') : null;
 }
 
 /**
@@ -367,18 +370,17 @@ export function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: Pick<
  *   Status: disappeared
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
-  // const mcDetails = [];
-  // if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
+  const mcDetails = [];
+  if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
 
-  // const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
-  // const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
+  const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
+  const mcInfo = mcDetails.length ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
 
   // Exclude character with same name as MC's, it's him/herself
   const sideCharacters = characters ? Object.values(characters).filter(c => c.name !== mc.name) : [];
 
   // Early return: still no side characters yet
-  // if (!sideCharacters.length) return mcInfo;
-  if (!sideCharacters.length) return 'No side characters yet.';
+  if (!sideCharacters.length) return mcInfo;
 
   // Sort side characters by most recent interaction or introduction.
   sideCharacters.sort((a, b) => {
@@ -453,7 +455,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
           if (injury.consequences) injuryParts.push(`Consequences (${severityLabel}): ${injury.consequences}`);
           if (injury.pageAcquired) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
           
-          const injuryInfo = injuryParts.length > 0 ? ` (${injuryParts.join(', ')})` : '';
+          const injuryInfo = injuryParts.length ? ` (${injuryParts.join(', ')})` : '';
           details.push(`    - Injury ${index + 1}${injuryInfo}`);
         });
       }
@@ -469,7 +471,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
         narrativeInfo.push(`potential twist: ${narrativeFlags.potentialTwist}`);
       }
       
-      if (narrativeInfo.length > 0) {
+      if (narrativeInfo.length) {
         details.push(`  Narrative flags: ${narrativeInfo.join(', ')}`);
       }
       
@@ -491,8 +493,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
     })
     .join('\n\n');
 
-  // return `${mcInfo}\n\n${sideCharactersFormatted}`;
-  return sideCharactersFormatted;
+  return `${mcInfo}\n\n${sideCharactersFormatted}`;
 }
 
 /**

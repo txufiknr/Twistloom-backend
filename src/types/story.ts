@@ -1055,6 +1055,8 @@ export type StoryState = {
   futureNotes: FutureNote[];
 };
 
+export type StoryMCState = Pick<StoryState, 'inventory' | 'injuries'>;
+
 /**
  * Comprehensive information about the current state of a story
  * 

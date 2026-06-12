@@ -81,6 +81,10 @@ export type AIPromptOptions = Partial<AIPromptDocuments> & {
   logPrompts?: boolean;
   /** Whether to log the evaluation result */
   logEvaluationResult?: boolean;
+  /** Additional metadata */
+  meta?: {
+    bookId?: string;
+  };
 };
 
 export type AIPromptDocuments = {
