@@ -6,7 +6,7 @@ import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure } from './ai-logger.js';
-import { classifyGenAIError, getErrorMessage } from "./error.js";
+import { classifyGenAIError } from "./error.js";
 import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
@@ -247,7 +247,7 @@ export async function geminiPrompt(
       }
 
       // Clean up context cache after generation completed
-      // Note: clean up should be done after AI generation successful & pages inserted
+      // Note: clean up should be done after AI generation successful, because
       // same book can have vast various amount of state combination per-parallel generation
       // as this is an AI branching thriller narrative.
       if (cachedContentId) await invalidateGeminiCache(cachedContentId);
@@ -393,39 +393,19 @@ export async function groqPrompt(
         console.warn('[groq] ❓ No usage data in response');
         return undefined;
       }
+
+      const promptTokens = usage.prompt_tokens;
+      const completionTokens = usage.completion_tokens;
+      const totalTokens = usage.total_tokens;
+      const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+      const cacheHitRate = promptTokens && cachedTokens ? cachedTokens / promptTokens : 0;
+
       return {
-        promptTokens: usage.prompt_tokens,
-        completionTokens: usage.completion_tokens,
-        totalTokens: usage.total_tokens,
-
-        // FIXME: Property 'cached_tokens' does not exist on type 'CompletionUsage'.
-        // cachedTokens: usage.cached_tokens,
-
-        // see: node_modules\.pnpm\groq-sdk@1.2.1\node_modules\groq-sdk\src\resources\completions.ts
-        // export interface CompletionUsage {
-        //   completion_tokens: number;
-        //   prompt_tokens: number;
-        //   total_tokens: number;
-        //   completion_time?: number;
-        //   completion_tokens_details?: CompletionUsage.CompletionTokensDetails | null;
-        //   prompt_time?: number;
-        //   prompt_tokens_details?: CompletionUsage.PromptTokensDetails | null;
-        //   queue_time?: number;
-        //   total_time?: number;
-        // }
-
-        // export namespace CompletionUsage {
-        //   export interface CompletionTokensDetails {
-        //     reasoning_tokens: number;
-        //   }
-        //   export interface PromptTokensDetails {
-        //     cached_tokens: number;
-        //   }
-        // }
-
-        // export declare namespace Completions {
-        //   export { type CompletionUsage as CompletionUsage };
-        // }
+        promptTokens,
+        completionTokens,
+        totalTokens,
+        cachedTokens,
+        cacheHitRate
       };
     },
     (response) => response.choices?.[0]?.finish_reason ?? 'unknown'
@@ -908,7 +888,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ✅ JSON schema via extra_body | ☑️ document via system prompt
       }
     } catch (error) {
-      console.log(`[${provider}] ⚠️ Provider failed:`, getErrorMessage(error));
+      console.log(`[${provider}] ⚠️ Provider failed:`, error);
       result = null;
     }
 
@@ -974,7 +954,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
               console.warn(`[${evaluationContext}] ❓ Evaluation returned no result — falling back to generation output`);
             }
           } catch (evalError) {
-            console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, getErrorMessage(evalError));
+            console.warn(`[${evaluationContext}] ⚠️ Evaluation failed — falling back to generation output:`, evalError);
             // Continue to parsing original generated result
           } finally {
             try {

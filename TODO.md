@@ -14,16 +14,44 @@ https://www.npmjs.com/package/ajv
 
 ---
 
-1. for P6 — Character Relevance Filter, I have my concern:
-because the system is per-page generation, I don't want AI forget that certain character exists in old pages (that important to re-appear later)
-my `futureNotes` system might help to solve that, but not fully because note usually minimum, AI will forget every details of that particular character
-that's why I kept all characters listed in prompt with their statuses, but sorted by most recent interaction
-I have limited side characters to 6 max, thus formatCharactersForPrompt will only list no more than 1 MC + 6 side characters
-so I think kept all characters listed is negligible than losing important information in future AI turns
-what's your take?
+utils/ai-chat.ts
+utils/ai-chat-stream.ts
+utils/gemini.ts
+utils/prompt.ts
+utils/characters.ts
 
-2. I have this `utils/redis.ts` and `services/cache.ts` (uploaded)
-can you help me migrate `contentCacheMap` in `utils/gemini.ts` into using Redis? please give me complete patched code file
+are my updates correct?
+
+I have 1 concern about Gemini stale cache clean up:
+I think clean up should be done after AI generation successful, because same book can have vast various amount of state combination per-parallel generation as this is an AI branching thriller narrative.
+
+so I put cleanup in `geminiPrompt` after AI generation for that "cached context" successful, am I correct?
+
+here's `buildBookMetaDocuments` function:
+
+export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'places' | 'page' | 'inventory' | 'injuries'>): AIPromptDocuments {
+  const documents: AIDocument[] = [];
+
+  if (book) {
+    documents.push({ title: `BOOK META`, snippet: formatBookMetaForPrompt(book) });
+    documents.push({ title: `MAIN CHARACTER (POV)`, snippet: getMainCharacterInfo(book.mc, state)! });
+    documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}) });
+  }
+  if (state) {
+    documents.push({ title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state.places, state.page) });
+  }
+
+  // Generate unique identifier per identical `book.id + state.characters + state.places`
+  const cachedContentId = createCacheKey([
+    book?.id,
+    state?.characters ? Object.values(state.characters) : undefined,
+    state?.places ? Object.values(state.places) : undefined,
+    state?.inventory ? Object.values(state.inventory) : undefined,
+    state?.injuries ? Object.values(state.injuries) : undefined,
+  ].filter(Boolean));
+
+  return { documents, cachedContentId };
+}
 
 ---
 

@@ -1,6 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext } from "../types/character.js";
+import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
 import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
@@ -183,34 +183,49 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   required: ['name', 'type', 'context', 'familiarity', 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
 };
 
+export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
+  name: { type: 'string', description: 'Real full name, even if undisclosed yet (used as identifier, cannot be changed).' },
+  knownName: { type: 'string', description: `Preferred alias, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
+  recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
+  role: { type: 'string', description: 'Role or occupation known to the MC.' },
+  gender: { type: "string", enum: [...genders] },
+  status: { type: 'string', enum: [...characterStatuses] },
+  relationshipToMC: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: [...relationshipTypes] },
+      status: { type: 'string', enum: [...relationshipStatuses] },
+      context: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
+      recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: 'How well does this character know MC.' },
+    } satisfies Record<keyof CharacterRelationshipContext, AIJsonProperty>,
+    required: ['type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationshipContext)[],
+    additionalProperties: false
+  },
+  bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
+  visualDescription: { type: 'string', description: "Character visual description (e.g., height, skin color, eye color, hair)." },
+  secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
+  narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
+  injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
+  pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
+};
+
+const { pastInteractions: _pi, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
+
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
+  properties: INITIAL_CHARACTER_PROPERTIES,
+  required: ['name', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
+  additionalProperties: false
+};
+
+export const UPDATE_CHARACTER_SCHEMA: AIJsonProperty = {
+  type: 'object',
   properties: {
-    name: { type: 'string', description: 'True name, even if undisclosed yet.' },
-    knownName: { type: 'string', description: `Preferred alias, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
-    recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
-    role: { type: 'string', description: 'Role or occupation known to the MC.' },
-    gender: { type: "string", enum: [...genders] },
-    status: { type: 'string', enum: [...characterStatuses] },
-    relationshipToMC: {
-      type: 'object',
-      properties: {
-        type: { type: 'string', enum: [...relationshipTypes] },
-        status: { type: 'string', enum: [...relationshipStatuses] },
-        context: { type: 'string', description: `Specific dynamic, not generic (${RELATIONSHIP_TO_MC_LENGTH}).` },
-        recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: 'How well does this character know MC.' },
-      } satisfies Record<keyof CharacterRelationshipContext, AIJsonProperty>,
-      required: ['type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationshipContext)[],
-      additionalProperties: false
-    },
-    bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
-    visualDescription: { type: 'string', description: "Character visual description (e.g., height, skin color, eye color, hair)." },
-    secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
-    narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
-    injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
-    pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
-  } satisfies Record<keyof NewCharacter, AIJsonProperty>,
-  required: ['name', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'secrets'] satisfies (keyof NewCharacter)[],
+    ...updateCharacterProperties,
+    name: { type: 'string', description: 'Real full name of character to update' },
+    newInteractions: { type: 'array', items: { type: 'string' }, description: 'New interactions happened in this page' },
+  } satisfies Record<keyof CharacterUpdate, AIJsonProperty>,
+  required: ['name', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions'] satisfies (keyof CharacterUpdate)[],
   additionalProperties: false
 };
 
@@ -218,8 +233,8 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
   type: 'object',
   description: 'Relationship between side characters',
   properties: {
-    source: { type: 'string', description: 'Character name initiating the relationship change. Only side characters. No need to describe feeling from MC (POV).' },
-    target: { type: 'string', description: 'Target character name. Only side characters. Use `relationshipToMC` if targetting MC.' },
+    source: { type: 'string', description: "Character's real full name initiating the relationship change. Only side characters. No need to describe feeling from MC (POV)." },
+    target: { type: 'string', description: "Target character's real full name. Only side characters. Use `relationshipToMC` if targetting MC." },
     type: { type: 'string', enum: [...relationshipTypes] },
     status: { type: 'string', enum: [...relationshipStatuses] },
     context: { type: 'string', description: 'Define relationship context' },
@@ -292,16 +307,8 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   characterUpdates: {
     type: 'object',
     properties: {
-      newCharacters: {
-        type: 'array',
-        description: 'New characters introduced if any.',
-        items: INITIAL_CHARACTER_SCHEMA
-      },
-      updatedCharacters: {
-        type: 'array',
-        description: 'Characters whose details have been updated if any.',
-        items: { type: 'object' },
-      },
+      newCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA, description: 'New characters introduced if any.' },
+      updatedCharacters: { type: 'array', items: UPDATE_CHARACTER_SCHEMA, description: 'Characters whose details have been updated if any.' },
     } satisfies Record<keyof CharacterUpdates, AIJsonProperty>,
     required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
     additionalProperties: false

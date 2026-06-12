@@ -3,12 +3,12 @@ import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clien
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_PAST_INTERACTIONS, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
+import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
-import { getInjurySeverityLabel } from "./characters.js";
+import { getMainCharacterInfo } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
@@ -36,7 +36,7 @@ import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js"
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptDocuments, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, StoryMCCandidate } from "../types/character.js";
+import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
@@ -188,6 +188,11 @@ For Later:
 - Do not force them into the current page unless naturally justified.`;
 
 export const RULES_PAGE_GENERATION = [
+  `PAGE TEXT RULES:
+- Continue directly from selected action. Example: "I [verb]."
+- Continue from current situation.
+- Pay close attention to the historical context and story canons. Ensure the storyline and every elements connects perfectly.
+- Keep consistent writing style and language.`,
   RULES_ROUTE_MEMORY,
   RULES_STORY_CONSISTENCY,
   RULES_DIFFICULTY_SCALING,
@@ -514,7 +519,7 @@ const nextPageOutputFormat: string = `{
     ],
     "updatedCharacters": [
       {
-        "name": "...",
+        "name": "<Real Full Name>",
         "knownName": "...",
         "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
         "gender": "One of: ${formatOneOf(genders)}",
@@ -528,21 +533,22 @@ const nextPageOutputFormat: string = `{
           "status": "One of: ${formatOneOf(relationshipStatuses)}",
           "context": "..."
         },
-        "pastInteractions": [
-          {
-            "page": <number>,
-            "interaction": "..."
-          }
-        ],
-        "narrativeFlags": {},
+        "newInteractions": ["..."],
+        "narrativeFlags": {
+          "isSuspicious": <boolean>,
+          "isMissing": <boolean>,
+          "isDead": <boolean>,
+          "hasSecret": <boolean>,
+          "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
+        },
         "injuries": []
       }
     ]
   },
   "relationshipUpdates": [
     {
-      "source": "<Name 1>",
-      "target": "<Name 2>",
+      "source": "<Real Full Name 1>",
+      "target": "<Real Full Name 2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}"
     }
@@ -863,15 +869,16 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
 
 characterUpdates.updatedCharacters
+${isLatePhase || isFinale
+? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
+: `  - Only update when bio, status, interactions, or relevance changes.`}
   - Only include characters whose state actually changed this page.
-  - Include only changed fields: knownName, bio, visualDescription, status, relationshipToMC, pastInteractions (append), narrativeFlags, injuries, secrets.
+  - Only include changed fields: knownName, bio, visualDescription, status, relationshipToMC, newInteractions, narrativeFlags, injuries, secrets.
   - bio: only gradually update character's bio if new information is revealed in this page.
   - knownName: gradually update mysterious character's known name as the MC learns more about his/her real identity.
   - recognitionLevel: how well does MC recognize this character at this point.
-  ${isLatePhase || isFinale ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.
-  - secrets: remove any revealed secret.` : `  - Only update when bio, status, interactions, or relevance changes.`}
-  - Merge pastInteractions (keep last ${MAX_PAST_INTERACTIONS})
-  - Adjust narrativeFlags to reflect plot developments
+  - narrativeFlags: adjust to reflect plot developments
+  - secrets: remove any revealed secret.
 
 relationshipUpdates
   - Changes in relationship between any two named characters (excluding MC).
@@ -1022,7 +1029,7 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale } = getStoryStateInfo(state);
   const { action } = actionedPage;
 
-  const prompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
+  const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
 Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount)}
 
@@ -1035,11 +1042,11 @@ ${formatNextPageNarrativePrompt(params)}
 EXPECTED JSON SCHEMA:
 ${candidateCount > 1 ? multiNextPageOutputFormat : nextPageOutputFormat}
 
-FIELD INSTRUCTIONS:
-${buildNextPageFieldInstructions(state, action)}
-
 ---
-INSTRUCTIONS — FOLLOW IN ORDER:
+FIELD INSTRUCTIONS:
+${buildNextPageFieldInstructions(state, action)}`;
+
+  const instructionsPrompt = `INSTRUCTIONS — FOLLOW IN ORDER:
 
 STEP 1 — PARSE & RECONSTRUCT
 If the generated JSON is malformed, invalid, or has out-of-bound values: reconstruct using available content and the expected schema. Fill missing required fields from story context. Do not invent content that contradicts established state.
@@ -1175,7 +1182,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
   "integrityFlags": [{ "field": "...", "issue": "..." }]
 }`;
 
-  return prompt.split('---').map(stripEmptyLines).join('\n\n---\n');
+  return [taskPrompt, ...instructionsPrompt.split('---').map(stripEmptyLines)].join('\n\n---\n');
 }
 
 /**
@@ -1422,7 +1429,7 @@ function getEndingArchetypesText(): string {
  * @param action - The action taken on this page if any
  * @returns Formatted string for this page entry
  */
-function formatPreviousPageEntry(page: ActionedStoryPage, plotFlags?: PlotFlag[]): string {
+function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPage, plotFlags?: PlotFlag[]): string {
   const pageText = formatPageTextForPrompt(page.text);
   const sceneInfo = [
     page.place ? `place: ${page.place}` : '',
@@ -1436,7 +1443,7 @@ function formatPreviousPageEntry(page: ActionedStoryPage, plotFlags?: PlotFlag[]
   if (plotFlags) entry += `\n  → Plot flags: ${plotFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent)).map(plotFlag => formatPlotFlag(plotFlag, { showPageHeader: false })).join('; ')}`;
 
   // Add action information if present
-  const { selectedAction: action } = page;
+  const action = 'action' in page ? page.action : page.selectedAction;
   if (action) {
     if (action.text) {
       const actionText = `"${action.text}"`;
@@ -1505,10 +1512,12 @@ function formatPreviousPagesForPrompt(
   const seenPlotFlags = new Set<string>();
 
   const olderPlotFlags = [...plotFlags].sort((a, b) => {
-    if (a.page !== b.page) return a.page - b.page;
-
-    return Number(b.isMajorEvent) - Number(a.isMajorEvent);
+    if (a.page === b.page) return Number(b.isMajorEvent) - Number(a.isMajorEvent); // Major events first
+    return a.page - b.page; // Page number ascending
   }).filter(flag => {
+    // Exclude plot flags from current page
+    if (currentPage === flag.page) return false;
+
     // Already represented by recent page context
     if (displayedPages.has(flag.page)) return false;
 
@@ -1544,88 +1553,6 @@ function formatPreviousPagesForPrompt(
     ...formattedOlderFlags,
     ...formattedRecentPages,
   ].join('\n');
-}
-
-/**
- * Gets formatted main character information for prompt
- * @param mc - Main character profile
- * @param state - Current story state with inventory and injuries
- * @returns Formatted string with character details, or null if no character data
- * 
- * @example
- * // Basic character without state
- * "Lisa Carter, female, 16 — Shy teenager with social anxiety."
- * 
- * @example
- * // Character with inventory and injuries
- * "Lisa Carter, female, 16 — Shy teenager with social anxiety.
- * - Inventory:
- *   - Cellphone (amount: 1, where: right pants pocket) - acquired: page 1
- *     → traits: color: black
- *   - Rugged rope (where: backpack) - acquired: page 5 at Haunted House
- *     → traits: color: brown, length: 5-meter
- * - Injuries:
- *   - Deep cut (left arm, severity: 0.7) - acquired: page 5 at Haunted House
- *     → Consequence (high): Cannot lift heavy objects
- *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18 at School
- *     → Consequence (medium): Cannot run fast"
- */
-export function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: StoryState): string | null {
-  if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
-  const bio = `${[mc.name, mc.gender, mc.age].filter(Boolean).join(', ')}${mc.bio ? ` — ${mc.bio}` : ``}`.trim();
-  
-  if (state) {
-    let inventoryDetails: string | null = null;
-    let injuryDetails: string | null = null;
-    
-    // Format inventory items with detailed nested information
-    if (state.inventory.length > 0) {
-      const inventoryList = state.inventory.map(invItem => {
-        const parts = [];
-        parts.push(invItem.name);
-        
-        const details = [];
-        if (invItem.amount !== undefined) details.push(`amount: ${invItem.amount}`);
-        if (invItem.where) details.push(`where: ${invItem.where}`);
-        
-        let inventoryLine = `  - ${parts.join(' ')}`;
-        if (details.length > 0) {
-          inventoryLine += ` (${details.join(', ')})`;
-        }
-        if (invItem.pageAcquired) {
-          inventoryLine += ` - acquired: page ${invItem.pageAcquired}${invItem.place ? ` at ${invItem.place}` : ''}`;
-        }
-        if (invItem.traits && Object.keys(invItem.traits).length > 0) {
-          const traitEntries = Object.entries(invItem.traits).map(([key, value]) => `${key}: ${value}`);
-          inventoryLine += `\n    → traits: ${traitEntries.join(', ')}`;
-        }
-        return inventoryLine;
-      });
-      inventoryDetails = `\n${inventoryList.join('\n')}`;
-    }
-    
-    // Format detailed injury information with nested bullet points
-    if (state.injuries.length > 0) {
-      const injuryList = state.injuries.map(injury => {
-        const parts = [];
-        const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
-        if (injury.description) parts.push(injury.description);
-        if (injuryLocation) parts.push(`(${injuryLocation})`);
-        if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.place ? ` at ${injury.place}` : ''}`);
-
-        let injuryLine = `  - ${parts.join(' ')}`;
-        if (injury.consequences) {
-          const injurySeverity = getInjurySeverityLabel(injury);
-          injuryLine += `\n    → Consequences (${injurySeverity}): ${injury.consequences}`;
-        }
-        return injuryLine;
-      });
-      injuryDetails = `\n${injuryList.join('\n')}`;
-    }
-    
-    return [bio, inventoryDetails && `- Inventory: ${inventoryDetails}`, injuryDetails && `- Injuries: ${injuryDetails}`].filter(Boolean).join('\n');
-  }
-  return bio;
 }
 
 /**
@@ -2088,27 +2015,14 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage): string 
 }
 
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
-  const { book, advancedState: state, actionedPage: page, previousPages } = params;
-  const { mc, summary } = book;
+  const { advancedState: state, actionedPage: page, previousPages } = params;
   const { actions } = page;
   const { page: currentPage, contextHistory, plotFlags, factsHistory } = state;
   const stateInfo = getStoryStateInfo(state);
   const { phase, phaseGoal } = stateInfo;
 
-  return `HARD RULES:
-- Continue directly from selected action. Example: "I [verb]."
-- Continue from current situation.
-- Pay close attention to the historical context and story canons. Ensure the storyline and every elements connects perfectly.
-- Keep consistent writing style and language.
-
-THEME REMINDER:
-${summary}
-
-CURRENT PHASE:
+  return `CURRENT PHASE:
 ${phase} ${phaseGoal}
-
-MAIN CHARACTER (POV):
-${getMainCharacterInfo(mc, state)!}
 
 STORY CONTEXT:
 ${contextHistory || 'No story context yet.'}
@@ -2122,7 +2036,7 @@ PREVIOUS PAGES:
 ${formatPreviousPagesForPrompt(currentPage, previousPages, plotFlags)}
 
 CURRENT PAGE:
-• Page ${page.page}: ${formatPageTextForPrompt(page.text)}
+${formatPreviousPageEntry(page, plotFlags.filter(f => f.page === currentPage))}
 
 CURRENT SITUATION:
 ${formatCurrentSituationForPrompt(page)}
@@ -2450,9 +2364,9 @@ function formatHiddenState(hiddenState: HiddenState, currentPage: number): strin
   const realityInfluence = realityStabilities[realityStability as keyof typeof realityStabilities];
 
   const lines: string[] = [
-    `• Truth level: ${truthLevel}${truthInfluence ? ` (${truthInfluence})` : ""}`,
-    `• Threat proximity: ${threatProximity}${threatInfluence ? ` (${threatInfluence})` : ""}`,
-    `• Reality stability: ${realityStability}${realityInfluence ? ` (${realityInfluence})` : ""}`,
+    `• Truth level: ${truthInfluence ?? truthLevel}`,
+    `• Threat proximity: ${threatInfluence ?? threatProximity}`,
+    `• Reality stability: ${realityInfluence ?? realityStability}`,
   ];
 
   if (endingPlan?.armed) {
@@ -3405,7 +3319,10 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   
   // 4. Handle AI response validation
   if (!response.result) {
-    throw new Error(`Failed to generate story page: ${response.finishReason ?? "UNKNOWN"} (${response.provider ?? "unknown"})`);
+    // TODO: investigate why
+    const { provider = 'unknown', finishReason = 'UNKNOWN' } = response;
+    console.log(`[${provider}] ❌ Failed to generate story page:`, { finishReason, response });
+    throw new Error(`Failed to generate story page: ${finishReason} (${provider})`);
   }
 
   // 5. Apply state updates

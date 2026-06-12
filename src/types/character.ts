@@ -240,7 +240,7 @@ export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInter
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Partial<NewCharacter>;
+export type CharacterUpdate = Partial<Omit<NewCharacter, 'pastInteractions'>> & { newInteractions?: string[] };
 
 /**
  * Complete character updates structure for AI JSON output

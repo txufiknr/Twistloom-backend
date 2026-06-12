@@ -106,17 +106,12 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.status) updated.status = update.status;
   if (update.secrets) updated.secrets = update.secrets;
   if (update.relationshipToMC) updated.relationshipToMC = update.relationshipToMC;
-  
-  // Merge relationships (replace entire array if provided)
-  // if (update.relationships) {
-  //   updated.relationships = update.relationships;
-  // }
-  
+
   // Merge past interactions with sliding window
-  if (update.pastInteractions) {
+  if (update.newInteractions) {
     updated.pastInteractions = [
       ...existing.pastInteractions,
-      ...update.pastInteractions.map<PastInteraction>(i => ({ page, interaction: i, place }))
+      ...update.newInteractions.map<PastInteraction>(i => ({ page, interaction: i, place }))
     ].slice(-MAX_PAST_INTERACTIONS);
   }
     
@@ -241,6 +236,89 @@ export function processCharacterUpdates(
 }
 
 /**
+ * Gets formatted main character information for prompt
+ * @param mc - Main character profile
+ * @param state - Current story state with inventory and injuries
+ * @returns Formatted string with character details, or null if no character data
+ * 
+ * @example
+ * // Basic character without state
+ * "Lisa Carter, female, 16 — Shy teenager with social anxiety."
+ * 
+ * @example
+ * // Character with inventory and injuries
+ * "Lisa Carter, female, 16 — Shy teenager with social anxiety.
+ * - Inventory:
+ *   - Cellphone (amount: 1, where: right pants pocket) - acquired: page 1
+ *     → traits: color: black
+ *   - Rugged rope (where: backpack) - acquired: page 5 at Haunted House
+ *     → traits: color: brown, length: 5-meter
+ * - Injuries:
+ *   - Deep cut (left arm, severity: 0.7) - acquired: page 5 at Haunted House
+ *     → Consequence (high): Cannot lift heavy objects
+ *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18 at School
+ *     → Consequence (medium): Cannot run fast"
+ */
+export function getMainCharacterInfo(mc?: StoryMCCandidate | null, state?: Pick<StoryState, 'inventory' | 'injuries'>): string | null {
+  if (!mc || Object.values(mc).every((i) => i === undefined)) return null;
+  const info = [mc.name, mc.gender, mc.age].filter(Boolean).join(', ');
+  const bio = `${info}${mc.bio ? ` — ${mc.bio}` : ''}`;
+
+  if (state) {
+    let inventoryDetails: string | null = null;
+    let injuryDetails: string | null = null;
+    
+    // Format inventory items with detailed nested information
+    if (state.inventory.length > 0) {
+      const inventoryList = state.inventory.map(invItem => {
+        const parts = [];
+        parts.push(`${invItem.amount}x`);
+        parts.push(invItem.name);
+        
+        const details = [];
+        if (invItem.where) details.push(`where: ${invItem.where}`);
+        if (invItem.pageAcquired) details.push(`acquired: page ${invItem.pageAcquired}`);
+        
+        let inventoryLine = `  - ${parts.join(' ')}`;
+        if (details.length) inventoryLine += ` (${details.join(', ')})`;
+        if (invItem.traits && Object.keys(invItem.traits).length > 0) {
+          const traitEntries = Object.entries(invItem.traits).map(([key, value]) => `${key}: ${value}`);
+          inventoryLine += `\n    → traits: ${traitEntries.join(', ')}`;
+        }
+        return inventoryLine;
+      });
+      inventoryDetails = `\n${inventoryList.join('\n')}`;
+    }
+    
+    // Format detailed injury information with nested bullet points
+    if (state.injuries.length > 0) {
+      const injuryList = state.injuries.map(injury => {
+        const parts = [];
+        const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
+        if (injury.description) parts.push(injury.description);
+        if (injuryLocation) parts.push(`(${injuryLocation})`);
+        if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.place ? ` at ${injury.place}` : ''}`);
+
+        let injuryLine = `  - ${parts.join(' ')}`;
+        if (injury.consequences) {
+          const injurySeverity = getInjurySeverityLabel(injury);
+          injuryLine += `\n    → Consequences (${injurySeverity}): ${injury.consequences}`;
+        }
+        return injuryLine;
+      });
+      injuryDetails = `\n${injuryList.join('\n')}`;
+    }
+    
+    return [
+      bio,
+      inventoryDetails && `- Inventory: ${inventoryDetails}`,
+      injuryDetails && `- Injuries: ${injuryDetails}`
+    ].filter(Boolean).join('\n');
+  }
+  return bio;
+}
+
+/**
  * Formats characters for prompt injection with comprehensive narrative context
  * 
  * Creates a rich, detailed string representation of characters including narrative flags,
@@ -289,17 +367,18 @@ export function processCharacterUpdates(
  *   Status: disappeared
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
-  const mcDetails = [];
-  if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
+  // const mcDetails = [];
+  // if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
 
-  const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
-  const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
+  // const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
+  // const mcInfo = mcDetails.length > 0 ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
 
   // Exclude character with same name as MC's, it's him/herself
   const sideCharacters = characters ? Object.values(characters).filter(c => c.name !== mc.name) : [];
 
   // Early return: still no side characters yet
-  if (!sideCharacters.length) return mcInfo;
+  // if (!sideCharacters.length) return mcInfo;
+  if (!sideCharacters.length) return 'No side characters yet.';
 
   // Sort side characters by most recent interaction or introduction.
   sideCharacters.sort((a, b) => {
@@ -330,7 +409,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const details = [];
       
       // Basic information
-      if (useDifferentReference) details.push(`  Real name: "${name}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
+      if (useDifferentReference) details.push(`  Real full name: "${name}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
       details.push(`  Bio: ${bio}`);
       details.push(`  Visual description: ${visualDescription}`);
       details.push(`  Introduced at page: ${introducedAtPage || '-'}`);
@@ -412,7 +491,8 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
     })
     .join('\n\n');
 
-  return `${mcInfo}\n\n${sideCharactersFormatted}`;
+  // return `${mcInfo}\n\n${sideCharactersFormatted}`;
+  return sideCharactersFormatted;
 }
 
 /**

@@ -5,8 +5,9 @@ import { SUMMARY_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
 import type { ActionTranslation } from "../types/story.js";
 import type { BookTranslation, PageTranslation, PageTranslationBulk, PageTranslationBulkResponse, BookTranslationBulkResponse, BookTranslationBulk, PageToTranslate, BookToTranslate } from "../types/book.js";
 import { BOOK_TRANSLATION_REQUIRED_FIELDS, BOOK_TRANSLATION_SCHEMA_DEFINITION, BULK_BOOK_TRANSLATION_REQUIRED_FIELDS, BULK_BOOK_TRANSLATION_SCHEMA_DEFINITION, PAGE_TRANSLATION_REQUIRED_FIELDS, PAGE_TRANSLATION_SCHEMA_DEFINITION, BULK_PAGE_TRANSLATION_REQUIRED_FIELDS, BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION } from "../schema/book.js";
-import { executePromptForJSON, getMainCharacterInfo } from "./prompt.js";
+import { executePromptForJSON } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
+import { getMainCharacterInfo } from "./characters.js";
 
 /**
  * For translating book meta (title, hook, summary) and page text
@@ -446,7 +447,7 @@ function formatPagePrompt(page: PageToTranslate): string {
   const { book, state } = page;
   return `TITLE: ${book.title}
 SYNOPSIS: ${book.summary}
-MAIN CHARACTER (MC): ${getMainCharacterInfo(book.mc, state)}
+MAIN CHARACTER (POV): ${getMainCharacterInfo(book.mc, state)}
 
 ---
 TO TRANSLATE:

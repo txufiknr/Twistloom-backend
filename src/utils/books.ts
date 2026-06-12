@@ -1,5 +1,6 @@
 import type { BookSortOption, LastUpdatedFilter, Book } from "../types/book.js";
 import { bookSortOptions, lastUpdatedFilterOptions } from "../types/book.js";
+import { formatLanguage } from "./translation.js";
 
 /**
  * Formats book metadata for prompt
@@ -15,7 +16,7 @@ export function formatBookMetaForPrompt(book: Book): string {
   return `- Title: ${book.title}
 - Hook: ${book.hook}
 - Summary: ${book.summary}
-- Language: ${book.language}
+- Language: ${formatLanguage(book.language)}
 - Total Pages: ${book.totalPages}
 - Status: ${book.status}
 - Keywords: ${book.keywords.join(', ')}`;

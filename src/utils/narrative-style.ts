@@ -329,7 +329,7 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
     ...(textureHint ? [`Perspective Texture:\n- ${textureHint}`] : [])
   ];
 
-  return sections.map(s => stripEmptyLines(s)).join('\n\n');
+  return sections.map(stripEmptyLines).join('\n\n');
 }
 
 /**
