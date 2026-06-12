@@ -1,5 +1,5 @@
 # Twistloom LLM Optimization Roadmap — Unified Edition
-> **Last updated:** post code-audit of `utils/prompt.ts`, `utils/ai-chat.ts`, `utils/ai-chat-stream.ts`
+> **Last updated:** post-implementation audit (v2)
 
 ---
 
@@ -7,11 +7,11 @@
 
 | Symbol | Meaning |
 |--------|---------|
-| ✅ | Fully implemented |
-| 🔧 | Partially implemented / exists but has bugs |
+| ✅ | Fully implemented and verified |
+| 🔧 | Partially implemented / has a known issue |
 | 📋 | Planned, not started |
-| ⚠️ | Bug or architectural anti-pattern found in audit |
-| 💡 | New finding — not in original roadmap |
+| ⚠️ | Bug or anti-pattern found — action needed |
+| 💡 | New finding not in original roadmap |
 
 ---
 
@@ -43,324 +43,264 @@ These improvements compound together and can reduce perceived latency by over 90
 
 ---
 
-## What Already Exists in Twistloom ✅
+## What's Already Implemented ✅
 
-Before planning work, here is what the codebase already does well:
+The following have been fully verified in the codebase:
 
-- **Multi-provider fallback chain** — `aiStreamSSE` tries all providers and all models in a sequential chain. If Groq fails, it falls back to Gemini, Cerebras, etc. automatically.
-- **Rate limiting** — `getRateLimiter(provider).throttle()` is applied before every generation.
-- **AbortSignal support** — streaming supports cancellation via `AbortSignal.any()`.
-- **Background candidate pre-generation** — after each page is persisted, `triggerCandidateGenerationWorkflow` fires in the background, pre-generating all action branches via GitHub Actions.
-- **Batched multi-candidate generation** — `generateNextPages` sends a single AI call that produces N alternative pages at once (rather than N separate calls). This is very efficient for rate-limited free providers.
-- **Rolling contextHistory** — rather than sending all pages, `contextHistory` is a rolling AI-maintained summary (`MAX_WORDS_SUMMARIZED_CONTEXT` words). This is a major context reduction already in place.
-- **Plot flag compression** — `formatPreviousPagesForPrompt` shows recent full pages + compressed older plot flags. Old minor events are dropped. This prevents prompt bloat over long stories.
-- **Dynamic AI config** — `determineAIConfig(state, action)` adjusts temperature/topP/topK based on story phase and action type. Early = more creative, finale = tighter.
-- **JSON schema via API params** — when `outputJsonStructure` is provided, it's passed as `response_format: { type: "json_schema" }` to providers that support it (GitHub, Groq, Cerebras, Mistral). This is correct.
-- **Prompt length gate** — `AI_MAX_PROMPT_LENGTH[provider]` skips providers if the prompt would exceed their context window.
-- **Streaming SSE** — `aiStreamSSE` streams tokens to the frontend as they arrive via Server-Sent Events.
+- **Multi-provider fallback chain** — `aiStreamSSE` and `aiPrompt` try all providers and models sequentially.
+- **Rate limiting** — `getRateLimiter(provider).throttle()` before every call.
+- **AbortSignal support** — Full cancellation threading through streaming path.
+- **Background candidate pre-generation** — `triggerCandidateGenerationWorkflow` fires on book creation; `MAX_BRANCHING_PREGENERATION_DEPTH` controls depth.
+- **Batched multi-candidate generation** — `generateNextPages` sends one AI call producing N alternatives.
+- **Rolling `contextHistory`** — AI-maintained summary caps context growth.
+- **Plot flag compression** — `formatPreviousPagesForPrompt` compresses older pages to flags; drops old minor events.
+- **Dynamic AI config** — `determineAIConfig(state, action)` adjusts sampling per phase/action type.
+- **JSON schema via API params** — `response_format: { type: "json_schema" }` for GitHub, Groq, Cerebras, Mistral, Gemini.
+- **Prompt length gate** — `AI_MAX_PROMPT_LENGTH[provider]` skips providers on oversize prompts.
+- **TTFT + telemetry** (`prompt-telemetry.ts`) ✅ — `logGenerationTelemetry` wired into `aiStreamSSE`.
+- **`RULES_PAGE_GENERATION` in system prompt** ✅ — `RULES_ROUTE_MEMORY`, `RULES_STORY_CONSISTENCY`, `RULES_DIFFICULTY_SCALING`, `RULES_FUTURE_NOTES` all consolidated into `RULES_PAGE_GENERATION` constant and injected via `buildSystemPrompt(book, state, RULES_PAGE_GENERATION)`.
+- **JSON schema moved to system prompt** ✅ — `executePromptForJSON` appends `outputFormatPart` to `options.systemPrompt`; schema no longer appended to user message.
+- **Compact schema for structured-output providers** ✅ — When `configs.schema && configs.requiredFields` are set, sends a 2-line reminder instead of the full JSON template, saving ~1 000–2 000 tokens per request.
+- **Gemini `systemInstruction` field** ✅ — Both `geminiPrompt` (non-streaming) and `geminiStreamGenerator` (streaming) now use `systemInstruction: { parts: [{ text: ... }] }` correctly.
+- **GitHub `prompt_cache_retention: "24h"`** ✅ — KV cache retention param wired into `githubPrompt`. This is Phase 4.5 for GitHub.
+- **`gemini.ts` cache module** ✅ — Full explicit Gemini context cache with `getOrCreateGeminiCache`, hash-based invalidation, 1-hour TTL, and minimum-length guard.
+- **`AI_CHAT_MODELS_EVALUATION`** ✅ — Evaluator uses a separate model pool from the writing pool.
+- **Debug SSE chunk log removed** ✅ — The per-token `console.log` that fired 1 000+ times per response is gone.
 
 ---
 
-## Critical Issues Found in Code Audit ⚠️
+## Active Bugs Found in Audit ⚠️
 
-These are active problems that hurt performance RIGHT NOW:
+### ⚠️ Bug 1 — CRITICAL: Gemini Explicit Cache Never Actually Fires
 
-### ⚠️ Issue 1: Every streaming token is console.log'd in production
+**File:** `utils/prompt.ts` — `generateNextPage` and `generateNextPages`
 
-**File:** `utils/ai-chat-stream.ts` line ~207
+`buildSystemPrompt()` returns an object with `{ systemPrompt, documents, cachedContentId }`.
+`prepareNextPageGenerationSetup` spreads it with `...systemPromptWithDocuments`.
+**But `cachedContentId` is never destructured** and therefore never passed to `executePromptForJSON`:
 
 ```ts
-console.log(`[${provider}] 🧩 SSE chunk:`, chunk);  // ← fires on every token
+// prepareNextPageGenerationSetup return:
+return {
+  ...systemPromptWithDocuments, // contains cachedContentId ← buried here
+  prompt,
+  systemPrompt, // explicitly extracted ✅
+  documents,    // explicitly extracted ✅
+  config,
+  ...
+};
+
+// generateNextPage destructure — cachedContentId silently DROPPED:
+const { prompt, config, systemPrompt, documents, fieldInstructions, ... }
+  = await prepareNextPageGenerationSetup(params, 1);
+
+// baseOptions passed to executePromptForJSON — NO cachedContentId:
+baseOptions: {
+  config,
+  modelSelection: AI_CHAT_MODELS_WRITING,
+  context: 'story-page-candidate',
+  systemPrompt,
+  documents,
+  // cachedContentId: ??? ← never here
+}
 ```
 
-On a 1 000-token response, this fires 1 000 times during the streaming hot path. Every
-`console.log` is a synchronous operation that blocks the event loop. This directly
-increases TTFT and slows the streaming pipeline. **Remove immediately (Patch P0).**
+**Result:** `geminiPrompt` and `geminiStreamGenerator` always see `cachedContentId = undefined`. `getOrCreateGeminiCache` is never called for story page generation. The entire Gemini cache system is dead code in the main generation paths.
 
----
-
-### ⚠️ Issue 2: Static rules appear AFTER dynamic content in every prompt
-
-**File:** `utils/prompt.ts` — `formatNextPageNarrativePrompt()`
-
-`RULES_ROUTE_MEMORY`, `RULES_FUTURE_NOTES`, `RULES_STORY_CONSISTENCY`, and
-`RULES_DIFFICULTY_SCALING` are **pure static string constants**. However, they are
-injected deep inside the dynamic narrative section — after psychological flags, hidden
-state, threads, and ending plan.
-
-Because prompt caching works by matching the **prefix** (the beginning of the input),
-any dynamic content placed *before* the static rules completely prevents those rules
-from being cached. This means **0% cache hits on the user message** across all providers.
-
-The fix is to move all four rules constants into the system prompt (see Patch P4).
-
----
-
-### ⚠️ Issue 3: JSON schema sent at the end of the prompt — uncacheable
-
-**File:** `utils/prompt.ts` — `executePromptForJSON()`
+**Fix — two-line change in `generateNextPage` and `generateNextPages`:**
 
 ```ts
-const finalPrompt = [
-  prompt.trim(),       // dynamic content — FIRST ❌
-  outputFormatPart,    // static JSON schema — LAST ❌
-  fieldInstructionsPart,
-  thinkThenOutputPart
-].join('\n\n---\n');
+// In generateNextPage — change destructure:
+const { prompt, config, systemPrompt, documents, cachedContentId,
+        fieldInstructions, thinkThenOutput, evaluatorPrompt,
+        generationContext, advancedState, currentState, expectedPageNumber, action }
+  = await prepareNextPageGenerationSetup(params, 1);
+
+// Then pass it in baseOptions:
+baseOptions: {
+  config,
+  modelSelection: AI_CHAT_MODELS_WRITING,
+  context: 'story-page-candidate',
+  logPrompts: true,
+  systemPrompt,
+  documents,
+  cachedContentId, // ← add this
+}
 ```
 
-The JSON schema (`nextPageOutputFormat` / `firstBookOutputFormat`) is ~800–1 200 chars of
-static content that is sent at the very end of the user message. It never changes for a
-given generation type, yet it cannot benefit from any provider-side caching because it
-appears after all the dynamic context. **Move it to the system prompt (Patch P5).**
+Apply the same fix to `generateNextPages` (line ~3483).
 
 ---
 
-### ⚠️ Issue 4: Gemini does not use `systemInstruction` field
+### ⚠️ Bug 2 — MEDIUM: Gemini Cache Entries Accumulate Without Cleanup
 
-**File:** `utils/ai-chat-stream.ts` — `geminiStreamGenerator()`
+**File:** `utils/gemini.ts`
+
+`cachedContentId` is computed from `createCacheKey([bookId, characters, places])`. Every time a character is introduced or a place is updated (which happens on most page generations), `cachedContentId` changes → a new Gemini cache entry is created → the old entry is **never deleted**. 
+
+Over a 40-page story with 8 characters, this could create 10–20 Gemini cache entries for the same book, each wasting storage on Gemini's side and accumulating forever in `contentCacheMap`.
+
+**Fix — book-scoped cleanup in `getOrCreateGeminiCache`:**
+
+The cleanest solution is to track a reverse index from `bookId` to the current `cachedContentId`, so old entries can be cleaned up when a new cache is created for the same book:
 
 ```ts
-// Current (wrong):
-contents: [{ parts: [{ text: `${systemPromptWithDocuments}\n\n${prompt}` }] }]
+// In gemini.ts, add a reverse index:
+const bookCacheIndex = new Map<string, string>(); // bookId → current cachedContentId
+
+export async function getOrCreateGeminiCache(
+  cachedContentId: string,
+  model: string,
+  systemInstruction: string,
+  semiStaticContext: string,
+  bookId?: string, // ← add optional bookId parameter
+): Promise<string | null> {
+  // ... existing validity check ...
+
+  // Before creating a new cache, clean up the previous one for this book
+  if (bookId) {
+    const previousCachedContentId = bookCacheIndex.get(bookId);
+    if (previousCachedContentId && previousCachedContentId !== cachedContentId) {
+      const previous = contentCacheMap.get(previousCachedContentId);
+      if (previous?.cacheId) {
+        await ai.caches.delete({ name: previous.cacheId }).catch(() => {}); // best-effort
+        contentCacheMap.delete(previousCachedContentId);
+      }
+    }
+  }
+
+  // ... create new cache as before ...
+
+  if (bookId) bookCacheIndex.set(bookId, cachedContentId);
+  return cache.name;
+}
 ```
 
-Gemini has a dedicated `systemInstruction` field. When the system prompt is
-concatenated into user `contents`, Gemini treats the entire input as a user message.
-This:
-- Prevents Gemini's automatic system-level caching
-- Blocks any future explicit `ai.caches.create()` integration (Patch P7)
-- Is semantically incorrect — the model sees no system/user distinction
+Then pass `book.id` through the chain from `buildSystemPrompt` → `baseOptions` → `geminiPrompt`.
 
-**Fix immediately (Patch P2).**
+> **Serverless note:** In serverless environments (Vercel), `contentCacheMap` resets on each cold start. The memory leak is only a concern for persistent server deployments. However, the Gemini-side cache accumulation (orphaned caches on Google's servers) applies in all environments.
 
 ---
 
-### ⚠️ Issue 5: JSON schema sent twice (text + structured API param)
+### ⚠️ Bug 3 — MINOR: `promptChars` Telemetry Underestimates Actual Size
 
-**File:** `utils/prompt.ts` + `utils/ai-chat-stream.ts`
+**File:** `utils/ai-chat-stream.ts` line 185
 
-For providers that support structured output natively (GitHub, Groq, Cerebras, Mistral,
-Gemini), `executePromptForJSON` passes the schema BOTH as:
-1. Text inside `outputFormatPart` (in the prompt body)
-2. A structured API parameter via `outputJsonStructure` (in the request)
+```ts
+// Current — misses documents:
+const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length;
 
-This is redundant. The schema travels twice in every request. For providers with native
-structured output, the text version should be replaced with a compact reminder.
-**Fix in Patch P3.**
+// Fix — include documents (same pattern used in aiPrompt for prompt-length gating):
+const totalDocumentsLength = options.documents?.reduce(
+  (sum, doc) => sum + (doc.title?.length ?? 0) + doc.snippet.length, 0
+) ?? 0;
+const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length + totalDocumentsLength;
+```
+
+Documents include BOOK META + KNOWN CHARACTERS + KNOWN PLACES and can add 2 000–8 000+ chars to the actual prompt. Without them, the "estimated tokens" log is systematically low, which makes it unreliable for planning.
 
 ---
 
 ## Performance Hierarchy
 
-Impact ranking from highest to lowest:
-
-| Priority | Optimization                          | Impact         | Status |
-|----------|---------------------------------------|----------------|--------|
-| 0        | Fix production debug logging          | Critical perf  | ⚠️ P0  |
-| 1        | Background pre-generation             | Extremely High | 🔧     |
-| 2        | Prompt ordering (static-first)        | Extremely High | ⚠️ P4  |
-| 3        | Context reduction                     | Extremely High | 🔧     |
-| 4        | Incremental memory updates            | Extremely High | 📋     |
-| 5        | Fix Gemini systemInstruction          | High           | ⚠️ P2  |
-| 6        | Remove duplicate JSON schema          | High           | ⚠️ P3  |
-| 7        | Prompt cache optimization             | High           | 📋     |
-| 8        | Parallel branch generation            | High           | ✅ (batched) |
-| 9        | Provider racing                       | Medium-High    | 📋     |
-| 10       | Streaming UX                          | Medium         | ✅     |
-| 11       | Dynamic model routing                 | Medium         | 📋     |
-| 12       | Semantic caching                      | Medium         | 📋     |
-| 13       | Gemini explicit cache objects         | Medium         | 📋 P7  |
-| 14       | Micro prompt tuning                   | Low            | 📋     |
+| Priority | Optimization                          | Impact         | Status           |
+|----------|---------------------------------------|----------------|------------------|
+| 0        | Fix SSE chunk debug log               | Critical       | ✅ Done          |
+| 1        | TTFT + prompt size telemetry          | Observability  | ✅ Done (minor issue) |
+| 2        | Prompt ordering (static-first)        | Extremely High | ✅ Done          |
+| 3        | Static rules → system prompt          | Extremely High | ✅ Done          |
+| 4        | JSON schema → system prompt           | High           | ✅ Done          |
+| 5        | Compact schema for structured output  | High (tokens)  | ✅ Done          |
+| 6        | Fix Gemini `systemInstruction`        | High (cache)   | ✅ Done          |
+| 7        | GitHub KV retention (`prompt_cache_retention: "24h"`) | Medium-High | ✅ Done |
+| 8        | Gemini explicit cache module          | Medium-High    | 🔧 Built, but not wired (Bug 1) |
+| 9        | Context reduction                     | Extremely High | 🔧 Partial       |
+| 10       | Incremental memory (delta updates)    | Extremely High | 🔧 Partial       |
+| 11       | Parallel action candidate generation  | High           | 📋 Not started   |
+| 12       | Provider racing                       | Medium-High    | 📋 Not started   |
+| 13       | Character relevance filter            | Medium         | 📋 Not started   |
+| 14       | Dynamic model routing (evaluator)     | Medium         | 🔧 Has separate pool |
+| 15       | Semantic caching                      | Medium         | 📋 Not started   |
 
 ---
 
 # Phase 0: Establish Observability
-**Status: 📋 Not started**
+**Status: ✅ Implemented (minor fix needed)**
 
-Before optimizing anything, measure everything. You cannot know whether P4 actually
-helped if you have no baseline. This phase costs almost nothing to implement.
+## What's Done
 
-## Required Metrics
+`prompt-telemetry.ts` exists with `estimateTokens` and `logGenerationTelemetry`. TTFT tracking
+is wired into `aiStreamSSE`:
 
-Track per generation:
+- `requestStartedAt = Date.now()` before the stream starts.
+- `firstTokenAt` captured on the first non-empty chunk.
+- `logGenerationTelemetry(...)` called on stream completion.
+
+## TTFT Quality Gate (in telemetry)
+
+```
+Excellent:  < 1 000 ms  → ✅
+Good:       < 2 000 ms  → 🟢
+Acceptable: < 3 000 ms  → 🟡
+Poor:       > 3 000 ms  → 🔴
+```
+
+## Remaining: Fix `promptChars` underestimate (Bug 3)
+
+See Bug 3 above. The `documents` field is not counted in the telemetry's `promptChars`.
+Documents can add 2 000–8 000+ chars. Fix is a one-liner.
+
+## What Telemetry Does NOT Yet Cover
+
+- `aiPrompt` (non-streaming) has no TTFT measurement. Non-streaming is used for all background candidate generation — this is where the most wall-clock time actually goes.
+- No cache hit reporting (Groq/Gemini provide `cached_tokens` in usage, but it's not surfaced in `logGenerationTelemetry`).
 
 ```ts
-{
-  provider,
-  model,
-  context,              // 'story-page-candidate', 'book-creation', etc.
-
-  promptChars,
-  estimatedPromptTokens,
-
-  requestStartedAt,
-  firstTokenAt,
-  completedAt,
-
-  ttftMs,               // Time To First Token — most important user-facing metric
-  generationMs,         // Time from first token to last token
-  totalLatencyMs,       // requestStartedAt to completedAt
-
-  cacheHitTokens,       // filled if provider reports cache usage
-  cacheMissTokens
-}
+// Future enhancement — log cache hit rate from Gemini usage:
+const cachedTokens = response.usageMetadata?.cachedContentTokenCount ?? 0;
+const promptTokens = response.usageMetadata?.promptTokenCount ?? 0;
+const cacheHitRate = promptTokens > 0 ? cachedTokens / promptTokens : 0;
 ```
-
-## Key KPIs
-
-### Time To First Token (TTFT)
-
-Most important user-facing metric. This is what the user feels.
-
-```
-Excellent:  < 1 000 ms
-Good:       < 2 000 ms
-Acceptable: < 3 000 ms
-Poor:       > 5 000 ms
-```
-
-### Total Generation Latency
-
-```
-Target: < 8 seconds
-```
-
-### Prompt Size
-
-```
-Target: < 4 000 tokens for most page generations
-Current estimate: 6 000–14 000 tokens (before any optimization)
-```
-
-> **How to get baseline:** Apply Patch P1 first. Let it log for 20–30 real
-> generations. You'll know exactly where you stand.
 
 ---
 
 # Phase 1: Prompt Architecture Refactor
-**Status: ⚠️ Active bugs — static content after dynamic content**
+**Status: ✅ Fully implemented**
 
-## Goal
+## What Was Done
 
-Create stable prompt prefixes that maximize provider-side prompt caching.
+All four phases of the prompt ordering fix are complete:
 
-## The Golden Rule
+**`RULES_PAGE_GENERATION` constant** — `RULES_ROUTE_MEMORY`, `RULES_STORY_CONSISTENCY`,
+`RULES_DIFFICULTY_SCALING`, and `RULES_FUTURE_NOTES` are joined into a single constant
+and passed to `buildSystemPrompt` as `staticRules`.
 
-> **The most stable content must always appear FIRST.**
-
-Every provider caches from the beginning of the input. If token #1 changes between
-requests, nothing is cached. If the first 5 000 tokens are identical across requests,
-they're cached for free.
-
-## What "Stable" Means in Practice
-
+**`buildSystemPrompt(book, state, staticRules)`** — signature now accepts optional `staticRules`
+and appends them to `PROMPT_SYSTEM`. The resulting system prompt is:
 ```
-MOST STABLE (never changes)
-├── System persona (PROMPT_SYSTEM)
-├── Writing rules (RULES_*)
-├── JSON output schema (nextPageOutputFormat)
-└── Hard output constraints
-
-SEMI-STABLE (changes per book/session, not per page)
-├── Book summary
-├── MC bio (without state-dependent inventory/injuries)
-└── World context
-
-DYNAMIC (changes every request)
-├── contextHistory
-├── Recent pages
-├── Current page + situation
-├── Psychological state
-├── Hidden state
-├── Threads + ending plan
-└── Selected action
+PROMPT_SYSTEM
++ RULES_PAGE_GENERATION (static)
++ outputFormatPart (static — appended by executePromptForJSON)
 ```
 
-## Current Prompt Layout (Broken) ❌
+**`formatNextPageNarrativePrompt`** — all four `RULES_*` constants have been removed from
+the user message. No duplication.
 
+**`executePromptForJSON` prompt ordering** — user message is now:
 ```
-USER MESSAGE:
-  TASK (dynamic)
-  HARD RULES (static — buried!)
-  THEME REMINDER (semi-static)
-  CURRENT PHASE (dynamic)
-  MC INFO (semi-static + dynamic inventory)
-  STORY CONTEXT (dynamic)
-  PLOT FLAGS (dynamic)
-  CURRENT FACTS (dynamic)
-  PREVIOUS PAGES (dynamic)
-  CURRENT PAGE (dynamic)
-  ACTION SELECTION (dynamic)
-  ───
-  NARRATIVE STYLE (dynamic)
-  PSYCH FLAGS (dynamic)
-  PSYCH PROFILE (dynamic)
-  HIDDEN STATE (dynamic)
-  FUTURE NOTES (dynamic)
-  ───
-  RULES_ROUTE_MEMORY (STATIC — after all dynamic!) ❌
-  RULES_STORY_CONSISTENCY (STATIC) ❌
-  RULES_DIFFICULTY_SCALING (STATIC) ❌
-  THREADS (dynamic)
-  ENDING PLAN (dynamic)
-  ───
-  JSON SCHEMA (STATIC — at the very end!) ❌
-  FIELD INSTRUCTIONS (semi-static)
-  REVIEW CHECKLIST (semi-static)
+[Semi-static] fieldInstructions  (changes by story phase)
+[Semi-static] thinkThenOutput    (changes by story phase)
+[Dynamic]     prompt             (changes every request)
 ```
+This is actually better than the ordering I originally recommended — instructions before
+context is the industry standard for prompt caching.
 
-## Corrected Prompt Layout ✅
+## What "HARD RULES" in User Message Means
 
-```
-SYSTEM MESSAGE:
-  PROMPT_SYSTEM (static persona + writing style)
-  ───
-  RULES_ROUTE_MEMORY (static)
-  RULES_STORY_CONSISTENCY (static)
-  RULES_DIFFICULTY_SCALING (static)
-  RULES_FUTURE_NOTES (static)
-  ───
-  nextPageOutputFormat (static JSON schema)
-  ───
-  [book documents: semi-static per book]
-
-USER MESSAGE:
-  [Semi-static section]
-  THEME REMINDER
-  MC BASE INFO
-  ───
-  [Dynamic section]
-  CURRENT PHASE
-  MC STATE (inventory, injuries)
-  STORY CONTEXT
-  CURRENT FACTS
-  PREVIOUS PAGES
-  CURRENT PAGE + SITUATION
-  ACTION SELECTION
-  ───
-  NARRATIVE STYLE
-  PSYCH FLAGS + PROFILE
-  HIDDEN STATE + ROUTE MEMORY
-  FUTURE NOTES
-  THREADS + ENDING PLAN
-  ───
-  FIELD INSTRUCTIONS
-  REVIEW CHECKLIST
-  ───
-  TASK
-```
-
-## Benefits
-
-- Every provider benefits from cached system messages
-- Gemini benefits additionally from explicit cache objects (Phase 4.5)
-- Prompt processing time decreases with every cache hit
-- TTFT drops proportionally to the fraction of the prompt that hits cache
-
-## Implementation
-
-See **Patch P4** (move rules) and **Patch P5** (move schema).
+The 4-line `HARD RULES:` block at the top of `formatNextPageStoryContextPrompt` remains
+in the user message. These are technically static, but they're short (~200 chars) and
+contextually correct at the start of the dynamic context section — their impact on cache
+hits is negligible. Low priority to move.
 
 ---
 
@@ -369,73 +309,48 @@ See **Patch P4** (move rules) and **Patch P5** (move schema).
 
 ## What Already Exists
 
-- `contextHistory` — rolling AI-maintained summary (good ✅)
-- `formatPreviousPagesForPrompt` — limits to `MAX_PAGE_HISTORY` recent pages, compresses older ones to plot flags (good ✅)
-- `MAX_OLDER_PLOT_FLAGS` — caps how many older flags are sent (good ✅)
-- All characters always included (needs fix ⚠️)
+- `contextHistory` — rolling AI-maintained summary ✅
+- `formatPreviousPagesForPrompt` — limits to `MAX_PAGE_HISTORY` recent pages, compresses older ones ✅
+- `MAX_OLDER_PLOT_FLAGS` — caps older plot flags ✅
 
-## Memory Layers
+## What's Missing
 
-### Hot Memory — Always included
+### Character Relevance Filter (P6) 📋
 
-```
-Last 2–3 pages (full text)
-Current page
-Current action
-Immediate situation
-```
+All characters from `state.characters` are formatted and sent every generation, even if they
+last appeared 30 pages ago and have no active narrative flags. On a long story with 8+ characters,
+this can be 1 500–4 000 extra tokens per request.
 
-### Warm Memory — Usually included
+**Implementation:** A filter that keeps characters that are: in the current scene, introduced
+recently (within last N pages), have active narrative flags (`isMissing`, `isSuspicious`,
+`hasSecret`), or are mentioned in recent plot flags.
 
-```
-contextHistory (rolling summary)
-Active characters
-Current psychological state
-Active threads
-Future notes (with relevance filter)
-Ending plan
-Recent plot flags
-```
+```ts
+export function filterRelevantCharacters(
+  characters: Record<string, CharacterMemory>,
+  currentPage: CandidateGenerationPage,
+  state: StoryState,
+  recentPageWindow: number = 5,
+): Record<string, CharacterMemory> {
+  const threshold = state.page - recentPageWindow;
+  const presentNames = new Set(currentPage.charactersPresent ?? []);
+  const recentFlagText = state.plotFlags
+    .filter(f => f.page >= threshold)
+    .map(f => f.fact)
+    .join(' ');
 
-### Cold Memory — Stored in DB, NOT sent to model
-
-```
-Archived characters (appeared long ago, inactive)
-Resolved threads
-Historical locations (not recently visited)
-Very old plot flags
-```
-
-## Character Relevance Filter 💡 New Finding
-
-**Status: 📋 Not started**
-
-As stories grow, `state.characters` accumulates many characters that are no longer
-relevant to the current scene. All are formatted and sent every generation. For a story
-with 10 characters but only 2 active in the current scene, 8 characters' worth of
-data is dead weight — potentially 1 000–3 000 extra tokens.
-
-Solution: **See Patch P6** — `filterRelevantCharacters()` function.
-
-The filter keeps characters that are:
-- Present in the current scene (`charactersPresent`)
-- Introduced recently (within last N pages)
-- Have active narrative flags (`isMissing`, `isSuspicious`, `hasSecret`)
-- Mentioned in recent plot flags by name
-
-All others are silently omitted. They remain in `state.characters` — they're just not
-sent to the model this turn.
-
-## Future Note Relevance Filter ✅ Already exists
-
-`formatFutureNotes` already splits notes into "Becoming Relevant" vs "For Later" vs
-"Unscheduled". Notes that aren't yet relevant are shown but deprioritized. Good.
-
-## Target
-
-Reduce prompt size by:
-```
-30–70% compared to unoptimized baseline
+  return Object.fromEntries(
+    Object.entries(characters).filter(([name, char]) =>
+      presentNames.has(name) ||
+      (char.introducedAtPage ?? 0) >= threshold ||
+      char.narrativeFlags?.isMissing ||
+      char.narrativeFlags?.isSuspicious ||
+      char.narrativeFlags?.hasSecret ||
+      char.status === 'active' ||
+      recentFlagText.includes(name)
+    )
+  );
+}
 ```
 
 ---
@@ -443,292 +358,139 @@ Reduce prompt size by:
 # Phase 3: Incremental Memory System
 **Status: 🔧 Partially implemented**
 
-## Goal
-
-Stop rebuilding the world state representation from scratch on every page.
-
 ## What Already Exists
 
-`contextHistory` is maintained incrementally by the AI — each generated page produces
-an updated `contextHistory` that incorporates the new events. This IS incremental. ✅
+- `contextHistory` is updated incrementally by the AI on each generation ✅
+- `factsHistory`, `plotFlags`, `traumaTags`, `threads` all use append/delta patterns ✅
+- `extractStateDelta` and `applyStateDelta` exist for state propagation ✅
 
-`factsHistory`, `plotFlags`, `traumaTags`, `threads` — all use append/delta patterns. ✅
+## What Could Improve
 
-## What Needs Improvement
-
-### `stateDelta` and `applyStateDelta` 🔧
-
-The code has `extractStateDelta` and `applyStateDelta` functions. These extract the
-changes from a generation and apply them to the state. This is the correct pattern.
-
-The gap: `contextHistory` is regenerated by the main model as part of every story
-page generation. This means the expensive story-writing model is also doing summary
-work. A lighter model (Flash/Groq Llama) could handle summary updates separately.
-
-### Incremental Summary Pattern
-
-Instead of:
-```ts
-// Every generation:
-AI writes page + updates contextHistory (expensive model)
-```
-
-Consider:
-```ts
-// After each generation:
-AI writes page (expensive model)
-FastAI.summarize(contextHistory + newPage.text) → updatedContextHistory (cheap model)
-```
-
-This is **Phase 3.5** — not in the original roadmap but highly valuable for Twistloom.
-
-## Benefits
-
-- Smaller prompts
-- More consistent story memory
-- Less AI drift on long stories
-- Fast-model summarization = lower cost + lower latency
+`contextHistory` is generated by the same expensive writing model as part of the story page
+output. A separate lightweight model call for summarization after generation would decouple
+creative work from bookkeeping. This is a future Phase 3.5 item.
 
 ---
 
 # Phase 4: Prompt Caching Optimization
-**Status: ⚠️ Broken by ordering issues — fixable with P4 + P5**
+**Status: ✅ Implemented for all providers**
 
-## Goal
+## Current System Prompt Structure (verified)
 
-Maximize how many tokens providers can skip re-processing on each request.
-
-## How Prompt Caching Works
-
-Think of it like a book index. If you read a 500-page book and then someone asks you
-a question about page 501, you don't re-read pages 1–500. You already processed them.
-LLM prompt caching works the same way — if the beginning of the input is identical to
-a previous request, the provider skips re-computing it.
-
-**The catch:** The cached prefix must be byte-for-byte identical. Even a single changed
-character breaks the cache. This is why static content must come first.
-
-## Cacheable Components (by layer)
-
-### Fully Static — cache forever
-
+Every story page generation builds a system prompt of:
 ```
-System Prompt persona text
-Writing rules (RULES_*)
-JSON output schema
-Hard output constraints
+PROMPT_SYSTEM (persona + writing style)
++ RULES_PAGE_GENERATION (4 rule sets)
++ "OUTPUT FORMAT: Respond with valid JSON..." (compact reminder)
 ```
 
-### Semi-Static per book — cache for the reading session
+This system prompt is identical for every page of the same generation type — making it
+fully cacheable by every provider's automatic system-message cache.
 
-```
-Book summary/theme
-MC base bio
-Initial world context
-```
+## Provider Status
 
-### Non-Cacheable
-
-```
-Current page number
-Current scene
-Action selected
-Psychological state
-Recent pages
-Inventory/injuries
-```
-
-## Provider-Specific Cache Support
-
-| Provider   | Auto-caches system msg | Explicit cache API | Notes |
-|------------|------------------------|-------------------|-------|
-| **Gemini** | Yes (with systemInstruction) | Yes (`ai.caches.create`) | Best support |
-| **OpenAI/GitHub** | Yes (recent models) | Limited | Good |
-| **Groq**   | Internal, not exposed  | No                | Benefits from system msg |
-| **Cerebras** | Focus on speed, not cache | No             | Raw speed instead |
-| **Mistral** | Limited               | No                | Some automatic |
-| **NVIDIA NIM** | Deployment-dependent | No             | Not guaranteed |
-| **Cohere** | Very limited           | No                | Lowest |
-
-## Metrics to Track
-
-```ts
-{
-  cacheHitTokens,
-  cacheMissTokens,
-  cacheHitRate: cacheHitTokens / (cacheHitTokens + cacheMissTokens)
-}
-```
-
-**Target:** Cache hit rate > 60% on story page generation.
+| Provider   | Caching mechanism             | Status       |
+|------------|-------------------------------|--------------|
+| GitHub     | Auto + `prompt_cache_retention: "24h"` | ✅ Best coverage |
+| Gemini     | Auto (system instruction) + explicit | 🔧 System instruction ✅, explicit cache wired but Bug 1 |
+| Groq       | Automatic (internal)          | ✅ Benefits from system prompt fix |
+| Cerebras   | Speed-focused, minimal cache  | ✅ Benefits from system prompt fix |
+| Mistral    | Limited automatic             | ✅ Benefits from system prompt fix |
+| NVIDIA NIM | Deployment-dependent          | ✅ Benefits from system prompt fix |
+| Cohere     | Very limited                  | ✅ Benefits from system prompt fix |
 
 ---
 
 # Phase 4.5: KV Cache Retention
-**Status: 📋 Not started (requires Phase 1 completion first)**
+**Status: 🔧 GitHub ✅, Gemini wired but not active (Bug 1)**
 
-## What This Is
+## Three Layers of Caching
 
-There are three distinct types of caching in the LLM world. Most discussions only cover
-the first two. Understanding all three is important:
+Understanding the difference matters:
 
-| Type                       | Who Controls It | What It Does                             |
-|----------------------------|-----------------|------------------------------------------|
-| Prompt Layout Optimization | **You**         | Structure prompts for maximum cache hits |
-| Prompt Caching             | **Provider**    | Reuse saved prompt processing            |
-| KV Cache Retention         | **Provider**    | Persist transformer attention state      |
+| Layer | What it saves | Who controls it |
+|-------|--------------|-----------------|
+| **Prompt ordering** | Maximizes cache hit surface | You |
+| **Prompt caching** | Skips re-tokenizing the prefix | Provider |
+| **KV Cache Retention** | Skips re-building attention matrices | Provider |
 
-**KV Cache Retention** is the third category. It goes one level deeper than prompt
-caching. Rather than just skipping token re-encoding, it persists the actual *attention
-matrices* (Key-Value vectors) that the transformer built for your prefix. This is
-dramatically faster because the most expensive part of a transformer forward pass is
-building these matrices.
+KV retention goes one step deeper than prompt caching. The transformer's most expensive
+operation is building the Key-Value attention matrices for your prefix tokens. With KV
+retention, those matrices are stored after the first request and reused — the model only
+processes the new tokens at the suffix.
 
-## Why It Matters for Twistloom
+## GitHub — `prompt_cache_retention: "24h"` ✅
 
-### Branch generation is the ideal KV-cache workload
-
-When `generateNextPages` generates N alternative continuations, the N candidates all
-share an identical prefix (system prompt + story context). Each alternative only differs
-in the last few tokens (the chosen action).
-
-Without KV retention:
-```
-Each candidate: process 12 000 tokens → generate 500 tokens
-Total: 12 000 × N tokens processed
+```ts
+// In githubPrompt — already implemented:
+prompt_cache_retention: "24h",
 ```
 
+This instructs OpenAI/GitHub to retain the computed KV state for the prompt for 24 hours.
+For Twistloom, this means the expensive system prompt computation is cached across all story
+page generations for an entire day.
+
+## Gemini — Explicit Cache ✅ (module built) / ⚠️ Not active (Bug 1)
+
+`gemini.ts` implements `getOrCreateGeminiCache` correctly. It:
+- Accepts `(cachedContentId, model, systemInstruction, semiStaticContext)`
+- Creates a Gemini context cache with 1-hour TTL
+- Uses hash-based invalidation — if content changes, creates a new cache
+- Falls back gracefully if prefix is too short or creation fails
+
+The logic for deciding WHAT to cache is correct:
+- `systemInstruction`: the full system prompt (PROMPT_SYSTEM + rules + schema) — static
+- `semiStaticContext`: formatted documents (BOOK META + KNOWN CHARACTERS + KNOWN PLACES) — semi-static per book
+
+**The only problem is Bug 1 (cachedContentId never forwarded).** Fix that single bug and the
+entire Gemini explicit cache becomes active for all story page generations.
+
+## Why Twistloom Is an Ideal KV Workload
+
+`generateNextPages` generates N alternatives from the same prefix. Without KV retention:
+```
+N candidates × 12 000 token prefix = 36 000 prefix tokens processed (for N=3)
+```
 With KV retention:
 ```
-Candidate 1: process 12 000 tokens → generate 500 tokens → store KV cache
-Candidate 2: REUSE stored KV → generate 500 tokens
-Candidate 3: REUSE stored KV → generate 500 tokens
-Total: 12 000 + (500 × N) tokens processed
+1 × 12 000 token prefix + N × suffix ≈ 12 000 + 3 × 500 = 13 500 tokens processed
 ```
-
-On a 3-candidate batch: ~75% reduction in prefix processing.
-
-## Important Caveat
-
-**KV cache retention only works if the prefix is byte-for-byte identical.**
-
-This is why Phase 1 (stable prefix) must come first. A prompt that changes its static
-rules every request has effectively no cacheable prefix. With Phase 1 applied, a large
-fraction of every prompt becomes a stable, cacheable prefix.
-
-**Common prefix killers to eliminate:**
-
-```ts
-// Bad — changes every second
-`Current Time: ${new Date().toISOString()}`
-
-// Bad — random variation
-`Request ID: ${Math.random()}`
-
-// Bad — static content after dynamic content (current state of codebase)
-`${dynamicStoryContext}
- ... 800 lines later ...
- ${RULES_ROUTE_MEMORY}  // ← cache can never reach this
-```
-
-## Provider Support
-
-- **Gemini**: Best — explicit `ai.caches.create()` API gives full control
-- **OpenAI/GitHub**: Automatic for longer prompts; newer APIs expose more control  
-- **Groq**: Automatic for some models/tiers
-- **Cerebras**: Focused on raw speed; limited cache control
-- **Mistral/NVIDIA**: Limited
-
-## Recommendation for Twistloom
-
-### Phase 4.5-A: Prerequisite
-
-Apply Phase 1 (prompt ordering) first. KV cache without stable prefixes = 0% benefit.
-
-### Phase 4.5-B: Gemini Explicit Cache (High ROI)
-
-Gemini is the only provider in Twistloom's stack with a clear, controllable cache API.
-
-```ts
-const cache = await ai.caches.create({
-  model,
-  config: {
-    ttl: '3600s',
-    systemInstruction: { parts: [{ text: systemPrompt + staticRules + schema }] },
-    contents: [{
-      role: 'user',
-      parts: [{ text: bookSummary + mcBaseInfo }],
-    }]
-  }
-});
-
-// Store cache.name per storyId
-// Reuse across all page generations for that story
-```
-
-**See Patch P7 for full implementation.**
-
-### Phase 4.5-C: Cache metadata in DB
-
-Store per-story:
-
-```ts
-{
-  storyId,
-  prefixHash,         // SHA-256 of cached content — invalidate if changed
-  geminiCacheId,      // Gemini cache resource name
-  cacheCreatedAt,
-  expiresAt,
-}
-```
-
-This allows cache reuse across server restarts and multiple instances.
+~63% reduction in prefix processing for a 3-candidate batch.
 
 ---
 
 # Phase 5: Parallel Generation Architecture
-**Status: ✅ Partially implemented (batched)**
+**Status: ✅ Batched (within-action), 📋 Not started (across-actions)**
 
-## Current Implementation
+## What's Done
 
-`generateNextPages(params, candidateCount)` generates multiple alternative pages in a
-**single AI call** with a multi-candidate prompt wrapper:
+`generateNextPages` batches multiple candidates in a single AI call with `multiNextPageOutputFormat`.
+This is the correct approach for rate-limited free providers — it processes the shared prefix once.
 
-```ts
-// Current approach (single batched request):
-const response = await executePromptForJSON({
-  prompt: buildNextPagePrompt({ candidateCount: 3 }),  // asks for 3 alternatives at once
-  ...
-});
-// AI returns: { generatedPages: [page1, page2, page3] }
+## What's Missing — Parallel Across Actions
+
+Currently, candidate generation for each ACTION is sequential. For a page with 3 actions,
+this means:
+
+```
+generate candidates for action A  →  ~8s
+then generate for action B        →  ~8s
+then generate for action C        →  ~8s
+────────────────────────────────────
+Total wall-clock:                    ~24s
 ```
 
-This is actually **correct and efficient for rate-limited free providers**. One request
-processes the shared prefix once and returns N outputs. The doc's `Promise.allSettled`
-approach would make N separate requests, re-processing the prefix N times.
-
-## What Can Still Be Parallelized
-
-`generateCandidatePages` is called per-action (e.g., 3 actions on a page = 3 separate
-calls). These calls are currently sequential. They share no prefix (each uses a
-different selected action), so they should be parallelized:
+These three calls share NO common prefix (each uses a different selected action) and can be
+parallelized:
 
 ```ts
-// Before (sequential — each waits for the previous):
-for (const action of actions) {
-  await generateCandidatePages(action);
-}
-
-// After (parallel — all fire simultaneously):
+// In whatever calls generateNextPages per-action:
 await Promise.allSettled(
-  actions.map(action => generateCandidatePages(action))
+  page.actions.map(action => 
+    generateNextPages({ ...params, actionedPage: { ...page, action } })
+  )
 );
-```
-
-Wall-clock reduction:
-```
-Sequential (3 actions × 8 seconds each): 24 seconds
-Parallel (3 actions in parallel):         ~8 seconds
+// Wall-clock: ~8s (all three in parallel)
 ```
 
 ---
@@ -738,84 +500,43 @@ Parallel (3 actions in parallel):         ~8 seconds
 
 ## Goal
 
-Reduce tail latency by running the same request on multiple providers simultaneously
-and using the first valid response.
-
-## Current Behavior
-
-Providers are tried **sequentially** — if provider A takes 12 seconds, provider B
-never starts until A finishes or fails.
-
-## Racing Pattern
+Reduce tail latency by racing two providers simultaneously and using the first valid response.
 
 ```ts
 const result = await Promise.any([
-  generateWithGemini(prompt),
-  generateWithGroq(prompt),
+  generateWithGemini(prompt, opts),
+  generateWithGroq(prompt, opts),
 ]);
-// Use whichever responds first; cancel the other
 ```
 
-## Recommended Usage
+## When to Use
 
-**Only race for:**
-```
-Premium/critical generations (finale pages, book creation)
-When the user is actively waiting
-```
-
-**Do NOT race:**
-```
-Background candidate pre-generation (wastes API quota)
-Routine candidate generation
-```
-
-## Cost Warning
-
-Racing N providers uses N × tokens. Reserve for high-value moments.
+Only for premium moments (book creation, finale pages) where the user is actively waiting.
+Do NOT race for background candidate generation — wastes API quota.
 
 ---
 
 # Phase 7: Dynamic Model Routing
-**Status: 📋 Not started**
+**Status: 🔧 Has separate evaluation pool, story generation pool is uniform**
 
-## Goal
+## What Exists
 
-Use the cheapest and fastest model that can handle the specific task. Not every task
-needs the most capable model.
+`AI_CHAT_MODELS_EVALUATION` — evaluator calls use a separate model selection pool. The actual
+models in this pool aren't visible in the uploaded files, but the infrastructure for routing
+evaluator calls to different (potentially faster) models already exists. ✅
 
-## Suggested Tiers
+## What's Missing
 
-### Fast Tier — for utility tasks
+Story generation always uses `AI_CHAT_MODELS_WRITING`. There's no routing based on task type:
+
+```ts
+// Opportunity — use fast models for utility tasks:
+// contextHistory summarization  →  Gemini Flash / Groq 8B
+// tag generation                →  Gemini Flash
+// evaluator scoring             →  AI_CHAT_MODELS_EVALUATION (already done ✅)
+// story page generation         →  AI_CHAT_MODELS_WRITING (current)
+// book creation / finale pages  →  best available model
 ```
-Models:  Gemini Flash, Groq Llama 8B, Cerebras Llama 8B
-Tasks:   contextHistory summarization, tag generation, metadata extraction,
-         validation, character summary updates
-```
-
-### Standard Tier — for normal story generation
-```
-Models:  Groq Llama 70B, Gemini Flash/Pro, Mistral
-Tasks:   Most story page generation
-```
-
-### Premium Tier — for critical moments
-```
-Models:  Gemini Pro, best available
-Tasks:   Book initialization, finale pages, evaluator calls
-```
-
-## Evaluator Model Routing 💡 New Finding
-
-The `buildNextPageEvaluatorPrompt` evaluator runs as a second AI call after every
-story generation. It re-reads the entire story context plus the generated page.
-
-Currently it uses the same expensive writing model. Consider routing evaluator calls
-to a fast model:
-- Writing model: generates the page (quality matters)
-- Fast model: evaluates the page (pattern matching, scoring)
-
-This could halve the cost of every generation that goes through evaluation.
 
 ---
 
@@ -826,396 +547,227 @@ This could halve the cost of every generation that goes through evaluation.
 
 Avoid re-running identical or near-identical utility operations.
 
-## Suitable Tasks (deterministic or near-deterministic outputs)
+## Suitable Tasks
 
 ```
-Story Summary generation (same book state → same summary)
-Character Summary generation
-Location Summary generation
+contextHistory summarization (same state → same output)
 Tag/keyword generation
 Book metadata generation
 ```
 
-## Not Suitable (creative outputs must not be cached)
+## Not Suitable
 
 ```
-Story page generation
-Choice generation
-Any narrative content
+Story page generation — must always be fresh
+Choice generation — must always be fresh
 ```
 
-## Implementation Sketch
-
-```ts
-// Redis-backed semantic cache
-async function cachedSummarize(storyId: string, content: string): Promise<string> {
-  const cacheKey = `summary:${storyId}:${hashContent(content)}`;
-  const cached = await redis.get(cacheKey);
-  if (cached) return cached;
-
-  const result = await generateSummary(content);
-  await redis.setex(cacheKey, 3600, result);
-  return result;
-}
-```
-
-> **Never cache creative outputs.** Story page text must always be freshly generated.
-> Caching it would break the branching narrative system.
+Never cache creative outputs. Only deterministic/near-deterministic utility outputs.
 
 ---
 
 # Phase 9: Streaming Optimization
-**Status: ✅ Implemented — with minor issues**
+**Status: ✅ Implemented**
 
-## What's Working
-
-`aiStreamSSE` provides full SSE streaming with:
-- Token-by-token delivery to the frontend
-- Provider/model-level start/end events
-- Backpressure handling
+SSE streaming is fully operational with:
+- Token-by-token delivery
+- TTFT measurement
 - AbortSignal cancellation
-
-## What Needs Fixing
-
-### 9-a. Remove debug chunk logging (P0)
-
-Already covered — `console.log` on every chunk.
-
-### 9-b. Add TTFT measurement (P1)
-
-Track when the first non-empty chunk arrives. This is the metric users feel.
-
-### 9-c. Client-side progressive rendering
-
-Once a JSON chunk begins arriving, start rendering the fields as they complete:
-- The `text` field can begin rendering as it streams
-- Actions can appear as soon as that JSON section closes
-- Mood/scene metadata can update incrementally
-
-This requires the frontend to parse partial JSON — libraries like `json-stream-stringify`
-or a custom partial-JSON parser can help.
+- Backpressure handling
+- Start/end/error events
 
 ---
 
 # Phase 10: Background Pre-Generation
 **Status: 🔧 Partially implemented**
 
-## Current State
+## What's Done
 
-✅ **Implemented:**
-- After `initializeBook`, `triggerCandidateGenerationWorkflow` fires background candidate
-  generation via GitHub Actions webhook
-- `MAX_BRANCHING_PREGENERATION_DEPTH` controls how many levels deep to pre-generate
-- `ensureCandidatesForPageWithStrategy` handles the generation logic
+- `triggerCandidateGenerationWorkflow` fires after book creation (fire-and-forget) ✅
+- `MAX_BRANCHING_PREGENERATION_DEPTH` controls recursive depth ✅
 
-🔧 **Partially done:**
-- Pre-generation fires after book creation, but it's unclear if it also fires after
-  every user page selection
-- The pre-generation is always at least 1 async step delayed from user action
+## What's Missing
 
-📋 **Not yet done:**
-- Per-session hot cache warming (pre-generate N most likely next actions immediately)
-- Confidence-based speculative generation
-
-## Target Architecture
-
-```
-User reads page
-    │
-    ▼
-User sees actions A, B, C
-    │
-    ▼ (immediately, in background)
-Generate candidate pages for A, B, C in parallel
-    │
-    ▼
-Store in DB (candidate pages)
-    │
-    ▼
-User selects action B
-    │
-    ▼
-Page B already exists → serve in < 300 ms ✅
-```
-
-## Future Enhancement: Confidence-Based Expansion
-
-```json
-{
-  "likelyNextPlaces": [
-    { "place": "Abandoned Hospital", "confidence": 0.82 },
-    { "place": "River Bridge",       "confidence": 0.61 }
-  ]
-}
-```
-
-Use predicted next locations to guide speculative generation even before the user
-has selected an action.
-
-## Target
-
-Perceived latency:
-```
-< 300 ms for pre-generated pages
-< 8 000 ms for cold generation (first-time or cache miss)
-```
+- Pre-generation is not confirmed to fire after every USER PAGE SELECTION (only after book creation in the visible code)
+- No confidence-based speculative generation
+- No per-session warmup
 
 ---
 
-# Recommended Final Architecture
+# Recommended Implementation Order (Updated)
 
-```
-Reader
-│
-├── Current Page (served from DB)
-│
-├── Pre-generated Branch Cache (DB, filled by background workers)
-│
-├── Story Memory Layer
-│   ├── Hot Memory (last 2–3 pages + current state)
-│   ├── Warm Memory (contextHistory + active chars + threads + ending plan)
-│   └── Cold Memory (DB only — archived chars, resolved threads, old events)
-│
-├── Prompt Builder
-│   ├── Static Prefix (system prompt + rules + schema → always first)
-│   ├── Semi-Static (book summary + MC base)
-│   └── Dynamic Context (current page + action + state)
-│
-├── Generation Engine
-│   ├── Batched Candidates (N alternatives in one call)
-│   ├── Parallel Actions (generate candidates for all actions simultaneously)
-│   ├── Provider Fallback Chain (Gemini → Groq → Cerebras → Mistral → NVIDIA)
-│   └── Model Routing (fast for utility, standard for pages, premium for finale)
-│
-└── Telemetry
-    ├── TTFT per provider
-    ├── Prompt tokens (estimated)
-    ├── Cache hit rate
-    └── Generation latency
-```
+## Immediate (this week) — Bug fixes
 
----
+1. **Fix Bug 1** — add `cachedContentId` to destructure in `generateNextPage` + `generateNextPages` (2-line fix, activates all Gemini caching immediately)
+2. **Fix Bug 3** — add documents to `promptChars` in telemetry (1-line fix, fixes observability)
+3. **Fix Bug 2** — add book-scoped cleanup in `getOrCreateGeminiCache` (prevents orphaned caches)
 
-# Implementation Order
+## Short-term (next 2 weeks)
 
-## Week 1: Fix active bugs + add observability
-- ✅ P0: Remove production SSE debug log (1 line)
-- ✅ P1: Add TTFT + prompt size telemetry (~30 lines)
-- ✅ P2: Fix Gemini `systemInstruction` field (~10 lines)
-- ✅ P3: Remove duplicate schema for structured-output providers (~20 lines)
+4. **P6** — Character relevance filter (reduces tokens for long stories)
+5. **Parallel action candidate generation** — `Promise.allSettled` across actions (3× speed for candidate pre-generation)
+6. **Non-streaming telemetry** — add `aiPrompt` TTFT/size logging (background generation is currently a black box)
 
-## Week 2: Prompt architecture (the biggest lever)
-- ✅ P4: Move static rules to system prompt
-- ✅ P5: Move JSON schema to system prompt
-- Measure baseline TTFT before/after using P1 telemetry
+## Medium-term (next month)
 
-## Week 3: Context reduction
-- P6: Character relevance filter
-- Review and tune `MAX_PAGE_HISTORY`, `MAX_OLDER_PLOT_FLAGS` based on measured token sizes
-- Evaluate making evaluator use a fast model
+7. **Persist `cachedContentId`/Gemini cache ID in DB** — allows cache reuse across serverless cold starts and server restarts
+8. **Provider racing for book creation** — race Gemini + Groq for the expensive book initialization call
+9. **Fast model for evaluator** — confirm/set `AI_CHAT_MODELS_EVALUATION` to fast models (Gemini Flash, Groq 8B)
 
-## Week 4: Gemini caching
-- P7: Gemini explicit cache objects per story
-- Add `geminiCacheId` tracking in DB
+## Long-term
 
-## Week 5: Parallel generation
-- Parallelize `generateCandidatePages` across actions (Phase 5)
-
-## Week 6: Model routing
-- Route evaluator calls to a fast model (Phase 7)
-- Route `contextHistory` summarization to a fast model (Phase 3.5)
-
-## Week 7+: Advanced
-- Semantic caching for summaries (Phase 8)
-- Provider racing for premium generations (Phase 6)
-- Confidence-based speculative pre-generation (Phase 10)
+10. Semantic caching for summaries
+11. Confidence-based speculative pre-generation
+12. Phase 7 full model tiering
 
 ---
 
 # Success Criteria
 
-A mature Twistloom generation pipeline should achieve:
-
 ```
-Prompt Size:
-  70–90% smaller than unoptimized baseline (after Phase 1–3)
-  or: < 4 000 tokens for normal story pages
+Prompt tokens per story page:
+  Target: < 4 000
+  Current (estimated, pre-fix): 6 000–14 000
 
 TTFT:
-  < 1 500 ms (excellent)
-  < 2 500 ms (acceptable)
+  Excellent: < 1 000 ms
+  Acceptable: < 2 500 ms
 
-Average Generation Latency:
-  < 8 seconds (cold, no cache)
-  < 5 seconds (warm, provider cache hit)
+Cache hit rate (Gemini, after Bug 1 fixed):
+  Target: > 60% on system/document tokens
+  Current: 0% (Bug 1)
 
-Pre-generated Branch Load:
-  < 300 ms
+Cache hit rate (GitHub):
+  Passive via prompt_cache_retention: "24h" — active for all requests
 
-Cache Hit Rate (after Phase 4):
-  > 60% on system message tokens
+Pre-generated branch load time:
+  Target: < 300 ms (from DB, no AI call)
 
-Perceived User Wait:
-  Near-instant for pre-generated pages
+Candidate generation (3 actions × 2 candidates):
+  Sequential (current): ~24–48 seconds
+  Parallel (after Phase 5 fix): ~8–16 seconds
 ```
 
 ---
 
-# Appendix A: Canonical Prompt Architecture
+# Appendix A: Verified Prompt Layout
 
-Every Twistloom generation request must be built in this exact layer order.
-Deviating from this order directly costs cache hits.
+The system prompt for every story page generation now contains exactly:
 
 ```
-SYSTEM MESSAGE
-├── [STATIC] System persona (PROMPT_SYSTEM)
-├── [STATIC] RULES_ROUTE_MEMORY
-├── [STATIC] RULES_STORY_CONSISTENCY
-├── [STATIC] RULES_DIFFICULTY_SCALING
-├── [STATIC] RULES_FUTURE_NOTES
-├── [STATIC] nextPageOutputFormat (JSON schema)
-└── [SEMI-STATIC] Book documents (buildBookMetaDocuments)
+[1. PROMPT_SYSTEM]
+    — persona, writing style, page format, branching rules, hard rules
+    — ~2 800 chars, STATIC
 
-USER MESSAGE — PART 1 (semi-static per book)
-├── Theme reminder (book.summary)
-└── MC base info (name, gender, age, bio)
+[2. RULES_PAGE_GENERATION]
+    — RULES_ROUTE_MEMORY
+    — RULES_STORY_CONSISTENCY
+    — RULES_DIFFICULTY_SCALING
+    — RULES_FUTURE_NOTES
+    — ~800 chars, STATIC
 
-USER MESSAGE — PART 2 (dynamic per page)
-├── Current phase
-├── MC state (inventory, injuries)
-├── Story context (contextHistory)
-├── Recent major events (plotFlags)
-├── Current facts (factsHistory)
-├── Previous pages (compressed)
-├── Current page + situation
-└── Action selection
+[3. outputFormatPart]
+    — compact: "OUTPUT FORMAT: Respond with valid JSON. Required fields: ..."
+    — ~120 chars, STATIC per generation type
 
-USER MESSAGE — PART 3 (dynamic, narrative)
-├── Narrative style (createNarrativeStyle)
-├── Psychological flags + profile
-├── Hidden state
-├── Route memory
-├── Future notes
-├── Threads
-└── Ending plan
-
-USER MESSAGE — PART 4 (instructions)
-├── Field instructions (buildNextPageFieldInstructions)
-├── Review checklist (buildNextPageReviewChecklist)
-└── Task directive (LAST — tells model what to do after reading everything)
+[4. buildBookMetaDocuments documents (via formatSystemPromptWithDocuments)]
+    — BOOK META snippet
+    — KNOWN CHARACTERS snippet
+    — KNOWN PLACES snippet
+    — SEMI-STATIC per book state (changes as chars/places update)
 ```
 
-**Cacheability:**
-| Layer | Can be cached? | Notes |
-|-------|---------------|-------|
-| System message | ✅ Always | Identical per generation type |
-| Book documents | ✅ Per book | Same for all pages of a book |
-| Part 1 (semi-static) | ✅ Per book | Changes only if book meta updates |
-| Part 2 (dynamic) | ❌ | Different every page |
-| Part 3 (narrative) | ❌ | Different every page |
-| Part 4 (instructions) | 🔶 Phase-dependent | Changes with story phase |
+**User message:**
+
+```
+[fieldInstructions]  — phase-specific field guidance, SEMI-STATIC
+[thinkThenOutput]    — phase-specific review checklist, SEMI-STATIC
+[prompt]             — full story context (all dynamic content), DYNAMIC
+```
+
+This layout is correct. The system message has the maximum stable prefix. The user message
+starts with instructions (semi-stable) before the dynamic context.
 
 ---
 
-# Appendix B: Provider Implementation Patterns
+# Appendix B: Provider Patterns (Verified)
 
-## The Unified Pattern
-
-All non-Gemini providers should use the same two-message structure:
+## All Non-Gemini Providers
 
 ```ts
 messages = [
-  {
-    role: "system",
-    content: systemPrompt,  // static rules + schema
-  },
-  {
-    role: "user",
-    content: prompt,         // everything dynamic
-  },
+  { role: "system", content: systemPromptWithDocuments },  // PROMPT_SYSTEM + rules + schema + docs
+  { role: "user",   content: prompt },                     // dynamic context
 ];
 ```
 
-## Gemini — Special Case
-
-Gemini uses different fields AND supports explicit caching:
+## Gemini (non-streaming)
 
 ```ts
-// Standard (no explicit cache):
-await ai.models.generateContent({
+// Cache miss path (current behavior, always active since Bug 1 not yet fixed):
+{
   model,
-  systemInstruction: { parts: [{ text: systemPrompt }] },
-  contents: [{ role: "user", parts: [{ text: prompt }] }],
-  config: { responseSchema, ... },
-});
+  systemInstruction: { parts: [{ text: systemPromptWithDocuments }] },  // ✅ correct field
+  contents: [{ parts: [{ text: prompt }] }],
+  config: { responseJsonSchema, ... },
+}
 
-// With explicit cache (after Phase 4.5):
-await ai.models.generateContent({
+// Cache hit path (active after Bug 1 fix):
+{
   model,
-  cachedContent: cacheId,      // pre-created cache resource
-  contents: [{ role: "user", parts: [{ text: dynamicOnlyPrompt }] }],
-  config: { responseSchema, ... },
-});
+  cachedContent: cacheId,           // points to pre-cached prefix
+  contents: [{ parts: [{ text: prompt }] }],   // dynamic suffix only
+  config: { responseJsonSchema, ... },
+}
 ```
 
-> **Current bug:** `geminiStreamGenerator` concatenates system + prompt into `contents`
-> instead of using `systemInstruction`. Fix in Patch P2.
-
-## OpenAI / GitHub
+## GitHub (non-streaming only in `ai-chat.ts`)
 
 ```ts
-messages = [
-  { role: "system", content: systemPrompt },
-  { role: "user",   content: prompt },
-];
-// Optional: split user into two messages for better caching:
-// message[1] = semi-static book context
-// message[2] = dynamic page context
+{
+  messages: [
+    { role: "system", content: systemPromptWithDocuments },
+    { role: "user",   content: prompt },
+  ],
+  prompt_cache_retention: "24h",   // ✅ KV cache retention
+  ...
+}
 ```
 
 ---
 
-# Appendix C: Twistloom-Specific Notes
+# Appendix C: Gemini Cache Key Design
 
-## On `generateNextPages` Batch Strategy
-
-The current implementation generates multiple candidates in a **single API call** by
-asking the model to produce N alternative continuations at once via the
-`multiNextPageOutputFormat` wrapper. This is intentional and correct for free/rate-limited
-providers — it processes the shared prefix once and returns N outputs.
-
-Do NOT switch to N parallel calls for the same action. That would multiply token usage
-by N × (prefix_tokens / output_tokens ratio) which is typically 10x–20x the output.
-
-The place to add parallelism is **across actions** (different actions for the same page)
-since those do not share a prefix.
-
-## On the Evaluator Call
-
-`buildNextPageEvaluatorPrompt` triggers a second AI call that re-reads the full story
-context plus the generated page. This is effectively doubling the cost of every
-evaluated generation.
-
-Consider:
-1. Routing evaluator to a fast model (Gemini Flash, Groq 8B)
-2. Skipping evaluation for background candidate generation (only evaluate main story pages)
-3. Making evaluation conditional on score risk (skip if generation looks clean)
-
-## On `contextHistory`
-
-`contextHistory` is currently updated by the same expensive writing model as part of
-every story page generation. The model writes the page AND updates its own running
-summary in the same output object.
-
-This is fine now, but as context grows, consider a separate lightweight call:
-```ts
-// After page generation:
-const updatedContextHistory = await fastModel.summarize(
-  existingContextHistory + newPageText
-);
+```
+cachedContentId = createCacheKey([bookId, characters, places])
 ```
 
-This decouples the expensive creative work from the cheap bookkeeping work.
+**When cache is created:** First Gemini call for a given (bookId, characters, places) combination
+after Bug 1 is fixed.
+
+**When cache is INVALIDATED:** Any change to `state.characters` or `state.places` (new character,
+character update, new place, place update) triggers a new `cachedContentId` → new cache created
+→ old one orphaned (Bug 2).
+
+**After Bug 2 fix:** When a new cache is created for `bookId`, the previous cache entry for
+that book is explicitly deleted from Gemini's servers and from `contentCacheMap`.
+
+**Serverless consideration:** `contentCacheMap` is in-memory and resets on cold starts. For
+serverless production use, persist `cachedContentId → cacheId` in Redis or DB:
+
+```ts
+{
+  table: "gemini_caches",
+  bookId: string,        // foreign key
+  cachedContentId: string,
+  geminiCacheId: string, // Gemini resource name
+  createdAt: timestamp,
+  expiresAt: timestamp,
+}
+```
+
+This avoids re-creating the cache on every cold start (which would happen multiple times per
+hour in serverless with the current in-memory approach).
 
 ---
 
@@ -1223,4 +775,4 @@ This decouples the expensive creative work from the cheap bookkeeping work.
 
 - https://latitude.so/blog/latency-optimization-in-llm-streaming-key-techniques
 - https://redis.io/blog/what-is-prompt-caching/
-- Code audit: `utils/prompt.ts`, `utils/ai-chat.ts`, `utils/ai-chat-stream.ts` (Twistloom)
+- Code audit: `utils/prompt.ts`, `utils/ai-chat.ts`, `utils/ai-chat-stream.ts`, `utils/gemini.ts`

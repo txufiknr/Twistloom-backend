@@ -1345,6 +1345,7 @@ router.get("/tags/popular", async (req: Request, res: Response) => {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
     
     // Use cache for popular tags
+    // TODO: kayanya gaperlu redis
     const tags = await withCache(
       CACHE_KEYS.POPULAR_TAGS,
       async () => await getPopularTags(limit),

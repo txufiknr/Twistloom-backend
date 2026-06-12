@@ -14,6 +14,19 @@ https://www.npmjs.com/package/ajv
 
 ---
 
+1. for P6 — Character Relevance Filter, I have my concern:
+because the system is per-page generation, I don't want AI forget that certain character exists in old pages (that important to re-appear later)
+my `futureNotes` system might help to solve that, but not fully because note usually minimum, AI will forget every details of that particular character
+that's why I kept all characters listed in prompt with their statuses, but sorted by most recent interaction
+I have limited side characters to 6 max, thus formatCharactersForPrompt will only list no more than 1 MC + 6 side characters
+so I think kept all characters listed is negligible than losing important information in future AI turns
+what's your take?
+
+2. I have this `utils/redis.ts` and `services/cache.ts` (uploaded)
+can you help me migrate `contentCacheMap` in `utils/gemini.ts` into using Redis? please give me complete patched code file
+
+---
+
 validate AI json integrity:
 
 import { z } from "zod";

@@ -3377,7 +3377,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
   console.log(`[${context}] 💭 Conceptualizing continuation for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (single story context)
@@ -3393,7 +3393,8 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         context: 'story-page-candidate',
         logPrompts: true,
         systemPrompt,
-        documents
+        documents,
+        cachedContentId
       }
     } satisfies AIPromptForJson<StoryGeneration>,
     jsonStructure: nextPageOutputFormat,
@@ -3480,7 +3481,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   const context = "generateNextPages";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
   console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)
@@ -3496,7 +3497,8 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         context: 'story-page-candidates',
         logPrompts: true,
         systemPrompt,
-        documents
+        documents,
+        cachedContentId
       }
     } satisfies AIPromptForJson<CandidatePagesGeneration>,
     jsonStructure: multiNextPageOutputFormat,

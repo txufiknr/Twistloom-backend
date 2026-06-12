@@ -1,6 +1,5 @@
 import { getGeminiClient } from './ai-clients.js';
 import { Type } from "@google/genai";
-// import { createHash } from 'crypto';
 import type { Schema } from "@google/genai";
 import { hashContentDJB2 } from './cache.js';
 
@@ -22,9 +21,18 @@ const GEMINI_TYPE_MAP: Record<string, Type> = {
   null: Type.NULL,
 };
 
-
 // In-memory cache store (replace with Redis for multi-process setups)
+// Note: Vercel function instances restart often. Every cold start recreates Gemini
+// cache from scratch, wasting one roundtrip.
 const contentCacheMap = new Map<string, GeminiCacheEntry>();
+// Future solution:
+// Store cache metadata in Redis (or a `gemini_caches` DB table):
+// {
+//   bookId: string,
+//   cachedContentId: string,   // hash of current (chars, places) state
+//   geminiCacheId: string,     // Gemini resource name like "cachedContents/abc123"
+//   expiresAt: timestamp,
+// }
 
 const CACHE_TTL_SECONDS = 3600; // 1 hour
 
@@ -88,7 +96,9 @@ export async function getOrCreateGeminiCache(
 export async function invalidateGeminiCache(cachedContentId: string): Promise<void> {
   const ai = getGeminiClient();
   const existing = contentCacheMap.get(cachedContentId);
-  if (existing?.cacheId) await ai.caches.delete({ name: existing.cacheId });
+  if (existing?.cacheId) {
+    await ai.caches.delete({ name: existing.cacheId }).catch(() => {}); // best-effort
+  }
   contentCacheMap.delete(cachedContentId);
 }
 

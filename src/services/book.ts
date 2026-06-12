@@ -1780,6 +1780,7 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
  * ```
  */
 export async function getPopularTags(limit: number = 20): Promise<string[]> {
+  // TODO: implement LRU cache
   try {
     // Use database-level aggregation for efficient keyword counting
     const result = await dbRead.execute(sql`
@@ -1797,8 +1798,7 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
     `);
 
     // Extract tag names from result
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tags = result.rows.map((row: any) => row.keyword as string);
+    const tags = result.rows.map(row => row.keyword as string);
 
     return tags;
   } catch (error) {

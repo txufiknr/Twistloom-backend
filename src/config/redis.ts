@@ -47,7 +47,7 @@ export const REDIS_CACHE_KEYS = {
   /** Explore page 1 trending: books:explore:page:1:trending */
   EXPLORE_PAGE_1_TRENDING: 'books:explore:page:1:trending',
   /** Popular tags: books:tags:popular */
-  POPULAR_TAGS: 'books:tags:popular',
+  POPULAR_TAGS: 'books:tags:popular', // TODO: LRU cache aja
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,
 } as const;

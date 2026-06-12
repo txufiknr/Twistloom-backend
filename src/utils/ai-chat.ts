@@ -19,7 +19,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
-import { getOrCreateGeminiCache } from "./gemini.js";
+import { getOrCreateGeminiCache, invalidateGeminiCache } from "./gemini.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -206,18 +206,18 @@ export async function geminiPrompt(
     options,
     async (model, prompt, opts) => {
       const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = opts;
-      // const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
-      const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? (outputJsonStructure ? {
+      const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', opts);
+      const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
         type: "object",
-        properties: outputJsonStructure,
-        required: outputJsonRequired,
-        additionalProperties: false
-      } : { type: 'object' }) : undefined;
+        ...(outputJsonStructure ? {
+          properties: outputJsonStructure,
+          required: outputJsonRequired,
+          additionalProperties: false
+        } : {})
+      } : undefined;
 
       // Helper block to fulfill Gemini's minimum token requirement for explicit caching
       const formattedDocuments = formatDocumentsToPrompt(documents);
-      const systemPromptWithDocuments = `${systemPrompt}\n\n${formattedDocuments}`;
-
       const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
         cachedContentId,
         model,
@@ -245,6 +245,12 @@ export async function geminiPrompt(
       if (response.promptFeedback?.blockReason) {
         throw new Error(`Prompt blocked: ${response.promptFeedback.blockReason}`);
       }
+
+      // Clean up context cache after generation completed
+      // Note: clean up should be done after AI generation successful & pages inserted
+      // same book can have vast various amount of state combination per-parallel generation
+      // as this is an AI branching thriller narrative.
+      if (cachedContentId) await invalidateGeminiCache(cachedContentId);
       
       return response;
     },
@@ -282,10 +288,19 @@ export async function geminiPrompt(
         console.warn('[gemini] ❓ No usage data in response');
         return undefined;
       }
+
+      const cachedTokens = usageMetadata.cachedContentTokenCount;
+      const promptTokens = usageMetadata.promptTokenCount;
+      const outputTokens = usageMetadata.candidatesTokenCount;
+      const totalTokens = usageMetadata.totalTokenCount;
+      const cacheHitRate = promptTokens && cachedTokens ? cachedTokens / promptTokens : 0;
+
       return {
-        promptTokens: usageMetadata.promptTokenCount,
-        outputTokens: usageMetadata.candidatesTokenCount,
-        totalTokens: usageMetadata.totalTokenCount,
+        cachedTokens,
+        promptTokens,
+        outputTokens,
+        totalTokens,
+        cacheHitRate,
       };
     },
     (response) => response.candidates?.[0]?.finishReason ?? 'unknown'
@@ -382,6 +397,35 @@ export async function groqPrompt(
         promptTokens: usage.prompt_tokens,
         completionTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
+
+        // FIXME: Property 'cached_tokens' does not exist on type 'CompletionUsage'.
+        // cachedTokens: usage.cached_tokens,
+
+        // see: node_modules\.pnpm\groq-sdk@1.2.1\node_modules\groq-sdk\src\resources\completions.ts
+        // export interface CompletionUsage {
+        //   completion_tokens: number;
+        //   prompt_tokens: number;
+        //   total_tokens: number;
+        //   completion_time?: number;
+        //   completion_tokens_details?: CompletionUsage.CompletionTokensDetails | null;
+        //   prompt_time?: number;
+        //   prompt_tokens_details?: CompletionUsage.PromptTokensDetails | null;
+        //   queue_time?: number;
+        //   total_time?: number;
+        // }
+
+        // export namespace CompletionUsage {
+        //   export interface CompletionTokensDetails {
+        //     reasoning_tokens: number;
+        //   }
+        //   export interface PromptTokensDetails {
+        //     cached_tokens: number;
+        //   }
+        // }
+
+        // export declare namespace Completions {
+        //   export { type CompletionUsage as CompletionUsage };
+        // }
       };
     },
     (response) => response.choices?.[0]?.finish_reason ?? 'unknown'
@@ -690,12 +734,14 @@ export async function nvidiaPrompt(
           ...(outputAsJson ? {
             extra_body: {
               nvext: {
-                guided_json: (outputJsonStructure ? {
+                guided_json: {
                   type: "object",
-                  properties: outputJsonStructure,
-                  required: outputJsonRequired,
-                  additionalProperties: false
-                } : { type: "object" }) satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
+                  ...(outputJsonStructure ? {
+                    properties: outputJsonStructure,
+                    required: outputJsonRequired,
+                    additionalProperties: false
+                  } : {})
+                } satisfies AIJsonProperty // Falls back to a generic JSON object if no structural layout is passed
               }
             }
           } : {}),
@@ -1067,7 +1113,6 @@ export function formatDocumentsToPrompt(documents?: AIDocument[]): string {
  *     { title: 'Rules', snippet: 'Be concise...' }
  *   ]
  * });
- * // Returns: "You are a helpful assistant...\n\nContext\nUser is exploring...\n\nRules\nBe concise..."
  * ```
  */
 export function formatSystemPromptWithDocuments(provider: AIChatProvider, options: Pick<AIPromptOptions, 'systemPrompt' | 'documents' | 'logPrompts'>): string {
@@ -1075,13 +1120,13 @@ export function formatSystemPromptWithDocuments(provider: AIChatProvider, option
   
   // Early return when no document or provider is Cohere's V2 API which
   // natively supports RAG via documents field.
-  if (!documents || documents.length === 0 || provider === 'cohere') {
+  if (!documents?.length || provider === 'cohere') {
     logPromptWithSeparators(provider, '💬 Built system prompt', systemPrompt, logPrompts);
     return systemPrompt;
   }
   
   const formattedDocuments = formatDocumentsToPrompt(documents);
-  const systemPromptWithDocs = `${systemPrompt}\n\n${formattedDocuments}`;
+  const systemPromptWithDocs = `${systemPrompt}\n\n---\n${formattedDocuments}`;
   const message = `🧾 Built system prompt with ${documents.length} document${documents.length > 1 ? 's' : ''}`;
   logPromptWithSeparators(provider, message, systemPromptWithDocs, logPrompts);
   return systemPromptWithDocs;

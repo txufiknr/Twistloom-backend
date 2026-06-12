@@ -543,6 +543,7 @@ export const usage = pgTable(
     date, // YYYY-MM-DD format
     provider: text("provider").$type<AIChatProvider>().notNull(), // github | gemini | groq | cohere | cerebras | mistral | nvidia
     requests: integer("requests"), // Number of AI requests made
+    // TODO: add model, input token, output token, duration & TTFT?
     context: text("context"), // Usage context, e.g. 'story-page', etc.
   },
   (t) => [

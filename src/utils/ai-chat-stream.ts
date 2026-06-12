@@ -17,7 +17,7 @@ import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as OpenAI from "openai/resources";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
-import { getOrCreateGeminiCache } from "./gemini.js";
+import { getOrCreateGeminiCache, invalidateGeminiCache } from "./gemini.js";
 // import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
@@ -182,7 +182,10 @@ export async function aiStreamSSE(
               controller.enqueue(encoder.encode(createStartEvent(provider, model)));
 
               const requestStartedAt = Date.now();
-              const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length;
+
+              // Calculate estimated tokens for telemetry
+              const totalDocumentsLength = options.documents?.reduce((sum, doc) => sum + (doc.title?.length ?? 0) + doc.snippet.length, 0) ?? 0;
+              const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length + totalDocumentsLength;
               let firstTokenAt: number | null = null;
               
               // Call the appropriate streaming provider
@@ -345,19 +348,19 @@ async function* geminiStreamGenerator(
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = options;
-  // const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
-  const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? (outputJsonStructure ? {
+  const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
+  const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
     type: "object",
-    properties: outputJsonStructure,
-    required: outputJsonRequired,
-    additionalProperties: false
-  } : { type: 'object' }) : undefined;
+    ...(outputJsonStructure ? {
+      properties: outputJsonStructure,
+      required: outputJsonRequired,
+      additionalProperties: false
+    } : {})
+  } : undefined;
 
   // Helper block to fulfill Gemini's minimum token requirement for explicit caching
   const formattedDocuments = formatDocumentsToPrompt(documents);
-  const systemPromptWithDocuments = `${systemPrompt}\n\n${formattedDocuments}`;
   const model = options.models?.[0] || 'gemini-2.5-flash';
-
   const cachedContent = cachedContentId ? await getOrCreateGeminiCache(
     cachedContentId,
     model,
@@ -381,7 +384,7 @@ async function* geminiStreamGenerator(
   } satisfies GenerateContentParameters);
   
   for await (const chunk of response) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) break; // or `return;` to keep cache active for next retry?
     if (chunk.candidates?.[0]?.content?.parts) {
       const text = chunk.candidates[0].content.parts
         .filter((p) => typeof p?.text === 'string')
@@ -390,6 +393,12 @@ async function* geminiStreamGenerator(
       if (text) yield text;
     }
   }
+
+  // Clean up context cache after generation completed
+  // Note: in serverless environments (Vercel), `contentCacheMap` resets on each cold start.
+  // The memory leak is only a concern for persistent server deployments. However, the Gemini-side
+  // cache accumulation (orphaned caches on Google's servers) applies in all environments.
+  if (cachedContentId) await invalidateGeminiCache(cachedContentId);
 }
 
 /**

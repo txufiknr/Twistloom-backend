@@ -1,6 +1,5 @@
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
-import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction } from "../types/character.js";
 import type { StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
@@ -239,48 +238,6 @@ export function processCharacterUpdates(
       }
     }
   }
-}
-
-/**
- * Filters the character map to only characters relevant to the current generation.
- * 
- * "Relevant" means at least one of:
- * 1. Present in the current page's charactersPresent list
- * 2. Introduced recently (within last N pages)
- * 3. Have an active narrative flag (suspicious, missing, has secret)
- * 4. Appear in recent plot flags by name
- * 
- * Archives the rest to Cold Memory — they're still in state.characters
- * but just not sent to the model this turn.
- */
-export function filterRelevantCharacters(
-  characters: Record<string, CharacterMemory>,
-  currentPage: CandidateGenerationPage,
-  state: StoryState,
-  recentPageCount: number = 5,
-): Record<string, CharacterMemory> {
-  const recentPageThreshold = state.page - recentPageCount;
-  const presentNames = new Set(currentPage.charactersPresent ?? []);
-
-  // Collect names mentioned in recent plot flags
-  const recentFlagText = state.plotFlags
-    .filter(f => f.page >= recentPageThreshold)
-    .map(f => f.fact)
-    .join(' ');
-
-  return Object.fromEntries(
-    Object.entries(characters).filter(([name, char]) => {
-      if (presentNames.has(name)) return true;
-      if ((char.introducedAtPage ?? 0) >= recentPageThreshold) return true;
-      if (char.narrativeFlags?.isMissing) return true;
-      if (char.narrativeFlags?.isSuspicious) return true;
-      if (char.narrativeFlags?.hasSecret) return true;
-      if (!['dead', 'missing', 'injured'].includes(char.status)) return true;
-      // Name appears in recent plot flags
-      if (recentFlagText.includes(name)) return true;
-      return false;
-    })
-  );
 }
 
 /**

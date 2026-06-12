@@ -108,10 +108,7 @@ export async function deleteCache(key: string): Promise<boolean> {
  */
 export async function deleteCachePattern(pattern: string): Promise<number> {
   const redis = getRedisClient();
-  
-  if (!redis) {
-    return 0;
-  }
+  if (!redis) return 0;
 
   try {
     // Upstash Redis doesn't support KEYS command in production
@@ -155,9 +152,7 @@ export async function withCache<T>(
 ): Promise<T> {
   // Try to get from cache
   const cached = await getFromCache<T>(key);
-  if (cached.hit && cached.data !== null) {
-    return cached.data;
-  }
+  if (cached.hit && cached.data !== null) return cached.data;
 
   // Cache miss - fetch from source
   const data = await fetchFn();
