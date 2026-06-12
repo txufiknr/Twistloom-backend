@@ -844,7 +844,10 @@ export async function getPageFromDB(pageId: string, options: {
         if (book) bookId = book.id;
       }
   
-      if (!bookId) throw new Error("Book not found");
+      if (!bookId) {
+        // throw new Error("Book not found");
+        return null;
+      }
     }
   
     // Build where conditions - only include bookId filter if bookId is defined
@@ -853,17 +856,17 @@ export async function getPageFromDB(pageId: string, options: {
       whereConditions.push(eq(pages.bookId, bookId));
     }
 
-    const [result] = await client
+    const result = await client
       .select()
       .from(pages)
       .where(and(...whereConditions))
       .limit(1);
 
-    return result;
+    return result.length ? result[0] : null;
   } catch (error) {
-    const errorMessage = getErrorMessage(error);
-    console.error(`[getPageFromDB] ❌ Failed to get page ${pageId}:`, errorMessage);
-    throw new Error(`Unable to retrieve page: ${errorMessage}`, { cause: error });
+    console.error(`[getPageFromDB] ❌ Failed to get page ${pageId}:`, error);
+    // throw new Error(`Unable to retrieve page: ${errorMessage}`, { cause: error });
+    return null;
   }
 }
 

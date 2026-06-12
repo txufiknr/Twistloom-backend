@@ -442,7 +442,7 @@ export function convertToGeminiSchema(
     minify = false,
     maxEnums = 5,
     maxDescriptionLength = 60,
-    moveEnumsToDescription = false,
+    moveEnumsToDescription = true,
     enumHintFormatter = (values: string[]) => `One of: ${values.map((v) => `'${v}'`).join(', ')}`,
   } = options ?? {};
 

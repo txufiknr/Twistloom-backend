@@ -9,7 +9,7 @@ import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY, MAX_TRAVERSAL_DEPTH_SHALLOW } from "../config/story.js";
-import type { BookPageVisit, EnrichedBookData } from "../types/book.js";
+import type { BookPageVisit, BookStats, EnrichedBookData } from "../types/book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { applyStateDelta } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
@@ -305,7 +305,7 @@ async function markPageVisitedWithClient(params: {
   branchId: string,
   totalPages: number | null,
   visitCount: number,
-  stats: Pick<EnrichedBookData, 'stats'>['stats'],
+  stats: BookStats,
   actionedPageId?: string, // previous actioned page id
   action?: Action,
 }, options: { client: DBClient, req: Request }): Promise<BookPageVisit> {
@@ -389,9 +389,9 @@ export async function markPageVisited(params: {
   userId: string,
   book: Pick<EnrichedBookData, 'id' | 'totalPages' | 'stats'>,
   visitedPage: Pick<DBPage, 'id' | 'page' | 'branchId' | 'visitCount'>,
-  actionedPageId?: string, // omit for page 1
-  action?: Action // omit for page 1
-  shouldConsumeCredits?: boolean // whether to consume credits for choosing a different action (only applicable for page 2 onwards)
+  actionedPageId?: string, // Omit for page 1
+  action?: Action // Omit for page 1
+  shouldConsumeCredits?: boolean // Whether to consume credits for choosing a different action (only applicable for page 2 onwards)
 }, options: { req: Request }): Promise<BookPageVisit> {
   const { userId, book, visitedPage, actionedPageId, action, shouldConsumeCredits = false } = params;
   const { req } = options;
