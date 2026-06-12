@@ -61,11 +61,14 @@ async function promptWithFallback<T>(
     try {
       // Rate limiting: Apply throttling before making API call
       await getRateLimiter(provider).throttle();
-      
+
       // Only respect logPrompts for the very first model index
       const modelOptions = i === 0 ? options : { ...options, logPrompts: false };
       
-      // API call: Execute the actual request to the AI provider
+      // Track total duration
+      const requestStartAt = Date.now();
+      
+      // Execute the actual request to the AI provider
       const response = await apiCall(model, prompt, modelOptions);
       
       // Response extraction: Get the output content from the response
@@ -85,7 +88,7 @@ async function promptWithFallback<T>(
         };
         
         // Logging: Log successful AI response
-        logAISuccess(aiResponse);
+        logAISuccess(aiResponse, requestStartAt);
         // Usage tracking: Increment daily usage counter on successful AI response
         await incrementDailyUsageCount(provider, options.context ?? 'ai-prompt');
         return aiResponse;

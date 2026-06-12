@@ -300,7 +300,7 @@ export async function getOrCreateGeminiCache(
     return cache.name;
   } catch (err) {
     // Non-fatal — caller falls back to a standard (non-cached) request
-    console.warn(`[gemini-cache] ⚠️ Failed to create cache:`, classifyGenAIError(err));
+    console.log(`[gemini-cache] ⏩ Cache creation failed, skipping:`, classifyGenAIError(err));
     return null;
   }
 }
@@ -342,11 +342,70 @@ const GEMINI_TYPE_MAP: Record<string, Type> = {
 };
 
 /**
+ * Options for converting JSON Schema into Gemini Schema.
+ */
+export interface ConvertToGeminiSchemaOptions {
+  /**
+   * Enable schema simplification to reduce Gemini constrained-decoding complexity.
+   *
+   * When enabled:
+   * - min/max numeric constraints are removed
+   * - min/max array length constraints are removed
+   * - propertyOrdering is removed
+   * - enums/descriptions may be removed according to the thresholds below
+   */
+  minify?: boolean;
+
+  /**
+   * Maximum enum size to keep.
+   *
+   * Behavior:
+   * - undefined = keep all enums
+   * - 0 = remove all enums
+   * - N = keep enum only if enum.length <= N
+   *
+   * If an enum is removed and `moveEnumsToDescription` is enabled,
+   * its values will be converted into a description hint.
+   */
+  maxEnums?: number;
+
+  /**
+   * Maximum description length (in characters) to keep.
+   *
+   * Behavior:
+   * - undefined = keep all descriptions
+   * - 0 = remove all descriptions
+   * - N = keep description only if description.length <= N
+   *
+   * Descriptions exceeding the limit are removed entirely (not truncated).
+   */
+  maxDescriptionLength?: number;
+
+  /**
+   * When removing enums due to `maxEnums`, convert them into a
+   * lightweight description hint instead.
+   *
+   * Example:
+   * enum: ["A", "B", "C"]
+   *
+   * becomes:
+   * description: "One of: 'A', 'B', 'C'"
+   */
+  moveEnumsToDescription?: boolean;
+
+  /**
+   * Formats enum values when `moveEnumsToDescription` is enabled.
+   *
+   * Example:
+   * (values) => `One of: ${formatOneOf(values)}`
+   */
+  enumHintFormatter?: (values: readonly string[]) => string;
+}
+
+/**
  * Converts a JSON Schema subset into Gemini's native `Schema` format.
  *
- * This utility is intended for structured-output generation with Gemini models.
- * It supports the most common schema constructs used by AI output schemas:
- *
+ * Supported:
  * - Primitive types
  * - Objects and nested properties
  * - Arrays
@@ -354,42 +413,83 @@ const GEMINI_TYPE_MAP: Record<string, Type> = {
  * - Enums
  * - Numeric constraints
  * - String formats
- * - `anyOf` / `oneOf`
+ * - anyOf / oneOf
  * - Nullable types (`["string", "null"]`)
  *
- * When `minify` is enabled, non-essential constraints are removed to reduce
- * Gemini schema complexity and avoid "too many states for serving" errors.
- * The resulting schema preserves structural typing while discarding:
+ * Unsupported:
+ * - $ref
+ * - $defs
+ * - Recursive schemas
+ * - allOf
+ * - not
+ * - if / then / else
+ * - pattern
+ * - additionalProperties
  *
- * - descriptions
- * - enums
- * - formats
- * - minimum / maximum
- * - minItems / maxItems
- * - propertyOrdering
+ * Minification can be enabled to reduce Gemini schema complexity and avoid
+ * "too many states for serving" errors caused by large enums, verbose
+ * descriptions, numeric constraints, array bounds, and other expensive
+ * constrained-decoding features.
  *
  * @param jsonSchema JSON Schema object to convert.
  * @param options Conversion options.
- * @param options.minify Removes expensive constraints to reduce schema size.
  */
 export function convertToGeminiSchema(
   jsonSchema: any,
-  options?: { minify?: boolean },
+  options?: ConvertToGeminiSchemaOptions,
 ): Schema {
-  const { minify = false } = options ?? {};
+  const {
+    minify = false,
+    maxEnums = 5,
+    maxDescriptionLength = 60,
+    moveEnumsToDescription = false,
+    enumHintFormatter = (values: string[]) => `One of: ${values.map((v) => `'${v}'`).join(', ')}`,
+  } = options ?? {};
 
-  if (typeof jsonSchema === 'boolean') return { type: Type.TYPE_UNSPECIFIED };
-  if (!jsonSchema || typeof jsonSchema !== 'object') return { type: Type.TYPE_UNSPECIFIED };
+  const shouldKeepDescription = (description?: string): boolean => {
+    if (!description) return false;
+    if (!minify) return true;
+    if (maxDescriptionLength === undefined) return true;
+
+    return description.length <= maxDescriptionLength;
+  };
+
+  const shouldKeepEnum = (values?: readonly unknown[]): boolean => {
+    if (!values?.length) return false;
+    if (!minify) return true;
+    if (maxEnums === undefined) return true;
+
+    return values.length <= maxEnums;
+  };
+
+  const appendDescription = (
+    existing: string | undefined,
+    extra: string,
+  ): string => {
+    return existing ? `${existing} ${extra}` : extra;
+  };
+
+  if (typeof jsonSchema === 'boolean') {
+    return { type: Type.TYPE_UNSPECIFIED };
+  }
+
+  if (!jsonSchema || typeof jsonSchema !== 'object') {
+    return { type: Type.TYPE_UNSPECIFIED };
+  }
 
   if (jsonSchema.anyOf) {
     return {
-      anyOf: jsonSchema.anyOf.map((schema: any) => convertToGeminiSchema(schema, options)),
+      anyOf: jsonSchema.anyOf.map((schema: any) =>
+        convertToGeminiSchema(schema, options),
+      ),
     } as Schema;
   }
 
   if (jsonSchema.oneOf) {
     return {
-      anyOf: jsonSchema.oneOf.map((schema: any) => convertToGeminiSchema(schema, options)),
+      anyOf: jsonSchema.oneOf.map((schema: any) =>
+        convertToGeminiSchema(schema, options),
+      ),
     } as Schema;
   }
 
@@ -404,7 +504,10 @@ export function convertToGeminiSchema(
       return {
         anyOf: nonNull.map((t) =>
           convertToGeminiSchema(
-            { ...jsonSchema, type: t },
+            {
+              ...jsonSchema,
+              type: t,
+            },
             options,
           ),
         ),
@@ -413,16 +516,29 @@ export function convertToGeminiSchema(
   }
 
   if (type === 'array') {
-    const schema: Schema = { type: Type.ARRAY };
+    const schema: Schema = {
+      type: Type.ARRAY,
+    };
 
     if (jsonSchema.items) {
-      schema.items = convertToGeminiSchema(jsonSchema.items, options);
+      schema.items = convertToGeminiSchema(
+        jsonSchema.items,
+        options,
+      );
     }
 
     if (!minify) {
-      if (typeof jsonSchema.minItems === 'number') schema.minItems = jsonSchema.minItems;
-      if (typeof jsonSchema.maxItems === 'number') schema.maxItems = jsonSchema.maxItems;
-      if (jsonSchema.description) schema.description = jsonSchema.description;
+      if (typeof jsonSchema.minItems === 'number') {
+        schema.minItems = jsonSchema.minItems;
+      }
+
+      if (typeof jsonSchema.maxItems === 'number') {
+        schema.maxItems = jsonSchema.maxItems;
+      }
+    }
+
+    if (shouldKeepDescription(jsonSchema.description)) {
+      schema.description = jsonSchema.description;
     }
 
     return schema;
@@ -437,29 +553,67 @@ export function convertToGeminiSchema(
 
     if (jsonSchema.properties) {
       schema.properties = Object.fromEntries(
-        Object.entries(jsonSchema.properties).map(([key, value]) => [
-          key,
-          convertToGeminiSchema(value, options),
-        ]),
+        Object.entries(jsonSchema.properties).map(
+          ([key, value]) => [
+            key,
+            convertToGeminiSchema(value, options),
+          ],
+        ),
       );
     }
 
-    if (!minify) {
-      if (jsonSchema.description) schema.description = jsonSchema.description;
-      if (jsonSchema.propertyOrdering) schema.propertyOrdering = jsonSchema.propertyOrdering;
+    if (shouldKeepDescription(jsonSchema.description)) {
+      schema.description = jsonSchema.description;
+    }
+
+    if (!minify && jsonSchema.propertyOrdering) {
+      schema.propertyOrdering = jsonSchema.propertyOrdering;
     }
 
     return schema;
   }
 
-  const schema: Schema = { type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED };
+  const schema: Schema = {
+    type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED,
+  };
 
-  if (!minify) {
-    if (jsonSchema.description) schema.description = jsonSchema.description;
-    if (jsonSchema.enum) schema.enum = jsonSchema.enum;
-    if (jsonSchema.format) schema.format = jsonSchema.format;
-    if (typeof jsonSchema.minimum === 'number') schema.minimum = jsonSchema.minimum;
-    if (typeof jsonSchema.maximum === 'number') schema.maximum = jsonSchema.maximum;
+  let description: string | undefined;
+
+  if (shouldKeepDescription(jsonSchema.description)) {
+    description = jsonSchema.description;
+  }
+
+  const enumValues = Array.isArray(jsonSchema.enum)
+    ? jsonSchema.enum
+    : undefined;
+
+  if (shouldKeepEnum(enumValues)) {
+    schema.enum = enumValues;
+  } else if (
+    moveEnumsToDescription &&
+    enumValues?.length &&
+    enumValues.every((v: unknown) => typeof v === 'string')
+  ) {
+    description = appendDescription(
+      description,
+      enumHintFormatter(enumValues),
+    );
+  }
+
+  if (description) {
+    schema.description = description;
+  }
+
+  if (!minify && jsonSchema.format) {
+    schema.format = jsonSchema.format;
+  }
+
+  if (!minify && typeof jsonSchema.minimum === 'number') {
+    schema.minimum = jsonSchema.minimum;
+  }
+
+  if (!minify && typeof jsonSchema.maximum === 'number') {
+    schema.maximum = jsonSchema.maximum;
   }
 
   return schema;

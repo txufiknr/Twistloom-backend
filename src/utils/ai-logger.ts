@@ -11,10 +11,11 @@ import { group } from '@actions/core';
  * 
  * @param response - The AI provider response data
  */
-export function logAISuccess(response: AIResponse<unknown>): void {
+export function logAISuccess(response: AIResponse<unknown>, requestStartAt?: number): void {
   const { provider, model, output, finishReason = 'unknown', usage } = response;
+  const elapsedMs = requestStartAt ? Date.now() - requestStartAt : undefined;
 
-  group(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason})`, async () => {
+  group(`[${provider}] ✅ ${model} succeeded (${output.length} chars, finish: ${finishReason}${elapsedMs ? `, duration: ${elapsedMs}ms` : ''})`, async () => {
     // Log success with output
     console.log(`"""\n${output}\n"""`);
     

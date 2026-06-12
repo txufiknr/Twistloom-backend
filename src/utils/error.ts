@@ -230,8 +230,28 @@ type GenAIErrorCode =
   | 'SERVICE_UNAVAILABLE'
   | 'UNKNOWN';
 
+/**
+ * Classify a GenAI-related error into a small set of canonical error codes.
+ *
+ * The classifier uses conservative substring matching of known provider and
+ * transport error phrases (HTTP status codes, short phrases like "rate limit",
+ * undici abort errors, etc.). This maps diverse error shapes into a handful
+ * of actionable categories consumers can use for retry/backoff decisions,
+ * user-facing messages, or metrics.
+ *
+ * Example mappings:
+ * - "413 Request body too large" / "request body too large for model" -> `BAD_REQUEST`
+ * - "429" or "rate limit" -> `RATE_LIMITED`
+ * - "quota" or "resource_exhausted" -> `QUOTA_EXCEEDED`
+ *
+ * Note: This is a best-effort classifier based on message text. When possible
+ * callers should prefer structured error fields (HTTP status, provider codes).
+ *
+ * @param err - The thrown value or error to classify
+ * @returns One of the `GenAIErrorCode` discriminants describing the category
+ */
 export function classifyGenAIError(err: unknown): GenAIErrorCode {
-  console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
+  // console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
   const msg = getErrorMessage(err).toLowerCase();
 
   // Check for schema validation errors
@@ -267,6 +287,17 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
   // Check for rate limiting
   if (msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')) {
     return 'RATE_LIMITED';
+  }
+
+  // Check for payload-too-large / request body too large (HTTP 413)
+  // Example: "APIError: 413 Request body too large for gpt-4o model. Max size: 8000 tokens."
+  if (
+    msg.includes('413') ||
+    msg.includes('payload too large') ||
+    msg.includes('request body too large') ||
+    msg.includes('too large for')
+  ) {
+    return 'BAD_REQUEST';
   }
 
   // Check for API key issues

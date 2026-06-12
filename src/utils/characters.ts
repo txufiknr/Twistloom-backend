@@ -269,7 +269,7 @@ export function getMainCharacterInfo(params: {
 
   // Format main character's bio
   if (mc && !Object.values(mc).every((i) => i === undefined)) {
-    const info = [mc.name, mc.knownName ? ` ("${mc.knownName}")` : '', mc.gender, mc.age].filter(Boolean).join(', ');
+    const info = [`${mc.name}${mc.knownName ? ` ("${mc.knownName}")` : ''}`, mc.gender, mc.age].filter(Boolean).join(', ');
     mcInfo.push(`- Bio: ${info}${mc.bio ? ` — ${mc.bio}` : ''}`);
   }
 

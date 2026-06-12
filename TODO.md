@@ -14,6 +14,14 @@
 [ ] const validated = ajv.validate(schema, aiResponse);
 https://www.npmjs.com/package/ajv
 
+[ ] Consider place & character key (generate like future note key)
+[ ] Routine retry cron buat sequential aja (github action strategy)
+
+[gemini] 💥 Model gemini-2.5-flash failed, trying next model: BAD_REQUEST
+[cohere] ❌ All models failed: INVALID_SCHEMA
+
+[classifyGenAIError] ❓ Original error from gemini: ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving. Typical causes of this error are schemas with lots of text (for example, very long property or enum names), schemas with long array length limits (especially when nested), or schemas using complex value matchers (for example, integers or numbers with minimum/maximum bounds or strings with complex formats like date-time)","status":"INVALID_ARGUMENT"}}
+
 ---
 
 utils/ai-chat.ts

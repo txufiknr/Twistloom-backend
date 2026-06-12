@@ -95,7 +95,11 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   groq: 480_000,         // Full 128K token context (~512K chars, use 480K safe)
   cerebras: 480_000,     // Same as Groq
   nvidia: 480_000,       // Same as Groq/Cerebras
-  github: 480_000,       // GPT-4o 128K context
+  // While the standard OpenAI gpt-4o model natively supports a context window of
+  // up to 128,000 tokens, GitHub heavily throttles its marketplace playground proxy.
+  // Their server forcefully rejects any single HTTP request payload
+  // that exceeds a maximum size of 8,000 tokens.
+  github: 30_000,        // GPT-4o 8K context on GitHub Models (official OpenAI = 128K context)
   mistral: 1_000_000,    // 256K token context (~1,024K chars, use 1M safe)
 };
 
