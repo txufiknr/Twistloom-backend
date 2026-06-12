@@ -185,7 +185,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
 
 export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
   name: { type: 'string', description: 'Real full name, even if undisclosed yet (used as identifier, cannot be changed).' },
-  knownName: { type: 'string', description: `Preferred alias, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
+  knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
   recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
   role: { type: 'string', description: 'Role or occupation known to the MC.' },
   gender: { type: "string", enum: [...genders] },
@@ -387,7 +387,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
 
   // Provide full to overwrite current. Can omit or empty if no changes.
-  contextHistory: { type: 'string', description: `Summary of important story context from page 1 up to this point. Focus on key facts, relationships, and developments for story continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
+  contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Empty array if no changes.` },
   injuries: { type: 'array', items: INJURY_SCHEMA, description: 'Injuries sustained on this page. Injuries severity are automatically decaying. Empty array if no changes.' },
 }

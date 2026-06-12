@@ -734,15 +734,15 @@ export async function getEnrichedBook(
     conditions.push(eq(books.id, identifier));
   }
 
-  const result = await dbRead
+  const [result] = await dbRead
     .select(getEnrichedBookSelect(currentUserId, language))
     .from(books)
     .leftJoin(users, eq(books.userId, users.userId))
     .where(or(...conditions))
     .limit(1);
 
-  if (result.length > 0) {
-    const enrichedBook = result[0] as EnrichedBookData;
+  if (result) {
+    const enrichedBook = result as EnrichedBookData;
     // Only cache active books (published and stable)
     if (enrichedBook.status === 'active') {
       enrichedBookCache.set(cacheKey, enrichedBook);

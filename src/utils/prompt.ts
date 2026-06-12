@@ -169,13 +169,13 @@ Guiding principle: Confusing, but never meaningless.`;
  */
 export const RULES_DIFFICULTY_SCALING = `DIFFICULTY SCALING:
 
-Levels:
-- Low: Stable narrative, occasional relief
-- Medium: Tension, misdirection, occasional betrayal
-- High: Frequent twists, emotional damage, unreliable characters
-- Nightmare: Constant pressure, no safe choices, broken reality
+Escalate naturally as page count increases. Near the ending, behave as at least 'high' regardless of setting. Higher difficulty = more unreliable narration and reality distortion.
 
-Rules — Escalate naturally as page count increases. Near the ending, behave as at least High regardless of setting. Higher difficulty = more unreliable narration and reality distortion.`;
+Levels:
+- 'low': Stable narrative, occasional relief
+- 'medium': Tension, misdirection, occasional betrayal
+- 'high': Frequent twists, emotional damage, unreliable characters
+- 'nightmare': Constant pressure, no safe choices, broken reality`;
 
 export const RULES_FUTURE_NOTES = `FUTURE NOTE RULES:
 
@@ -187,16 +187,98 @@ For Later:
 - Keep these in mind for future planning.
 - Do not force them into the current page unless naturally justified.`;
 
-export const RULES_PAGE_GENERATION = [
-  `PAGE TEXT RULES:
+export const RULES_FALSE_PREVIEW = `FALSE PREVIEW SYSTEM:
+
+You may inject a "false preview" — a misleading hint about future events.
+
+This preview must:
+- Feel believable and connected to the story - never contradict story logic
+- Be partially true, but misleading - connect to real future events indirectly
+- Encourage the reader to make wrong assumptions - never reveal it's false
+- Should distort: identity, cause of events, timing, danger source
+
+Examples:
+
+A. NPC Agreement
+"Don't trust him," she whispered.
+I knew it.
+
+B. Environmental Reinforcement
+The door was locked.
+Of course it was.
+
+C. Memory Echo
+I remembered this.
+It ends badly if I go inside.`;
+
+export const RULES_PLACE = `PLACE RULES:
+
+- Use existing places whenever possible.
+- Reflect last mood and event history in descriptions.
+- Reflect traits and key objects consistently.
+- Familiar places feel more textured and real.
+- Apply trauma tags to atmosphere — a betrayal place stays tense.`;
+
+export const RULES_CHARACTER = `CHARACTER RULES:
+
+- NEVER reveal hidden character data unless explicitly discovered.
+- NEVER refer to character using their real full name.
+- If name is undisclosed, use descriptions, pronouns, roles, or known aliases.
+- Respect character's bio (and visualDescription).
+- Preserve dialect, tone, and personality consistently.
+- Use pastInteractions to subtly shape dialogue.
+- Reflect current status in behavior.
+- Reintroduce naturally after absence.
+- Characters may shift suddenly if narrativeFlags suggest it — never explain the change.
+- Use relationships to build tension triangles.
+- Sometimes they also misunderstand, reinforcing illusion or false theory through dialog or action.`;
+
+export const RULES_CHARACTER_RECOGNITION = `CHARACTER RECOGNITION LEVEL:
+
+Notice how characters should refer to each other based on recognitionLevel.
+
+Levels:
+- 'never_seen': Character is unseen by the source character (e.g., "someone", "a figure").
+- 'seen': Use descriptions only. Never use any name (e.g., "the tall man", "the woman in red").
+- 'alias_known': Use alias or codename only (e.g., "The Janitor").
+- 'first_name_known' or 'full_name_known': Use known name normally.`;
+
+export const RULES_PAGE_TEXT = `PAGE TEXT RULES:
+
 - Continue directly from selected action. Example: "I [verb]."
 - Continue from current situation.
 - Pay close attention to the historical context and story canons. Ensure the storyline and every elements connects perfectly.
-- Keep consistent writing style and language.`,
+- Keep consistent writing style and language.`;
+
+export const RULES_ACTIONS = `ACTION TYPES:
+${Object.entries(actionTypes)
+  .filter(([key]) => key !== 'custom')
+  .map(([key, value]) => `- ${key}: ${value}`)
+  .join('\n')}
+
+DIALOGUE ACTIONS:
+- Use sparingly for internal scenes or interactions
+- Write as direct speech (no quotes)
+- Keep the tone and style of the MC
+- Must be short, natural, and emotionally meaningful
+- Reflect different tones (fear, denial, curiosity, anger, etc.)
+- MC may say something inappropriate or with unintended consequences
+
+ACTION HINT:
+- Each action should have a hint that provides key continuity
+- Purpose: guide AI build the next page and continue the story`;
+
+export const RULES_PAGE_GENERATION = [
   RULES_ROUTE_MEMORY,
   RULES_STORY_CONSISTENCY,
   RULES_DIFFICULTY_SCALING,
   RULES_FUTURE_NOTES,
+  RULES_FALSE_PREVIEW,
+  RULES_PLACE,
+  RULES_CHARACTER,
+  RULES_CHARACTER_RECOGNITION,
+  RULES_PAGE_TEXT,
+  RULES_ACTIONS,
 ].join('\n\n---\n');
 
 // ============================================================================
@@ -224,16 +306,17 @@ function buildSystemPrompt(
 
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
-  "alternativeTitles": ["Alternative Title: Dead City", "..."],
+  "alternativeTitles": ["Alternative Title", "..."],
   "totalPages": <integer between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}>,
-  "language": "<ISO 639-1 language code, e.g. 'en'>",
+  "language": "<ISO 639-1 code>",
   "hook": "...",
   "summary": "...",
   "keywords": ["mood-tag", "theme-tag", "..."],
   "mainCharacter": {
     "name": "Full Name",
+    "knownName": "Preferred alias or nick",
     "age": <integer between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
-    "gender": "One of: 'male', 'female'",
+    "gender": "'male' OR 'female'",
     "bio": "Trait-forward description. Include at least one psychological vulnerability."
   },
   "firstPage": {
@@ -269,7 +352,7 @@ const firstBookOutputFormat: string = `{
       "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
       "outline": ["...", "..."]
     },
-    "traumaTags": [],
+    "traumaTags": ["..."],
     "plotFlags": [
       {
         "fact": "...",
@@ -309,7 +392,7 @@ const firstBookOutputFormat: string = `{
     "type": "One of: ${formatOneOf(placeTypes)}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
-    "locationHint": "",
+    "locationHint": "...",
     "keyEvents": ["..."],
     "keyObjects": [
       {
@@ -320,12 +403,12 @@ const firstBookOutputFormat: string = `{
       }
     ],
     "knownCharacters": {
-      "<Name>": "<Context or interaction>"
+      "<Real Full Name>": "<Context or interaction>"
     }
   },
   "initialCharacters": [
     {
-      "name": "Real Name",
+      "name": "Real Full Name",
       "knownName": "Narration Alias",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
       "role": "e.g. 'schoolmate', 'neighbor'",
@@ -360,8 +443,8 @@ const firstBookOutputFormat: string = `{
   ],
   "initialRelationships": [
     {
-      "source": "<Name 1>",
-      "target": "<Name 2>",
+      "source": "<Real Full Name 1>",
+      "target": "<Real Full Name 2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
@@ -645,8 +728,8 @@ const nextPageOutputFormat: string = `{
 
 const multiNextPageOutputFormat: string = `{
   "generatedPages": [
-    ${nextPageOutputFormat},
-    ${nextPageOutputFormat}
+    ${nextPageOutputFormat.split(`\n`).join(`\n    `)},
+    ${nextPageOutputFormat.split(`\n`).join(`\n    `)}
   ],
   "output": "..."
 }`;
@@ -655,71 +738,12 @@ function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, candidateCount } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
 
-  return `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}
-
-${formatNextPageStoryContextPrompt(params)}
-
----
-${formatNextPageNarrativePrompt(params)}
-
----
-${isFinale ? `` : `FALSE PREVIEW SYSTEM:
-
-You may inject a "false preview" — a misleading hint about future events.
-
-This preview must:
-- Feel believable and connected to the story - never contradict story logic
-- Be partially true, but misleading - connect to real future events indirectly
-- Encourage the reader to make wrong assumptions - never reveal it's false
-- Should distort: identity, cause of events, timing, danger source
-
-Examples:
-
-A. NPC Agreement
-"Don't trust him," she whispered.
-I knew it.
-
-B. Environmental Reinforcement
-The door was locked.
-Of course it was.
-
-C. Memory Echo
-I remembered this.
-It ends badly if I go inside.`}
-
----
-PLACE RULES:
-- Use existing places whenever possible.
-- Reflect last mood and event history in descriptions.
-- Reflect traits and key objects consistently.
-- Familiar places feel more textured and real.
-- Apply trauma tags to atmosphere — a betrayal place stays tense.
-
----
-CHARACTER RULES:
-- NEVER reveal hidden character data unless explicitly discovered.
-- NEVER refer to character using their real name.
-- If name is undisclosed, use descriptions, pronouns, roles, or known aliases.
-- Respect character's bio (and visualDescription).
-- Reflect current status in behavior.
-- Preserve dialect, tone, and personality consistently.
-- Use pastInteractions to subtly shape dialogue.
-- Reintroduce naturally after absence.
-- Characters may shift suddenly if narrativeFlags suggest it — never explain the change.
-- Use relationships to build tension triangles.
-- Sometimes they also misunderstand, reinforcing illusion or false theory through dialog or action.
-
----
-CHARACTER RECOGNITION LEVEL:
-Notice how characters should refer to each other based on recognitionLevel.
-- 'never_seen': Character is unseen by the source character (e.g., "someone", "a figure").
-- 'seen': Use descriptions only. Never use any name (e.g., "the tall man", "the woman in red").
-- 'alias_known': Use alias or codename only (e.g., "The Janitor").
-- 'first_name_known' or 'full_name_known': Use known name normally.
-
-${isLastPage ? '' : `---
-BRANCHING ACTIONS:
-${getActionRulesText({ isFinale })}`}`;
+  return [
+    `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}`,
+    formatNextPageStoryContextPrompt(params),
+    formatNextPageNarrativePrompt(params),
+    isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale })}`
+  ].filter(Boolean).join(`\n\n---\n`);
 }
 
 function buildNextPageFieldInstructions(state: StoryState, action: Action): string {
@@ -832,8 +856,7 @@ addPlotFlags
 contextHistory
   - Running summary from page 1 until now — key plot developments, hard facts, major events.
   - Incorporate the overall story context while keeping all essential narrative elements.
-  - Use "MC" to indicate the first-person narrator.
-  - Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.
+  - Write in 3rd person POV. Single paragraph or bullet points. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.
   - Maintain the continuity of the story.
 
 flagUpdates
@@ -1356,20 +1379,10 @@ OUTPUT FORMAT (strict JSON, no extra text):
 }`;
 }
 
-/**
- * Formats action types for inclusion in prompts
- * @returns Formatted string of all action types
- */
-function getActionTypesText(): string {
-  return Object.entries(actionTypes)
-    .filter(([key]) => key !== 'custom')
-    .map(([key, value]) => `- ${key}: ${value}`)
-    .join('\n');
-}
-
 function getActionRulesText(stateInfo: Partial<StoryStateInfo>): string {
   const { isFirstPage, isFinale } = stateInfo;
   const limit = isFirstPage || isFinale ? MAX_ACTION_CHOICES_FIRST_PAGE : MAX_ACTION_CHOICES;
+
   return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
 - Can be verb (what to do next) or dialogue (say/answer), ${ACTION_TEXT_LENGTH}
 - Represent the reader's decision - must feel natural, immediate, narrative-driven
@@ -1389,22 +1402,7 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
 - No two actions should lead to the same implied consequence
 - Choice pattern: safe / risky / ambiguous
 - Occasionally include deceptive choice
-- Avoid over-explaining actions`}
-
-ACTION TYPES:
-${getActionTypesText()}
-
-DIALOGUE ACTIONS:
-- Use sparingly for internal scenes or interactions
-- Write as direct speech (no quotes)
-- Keep the tone and style of the MC
-- Must be short, natural, and emotionally meaningful
-- Reflect different tones (fear, denial, curiosity, anger, etc.)
-- MC may say something inappropriate or with unintended consequences
-
-ACTION HINT:
-- Each action should have a hint that provides key continuity
-- Purpose: guide AI build the next page and continue the story`;
+- Avoid over-explaining actions`}`;
 }
 
 /**
@@ -2659,6 +2657,7 @@ function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcC
 Main Character (MC):
 ${getMainCharacterInfo({mc: mcCandidate}) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
 - If MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.`}
+- knownName: Preferred alias or nick referred by other characters.
 - bio: ${mcCandidate?.bio ? 'enhance it' : 'infer from theme if provided'}. Must include at least one psychological trait that will be used against them.
 
 Initial Place:

@@ -227,6 +227,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 - titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
 - mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
+  - knownName: Preferred alias or nick referred by other characters.
   - bio: infer from theme if provided. Must include at least one psychological trait that will be used against them.
 
 Comment structure (only if theme is valid):
@@ -235,7 +236,7 @@ Comment structure (only if theme is valid):
 - Express excitement and anticipation before generation
 
 Comment example (use your own wording):
-"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story book—will be ready for you very soon!"`,
+"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story—will be ready for you very soon!"`,
       jsonStructure: `{
   "isViolating": <boolean>,
   "category": "One of: ${formatOneOf(THEME_VALIDATION_CATEGORIES)}",
@@ -254,6 +255,7 @@ Comment example (use your own wording):
   "titleIdea": "...",
   "mcCandidate": {
     "name": "Full Name",
+    "knownName": "Preferred alias or nick",
     "age": <integer between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
     "gender": "One of: 'male', 'female'",
     "bio": "Trait-forward description. Include at least one psychological vulnerability."

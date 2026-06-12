@@ -8,6 +8,8 @@
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
 [ ] cohere track `meta.billed_units.input_tokens`
+[ ] story state: elapsedDays
+[ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
 
 [ ] const validated = ajv.validate(schema, aiResponse);
 https://www.npmjs.com/package/ajv
@@ -15,44 +17,10 @@ https://www.npmjs.com/package/ajv
 ---
 
 utils/ai-chat.ts
-utils/prompt.ts
-
 utils/ai-chat-stream.ts
-utils/gemini.ts
 utils/characters.ts
-
-are my updates correct?
-
-I have 1 concern about Gemini stale cache clean up:
-I think clean up should be done after AI generation successful, because same book can have vast various amount of state combination per-parallel generation as this is an AI branching thriller narrative.
-
-so I put cleanup in `geminiPrompt` after AI generation for that "cached context" successful, am I correct?
-
-here's `buildBookMetaDocuments` function:
-
-export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'places' | 'page' | 'inventory' | 'injuries'>): AIPromptDocuments {
-  const documents: AIDocument[] = [];
-
-  if (book) {
-    documents.push({ title: `BOOK META`, snippet: formatBookMetaForPrompt(book) });
-    documents.push({ title: `MAIN CHARACTER (POV)`, snippet: getMainCharacterInfo(book.mc, state)! });
-    documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}) });
-  }
-  if (state) {
-    documents.push({ title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state.places, state.page) });
-  }
-
-  // Generate unique identifier per identical `book.id + state.characters + state.places`
-  const cachedContentId = createCacheKey([
-    book?.id,
-    state?.characters ? Object.values(state.characters) : undefined,
-    state?.places ? Object.values(state.places) : undefined,
-    state?.inventory ? Object.values(state.inventory) : undefined,
-    state?.injuries ? Object.values(state.injuries) : undefined,
-  ].filter(Boolean));
-
-  return { documents, cachedContentId };
-}
+utils/gemini.ts
+utils/prompt.ts
 
 ---
 
@@ -76,23 +44,15 @@ try {
 
 ---
 
-[ ] Place Traits pastiin record<string, string>
-[ ] book type add: translation?: BookTranslation;
 [ ] Consider generate multiverse in parallel instead of 1 big request
-[ ] Roadmap AI optimization docs dari chatgpt, minta claude review prompt.ts & ai-chat.ts
+[ ] Roadmap AI optimization docs selesaiin & jadiin architecture MD docs file
 [ ] Provider Abstraction Layer:
 interface AIProvider {
   generate(request: AIRequest): Promise<AIResponse>;
   stream(request: AIRequest): AsyncIterable<string>;
 }
 
-Prompt:
-- story thread: active clues, active mysteries
-- story summary (contextHistory) format bullet points
-- The most stable content should always appear first → task at bottom
-- instructions and output specifications at the top is the industry best practice for prompt caching.
-- buat system prompt static semua
-
+[ ] Prompt: story thread: active clues, active mysteries
 [ ] titleIdea buat mandatory aja, jadiin input cron juga
 [ ] updateBookGenerationStatus -> update bookGenerations aiProvider & aiModel
 [ ] ai-chat add metrics: requestStart, firstTokenReceived, generationFinished (TTFT: 1.3s, Generation: 5.8s, Total: 7.1s)

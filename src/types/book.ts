@@ -1,7 +1,7 @@
 import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { NewPlace } from "./places.js";
 import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction } from "./story.js";
-import type { DBPage, DBUserSession } from "./schema.js";
+import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
@@ -102,25 +102,26 @@ export type Book = {
 /**
  * Enriched book data with author info and engagement metrics
  */
-export interface EnrichedBookData {
-  id: string;
-  userId: string;
-  slug: string | null;
-  title: string;
-  hook: string | null;
-  summary: string | null;
-  image: string | null;
-  keywords: string[] | null;
-  status: string | null;
-  trendingScore: number | null;
-  totalPages: number;
-  language: string | null;
-  topPick: Date | null;
-  isOriginal: boolean;
-  creditsPrice: number | null;
-  createdAt: Date;
-  updatedAt: Date;
-  mc: StoryMC;
+export type EnrichedBookData = Pick<DBBook,
+  | 'id'
+  | 'userId'
+  | 'slug'
+  | 'title'
+  | 'hook'
+  | 'summary'
+  | 'image'
+  | 'keywords'
+  | 'status'
+  | 'trendingScore'
+  | 'totalPages'
+  | 'language'
+  | 'topPick'
+  | 'isOriginal'
+  | 'creditsPrice'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'mc'
+> & {
   author: BookAuthor | null;
   stats: BookStats;
   isLiked: boolean;

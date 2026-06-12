@@ -247,7 +247,7 @@ export function processCharacterUpdates(
  * 
  * @example
  * // Character with inventory and injuries
- * - Bio: Lisa Carter, female, 16 — Shy teenager with social anxiety.
+ * - Bio: Lisa Carter ("Lisa"), female, 16 — Shy teenager with social anxiety.
  * - Inventory:
  *   - Cellphone (amount: 1, where: right pants pocket) - acquired: page 1
  *     → traits: color: black
@@ -269,7 +269,7 @@ export function getMainCharacterInfo(params: {
 
   // Format main character's bio
   if (mc && !Object.values(mc).every((i) => i === undefined)) {
-    const info = [mc.name, mc.gender, mc.age].filter(Boolean).join(', ');
+    const info = [mc.name, mc.knownName ? ` ("${mc.knownName}")` : '', mc.gender, mc.age].filter(Boolean).join(', ');
     mcInfo.push(`- Bio: ${info}${mc.bio ? ` — ${mc.bio}` : ''}`);
   }
 
@@ -338,6 +338,7 @@ export function getMainCharacterInfo(params: {
  * Output example:
  * · Sarah Chen (MC) - 28 years old, female
  *   Bio: Shy librarian with hidden past and mysterious family connections
+ *   Known as: Sarah
  * 
  * · Tom Martinez (friend) - male, healthy, active
  *   Bio: Former military medic, now works as security guard
@@ -372,6 +373,7 @@ export function getMainCharacterInfo(params: {
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
   const mcDetails = [];
   if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
+  if (mc.knownName) mcDetails.push(`  Known as: ${mc.knownName}`);
 
   const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
   const mcInfo = mcDetails.length ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;

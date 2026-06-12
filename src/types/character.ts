@@ -19,6 +19,8 @@ export interface StoryMC {
   gender: KnownGender;
   /** Character's bio */
   bio: string;
+  /** Character's known name in narrative */
+  knownName?: string;
 }
 
 export type StoryMCCandidate = Partial<StoryMC>;
