@@ -19,7 +19,7 @@ import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
-import { getOrCreateGeminiCache } from "./gemini.js";
+import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -232,8 +232,8 @@ export async function geminiPrompt(
         config: {
           ...config,
           ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
-          // responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema) : undefined,
-          responseJsonSchema,
+          responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema, { minify: true }) : undefined,
+          // responseJsonSchema,
           // Cache hit — send only the dynamic prompt
           ...(cachedContent ? { cachedContent } : {
             // Cache miss or unnecessary — do full request (Gemini caches this automatically)

@@ -111,8 +111,6 @@ export async function retryPendingGenerations(): Promise<string[]> {
   // TODO: is it feasible to make it parallel?
   for (const pageData of pagesWithPending) {
     try {
-      console.log(`[retryPendingGenerations] 🔄 Processing page ${pageData.id} (pending: ${pageData.pendingGenerationCount})`);
-      
       // Fetch fresh page data using `dbWrite` client
       const dbPage = await getPageFromDB(pageData.id, { client: dbWrite });
       if (!dbPage) {
@@ -244,6 +242,10 @@ async function processPageGeneration(params: {
     const systemUserId = requireEnv('SYSTEM_USER_ID');
     const actionsBefore = dbPage.actions || [];
     const pendingBefore = actionsBefore.filter(action => !action.destinationPageIds?.length).length;
+
+    if (dbPage.pendingGenerationCount !== pendingBefore) {
+      console.log(`[${context}] ⚠️ Pending generation count mismatch in database:`, { pendingBefore, inDatabase: dbPage.pendingGenerationCount });
+    }
 
     hasNoPendingActions = hasNoPendingActions || pendingBefore === 0;
 

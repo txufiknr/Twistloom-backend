@@ -17,7 +17,7 @@ import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as OpenAI from "openai/resources";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
-import { getOrCreateGeminiCache } from "./gemini.js";
+import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
 // import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
@@ -375,7 +375,8 @@ async function* geminiStreamGenerator(
     config: {
       ...config,
       ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
-      responseJsonSchema,
+      responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema, { minify: true }) : undefined,
+      // responseJsonSchema,
       // Cache hit path — send only the dynamic prompt
       ...(cachedContent ? { cachedContent } : {
         // Cache miss or unnecessary — do full request (Gemini caches this automatically)

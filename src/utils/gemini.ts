@@ -40,6 +40,7 @@ import { getFromCache, setCache, deleteCache } from '../services/cache.js';
 import { hashContentDJB2 } from './cache.js';
 import { Type } from "@google/genai";
 import type { Schema } from "@google/genai";
+import { classifyGenAIError } from './error.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -299,7 +300,7 @@ export async function getOrCreateGeminiCache(
     return cache.name;
   } catch (err) {
     // Non-fatal — caller falls back to a standard (non-cached) request
-    console.warn(`[gemini-cache] ⚠️ Failed to create cache:`, err);
+    console.warn(`[gemini-cache] ⚠️ Failed to create cache:`, classifyGenAIError(err));
     return null;
   }
 }
@@ -340,11 +341,57 @@ const GEMINI_TYPE_MAP: Record<string, Type> = {
   null: Type.NULL,
 };
 
-export function convertToGeminiSchema(jsonSchema: any): Schema {
+/**
+ * Converts a JSON Schema subset into Gemini's native `Schema` format.
+ *
+ * This utility is intended for structured-output generation with Gemini models.
+ * It supports the most common schema constructs used by AI output schemas:
+ *
+ * - Primitive types
+ * - Objects and nested properties
+ * - Arrays
+ * - Required fields
+ * - Enums
+ * - Numeric constraints
+ * - String formats
+ * - `anyOf` / `oneOf`
+ * - Nullable types (`["string", "null"]`)
+ *
+ * When `minify` is enabled, non-essential constraints are removed to reduce
+ * Gemini schema complexity and avoid "too many states for serving" errors.
+ * The resulting schema preserves structural typing while discarding:
+ *
+ * - descriptions
+ * - enums
+ * - formats
+ * - minimum / maximum
+ * - minItems / maxItems
+ * - propertyOrdering
+ *
+ * @param jsonSchema JSON Schema object to convert.
+ * @param options Conversion options.
+ * @param options.minify Removes expensive constraints to reduce schema size.
+ */
+export function convertToGeminiSchema(
+  jsonSchema: any,
+  options?: { minify?: boolean },
+): Schema {
+  const { minify = false } = options ?? {};
+
   if (typeof jsonSchema === 'boolean') return { type: Type.TYPE_UNSPECIFIED };
   if (!jsonSchema || typeof jsonSchema !== 'object') return { type: Type.TYPE_UNSPECIFIED };
-  if (jsonSchema.anyOf) return { anyOf: jsonSchema.anyOf.map(convertToGeminiSchema) } as Schema;
-  if (jsonSchema.oneOf) return { anyOf: jsonSchema.oneOf.map(convertToGeminiSchema) } as Schema;
+
+  if (jsonSchema.anyOf) {
+    return {
+      anyOf: jsonSchema.anyOf.map((schema: any) => convertToGeminiSchema(schema, options)),
+    } as Schema;
+  }
+
+  if (jsonSchema.oneOf) {
+    return {
+      anyOf: jsonSchema.oneOf.map((schema: any) => convertToGeminiSchema(schema, options)),
+    } as Schema;
+  }
 
   let type = jsonSchema.type;
 
@@ -355,7 +402,12 @@ export function convertToGeminiSchema(jsonSchema: any): Schema {
       type = nonNull[0];
     } else {
       return {
-        anyOf: nonNull.map((t) => convertToGeminiSchema({ ...jsonSchema, type: t })),
+        anyOf: nonNull.map((t) =>
+          convertToGeminiSchema(
+            { ...jsonSchema, type: t },
+            options,
+          ),
+        ),
       } as Schema;
     }
   }
@@ -363,10 +415,15 @@ export function convertToGeminiSchema(jsonSchema: any): Schema {
   if (type === 'array') {
     const schema: Schema = { type: Type.ARRAY };
 
-    if (jsonSchema.items) schema.items = convertToGeminiSchema(jsonSchema.items);
-    if (typeof jsonSchema.minItems === 'number') schema.minItems = jsonSchema.minItems;
-    if (typeof jsonSchema.maxItems === 'number') schema.maxItems = jsonSchema.maxItems;
-    if (jsonSchema.description) schema.description = jsonSchema.description;
+    if (jsonSchema.items) {
+      schema.items = convertToGeminiSchema(jsonSchema.items, options);
+    }
+
+    if (!minify) {
+      if (typeof jsonSchema.minItems === 'number') schema.minItems = jsonSchema.minItems;
+      if (typeof jsonSchema.maxItems === 'number') schema.maxItems = jsonSchema.maxItems;
+      if (jsonSchema.description) schema.description = jsonSchema.description;
+    }
 
     return schema;
   }
@@ -382,25 +439,28 @@ export function convertToGeminiSchema(jsonSchema: any): Schema {
       schema.properties = Object.fromEntries(
         Object.entries(jsonSchema.properties).map(([key, value]) => [
           key,
-          convertToGeminiSchema(value),
+          convertToGeminiSchema(value, options),
         ]),
       );
     }
 
-    if (jsonSchema.description) schema.description = jsonSchema.description;
-    if (jsonSchema.propertyOrdering) schema.propertyOrdering = jsonSchema.propertyOrdering;
-    // if (jsonSchema.additionalProperties) (schema as any).additionalProperties = convertToGeminiSchema(jsonSchema.additionalProperties);
+    if (!minify) {
+      if (jsonSchema.description) schema.description = jsonSchema.description;
+      if (jsonSchema.propertyOrdering) schema.propertyOrdering = jsonSchema.propertyOrdering;
+    }
 
     return schema;
   }
 
   const schema: Schema = { type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED };
 
-  if (jsonSchema.description) schema.description = jsonSchema.description;
-  if (jsonSchema.enum) schema.enum = jsonSchema.enum;
-  if (jsonSchema.format) schema.format = jsonSchema.format;
-  if (typeof jsonSchema.minimum === 'number') schema.minimum = jsonSchema.minimum;
-  if (typeof jsonSchema.maximum === 'number') schema.maximum = jsonSchema.maximum;
+  if (!minify) {
+    if (jsonSchema.description) schema.description = jsonSchema.description;
+    if (jsonSchema.enum) schema.enum = jsonSchema.enum;
+    if (jsonSchema.format) schema.format = jsonSchema.format;
+    if (typeof jsonSchema.minimum === 'number') schema.minimum = jsonSchema.minimum;
+    if (typeof jsonSchema.maximum === 'number') schema.maximum = jsonSchema.maximum;
+  }
 
   return schema;
 }
