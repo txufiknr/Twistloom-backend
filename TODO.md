@@ -11,6 +11,7 @@
 [ ] Routine retry cron buat sequential aja (github action strategy)
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
+[ ] story state: sceneTypes
 [ ] story state: storyMomentum: "building" | "rising" | "critical" | "resolution";
 [ ] more LLM SDK: OpenRouter, Cloudflare Workers AI, Hugging Face Serverless Inference API, Together AI
 [ ] Process character update relationship match first name & knownName
@@ -24,6 +25,13 @@ Writing Guidance:
 - Favor emotionally charged observations.
 - Compress downtime.
 - Make actions feel consequential.
+
+export const storyMomentums = {
+  "building": "",
+  "rising": "",
+  "critical": "",
+  "resolution": "",
+};
 
 export const sceneTypes = {
   "investigation": "",

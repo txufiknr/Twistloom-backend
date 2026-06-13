@@ -317,6 +317,7 @@ async function* githubStreamGenerator(
     temperature: config.temperature,
     top_p: config.topP,
     stream: true,
+    stream_options: { include_usage: true },
     stop: config.stopSequences,
     response_format: outputAsJson ? (outputJsonStructure ? {
       type: "json_schema",
@@ -395,6 +396,41 @@ async function* geminiStreamGenerator(
       if (text) yield text;
     }
   }
+
+  // let _cachedTokens: number | undefined;
+  // let _promptTokens: number | undefined;
+
+  // for await (const chunk of response) {
+  //   const text = chunk.text ?? '';
+    
+  //   if (!firstTokenAt && text.length > 0) firstTokenAt = Date.now();
+    
+  //   if (chunk.usageMetadata) {
+  //     _promptTokens = chunk.usageMetadata.promptTokenCount ?? undefined;
+  //     _cachedTokens = chunk.usageMetadata.cachedContentTokenCount ?? undefined;
+  //   }
+    
+  //   if (text) {
+  //     controller.enqueue(encoder.encode(createTextChunkEvent(text)));
+  //   }
+  // }
+
+  // logGenerationTelemetry({
+  //   provider,
+  //   model,
+  //   context: options.context,
+  //   promptChars,
+  //   estimatedPromptTokens: estimateTokens(promptChars),
+  //   requestStartedAt,
+  //   firstTokenAt,
+  //   completedAt: Date.now(),
+  //   ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
+  //   generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
+  //   cachedTokens: _cachedTokens,
+  //   cacheHitRate: (_promptTokens && _cachedTokens != null)
+  //     ? _cachedTokens / _promptTokens
+  //     : undefined,
+  // });
 }
 
 /**

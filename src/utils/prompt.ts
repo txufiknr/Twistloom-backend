@@ -41,6 +41,7 @@ import type { Book, BookCreationResponse, BookGenerationProgress, StoryGeneratio
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
+import { ucfirst } from "./formatter.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2354,32 +2355,48 @@ function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, sho
  * • world.monster.appearance: every 1 AM (from page 9)
  */
 function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>, groupByCategory: boolean = false): string {
-  const currentFacts = Object.fromEntries(Object.entries(factsHistory).filter(([_, history]) => history.length > 0).map(([key, history]) => [key, history.at(-1)!]));
-  if (Object.keys(currentFacts).length === 0) return 'No facts discovered yet.';
+  const entries: [string, FactHistory][] = [];
 
-  if (!groupByCategory) return Object.entries(currentFacts).sort(([a], [b]) => a.localeCompare(b)).map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`).join('\n');
-
-  // Group facts by their declared `type`, falling back to an inferred
-  // type based on the key prefix (e.g. "character.") or to 'other'.
-  const knownTypes = Object.keys(factTypes) as (keyof typeof factTypes)[];
-  const groups: Partial<Record<keyof typeof factTypes, Array<[string, FactHistory]>>> = {};
-
-  for (const [key, fact] of Object.entries(currentFacts)) {
-    const inferred = knownTypes.find(t => key.startsWith(`${t}.`));
-    const type = (fact.type as keyof typeof factTypes) ?? inferred ?? 'other';
-    if (!groups[type]) groups[type] = [];
-    groups[type]!.push([key, fact]);
+  // 1. Single-pass extraction (Faster than flatMap/filter combinations)
+  for (const [key, history] of Object.entries(factsHistory)) {
+    const lastFact = history.at(-1);
+    if (lastFact) entries.push([key, lastFact]);
   }
 
-  // Build a readable, alphabetically-sorted output grouped by type.
+  if (entries.length === 0) return 'No facts discovered yet.';
+
+  // 2. Sort EVERYTHING alphabetically upfront (Highly optimal)
+  entries.sort((a, b) => a[0].localeCompare(b[0]));
+
+  // 3. Early return for the flat list
+  if (!groupByCategory) {
+    return entries
+      .map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`)
+      .join('\n');
+  }
+
+  // 4. Group by type (Preserves the sorted order inherently)
+  const groups: Record<string, typeof entries> = {};
+  const knownTypes = Object.keys(factTypes);
+
+  for (const entry of entries) {
+    const [key, fact] = entry;
+    
+    // Restored inference logic for strict parity with Version 1
+    const inferredType = knownTypes.find(t => key.startsWith(`${t}.`));
+    const type = fact.type ?? inferredType ?? 'other';
+    
+    (groups[type] ??= []).push(entry);
+  }
+
+  // 5. Build final string based on knownTypes order
   const parts: string[] = [];
-  for (const t of knownTypes) {
-    const items = groups[t];
+  for (const type of knownTypes) {
+    const items = groups[type];
     if (!items || items.length === 0) continue;
-    items.sort((a, b) => a[0].localeCompare(b[0]));
-    const header = `${t[0].toUpperCase()}${t.slice(1)}:`;
+
     const lines = items.map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`);
-    parts.push(`${header}\n${lines.join('\n')}`);
+    parts.push(`${ucfirst(type)}:\n${lines.join('\n')}`);
   }
 
   return parts.join('\n\n');
