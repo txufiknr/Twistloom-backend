@@ -11,7 +11,7 @@ export const EVALUATION_SCORING_OUTPUT_TOKEN: number = 2000;
  */
 export const NVIDIA_REQUEST_TIMEOUT_MS: number = 60000;
 
-/** Temperature controls randomness (0.6 - 0.85): > 0.85 → messy / incoherent, < 0.6 → robotic */
+/** Temperature controls randomness and elevates the creative vocabulary (0.6 - 0.85): > 0.85 → messy / incoherent, < 0.6 → robotic */
 export const DEFAULT_TEMPERATURE: number = 0.7;
 /** Top-p (nucleus) sampling: 0.0 = all tokens, 1.0 = only most likely tokens */
 export const DEFAULT_TOP_P: number = 0.9;

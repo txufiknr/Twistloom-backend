@@ -346,7 +346,6 @@ export const books = pgTable(
     imageId, // ImageKit file ID for deletion
     trendingScore: real("trending_score").default(0),
     isOriginal: boolean("is_original").notNull().default(false),
-    // keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['reality-bending', 'psychological-horror', 'unreliable-narrator', 'time-loop-feel', 'paranormal', 'forgotten-trauma']
     status: text("status").$type<BookStatus>().notNull().default('draft'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
@@ -359,7 +358,6 @@ export const books = pgTable(
     creditsPrice: integer("credits_price"),
     createdAt,
     updatedAt,
-  // } satisfies Record<keyof Omit<Book, 'stats'> | keyof BookStats | 'keywordsText' | 'keywordsArray' | 'generatedKeywordsArray' | ResourceTimestamp, unknown>,
   } satisfies Record<keyof Omit<Book, 'stats'> | keyof BookStats | ResourceTimestamp, unknown>,
   (t) => [
     // Optimize trending sorting by pre-calculated score (cron-based with time decay)

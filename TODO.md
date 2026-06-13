@@ -7,20 +7,26 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] cohere track `meta.billed_units.input_tokens`
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
+[ ] Consider place & character key (generate like future note key)
+[ ] Routine retry cron buat sequential aja (github action strategy)
+[x] take out github dari writing provider
 
 [ ] const validated = ajv.validate(schema, aiResponse);
 https://www.npmjs.com/package/ajv
 
-[ ] Consider place & character key (generate like future note key)
-[ ] Routine retry cron buat sequential aja (github action strategy)
+---
 
-[gemini] 💥 Model gemini-2.5-flash failed, trying next model: BAD_REQUEST
-[cohere] ❌ All models failed: INVALID_SCHEMA
+config/ai-chat.ts
 
-[classifyGenAIError] ❓ Original error from gemini: ApiError: {"error":{"code":400,"message":"The specified schema produces a constraint that has too many states for serving. Typical causes of this error are schemas with lots of text (for example, very long property or enum names), schemas with long array length limits (especially when nested), or schemas using complex value matchers (for example, integers or numbers with minimum/maximum bounds or strings with complex formats like date-time)","status":"INVALID_ARGUMENT"}}
+please evaluate and review my implementation of dynamic AI sampling configurations for generating creative story page in Twistloom (`determineAIConfig` function)
+are they correct and optimal if I want the most breathtaking, artistic, and emotionally resonant prose? and is it actually good to differentiate sampling (lower temperature) based on story phase progress, for narrative quality, writing style & language consistency?
+please elaborate
+
+determineAIConfig
+applyActionConfig
+validateAIConfig
 
 ---
 
@@ -29,6 +35,11 @@ utils/ai-chat-stream.ts
 utils/characters.ts
 utils/gemini.ts
 utils/prompt.ts
+
+"Gap 2 — Non-streaming `aiPrompt` has no latency telemetry" is implemented
+here's my updated `utils/prompt.ts` (uploaded), I restructured and optimized user prompt even more (moved all static rules into `RULES_PAGE_GENERATION`)
+
+can you continue writing the comprehensive architecture docs to best reflect the latest actual codes?
 
 ---
 
@@ -98,6 +109,7 @@ future:
 
 paid infra:
 [ ] purchase premium AI chat API keys
+[ ] migrate: GitHub models 8K context -> Official OpenAI 128K context
 [ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.
 [ ] migrate: serverless environment -> single, always-on server Vercel VPS alternative (like Render, Railway, or Fly.io) if you want a true, traditional single-instance server.
 
@@ -142,3 +154,13 @@ I'd like to see your designs proposal for:
 Branch locking system (prevents illegal jumps)
 “Golden path” vs “corrupted path” tracking
 Replay system with alternate timeline comparison
+
+
+PROMPT:
+You are an award-winning literary author.
+You are an award-winning literary novelist.
+You are an avant-garde fiction writer.
+
+Focus on the visual textures and psychological weight of the environment.
+Focus deeply on subtext, sensory details, environmental atmosphere, psychological depth, and complex human contradictions.
+Never use predictable AI framing phrases.

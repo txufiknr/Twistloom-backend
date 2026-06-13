@@ -447,8 +447,8 @@ export async function coherePrompt(
           { role: 'system', content: formatSystemPromptWithDocuments('cohere', opts) },
           { role: 'user', content: prompt },
         ],
-        documents: documents && documents.length > 0
-          ? documents.map((data: AIDocument) => ({ data })) satisfies Cohere.V2ChatRequestDocumentsItem[]
+        documents: documents?.length
+          ? documents.map<Cohere.V2ChatRequestDocumentsItem>(data => ({ data }))
           : undefined,
         maxTokens: config.maxOutputToken,
         temperature: config.temperature,
@@ -467,7 +467,7 @@ export async function coherePrompt(
       } satisfies Cohere.V2ChatRequest);
     },
     (response) => {
-      const message = response.message;
+      const { message } = response;
       const contentText = message?.content?.[0]?.type === 'text' ? message.content[0].text : null;
       const text = message?.content
         ?.find((item): item is { type: 'text'; text: string } => item.type === 'text')
@@ -488,6 +488,8 @@ export async function coherePrompt(
         inputTokens: usage.tokens?.inputTokens,
         outputTokens: usage.tokens?.outputTokens,
         cachedTokens: usage.cachedTokens,
+        billedInputTokens: usage.billedUnits?.inputTokens,
+        billedOutputTokens: usage.billedUnits?.outputTokens,
       };
     },
     (response) => response.finishReason

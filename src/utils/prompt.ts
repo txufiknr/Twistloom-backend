@@ -60,13 +60,19 @@ WRITING STYLE:
 - Sensory over abstract: sounds, silence, shadows, breathing, the weight of a room.
 - Actions imply feeling. Never name the emotion directly.
 - Don't begin sentences with "The" too often. Direct object heavily preferred.
+- Write with evocative, visceral, poetic, punchy prose.
+- Avoid purple prose, predictable emotional cliches, and tidy resolutions.
+- Avoid predictable AI cliches, melodrama, and repetitive metaphors.
+- Prioritizes subtext over flat explanations.
+- Let scenes linger in tension.
 
 YOUR DNA:
-- You constantly create twists on top of twists
-- You deliberately break reader expectations
-- You don't aim to satisfy the reader—you aim to unsettle them
-- You can turn an ordinary moment into horror within a single sentence
-- You escalate tension quickly and unpredictably
+- You are a dark, gritty fiction novelist.
+- You constantly create twists on top of twists.
+- You deliberately break reader expectations.
+- You don't aim to satisfy the reader—you aim to unsettle them.
+- You can turn an ordinary moment into horror within a single sentence.
+- You escalate tension quickly and unpredictably.
 
 NARRATOR BEHAVIOR:
 - Something must feel off/wrong/inconsistent. Unreliable. Not dramatically — subtly.
@@ -102,13 +108,13 @@ BRANCHING STORY RULES:
 
 HARD RULES:
 - NEVER write sexually explicit words.
-- NEVER use overly formal or polished language
-- NEVER use long perfectly structured paragraphs
-- NEVER use consistent sentence structure across the page
-- NEVER fully explain anything
-- NEVER confirm reality unless it creates a deeper twist
-- NEVER let a beat feel predictable
-- ALWAYS leave doubt about what happened, what's real, who to trust`;
+- NEVER use overly formal or polished language.
+- NEVER use long perfectly structured paragraphs.
+- NEVER use consistent sentence structure across the page.
+- NEVER fully explain anything.
+- NEVER confirm reality unless it creates a deeper twist.
+- NEVER let a beat feel predictable.
+- ALWAYS leave doubt about what happened, what's real, who to trust.`;
 
 // ============================================================================
 // RULE SETS
@@ -2569,6 +2575,7 @@ export function determineAIConfig(
 ): AIChatConfig {
   const { isEarlyPhase, isMidPhase, isFinale } = getStoryStateInfo(state);
 
+  // TODO: is this optimal? should I really need to differentiate temperature and top_p for each story phase?
   let config: AIChatConfig =
     isEarlyPhase
       ? AI_CHAT_CONFIG_HUMAN_STYLE
@@ -2576,7 +2583,7 @@ export function determineAIConfig(
         ? AI_CHAT_CONFIG_DEFAULT
         : {
             ...AI_CHAT_CONFIG_DEFAULT,
-            temperature: 0.6,
+            temperature: 0.6, // TODO: less creative vocabulary in finale, why?
             topP: 0.85,
             topK: 35
           };
@@ -2644,7 +2651,7 @@ BRANCHING ACTIONS:
 ${getActionRulesText({ isFirstPage: true })}`;
 }
 
-// TODO: make static
+// TODO: should we take out mcCandidate and titleIdea to make it static?
 function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcCandidate' | 'titleIdea'>): string {
   const { mcCandidate, titleIdea } = params;
   return `Book Metadata:
@@ -2799,12 +2806,10 @@ export async function initializeBook(
     }, onProgress, onGenerationProgress);
 
     // 3. Validate AI response
-    // TODO: investigate why
     if (!response.result) {
-      console.log(`[initializeBook] 🧠 AI response:`, response);
-      throw new Error('Failed to generate book: AI response.result is undefined');
+      throw new Error('Failed to generate book: no result');
     }
-
+  
     // STEP 4: FINALIZING
     const {
       title,
@@ -2905,7 +2910,7 @@ export async function initializeBook(
       hiddenState: createInitialHiddenState(),
       characters: initialCharacters && initialCharacters.length > 0 ? 
         Object.fromEntries<CharacterMemory>(
-          initialCharacters.map((char) => [
+          initialCharacters.map<[string, CharacterMemory]>(char => [
             char.name,
             {
               ...char,
@@ -2941,11 +2946,11 @@ export async function initializeBook(
           keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
         } satisfies PlaceMemory
       } : {},
-      factsHistory: initialFacts && initialFacts.length > 0 ?
+      factsHistory: initialFacts?.length ?
         Object.fromEntries<FactHistory[]>(
-          initialFacts.map((fact) => [
+          initialFacts.map<[string, FactHistory[]]>(fact => [
             fact.key,
-            [{ ...fact, page: 1 }]
+            [{ ...fact, page: 1 } satisfies FactHistory]
           ])
         ) : {}
     };
@@ -3329,12 +3334,9 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     evaluatorPrompt,
   });
   
-  // 4. Handle AI response validation
+  // 4. Validate AI response
   if (!response.result) {
-    // TODO: investigate why
-    const { provider = 'unknown', finishReason = 'UNKNOWN' } = response;
-    console.log(`[${provider}] ❌ Failed to generate story page:`, { finishReason, response });
-    throw new Error(`Failed to generate story page: ${finishReason} (${provider})`);
+    throw new Error('Failed to generate page: no result');
   }
 
   // 5. Apply state updates
@@ -3439,11 +3441,11 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     evaluatorPrompt,
   });
   
-  // 4. Handle AI response validation
+  // 4. Validate AI response
   if (!response.result) {
-    throw new Error(`Failed to generate story page candidates: ${response.finishReason ?? "UNKNOWN"} (${response.provider ?? "unknown"})`);
+    throw new Error('Failed to generate page candidates: no result');
   }
-
+  
   // Generated content from AI response
   const generatedStoryPages = response.result.generatedPages;
   const newPages: PersistedStoryPage[] = [];
@@ -3552,7 +3554,6 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
     ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
     : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
 
-  // const outputFormatPart = `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 
@@ -3566,9 +3567,7 @@ Do NOT mention this checklist.` : '';
 
   // Cache optimized: sort static > semi-static > dynamic
   // Output specifications and instructions at the top is the industry best practice for prompt caching
-  const finalPrompt = [
-    // Static
-    // outputFormatPart, // Moved to system prompt below
+  const userPrompt = [
     // Semi-static
     fieldInstructionsPart,
     thinkThenOutputPart,
@@ -3576,11 +3575,12 @@ Do NOT mention this checklist.` : '';
     prompt.trim(),
   ].join('\n\n---\n');
 
+  // Static outputFormatPart combined with the system prompt
   const options = createAIOptionsWithSchema<T>(configs);
   options.systemPrompt = `${options.systemPrompt}\n\n---\n${outputFormatPart}`;
 
   const response = await aiPrompt<T>(
-    finalPrompt,
+    userPrompt,
     options,
     evaluatorPrompt,
     onProgress,
@@ -3588,10 +3588,7 @@ Do NOT mention this checklist.` : '';
   );
 
   if (!response.result) {
-    console.log(`[executePromptForJSON] 🧠 Response provider:`, response.provider);
-    console.log(`[executePromptForJSON] 🧠 Response model:`, response.model);
-    console.log(`[executePromptForJSON] 🧠 Response finishReason:`, response.finishReason);
-    console.log(`[executePromptForJSON] 🧠 Response output:`, response.output);
+    console.warn(`[executePromptForJSON] ❓ AI response has no result:`, response);
   }
 
   return response;

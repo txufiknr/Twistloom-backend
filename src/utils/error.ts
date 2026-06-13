@@ -225,6 +225,7 @@ type GenAIErrorCode =
   | 'SAFETY_BLOCKED'
   | 'NETWORK_ERROR'
   | 'INVALID_SCHEMA'
+  | 'SCHEMA_TOO_COMPLEX'
   | 'VALIDATION_ERROR'
   | 'BAD_REQUEST'
   | 'SERVICE_UNAVAILABLE'
@@ -263,6 +264,10 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('array schema')
   ) {
     return 'INVALID_SCHEMA';
+  }
+
+  if (msg.includes('too many states for serving')) {
+    return 'SCHEMA_TOO_COMPLEX';
   }
 
   // Check for general validation errors
