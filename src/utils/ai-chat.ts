@@ -1064,16 +1064,15 @@ export function createAIOptionsWithSchema<T extends Record<string, unknown>>(
  *   { title: 'Story Context', snippet: 'User is in a dark forest...' },
  *   { title: 'Character Info', snippet: 'Main character: John...' }
  * ]);
- * // Returns: "Story Context\nUser is in a dark forest...\n\nCharacter Info\nMain character: John..."
  * ```
  */
 export function formatDocumentsToPrompt(documents?: AIDocument[]): string {
-  return documents 
-    ? documents
-        .filter((doc): doc is AIDocument => !!doc)
-        .map((doc) => `${doc.title ? `${doc.title}:\n` : ''}${doc.snippet}`.trim())
-        .join('\n\n')
-    : '';
+  if (!documents?.length) return '';
+
+  return documents
+    .filter((doc): doc is AIDocument => !!doc)
+    .map((doc) => `${doc.title ? `${doc.title}:\n` : ''}${doc.snippet}`.trim())
+    .join('\n\n');
 }
 
 /**

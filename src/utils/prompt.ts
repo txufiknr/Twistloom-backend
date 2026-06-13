@@ -2,7 +2,7 @@ import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOK
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties } from "../types/story.js";
-import { createNonRetryableError } from "../utils/retry.js";
+import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
@@ -1222,7 +1222,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
  * It is worth fixing more aggressively here.
  */
 function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
-  const { theme, mcCandidate } = params;
+  const { theme, mcCandidate, titleIdea } = params;
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
@@ -1231,6 +1231,9 @@ STORY THEME:
 ${theme}
 """
 
+TITLE IDEA:
+${titleIdea ? `"${titleIdea}"` : 'None'}. If generated title is better, keep it.
+
 MAIN CHARACTER (MC):
 ${getMainCharacterInfo({mc: mcCandidate}) ?? `Character should be inferred from theme. Keep the generated one if it already fits.`}
 
@@ -1238,7 +1241,7 @@ EXPECTED JSON SCHEMA:
 ${firstBookOutputFormat}
 
 FIELD INSTRUCTIONS:
-${buildFirstBookFieldInstructions(params)}
+${firstBookFieldInstructions}
 
 ---
 INSTRUCTIONS — FOLLOW IN ORDER:
@@ -1407,14 +1410,6 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
 - Choice pattern: safe / risky / ambiguous
 - Occasionally include deceptive choice
 - Avoid over-explaining actions`}`;
-}
-
-/**
- * Formats ending archetypes for inclusion in prompts
- * @returns Formatted string of all ending archetypes
- */
-function getEndingArchetypesText(): string {
-  return Object.entries(endingTypes).map(([key, value]) => `- ${key}: ${value}`).join('\n');
 }
 
 // ============================================================================
@@ -2351,13 +2346,43 @@ function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, sho
  * Extracts the most recent fact for each key from the facts history
  * for current canonical facts, sorted by `key` alphabetically.
  * 
- * @todo categorize per type
+ * Categorized per type, example:
+ * Character:
+ * • character.harlow.favorite_food: pizza (from page 2)
+ * • character.clara.favorite_color: red (from page 4)
+ * World:
+ * • world.monster.appearance: every 1 AM (from page 9)
  */
-function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>): string {
+function formatCurrentFacts(factsHistory: Record<string, FactHistory[]>, groupByCategory: boolean = false): string {
   const currentFacts = Object.fromEntries(Object.entries(factsHistory).filter(([_, history]) => history.length > 0).map(([key, history]) => [key, history.at(-1)!]));
   if (Object.keys(currentFacts).length === 0) return 'No facts discovered yet.';
 
-  return Object.entries(currentFacts).sort(([a], [b]) => a.localeCompare(b)).map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`).join('\n');
+  if (!groupByCategory) return Object.entries(currentFacts).sort(([a], [b]) => a.localeCompare(b)).map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`).join('\n');
+
+  // Group facts by their declared `type`, falling back to an inferred
+  // type based on the key prefix (e.g. "character.") or to 'other'.
+  const knownTypes = Object.keys(factTypes) as (keyof typeof factTypes)[];
+  const groups: Partial<Record<keyof typeof factTypes, Array<[string, FactHistory]>>> = {};
+
+  for (const [key, fact] of Object.entries(currentFacts)) {
+    const inferred = knownTypes.find(t => key.startsWith(`${t}.`));
+    const type = (fact.type as keyof typeof factTypes) ?? inferred ?? 'other';
+    if (!groups[type]) groups[type] = [];
+    groups[type]!.push([key, fact]);
+  }
+
+  // Build a readable, alphabetically-sorted output grouped by type.
+  const parts: string[] = [];
+  for (const t of knownTypes) {
+    const items = groups[t];
+    if (!items || items.length === 0) continue;
+    items.sort((a, b) => a[0].localeCompare(b[0]));
+    const header = `${t[0].toUpperCase()}${t.slice(1)}:`;
+    const lines = items.map(([key, fact]) => `• ${key}: ${fact.value} (from page ${fact.page})`);
+    parts.push(`${header}\n${lines.join('\n')}`);
+  }
+
+  return parts.join('\n\n');
 }
 
 /**
@@ -2561,36 +2586,10 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
 function determineAIConfig(state: StoryState): AIChatConfig {
   let config = AI_CHAT_CONFIG_CREATIVE;
 
-  // // TODO: is this optimal? should I really need to differentiate temperature and top_p for each story phase?
-  // let config: AIChatConfig =
-  //   isEarlyPhase
-  //     ? AI_CHAT_CONFIG_HUMAN_STYLE
-  //     : isMidPhase
-  //       ? AI_CHAT_CONFIG_DEFAULT
-  //       : {
-  //           ...AI_CHAT_CONFIG_DEFAULT,
-  //           // TODO: less creative vocabulary in finale, why?
-  //           temperature: 0.6,
-  //           topP: 0.85,
-  //           topK: 35
-  //         };
-
-  // Apply a temporary boost because twists benefit from novelty, revelations
-  // benefit from less predictable phrasing, unusual imagery is valuable.
+  // Apply temporary twist or revelation boost
   if (state.hiddenState.profileShift?.detected) {
     config = applyActionConfig(config, TWIST_INJECTION_CONFIG);
   }
-
-  // if (action?.type) {
-  //   const actionConfig = ACTION_AI_CONFIG[action.type];
-  //   if (actionConfig) {
-  //     config = applyActionConfig(config, actionConfig);
-  //   }
-  // }
-
-  // if (isFinale) {
-  //   config = applyActionConfig(config, FINALE_CONFIG);
-  // }
 
   // Apply capping limits to AI configuration
   config = applyConfigCaps(config, JSON_RELIABILITY_CAPS);
@@ -2641,21 +2640,18 @@ BRANCHING ACTIONS:
 ${getActionRulesText({ isFirstPage: true })}`;
 }
 
-// TODO: should we take out mcCandidate and titleIdea to make it static?
-function buildFirstBookFieldInstructions(params: Pick<InitializeBookParams, 'mcCandidate' | 'titleIdea'>): string {
-  const { mcCandidate, titleIdea } = params;
-  return `Book Metadata:
-- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.${titleIdea ? ` Current title idea is "${titleIdea}".` : ''}
+const firstBookFieldInstructions: string = `Book Metadata:
+- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.
 - HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
 - SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
 - TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
 
 Main Character (MC):
-${getMainCharacterInfo({mc: mcCandidate}) ?? `- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
-- If MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.`}
-- knownName: Preferred alias or nick referred by other characters.
-- bio: ${mcCandidate?.bio ? 'enhance it' : 'infer from theme if provided'}. Must include at least one psychological trait that will be used against them.
+- Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
+- name: if provided, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
+- knownName: preferred alias or nick referred by other characters.
+- bio: if provided, enhance it. If not provided, infer from theme. Must include at least one psychological trait that will be used against them.
 
 Initial Place:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
@@ -2698,8 +2694,7 @@ Initial Facts:
 - reason: 1-sentence, why or how it hapenned.
 
 Ending Archetypes:
-${getEndingArchetypesText()}`;
-}
+${Object.entries(endingTypes).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`;
 
 /**
  * Initializes a complete book with AI-generated content and database persistence
@@ -2789,7 +2784,7 @@ export async function initializeBook(
         },
       } satisfies AIPromptForJson<BookCreationResponse>,
       jsonStructure: firstBookOutputFormat,
-      fieldInstructions: buildFirstBookFieldInstructions(params),
+      fieldInstructions: firstBookFieldInstructions,
       thinkThenOutput: firstBookReviewChecklist,
       // STEP 3: EVALUATING (inside `executePromptForJSON`)
       evaluatorPrompt: buildFirstBookEvaluatorPrompt(params),
@@ -3567,7 +3562,7 @@ Do NOT mention this checklist.` : '';
 
   // Static outputFormatPart combined with the system prompt
   const options = createAIOptionsWithSchema<T>(configs);
-  options.systemPrompt = `${options.systemPrompt}\n\n---\n${outputFormatPart}`;
+  options.systemPrompt = `${options.systemPrompt ?? PROMPT_SYSTEM}\n\n---\n${outputFormatPart}`;
 
   const response = await aiPrompt<T>(
     userPrompt,

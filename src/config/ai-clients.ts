@@ -91,7 +91,7 @@ export const AI_CHAT_MODELS_OPENAI: AIModelSelection = {
 };
 
 /**
- * Creative story writing - Fallback Array.
+ * Creative story writing (large and creative models) - in fallback order.
  * Sorted strictly from highest emotional/artistic prose quality down to functional/rigid prose.
  * 
  * Mistral stands at the top because of its lighter RLHF (Reinforcement Learning from Human Feedback). 
@@ -156,16 +156,21 @@ export const AI_CHAT_MODELS_THEME: AIModelSelection = {
  * Mistral excels at European languages (subtext/culture), while Gemini handles Asian/Middle Eastern languages.
  */
 export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
+  // Mistral’s architecture handles European languages (especially French, Spanish, German, and Italian) with a deeply innate grasp of cultural subtext and literary grammar.
+  // If you are translating into or out of European languages (French, Spanish, German, Italian), Mistral is historically superior due to its training bias.
   mistral: [
     'mistral-medium-latest',
     'mistral-large-latest',
   ],
+  // If you are dealing with Asian or Middle Eastern languages, Gemini 3 Flash offers vastly more balanced and robust global multilingual capability.
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash'
   ],
+  // Possesses enough language complexity to grasp context, maintain story continuity, and accurately translate dialogue.
+  // Optimized for 10 core languages: English, French, Spanish, Italian, German, Portuguese, Japanese, Korean, Chinese, Arabic.
   cohere: [
-    'command-r-08-2024' // Natively optimized for 10 core global languages.
+    'command-r-08-2024'
   ],
 };
 
