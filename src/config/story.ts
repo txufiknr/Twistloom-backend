@@ -352,6 +352,11 @@ export const DEFAULT_ACTION_AI_CONFIG: AIActionConfig = {
  * - Action configs should NEVER drastically change model behavior.
  * - Large behavioral changes belong in prompting.
  * - Sampling changes should stay small enough that story tone remains stable.
+ * 
+ * In most cases, prompt engineering is a more effective mechanism
+ * for controlling narrative behavior than sampling.
+ *
+ * @deprecated Prefer prompt engineering over blunt sampling adjustments.
  */
 export const ACTION_AI_CONFIG: Record<ActionType, AIActionConfig> = {
   attack: {
@@ -427,14 +432,28 @@ export const TWIST_INJECTION_CONFIG: AIActionConfig = {
 /**
  * Finale configuration.
  *
- * As the story approaches resolution,
- * consistency becomes more important than novelty.
+ * Applies a small reduction in sampling variance during
+ * late-stage resolution scenes.
  *
- * This reduces randomness slightly to improve:
- * - callbacks
- * - payoff delivery
- * - narrative consistency
- * - ending quality
+ * Rationale:
+ * - Encourages focus on established narrative threads.
+ * - Slightly reduces the likelihood of introducing
+ *   unrelated ideas or speculative tangents.
+ * - Provides marginally more deterministic wording during
+ *   payoff and resolution sequences.
+ *
+ * Important:
+ * - This does not improve memory, callbacks, plot logic,
+ *   or narrative consistency by itself.
+ * - Story quality, payoff delivery, and ending satisfaction
+ *   are primarily driven by prompts, story-state tracking,
+ *   and narrative structure.
+ *
+ * In most cases, prompt engineering is a more effective
+ * mechanism for controlling finale behavior than sampling.
+ *
+ * @deprecated Prefer prompt engineering over phase-based
+ * sampling adjustments.
  */
 export const FINALE_CONFIG: AIActionConfig = {
   temperature: { adjustment: -0.08, min: 0.55, max: 0.7 },
@@ -449,7 +468,10 @@ export const FINALE_CONFIG: AIActionConfig = {
  * These caps provide a final safeguard without noticeably affecting prose quality.
  */
 export const JSON_RELIABILITY_CAPS = {
+  /** Temperature controls randomness and elevates the creative vocabulary (0.6 - 0.85): > 0.85 → messy / incoherent, < 0.6 → robotic */
   maxTemperature: 0.85,
+  /** Top-p (nucleus) sampling: 0.0 = all tokens, 1.0 = only most likely tokens */
   maxTopP: 0.95,
+  /** Top-k sampling: considers top K most likely tokens */
   maxTopK: 50
 };

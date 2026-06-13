@@ -205,6 +205,7 @@ export function processCharacterUpdates(
   
     // Add new characters
     for (const character of newCharacters) {
+      // TODO: consider generating characterId (slugify from `character.name`)
       state.characters[character.name] = {
         ...character,
         introducedAtPage: page,
@@ -227,6 +228,7 @@ export function processCharacterUpdates(
   // Process relationship updates
   if (relationshipUpdates?.length) {
     for (const relUpdate of relationshipUpdates) {
+      // TODO: also match first name or knownName (or characterId if implemented)
       const sourceCharacter = state.characters[relUpdate.source];
       if (sourceCharacter) {
         state.characters[relUpdate.source] = updateRelationship(sourceCharacter, relUpdate);

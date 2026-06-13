@@ -1,9 +1,9 @@
-import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_HUMAN_STYLE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties } from "../types/story.js";
 import { createNonRetryableError } from "../utils/retry.js";
-import { ACTION_AI_CONFIG, TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FINALE_CONFIG, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey } from "./story.js";
@@ -91,15 +91,6 @@ HORROR MECHANICS:
 CHARACTERS RULES:
 - No one is safe. No one is predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode. The reader should never feel certain who to trust — including the MC.
 - Don't introduce character (including MC) with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
-
-PAGE FORMAT:
-- Max ${MAX_WORDS_PER_PAGE} words per page. Tight. Tense.
-- Write narrative style and tone in target language.
-- Ensure each continuation page maintains a consistent narrative style that flows smoothly from the previous page based on chosen action.
-- End at a moment of tension or revelation — never resolution.
-- Multiple short paragraphs (1-4 sentences each). At least 4 paragraphs.
-- Each short paragraph on a separate line — Goosebumps style spacing for tension.
-- No markdown except italic by surrounding a word or phrase with a single asterisk (*) if needed.
 
 BRANCHING STORY RULES:
 - Choices feel meaningful. Some are traps. Some are illusions.
@@ -249,12 +240,21 @@ Levels:
 - 'alias_known': Use alias or codename only (e.g., "The Janitor").
 - 'first_name_known' or 'full_name_known': Use known name normally.`;
 
-export const RULES_PAGE_TEXT = `PAGE TEXT RULES:
+export const RULES_PAGE_TEXT = `PAGE FORMAT:
+- Max ${MAX_WORDS_PER_PAGE} words. Tight. Tense.
+- Multiple short paragraphs (1-4 sentences each). At least 4 paragraphs.
+- Each paragraph on its own line (Goosebumps-style spacing).
+- No markdown except optional *italic* emphasis.
+- Write in the target language.
 
-- Continue directly from selected action. Example: "I [verb]."
-- Continue from current situation.
-- Pay close attention to the historical context and story canons. Ensure the storyline and every elements connects perfectly.
-- Keep consistent writing style and language.`;
+PAGE NARRATIVE RULES:
+- First-person central POV ("I") only. Unreliable narrator.
+- Show only what the MC currently perceives, knows, or believes.
+- Continue directly from the selected action and current situation.
+- Maintain continuity with established story canon, history, characters, and events.
+- Preserve a consistent narrative voice and style across pages.
+- Keep pacing tight; focus on plot-relevant details.
+- End on tension, uncertainty, discovery, or a new problem — never resolution.`;
 
 export const RULES_ACTIONS = `ACTION TYPES:
 ${Object.entries(actionTypes)
@@ -758,11 +758,9 @@ function buildNextPageFieldInstructions(state: StoryState, action: Action): stri
   const isDialogueAction = action.type === 'dialogue';
 
   return `text
-  - Max ${MAX_WORDS_PER_PAGE} words. First-person central POV ("I") as MC. Unreliable narrator.
-  - Don't use phrase like "The protagonist" or "The narrator", just use "I".
-  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Always begin directly from the chosen action. Example: "I decide to [...]," or "I [verb]."`}
-  - Open mid-moment. End on tension, a hook, or unresolved unease — never resolution.
-  - Each sentence/short paragraph on a separate line — Goosebumps style spacing for tension.
+  - Use "I". Never refer to the MC as "the protagonist" or "the narrator".
+  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I decide to [...]," or "I [verb]."`}
+  - Open mid-moment. Avoid setup or recap.
   - This is a fast-paced story, don't over explain small details (e.g. clothing, etc) unless they're plot important.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
@@ -2523,86 +2521,78 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
 }
 
 /**
- * Determines AI sampling configuration for the current generation
- * 
- * This function implements a sophisticated multi-layer configuration system that balances
- * creative unpredictability with narrative consistency and structural reliability.
- * 
- * Configuration follows these principles:
- * - Controlled chaos: High enough creativity for eerie tone, low enough for consistency
- * - Phase-based progression: Different creativity levels for story arcs
- * - JSON reliability: Ensures structured output integrity
- * 
- * Purpose:
- * - Sampling configuration controls: creativity, variation, novelty.
- * - It does NOT control: paranoia, hallucinations, psychological instability, narrative tone.
- * - Psychological stability is intentionally absent.
- * - Those should be handled through prompting.
- * 
- * Core Philosophy:
- * - Story Phase → Major influence on creativity
- * - Action Type → Minor influence on creativity
- * - Twists / Revelations → Temporary creativity boost
- * 
- * This will produce more consistent thriller stories, because the psychological effects will
- * come from prompt engineering and story-state system rather than from large sampling swings
- * that can make the model feel erratic.
- * 
- * @param state - Current story state containing progress, psychological profile, and hidden values
- * @param action - Optional action taken by user for context-specific adjustments
- * @returns Dynamic AI configuration optimized for current story context
- * 
- * @example
- * ```typescript
- * // Early story with stable psychological state
- * const earlyConfig = determineAIConfig(
- *   { page: 5, psychologicalProfile: { stability: 'stable' } },
- *   { type: 'explore' }
- * );
- * // Returns: { temperature: 0.75, topP: 0.92, topK: 50, ... }
- * 
- * // Late story with unstable psychological state
- * const lateConfig = determineAIConfig(
- *   { page: 85, psychologicalProfile: { stability: 'unstable' } },
- *   { type: 'attack' }
- * );
- * // Returns: { temperature: 0.65, topP: 0.88, topK: 45, ... }
- * ```
+ * Determines AI sampling parameters for story generation.
+ *
+ * This function configures the model's token sampling behavior, controlling
+ * how much variation and novelty are allowed during text generation.
+ *
+ * Important:
+ * - Sampling affects wording, phrasing diversity, and lexical creativity.
+ * - Sampling does NOT control plot quality, character consistency,
+ *   psychological realism, pacing, mystery structure, or narrative logic.
+ * - Those aspects are primarily driven by prompts, story state, memory,
+ *   and narrative tracking systems.
+ *
+ * Design Philosophy:
+ * - Maintain a stable writing voice throughout the story.
+ * - Avoid large sampling swings that can make the prose feel as if it was
+ *   written by different authors across pages.
+ * - Use prompt instructions and story-state data to control narrative
+ *   progression rather than relying on temperature changes.
+ * - Apply only small sampling adjustments for special situations where
+ *   additional novelty is beneficial (such as twists, revelations,
+ *   unexpected discoveries, or major perspective shifts).
+ *
+ * Reliability:
+ * - JSON generation and structured outputs may require stricter sampling.
+ * - Provider-specific caps can be applied to improve schema adherence.
+ * - Final values are validated and clamped to supported bounds.
+ *
+ * Rationale:
+ * Stable sampling generally produces more consistent prose quality,
+ * narrative voice, and emotional tone than phase-based temperature
+ * adjustments. Story progression should emerge from narrative context,
+ * not from increasingly restrictive sampling parameters.
+ *
+ * @param state Current story state and hidden narrative information.
+ * @param action Optional player action that may influence generation behavior.
+ * @returns AI configuration optimized for story writing and output reliability.
  */
-export function determineAIConfig(
-  state: StoryState,
-  action?: Action
-): AIChatConfig {
-  const { isEarlyPhase, isMidPhase, isFinale } = getStoryStateInfo(state);
+function determineAIConfig(state: StoryState): AIChatConfig {
+  let config = AI_CHAT_CONFIG_CREATIVE;
 
-  // TODO: is this optimal? should I really need to differentiate temperature and top_p for each story phase?
-  let config: AIChatConfig =
-    isEarlyPhase
-      ? AI_CHAT_CONFIG_HUMAN_STYLE
-      : isMidPhase
-        ? AI_CHAT_CONFIG_DEFAULT
-        : {
-            ...AI_CHAT_CONFIG_DEFAULT,
-            temperature: 0.6, // TODO: less creative vocabulary in finale, why?
-            topP: 0.85,
-            topK: 35
-          };
+  // // TODO: is this optimal? should I really need to differentiate temperature and top_p for each story phase?
+  // let config: AIChatConfig =
+  //   isEarlyPhase
+  //     ? AI_CHAT_CONFIG_HUMAN_STYLE
+  //     : isMidPhase
+  //       ? AI_CHAT_CONFIG_DEFAULT
+  //       : {
+  //           ...AI_CHAT_CONFIG_DEFAULT,
+  //           // TODO: less creative vocabulary in finale, why?
+  //           temperature: 0.6,
+  //           topP: 0.85,
+  //           topK: 35
+  //         };
 
+  // Apply a temporary boost because twists benefit from novelty, revelations
+  // benefit from less predictable phrasing, unusual imagery is valuable.
   if (state.hiddenState.profileShift?.detected) {
     config = applyActionConfig(config, TWIST_INJECTION_CONFIG);
   }
 
-  if (action?.type) {
-    const actionConfig = ACTION_AI_CONFIG[action.type];
-    if (actionConfig) {
-      config = applyActionConfig(config, actionConfig);
-    }
-  }
+  // if (action?.type) {
+  //   const actionConfig = ACTION_AI_CONFIG[action.type];
+  //   if (actionConfig) {
+  //     config = applyActionConfig(config, actionConfig);
+  //   }
+  // }
 
-  if (isFinale) {
-    config = applyActionConfig(config, FINALE_CONFIG);
-  }
+  // if (isFinale) {
+  //   config = applyActionConfig(config, FINALE_CONFIG);
+  // }
 
+  // Apply capping limits to AI configuration
   config = applyConfigCaps(config, JSON_RELIABILITY_CAPS);
 
   return validateAIConfig(config);
@@ -3192,7 +3182,7 @@ async function prepareNextPageGenerationSetup(
   const systemPromptWithDocuments = buildSystemPrompt(book, advancedState, RULES_PAGE_GENERATION);
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
-  const config = determineAIConfig(advancedState, action);
+  const config = determineAIConfig(advancedState);
 
   return {
     currentState,

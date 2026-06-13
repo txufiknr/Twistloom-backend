@@ -7,39 +7,62 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
+[ ] Consider place & character key (generate like future note key) -> replace all "real full name"
+[ ] Routine retry cron buat sequential aja (github action strategy)
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
-[ ] Consider place & character key (generate like future note key)
-[ ] Routine retry cron buat sequential aja (github action strategy)
-[x] take out github dari writing provider
+[ ] story state: storyMomentum: "building" | "rising" | "critical" | "resolution";
+[ ] more LLM SDK: OpenRouter, Cloudflare Workers AI, Hugging Face Serverless Inference API, Together AI
+[ ] Process character update relationship match first name & knownName
+
+---
+
+Story Momentum: Critical
+
+Writing Guidance:
+- Increase urgency.
+- Favor emotionally charged observations.
+- Compress downtime.
+- Make actions feel consequential.
+
+export const sceneTypes = {
+  "investigation": "",
+  "revelation": "",
+  "dialogue": "",
+  "dream": "",
+  "escape": "",
+  "confrontation": "",
+  "aftermath": "",
+};
+
+Writing Style Guidance:
+- Use more symbolic imagery.
+- Allow unusual metaphors.
+- Favor sensory language.
+
+
+Story Phase: Development
+Story Momentum: Critical
+Scene Type: Revelation
+
+Writing Goals:
+- Reveal meaningful information.
+- Increase urgency.
+- Connect clues established earlier.
+- Use vivid but controlled imagery.
+- Avoid introducing unrelated mysteries.
+
+---
 
 [ ] const validated = ajv.validate(schema, aiResponse);
 https://www.npmjs.com/package/ajv
 
 ---
-
-config/ai-chat.ts
-
-please evaluate and review my implementation of dynamic AI sampling configurations for generating creative story page in Twistloom (`determineAIConfig` function)
-are they correct and optimal if I want the most breathtaking, artistic, and emotionally resonant prose? and is it actually good to differentiate sampling (lower temperature) based on story phase progress, for narrative quality, writing style & language consistency?
-please elaborate
-
-determineAIConfig
-applyActionConfig
-validateAIConfig
-
----
-
-utils/ai-chat.ts
-utils/ai-chat-stream.ts
-utils/characters.ts
-utils/gemini.ts
 utils/prompt.ts
+types/story.ts
+config/story.ts
 
-"Gap 2 — Non-streaming `aiPrompt` has no latency telemetry" is implemented
-here's my updated `utils/prompt.ts` (uploaded), I restructured and optimized user prompt even more (moved all static rules into `RULES_PAGE_GENERATION`)
-
-can you continue writing the comprehensive architecture docs to best reflect the latest actual codes?
+storyMomentum: "building" | "rising" | "critical" | "resolution";
 
 ---
 
@@ -97,7 +120,7 @@ Increase paranoia and uncertainty.
 - email notification settings
 
 [ ] enhance book explore:
-- fuzzy search/Levenshtein (typo) // does postgresql has this built-in?
+- fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
 - search jaccard similarity (by book keywords & title)
 - need change to cursor pagination?
 
@@ -132,7 +155,6 @@ visualStyle = "dark cinematic, moody lighting, realistic horror, muted tones"
 corruptionCurve: number[]
 Hints/secret dark facts (don't reveal, it may or never known by MC)
 
-
 Starting a sentence with a coordinating conjunction (such as or, and, or but) is a stylistic choice rather than a grammatical error. 
 
 Conditional prompt
@@ -145,9 +167,7 @@ Image importance score
 At initialize book:
 - Fully connected graph (places connection, characters connection, place-character connection)
 
-
-
-
+---
 
 I'd like to see your designs proposal for:
 
@@ -155,6 +175,7 @@ Branch locking system (prevents illegal jumps)
 “Golden path” vs “corrupted path” tracking
 Replay system with alternate timeline comparison
 
+---
 
 PROMPT:
 You are an award-winning literary author.
@@ -164,3 +185,76 @@ You are an avant-garde fiction writer.
 Focus on the visual textures and psychological weight of the environment.
 Focus deeply on subtext, sensory details, environmental atmosphere, psychological depth, and complex human contradictions.
 Never use predictable AI framing phrases.
+
+---
+
+Story Phase: Early
+
+Narrative Objectives:
+- Establish atmosphere and tone.
+- Create curiosity rather than answers.
+- Introduce subtle inconsistencies and unanswered questions.
+- Favor implication over explanation.
+- Build attachment to characters and locations.
+- Avoid major revelations.
+
+Mystery Guidelines:
+- Readers should notice strange details.
+- Readers should not yet understand their significance.
+
+---
+
+Story Phase: Mid
+
+Narrative Objectives:
+- Escalate tension and uncertainty.
+- Increase consequences of player choices.
+- Introduce contradictions and conflicting interpretations.
+- Reveal partial truths while creating deeper questions.
+- Strengthen relationships, suspicions, and conflicts.
+
+Mystery Guidelines:
+- Answers should generate new questions.
+- Existing mysteries should evolve rather than stagnate.
+
+---
+
+Story Phase: Finale
+
+Writing Guidance:
+- Prioritize resolution over setup.
+- Prefer established plot threads.
+- Avoid introducing major new mysteries.
+- Connect current events to previous clues.
+- Focus on consequences and emotional payoff.
+
+Writing Goals:
+- Deliver emotional payoff.
+- Resolve major mysteries when appropriate.
+- Intensify dramatic tension.
+- Favor emotionally charged observations.
+- Allow consequences of earlier choices to surface.
+- Reveal hidden connections between established story elements.
+- Avoid introducing major unrelated mysteries unless required.
+
+Narrative Objectives:
+- Prioritize payoff over setup.
+- Connect present events to previously established clues.
+- Deliver emotional and thematic resolution.
+- Reveal truths through action and consequence.
+- Maximize dramatic intensity.
+
+Mystery Guidelines:
+- Mysteries should converge.
+- Avoid creating major unresolved plot threads.
+- Prefer revelations that feel inevitable in hindsight.
+
+---
+
+Current Story Momentum: Critical
+
+Writing Guidance:
+- Every scene should feel consequential.
+- Increase urgency.
+- Reduce routine interactions.
+- Favor irreversible developments.

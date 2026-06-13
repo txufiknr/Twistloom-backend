@@ -45,9 +45,9 @@ export const AI_CHAT_CONFIG_DEFAULT: Readonly<AIChatConfig> = {
  * These settings provide a natural, engaging narrative experience
  * with appropriate creativity and personality for compelling storytelling.
  */
-export const AI_CHAT_CONFIG_HUMAN_STYLE: Readonly<AIChatConfig> = {
+export const AI_CHAT_CONFIG_CREATIVE: Readonly<AIChatConfig> = {
   /** Controls randomness: 0.0 = deterministic, 1.0 = maximum randomness */
-  temperature: 0.75,
+  temperature: 0.78,
   /** Nucleus sampling: 0.0 = all tokens, 1.0 = only most likely tokens */
   topP: 0.92,
   /** Top-k sampling: considers top K most likely tokens */
