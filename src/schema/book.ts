@@ -1,11 +1,11 @@
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
 import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
-import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, StoryPageGeneration, InitialFact, InitialEnding, Ending, EndingChangeNote } from "../types/story.js";
+import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, endingTypes, factTypes, flagLevels } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
-import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
 import { BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
@@ -108,6 +108,12 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
   } satisfies Record<keyof Ending, AIJsonProperty>
 }
 
+const { charactersPresent: _cp, placeId: _pi, ...initialStoryPageGeneration} = STORY_PAGE_GENERATION_SCHEMA;
+
+export const INITIAL_STORY_PAGE_GENERATION_SCHEMA: Record<keyof InitialStoryPageGeneration, AIJsonProperty> = {
+  ...initialStoryPageGeneration,
+};
+
 /**
  * Common schema definition for BookCreationResponse type
  * 
@@ -124,8 +130,8 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
   keywords: { type: 'array', items: { type: 'string' } },
   firstPage: {
     type: 'object',
-    properties: STORY_PAGE_GENERATION_SCHEMA,
-    required: ['text', 'actions'] satisfies (keyof StoryPageGeneration)[],
+    properties: INITIAL_STORY_PAGE_GENERATION_SCHEMA,
+    required: STORY_GENERATION_REQUIRED_FIELDS,
     additionalProperties: false
   },
   initialState: {
@@ -232,7 +238,6 @@ export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies 
  */
 export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   text: { type: 'string' },
-  place: { type: 'string' },
   timeOfDay: { type: 'string' },
   mood: { type: 'string' },
   weather: { type: 'string' },
@@ -259,7 +264,7 @@ export const BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
     properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION } satisfies Record<keyof PageTranslationWithID, AIJsonProperty>,
-    required: ['pageId', 'text', 'place', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslationWithID)[],
+    required: ['pageId', 'text', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslationWithID)[],
     additionalProperties: false
   } }
 } satisfies Record<keyof PageTranslationBulk, AIJsonProperty>;

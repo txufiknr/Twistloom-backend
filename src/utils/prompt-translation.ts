@@ -461,7 +461,6 @@ Text:
 ${page.text}
 """
 
-Place: ${page.place || 'unknown'}
 Time: ${page.timeOfDay || 'unknown'}
 Mood: ${page.mood || 'unknown'}
 Weather: ${page.weather || 'unknown'}

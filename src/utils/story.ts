@@ -1,13 +1,192 @@
-import { MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS } from "../config/story.js";
+import { DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_TYPE_URGENCY, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
-import type { StoryState, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene } from "../types/story.js";
+import { calculatePlayerProfile } from './player-profile.js';
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
-import type { ThreadUpdates, StoryThread } from "../types/thread.js";
+import type { ThreadUpdates, StoryThread } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
+import { slugify } from "./text-processing.js";
+
+/**
+ * Pressure from recent major plot flags. A major event introduced this page
+ * contributes 1.0; pressure linearly decays to 0 over RECENCY_WINDOW pages.
+ */
+export function calculatePlotFlagPressure(plotFlags: PlotFlag[], currentPage: number): number {
+  let pressure = 0;
+  for (const flag of plotFlags) {
+    if (!flag.isMajorEvent) continue;
+    const distance = currentPage - flag.page;
+    if (distance < 0 || distance > MOMENTUM_RECENCY_WINDOW) continue;
+    pressure += 1 - distance / (MOMENTUM_RECENCY_WINDOW + 1);
+  }
+  return Math.min(1, pressure);
+}
+
+/**
+ * Pressure from open story threads (mysteries), weighted by priority and
+ * importance. Threads updated this page get a small recency boost — a fresh
+ * clue should nudge momentum even if the thread's stored urgency hasn't
+ * caught up yet.
+ */
+export function calculateThreadPressure(threads: StoryThread[], currentPage: number): number {
+  const active = threads.filter(t => t.status === 'open');
+  if (!active.length) return 0;
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+
+  for (const thread of active) {
+    const priorityWeight = THREAD_PRIORITY_WEIGHT[thread.priority] ?? 0.5;
+    const threadScore = thread.urgency * (0.6 + thread.importance * 0.4);
+    const recencyBoost = thread.lastUpdatedAt === currentPage ? 0.15 : 0;
+
+    weightedSum += Math.min(1, threadScore + recencyBoost) * priorityWeight;
+    totalWeight += priorityWeight;
+  }
+
+  return Math.min(1, weightedSum / totalWeight);
+}
+
+/**
+ * Immediate danger: hiddenState.threatProximity (primary signal), recent
+ * dangerous/safe actions (most recent weighted higher), hostile/suspicious
+ * characters present, and current fear flag.
+ */
+export function calculateDangerLevel(state: StoryState, charactersPresent: string[]): number {
+  const threatScore = THREAT_PROXIMITY_SCORE[state.hiddenState.threatProximity] ?? 0.2;
+
+  const recent = state.actionsHistory.slice(-2);
+  let actionScore = 0;
+  recent.forEach((action, i) => {
+    const weight = i === recent.length - 1 ? 0.6 : 0.4;
+    if (DANGEROUS_ACTIONS.includes(action.type)) actionScore += weight;
+    else if (SAFE_ACTIONS.includes(action.type)) actionScore -= weight * 0.5;
+  });
+  actionScore = Math.max(0, Math.min(1, actionScore));
+
+  const hostileCount = charactersPresent.filter(characterId => {
+    const c = state.characters[characterId];
+    if (!c) return false;
+    return c.relationshipToMC.status === 'hostile'
+      || c.relationshipToMC.status === 'afraid'
+      || c.narrativeFlags.isSuspicious;
+  }).length;
+
+  const hostilityScore = Math.min(1, hostileCount * 0.3);
+  const fearScore = state.flags.fear === 'high' ? 1 : state.flags.fear === 'medium' ? 0.5 : 0.2;
+
+  return Math.min(1,
+    threatScore   * 0.4 +
+    actionScore   * 0.25 +
+    hostilityScore * 0.2 +
+    fearScore     * 0.15
+  );
+}
+
+/**
+ * Scene-driven urgency, blended with thread pressure (an urgent mystery
+ * raises the floor even during a quiet scene type).
+ */
+export function calculateUrgencyLevel(sceneType: SceneType | undefined, threadPressure: number): number {
+  const sceneScore = sceneType ? (SCENE_TYPE_URGENCY[sceneType] ?? DEFAULT_SCENE_URGENCY) : DEFAULT_SCENE_URGENCY;
+  return Math.min(1, sceneScore * 0.6 + threadPressure * 0.4);
+}
+
+/**
+ * Psychological pressure: fear and aggression dominate, trauma weight and
+ * cognitive disorder (1 - cognitiveState) add a "things are getting away
+ * from the MC" component.
+ */
+export function calculatePsychPressure(profile: PsychologicalProfileMetrics): number {
+  const cognitiveDisorder = 1 - profile.cognitiveState;
+  return Math.min(1,
+    profile.fear         * 0.35 +
+    profile.aggression   * 0.2 +
+    profile.traumaWeight * 0.25 +
+    cognitiveDisorder    * 0.2
+  );
+}
+
+function scoreToMomentum(score: number): StoryMomentum {
+  for (const { max, momentum } of MOMENTUM_THRESHOLDS) {
+    if (score <= max) return momentum;
+  }
+  return 'critical';
+}
+
+/**
+ * Calculates current story momentum (narrative pressure/urgency) for the
+ * page about to be persisted.
+ *
+ * Combines five 0–1 factors into a raw score, smooths it against the parent
+ * page's momentum (so momentum ramps rather than jumps page-to-page), then
+ * maps to a discrete StoryMomentum — with two overrides:
+ *  - a major event this page forces 'climactic' (if the raw score clears
+ *    a minimal floor — a major event in an otherwise very calm scene still
+ *    reads as a turning point, but won't override a near-zero score)
+ *  - a sharp drop from a peak ('tense'/'climactic') maps to 'resolving'
+ *    instead of jumping straight back down the scale
+ *
+ * @example
+ * ```typescript
+ * const { momentum } = calculateStoryMomentum({
+ *   state: newState,
+ *   currentPage: expectedPageNumber,
+ *   sceneType: generatedStoryPage.sceneType,
+ *   charactersPresent: generatedStoryPage.charactersPresent ?? [],
+ *   previousMomentum: actionedPage.momentum,
+ * });
+ * ```
+ */
+export function calculateStoryMomentum(params: CalculateStoryMomentumParams): StoryMomentumResult {
+  const { state, currentPage, sceneType, charactersPresent, previousMomentum } = params;
+
+  const profile = calculatePlayerProfile(state);
+
+  const plotPressure   = calculatePlotFlagPressure(state.plotFlags, currentPage);
+  const threadPressure = calculateThreadPressure(state.threads, currentPage);
+  const dangerLevel    = calculateDangerLevel(state, charactersPresent);
+  const urgencyLevel   = calculateUrgencyLevel(sceneType, threadPressure);
+  const psychPressure  = calculatePsychPressure(profile);
+
+  const rawScore =
+    plotPressure   * MOMENTUM_WEIGHTS.plotPressure +
+    threadPressure * MOMENTUM_WEIGHTS.threadPressure +
+    dangerLevel    * MOMENTUM_WEIGHTS.dangerLevel +
+    urgencyLevel   * MOMENTUM_WEIGHTS.urgencyLevel +
+    psychPressure  * MOMENTUM_WEIGHTS.psychPressure;
+
+  const prevScore = previousMomentum ? MOMENTUM_BASELINE_SCORE[previousMomentum] : rawScore;
+  const smoothedScore = prevScore * MOMENTUM_PERSISTENCE + rawScore * (1 - MOMENTUM_PERSISTENCE);
+
+  let momentum: StoryMomentum;
+
+  if (state.isMajorEvent && smoothedScore >= MAJOR_EVENT_CLIMAX_FLOOR) {
+    momentum = 'critical';
+  } else {
+    momentum = scoreToMomentum(smoothedScore);
+
+    // An elevated state ('rising' or 'critical') that drops sharply reads as
+    // tension being released, not a reset back to quiet setup.
+    const wasElevated = previousMomentum === 'rising' || previousMomentum === 'critical';
+    const droppedSignificantly = wasElevated
+      && (MOMENTUM_BASELINE_SCORE[previousMomentum!] - smoothedScore) >= RESOLVING_DROP_THRESHOLD
+      && momentum !== 'critical';
+
+    if (droppedSignificantly) momentum = 'resolution';
+  }
+
+  return {
+    momentum,
+    rawScore,
+    smoothedScore,
+    factors: { plotPressure, threadPressure, dangerLevel, urgencyLevel, psychPressure },
+  };
+}
 
 /**
  * Extract state delta from generated page for database storage
@@ -25,7 +204,7 @@ import type { CandidateGenerationPage } from "../types/candidate-generation.js";
  */
 export function extractStateDelta(generation: StoryGeneration, expectedPageNumber: number, futureNoteKeys: string[]): StateDelta {
   if (expectedPageNumber === 1) return {};
-  const { place, futureNoteUpdates } = generation;
+  const { placeId, futureNoteUpdates } = generation;
 
   const stateDelta: StateDelta = {
     flagUpdates: generation.flagUpdates,
@@ -44,8 +223,8 @@ export function extractStateDelta(generation: StoryGeneration, expectedPageNumbe
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
     // Tag with current place for context
-    inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, place }) : inventory),
-    injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, place }) : injury),
+    inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
+    injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
   } satisfies Record<keyof StateDeltaGeneration | 'isMajorEvent', unknown>;
 
   return stateDelta;
@@ -229,13 +408,15 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     difficulty: difficulty ?? baseState.difficulty,
   };
 
+  const [previousPlaceId] = Object.entries(baseState.places).find(([, place]) => place.lastVisitedAtPage === newState.page - 1) ?? [];
+
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
   processPlotFlagUpdates(newState, addPlotFlags, scene);
   processFactUpdates(newState, factUpdates);
-  processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.place);
-  processPlaceUpdates(newState, placeUpdates, scene);
+  processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.placeId);
+  processPlaceUpdates(newState, placeUpdates, scene, previousPlaceId);
   processThreadUpdates(newState, threadUpdates);
 
   // Apply flag updates — each update contains a `type` and `level`.
@@ -340,18 +521,18 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   }
 
   // Remove any items which has zero amount
-  if (updatedState.inventory && updatedState.inventory.length > 0) {
+  if (updatedState.inventory?.length) {
     updatedState.inventory = cleanUpInventory(updatedState.inventory);
   }
 
   // Apply injury decay to MC injuries
-  if (updatedState.injuries && updatedState.injuries.length > 0) {
+  if (updatedState.injuries?.length) {
     updatedState.injuries = decayInjuries(updatedState.injuries);
   }
 
   // Apply injury decay to all characters
   Object.values(updatedState.characters).forEach(character => {
-    if (character.injuries && character.injuries.length > 0) {
+    if (character.injuries?.length) {
       character.injuries = decayInjuries(character.injuries);
     }
   });
@@ -701,12 +882,12 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
 export function processPlotFlagUpdates(state: StoryState, addPlotFlags?: InitialPlotFlag[], scene?: StoryScene): void {
   if (!addPlotFlags?.length) return;
 
-  const { place, timeOfDay } = scene ?? {};
+  const { placeId, timeOfDay } = scene ?? {};
 
   for (const addPlotFlag of addPlotFlags) {
     // Validate / normalise type
     const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, place, timeOfDay, type: validType };
+    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, placeId, timeOfDay, type: validType };
   
     // Guard against duplicates (same page + type + fact).
     // This mirrors the deduplication in processTagUpdates and provides a safety
@@ -766,32 +947,59 @@ export function processFactUpdates(
 }
 
 /**
- * Processes thread updates from AI-generated content
- * 
- * Handles creation of new threads, updates to existing threads, clue additions,
- * and thread closures based on AI-generated thread updates.
- * 
- * @param state - Current story state to update
- * @param threadUpdates - Thread updates from AI generation
+ * Processes AI-generated thread updates and advances thread pacing.
+ *
+ * This function:
+ * - Applies passive urgency decay to all active threads
+ * - Creates new threads
+ * - Updates existing thread metadata
+ * - Adds newly discovered clues
+ * - Closes resolved threads
+ * - Applies AI-provided urgency corrections
+ * - Increases urgency for threads that were actively touched this page
+ *
+ * Urgency represents how close a thread is to a major reveal,
+ * twist, or resolution.
+ *
+ * Engine-owned pacing:
+ * - All active threads gradually lose urgency over time if ignored
+ * - Threads gain urgency whenever they are meaningfully developed
+ * - More important threads gain urgency faster
+ *
+ * AI-owned pacing:
+ * - `urgencyCorrection` may be used to reflect exceptional shifts
+ *   in narrative momentum (breakthroughs, setbacks, major twists)
+ * - Routine progression should rely on automatic urgency updates
+ *
+ * @param state - Mutable story state
+ * @param threadUpdates - Optional thread operations generated by AI
  */
 export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUpdates): void {
+  // Decay urgency for all active threads slightly to represent natural
+  // cooling when threads are ignored. Keep a sensible floor so threads
+  // never drop to zero and lose all momentum.
+  for (const thread of state.threads) {
+    thread.urgency = Math.max(0.1, thread.urgency - 0.01);
+  }
+
   if (!threadUpdates) return;
 
   // Create new threads
   if (threadUpdates.newThreads?.length) {
     for (const newThread of threadUpdates.newThreads) {
+      const threadId = slugify(newThread.title);
       const thread: StoryThread = {
+        threadId: threadId,
         title: newThread.title,
         question: newThread.question,
         priority: newThread.priority,
-        status: 'open',
         truth: newThread.truth,
+        importance: newThread.importance ?? 0.5,
+        clues: newThread.clues?.map(c => ({ ...c, discoveredAtPage: state.page })) ?? [],
+        status: 'open',
         introducedAt: state.page,
         lastUpdatedAt: state.page,
-        importance: newThread.importance ?? 0.5,
-        urgency: 0.3, // Start with low urgency
-        clues: [],
-        falseClues: [],
+        urgency: 0.27, // Start with low urgency
       };
       state.threads.push(thread);
     }
@@ -800,13 +1008,15 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   // Update existing threads
   if (threadUpdates.updateThreads?.length) {
     for (const update of threadUpdates.updateThreads) {
-      const existingThread = state.threads.find(t => t.title === update.title);
+      const existingThread = state.threads.find(t => t.threadId === update.threadId);
       if (existingThread) {
         if (update.status) existingThread.status = update.status;
         if (update.priority) existingThread.priority = update.priority;
         if (update.truth) existingThread.truth = update.truth;
         if (update.importance !== undefined) existingThread.importance = update.importance;
-        if (update.urgency !== undefined) existingThread.urgency = update.urgency;
+        if (update.urgencyCorrection !== undefined && update.urgencyCorrection !== 0) {
+          existingThread.urgency = Math.max(Math.min(existingThread.urgency + update.urgencyCorrection, 1.0), 0);
+        }
         if (update.resolution) existingThread.resolution = update.resolution;
         existingThread.lastUpdatedAt = state.page;
       }
@@ -815,17 +1025,13 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
 
   // Add clues to existing threads
   if (threadUpdates.addClues?.length) {
-    for (const clueUpdate of threadUpdates.addClues) {
-      const existingThread = state.threads.find(t => t.title === clueUpdate.thread);
+    for (const newClue of threadUpdates.addClues) {
+      const existingThread = state.threads.find(t => t.threadId === newClue.threadId);
       if (existingThread) {
-        if (clueUpdate.isFalse) {
-          existingThread.falseClues.push(clueUpdate.clue);
-        } else {
-          existingThread.clues.push(clueUpdate.clue);
-        }
+        existingThread.clues.push({ ...newClue, discoveredAtPage: state.page });
         existingThread.lastUpdatedAt = state.page;
-        // Increase urgency when clues are added
-        existingThread.urgency = Math.min(1.0, existingThread.urgency + 0.1);
+        // A newly added clue should raise urgency proportional to thread importance
+        existingThread.urgency = Math.min(1.0, existingThread.urgency + existingThread.importance * 0.05);
       }
     }
   }
@@ -838,6 +1044,14 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
         existingThread.status = 'closed';
         existingThread.lastUpdatedAt = state.page;
       }
+    }
+  }
+
+  // Increase urgency every time the thread is introduced or touched
+  // Increase urgency for threads that were introduced or touched on this page.
+  for (const thread of state.threads) {
+    if (thread.lastUpdatedAt === state.page) {
+      thread.urgency = Math.min(1.0, thread.urgency + (thread.importance * 0.03));
     }
   }
 }

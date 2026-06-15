@@ -364,6 +364,36 @@ export function generateSlug(text: string): string {
   return slug;
 }
 
+/**
+ * Converts text into a normalized, lowercase slug.
+ *
+ * Unicode diacritics are removed, non-alphanumeric characters are
+ * replaced with the specified separator, repeated separators are
+ * collapsed, and leading/trailing separators are trimmed.
+ *
+ * Guaranteed to be idempotent.
+ *
+ * @param text - Text to slugify.
+ * @param separator - Segment separator. Defaults to "_".
+ * @returns The normalized slug.
+ */
+export function slugify(text: string, separator: string = "_"): string {
+  if (!text) return "";
+
+  const escapedSeparator = separator.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  return text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // remove diacritics
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, separator)
+    .replace(new RegExp(`${escapedSeparator}+`, "g"), separator)
+    .replace(
+      new RegExp(`^${escapedSeparator}|${escapedSeparator}$`, "g"),
+      "",
+    );
+}
+
 export function sanitizeText(text: string): string {
   return correctDoubleQuotes(sanitizeTextForDB(text.trim()));
 }

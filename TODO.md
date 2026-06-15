@@ -7,58 +7,75 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] Consider place & character key (generate like future note key) -> replace all "real full name"
 [ ] Routine retry cron buat sequential aja (github action strategy)
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
-[ ] story state: sceneTypes
-[ ] story state: storyMomentum: "building" | "rising" | "critical" | "resolution";
 [ ] more LLM SDK: OpenRouter, Cloudflare Workers AI, Hugging Face Serverless Inference API, Together AI
-[ ] Process character update relationship match first name & knownName
+[ ] consider threadId (instead of by name)
+[x] place `locationHints` jadiin array of string aja
+[x] place `knownCharacters` jadiin array of object aja
+[x] place & inventory `traits` jadiin array of object { "trait": "...", "value": "..." }
+[x] place update add: `removeTraits`
+[x] place update remove: `visitCount`, `familiarity` & `lastVisitedAtPage`
+[x] place calculate `familiarity` using `calculatePlaceFamiliarity`
+[x] place calculate `lastVisitedAtPage`, `visitCount` (compare with previous page's place)
+
+[x] update place by placeId
+[x] update character by characterId
+[x] Consider place & character key (generate like future note key)
+[x] replace all "real full name" -> character_id
+[x] Previous pages → Plot flags: kosong
+[x] charactersPresent jadiin pake id aja
+[x] Slugify character name nama tengah & belakang 1 huruf aja
+[x] Initialize book firstPage gausah chatactersPresent
+[x] Initialize book chatactersPresent infer dari initialCharacters
+[x] scene harusnya pake placeId
+[x] page table place harusnya placeId
+[x] pageTranslations table take out `place`
+[x] firstpage & nextpage place harusnya placeId
+[x] add thread urgency decay
+[x] place prompt tambah actual name, isRealNameKnown (known name jadi primary)
+[ ] implement openrouter & cloudflare
+[ ] Future notes key pakein slugify juga aja (DRY)
+[ ] translate story state (place name, inventory, actionsHistory, contextHistory)
+[ ] db reset
+[ ] env openrouter & cloudflare -> also add on github & vercel
 
 ---
 
-Story Momentum: Critical
+utils/prompt.ts: formatActiveThreads, getThreadState
+utils/story.ts: processThreadUpdates
+types/story-thread.ts
 
-Writing Guidance:
-- Increase urgency.
-- Favor emotionally charged observations.
-- Compress downtime.
-- Make actions feel consequential.
+I want to enhance my story thread system for reader experience, while also keeping it not too complex for AI
+here's suggestions from ChatGPT (uploaded)
+what's your proposal?
 
-export const storyMomentums = {
-  "building": "",
-  "rising": "",
-  "critical": "",
-  "resolution": "",
-};
+---
 
-export const sceneTypes = {
-  "investigation": "",
-  "revelation": "",
-  "dialogue": "",
-  "dream": "",
-  "escape": "",
-  "confrontation": "",
-  "aftermath": "",
-};
+Recent Momentum Trend:
+Building → Rising → Critical
 
-Writing Style Guidance:
-- Use more symbolic imagery.
-- Allow unusual metaphors.
-- Favor sensory language.
+Current Narrative Pressure:
+High
 
+Sesuaiin sama real values aja:
+Example: High curiosity leads to discovering uncomfortable truths
+  - Profile archetype: "the_explorer"
+  - Curiosity flag: "high"
+  - Recommended ending type: "false_reality"
 
-Story Phase: Development
-Story Momentum: Critical
-Scene Type: Revelation
+---
 
-Writing Goals:
-- Reveal meaningful information.
-- Increase urgency.
-- Connect clues established earlier.
-- Use vivid but controlled imagery.
-- Avoid introducing unrelated mysteries.
+[ ] ask claude to review and incorporate new LLM providers
+
+docs/TODO-more-llm-sdk.md
+docs/TODO-more-llm-sdk-2.md
+config/ai-clients.ts
+utils/ai-chat.ts
+utils/ai-chat-stream.ts
+utils/ai-limiters.ts
+utils/ai-clients.ts
 
 ---
 
@@ -66,15 +83,8 @@ Writing Goals:
 https://www.npmjs.com/package/ajv
 
 ---
-utils/prompt.ts
-types/story.ts
-config/story.ts
 
-storyMomentum: "building" | "rising" | "critical" | "resolution";
-
----
-
-validate AI json integrity:
+[ ] validate AI json integrity:
 
 import { z } from "zod";
 
@@ -95,15 +105,12 @@ try {
 ---
 
 [ ] Consider generate multiverse in parallel instead of 1 big request
-[ ] Roadmap AI optimization docs selesaiin & jadiin architecture MD docs file
 [ ] Provider Abstraction Layer:
 interface AIProvider {
   generate(request: AIRequest): Promise<AIResponse>;
   stream(request: AIRequest): AsyncIterable<string>;
 }
 
-[ ] Prompt: story thread: active clues, active mysteries
-[ ] titleIdea buat mandatory aja, jadiin input cron juga
 [ ] updateBookGenerationStatus -> update bookGenerations aiProvider & aiModel
 [ ] ai-chat add metrics: requestStart, firstTokenReceived, generationFinished (TTFT: 1.3s, Generation: 5.8s, Total: 7.1s)
 
@@ -143,6 +150,7 @@ paid infra:
 [ ] migrate: GitHub models 8K context -> Official OpenAI 128K context
 [ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.
 [ ] migrate: serverless environment -> single, always-on server Vercel VPS alternative (like Render, Railway, or Fly.io) if you want a true, traditional single-instance server.
+[ ] unlock 1,000 RPD OpenRouter: requires a one-time $10 credit top-up
 
 by book creator:
 [ ] soundtrack based on mood
@@ -256,13 +264,3 @@ Mystery Guidelines:
 - Mysteries should converge.
 - Avoid creating major unresolved plot threads.
 - Prefer revelations that feel inevitable in hindsight.
-
----
-
-Current Story Momentum: Critical
-
-Writing Guidance:
-- Every scene should feel consequential.
-- Increase urgency.
-- Reduce routine interactions.
-- Favor irreversible developments.

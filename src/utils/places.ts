@@ -3,10 +3,14 @@ import {
   FAMILIARITY_RECENCY_DECAY,
   FAMILIARITY_RECENCY_WEIGHT,
   FAMILIARITY_EVENT_BONUS,
-  FAMILIARITY_MAX_VISITS} from "../config/story.js";
+  FAMILIARITY_MAX_VISITS,
+  SIGNIFICANT_EVENT_KEYWORDS,
+  FAMILIARITY_MAX_SIGNIFICANT_EVENTS,
+  FAMILIARITY_VISIT_WEIGHT} from "../config/story.js";
 import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
 import type { PastEvent, StoryScene, StoryState } from "../types/story.js";
 import { cleanUpInventory } from "./story.js";
+import { slugify } from "./text-processing.js";
 
 /**
  * Creates a new place with default values
@@ -51,23 +55,49 @@ export function createPlace(params: NewPlace, currentPage: number, scene?: Story
  * });
  * ```
  */
-export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: number, scene?: StoryScene): PlaceMemory {
-  const updated = { ...existing };
+export function updatePlace(params: {
+  existing: PlaceMemory,
+  update: PlaceUpdate,
+  page: number,
+  scene?: StoryScene,
+  placeId?: string
+  previousPlaceId?: string
+}): PlaceMemory {
+  const { existing, update, page, scene, placeId, previousPlaceId } = params;
+  const updated: PlaceMemory = structuredClone(existing);
+  const { weather, mood, placeId: currentPlaceId } = scene ?? {};
+  const { familiarityCorrection = 0, updateTraits = [], removeTraits = [], addHints = [], removeHints = [] } = update;
+  const { visitCount = 0, keyEvents = [], knownCharacters = [], traits = [], hints = [] } = existing;
   
   // Update basic properties if provided
-  if (update.name) updated.name = update.name;
   if (update.type) updated.type = update.type;
   if (update.context) updated.context = update.context;
-  if (update.locationHint) updated.locationHint = update.locationHint;
-  if (update.familiarity !== undefined) updated.familiarity = update.familiarity;
-  if (update.visitCount !== undefined) updated.visitCount = update.visitCount;
-  if (update.lastVisitedAtPage !== undefined) updated.lastVisitedAtPage = update.lastVisitedAtPage;
-  if (update.name === scene?.place) {
-    updated.lastWeather = scene?.weather;
-    updated.lastMood = scene?.mood;
+  if (update.isRealNameKnown) updated.isRealNameKnown = update.isRealNameKnown;
+
+  // Add or remove hints if provided
+  if (addHints.length || removeHints.length) {
+    updated.hints = [
+      ...hints.filter(h => !removeHints.includes(h)),
+      ...addHints,
+    ];
   }
 
-  const { keyEvents = [], knownCharacters = {} } = existing;
+  // This place is where the MC currently is this page
+  const isCurrentPlace = update.placeId === currentPlaceId;
+
+  if (isCurrentPlace) {
+    updated.lastWeather = weather;
+    updated.lastMood = mood;
+
+    // Only counts as a new "visit" if the MC wasn't already here last page —
+    // a continuous stay across pages isn't a fresh visit, but returning
+    // after being elsewhere is.
+    if (placeId !== previousPlaceId) {
+      updated.visitCount = visitCount + 1;
+    }
+
+    updated.lastVisitedAtPage = page;
+  }
 
   // Apply keyObjects updates (full replacements, remove which has amount of 0)
   if (update.keyObjects?.length) updated.keyObjects = cleanUpInventory(update.keyObjects);
@@ -78,17 +108,36 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
   }
   
   // Merge known characters
-  if (update.knownCharacters) {
-    updated.knownCharacters = {
-      ...knownCharacters,
+  if (update.knownCharacters?.length) {
+    updated.knownCharacters = [
+      ...knownCharacters.filter(c => !update.knownCharacters!.some(u => u.key === c.key)),
       ...update.knownCharacters
-    };
+    ];
   }
   
   // Update traits if provided
-  if (update.traits) {
-    updated.traits = {...existing.traits, ...update.traits};
+  if (updateTraits.length) {
+    updated.traits = [
+      ...traits.filter(t => !updateTraits.some(u => u.key === t.key)),
+      ...updateTraits
+    ];
   }
+
+  // Remove traits
+  if (removeTraits.length) {
+    updated.traits = [
+      ...traits.filter(t => !removeTraits.includes(t.key)),
+    ];
+  }
+
+  // Deliberate place familiarity change if provided
+  if (familiarityCorrection !== 0) {
+    updated.familiarity = Math.min(Math.max(updated.familiarity + familiarityCorrection, 0), 1);
+  }
+
+  // Re-calculate familiarity last, once visitCount/lastVisitedAtPage/keyEvents
+  // all reflect this page's updates
+  updated.familiarity = calculatePlaceFamiliarity(updated, page);
   
   return updated;
 }
@@ -107,7 +156,7 @@ export function updatePlace(existing: PlaceMemory, update: PlaceUpdate, page: nu
  * processPlaceUpdates(state, storyPage);
  * ```
  */
-export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, scene?: StoryScene): void {
+export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, scene?: StoryScene, previousPlaceId?: string): void {
   const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
 
   // Early exit: if no updates to process
@@ -116,15 +165,23 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
   // Add new places into place memory
   for (const newPlace of newPlaces) {
     const place = createPlace(newPlace, state.page, scene);
-    state.places[place.name] = place;
+    const placeId = slugify(newPlace.placeId);
+    state.places[placeId] = place;
   }
   
   // Update existing places
   for (const update of updatedPlaces) {
-    if (!update.name) continue;
-    const existing = state.places[update.name];
+    const placeId = slugify(update.placeId);
+    const existing = state.places[placeId];
     if (existing) {
-      state.places[update.name] = updatePlace(existing, update, state.page, scene);
+      state.places[placeId] = updatePlace({
+        existing,
+        update,
+        page: state.page,
+        scene,
+        placeId,
+        previousPlaceId
+      });
     }
   }
 }
@@ -152,7 +209,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  * const placeText = formatPlacesForPrompt(state);
  * ```
  * 
- * • Old River (river) [CURRENT] - familiarity: 0.8
+ * • Old River (river) [CURRENT] - familiarity: 0.8 [ID: old_river]
+ *   - Real name: Simatra River (revealed: true)
  *   - Visited 3 times (last visited: page 12, last mood: threatening, last weather: misty)
  *   - Context: narrow river behind the school
  *   - Location: 500 meters south of the school
@@ -168,7 +226,8 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *     • Lisa (first met here)
  *     • Tom (saved from drowning here)
  * 
- * • Abandoned Church (building) [CURRENT] - familiarity: 0.6
+ * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church]
+ *   - Real name: Project Lazarus Research Facility (revealed: false)
  *   - Visited 2 times (last visited: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
@@ -181,10 +240,10 @@ export function formatPlacesForPrompt(
   places: Record<string, PlaceMemory>,
   currentPage: number,
 ): string {
-  const placeArray = Object.values(places);
-  if (!placeArray.length) return 'No known places.';
+  const placeEntries = Object.entries(places);
+  if (!placeEntries.length) return 'No known places.';
 
-  const sortedPlaces = [...placeArray].sort((a, b) => {
+  const sortedEntries = [...placeEntries].sort(([, a], [, b]) => {
     const aCurrent = a.lastVisitedAtPage === currentPage ? 1 : 0;
     const bCurrent = b.lastVisitedAtPage === currentPage ? 1 : 0;
 
@@ -197,16 +256,20 @@ export function formatPlacesForPrompt(
     return b.familiarity - a.familiarity;
   });
 
-  return sortedPlaces.map(place => {
+  return sortedEntries.map(([id, place]) => {
     const lines: string[] = [];
     const currentMarker = place.lastVisitedAtPage === currentPage ? ' [CURRENT]' : '';
 
-    lines.push(`• ${place.name} (${place.type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)}`);
+    // Main place info and identifier
+    lines.push(`• ${place.knownName} (${place.type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]`);
+
+    // Real name and whether it's revealed to the MC (matches jsdoc example format)
+    lines.push(`  - Real name: ${place.realName} (revealed: ${String(place.isRealNameKnown)})`);
     lines.push(`  - Visited ${place.visitCount ?? 1} time${(place.visitCount ?? 1) > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
     lines.push(`  - Context: ${place.context}`);
 
-    if (place.locationHint) {
-      lines.push(`  - Location: ${place.locationHint}`);
+    if (place.hints?.length) {
+      lines.push(`  - Hints: ${place.hints.join('; ')}`);
     }
 
     const traits = Object.entries(place.traits ?? {});
@@ -239,10 +302,9 @@ export function formatPlacesForPrompt(
       });
     }
 
-    const characters = Object.entries(place.knownCharacters ?? {});
-    if (characters.length) {
+    if (place.knownCharacters?.length) {
       lines.push('  - Associated characters:');
-      characters.sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
+      Object.entries(place.knownCharacters).sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
         lines.push(`    • ${name}${context ? ` (${context})` : ''}`);
       });
     }
@@ -253,36 +315,47 @@ export function formatPlacesForPrompt(
 
 /**
  * Calculates place familiarity score based on visit patterns
- * 
- * This function determines how familiar the MC should be with a place
- * based on visit count, recency, and events that occurred there.
- * 
+ *
+ * Combines three independently-capped components so no single factor
+ * saturates familiarity on its own:
+ * - Visit count (diminishing returns, capped at FAMILIARITY_VISIT_WEIGHT)
+ * - Recency of last visit (capped at FAMILIARITY_RECENCY_WEIGHT, decays
+ *   even for well-visited places — a long-abandoned "home base" should
+ *   feel less familiar again over time)
+ * - Significant past events (capped at FAMILIARITY_MAX_SIGNIFICANT_EVENTS
+ *   × FAMILIARITY_EVENT_BONUS, so a couple of major events matter but a
+ *   dozen don't matter ten times as much)
+ *
  * @param place - Place memory to calculate familiarity for
  * @param currentPage - Current story page
  * @returns Familiarity score between 0 and 1
+ *
+ * @example
+ * ```typescript
+ * const familiarity = calculatePlaceFamiliarity(place, state.page);
+ * ```
  */
 export function calculatePlaceFamiliarity(place: PlaceMemory, currentPage: number): number {
   const { visitCount = 0, keyEvents = [] } = place;
-  let familiarity = 0;
-  
-  // Base familiarity from visit count (diminishing returns)
-  familiarity += Math.log(visitCount + 1) / Math.log(FAMILIARITY_MAX_VISITS); // Max ~1 at configured visits
-  
-  // Recency bonus
-  const pagesSinceVisit = currentPage - place.lastVisitedAtPage;
-  const recencyBonus = Math.max(0, 1 - (pagesSinceVisit / FAMILIARITY_RECENCY_DECAY)); // Decays over configured pages
-  familiarity += recencyBonus * FAMILIARITY_RECENCY_WEIGHT;
-  
-  // Event significance bonus
-  const significantEvents = keyEvents.filter(e => 
-    e.event.includes("betray") || 
-    e.event.includes("death") || 
-    e.event.includes("discover") ||
-    e.event.includes("trauma") ||
-    e.event.includes("meet")
-  ).length;
-  familiarity += significantEvents * FAMILIARITY_EVENT_BONUS;
-  
-  // Clamp between 0 and 1
-  return Math.min(1, Math.max(0, familiarity));
+
+  // Visit-count component — diminishing returns, capped at FAMILIARITY_VISIT_WEIGHT
+  const visitScore = Math.min(1, Math.log(visitCount + 1) / Math.log(FAMILIARITY_MAX_VISITS));
+  const visitComponent = visitScore * FAMILIARITY_VISIT_WEIGHT;
+
+  // Recency component — decays back toward 0 the longer the place goes
+  // unvisited, regardless of how familiar it once was
+  const pagesSinceVisit = Math.max(0, currentPage - place.lastVisitedAtPage);
+  const recencyScore = Math.max(0, 1 - pagesSinceVisit / FAMILIARITY_RECENCY_DECAY);
+  const recencyComponent = recencyScore * FAMILIARITY_RECENCY_WEIGHT;
+
+  // Event-significance component — narratively significant moments that
+  // happened here, capped so a handful of major events doesn't
+  // single-handedly saturate familiarity
+  const significantEvents = keyEvents.filter(e => {
+    const text = e.event.toLowerCase();
+    return SIGNIFICANT_EVENT_KEYWORDS.some(keyword => text.includes(keyword));
+  }).length;
+  const eventComponent = Math.min(significantEvents, FAMILIARITY_MAX_SIGNIFICANT_EVENTS) * FAMILIARITY_EVENT_BONUS;
+
+  return Math.min(1, Math.max(0, visitComponent + recencyComponent + eventComponent));
 }

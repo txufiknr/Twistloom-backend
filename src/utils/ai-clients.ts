@@ -14,6 +14,8 @@ let cohereClient: CohereClientV2 | null = null;
 let mistralClient: Mistral | null = null;
 let groqClient: Groq | null = null;
 let cerebrasClient: Cerebras | null = null;
+let openrouterClient: OpenAI | null = null;
+let cloudflareClient: OpenAI | null = null;
 
 /** Mapping of AI providers to their API key environment variable names */
 export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
@@ -24,16 +26,16 @@ export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
   groq: 'GROQ_API_KEY',
   cerebras: 'CEREBRAS_API_KEY',
   nvidia: 'NVIDIA_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  cloudflare: 'CLOUDFLARE_API_TOKEN',
 };
 
 // GitHub client singleton
 export function getGitHubClient(): OpenAI {
   if (githubClient) return githubClient;
 
-  const apiKey = requireEnv('GITHUB_API_KEY');
-
   githubClient = new OpenAI({
-    apiKey,
+    apiKey: requireEnv('GITHUB_API_KEY'),
     baseURL: "https://models.github.ai/inference",
   });
   return githubClient;
@@ -43,9 +45,7 @@ export function getGitHubClient(): OpenAI {
 export function getGeminiClient(): GoogleGenAI {
   if (geminiClient) return geminiClient;
 
-  const apiKey = requireEnv('GEMINI_API_KEY');
-
-  geminiClient = new GoogleGenAI({ apiKey });
+  geminiClient = new GoogleGenAI({ apiKey: requireEnv('GEMINI_API_KEY') });
   return geminiClient;
 }
 
@@ -53,9 +53,7 @@ export function getGeminiClient(): GoogleGenAI {
 export function getCohereClient(): CohereClientV2 {
   if (cohereClient) return cohereClient;
 
-  const apiKey = requireEnv('COHERE_API_KEY');
-
-  cohereClient = new CohereClientV2({ token: apiKey });
+  cohereClient = new CohereClientV2({ token: requireEnv('COHERE_API_KEY') });
   return cohereClient;
 }
 
@@ -63,9 +61,7 @@ export function getCohereClient(): CohereClientV2 {
 export function getMistralClient(): Mistral {
   if (mistralClient) return mistralClient;
 
-  const apiKey = requireEnv('MISTRAL_API_KEY');
-
-  mistralClient = new Mistral({ apiKey });
+  mistralClient = new Mistral({ apiKey: requireEnv('MISTRAL_API_KEY') });
   return mistralClient;
 }
 
@@ -73,9 +69,7 @@ export function getMistralClient(): Mistral {
 export function getGroqClient(): Groq {
   if (groqClient) return groqClient;
 
-  const apiKey = requireEnv('GROQ_API_KEY');
-
-  groqClient = new Groq({ apiKey });
+  groqClient = new Groq({ apiKey: requireEnv('GROQ_API_KEY') });
   return groqClient;
 }
 
@@ -83,8 +77,26 @@ export function getGroqClient(): Groq {
 export function getCerebrasClient(): Cerebras {
   if (cerebrasClient) return cerebrasClient;
 
-  const apiKey = requireEnv('CEREBRAS_API_KEY');
-
-  cerebrasClient = new Cerebras({ apiKey });
+  cerebrasClient = new Cerebras({ apiKey: requireEnv('CEREBRAS_API_KEY') });
   return cerebrasClient;
+}
+
+export function getOpenRouterClient(): OpenAI {
+  if (openrouterClient) return openrouterClient;
+
+  openrouterClient = new OpenAI({
+    apiKey: requireEnv('OPENROUTER_API_KEY'),
+    baseURL: 'https://openrouter.ai/api/v1',
+  });
+  return openrouterClient;
+}
+
+export function getCloudflareClient(): OpenAI {
+  if (cloudflareClient) return cloudflareClient;
+
+  cloudflareClient = new OpenAI({
+    apiKey: requireEnv('CLOUDFLARE_API_TOKEN'),
+    baseURL: `https://api.cloudflare.com/client/v4/accounts/${requireEnv('CLOUDFLARE_ACCOUNT_ID')}/ai/v1`,
+  });
+  return cloudflareClient;
 }

@@ -1,8 +1,8 @@
-import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, PromptWithFallbackOptions } from "../types/ai-chat.js";
-import { getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
+import type { AIChatProvider, AIDocument, AIJsonProperty, AIPromptOptions, AIStreamGenerator, PromptWithFallbackOptions, StreamUsage } from "../types/ai-chat.js";
+import { getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, NVIDIA_REQUEST_TIMEOUT_MS } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
-import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
+import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess } from './ai-logger.js';
@@ -13,12 +13,12 @@ import { type GenerateContentConfig, type GenerateContentParameters } from "@goo
 import type { AIChatStreamProvider, AIChatStreamResult } from "../types/sse.js";
 import type { Cohere } from "cohere-ai";
 import type Cerebras from "@cerebras/cerebras_cloud_sdk/resources";
-import type * as Mistral from "@mistralai/mistralai/models/components";
+import type OpenAIClient from 'openai';
 import type * as OpenAI from "openai/resources";
+import type * as Mistral from "@mistralai/mistralai/models/components";
 import type * as Groq from "groq-sdk/resources/chat/completions";
 import { estimateTokens, logGenerationTelemetry } from "./prompt-telemetry.js";
 import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
-// import { getOrCreateGeminiCache } from "./gemini.js";
 
 /**
  * SSE-enabled AI streaming function that yields chunks immediately
@@ -149,6 +149,12 @@ export async function aiStreamSSE(
             console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
             continue;
           }
+
+          // Skip providers that have already exhausted their daily request budget
+          if (!(await canUseAIToday(provider))) {
+            console.log(`[${provider}] ⚠️ Daily request limit reached, skipping`);
+            continue;
+          }
           
           console.log(`[${provider}] 🧠 Starting SSE streaming task (${models.length} models)...`);
           
@@ -189,7 +195,8 @@ export async function aiStreamSSE(
               let firstTokenAt: number | null = null;
               
               // Call the appropriate streaming provider
-              let streamGenerator: AsyncGenerator<string> | null = null;
+              // let streamGenerator: AsyncGenerator<string> | null = null;
+              let streamGenerator: AIStreamGenerator | null = null;
               
               switch (provider) {
                 case 'github': streamGenerator = githubStreamGenerator(prompt, opts); break;
@@ -199,11 +206,24 @@ export async function aiStreamSSE(
                 case 'groq': streamGenerator = groqStreamGenerator(prompt, opts); break;
                 case 'cerebras': streamGenerator = cerebrasStreamGenerator(prompt, opts); break;
                 case 'nvidia': streamGenerator = nvidiaStreamGenerator(prompt, opts); break;
+                case 'openrouter': streamGenerator = openrouterStreamGenerator(prompt, opts); break;
+                case 'cloudflare': streamGenerator = cloudflareStreamGenerator(prompt, opts); break;
               }
-              
+
               if (streamGenerator) {
                 try {
-                  for await (const chunk of streamGenerator) {
+                  let usage: StreamUsage | undefined;
+
+                  while (true) {
+                    const { value, done } = await streamGenerator.next();
+
+                    if (done) {
+                      usage = value || undefined;  // generator's return value, if any
+                      break;
+                    }
+
+                    const chunk = value; // value is `string` while done === false
+
                     // Check if aborted during streaming
                     if (signal?.aborted) {
                       controller.close();
@@ -214,18 +234,19 @@ export async function aiStreamSSE(
                     if (!firstTokenAt && chunk.length > 0) {
                       firstTokenAt = Date.now();
                     }
-                    
+
                     // Handle backpressure
                     await handleBackpressure(controller);
-                    
+
                     controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
                   }
-                  
+
                   // Send end event
                   controller.enqueue(encoder.encode(createEndEvent(provider, model)));
                   providerSucceeded = true;
 
-                  // Log telemetry
+                  // Log telemetry — cache fields are simply undefined for providers
+                  // that don't report usage; logGenerationTelemetry already handles that.
                   logGenerationTelemetry({
                     provider,
                     model,
@@ -237,6 +258,10 @@ export async function aiStreamSSE(
                     completedAt: Date.now(),
                     ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
                     generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
+                    cachedTokens: usage?.cachedTokens,
+                    cacheHitRate: (usage?.promptTokens && usage?.cachedTokens != null)
+                      ? usage.cachedTokens / usage.promptTokens
+                      : undefined,
                   });
 
                   // Resolve aiUsed promise with selected provider/model
@@ -297,49 +322,80 @@ export async function aiStreamSSE(
 }
 
 /**
+ * Creates a streaming generator for any OpenAI Chat Completions–compatible
+ * provider. Shared implementation behind {@link githubStreamGenerator}.
+ *
+ * @param provider - Provider name for logging and config lookups
+ * @param getClient - Singleton client getter
+ * @param defaultModel - Fallback model ID if `options.models` is empty
+ */
+function createOpenAICompatibleStreamGenerator(
+  provider: AIChatProvider,
+  getClient: () => OpenAIClient,
+  defaultModel: string
+) {
+  return async function* (
+    prompt: string,
+    options: Partial<PromptWithFallbackOptions>
+  ): AIStreamGenerator {
+    const { signal } = options;
+    const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
+    const systemPromptWithDocuments = formatSystemPromptWithDocuments(provider, options);
+
+    const stream = await getClient().chat.completions.create({
+      model: options.models?.[0] || defaultModel,
+      messages: [
+        { role: 'system', content: systemPromptWithDocuments },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: config.maxOutputToken,
+      temperature: config.temperature,
+      top_p: config.topP,
+      stream: true,
+      stream_options: { include_usage: true },
+      stop: config.stopSequences,
+      response_format: outputAsJson ? (outputJsonStructure ? {
+        type: "json_schema",
+        json_schema: {
+          name: context ?? "output-format",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: outputJsonStructure,
+            required: outputJsonRequired,
+            additionalProperties: false
+          }
+        }
+      } : { type: 'json_object' }) : undefined,
+    } satisfies OpenAI.ChatCompletionCreateParamsStreaming, { signal });
+
+    let usage: StreamUsage | undefined;
+
+    for await (const chunk of stream) {
+      if (signal?.aborted) return usage;
+
+      // Final chunk (stream_options.include_usage) has usage + empty choices
+      if (chunk.usage) {
+        usage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          cachedTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+        };
+      }
+
+      const delta = chunk.choices[0]?.delta?.content || '';
+      if (delta) yield delta;
+    }
+
+    return usage;
+  };
+}
+
+/**
  * GitHub streaming generator that yields chunks
  */
-async function* githubStreamGenerator(
-  prompt: string,
-  options: Partial<PromptWithFallbackOptions>
-): AsyncGenerator<string> {
-  const { signal } = options;
-  const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const systemPromptWithDocuments = formatSystemPromptWithDocuments('github', options);
-  
-  const stream = await getGitHubClient().chat.completions.create({
-    model: options.models?.[0] || 'gpt-4o',
-    messages: [
-      { role: 'system', content: systemPromptWithDocuments },
-      { role: 'user', content: prompt },
-    ],
-    max_tokens: config.maxOutputToken,
-    temperature: config.temperature,
-    top_p: config.topP,
-    stream: true,
-    stream_options: { include_usage: true },
-    stop: config.stopSequences,
-    response_format: outputAsJson ? (outputJsonStructure ? {
-      type: "json_schema",
-      json_schema: {
-        name: context ?? "output-format",
-        strict: true,
-        schema: {
-          type: "object",
-          properties: outputJsonStructure,
-          required: outputJsonRequired,
-          additionalProperties: false
-        }
-      }
-    } : { type: 'json_object' }) : undefined,
-  } satisfies OpenAI.ChatCompletionCreateParamsStreaming, { signal });
-  
-  for await (const chunk of stream) {
-    if (signal?.aborted) return;
-    const delta = chunk.choices[0]?.delta?.content || '';
-    if (delta) yield delta;
-  }
-}
+const githubStreamGenerator = createOpenAICompatibleStreamGenerator('github', getGitHubClient, 'gpt-4o');
+const openrouterStreamGenerator = createOpenAICompatibleStreamGenerator('openrouter', getOpenRouterClient, 'deepseek/deepseek-r1:free');
+const cloudflareStreamGenerator = createOpenAICompatibleStreamGenerator('cloudflare', getCloudflareClient, '@cf/meta/llama-3.1-8b-instruct');
 
 /**
  * Gemini streaming generator that yields chunks
@@ -347,7 +403,7 @@ async function* githubStreamGenerator(
 async function* geminiStreamGenerator(
   prompt: string,
   options: Partial<PromptWithFallbackOptions>
-): AsyncGenerator<string> {
+): AIStreamGenerator {
   const { meta, signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired, systemPrompt = PROMPT_SYSTEM, documents, cachedContentId } = options;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('gemini', options);
   const responseJsonSchema: AIJsonProperty | undefined = outputAsJson ? {
@@ -386,8 +442,20 @@ async function* geminiStreamGenerator(
     } satisfies GenerateContentConfig,
   } satisfies GenerateContentParameters);
   
+  let usage: StreamUsage | undefined;
+
   for await (const chunk of response) {
-    if (signal?.aborted) break; // or `return;` to keep cache active for next retry?
+    if (signal?.aborted) break;
+
+    // Gemini sends cumulative usageMetadata on each chunk; the last one
+    // received before the stream ends holds the final totals.
+    if (chunk.usageMetadata) {
+      usage = {
+        promptTokens: chunk.usageMetadata.promptTokenCount,
+        cachedTokens: chunk.usageMetadata.cachedContentTokenCount,
+      };
+    }
+
     if (chunk.candidates?.[0]?.content?.parts) {
       const text = chunk.candidates[0].content.parts
         .filter((p) => typeof p?.text === 'string')
@@ -397,40 +465,7 @@ async function* geminiStreamGenerator(
     }
   }
 
-  // let _cachedTokens: number | undefined;
-  // let _promptTokens: number | undefined;
-
-  // for await (const chunk of response) {
-  //   const text = chunk.text ?? '';
-    
-  //   if (!firstTokenAt && text.length > 0) firstTokenAt = Date.now();
-    
-  //   if (chunk.usageMetadata) {
-  //     _promptTokens = chunk.usageMetadata.promptTokenCount ?? undefined;
-  //     _cachedTokens = chunk.usageMetadata.cachedContentTokenCount ?? undefined;
-  //   }
-    
-  //   if (text) {
-  //     controller.enqueue(encoder.encode(createTextChunkEvent(text)));
-  //   }
-  // }
-
-  // logGenerationTelemetry({
-  //   provider,
-  //   model,
-  //   context: options.context,
-  //   promptChars,
-  //   estimatedPromptTokens: estimateTokens(promptChars),
-  //   requestStartedAt,
-  //   firstTokenAt,
-  //   completedAt: Date.now(),
-  //   ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
-  //   generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
-  //   cachedTokens: _cachedTokens,
-  //   cacheHitRate: (_promptTokens && _cachedTokens != null)
-  //     ? _cachedTokens / _promptTokens
-  //     : undefined,
-  // });
+  return usage;
 }
 
 /**

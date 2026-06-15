@@ -377,9 +377,30 @@ export interface ConvertToGeminiSchemaOptions {
    * - 0 = remove all descriptions
    * - N = keep description only if description.length <= N
    *
-   * Descriptions exceeding the limit are removed entirely (not truncated).
+   * Descriptions exceeding the limit are removed entirely (not truncated),
+   * unless `tryRemoveSupplementary` manages to shorten it enough first.
    */
   maxDescriptionLength?: number;
+
+  /**
+   * When a description exceeds `maxDescriptionLength`, attempt to shorten it
+   * by stripping "supplementary" parenthetical asides before falling back to
+   * removing the description entirely.
+   *
+   * Example:
+   * "Haunting experiences referenced by story (and affect MC's psychological profile)."
+   * becomes:
+   * "Haunting experiences referenced by story."
+   *
+   * If the shortened description is still longer than `maxDescriptionLength`,
+   * the description is removed entirely — same as if this option were `false`.
+   *
+   * Only single-level (non-nested) parentheses are handled, which is
+   * sufficient for the short, flat descriptions used in this schema.
+   *
+   * No effect unless `minify` is enabled and `maxDescriptionLength` is set.
+   */
+  tryRemoveSupplementary?: boolean;
 
   /**
    * When removing enums due to `maxEnums`, convert them into a
@@ -414,7 +435,7 @@ export interface ConvertToGeminiSchemaOptions {
  * - Numeric constraints
  * - String formats
  * - anyOf / oneOf
- * - Nullable types (`["string", "null"]`)
+ * - Nullable types (`["string", "null"]`), translated to Gemini's `nullable: true`
  *
  * Unsupported:
  * - $ref
@@ -442,16 +463,46 @@ export function convertToGeminiSchema(
     minify = false,
     maxEnums = 5,
     maxDescriptionLength = 60,
+    tryRemoveSupplementary = true,
     moveEnumsToDescription = true,
     enumHintFormatter = (values: string[]) => `One of: ${values.map((v) => `'${v}'`).join(', ')}`,
   } = options ?? {};
 
-  const shouldKeepDescription = (description?: string): boolean => {
-    if (!description) return false;
-    if (!minify) return true;
-    if (maxDescriptionLength === undefined) return true;
+  /**
+   * Strips parenthetical "supplementary" asides from a description.
+   *
+   * Example:
+   * "Haunting experiences referenced by story (and affect MC's psychological profile)."
+   * -> "Haunting experiences referenced by story."
+   *
+   * Only handles a single level of (non-nested) parentheses — sufficient for
+   * the short, flat descriptions used in this schema. Collapses any resulting
+   * double spaces and trims the result.
+   */
+  const removeSupplementary = (description: string): string =>
+    description.replace(/\s*\([^()]*\)/g, '').replace(/\s{2,}/g, ' ').trim();
 
-    return description.length <= maxDescriptionLength;
+  /**
+   * Resolves the description to keep for a schema node.
+   *
+   * - No description -> `undefined`.
+   * - `minify` disabled, or `maxDescriptionLength` unset -> kept as-is.
+   * - Fits within `maxDescriptionLength` -> kept as-is.
+   * - Too long and `tryRemoveSupplementary` enabled -> parenthetical asides
+   *   are stripped; if the result then fits, it's used.
+   * - Otherwise -> `undefined` (the description is dropped, never truncated).
+   */
+  const resolveDescription = (description?: string): string | undefined => {
+    if (!description) return undefined;
+    if (!minify || maxDescriptionLength === undefined) return description;
+    if (description.length <= maxDescriptionLength) return description;
+
+    if (tryRemoveSupplementary) {
+      const shortened = removeSupplementary(description);
+      if (shortened && shortened.length <= maxDescriptionLength) return shortened;
+    }
+
+    return undefined;
   };
 
   const shouldKeepEnum = (values?: readonly unknown[]): boolean => {
@@ -462,159 +513,96 @@ export function convertToGeminiSchema(
     return values.length <= maxEnums;
   };
 
-  const appendDescription = (
-    existing: string | undefined,
-    extra: string,
-  ): string => {
+  const appendDescription = (existing: string | undefined, extra: string): string => {
     return existing ? `${existing} ${extra}` : extra;
   };
 
-  if (typeof jsonSchema === 'boolean') {
-    return { type: Type.TYPE_UNSPECIFIED };
-  }
+  /** Recursive worker — reuses the helpers above instead of re-deriving them at every node. */
+  const convert = (node: any): Schema => {
+    if (typeof node === 'boolean') return { type: Type.TYPE_UNSPECIFIED };
+    if (!node || typeof node !== 'object') return { type: Type.TYPE_UNSPECIFIED };
+    if (node.anyOf) return { anyOf: node.anyOf.map((schema: any) => convert(schema)) } as Schema;
+    if (node.oneOf) return { anyOf: node.oneOf.map((schema: any) => convert(schema)) } as Schema;
 
-  if (!jsonSchema || typeof jsonSchema !== 'object') {
-    return { type: Type.TYPE_UNSPECIFIED };
-  }
+    let type = node.type;
+    let nullable = false;
 
-  if (jsonSchema.anyOf) {
-    return {
-      anyOf: jsonSchema.anyOf.map((schema: any) =>
-        convertToGeminiSchema(schema, options),
-      ),
-    } as Schema;
-  }
+    if (Array.isArray(type)) {
+      const nonNull = type.filter((t) => t !== 'null');
+      nullable = nonNull.length !== type.length;
 
-  if (jsonSchema.oneOf) {
-    return {
-      anyOf: jsonSchema.oneOf.map((schema: any) =>
-        convertToGeminiSchema(schema, options),
-      ),
-    } as Schema;
-  }
-
-  let type = jsonSchema.type;
-
-  if (Array.isArray(type)) {
-    const nonNull = type.filter((t) => t !== 'null');
-
-    if (nonNull.length === 1) {
-      type = nonNull[0];
-    } else {
-      return {
-        anyOf: nonNull.map((t) =>
-          convertToGeminiSchema(
-            {
-              ...jsonSchema,
-              type: t,
-            },
-            options,
-          ),
-        ),
-      } as Schema;
-    }
-  }
-
-  if (type === 'array') {
-    const schema: Schema = {
-      type: Type.ARRAY,
-    };
-
-    if (jsonSchema.items) {
-      schema.items = convertToGeminiSchema(
-        jsonSchema.items,
-        options,
-      );
-    }
-
-    if (!minify) {
-      if (typeof jsonSchema.minItems === 'number') {
-        schema.minItems = jsonSchema.minItems;
-      }
-
-      if (typeof jsonSchema.maxItems === 'number') {
-        schema.maxItems = jsonSchema.maxItems;
+      if (nonNull.length === 1) {
+        type = nonNull[0];
+      } else if (nonNull.length > 1) {
+        const schema: Schema = { anyOf: nonNull.map((t) => convert({ ...node, type: t })) };
+        if (nullable) schema.nullable = true;
+        return schema;
+      } else {
+        // type was just ["null"] (or empty after filtering) — nothing more to describe.
+        return { type: Type.NULL };
       }
     }
 
-    if (shouldKeepDescription(jsonSchema.description)) {
-      schema.description = jsonSchema.description;
+    if (type === 'array') {
+      const schema: Schema = { type: Type.ARRAY };
+
+      if (node.items) schema.items = convert(node.items);
+
+      if (!minify) {
+        if (typeof node.minItems === 'number') schema.minItems = node.minItems;
+        if (typeof node.maxItems === 'number') schema.maxItems = node.maxItems;
+      }
+
+      const description = resolveDescription(node.description);
+      if (description) schema.description = description;
+      if (nullable) schema.nullable = true;
+
+      return schema;
     }
+
+    if (type === 'object') {
+      const schema: Schema = { type: Type.OBJECT, properties: {} };
+
+      if (node.required?.length) schema.required = node.required;
+
+      if (node.properties) {
+        schema.properties = Object.fromEntries(
+          Object.entries(node.properties).map(([key, value]) => [key, convert(value)]),
+        );
+      }
+
+      const description = resolveDescription(node.description);
+      if (description) schema.description = description;
+      if (!minify && node.propertyOrdering) schema.propertyOrdering = node.propertyOrdering;
+      if (nullable) schema.nullable = true;
+
+      return schema;
+    }
+
+    const schema: Schema = { type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED };
+
+    let description = resolveDescription(node.description);
+
+    const enumValues = Array.isArray(node.enum) ? node.enum : undefined;
+
+    if (shouldKeepEnum(enumValues)) {
+      schema.enum = enumValues;
+    } else if (
+      moveEnumsToDescription &&
+      enumValues?.length &&
+      enumValues.every((v: unknown) => typeof v === 'string')
+    ) {
+      description = appendDescription(description, enumHintFormatter(enumValues));
+    }
+
+    if (description) schema.description = description;
+    if (!minify && node.format) schema.format = node.format;
+    if (!minify && typeof node.minimum === 'number') schema.minimum = node.minimum;
+    if (!minify && typeof node.maximum === 'number') schema.maximum = node.maximum;
+    if (nullable) schema.nullable = true;
 
     return schema;
-  }
-
-  if (type === 'object') {
-    const schema: Schema = {
-      type: Type.OBJECT,
-      properties: {},
-      required: jsonSchema.required ?? [],
-    };
-
-    if (jsonSchema.properties) {
-      schema.properties = Object.fromEntries(
-        Object.entries(jsonSchema.properties).map(
-          ([key, value]) => [
-            key,
-            convertToGeminiSchema(value, options),
-          ],
-        ),
-      );
-    }
-
-    if (shouldKeepDescription(jsonSchema.description)) {
-      schema.description = jsonSchema.description;
-    }
-
-    if (!minify && jsonSchema.propertyOrdering) {
-      schema.propertyOrdering = jsonSchema.propertyOrdering;
-    }
-
-    return schema;
-  }
-
-  const schema: Schema = {
-    type: GEMINI_TYPE_MAP[type] ?? Type.TYPE_UNSPECIFIED,
   };
 
-  let description: string | undefined;
-
-  if (shouldKeepDescription(jsonSchema.description)) {
-    description = jsonSchema.description;
-  }
-
-  const enumValues = Array.isArray(jsonSchema.enum)
-    ? jsonSchema.enum
-    : undefined;
-
-  if (shouldKeepEnum(enumValues)) {
-    schema.enum = enumValues;
-  } else if (
-    moveEnumsToDescription &&
-    enumValues?.length &&
-    enumValues.every((v: unknown) => typeof v === 'string')
-  ) {
-    description = appendDescription(
-      description,
-      enumHintFormatter(enumValues),
-    );
-  }
-
-  if (description) {
-    schema.description = description;
-  }
-
-  if (!minify && jsonSchema.format) {
-    schema.format = jsonSchema.format;
-  }
-
-  if (!minify && typeof jsonSchema.minimum === 'number') {
-    schema.minimum = jsonSchema.minimum;
-  }
-
-  if (!minify && typeof jsonSchema.maximum === 'number') {
-    schema.maximum = jsonSchema.maximum;
-  }
-
-  return schema;
+  return convert(jsonSchema);
 }

@@ -147,16 +147,23 @@ export async function getPageTranslation({
  * Indices are tracked up-front; after the call each field is sliced/indexed back
  * out of the result array.
  *
- * **Index tracking rules:**
+ * Index Tracking Rules:
  * - Use `!== undefined` (never truthiness) when reading back optional indices,
  *   because an index of `0` is falsy but perfectly valid.
  * - Each optional scalar gets a dedicated index variable.
  * - Each optional array gets a start-index variable; the slice length equals the
  *   original array length, which is known before the API call.
  *
- * **Fields translated:**
- * text · place · timeOfDay · mood · weather · contextHistory ·
- * keyEvents[] · importantObjects[] · actions[].text
+ * Fields Translated:
+ * · text
+ * · place
+ * · timeOfDay
+ * · mood
+ * · weather
+ * · contextHistory
+ * · keyEvents[]
+ * · importantObjects[]
+ * · actions[].text
  */
 async function translatePageWithLibre({
   page,
@@ -169,12 +176,6 @@ async function translatePageWithLibre({
   const batch: string[] = [page.text]; // index 0 is always the main text
 
   // Optional scalar fields — each may or may not exist
-  let placeIndex: number | undefined;
-  if (page.place) {
-    placeIndex = batch.length;
-    batch.push(page.place);
-  }
-
   let timeOfDayIndex: number | undefined;
   if (page.timeOfDay) {
     timeOfDayIndex = batch.length;
@@ -229,7 +230,6 @@ async function translatePageWithLibre({
   // IMPORTANT: use `!== undefined` (not truthiness) — index 0 would be falsy.
   const translatedText = translated[0];
 
-  const translatedPlace          = placeIndex          !== undefined ? translated[placeIndex]          : undefined;
   const translatedTimeOfDay      = timeOfDayIndex      !== undefined ? translated[timeOfDayIndex]      : undefined;
   const translatedMood           = moodIndex           !== undefined ? translated[moodIndex]           : undefined;
   const translatedWeather        = weatherIndex        !== undefined ? translated[weatherIndex]        : undefined;
@@ -257,7 +257,6 @@ async function translatePageWithLibre({
       pageId:           page.id,
       language:         targetLanguage,
       text:             translatedText,
-      place:            translatedPlace,
       timeOfDay:        translatedTimeOfDay,       // DB column: time_of_day
       mood:             translatedMood,
       weather:          translatedWeather,
@@ -305,7 +304,6 @@ export function applyPageTranslation(
     ...page,
     text: translation.text,
     // Scalar fields: only override when the translation has a non-null value
-    ...(translation.place          != null && { place:          translation.place }),
     ...(translation.timeOfDay      != null && { timeOfDay:      translation.timeOfDay }),
     ...(translation.mood           != null && { mood:           translation.mood }),
     ...(translation.weather        != null && { weather:        translation.weather }),
@@ -322,7 +320,6 @@ export function applyPageTranslation(
 export function mapToPageTranslation(dbPageTranslations: DBPageTranslations): PageTranslation {
   return {
     text:             dbPageTranslations.text,
-    place:            dbPageTranslations.place,
     timeOfDay:        dbPageTranslations.timeOfDay,
     mood:             dbPageTranslations.mood,
     weather:          dbPageTranslations.weather,

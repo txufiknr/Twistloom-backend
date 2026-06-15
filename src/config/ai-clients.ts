@@ -28,13 +28,23 @@ import type { AIChatProvider, AIModelSelection } from "../types/ai-chat.js";
  * @see https://docs.mistral.ai/getting-started/models/
  */
 export const AI_RATE_LIMITS: Record<AIChatProvider, { rpm: number; rpd: number }> = {
-  github:   { rpm: 15,  rpd: 150 },
-  gemini:   { rpm: 15,  rpd: 1_500 },
-  cohere:   { rpm: 100, rpd: 10_000 },
-  mistral:  { rpm: 60,  rpd: 86_400 },
-  groq:     { rpm: 30,  rpd: 14_400 },
-  cerebras: { rpm: 30,  rpd: 14_400 },
-  nvidia:   { rpm: 40,  rpd: 57_600 },
+  github:     { rpm: 15,  rpd: 150 },
+  gemini:     { rpm: 15,  rpd: 1_500 },
+  cohere:     { rpm: 100, rpd: 10_000 },
+  mistral:    { rpm: 60,  rpd: 86_400 },
+  groq:       { rpm: 30,  rpd: 14_400 },
+  cerebras:   { rpm: 30,  rpd: 14_400 },
+  nvidia:     { rpm: 40,  rpd: 57_600 },
+
+  // NOTE: 1,000 RPD requires a one-time $10 credit top-up on OpenRouter (never expires).
+  // If you haven't done that yet, use 50 RPD instead.
+  openrouter: { rpm: 20,  rpd: 50 },
+
+  // Cloudflare bills in "neurons" (compute units), not requests, so this is
+  // a conservative request-based proxy for the 10,000 neurons/day budget on
+  // small (8B-class) models. Monitor actual neuron usage in the Cloudflare
+  // dashboard and adjust `rpd` down if you pick a larger model.
+  cloudflare: { rpm: 10,  rpd: 150 },
 };
 
 /**
@@ -71,15 +81,27 @@ export const AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8;
  * @see https://github.com/marketplace/models
  * @see https://docs.mistral.ai/getting-started/models/
  * @see https://developers.openai.com/api/docs/models
+ * @see https://openrouter.ai/models
+ * @see https://developers.cloudflare.com/workers-ai/models
  */
 export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
-  gemini:   3_600_000,   // 1M Tokens   - The Deep Memory Vault. Safe to load full story.
-  mistral:  1_000_000,   // 256K Tokens - Handles massive context perfectly.
-  cohere:   500_000,     // 128K Tokens - Good for external lore fetching.
-  nvidia:   480_000,     // 128K Tokens - Native context.
-  cerebras: 32_000,      // 8K Tokens   - FREE TIER CAP. Do not exceed ~32,000 chars.
-  github:   30_000,      // 8K Tokens   - Standard GPT-4o free tier context limit.
-  groq:     24_000,      // 6K Tokens   - FREE TIER TPM CAP. Exceeding this triggers a 429.
+  gemini:     3_600_000, // 1M tokens   - The Deep Memory Vault. Safe to load full story.
+  mistral:    1_000_000, // 256K tokens - Handles massive context perfectly.
+  cohere:     500_000,   // 128K tokens - Good for external lore fetching.
+  nvidia:     480_000,   // 128K tokens - Native context.
+  cerebras:   32_000,    // 8K tokens   - FREE TIER CAP. Do not exceed ~32,000 chars.
+  github:     30_000,    // 8K tokens   - Standard GPT-4o free tier context limit.
+  groq:       24_000,    // 6K tokens   - FREE TIER TPM CAP. Exceeding this triggers a 429.
+
+  // If you pin a large-context free model (e.g. meta-llama/llama-4-maverick:free
+  // with a 1M context), raise this — but remember the 20 RPM cap makes huge
+  // prompts a poor fit regardless.
+  openrouter: 60_000,    // ~15K tokens - Conservative default for most :free model variants.
+
+  // Workers AI 8B-class models commonly cap around 4-8K token context.
+  // Keep this small both to fit the context window and to preserve neuron
+  // budget for the output.
+  cloudflare: 12_000,
 };
 
 /**
@@ -121,14 +143,26 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'meta/llama-3.3-70b-instruct', // Tightly paced, structurally robust.
     'qwen/qwen2.5-72b-instruct', // Intricate, heavily detailed. Ideal for massive lore.
   ],
+
+  // Last-resort fallback when every dedicated free tier above is exhausted.
   cohere: [
     'command-r-08-2024' // Reads like an academic summary. Use only as a last resort for prose.
+  ],
+  // Verify these IDs are still :free at openrouter.ai/models before relying on them.
+  openrouter: [
+    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose
+    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
+  ],
+  // Verify current model IDs/availability at developers.cloudflare.com/workers-ai/models
+  cloudflare: [
+    '@cf/meta/llama-3.1-8b-instruct',
+    '@cf/google/gemma-3-12b-it',
   ],
 };
 
 /**
  * Generating story theme ideas and meta-directives.
- * Prefers fast, highly structured, smaller models that excel at following bullet-point instructions.
+ * Prefers fast, highly structured, smaller models that excel at brainstorming.
  */
 export const AI_CHAT_MODELS_THEME: AIModelSelection = {
   ...AI_CHAT_MODELS_OPENAI,
@@ -148,6 +182,10 @@ export const AI_CHAT_MODELS_THEME: AIModelSelection = {
   nvidia: [
     'meta/llama-3.3-70b-instruct', 
     'mistralai/mistral-7b-instruct'
+  ],
+  openrouter: [
+    'deepseek/deepseek-r1:free',
+    'meta-llama/llama-4-maverick:free',
   ],
 };
 

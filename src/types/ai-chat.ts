@@ -8,22 +8,24 @@
  */
 export type AIChatProvider =
   // @see https://docs.github.com/en/rest/models/inference
-  'github' |
+  | 'github'
   // @see https://ai.google.dev/gemini-api/docs/file-search
   // @see https://ai.google.dev/api/generate-content
-  'gemini' |
-  'cohere' |
+  | 'gemini'
+  | 'cohere'
   // @see https://docs.mistral.ai/api/endpoint/chat
-  'mistral' |
+  | 'mistral'
   // @see https://console.groq.com/docs/api-reference
-  'groq' |
+  | 'groq'
   // @see https://docs.cerebras.ai/en/latest/cerebras-basics/api-endpoints.html
   // @see https://inference-docs.cerebras.ai/api-reference/chat-completions
-  'cerebras' |
+  | 'cerebras'
   // @see https://docs.nvidia.com/ai-enterprise/nim-llm/1.0/api-reference.html
   // @see https://docs.nvidia.com/nim/large-language-models/latest/api-reference.html
   // @see https://docs.nvidia.com/nim/large-language-models/latest/system-example.html
-  'nvidia';
+  | 'nvidia'
+  | 'openrouter'
+  | 'cloudflare';
 
 /**
  * AI response structure returned from chat completion APIs
@@ -369,3 +371,40 @@ export interface NvidiaChatCompletionResponse {
     total_tokens: number;
   };
 }
+
+export interface GenerationTelemetry {
+  provider: string;
+  model: string;
+  context?: string;
+  promptChars: number;
+  estimatedPromptTokens: number;
+  requestStartedAt: number;
+  firstTokenAt: number | null;
+  completedAt: number | null;
+  ttftMs: number | null;
+  generationMs: number | null;
+  /** Tokens that were served from provider-side cache */
+  cachedTokens?: number;
+  /** Fraction of prompt tokens that were cache hits (0–1). Undefined if not reported. */
+  cacheHitRate?: number;
+}
+
+/**
+ * Optional usage data a provider generator can report on completion.
+ * Returned as the generator's return value (not yielded) — see
+ * `AIStreamGenerator` below. Providers that don't expose mid-stream
+ * usage simply don't return anything (`undefined`, i.e. `void`).
+ */
+export interface StreamUsage {
+  /** Total prompt tokens for this request, as reported by the provider. */
+  promptTokens?: number;
+  /** Of `promptTokens`, how many were served from a provider-side cache. */
+  cachedTokens?: number;
+}
+
+/**
+ * A streaming text generator that may optionally report `StreamUsage`
+ * as its return value once exhausted. All provider generators share
+ * this type so the orchestrator can read usage uniformly via `.next()`.
+ */
+export type AIStreamGenerator = AsyncGenerator<string, StreamUsage | void, unknown>;

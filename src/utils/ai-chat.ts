@@ -1,8 +1,8 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
-import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient } from "./ai-clients.js";
+import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
-import { getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
+import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure } from './ai-logger.js';
@@ -10,8 +10,10 @@ import { classifyGenAIError } from "./error.js";
 import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
+import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
 import type Groq from 'groq-sdk';
 import type OpenAI from 'openai/resources/chat/completions.js';
+import type OpenAIClient from 'openai';
 import type Cerebras from "@cerebras/cerebras_cloud_sdk/resources/index.mjs";
 import type { Cohere } from "cohere-ai";
 import type { GenerateContentConfig, GenerateContentParameters, GenerateContentResponse } from "@google/genai";
@@ -19,7 +21,6 @@ import type { ProgressCallback } from "../types/sse.js";
 import type { StoryGenerationStep } from "../types/book.js";
 import type { ChatCompletionRequest, ChatCompletionResponse } from "@mistralai/mistralai/models/components";
 import type * as GroqCompletion from "groq-sdk/resources/chat/completions.mjs";
-import { convertToGeminiSchema, getOrCreateGeminiCache } from "./gemini.js";
 
 /**
  * Base function for AI provider prompt handling with common patterns
@@ -114,6 +115,85 @@ async function promptWithFallback<T>(
 }
 
 /**
+ * Creates a prompt function for any OpenAI Chat Completions–compatible provider
+ * (GitHub Models, OpenRouter, Cloudflare Workers AI, and any future provider that
+ * implements the standard `/v1/chat/completions` request/response shape).
+ *
+ * This is the shared implementation behind {@link githubPrompt}; new
+ * OpenAI-compatible providers should be defined as a one-line call to this
+ * factory rather than copy-pasting a full prompt function.
+ *
+ * @param provider - Provider name for logging, rate limiting, and config lookups
+ * @param getClient - Singleton client getter (e.g. {@link getGitHubClient})
+ * @returns A prompt function with the same signature as {@link githubPrompt}
+ */
+export function createOpenAICompatiblePrompt(
+  provider: AIChatProvider,
+  getClient: () => OpenAIClient
+) {
+  return async function (
+    prompt: string,
+    options?: Partial<PromptWithFallbackOptions>
+  ): Promise<AIResponse<string> | null> {
+    return promptWithFallback<OpenAI.ChatCompletion>(
+      provider,
+      prompt,
+      options,
+      async (model, prompt, opts) => {
+        const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
+        const systemPromptWithDocuments = formatSystemPromptWithDocuments(provider, opts);
+        return await getClient().chat.completions.create({
+          model,
+          messages: [
+            { role: 'system', content: systemPromptWithDocuments },
+            { role: 'user', content: prompt },
+          ],
+          max_tokens: config.maxOutputToken,
+          temperature: config.temperature,
+          top_p: config.topP,
+          stream: false,
+          stop: config.stopSequences,
+          response_format: outputAsJson ? (outputJsonStructure ? {
+            type: "json_schema",
+            json_schema: {
+              name: context ?? "output-format",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: outputJsonStructure,
+                required: outputJsonRequired,
+                additionalProperties: false
+              } satisfies AIJsonProperty
+            }
+          } : { type: 'json_object' }) : undefined,
+        } satisfies OpenAI.ChatCompletionCreateParamsNonStreaming);
+      },
+      (response) => {
+        const content = response.choices?.[0]?.message?.content;
+        if (typeof content !== 'string' || !content.trim()) {
+          console.warn(`[${provider}] ⚠️ Invalid or empty model response`);
+          return null;
+        }
+        return content.trim();
+      },
+      (response) => {
+        const { usage } = response;
+        if (!usage) {
+          console.warn(`[${provider}] ❓ No usage data in response`);
+          return undefined;
+        }
+        return {
+          promptTokens: usage.prompt_tokens,
+          completionTokens: usage.completion_tokens,
+          totalTokens: usage.total_tokens,
+        };
+      },
+      (response) => response.choices?.[0]?.finish_reason ?? 'unknown'
+    );
+  };
+}
+
+/**
  * Sends a prompt to GitHub Models inference (`models.github.ai`, OpenAI-compatible chat completions).
  *
  * Tries each model in order. Applies {@link githubLimiter}
@@ -126,68 +206,9 @@ async function promptWithFallback<T>(
  * 
  * @see structured JSON guide - https://developers.openai.com/api/docs/guides/structured-outputs
  */
-export async function githubPrompt(
-  prompt: string,
-  options?: Partial<PromptWithFallbackOptions>
-): Promise<AIResponse<string> | null> {
-  return promptWithFallback<OpenAI.ChatCompletion>(
-    'github',
-    prompt,
-    options,
-    async (model, prompt, opts) => {
-      const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const systemPromptWithDocuments = formatSystemPromptWithDocuments('github', opts);
-      return await getGitHubClient().chat.completions.create({
-        model,
-        messages: [
-          { role: 'system', content: systemPromptWithDocuments },
-          { role: 'user', content: prompt },
-        ],
-        // Instructs OpenAI to retain the calculated KV cache for a full day
-        prompt_cache_retention: "24h",
-        max_tokens: config.maxOutputToken,
-        temperature: config.temperature,
-        top_p: config.topP,
-        stream: false,
-        stop: config.stopSequences,
-        response_format: outputAsJson ? (outputJsonStructure ? {
-          type: "json_schema",
-          json_schema: {
-            name: context ?? "output-format",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: outputJsonStructure,
-              required: outputJsonRequired,
-              additionalProperties: false
-            } satisfies AIJsonProperty
-          }
-        } : { type: 'json_object' }) : undefined,
-      } satisfies OpenAI.ChatCompletionCreateParamsNonStreaming);
-    },
-    (response) => {
-      const content = response.choices?.[0]?.message?.content;
-      if (typeof content !== 'string' || !content.trim()) {
-        console.warn('[github] ⚠️ Invalid or empty model response');
-        return null;
-      }
-      return content.trim();
-    },
-    (response) => {
-      const { usage } = response;
-      if (!usage) {
-        console.warn('[github] ❓ No usage data in response');
-        return undefined;
-      }
-      return {
-        promptTokens: usage.prompt_tokens,
-        completionTokens: usage.completion_tokens,
-        totalTokens: usage.total_tokens,
-      };
-    },
-    (response) => response.choices?.[0]?.finish_reason ?? 'unknown'
-  );
-}
+export const githubPrompt = createOpenAICompatiblePrompt('github', getGitHubClient);
+export const openrouterPrompt = createOpenAICompatiblePrompt('openrouter', getOpenRouterClient);
+export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCloudflareClient);
 
 /**
  * Sends a prompt to Google Gemini and returns structured output.
@@ -863,6 +884,12 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         continue;
       }
 
+      // Skip providers that have already exhausted their daily request budget
+      if (!(await canUseAIToday(provider))) {
+        console.log(`[${provider}] ⏩ Daily request limit reached, skipping`);
+        continue;
+      }
+
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
       
       // Only log prompts on the very first iteration
@@ -881,13 +908,15 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       
       // Provider-agnostic stack
       switch (provider) {
-        case 'github': result = await githubPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
-        case 'gemini': result = await geminiPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
-        case 'cohere': result = await coherePrompt(prompt, opts); break;     // ✅ JSON schema | ✅ document via RAG
-        case 'mistral': result = await mistralPrompt(prompt, opts); break;   // ✅ JSON schema | ☑️ document via system prompt
-        case 'groq': result = await groqPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
-        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break; // ✅ JSON schema | ☑️ document via system prompt
-        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;     // ✅ JSON schema via extra_body | ☑️ document via system prompt
+        case 'github': result = await githubPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
+        case 'gemini': result = await geminiPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
+        case 'cohere': result = await coherePrompt(prompt, opts); break;         // ✅ JSON schema | ✅ document via RAG
+        case 'mistral': result = await mistralPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
+        case 'groq': result = await groqPrompt(prompt, opts); break;             // ✅ JSON schema | ☑️ document via system prompt
+        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
+        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;         // ✅ JSON schema via extra_body | ☑️ document via system prompt
+        case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // Same as github
+        case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // Same as github
       }
     } catch (error) {
       console.log(`[${provider}] ⚠️ Provider failed:`, error);

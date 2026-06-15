@@ -30,6 +30,8 @@ const AI_RATE_LIMITS_WITH_BUFFER: Record<AIChatProvider, { rpm: number; delayMs:
   cerebras: getRateLimitConfig('cerebras'),
   mistral: getRateLimitConfig('mistral'),
   nvidia: getRateLimitConfig('nvidia'),
+  openrouter: getRateLimitConfig('openrouter'),
+  cloudflare: getRateLimitConfig('cloudflare'),
 };
 
 /**
@@ -51,9 +53,12 @@ export class RateLimiter {
   private readonly delay: number;
 
   /**
-   * Create a new rate limiter for the specified AI provider
-   * @param provider - The AI provider to rate limit calls for
+   * Serializes concurrent throttle() calls. Each call chains onto this promise,
+   * so overlapping callers wait their turn instead of all reading the same
+   * `lastCall` and passing the gate simultaneously.
    */
+  private queue: Promise<void> = Promise.resolve();
+
   constructor(private readonly provider: AIChatProvider) {
     const config = AI_RATE_LIMITS_WITH_BUFFER[provider];
     if (!config) {
@@ -69,16 +74,27 @@ export class RateLimiter {
    * @returns Promise that resolves when it's safe to make the next API call
    */
   async throttle(): Promise<void> {
-    const now = Date.now();
-    const timeSinceLastCall = now - this.lastCall;
-    
-    if (timeSinceLastCall < this.delay) {
-      const waitTime = this.delay - timeSinceLastCall;
-      console.log(`[RateLimiter] Throttling ${this.provider} - waiting ${waitTime}ms`);
-      await delay(waitTime);
+    // Grab a slot in the queue, chained after whoever is currently waiting
+    const previous = this.queue;
+    let release: () => void;
+    this.queue = new Promise<void>((resolve) => { release = resolve; });
+
+    await previous;
+
+    try {
+      const now = Date.now();
+      const timeSinceLastCall = now - this.lastCall;
+
+      if (timeSinceLastCall < this.delay) {
+        const waitTime = this.delay - timeSinceLastCall;
+        console.log(`[RateLimiter] ⏰ Throttling ${this.provider} - waiting ${waitTime}ms`);
+        await delay(waitTime);
+      }
+
+      this.lastCall = Date.now();
+    } finally {
+      release!();
     }
-    
-    this.lastCall = Date.now();
   }
 
   /**
@@ -114,6 +130,8 @@ let cohereLimiter: RateLimiter | null = null;
 let cerebrasLimiter: RateLimiter | null = null;
 let mistralLimiter: RateLimiter | null = null;
 let nvidiaLimiter: RateLimiter | null = null;
+let openrouterLimiter: RateLimiter | null = null;
+let cloudflareLimiter: RateLimiter | null = null;
 
 /**
  * Get GitHub Models rate limiter (singleton)
@@ -172,6 +190,22 @@ export function getNvidiaLimiter(): RateLimiter {
 }
 
 /**
+ * Get OpenRouter rate limiter (singleton)
+ * @returns Rate limiter instance for OpenRouter
+ */
+export function getOpenRouterLimiter(): RateLimiter {
+  return openrouterLimiter || (openrouterLimiter = new RateLimiter('openrouter'));
+}
+
+/**
+ * Get Cloudflare Workers AI rate limiter (singleton)
+ * @returns Rate limiter instance for Cloudflare Workers AI
+ */
+export function getCloudflareLimiter(): RateLimiter {
+  return cloudflareLimiter || (cloudflareLimiter = new RateLimiter('cloudflare'));
+}
+
+/**
  * Get rate limiter by provider name with lazy initialization
  * @param provider - AI provider name
  * @returns Rate limiter instance for the provider
@@ -186,6 +220,8 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
     case 'cerebras': return getCerebrasLimiter();
     case 'mistral': return getMistralLimiter();
     case 'nvidia': return getNvidiaLimiter();
+    case 'openrouter': return getOpenRouterLimiter();
+    case 'cloudflare': return getCloudflareLimiter();
     default: throw new Error(`No rate limiter found for provider: ${provider}`);
   }
 }

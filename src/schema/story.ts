@@ -2,10 +2,10 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
-import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, storyPhases } from "../types/story.js";
+import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag } from "../types/story.js";
-import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates } from "../types/thread.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem } from "../types/story.js";
+import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, AddThreadClue, InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
 
@@ -50,7 +50,7 @@ export const INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
     ...INITIAL_INVENTORY_ITEM_PROPERTIES,
     amount: { type: 'integer', description: 'Quantity of the inventory item. Set amount to 0 to remove item.' },
     pageAcquired: { type: 'integer', description: 'Page number when the item was acquired' }
-  } satisfies Record<keyof Omit<InventoryItem, 'place'>, AIJsonProperty>,
+  } satisfies Record<keyof Omit<InventoryItem, 'placeId'>, AIJsonProperty>,
   required: [...INITIAL_INVENTORY_ITEM_KEYS, 'pageAcquired'] satisfies (keyof InventoryItem)[],
 };
 
@@ -75,7 +75,7 @@ export const INJURY_SCHEMA: AIJsonProperty = {
   properties: {
     ...INITIAL_INJURY_PROPERTIES,
     pageAcquired: { type: 'integer', description: 'Page number when the item was acquired' }
-  } satisfies Record<keyof Omit<Injury, 'place'>, AIJsonProperty>,
+  } satisfies Record<keyof Omit<Injury, 'placeId'>, AIJsonProperty>,
   required: [...INITIAL_INJURY_KEYS, 'pageAcquired'] satisfies (keyof Injury)[],
 };
 
@@ -96,7 +96,13 @@ export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
     name: { type: 'string' },
-    traits: { type: 'object' },
+    traits: {
+      type: 'array',
+      description: 'Any relevant details for the object (key-value pairs)',
+      items: buildTraitItemSchema({
+        keyDescription: 'e.g., color, size, material',
+      })
+    },
     amount: { type: 'integer' },
     where: { type: 'string', description: 'e.g., "in the corner of the room"' },
   } satisfies Record<keyof InitialInventoryItem, AIJsonProperty>,
@@ -104,25 +110,61 @@ export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
+const placeTraitsExample = 'e.g., smell, sound, visual, feeling, dimension, wall color';
+
+function buildTraitItemSchema(params?: {
+  keyDescription?: string,
+  valueDescription?: string
+  keyEnum?: string[],
+  valueEnum?: string[]
+}): AIJsonProperty {
+  const { keyDescription, valueDescription, keyEnum, valueEnum } = params ?? {};
+  return {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: keyDescription, enum: keyEnum },
+      value: { type: 'string', description: valueDescription, enum: valueEnum },
+    } satisfies Record<keyof TraitItem, AIJsonProperty>,
+    required: ['key', 'value'] satisfies (keyof TraitItem)[],
+    additionalProperties: false
+  };
+}
+
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
-  name: { type: 'string', description: 'Place name as it appears in the narrative' },
+  placeId: { type: 'string', description: 'Slug identifier (e.g., "abandoned_hotel")' },
+  knownName: { type: 'string', description: `Place name as it appears in the narrative (preferred name)` },
+  realName: { type: 'string', description: 'Original name unrevealed (e.g., institution name)' },
   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
-  locationHint: { type: 'string', description: 'Spatial relationship to other places' },
-  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place (e.g., "MC discovered the place", "first meeting with Character A")' },
+  isRealNameKnown: { type: 'boolean', description: `Whether place's real name known to MC`},
+  hints: { type: 'array', items: { type: 'string' }, description: 'Known clues, obstacles, spatial relationship to other places' },
+  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place' },
   keyObjects: {
     type: 'array',
     description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror)',
     items: PLACE_KEY_OBJECT_SCHEMA
   },
-  knownCharacters: { type: 'object', description: 'A map of characters known to be at this place' },
-  traits: { type: 'object', description: 'Any details present and relevant to the scene for narrative consistency (key-value pairs like sensory details, facing, feeling, etc)' },
+  knownCharacters: {
+    type: 'array',
+    description: 'Characters associated with this place if any',
+    items: buildTraitItemSchema({
+      keyDescription: 'character_id',
+      valueDescription: 'Context to this place'
+    })
+  },
+  traits: {
+    type: 'array',
+    description: 'Any relevant details for narrative consistency (key-value pairs)',
+    items: buildTraitItemSchema({
+      keyDescription: placeTraitsExample,
+    })
+  },
 };
 
-export const { keyEvents: placeEvents, ...placeProperties } = INITIAL_PLACE_PROPERTIES;
+export const { keyEvents: placeEvents, familiarity: _f, realName: _n, ...placeUpdateProperties } = INITIAL_PLACE_PROPERTIES;
 
-export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['name', 'type', 'context', 'familiarity'];
+export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['placeId', 'realName', 'type', 'context', 'familiarity'];
 
 export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
   type: 'object',
@@ -162,7 +204,7 @@ export const PLOT_FLAGS_SCHEMA: AIJsonProperty = {
 export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   ...INITIAL_PLACE_SCHEMA,
   properties: {
-    ...placeProperties,
+    ...placeUpdateProperties,
     addKeyEvents: placeEvents,
     keyObjects: {
       type: 'array',
@@ -175,17 +217,25 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
         }
       }
     },
-    visitCount: { type: 'integer', description: 'Number of times the place has been visited. One for first visit.' },
-    lastVisitedAtPage: { type: 'integer', description: 'The page number when the place was last visited. Current page for first visit.' },
+    updateTraits: {
+      type: 'array',
+      description: 'Update details about this place (key-value pairs)',
+      items: buildTraitItemSchema({
+        keyDescription: placeTraitsExample,
+      })
+    },
+    removeTraits: { type: 'array', items: { type: 'string' } },
+    familiarityCorrection: { type: 'number', description: 'Always 0 except on major condition. Use small conservative values (between -0.5 to 0.5).' },
+    addHints: { type: 'array', items: { type: 'string' } },
+    removeHints: { type: 'array', items: { type: 'string' } },
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
-  // required: [...INITIAL_PLACE_KEYS, 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
-  // required: [...Object.keys(placeProperties), 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
-  required: ['name', 'type', 'context', 'familiarity', 'addKeyEvents', 'visitCount', 'lastVisitedAtPage'] satisfies (keyof PlaceUpdate)[],
+  required: ['placeId', 'type', 'context', 'addKeyEvents'] satisfies (keyof PlaceUpdate)[],
 };
 
 export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
-  name: { type: 'string', description: 'Real full name, even if undisclosed yet (used as identifier, cannot be changed).' },
+  characterId: { type: 'string', description: 'Slug identifier (e.g., "Lisa Park" → "lisa_p")' },
   knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
+  realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
   recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
   role: { type: 'string', description: 'Role or occupation known to the MC.' },
   gender: { type: "string", enum: [...genders] },
@@ -209,12 +259,12 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
   pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
 };
 
-const { pastInteractions: _pi, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
+export const { realName: _cn, pastInteractions: _pi, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
 
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['name', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'realName', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -222,10 +272,9 @@ export const UPDATE_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
     ...updateCharacterProperties,
-    name: { type: 'string', description: 'Real full name of character to update' },
     newInteractions: { type: 'array', items: { type: 'string' }, description: 'New interactions happened in this page' },
   } satisfies Record<keyof CharacterUpdate, AIJsonProperty>,
-  required: ['name', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions'] satisfies (keyof CharacterUpdate)[],
+  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions'] satisfies (keyof CharacterUpdate)[],
   additionalProperties: false
 };
 
@@ -233,14 +282,14 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
   type: 'object',
   description: 'Relationship between side characters',
   properties: {
-    source: { type: 'string', description: "Character's real full name initiating the relationship change. Only side characters. No need to describe feeling from MC (POV)." },
-    target: { type: 'string', description: "Target character's real full name. Only side characters. Use `relationshipToMC` if targetting MC." },
+    sourceId: { type: 'string', description: "Character ID initiating the relationship change. Only side characters. No need to describe feeling from MC (POV)." },
+    targetId: { type: 'string', description: "Target character ID. Only side characters. Use `relationshipToMC` if targetting MC." },
     type: { type: 'string', enum: [...relationshipTypes] },
     status: { type: 'string', enum: [...relationshipStatuses] },
     context: { type: 'string', description: 'Define relationship context' },
     recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: 'How well does source know target' },
   } satisfies Record<keyof RelationshipUpdate, AIJsonProperty>,
-  required: ['source', 'target', 'context'] satisfies (keyof RelationshipUpdate)[],
+  required: ['sourceId', 'targetId', 'context'] satisfies (keyof RelationshipUpdate)[],
   additionalProperties: false
 };
 
@@ -261,10 +310,11 @@ function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, i
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {
   text: { type: 'string', description: `Main story page content. First-person central ("I") POV as MC. Max ${MAX_WORDS_PER_PAGE} words.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
-  place: { type: 'string', description: 'Current place name' },
+  placeId: { type: 'string', description: 'Current place ID' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
   timeOfDay: { type: 'string', description: `Current time mark (e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range)` },
-  charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Names of characters present in this page besides MC' },
+  sceneType: { type: 'string', enum: [...Object.keys(sceneTypes)] },
+  charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Character IDs present in this page (besides MC)' },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
   importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page' },
   actions: STORY_ACTION_SCHEMA
@@ -272,10 +322,10 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
 
 export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, AIJsonProperty> = {
   traumaTagUpdates: getTagUpdatesSchema<string>({
-    description: `Max ${MAX_TRAUMA_TAGS} items — representing haunting experiences that can be referenced by the story and affect MC's psychological profile.`
+    description: `Max ${MAX_TRAUMA_TAGS}. Haunting experiences referenced by story (and affect MC's psychological profile).`
   }),
   futureNoteUpdates: getTagUpdatesSchema<FutureNote>({
-    description: `Max ${MAX_FUTURE_NOTES} items — important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc).`,
+    description: `Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
     items: FUTURE_NOTE_SCHEMA
   }),
   factUpdates: {
@@ -332,32 +382,45 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
           priority: { type: 'string', enum: [...threadPriorities] },
           truth: { type: 'string', enum: [...threadTruths] },
           importance: { type: 'number' },
+          clues: {
+            type: 'array',
+            description: 'Initial clues if any',
+            items: {
+              type: 'object',
+              properties: {
+                clue: { type: 'string' },
+                isFalse: { type: 'boolean', description: 'Whether the clue is true or misleading' },
+              } satisfies Record<keyof InitialThreadClue, AIJsonProperty>,
+              required: ['clue', 'isFalse'] satisfies (keyof InitialThreadClue)[],
+              additionalProperties: false
+            },
+          },
         } satisfies Record<keyof NewThread, AIJsonProperty>,
-        required: ['title', 'question', 'priority', 'truth', 'importance'] satisfies (keyof NewThread)[],
+        required: ['title', 'question', 'priority', 'truth', 'importance', 'clues'] satisfies (keyof NewThread)[],
         additionalProperties: false
       } },
       updateThreads: { type: 'array', description: 'Updates to existing threads if any.', items: {
         type: 'object',
         properties: {
-          title: { type: 'string' },
+          threadId: { type: 'string', description: 'Existing thread ID' },
           status: { type: 'string', enum: [...threadStatuses] },
           priority: { type: 'string', enum: [...threadPriorities] },
           truth: { type: 'string', enum: [...threadTruths] },
           importance: { type: 'number' },
-          urgency: { type: 'number', description: 'Increase as thread approaches resolution' },
+          urgencyCorrection: { type: 'number', description: 'Only for exceptional shifts in narrative momentum (between -0.5 to 0.5). Not for normal development.' },
           resolution: { type: 'string' },
         } satisfies Record<keyof UpdateThread, AIJsonProperty>,
-        required: ['title'] satisfies (keyof UpdateThread)[],
+        required: ['threadId'] satisfies (keyof UpdateThread)[],
         additionalProperties: false
       } },
       addClues: { type: 'array', description: 'Clues to be added to existing threads if any.', items: {
         type: 'object',
         properties: {
-          thread: { type: 'string' },
+          threadId: { type: 'string', description: 'Existing thread ID' },
           clue: { type: 'string' },
-          isFalse: { type: 'boolean' },
-        } satisfies Record<keyof ThreadClue, AIJsonProperty>,
-        required: ['thread', 'clue', 'isFalse'] satisfies (keyof ThreadClue)[],
+          isFalse: { type: 'boolean', description: 'Whether the clue is true or misleading' },
+        } satisfies Record<keyof AddThreadClue, AIJsonProperty>,
+        required: ['threadId', 'clue', 'isFalse'] satisfies (keyof AddThreadClue)[],
         additionalProperties: false
       } },
       closeThreads: { type: 'array', description: 'Thread titles to be closed if any.', items: { type: 'string' } },

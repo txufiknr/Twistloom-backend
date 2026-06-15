@@ -128,7 +128,6 @@ async function translatePagesToIndonesianBulk(dbPages: DBPage[]): Promise<void> 
     for (const translation of translations) {
       const translationValues = {
         text:             translation.text,
-        place:            translation.place,
         timeOfDay:        translation.timeOfDay,
         mood:             translation.mood,
         weather:          translation.weather,
@@ -145,7 +144,7 @@ async function translatePagesToIndonesianBulk(dbPages: DBPage[]): Promise<void> 
       await dbWrite
         .insert(pageTranslations)
         .values({
-          pageId:   translation.pageId,
+          pageId: translation.pageId,
           language: TARGET_LANGUAGE,
           ...translationValues,
         } satisfies DBNewPageTranslations)

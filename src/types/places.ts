@@ -1,5 +1,5 @@
 import type { InitialInventoryItem } from "./character.js";
-import type { Mood, PastEvent } from "./story.js";
+import type { Mood, PastEvent, TraitItem } from "./story.js";
 
 /**
  * Available place types for categorizing locations
@@ -97,14 +97,16 @@ export type PlaceWeather = typeof placeWeathers[number];
  * emotional associations, and narrative connections.
  */
 export type PlaceMemory = {
-  /** Place name as it appears in the narrative */
-  name: string;
+  /** Place name as it appears in the narrative (preferred name) */
+  knownName: string;
+  /** Original name unrevealed (e.g., institution name) - never changed throughout story */
+  realName: string;
   /** Type of place for categorization and behavior patterns */
   type: PlaceType;
   /** Short human-readable description for immediate recall */
   context: string;
-  /** Spatial relationship to other places */
-  locationHint?: string;
+  /** Known clues, obstacles, spatial relationship to other places */
+  hints?: string[];
   /** Visit tracking metrics */
   visitCount?: number;
   /** Last visited by main character */
@@ -112,8 +114,8 @@ export type PlaceMemory = {
   /** Emotional atmosphere of the place on last visit */
   lastWeather?: PlaceWeather;
   lastMood?: Mood;
-  /** The traits of the item (e.g., facing, feeling, sensory details, etc) */
-  traits?: Record<string, string>;
+  /** The traits of the item (e.g., smell, sound, visual, feeling) */
+  traits?: TraitItem[];
   /** Familiarity scale */
   familiarity: number; // 0-1, important for reuse priority
   /** Emotional and narrative associations */
@@ -121,11 +123,9 @@ export type PlaceMemory = {
   /** Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc) */
   keyObjects?: InitialInventoryItem[];
   /** Characters encountered here with context */
-  knownCharacters?: Record<string, string>;
-  // /** Optional sensory details for consistent atmosphere */
-  // sensoryDetails?: SensoryDetails;
-  // /** Current weather conditions at the place */
-  // weather?: PlaceWeather;
+  knownCharacters?: TraitItem[];
+  /** Whether place's real name known to MC */
+  isRealNameKnown?: boolean;
 };
 
 /**
@@ -138,8 +138,10 @@ export type PlaceMemory = {
  * - Initial visitCount (always 1 for new places)
  * - Initial lastVisitedAtPage (always current page)
  */
-export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'lastWeather' | 'lastMood' | 'keyEvents'> & { keyEvents?: string[] };
-// export type InitialPlace = Omit<NewPlace, 'locationHint'>;
+export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'lastWeather' | 'lastMood' | 'keyEvents'> & {
+  placeId: string;
+  keyEvents?: string[];
+};
 
 /**
  * Place update structure for AI output
@@ -147,11 +149,15 @@ export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'l
  * When AI modifies existing places, it provides updates in this format
  * to maintain place development and narrative consistency.
  */
-export type PlaceUpdate = Partial<Omit<NewPlace, 'keyEvents'> & {
+export type PlaceUpdate = Partial<Omit<NewPlace, 'realName' | 'keyEvents' | 'familiarity' | 'traits' | 'hints'>> & {
+  placeId: string;
+  updateTraits?: TraitItem[];
   addKeyEvents?: string[];
-  visitCount?: number;
-  lastVisitedAtPage?: number;
-}>;
+  removeTraits?: string[];
+  familiarityCorrection?: number;
+  addHints?: string[];
+  removeHints?: string[];
+};
 
 /**
  * Complete place updates structure for AI JSON output

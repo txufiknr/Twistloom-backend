@@ -38,20 +38,3 @@ export type BuildNextPagePromptParams = {
   previousPages: ActionedStoryPage[],
   candidateCount: number;
 }
-
-export interface GenerationTelemetry {
-  provider: string;
-  model: string;
-  context?: string;
-  promptChars: number;
-  estimatedPromptTokens: number;
-  requestStartedAt: number;
-  firstTokenAt: number | null;
-  completedAt: number | null;
-  ttftMs: number | null;
-  generationMs: number | null;
-  /** Tokens that were served from provider-side cache */
-  cachedTokens?: number;
-  /** Fraction of prompt tokens that were cache hits (0–1). Undefined if not reported. */
-  cacheHitRate?: number;
-}

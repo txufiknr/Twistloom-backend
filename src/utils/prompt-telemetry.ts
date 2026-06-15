@@ -1,4 +1,4 @@
-import type { GenerationTelemetry } from "../types/prompt.js";
+import type { GenerationTelemetry } from "../types/ai-chat.js";
 
 /**
  * Rough token estimator — assumes ~4 chars per token (GPT-4 average).

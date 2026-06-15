@@ -61,6 +61,8 @@ export type ThreadPriority = typeof threadPriorities[number];
 export type ThreadTruth = typeof threadTruths[number];
 
 export interface StoryThread {
+  threadId: string;
+
   // What the mystery is
   title: string;
   question: string;
@@ -75,15 +77,13 @@ export interface StoryThread {
   // Lifecycle tracking
   introducedAt: number;
   lastUpdatedAt: number;
-  plannedRevealAt?: number;
 
   // Narrative control
   importance: number; // 0–1 (drives focus frequency)
   urgency: number;    // 0–1 (how close to resolution)
 
   // Clues & progression
-  clues: string[];
-  falseClues: string[];
+  clues: ThreadClue[];
 
   // Resolution
   resolution?: string;
@@ -102,24 +102,35 @@ export interface ThreadUpdates {
   /** Updates to existing threads by title */
   updateThreads?: UpdateThread[];
   /** Clues to add to existing threads by title */
-  addClues?: ThreadClue[];
+  addClues?: AddThreadClue[];
   /** Threads to close/resolve by title */
   closeThreads?: string[];
 }
 
-export type NewThread = Pick<StoryThread, 'title' | 'question' | 'priority' | 'truth' | 'importance'>;
+export type NewThread = Pick<StoryThread,
+  | 'title'
+  | 'question'
+  | 'priority'
+  | 'truth'
+  | 'importance'> & { clues?: InitialThreadClue[] };
+
 export type UpdateThread = {
-  title: string;
+  threadId: string;
   status?: ThreadStatus;
   priority?: ThreadPriority;
   truth?: ThreadTruth;
   importance?: number;
-  urgency?: number;
+  urgencyCorrection?: number;
   resolution?: string;
 };
 
 export type ThreadClue = {
-  thread: string;
   clue: string;
   isFalse?: boolean;
+  discoveredAtPage: number;
+};
+
+export type InitialThreadClue = Omit<ThreadClue, 'discoveredAtPage'>;
+export type AddThreadClue = InitialThreadClue & {
+  threadId: string;
 };

@@ -1,3 +1,4 @@
+import type { TraitItem } from "./story.js";
 import type { Gender, KnownGender } from "./user.js";
 
 /**
@@ -83,8 +84,8 @@ export type RelationshipStatus = typeof relationshipStatuses[number];
  * with type and current emotional status.
  */
 export type CharacterRelationship = CharacterRelationshipContext & {
-  /** Target character name (excluding MC, for MC use `relationshipToMC`) */
-  target: string;
+  /** Target character ID (excluding MC, for MC use `relationshipToMC`) */
+  targetId: string;
 };
 
 export type CharacterRelationshipContext = {
@@ -107,10 +108,10 @@ export type CharacterRelationshipContext = {
  * based on story events.
  */
 export type RelationshipUpdate =
-  Pick<CharacterRelationship, 'target' | 'context' | 'recognitionLevel'> &
+  Pick<CharacterRelationship, 'targetId' | 'context' | 'recognitionLevel'> &
   Partial<Pick<CharacterRelationship, 'type' | 'status'>> & {
-  /** Source character initiating the relationship change (excluding MC) */
-  source: string;
+  /** Source character ID initiating the relationship change (excluding MC) */
+  sourceId: string;
 };
 
 /**
@@ -200,10 +201,10 @@ export type NarrativeFlags = {
  * @interface CharacterMemory
  */
 export type CharacterMemory = {
-  /** Character's unique name identifier (real name) */
-  name: string;
   /** Character's known name in narrative (e.g., "The Janitor") */
   knownName: string;
+  /** Character's real full name - never changed throughout story */
+  realName: string;
   /** Character's gender (male/female/unknown) */
   gender: Gender;
   /** Character's role or occupation in the story */
@@ -232,7 +233,11 @@ export type CharacterMemory = {
   recognitionLevel: CharacterRecognitionLevel;
 };
 
-export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & { pastInteractions?: string[], injuries: InitialInjury[] };
+export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & {
+  characterId: string;
+  pastInteractions?: string[];
+  injuries?: InitialInjury[];
+};
 
 /**
  * Character update structure for AI output
@@ -242,7 +247,10 @@ export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInter
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Partial<Omit<NewCharacter, 'pastInteractions'>> & { newInteractions?: string[] };
+export type CharacterUpdate = Partial<Omit<NewCharacter, 'realName' | 'pastInteractions'>> & {
+  characterId: string;
+  newInteractions?: string[];
+};
 
 /**
  * Complete character updates structure for AI JSON output
@@ -260,19 +268,19 @@ export type CharacterUpdates = {
 export type InventoryItem = {
   /** The name of the item */
   name: string;
-  /** The traits of the item (e.g., color, length, state, rules, etc) */
-  traits?: Record<string, string>;
+  /** The traits of the item (e.g., color, size, length, material, state, rules) */
+  traits?: TraitItem[];
   /** The quantity of the item */
   amount?: number;
   /** The location or context of the item (e.g., "in backpack", "on the table", "worn by the character") */
   where?: string;
   /** The page number where the item was acquired */
   pageAcquired?: number;
-  /** Place where the item acquired (optional). */
-  place?: string;
+  /** Place ID where the item acquired (optional). */
+  placeId?: string;
 }
 
-export type InitialInventoryItem = Omit<InventoryItem, 'pageAcquired' | 'place'>;
+export type InitialInventoryItem = Omit<InventoryItem, 'pageAcquired' | 'placeId'>;
 
 /** Represents an injury sustained by a character */
 export type Injury = {
@@ -288,11 +296,11 @@ export type Injury = {
   consequences?: string;
   /** The page number where the injury was acquired */
   pageAcquired?: number;
-  /** Place where the injury acquired (optional). */
-  place?: string;
+  /** Place ID where the injury acquired (optional). */
+  placeId?: string;
 };
 
-export type InitialInjury = Omit<Injury, 'pageAcquired' | 'place'>;
+export type InitialInjury = Omit<Injury, 'pageAcquired' | 'placeId'>;
 
 export const injurySeverities = [
   "mild",
@@ -307,10 +315,10 @@ export type InjurySeverity = typeof injurySeverities[number];
 
 /** Represents a past interaction between characters */
 export type PastInteraction = {
-  /** The page number of the interaction */
+  /** Page number of the interaction */
   page: number;
-  /** The interaction between characters */
+  /** Interaction between characters */
   interaction: string;
-  /** The place where the interaction occurred. */
-  place?: string;
+  /** Place ID where the interaction occurred. */
+  placeId?: string;
 };

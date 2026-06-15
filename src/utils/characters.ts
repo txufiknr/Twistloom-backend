@@ -4,6 +4,7 @@ import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUp
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
+import { slugify } from "./text-processing.js";
 
 // ============================================================================
 // CHARACTER MEMORY MANAGEMENT SYSTEM
@@ -92,11 +93,10 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
  * });
  * ```
  */
-export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate, page: number, place?: string): CharacterMemory {
+export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate, page: number, placeId?: string): CharacterMemory {
   const updated = { ...existing };
   
   // Update basic properties if provided
-  if (update.name) updated.name = update.name;
   if (update.knownName) updated.knownName = update.knownName;
   if (update.recognitionLevel) updated.recognitionLevel = update.recognitionLevel;
   if (update.gender) updated.gender = update.gender;
@@ -111,7 +111,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.newInteractions) {
     updated.pastInteractions = [
       ...existing.pastInteractions,
-      ...update.newInteractions.map<PastInteraction>(i => ({ page, interaction: i, place }))
+      ...update.newInteractions.map<PastInteraction>(i => ({ page, interaction: i, placeId }))
     ].slice(-MAX_PAST_INTERACTIONS);
   }
     
@@ -150,7 +150,7 @@ export function updateRelationship(character: CharacterMemory, update: Relations
   const updated = { ...character };
   
   // Find existing relationship to target
-  const existingIndex = updated.relationships.findIndex(r => r.target === update.target);
+  const existingIndex = updated.relationships.findIndex(r => r.targetId === update.targetId);
   
   if (existingIndex >= 0) {
     // Update existing relationship
@@ -164,7 +164,7 @@ export function updateRelationship(character: CharacterMemory, update: Relations
   } else if (updated.relationships.length < MAX_CHARACTERS - 1) {
     // Create new relationship
     updated.relationships.push({
-      target: update.target,
+      targetId: update.targetId,
       type: update.type || "knows",
       status: update.status || "neutral",
       context: update.context,
@@ -194,7 +194,7 @@ export function processCharacterUpdates(
   state: StoryState,
   characterUpdates?: CharacterUpdates,
   relationshipUpdates?: RelationshipUpdate[],
-  place?: string
+  placeId?: string
 ): void {
   if (!characterUpdates && !relationshipUpdates) return;
   
@@ -205,22 +205,22 @@ export function processCharacterUpdates(
   
     // Add new characters
     for (const character of newCharacters) {
-      // TODO: consider generating characterId (slugify from `character.name`)
-      state.characters[character.name] = {
+      const characterId = ensureUniqueId(character.characterId, Object.keys(state.characters));
+      state.characters[characterId] = {
         ...character,
         introducedAtPage: page,
-        injuries: character.injuries,
-        pastInteractions: character.pastInteractions?.map<PastInteraction>(i => ({ page, interaction: i, place })) ?? [],
+        injuries: character.injuries ?? [],
+        pastInteractions: character.pastInteractions?.map<PastInteraction>(i => ({ page, interaction: i, placeId })) ?? [],
         relationships: [], // Will be processed later via `relationshipUpdates`
       };
     }
     
     // Update existing characters
     for (const update of updatedCharacters) {
-      if (!update.name) continue;
-      const existing = state.characters[update.name];
+      const updateId = slugify(update.characterId);
+      const existing = state.characters[updateId];
       if (existing) {
-        state.characters[update.name] = updateCharacter(existing, update, page, place);
+        state.characters[updateId] = updateCharacter(existing, update, page, placeId);
       }
     }
   }
@@ -228,10 +228,9 @@ export function processCharacterUpdates(
   // Process relationship updates
   if (relationshipUpdates?.length) {
     for (const relUpdate of relationshipUpdates) {
-      // TODO: also match first name or knownName (or characterId if implemented)
-      const sourceCharacter = state.characters[relUpdate.source];
+      const sourceCharacter = state.characters[relUpdate.sourceId];
       if (sourceCharacter) {
-        state.characters[relUpdate.source] = updateRelationship(sourceCharacter, relUpdate);
+        state.characters[relUpdate.sourceId] = updateRelationship(sourceCharacter, relUpdate);
       }
     }
   }
@@ -306,7 +305,7 @@ export function getMainCharacterInfo(params: {
       const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
       if (injury.description) parts.push(injury.description);
       if (injuryLocation) parts.push(`(${injuryLocation})`);
-      if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.place ? ` at ${injury.place}` : ''}`);
+      if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.placeId ? ` at ${injury.placeId}` : ''}`);
 
       let injuryLine = `  - ${parts.join(' ')}`;
       if (injury.consequences) {
@@ -342,7 +341,8 @@ export function getMainCharacterInfo(params: {
  *   Bio: Shy librarian with hidden past and mysterious family connections
  *   Known as: Sarah
  * 
- * · Tom Martinez (friend) - male, healthy, active
+ * · Tom Martinez (friend) - male, healthy, active - [ID: tom_martinez]
+ *   Real name: "Tom Martinez" (Recognition: full_name_known)
  *   Bio: Former military medic, now works as security guard
  *   Visual description: Tall, muscular build with military haircut and tired eyes
  *   Introduced at page: 5
@@ -357,7 +357,8 @@ export function getMainCharacterInfo(params: {
  *   Narrative flags: has secret, potential twist: knows about Sarah's past
  *   Status: healthy, active
  * 
- * · Lisa Park (mentor) - female, suspicious [suspicious, secret]
+ * · Lisa (mentor) - female, suspicious [suspicious, secret] - [ID: lisa_park]
+ *   Real name: "Lisa Park" (Recognition: first_name_known)
  *   Bio: Quiet girl who knows more than she lets on
  *   Visual description: Small frame, dark hair always in ponytail, avoids eye contact
  *   Introduced at page: 5
@@ -381,7 +382,8 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
   const mcInfo = mcDetails.length ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
 
   // Exclude character with same name as MC's, it's him/herself
-  const sideCharacters = characters ? Object.values(characters).filter(c => c.name !== mc.name) : [];
+  // Keep keys so we can display character ID (record key)
+  const sideCharacters = characters ? Object.entries(characters).filter(([, c]) => c.realName !== mc.name) : [];
 
   // Early return: still no side characters yet
   if (!sideCharacters.length) return mcInfo;
@@ -393,13 +395,13 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const maxPast = pages.length ? Math.max(...pages) : undefined;
       return (maxPast ?? ch.introducedAtPage ?? 0);
     };
-    return latest(b) - latest(a);
+    return latest(b[1]) - latest(a[1]);
   });
-  
+
   const sideCharactersFormatted = sideCharacters
-    .map(character => {
-      const { name, knownName, recognitionLevel, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
-      const useDifferentReference = knownName !== name;
+    .map(([id, character]) => {
+      const { knownName, realName, recognitionLevel, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
+      const useDifferentReference = knownName !== realName;
       const nameUnknown = useDifferentReference && ['never_seen', 'seen', 'alias_known'].includes(recognitionLevel);
 
       // Basic character information
@@ -410,12 +412,12 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       if (narrativeFlags.hasSecret) statusFlags.push('secret');
       
       const flagString = statusFlags.length ? ` [${statusFlags.join(', ')}]` : '';
-      const mainInfo = `· ${knownName} (${role}) - ${gender}, ${status}${flagString}`;
+      const mainInfo = `· ${knownName} (${role}) - ${gender}, ${status}${flagString} - [ID: ${id}]`;
       const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status, relationshipToMC.recognitionLevel].filter(Boolean).join(' - ');
       const details = [];
       
       // Basic information
-      if (useDifferentReference) details.push(`  Real full name: "${name}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
+      if (useDifferentReference) details.push(`  Real name: "${name}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
       details.push(`  Bio: ${bio}`);
       details.push(`  Visual description: ${visualDescription}`);
       details.push(`  Introduced at page: ${introducedAtPage || '-'}`);
@@ -443,7 +445,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
         details.push(`  Relationships:`);
         relationships.forEach(r => {
           const relationshipStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
-          details.push(`    - ${r.target}: ${relationshipStatus ? `(${relationshipStatus}) ` : ''}${r.context}`);
+          details.push(`    - ${r.targetId}: ${relationshipStatus ? `(${relationshipStatus}) ` : ''}${r.context}`);
         });
       }
       
@@ -643,4 +645,52 @@ function generateRandomCharacterBio(gender: KnownGender): string {
   const backgroundSentence = `${possessive} background suggests ${background}.`;
   
   return `${ucfirst(traitSentence)} ${characteristicSentence} ${quirkSentence} ${backgroundSentence}`;
+}
+
+/**
+ * Generates a compact, deterministic character ID from a character name.
+ *
+ * The first name is preserved in full, while each subsequent name
+ * contributes only its initial. Name parts are normalized via
+ * {@link slugify} before the ID is constructed.
+ *
+ * Examples:
+ * - "Lisa Park" → "lisa_p"
+ * - "John Ronald Reuel Tolkien" → "john_r_r_t"
+ * - "Crème Brûlée Smith" → "creme_b_s"
+ *
+ * @param name - Character name to convert into an ID.
+ * @returns A deterministic, normalized character ID.
+ */
+export function generateCharacterId(name: string): string {
+  const parts = name.trim().split(/\s+/).map(part => slugify(part)).filter(Boolean);
+  const [first = "", ...rest] = parts;
+  return [first, ...rest.map(part => part[0])].join("_");
+}
+
+/**
+ * 
+ * @param id 
+ * @param existingIds 
+ * @param separator 
+ * @returns 
+ * 
+ * @example
+ * const baseId = generateCharacterId(name);
+ * const uniqueId = ensureUniqueId(baseId, existingIds);
+ */
+export function ensureUniqueId(
+  id: string,
+  existingIds: readonly string[],
+  separator = "_",
+): string {
+  const existing = new Set(existingIds);
+  if (!existing.has(id)) return id;
+  let suffix = 2;
+
+  while (existing.has(`${id}${separator}${suffix}`)) {
+    suffix++;
+  }
+
+  return `${id}${separator}${suffix}`;
 }

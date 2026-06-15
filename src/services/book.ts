@@ -32,7 +32,7 @@ import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
 import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
-import { getStoryStateInfo } from "../utils/story.js";
+import { calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import { createCacheKey } from "../utils/cache.js";
@@ -228,7 +228,7 @@ export async function insertStoryPage(
   // Validation runs the same regardless of mode
   if (pageNumber > 1) {
     if (!parentId) throw new Error(`Parent page required for page ${pageNumber}`);
-
+    
     const [parentPage] = await client
       .select({ id: pages.id })
       .from(pages)
@@ -253,9 +253,11 @@ export async function insertStoryPage(
     page: pageNumber,
     text: page.text,
     mood: page.mood,
-    place: page.place,
+    placeId: page.placeId,
     weather: page.weather,
     timeOfDay: page.timeOfDay,
+    sceneType: page.sceneType,
+    momentum: page.momentum,
     charactersPresent: page.charactersPresent || [],
     keyEvents: page.keyEvents || [],
     importantObjects: page.importantObjects || [],
@@ -395,9 +397,18 @@ export async function persistPageWithState(params: {
     context = "persistPageWithState",
   } = params;
 
+  const { momentum: calculatedMomentum } = calculateStoryMomentum({
+    state: newState,
+    currentPage: expectedPageNumber,
+    sceneType: generatedStoryPage.sceneType,
+    charactersPresent: generatedStoryPage.charactersPresent ?? [],
+    previousMomentum: actionedPage.momentum,
+  });
+
   const pageToInsert: StoryPage = {
     ...generatedStoryPage,
     stateDelta: fullStateDelta,
+    momentum: calculatedMomentum,
   };
 
   const MAX_BRANCH_RETRIES = 3;
@@ -994,9 +1005,11 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     page: dbPage.page,
     text: dbPage.text,
     mood: dbPage.mood || undefined,
-    place: dbPage.place || undefined,
+    placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
     timeOfDay: dbPage.timeOfDay || undefined,
+    sceneType: dbPage.sceneType || undefined,
+    momentum: dbPage.momentum || undefined,
     charactersPresent: dbPage.charactersPresent,
     keyEvents: dbPage.keyEvents,
     importantObjects: dbPage.importantObjects,
@@ -1033,9 +1046,11 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
   return {
     text: dbPage.text,
     mood: dbPage.mood || undefined,
-    place: dbPage.place || undefined,
+    placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
     timeOfDay: dbPage.timeOfDay || undefined,
+    sceneType: dbPage.sceneType || undefined,
+    momentum: dbPage.momentum || undefined,
     charactersPresent: dbPage.charactersPresent || [],
     keyEvents: dbPage.keyEvents || [],
     importantObjects: dbPage.importantObjects || [],
@@ -1255,13 +1270,15 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       actionsHistory,
       plotFlags,
       // Filter only necessary fields for frontend
-      places: Object.values(places).map(place => ({
-        name: place.name,
+      places: Object.entries(places).map(([placeId, place]) => ({
+        id: placeId,
+        name: place.isRealNameKnown === true ? place.realName : place.knownName,
         type: place.type,
         context: place.context
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
-      characters: Object.values(characters).map(character => ({
-        name: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.name : character.knownName,
+      characters: Object.entries(characters).map(([characterId, character]) => ({
+        id: characterId,
+        name: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.realName : character.knownName,
         gender: character.gender,
         role: character.role,
         bio: character.bio
@@ -1286,9 +1303,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     parentId: dbPage.parentId,
     text: dbPage.text,
     mood: dbPage.mood || undefined,
-    place: dbPage.place || undefined,
+    placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
+    sceneType: dbPage.sceneType || undefined,
+    momentum: dbPage.momentum || undefined,
     charactersPresent: dbPage.charactersPresent,
     keyEvents: dbPage.keyEvents,
     importantObjects: dbPage.importantObjects,

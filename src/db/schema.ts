@@ -6,11 +6,11 @@ import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } fro
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
-import type { StoryThread } from "../types/thread.js";
+import type { StoryThread } from "../types/story-thread.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import type { ResourceAIProvider, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
@@ -60,11 +60,13 @@ export const pages = pgTable(
     bookId: bookId("cascade"), // Delete if book is deleted
     page: integer("page").notNull(), // Page number
     text: text("text").notNull(), // 60 words max, first-person POV
-    mood: text("mood"), // Current emotional atmosphere
-    place: text("place"), // Current place where the story is taking place
+    mood: text("mood").$type<Mood>(), // Current emotional atmosphere
+    placeId: text("place_id"), // Current place ID where the story is taking place
     weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
     timeOfDay: text("time_of_day"), // Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'
-    charactersPresent: text("characters").array().notNull().default(sql`ARRAY[]::text[]`),
+    sceneType: text("scene_type").$type<SceneType>(), // Current narrative function
+    momentum: text("momentum").$type<StoryMomentum>(), // Current pressure level
+    charactersPresent: text("character_ids").array().notNull().default(sql`ARRAY[]::text[]`), // Character IDs present
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
     importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
@@ -1121,7 +1123,6 @@ export const pageTranslations = pgTable(
     pageId: pageId("cascade"), // Delete if page is deleted
     language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
     text: text("translated_text").notNull(), // Translated page text
-    place: text("place"), // Current place where the story is taking place
     timeOfDay: text("time_of_day"),
     mood: text("mood"),
     weather: text("weather"),

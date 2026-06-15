@@ -4,7 +4,7 @@ import type { Book, PageTranslation } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
-import type { StoryThread, ThreadUpdates } from "./thread.js";
+import type { StoryThread, ThreadUpdates } from "./story-thread.js";
 
 /**
  * Available moods for story pages
@@ -39,7 +39,7 @@ export const moods = [
   "contaminated", // corrupted, tainted
   "neutral",      // no strong atmosphere
   "other"         // catch-all for unique emotional states
-];
+] as const;
 
 /**
  * Available ending archetypes for psychological thriller stories
@@ -325,9 +325,9 @@ export type PlotFlag = {
   type: PlotFlagType;
   /** Indicates whether the flagged event is a major plot point. */
   isMajorEvent: boolean;
-} & Pick<StoryScene, 'place' | 'timeOfDay'>
+} & Pick<StoryScene, 'placeId' | 'timeOfDay'>;
 
-export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'place' | 'timeOfDay'>;
+export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'placeId' | 'timeOfDay'>;
 
 export const factTypes = {
   character: "About characters, including status, goals, traits, conditions, locations, and major developments.",
@@ -671,8 +671,6 @@ export type PsychologicalProfile = {
   manipulationAffinity: ManipulationAffinity;
 };
 
-// TODO: redundant with `PsychologicalProfile`
-// TODO: `physicalState` should be based on actual `StoryState.injuries`
 export type PsychologicalProfileMetrics = {
   /** Trust level affecting social interactions and paranoia (0.0-1.0) */
   trust: number;
@@ -727,13 +725,128 @@ export type PsychologicalProfileTraits = {
 export type StoryScene = {
   /** Current emotional atmosphere */
   mood?: Mood;
-  /** Current place where the story is taking place */
-  place?: string;
+  /** Current place ID where the story is taking place */
+  placeId?: string;
   /** Current weather conditions at the place */
   weather?: PlaceWeather;
   /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
   timeOfDay?: string;
+  /** Current narrative function */
+  sceneType?: SceneType;
+  /** Current pressure level */
+  momentum?: StoryMomentum;
 };
+
+/**
+ * Current narrative pressure and urgency level.
+ *
+*/
+
+/**
+ * Narrative pressure and urgency level guidance for story generation.
+ *
+ * Story momentum reflects the current level of tension, urgency, and
+ * narrative pressure experienced by the reader.
+ *
+ * Unlike story phase, momentum is dynamic and may rise or fall
+ * throughout the story depending on recent events, unresolved
+ * conflicts, active mysteries, and immediate stakes.
+ *
+ * Descriptive, not prescriptive:
+ * This is guidance rather than a strict requirement. The next page
+ * should evolve naturally from previous events and may increase,
+ * maintain, decrease, or resolve pressure when justified.
+ */
+export const storyMomentums = {
+  /** Calm progression, setup, exploration, and foreshadowing. */
+  building: "Characterized by atmosphere, curiosity, setup, exploration, and subtle developments. Introduce questions, clues, or concerns without immediate payoff.",
+  /** Escalating tension, stakes, and uncertainty. */
+  rising: "Characterized by increasing tension, complications, uncertainty, and mounting pressure. Escalate stakes while avoiding major resolution.",
+  /** Maximum urgency, danger, or emotional intensity. */
+  critical: "Characterized by urgency, major consequences, decisive actions, revelations, and strong emotional intensity.",
+  /** Recovery, reflection, resolution, and emotional payoff. */
+  resolution: "Characterized by consequences, reflection, recovery, closure, and emotional payoff. Resolve existing tensions where appropriate rather than introducing major new escalation.",
+} as const;
+
+/**
+ * Union type of all possible story momentum keys
+ */
+export type StoryMomentum = keyof typeof storyMomentums;
+
+export interface CalculateStoryMomentumParams {
+  /** Final story state for the new page (after applyStateDelta). */
+  state: StoryState;
+  /** The new page's number — pass explicitly rather than relying on state.page. */
+  currentPage: number;
+  /** Scene type for the new page (StoryGeneration.sceneType). */
+  sceneType?: SceneType;
+  /** Characters IDs present in the new page's scene. */
+  charactersPresent: string[];
+  /** Momentum of the parent page (actionedPage.momentum), if known. */
+  previousMomentum?: StoryMomentum;
+}
+
+export interface StoryMomentumResult {
+  momentum: StoryMomentum;
+  rawScore: number;
+  smoothedScore: number;
+  factors: {
+    plotPressure: number;
+    threadPressure: number;
+    dangerLevel: number;
+    urgencyLevel: number;
+    psychPressure: number;
+  };
+}
+
+/**
+ * Immediate narrative function of the current scene.
+ *
+ * Scene type describes what role the current scene serves in the story.
+ * It helps guide pacing, focus, information flow, and prose style.
+ *
+ * Unlike story phase or momentum, scene type is highly local and may
+ * change from page to page.
+ * 
+ * Priority when multiple types strongly apply:
+ * revelation
+ * > confrontation
+ * > escape
+ * > investigation
+ * > deception
+ * > horror
+ * > dream
+ * > dialogue
+ * > aftermath
+ * > transition
+ */
+export const sceneTypes = {
+  /** Expose important truths, hidden information, or major twists. */
+  "revelation": "Focus on meaningful discoveries, hidden truths, connections, and shifts in understanding that reframe what came before.",
+  /** Direct conflict, forced choices, or decisive confrontations. */
+  "confrontation": "Focus on conflict, difficult choices, opposing goals, emotional clashes, and decisive moments with real consequences.",
+  /** Immediate danger requiring flight, pursuit, or survival. */
+  "escape": "Focus on urgency, pursuit, survival, quick decisions, and immediate consequences.",
+  /** Gather clues, explore surroundings, or build understanding. */
+  "investigation": "Focus on observation, discovery, clues, questions, unfamiliar surroundings, and gradual understanding.",
+  /** Conceal intentions, manipulate perceptions, or mislead. */
+  "deception": "Focus on secrets, lies, manipulation, hidden motives, and unreliable information.",
+  /** Evoke dread, fear, or psychological threat — anticipated or active. */
+  "horror": "Focus on dread, anticipation, fear, vulnerability, disturbing discoveries, and psychological or physical threat.",
+  /** Surreal, symbolic, memory-like, or subconscious experience. */
+  "dream": "Focus on symbolism, distorted logic, emotional imagery, and subconscious or fractured-reality themes.",
+  /** Character interaction and relationship development. */
+  "dialogue": "Focus on conversation, subtext, relationships, emotions, motives, and interpersonal dynamics.",
+  /** Process consequences, recover, or move toward what's next. */
+  "aftermath": "Focus on reflection, consequences, recovery, emotional impact, and movement or preparation toward the next development.",
+  /** Connect major scenes or story developments. */
+  "transition": "Focus on movement, preparation, travel, recovery, or progression toward the next major event.",
+} as const;
+
+/**
+ * Union type of all possible story momentum keys
+ */
+export type SceneType = keyof typeof sceneTypes;
 
 /**
  * Story page structure for AI-generated content
@@ -746,7 +859,7 @@ export type StoryScene = {
 export type StoryPage = {
   /** Main story page content (60-120 words, first-person POV) */
   text: string;
-  /** Characters present in the page */
+  /** Characters IDs present in the page */
   charactersPresent?: string[];
   /** Key events that occurred in the page */
   keyEvents?: string[];
@@ -823,8 +936,9 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
     remove?: string[];
   }
 };
-export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta'>;
+export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
+export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'charactersPresent' | 'placeId'>;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | ResourceAIProvider | ResourceTimestamp>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
@@ -858,8 +972,8 @@ export type EnrichedStoryPageContext = {
   plotFlags: PlotFlag[];
 };
 
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'name' | 'type' | 'context'>;
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'name' | 'gender' | 'role' | 'bio'>;
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { id: string; name: string; };
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { id: string; name: string; };
 
 export type Action = {
   /** Action text (serves as unique identifier) */
@@ -980,7 +1094,7 @@ export type StoryState = {
    * relationships, interactions, and narrative flags. This enables
    * consistent character behavior and plot twist setup.
    * 
-   * Key: character name
+   * Key: character ID
    */
   characters: Record<string, CharacterMemory>;
 
@@ -991,7 +1105,7 @@ export type StoryState = {
    * visit history, emotional associations, and narrative connections.
    * This enables consistent world-building and psychological anchoring.
    * 
-   * Key: place name
+   * Key: place ID
    */
   places: Record<string, PlaceMemory>;
 
@@ -1388,10 +1502,15 @@ export type StateReconstructionDeps = {
 
 /** Represents a past interaction between characters */
 export type PastEvent = {
-  /** The page number of the interaction */
+  /** Page number of the interaction */
   page: number;
-  /** The interaction between characters */
+  /** Interaction between characters */
   event: string;
-  /** The place where the interaction occurred. */
-  place?: string;
+  /** Place ID where the interaction occurred. */
+  placeId?: string;
+};
+
+export type TraitItem = {
+  key: string;
+  value: string;
 };

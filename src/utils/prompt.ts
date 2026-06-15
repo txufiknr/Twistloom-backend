@@ -1,9 +1,9 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
-import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey } from "./story.js";
@@ -23,7 +23,7 @@ import { generateBranchId, getStoryStateWithBranch } from "../services/story-bra
 import { CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
-import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread } from "../types/thread.js";
+import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread, ThreadStatus } from "../types/story-thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import { filterObjectEntries, stripEmptyLines } from "./parser.js";
@@ -34,7 +34,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptDocuments, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -92,6 +92,7 @@ HORROR MECHANICS:
 CHARACTERS RULES:
 - No one is safe. No one is predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode. The reader should never feel certain who to trust — including the MC.
 - Don't introduce character (including MC) with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
+- No two characters have the same first name.
 
 BRANCHING STORY RULES:
 - Choices feel meaningful. Some are traps. Some are illusions.
@@ -220,7 +221,7 @@ export const RULES_PLACE = `PLACE RULES:
 export const RULES_CHARACTER = `CHARACTER RULES:
 
 - NEVER reveal hidden character data unless explicitly discovered.
-- NEVER refer to character using their real full name.
+- NEVER refer to character using their real name. Use their known name.
 - If name is undisclosed, use descriptions, pronouns, roles, or known aliases.
 - Respect character's bio (and visualDescription).
 - Preserve dialect, tone, and personality consistently.
@@ -257,11 +258,12 @@ PAGE NARRATIVE RULES:
 - Keep pacing tight; focus on plot-relevant details.
 - End on tension, uncertainty, discovery, or a new problem — never resolution.`;
 
+/**
+ * Action rules and a human-readable list of action types (excluding
+ * the internal 'custom' type). Each action type is emitted as `- key: desc`.
+ */
 export const RULES_ACTIONS = `ACTION TYPES:
-${Object.entries(actionTypes)
-  .filter(([key]) => key !== 'custom')
-  .map(([key, value]) => `- ${key}: ${value}`)
-  .join('\n')}
+${formatKeyValueList(Object.fromEntries(Object.entries(actionTypes).filter(([key]) => key !== 'custom')))}
 
 DIALOGUE ACTIONS:
 - Use sparingly for internal scenes or interactions
@@ -275,12 +277,40 @@ ACTION HINT:
 - Each action should have a hint that provides key continuity
 - Purpose: guide AI build the next page and continue the story`;
 
+/**
+ * Human-readable list of ending archetypes used by the prompt system.
+ * Each line is formatted as `- key: description` for inclusion in the
+ * generated instructions given to the AI.
+ */
+export const RULES_ENDING_ARCHETYPES = `ENDING ARCHETYPES:
+${formatKeyValueList(endingTypes)}`;
+
+/**
+ * Human-readable list of story momentum descriptions.
+ * Used to inform pacing and escalation behavior in the prompt.
+ */
+export const RULES_STORY_MOMENTUMS = `STORY MOMENTUM GUIDANCE:
+- Current momentum indicates the recent level of narrative pressure or urgency. Use it as continuation context rather than a requirement.
+- Allow momentum to evolve naturally from story events. It may increase, decrease, remain stable, or begin resolving when justified.
+
+Story Momentums:
+${formatKeyValueList(storyMomentums)}`;
+
+/**
+ * Human-readable list of scene types available to the story generator.
+ */
+export const RULES_SCENE_TYPES = `SCENE TYPES (sorted by most important):
+${formatKeyValueList(sceneTypes)}`;
+
 export const RULES_PAGE_GENERATION = [
   RULES_ROUTE_MEMORY,
   RULES_STORY_CONSISTENCY,
   RULES_DIFFICULTY_SCALING,
   RULES_FUTURE_NOTES,
   RULES_FALSE_PREVIEW,
+  RULES_ENDING_ARCHETYPES,
+  RULES_STORY_MOMENTUMS,
+  RULES_SCENE_TYPES,
   RULES_PLACE,
   RULES_CHARACTER,
   RULES_CHARACTER_RECOGNITION,
@@ -329,9 +359,9 @@ const firstBookOutputFormat: string = `{
   "firstPage": {
     "text": "...",
     "mood": "One of: ${formatOneOf(moods)}",
-    "place": "Location Name",
     "weather": "One of: ${formatOneOf(placeWeathers)}",
     "timeOfDay": "e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range",
+    "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
     "charactersPresent": [],
     "keyEvents": [],
     "importantObjects": [],
@@ -395,28 +425,40 @@ const firstBookOutputFormat: string = `{
     ]
   },
   "initialPlace": {
-    "name": "Location Name",
+    "placeId": "<new_place_id>",
+    "knownName": "...",
+    "realName": "...",
     "type": "One of: ${formatOneOf(placeTypes)}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
-    "locationHint": "...",
+    "isRealNameKnown": <boolean>,
+    "hints": ["..."],
     "keyEvents": ["..."],
     "keyObjects": [
       {
         "name": "...",
-        "traits": {"...": "..."},
+        "traits": [
+          { "key": "...", "value": "..." }
+        ],
         "amount": <number>,
         "where": "..."
       }
     ],
-    "knownCharacters": {
-      "<Real Full Name>": "<Context or interaction>"
-    }
+    "traits": [
+      { "key": "...", "value": "..." }
+    ],
+    "knownCharacters": [
+      {
+        "key": "<character_id>",
+        "value": "<Context or interaction>"
+      }
+    ]
   },
   "initialCharacters": [
     {
-      "name": "Real Full Name",
+      "characterId": "<new_character_id>",
       "knownName": "Narration Alias",
+      "realName": "Real Full Name",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
       "role": "e.g. 'schoolmate', 'neighbor'",
       "gender": "One of: ${formatOneOf(genders)}",
@@ -450,8 +492,8 @@ const firstBookOutputFormat: string = `{
   ],
   "initialRelationships": [
     {
-      "source": "<Real Full Name 1>",
-      "target": "<Real Full Name 2>",
+      "source": "<character_id_1>",
+      "target": "<character_id_2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
@@ -491,7 +533,6 @@ const firstBookReviewChecklist: string = `
   □ Does at least one action feel subtly wrong or inadvisable? → If NO: add one.
 
 5. Character & Place Integrity
-  □ Do charactersPresent names exactly match names in initialCharacters? → If NO: align them.
   □ Does at least one initial character have a relationship that can corrupt? → If NO: adjust bio or relationship.
   □ Does the initial place familiarity reflect the MC's actual history with it? → If NO: correct the value.
   □ Is the place context evocative (atmosphere) rather than descriptive (facts)? → If NO: rewrite.
@@ -511,9 +552,10 @@ const firstBookReviewChecklist: string = `
 const nextPageOutputFormat: string = `{
   "text": "...",
   "mood": "One of: ${formatOneOf(moods)}",
-  "place": "...",
+  "placeId": "<place_id>",
   "weather": "One of: ${formatOneOf(placeWeathers)}",
   "timeOfDay": "...",
+  "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
   "charactersPresent": [],
   "keyEvents": [],
   "importantObjects": [],
@@ -586,7 +628,8 @@ const nextPageOutputFormat: string = `{
   "characterUpdates": {
     "newCharacters": [
       {
-        "name": "...",
+        "characterId": "<new_character_id>",
+        "realName": "...",
         "knownName": "...",
         "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
         "gender": "One of: ${formatOneOf(genders)}",
@@ -613,7 +656,7 @@ const nextPageOutputFormat: string = `{
     ],
     "updatedCharacters": [
       {
-        "name": "<Real Full Name>",
+        "characterId": "<character_id>",
         "knownName": "...",
         "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
         "gender": "One of: ${formatOneOf(genders)}",
@@ -641,8 +684,8 @@ const nextPageOutputFormat: string = `{
   },
   "relationshipUpdates": [
     {
-      "source": "<Real Full Name 1>",
-      "target": "<Real Full Name 2>",
+      "source": "<character_id_1>",
+      "target": "<character_id_2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}"
     }
@@ -650,39 +693,56 @@ const nextPageOutputFormat: string = `{
   "placeUpdates": {
     "newPlaces": [
       {
-        "name": "...",
+        "placeId": "<new_place_id>",
+        "knownName": "...",
+        "realName": "...",
         "type": "One of: ${formatOneOf(placeTypes)}",
         "context": "...",
         "familiarity": <number between 0.0 and 1.0>,
-        "locationHint": "...",
+        "isRealNameKnown": <boolean>,
+        "hints": ["..."],
         "keyEvents": ["..."],
         "keyObjects": [
           {
             "name": "...",
-            "traits": {"...": "..."},
+            "traits": [
+              { "key": "...", "value": "..." }
+            ],
             "amount": <number>,
             "where": "..."
           }
         ],
-        "knownCharacters": {
-          "<Name>": "<Context or interaction>"
-        },
+        "traits": [
+          { "key": "...", "value": "..." }
+        ],
+        "knownCharacters": [
+          {
+            "key": "<character_id>",
+            "value": "<Context or interaction>"
+          }
+        ]
       }
     ],
     "updatedPlaces": [
       {
-        "name": "...",
+        "placeId": "<place_id>",
+        "knownName": "...",
         "type": "One of: ${formatOneOf(placeTypes)}",
         "context": "...",
-        "locationHint": "...",
-        "familiarity": <number between 0.0 and 1.0>,
+        "isRealNameKnown": <boolean>,
         "addKeyEvents": ["..."],
-        "keyObjects": [],
-        "visitCount": <number>,
-        "lastVisitedAtPage": <number>,
-        "knownCharacters": {
-          "<Name>": "<Context or interaction>"
-        }
+        "addHints": [],
+        "removeHints": [],
+        "removeTraits": [],
+        "updateTraits": [
+          { "key": "...", "value": "..." }
+        ],
+        "knownCharacters": [
+          {
+            "key": "<character_id>",
+            "value": "<Context or interaction>"
+          }
+        ]
       }
     ]
   },
@@ -693,12 +753,15 @@ const nextPageOutputFormat: string = `{
         "question": "...",
         "priority": "One of: ${formatOneOf(threadPriorities)}",
         "truth": "One of: ${formatOneOf(threadTruths)}",
-        "importance": <number between 0.0 and 1.0>
+        "importance": <number between 0.0 and 1.0>,
+        "clues": [
+          { "clue": "...", "isFalse": <boolean> }
+        ]
       }
     ],
     "updatedThreads": [
       {
-        "id": "...",
+        "threadId": "<thread_id>",
         "status": "One of: ${formatOneOf(threadStatuses)}",
         "priority": "One of: ${formatOneOf(threadPriorities)}",
         "truth": "One of: ${formatOneOf(threadTruths)}",
@@ -709,7 +772,7 @@ const nextPageOutputFormat: string = `{
     ],
     "addClues": [
       {
-        "thread": "...",
+        "threadId": "<thread_id>",
         "clue": "...",
         "isFalse": <boolean>
       }
@@ -720,10 +783,7 @@ const nextPageOutputFormat: string = `{
     "text": "...",
     "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
     "outline": [
-      {
-        "text": "...",
-        "isDone": <boolean>
-      }
+      { "text": "...", "isDone": <boolean> }
     ],
     "changeNote": {
       "reason": "...",
@@ -762,7 +822,7 @@ function buildNextPageFieldInstructions(state: StoryState, action: Action): stri
   - Use "I". Never refer to the MC as "the protagonist" or "the narrator".
   - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I decide to [...]," or "I [verb]."`}
   - Open mid-moment. Avoid setup or recap.
-  - This is a fast-paced story, don't over explain small details (e.g. clothing, etc) unless they're plot important.
+  - This is a fast-paced story, don't over explain small details (e.g. clothing, accessories) unless they're plot important.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
 ${isLatePhase ? `  - Tone: fracturing. Reality and relationships should feel increasingly unstable.` : ''}
@@ -772,8 +832,8 @@ mood
   - Reflect the dominant emotional atmosphere of this specific page, not the genre generally.
 ${isFinale ? `  - Mood should feel terminal — no neutrality, no ambiguity in register.` : ''}
 
-place
-  - Use an existing place name from story state if the MC hasn't moved.
+placeId
+  - Use an existing place ID if the MC hasn't moved.
   - Use "unknown" only if location is genuinely ambiguous to the MC.
 ${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now — same name, different atmosphere.` : ''}
 
@@ -781,8 +841,14 @@ timeOfDay
   - Any string: "2 AM", "dusk", "HH:mm", time range, or "unknown".
   - Must be consistent with previous page unless a transition is written into the text.
 
+sceneType
+  - Select the single dominant narrative function of the page.
+  - Choose the scene type that best represents the page's primary narrative purpose, not merely its setting, mood, or individual actions.
+  - If multiple scene types apply, choose the most important narrative function.
+  - Use "transition" only when no stronger narrative function dominates the page.
+
 charactersPresent
-  - Names of side characters in the scene besides MC.
+  - IDs of side characters in the scene besides MC.
   - Only side characters, exclude MC, MC is central POV and always on the scene.
   - Must match names in known characters or newCharacters on this page. No invented names.
 ${isFinale ? `  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.` : ''}
@@ -890,7 +956,6 @@ ${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHA
   - It's meant for characters beside MC (the POV). Don't include MC here.
   - When introducing new characters, ensure to describe their visual appearance, incorporate naturally in the storytelling.
 ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age group, culture, and language context.
-  - No two characters has the same name.
   - Create only when genuinely new to the story, if it strongly recommended and opportunity is right based on your assessment.
   - knownName: mandatory narration alias. If MC know, use actual/nick name. Otherwise, use descriptions, pronouns, roles, or words interpreted by MC.
   - bio: concise, suggestive over descriptive, include personality traits, one vulnerability or potential threat vector, and age if plot-sensitive. Never spoil secrets that haven't been revealed in the story.
@@ -922,18 +987,23 @@ placeUpdates.newPlaces
 ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
-  - locationHint: spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
+  - hints: known clues, obstacles, spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
+  - traits: include relevant information about this place (e.g., smell, sound, visual, feeling).
   - knownCharacters: include relevant characters (beside MC) with meaningful context.
   - keyEvents: any important event happening in the scene.
   - keyObjects: any important objects to remember in the scene.
-  - Might need to update other places' locationHint to link with this new place.`
+  - Might need to update other places' hint to link with this new place.`
 : `  - New places should not be introduced. If the MC is somewhere new, question whether it's necessary.`}
 
 placeUpdates.updatedPlaces
   - Only update on revisit or significant event.
-  - Don't increment visitCount if it's the same place as in previous page.
-  - Include only changed fields: addKeyEvents (1 contextual sentence: betrayal, discovery, death, trauma, etc), keyObjects, visitCount (increment if revisited), lastVisitedAtPage (update to current page if revisited), familiarity (adjust), knownCharacters (with meaningful context update).
+  - Include only changed fields: addKeyEvents (1 contextual sentence), knownCharacters (with meaningful context update), keyObjects (overwrite), and traits change.
+  - familiarityCorrection: always 0 except on major condition:
+    → place changes drastically, or something fundamentally changes how the MC understands the place.
+    → learns important hidden functions or secrets, discovers substantial new areas, gains significantly deeper understanding of the place.
+    → memory loss/confusion, familiar assumptions are proven false, environment becomes unrecognizable.
+    → Do NOT use for ordinary visits, repeated exposure, spending time in a place, or learning the place gradually. Those changes are handled automatically by the system.
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}
 
 threadUpdates.newThreads
@@ -950,16 +1020,17 @@ ${isEarlyPhase || isMidPhase ? `  - title: Short, evocative name for the mystery
 
 threadUpdates.updateThreads
 ${isEarlyPhase || isMidPhase ? `  - Update existing threads when their status, priority, or urgency meaningfully changes.
-  - title: Must match an existing thread title from the story state
+  - threadId: Must match an existing thread ID
   - status: "open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved)
-  - urgency: 0.0-1.0 (increase as thread approaches resolution)
+  - urgencyCorrection: -0.5 to 0.5 (Optional adjustment to how close a thread is to resolution). Do not use for normal progression, new clues, or routine thread development. The system already handles those automatically.
   - resolution: Only include when thread is being closed or resolved (brief summary of the answer)` : ''}
+  - Include when a page significantly develops, complicates, advances, or revisits an active thread, even if no new clue is added.
 ${isLatePhase ? `  - Update thread status to "revealed" or "closed" as threads converge toward the ending.` : ''}
 ${isFinale ? `  - Every main thread must be resolved (status: "closed" with resolution text).` : ''}
 
 threadUpdates.addClues
 ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mysteries.
-  - thread: Must match an existing thread title
+  - threadId: Must match an existing thread ID
   - clue: Short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water")
   - isFalse: Set to true if this is a deliberate misdirection (false clue)` : ''}
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
@@ -967,7 +1038,7 @@ ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
 
 ${isLatePhase ? 'threadUpdates.closeThreads' : ''}
 ${isLatePhase ? `  - Close threads that have been fully resolved or are no longer relevant.
-  - Include thread titles that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
+  - Include thread IDs that should be marked as closed (resolution should be in updateThreads.resolution)` : ''}
 ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 
 viableEnding
@@ -1177,7 +1248,7 @@ Flag any choice that fails — include in issues.
 ---
 JSON INTEGRITY CHECKS (flag any violation):
 - familiarity is a decimal between 0.0 and 1.0
-- charactersPresent names exist in "KNOWN CHARACTERS"
+- charactersPresent IDs exist in "KNOWN CHARACTERS"
 - All mandatory fields present and filled
 
 ---
@@ -1303,11 +1374,9 @@ SCORING RUBRIC:
    Award points for:
    - Initial place context evocative and specific to the theme — not generic
    - Place familiarity appropriate to MC's established history with it
-   - charactersPresent matches names in initialCharacters exactly
    - timeOfDay and location consistent with the opening scene's mood
    Deduct points for:
    - Generic place descriptions (e.g. "a dark and eerie location")
-   - Character names in charactersPresent not present in initialCharacters
    - Familiarity value contradicting MC's stated history with the place
 
 5. INITIAL STATE CALIBRATION (0-15) — Threshold: 11
@@ -1348,7 +1417,6 @@ JSON INTEGRITY CHECKS (flag any violation):
 - totalPages is within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds
 - MC's age is a number between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}
 - familiarity is a decimal between 0.0 and 1.0
-- charactersPresent names exist in initialCharacters
 - language is a valid ISO 639-1 code
 - All mandatory fields present and filled
 
@@ -1434,7 +1502,7 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
 function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPage, plotFlags?: PlotFlag[]): string {
   const pageText = formatPageTextForPrompt(page.text);
   const sceneInfo = [
-    page.place ? `place: ${page.place}` : '',
+    page.placeId ? `place: ${page.placeId}` : '',
     page.timeOfDay ? `time: ${page.timeOfDay}` : '',
     page.mood && page.mood !== 'other' ? `mood: ${page.mood}` : '',
     page.weather && page.weather !== 'unknown' ? `weather: ${page.weather}` : '',
@@ -1442,7 +1510,7 @@ function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPa
   
   // Base page and plot flag information
   let entry = `• Page ${page.page} (${sceneInfo})\n  ${pageText}`;
-  if (plotFlags) entry += `\n  → Plot flags: ${plotFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent)).map(plotFlag => formatPlotFlag(plotFlag, { showPageHeader: false })).join('; ')}`;
+  if (plotFlags?.length) entry += `\n  → Plot flags: ${plotFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent)).map(plotFlag => formatPlotFlag(plotFlag, { showPageHeader: false })).join('; ')}`;
 
   // Add action information if present
   const action = 'action' in page ? page.action : page.selectedAction;
@@ -1592,6 +1660,21 @@ export function formatOneOf(items: string[] | readonly string[], separator: stri
 }
 
 /**
+ * Format a key/value collection into a bullet list.
+ *
+ * Accepts either an object map (e.g. `{ a: 'x', b: 'y' }`) or an array of
+ * entries (e.g. `[['a','x'], ['b','y']]`). Each entry is formatted as
+ * `- key: value` and joined by newlines. Values are coerced to string.
+ *
+ * @param items - Object or entry-array to format into `- key: value` lines
+ * @returns A newline-separated string suitable for inclusion in prompts
+ */
+export function formatKeyValueList(items: Record<string, unknown> | [string, unknown][]): string {
+  const entries: [string, unknown][] = Array.isArray(items) ? items : Object.entries(items);
+  return entries.map(([k, v]) => `- ${k}: ${String(v)}`).join('\n');
+}
+
+/**
  * Formats action choices for AI prompt with enhanced readability
  * 
  * Creates clean, professional presentation of available actions
@@ -1723,6 +1806,19 @@ CONTINUATION GUIDANCE (for selected action):
 · Important: ${isCustomAction ? `This is custom prompt from reader. Develop naturally, steer story toward viable ending plan.` : `This hint guides you in narrative direction, might be a secret, not to always put in the story.`}`;
 }
 
+export function getThreadState(
+  status: ThreadStatus,
+  urgency: number
+): string {
+  switch (status) {
+    case "open": return urgency >= 0.5 ? "Gaining momentum" : "Recently introduced";
+    case "developing": return urgency >= 0.75 ? "Major answers approaching" : "Actively developing";
+    case "revealed": return "Key truths emerging";
+    case "twisted": return "Recent twist changing assumptions";
+    case "closed": return "Resolved";
+  }
+}
+
 /**
  * Formats active story threads for AI prompt with structured display
  * 
@@ -1739,12 +1835,15 @@ CONTINUATION GUIDANCE (for selected action):
  *   { title: "Lisa's Identity", question: "Who is Lisa really?", status: "developing", priority: "high", urgency: 0.85, clues: ["She knows my mother", "She wasn't in yearbook"] }
  * ];
  * const formatted = formatActiveThreads(threads);
- * // Returns:
- * // • Lisa's Identity: "Who is Lisa really?" (developing)
- * //   Clues: She knows my mother, She wasn't in yearbook
- * //   Priority: main
- * //   Urgency: 0.85
  * ```
+ * 
+ * Returns:
+ * • Lisa's Identity: "Who is Lisa really?" (Major answers approaching) [ID: lisa_identity]
+ *   Recent clues:
+ *   → page 1: She knows my mother [FALSE]
+ *   → page 2: She wasn't in yearbook
+ *   Priority: main
+ *   Urgency: 0.85
  */
 function formatActiveThreads(threads: StoryThread[]): string {
   if (!threads || threads.length === 0) return 'No active threads yet.';
@@ -1755,17 +1854,25 @@ function formatActiveThreads(threads: StoryThread[]): string {
     const priorityA = priorityOrder[a.priority] || 0;
     const priorityB = priorityOrder[b.priority] || 0;
 
-    if (priorityA !== priorityB) {
-      return priorityB - priorityA;
-    }
-
+    if (priorityA !== priorityB) return priorityB - priorityA;
     return b.urgency - a.urgency;
   });
 
-  return threads.map(t => `• ${t.title}: "${t.question}" (${t.status})
-  Clues: ${t.clues.length > 0 ? t.clues.slice(-3).join(", ") : "No clues yet"}
-  Priority: ${t.priority}
-  Urgency: ${t.urgency.toFixed(2)}`).join("\n");
+  // Display thread ID and pretty-format clues (discoveredAtPage + isFalse flag)
+  return threads.map(t => {
+    const header = `• ${t.title}: "${t.question}" (${getThreadState(t.status, t.urgency)}) [ID: ${t.threadId}]`;
+    const recent = t.clues?.length ? t.clues
+      .slice(-MAX_THREADS_CLUES)
+      .sort((a, b) => a.discoveredAtPage - b.discoveredAtPage)
+      .map(c => `  → page ${c.discoveredAtPage}: ${c.clue}${c.isFalse ? ' [FALSE]' : ''}`) : [];
+
+    return [
+      header,
+      recent.length ? `  Recent clues:\n${recent.join('\n')}` : '',
+      `  Priority: ${t.priority}`,
+      `  Urgency: ${t.urgency.toFixed(2)}`,
+    ].filter(Boolean).join('\n');
+  }).join('\n');
 }
 
 /**
@@ -1987,31 +2094,29 @@ Open the door
  * @param page - The current page
  * @returns Formatted string with current situation details
  */
-function formatCurrentSituationForPrompt(page: CandidateGenerationPage): string {
-  const { mood, place, weather, timeOfDay, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
+function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: StoryState): string {
+  const { mood, placeId, weather, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
   const situation: string[] = [];
   
   // Basic situation elements
-  if (place) situation.push(`Place: ${place}`);
+  if (momentum) situation.push(`Story momentum: ${momentum}`);
+  if (sceneType) situation.push(`Scene type: ${sceneType}`);
+  if (placeId) situation.push(`Place: ${placeId}`);
   if (timeOfDay) situation.push(`Time: ${timeOfDay}`);
   if (mood) situation.push(`Mood: ${mood}`);
   if (weather) situation.push(`Weather: ${weather}`);
   
   // Add characters if present
-  if (charactersPresent.length) {
-    situation.push(`Characters present: ${charactersPresent.join(', ')}`);
-  }
+  if (charactersPresent.length) situation.push(`Characters present:\n${charactersPresent.map(characterId => {
+    const { knownName } = state.characters[characterId];
+    return `  · ${knownName} [ID: ${characterId}]`;
+  }).join('\n')}`);
   
   // Add important objects if any
-  if (importantObjects.length) {
-    // situation.push(`Important objects: ${importantObjects.join(', ')}`);
-    situation.push(`Important objects:\n${importantObjects.map(obj => `  · ${obj}`).join('\n')}`);
-  }
+  if (importantObjects.length) situation.push(`Important objects:\n${importantObjects.map(obj => `  · ${obj}`).join('\n')}`);
   
   // Add key events if any
-  if (keyEvents.length) {
-    situation.push(`Key events:\n${keyEvents.map(event => `  · ${event}`).join('\n')}`);
-  }
+  if (keyEvents.length) situation.push(`Key events:\n${keyEvents.map(event => `  · ${event}`).join('\n')}`);
   
   return situation.map(item => `- ${item}`).join('\n');
 }
@@ -2047,7 +2152,7 @@ CURRENT PAGE:
 ${formatPreviousPageEntry(page, plotFlags.filter(f => f.page === currentPage))}
 
 CURRENT SITUATION:
-${formatCurrentSituationForPrompt(page)}
+${formatCurrentSituationForPrompt(page, state)}
 
 ACTION SELECTION:
 Available choices:
@@ -2061,7 +2166,9 @@ function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): strin
   const { advancedState: state } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes } = state;
   const stateInfo = getStoryStateInfo(state);
-  const { currentPage, phase } = stateInfo;
+  const { currentPage, phase, isFinale } = stateInfo;
+
+  console.log(`[formatNextPageNarrativePrompt] 🥂 isFinale?`, {phase, isFinale});
 
   return `NARRATIVE STYLE & PROSE ATMOSPHERE:
 ${createNarrativeStyle(state).instructions}
@@ -2080,7 +2187,7 @@ ${formatHiddenState(hiddenState, currentPage)}
 ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
 
-FUTURE NOTES:
+FUTURE NOTES (What should happen later?):
 ${formatFutureNotes(futureNotes, currentPage, phase)}
 
 ---
@@ -2336,7 +2443,7 @@ function formatRecentMajorEvents(plotFlags: PlotFlag[]): string {
 
 function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, showPageHeader?: boolean, showMajorFlag?: boolean }): string {
   const { showSceneInfo = true, showPageHeader = true, showMajorFlag = true } = options ?? {};
-  const sceneInfo = showSceneInfo ? `${[flag.place && `place: ${flag.place}`, flag.timeOfDay && `time: ${flag.timeOfDay}`].filter(Boolean).join(', ')}` : '';
+  const sceneInfo = showSceneInfo ? `${[flag.placeId && `place: ${flag.placeId}`, flag.timeOfDay && `time: ${flag.timeOfDay}`].filter(Boolean).join(', ')}` : '';
   const pageHeader = showPageHeader ? `• Page ${flag.page}${sceneInfo ? ` (${sceneInfo})` : ''}: ` : '';
   return `${pageHeader}[${flag.type}] ${flag.fact}${showMajorFlag && flag.isMajorEvent ? ` (MAJOR)` : ''}`;
 }
@@ -2673,7 +2780,7 @@ Main Character (MC):
 Initial Place:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
 - context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
-- locationHint: no other places. Empty string for now.
+- hints: any known clue about the place.
 
 Initial Characters:
 - It's meant for characters beside MC (the POV). Don't include MC here.
@@ -2689,7 +2796,6 @@ Initial Relationships:
 
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
-- charactersPresent: names of side characters in the scene besides MC. Must match names in initialCharacters.
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - importantObjects: objects introduced or used this page that may have future narrative significance.
 
@@ -2708,10 +2814,7 @@ Initial Facts:
 - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
 - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
 - value: current state. Prefer concise value over long sentence (explanation can be added in reason).
-- reason: 1-sentence, why or how it hapenned.
-
-Ending Archetypes:
-${Object.entries(endingTypes).map(([key, value]) => `- ${key}: ${value}`).join('\n')}`;
+- reason: 1-sentence, why or how it hapenned.`;
 
 /**
  * Initializes a complete book with AI-generated content and database persistence
@@ -2884,8 +2987,54 @@ export async function initializeBook(
       bookId = book.id;
     }
 
+    const characters: Record<string, CharacterMemory> = Object.fromEntries<CharacterMemory>(initialCharacters.map<[string, CharacterMemory]>(char => [
+      char.characterId,
+      {
+        ...char,
+        pastInteractions: char.pastInteractions?.map<PastInteraction>(i => ({ page: 1, interaction: i, placeId })) ?? [],
+        narrativeFlags: {
+          ...{
+            isSuspicious: false,
+            isMissing: false,
+            isDead: false,
+            hasSecret: false,
+            potentialTwist: 'none'
+          },
+          ...char.narrativeFlags
+        },
+        introducedAtPage: 1,
+        relationships: initialRelationships.filter(r => r.sourceId === char.characterId).map<CharacterRelationship>(r => {
+          return {
+            ...r,
+            type: r.type || "knows",
+            status: r.status || "neutral",
+            context: r.context,
+            recognitionLevel: r.recognitionLevel,
+          } satisfies Record<keyof CharacterRelationship, string>;
+        }),
+        injuries: char.injuries ?? []
+      } satisfies CharacterMemory
+    ]));
+
+    const placeId = initialPlace.placeId;
+    const places: Record<string, PlaceMemory> = {
+      [placeId]: {
+        ...initialPlace,
+        visitCount: 1,
+        lastVisitedAtPage: 1,
+        keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
+      } satisfies PlaceMemory
+    };
+
     // 5. Persist first page as root page of the book
-    const firstPage = await insertStoryPage(userId, 1, generatedFirstPage, {
+    const pageToInsert: StoryPage = {
+      ...generatedFirstPage,
+      momentum: 'building',
+      charactersPresent: Object.keys(characters),
+      stateDelta: {},
+      placeId,
+    };
+    const firstPage = await insertStoryPage(userId, 1, pageToInsert, {
       bookId,
       branchId: 'main',
       aiResponseProvider: response
@@ -2894,7 +3043,7 @@ export async function initializeBook(
     console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
-    const { place, timeOfDay, actions } = firstUserPage;
+    const { timeOfDay, actions } = firstUserPage;
 
     console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
 
@@ -2903,51 +3052,15 @@ export async function initializeBook(
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
       ...{
         ...generatedInitialState,
-        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, place, timeOfDay })) || [],
-        inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, place })) || [],
-        injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, place })) || [],
+        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, timeOfDay })) || [],
+        inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId })) || [],
+        injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [],
         futureNotes: mapFutureNoteWithKey(generatedInitialState.futureNotes, 1, []),
         viableEnding: generatedInitialState.viableEnding ? { ...generatedInitialState.viableEnding, outline: generatedInitialState.viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
       },
       hiddenState: createInitialHiddenState(),
-      characters: initialCharacters && initialCharacters.length > 0 ? 
-        Object.fromEntries<CharacterMemory>(
-          initialCharacters.map<[string, CharacterMemory]>(char => [
-            char.name,
-            {
-              ...char,
-              pastInteractions: char.pastInteractions?.map<PastInteraction>(i => ({ page: 1, interaction: i, place })) ?? [],
-              narrativeFlags: {
-                ...{
-                  isSuspicious: false,
-                  isMissing: false,
-                  isDead: false,
-                  hasSecret: false,
-                  potentialTwist: 'none'
-                },
-                ...char.narrativeFlags
-              },
-              introducedAtPage: 1,
-              relationships: initialRelationships.filter(r => r.source === char.name).map<CharacterRelationship>(r => {
-                return {
-                  ...r,
-                  type: r.type || "knows",
-                  status: r.status || "neutral",
-                  context: r.context,
-                  recognitionLevel: r.recognitionLevel,
-                } satisfies Record<keyof CharacterRelationship, string>;
-              })
-            } satisfies CharacterMemory
-          ])
-        ) : {},
-      places: initialPlace ? {
-        [initialPlace.name]: {
-          ...initialPlace,
-          visitCount: 1,
-          lastVisitedAtPage: 1,
-          keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
-        } satisfies PlaceMemory
-      } : {},
+      characters,
+      places,
       factsHistory: initialFacts?.length ?
         Object.fromEntries<FactHistory[]>(
           initialFacts.map<[string, FactHistory[]]>(fact => [

@@ -1,4 +1,5 @@
-import type { ActionType, AIActionConfig } from "../types/story.js";
+import type { ActionType, AIActionConfig, SceneType, StoryMomentum, ThreatProximity } from "../types/story.js";
+import type { ThreadPriority } from "../types/story-thread.js";
 
 export const BOOK_MIN_PAGES = 80;
 export const BOOK_MAX_PAGES = 200;
@@ -13,6 +14,7 @@ export const MAX_CHARACTER_SECRETS = 3;
 export const MAX_PLACES = 6;
 export const MAX_ACTIVE_THREADS = 5;
 export const MAX_THREADS_PER_PAGE = 2;
+export const MAX_THREADS_CLUES = 5;
 export const MAX_INVENTORY_ITEM = 5;
 
 export const MIN_ACTION_CHOICES = 1;
@@ -184,99 +186,30 @@ export const FAMILIARITY_EVENT_BONUS = 0.1;
  */
 export const FAMILIARITY_MAX_VISITS = 9;
 
-// ============================================================================
-// PLACE SELECTION CONFIGURATION
-// ============================================================================
+/**
+ * Maximum contribution of visit count to familiarity (0-1).
+ * Reached once visitCount hits FAMILIARITY_MAX_VISITS.
+ */
+export const FAMILIARITY_VISIT_WEIGHT = 0.6;
 
 /**
- * Pages over which recency score decays in place selection
- * 
- * How many pages it takes for recency score to fully decay
- * when selecting places for scenes.
+ * Maximum number of significant events that contribute to familiarity.
+ * Caps the event-significance component at
+ * FAMILIARITY_MAX_SIGNIFICANT_EVENTS * FAMILIARITY_EVENT_BONUS.
  */
-export const PLACE_SELECTION_RECENCY_DECAY = 10;
+export const FAMILIARITY_MAX_SIGNIFICANT_EVENTS = 2;
 
 /**
- * Maximum characters for character connection scoring
- * 
- * How many characters a place needs to have maximum
- * character connection score in place selection.
+ * Keywords used to detect narratively significant past events for
+ * familiarity scoring. Case-insensitive substring matching against
+ * free-text `keyEvents` entries.
  */
-export const PLACE_MAX_CHARACTERS_SCORE = 3;
-
-/**
- * Randomness bonus in place selection scoring
- * 
- * Small random factor to prevent predictable place selection patterns.
- */
-export const PLACE_RANDOMNESS_BONUS = 0.05;
-
-// ============================================================================
-// PLACE SELECTION WEIGHTS
-// ============================================================================
-
-/**
- * Weight for familiarity in place selection (40%)
- */
-export const PLACE_WEIGHT_FAMILIARITY = 0.4;
-
-/**
- * Weight for recency in place selection (20%)
- */
-export const PLACE_WEIGHT_RECENCY = 0.2;
-
-/**
- * Weight for trauma relevance in place selection (30%)
- */
-export const PLACE_WEIGHT_TRAUMA = 0.3;
-
-/**
- * Weight for character connections in place selection (10%)
- */
-export const PLACE_WEIGHT_CHARACTERS = 0.1;
-
-// ============================================================================
-// TRAUMA RELEVANCE SCORES
-// ============================================================================
-
-/**
- * Score for direct event tag matches in trauma relevance
- */
-export const TRAUMA_SCORE_DIRECT_MATCH = 0.5;
-
-/**
- * Score for mood-based trauma relevance matches
- */
-export const TRAUMA_SCORE_MOOD_MATCH = 0.3;
-
-/**
- * Score for location hint-based trauma relevance matches
- */
-export const TRAUMA_SCORE_LOCATION_MATCH = 0.2;
-
-// ============================================================================
-// DIFFICULTY-BASED SELECTION
-// ============================================================================
-
-/**
- * Probability of selecting top place at high difficulty
- */
-export const HIGH_DIFFICULTY_TOP_PLACE_PROBABILITY = 0.7;
-
-/**
- * Probability of creating new place at low difficulty
- */
-export const LOW_DIFFICULTY_NEW_PLACE_PROBABILITY = 0.4;
-
-/**
- * Maximum places for low difficulty random selection
- */
-export const LOW_DIFFICULTY_MAX_PLACES = 8;
-
-/**
- * Weighted selection probabilities for medium difficulty
- */
-export const MEDIUM_DIFFICULTY_WEIGHTS = [0.5, 0.3, 0.2];
+export const SIGNIFICANT_EVENT_KEYWORDS = [
+  'betray', 'death', 'died', 'kill', 'murder',
+  'discover', 'found', 'reveal', 'secret',
+  'trauma', 'attack', 'hurt', 'injur',
+  'meet', 'escape', 'trap', 'ambush',
+];
 
 // ============================================================================
 // AI CONFIGURATION BOUNDS AND LIMITS
@@ -322,90 +255,6 @@ export const MAX_OUTPUT_TOKENS = 4000;
  */
 export const MIN_OUTPUT_TOKENS = 1;
 
-/**
- * Temperature threshold for JSON reliability capping
- */
-export const JSON_RELIABILITY_TEMPERATURE_THRESHOLD = 0.8;
-
-// ============================================================================
-// AI CONFIGURATION FOR ACTION TYPES
-// ============================================================================
-
-/**
- * Neutral adjustment.
- *
- * Used for actions that should not meaningfully affect
- * generation creativity or sampling behavior.
- */
-export const DEFAULT_ACTION_AI_CONFIG: AIActionConfig = {
-  temperature: { adjustment: 0, min: 0.6, max: 0.8 },
-  topP: { adjustment: 0, min: 0.85, max: 0.95 },
-  topK: { adjustment: 0, min: 40, max: 50 }
-};
-
-/**
- * Action-specific sampling adjustments.
- *
- * These provide subtle nudges to generation style.
- *
- * Important:
- * - Action configs should NEVER drastically change model behavior.
- * - Large behavioral changes belong in prompting.
- * - Sampling changes should stay small enough that story tone remains stable.
- * 
- * In most cases, prompt engineering is a more effective mechanism
- * for controlling narrative behavior than sampling.
- *
- * @deprecated Prefer prompt engineering over blunt sampling adjustments.
- */
-export const ACTION_AI_CONFIG: Record<ActionType, AIActionConfig> = {
-  attack: {
-    temperature: { adjustment: 0.02, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.01, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  escape: {
-    temperature: { adjustment: 0.01, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.01, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  risk: {
-    temperature: { adjustment: 0.03, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.02, min: 0.85, max: 0.95 },
-    topK: { adjustment: 3, min: 40, max: 50 }
-  },
-  social: {
-    temperature: { adjustment: 0.04, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.02, min: 0.85, max: 0.95 },
-    topK: { adjustment: 2, min: 40, max: 50 }
-  },
-  deceive: {
-    temperature: { adjustment: 0.02, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.01, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  create: {
-    temperature: { adjustment: 0.05, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.03, min: 0.85, max: 0.95 },
-    topK: { adjustment: 5, min: 40, max: 50 }
-  },
-  explore: {
-    temperature: { adjustment: 0.05, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0.03, min: 0.85, max: 0.95 },
-    topK: { adjustment: 5, min: 40, max: 50 }
-  },
-  protect: {
-    temperature: { adjustment: -0.01, min: 0.6, max: 0.8 },
-    topP: { adjustment: 0, min: 0.85, max: 0.95 },
-    topK: { adjustment: 0, min: 40, max: 50 }
-  },
-  heal: DEFAULT_ACTION_AI_CONFIG,
-  ignore: DEFAULT_ACTION_AI_CONFIG,
-  dialogue: DEFAULT_ACTION_AI_CONFIG,
-  custom: DEFAULT_ACTION_AI_CONFIG,
-  other: DEFAULT_ACTION_AI_CONFIG
-};
-
 // ============================================================================
 // SPECIAL AI CONFIGURATIONS FOR STORY MOMENTS
 // ============================================================================
@@ -430,38 +279,6 @@ export const TWIST_INJECTION_CONFIG: AIActionConfig = {
 };
 
 /**
- * Finale configuration.
- *
- * Applies a small reduction in sampling variance during
- * late-stage resolution scenes.
- *
- * Rationale:
- * - Encourages focus on established narrative threads.
- * - Slightly reduces the likelihood of introducing
- *   unrelated ideas or speculative tangents.
- * - Provides marginally more deterministic wording during
- *   payoff and resolution sequences.
- *
- * Important:
- * - This does not improve memory, callbacks, plot logic,
- *   or narrative consistency by itself.
- * - Story quality, payoff delivery, and ending satisfaction
- *   are primarily driven by prompts, story-state tracking,
- *   and narrative structure.
- *
- * In most cases, prompt engineering is a more effective
- * mechanism for controlling finale behavior than sampling.
- *
- * @deprecated Prefer prompt engineering over phase-based
- * sampling adjustments.
- */
-export const FINALE_CONFIG: AIActionConfig = {
-  temperature: { adjustment: -0.08, min: 0.55, max: 0.7 },
-  topP: { adjustment: -0.04, min: 0.82, max: 0.9 },
-  topK: { adjustment: -5, min: 30, max: 45 }
-};
-
-/**
  * Reliability caps for structured output generation.
  *
  * High sampling values can occasionally reduce JSON reliability.
@@ -475,3 +292,62 @@ export const JSON_RELIABILITY_CAPS = {
   /** Top-k sampling: considers top K most likely tokens */
   maxTopK: 50
 };
+
+export const MOMENTUM_WEIGHTS = {
+  plotPressure:   0.25, // recent major plot flags
+  threadPressure: 0.15, // open mysteries demanding attention
+  dangerLevel:    0.25, // immediate physical/narrative threat
+  urgencyLevel:   0.15, // scene type + thread urgency
+  psychPressure:  0.20, // player's psychological state
+} as const;
+
+export const MOMENTUM_RECENCY_WINDOW = 3; // pages over which a major plot flag's pressure decays
+
+export const THREAT_PROXIMITY_SCORE: Record<ThreatProximity, number> = {
+  immediate: 1.0,
+  near: 0.55,
+  distant: 0.2,
+};
+
+export const THREAD_PRIORITY_WEIGHT: Record<ThreadPriority, number> = {
+  main: 1.0,
+  secondary: 0.6,
+  minor: 0.3,
+};
+
+export const DANGEROUS_ACTIONS: ActionType[] = ['attack', 'escape', 'risk'];
+export const SAFE_ACTIONS: ActionType[] = ['heal', 'protect'];
+
+export const SCENE_TYPE_URGENCY: Record<SceneType, number> = {
+  escape: 1.0,
+  confrontation: 0.9,
+  revelation: 0.8,
+  horror: 0.75,
+  deception: 0.55,
+  dream: 0.5,
+  investigation: 0.45,
+  dialogue: 0.35,
+  aftermath: 0.2,
+  transition: 0.1,
+};
+
+export const DEFAULT_SCENE_URGENCY = 0.4;
+
+// previous-momentum → baseline score, used both for smoothing and
+// for detecting a drop-from-peak ("resolving")
+export const MOMENTUM_BASELINE_SCORE: Record<StoryMomentum, number> = {
+  building: 0.2,
+  rising: 0.5,
+  critical: 0.85,
+  resolution: 0.35,
+};
+
+export const MOMENTUM_THRESHOLDS: { max: number; momentum: StoryMomentum }[] = [
+  { max: 0.35, momentum: 'building' },
+  { max: 0.65, momentum: 'rising' },
+  { max: 1.0, momentum: 'critical' },
+];
+
+export const MOMENTUM_PERSISTENCE = 0.35;     // how much of the previous momentum carries forward
+export const RESOLVING_DROP_THRESHOLD = 0.25; // drop from a peak large enough to read as "winding down"
+export const MAJOR_EVENT_CLIMAX_FLOOR = 0.55; // minimum raw score for a major event to still register as climactic

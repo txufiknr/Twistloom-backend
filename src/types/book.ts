@@ -1,6 +1,6 @@
 import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { NewPlace } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -158,7 +158,7 @@ export type BookCreationResponse = {
   /** Main character's complete info */
   mainCharacter: StoryMC;
   /** First story page content */
-  firstPage: StoryPage;
+  firstPage: InitialStoryPageGeneration;
   /** Initial state for the story */
   initialState: InitialStoryState;
   /** Initial place memory setup */
@@ -320,7 +320,6 @@ export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<
  */
 export type PageTranslation = {
   text: string;
-  place?: string | null;
   timeOfDay?: string | null;
   mood?: string | null;
   weather?: string | null;
