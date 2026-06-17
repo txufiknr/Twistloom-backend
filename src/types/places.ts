@@ -111,8 +111,9 @@ export type PlaceMemory = {
   visitCount?: number;
   /** Last visited by main character */
   lastVisitedAtPage: number;
-  /** Emotional atmosphere of the place on last visit */
+  /** Weather condition of the place on last visit */
   lastWeather?: PlaceWeather;
+  /** Emotional atmosphere of the place on last visit */
   lastMood?: Mood;
   /** The traits of the item (e.g., smell, sound, visual, feeling) */
   traits?: TraitItem[];
@@ -127,6 +128,8 @@ export type PlaceMemory = {
   /** Whether the place's real name known to MC */
   isRealNameKnown?: boolean;
 };
+
+export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context'> & { placeId: string };
 
 /**
  * Place creation structure for AI output

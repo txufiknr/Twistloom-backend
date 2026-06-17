@@ -7,6 +7,7 @@ import type { StoryMC, StoryMCTranslation } from "../types/character.js";
 import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import type { KnownGender } from "../types/user.js";
+import type { PlaceMemoryTranslation } from "../types/places.js";
 
 /**
  * Schema definition for AI validation response
@@ -250,6 +251,16 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   keyEvents: { type: 'array', items: { type: 'string' } },
   importantObjects: { type: 'array', items: { type: 'string' } },
   contextHistory: { type: 'string' },
+  places: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      placeId: { type: 'string' },
+      knownName: { type: 'string' },
+      realName: { type: 'string' },
+    },
+    required: ['placeId', 'knownName', 'realName'] satisfies (keyof PlaceMemoryTranslation)[],
+    additionalProperties: false
+  } },
   actions: { type: 'array', items: {
     type: 'object',
     properties: {

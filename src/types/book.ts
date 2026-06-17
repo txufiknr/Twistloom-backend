@@ -1,5 +1,5 @@
 import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
-import type { NewPlace } from "./places.js";
+import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
 import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
@@ -327,6 +327,7 @@ export type PageTranslation = {
   importantObjects: string[];
   actions: ActionTranslation[];
   contextHistory?: string | null;
+  places?: PlaceMemoryTranslation[];
 };
 
 // export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
@@ -334,7 +335,6 @@ export type PageToTranslate = PersistedStoryPage & { state: StoryState } & { boo
 export type PageTranslationWithID = PageTranslation & { pageId: string };
 export type PageTranslationBulk = { translations: PageTranslationWithID[] };
 export type PageTranslationBulkResponse = PageTranslationBulk & Pick<AIResponse<PageTranslationBulk>, 'provider' | 'model'>;
-
 
 /**
  * Public statistics about the platform, with a creative thriller-themed twist

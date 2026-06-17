@@ -134,6 +134,7 @@ async function translatePagesToIndonesianBulk(dbPages: DBPage[]): Promise<void> 
         keyEvents:        translation.keyEvents,
         importantObjects: translation.importantObjects,
         contextHistory:   translation.contextHistory,
+        places:           translation.places,
         actions:          translation.actions,
         providerType,
         providerName,

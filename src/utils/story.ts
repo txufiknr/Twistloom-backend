@@ -1270,7 +1270,7 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
   
   // 3. Inject Dynamic Traits from Recent Actions
   if (actionsHistory.length > 0) {
-    const recentActions = actionsHistory.slice(-5); // Analyze last 5 actions
+    const recentActions = actionsHistory.slice(-MAX_ACTION_HISTORY); // Analyze last 5 actions
     
     if (recentActions.some(d => d.type === 'escape')) traitSet.add("fearful");
     if (recentActions.some(d => d.type === 'social')) traitSet.add("social");

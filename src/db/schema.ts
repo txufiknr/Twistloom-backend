@@ -8,7 +8,7 @@ import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
-import type { PlaceMemory, PlaceWeather } from "../types/places.js";
+import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread } from "../types/story-thread.js";
 import type { TransactionType } from "../types/credits.js";
@@ -1129,6 +1129,7 @@ export const pageTranslations = pgTable(
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
     importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
     contextHistory: text("context_history"),
+    places: jsonb("places").$type<PlaceMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`), // Place records
     actions: jsonb("actions").$type<ActionTranslation[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
     providerType: text("provider_type").$type<ResourceTranslatorType>(), // AI or translator
     providerName: text("provider_name"), // Provider name

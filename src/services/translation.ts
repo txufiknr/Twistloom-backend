@@ -27,6 +27,7 @@ import { translateTexts } from "../utils/translation.js";
 import type { DBBookTranslations, DBPage, DBPageTranslations } from "../types/schema.js";
 import type { ActionTranslation, PersistedStoryPage, TranslatedStoryPage } from "../types/story.js";
 import type { BookTranslation, PageToTranslate, PageTranslation } from "../types/book.js";
+import type { PlaceMemoryTranslation } from "../types/places.js";
 import { isValidLanguageCode } from "../utils/search.js";
 import { getBook, mapToPersistedStoryPage } from "./book.js";
 import { getStoryStateFromPage } from "./story.js";
@@ -73,19 +74,19 @@ export interface PageTranslationResult {
  * 2. Database cache - Persistent storage for all translations
  * 3. Translation API - LibreTranslate for new translations
  *
- * **Translation Scope:**
+ * Translation Scope:
  * Translates all page content in a single bulk API call for efficiency:
  * - Main page text
- * - Location/place name (if present)
  * - Time of day (if present)
  * - Mood (if present)
  * - Weather (if present)
- * - Context history (if present)
  * - Key events (if present)
  * - Important objects (if present)
  * - Action texts (if present)
+ * - Context history (from state, if present)
+ * - Places (from state, if present)
  *
- * **Error Handling:**
+ * Error Handling:
  * Returns error metadata instead of throwing to allow graceful fallback.
  * The caller can display the original text if translation fails.
  *
@@ -200,21 +201,36 @@ async function translatePageWithLibre({
     batch.push(page.state.contextHistory);
   }
 
+  // Optional places map — translate select fields for each place (knownName, realName, context)
+  // We push three strings per place and remember start indices per place key.
+  let placeIds: string[] = [];
+  let placesStartMap: Record<string, number> | undefined;
+  if (page.state?.places && Object.keys(page.state.places).length) {
+    placeIds = Object.keys(page.state.places);
+    placesStartMap = {};
+    for (const placeKey of placeIds) {
+      const place = page.state.places[placeKey];
+      // Record the start index for this place and push the three fields
+      placesStartMap[placeKey] = batch.length;
+      batch.push(place.knownName ?? '', place.realName ?? '', place.context ?? '');
+    }
+  }
+
   // Optional array fields — push all elements; remember where each starts
   let keyEventsStart: number | undefined;
-  if (page.keyEvents && page.keyEvents.length > 0) {
+  if (page.keyEvents?.length) {
     keyEventsStart = batch.length;
     batch.push(...page.keyEvents);
   }
 
   let importantObjectsStart: number | undefined;
-  if (page.importantObjects && page.importantObjects.length > 0) {
+  if (page.importantObjects?.length) {
     importantObjectsStart = batch.length;
     batch.push(...page.importantObjects);
   }
 
   let actionsStart: number | undefined;
-  if (page.actions && page.actions.length > 0) {
+  if (page.actions?.length) {
     actionsStart = batch.length;
     batch.push(...page.actions.map((a) => a.text));
   }
@@ -250,6 +266,20 @@ async function translatePageWithLibre({
       }))
     : [];
 
+  // ── Map translated places back to PlaceMemoryTranslation array ────
+  const translatedPlaces: PlaceMemoryTranslation[] = [];
+  if (placesStartMap) {
+    for (const placeId of placeIds) {
+      const start = placesStartMap[placeId];
+      translatedPlaces.push({
+        placeId,
+        knownName: translated[start],
+        realName:  translated[start + 1],
+        context:   translated[start + 2],
+      });
+    }
+  }
+
   // ── Persist to database for future cache hits ────────────────────────────────
   const [newTranslation] = await dbWrite
     .insert(pageTranslations)
@@ -257,12 +287,13 @@ async function translatePageWithLibre({
       pageId:           page.id,
       language:         targetLanguage,
       text:             translatedText,
-      timeOfDay:        translatedTimeOfDay,       // DB column: time_of_day
+      timeOfDay:        translatedTimeOfDay,
       mood:             translatedMood,
       weather:          translatedWeather,
       keyEvents:        translatedKeyEvents,
       importantObjects: translatedImportantObjects,
       contextHistory:   translatedContextHistory,
+      places:           translatedPlaces,
       actions:          translatedActions,
       providerType:     'translator',
       providerName:     'libre',
@@ -304,13 +335,14 @@ export function applyPageTranslation(
     ...page,
     text: translation.text,
     // Scalar fields: only override when the translation has a non-null value
-    ...(translation.timeOfDay      != null && { timeOfDay:      translation.timeOfDay }),
-    ...(translation.mood           != null && { mood:           translation.mood }),
-    ...(translation.weather        != null && { weather:        translation.weather }),
-    ...(translation.contextHistory != null && { contextHistory: translation.contextHistory }),
+    ...(translation.timeOfDay      && { timeOfDay:      translation.timeOfDay }),
+    ...(translation.mood           && { mood:           translation.mood }),
+    ...(translation.weather        && { weather:        translation.weather }),
+    ...(translation.contextHistory && { contextHistory: translation.contextHistory }),
+    ...(translation.places         && { places:         translation.places }),
     // Array fields: only override when the translated array is non-empty
-    ...(translation.keyEvents.length        > 0 && { keyEvents:        translation.keyEvents }),
-    ...(translation.importantObjects.length > 0 && { importantObjects: translation.importantObjects }),
+    ...(translation.keyEvents.length        && { keyEvents:        translation.keyEvents }),
+    ...(translation.importantObjects.length && { importantObjects: translation.importantObjects }),
     actions: translatedActions,
   };
 }
@@ -327,6 +359,7 @@ export function mapToPageTranslation(dbPageTranslations: DBPageTranslations): Pa
     importantObjects: dbPageTranslations.importantObjects,
     actions:          dbPageTranslations.actions,
     contextHistory:   dbPageTranslations.contextHistory,
+    places:           dbPageTranslations.places,
   } satisfies Record<keyof PageTranslation, unknown>;
 }
 

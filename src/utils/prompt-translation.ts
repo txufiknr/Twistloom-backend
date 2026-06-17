@@ -232,6 +232,14 @@ const pageTranslationOutputFormat: string = `{
   "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
   "importantObjects": ["translated-object-1", "translated-object-2", "..."],
   "contextHistory": "Translated context history",
+  "places": [
+    {
+      "placeId": "place_id",
+      "knownName": "Translated known name",
+      "realName": "Translated real name",
+      "context": "Translated context"
+    },
+  ],
   "actions": [
     {
       "originalText": "Original action text (keep unchanged)",
@@ -251,6 +259,14 @@ const bulkPageTranslationOutputFormat: string = `{
       "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
       "importantObjects": ["translated-object-1", "translated-object-2", "..."],
       "contextHistory": "Translated context history",
+      "places": [
+        {
+          "placeId": "place_id",
+          "knownName": "Translated known name",
+          "realName": "Translated real name",
+          "context": "Translated context"
+        },
+      ],
       "actions": [
         {
           "originalText": "Original action text (keep unchanged)",
@@ -267,6 +283,14 @@ const bulkPageTranslationOutputFormat: string = `{
       "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
       "importantObjects": ["translated-object-1", "translated-object-2", "..."],
       "contextHistory": "Translated context history",
+      "places": [
+        {
+          "placeId": "place_id",
+          "knownName": "Translated known name",
+          "realName": "Translated real name",
+          "context": "Translated context"
+        },
+      ],
       "actions": [
         {
           "originalText": "Original action text (keep unchanged)",
@@ -282,6 +306,7 @@ const bulkPageTranslationOutputFormat: string = `{
  */
 const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk: boolean = false): string => {
   const asteriskInstruction = hasAsterisks ? 'Keep text styling using asterisks (if any).' : '';
+
   return `${isBulk ? `- pageId: Don't change. Should match to its source page.` : ''}
 - text: Translate page narrative. ${asteriskInstruction}
 - timeOfDay: Translate time of day.
@@ -290,6 +315,7 @@ const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk: bo
 - keyEvents: Translate key events. Preserve the sequence and importance.
 - importantObjects: Translate important objects. Keep them relevant to the story.
 - contextHistory: Translate story summary until current page — key plot developments, hard facts, major events.
+- places: Translate place names, type, and contexts.
 - actions: Include both the original text (unchanged) and the translated text.`;
 };
 
