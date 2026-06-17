@@ -1,3 +1,5 @@
+import type { AchievementTier } from "./achievements.js";
+
 export const genders = [
   'male', 'female', 'unknown'
 ] as const;
@@ -107,3 +109,17 @@ export type UserComment = {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export type UserAchievement = {
+  id: string;
+  title: string;
+  description: string;
+  badgeIcon: string;
+  tier: AchievementTier;
+  currentProgress: number;
+  threshold: number;
+  progressPercent: number;
+  isUnlocked: boolean;
+  unlockedAt: Date | null;
+  isNotified: boolean;
+};

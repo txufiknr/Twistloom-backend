@@ -46,7 +46,7 @@ import type { LikeTargetType, User, UserActivityType } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth } from '../middleware/nextauth.js';
-import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs } from "../db/schema.js";
+import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs, userAchievements } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
@@ -58,6 +58,7 @@ import { getEnrichedUserSelect, setReferrerForNewUser } from "../services/user-c
 import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
+import { getUserAchievements } from '../services/achievements.js';
 
 const router: RouterType = Router();
 
@@ -2578,5 +2579,48 @@ router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
   }
 });
 
-export default router;
+/**
+ * GET /api/user/achievements
+ * Returns detailed view of unlocked and locked achievements with progress calculations.
+ */
+router.get('/achievements', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const badges = await getUserAchievements(userId);
 
+    res.json({ success: true, badges });
+  } catch (error) {
+    handleApiError(res, 'Failed to fetch achievements layout', error);
+  }
+});
+
+/**
+ * POST /api/user/achievements/acknowledge
+ * Updates status after frontend triggers notification toast.
+ */
+router.post('/achievements/acknowledge', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { achievementIds } = req.body; // Expects array string: ["gen_50"]
+
+    if (!Array.isArray(achievementIds) || achievementIds.length === 0) {
+      return handleValidationError(res, 'Invalid payload elements');
+    }
+
+    await dbWrite
+      .update(userAchievements)
+      .set({ isNotified: true })
+      .where(
+        and(
+          eq(userAchievements.userId, userId),
+          sql`${userAchievements.achievementId} IN ${achievementIds}`
+        )
+      );
+
+    res.json({ success: true, message: 'Badges flagged as viewed' });
+  } catch (error) {
+    handleApiError(res, 'Failed to clear banner states', error);
+  }
+});
+
+export default router;

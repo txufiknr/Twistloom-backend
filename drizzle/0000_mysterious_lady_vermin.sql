@@ -104,7 +104,13 @@ CREATE TABLE "page_translations" (
 	"key_events" text[] DEFAULT ARRAY[]::text[] NOT NULL,
 	"important_objects" text[] DEFAULT ARRAY[]::text[] NOT NULL,
 	"context_history" text,
+	"characters" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"places" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"inventory" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"injuries" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"threads" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"actions" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"actions_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"provider_type" text,
 	"provider_name" text,
 	"ai_model" text,
@@ -255,6 +261,15 @@ CREATE TABLE "usage" (
 	CONSTRAINT "usage_date_provider_context_pk" PRIMARY KEY("date","provider","context")
 );
 --> statement-breakpoint
+CREATE TABLE "user_achievements" (
+	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+	"user_id" uuid NOT NULL,
+	"achievement_id" text NOT NULL,
+	"unlocked_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"is_notified" boolean DEFAULT false NOT NULL,
+	CONSTRAINT "user_achievement_unique" UNIQUE("user_id","achievement_id")
+);
+--> statement-breakpoint
 CREATE TABLE "user_action_hints" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -328,6 +343,15 @@ CREATE TABLE "user_completed_books" (
 	"branch_id" uuid NOT NULL,
 	"completed_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "user_completed_books_user_book_unique" UNIQUE("user_id","book_id")
+);
+--> statement-breakpoint
+CREATE TABLE "user_counters" (
+	"user_id" uuid PRIMARY KEY NOT NULL,
+	"books_generated" integer DEFAULT 0 NOT NULL,
+	"books_completed" integer DEFAULT 0 NOT NULL,
+	"pages_read" integer DEFAULT 0 NOT NULL,
+	"branches_opened" integer DEFAULT 0 NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "user_favorites" (
@@ -463,6 +487,7 @@ ALTER TABLE "story_states" ADD CONSTRAINT "story_states_book_id_books_id_fk" FOR
 ALTER TABLE "subscription_transactions" ADD CONSTRAINT "subscription_transactions_subscription_id_subscriptions_id_fk" FOREIGN KEY ("subscription_id") REFERENCES "public"."subscriptions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "subscription_transactions" ADD CONSTRAINT "subscription_transactions_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "transactions" ADD CONSTRAINT "transactions_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_achievements" ADD CONSTRAINT "user_achievements_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_action_hints" ADD CONSTRAINT "user_action_hints_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_action_hints" ADD CONSTRAINT "user_action_hints_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_activity_logs" ADD CONSTRAINT "user_activity_logs_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -474,6 +499,7 @@ ALTER TABLE "user_comments" ADD CONSTRAINT "user_comments_page_id_pages_id_fk" F
 ALTER TABLE "user_completed_books" ADD CONSTRAINT "user_completed_books_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_completed_books" ADD CONSTRAINT "user_completed_books_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_completed_books" ADD CONSTRAINT "user_completed_books_page_id_pages_id_fk" FOREIGN KEY ("page_id") REFERENCES "public"."pages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "user_counters" ADD CONSTRAINT "user_counters_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_favorites" ADD CONSTRAINT "user_favorites_user_id_users_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_favorites" ADD CONSTRAINT "user_favorites_book_id_books_id_fk" FOREIGN KEY ("book_id") REFERENCES "public"."books"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_follows" ADD CONSTRAINT "user_follows_follower_id_users_user_id_fk" FOREIGN KEY ("follower_id") REFERENCES "public"."users"("user_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -548,6 +574,7 @@ CREATE INDEX "transactions_user_idx" ON "transactions" USING btree ("user_id");-
 CREATE INDEX "transactions_type_idx" ON "transactions" USING btree ("type");--> statement-breakpoint
 CREATE INDEX "transactions_created_idx" ON "transactions" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "transactions_context_idx" ON "transactions" USING btree ("context");--> statement-breakpoint
+CREATE INDEX "user_achievements_user_idx" ON "user_achievements" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "user_action_hints_user_idx" ON "user_action_hints" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "user_action_hints_page_idx" ON "user_action_hints" USING btree ("page_id");--> statement-breakpoint
 CREATE INDEX "user_action_hints_created_idx" ON "user_action_hints" USING btree ("created_at" DESC NULLS LAST);--> statement-breakpoint

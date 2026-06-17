@@ -1190,6 +1190,44 @@ export const userCheckins = pgTable(
 );
 
 /**
+ * User Counters Table
+ * Maintains atomic, denormalized metrics for active engagement tracking.
+ */
+export const userCounters = pgTable(
+  "user_counters",
+  {
+    userId: userId().primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+    booksGenerated: integer("books_generated").notNull().default(0),
+    booksCompleted: integer("books_completed").notNull().default(0),
+    pagesRead: integer("pages_read").notNull().default(0),
+    branchesOpened: integer("branches_opened").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
+  }
+);
+
+/**
+ * User Achievements Table
+ * Records exactly when a user successfully qualified for a badge.
+ */
+export const userAchievements = pgTable(
+  "user_achievements",
+  {
+    id: id(),
+    userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
+    achievementId: text("achievement_id").notNull(), // Links directly to Registry IDs
+    unlockedAt: timestamp("unlocked_at", { withTimezone: true }).defaultNow().notNull(),
+    /** tracks whether the frontend has flashed the achievement celebration toast to the user */
+    isNotified: boolean("is_notified").notNull().default(false),
+  },
+  (t) => [
+    // Multi-row index optimizing user lookup
+    index("user_achievements_user_idx").on(t.userId),
+    // Structural guard preventing identical double badge entries 
+    unique("user_achievement_unique").on(t.userId, t.achievementId),
+  ]
+);
+
+/**
  * Subscriptions table
  * @summary Track active user subscriptions and their status
  * @example

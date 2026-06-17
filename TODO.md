@@ -10,8 +10,8 @@
 [ ] Routine retry cron buat sequential aja (github action strategy)
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
-
-[ ] README.ms add LLM providers: OpenRouter, Cloudflare Workers AI
+[ ] incrementUserMetric for achievement
+[ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
 [ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [ ] translate action hint
 [ ] db reset & pnpm check
