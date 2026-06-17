@@ -71,14 +71,6 @@ export const MAX_DOMINANT_TRAITS = 3;
  */
 export const MAX_PAST_INTERACTIONS = 5;
 
-// /**
-//  * Maximum number of mood history entries to store per place
-//  * 
-//  * This maintains emotional atmosphere evolution while preventing
-//  * excessive memory usage for place mood tracking.
-//  */
-// export const MAX_PLACE_MOOD_HISTORY = 5;
-
 /**
  * Maximum number of event tags to store per place
  * 

@@ -421,7 +421,6 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 - `MAX_TRAUMA_TAGS`: 5 maximum trauma tags per story
 - `MAX_DOMINANT_TRAITS`: 3 maximum dominant traits per character
 - `MAX_PAST_INTERACTIONS`: 5 maximum past interactions per character
-- `MAX_PLACE_MOOD_HISTORY`: 5 maximum mood history entries per place
 - `MAX_PLACE_EVENTS`: 8 maximum event tags per place
 - `MAX_CHARACTER_PLACES`: 5 maximum character-place relations
 - `MAX_PAGE_HISTORY`: 3 maximum past pages for context

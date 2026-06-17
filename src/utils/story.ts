@@ -1075,31 +1075,33 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
  * Uses multi-factor analysis to determine all state properties dynamically.
  * 
  * PSYCHOLOGICAL PROGRESSION:
- * As pages increase: MC becomes less reliable, perception more distorted, reality less stable
+ * As pages increase: MC becomes less reliable, perception more distorted, reality less stable.
+ * Uses a cascading degradation model (Truth -> Memory -> Reality).
  * 
  * @param state - Current story state to update
  */
-function updateHiddenState(state: StoryState): void {
-  const pageProgress = state.page / state.maxPage;
+export function updateHiddenState(state: StoryState): void {
+  // Safeguard division by zero just in case
+  const pageProgress = state.maxPage > 0 ? (state.page / state.maxPage) : 0; 
   const traumaCount = state.traumaTags.length;
-  const majorEventCount = state.actionsHistory.filter(a => a.type === 'attack' || a.type === 'ignore').length;
+  
+  // Track stressful actions rather than calling them "major events"
+  const stressfulActionCount = state.actionsHistory.filter(
+    a => a.type === 'attack' || a.type === 'ignore' || a.type === 'escape'
+  ).length;
+
+  // Track actual narrative plot milestones
+  const majorPlotEvents = state.plotFlags.filter(f => f.isMajorEvent).length;
 
   // ========================
   // TRUTH LEVEL CALCULATION
   // ========================
   let truthScore = 1.0; // Start at 100% truth
   
-  // Reduce truth based on progress (up to 60% reduction)
-  truthScore -= pageProgress * 0.6;
-  
-  // Reduce truth based on trauma (up to 30% reduction)
-  truthScore -= Math.min(traumaCount * 0.1, 0.3);
-  
-  // Reduce truth based on major events (up to 20% reduction)
-  truthScore -= Math.min(majorEventCount * 0.05, 0.2);
-
-  // Ensure score doesn't go below 0
-  truthScore = Math.max(0, truthScore);
+  truthScore -= pageProgress * 0.5; // Up to 50% reduction from time
+  truthScore -= Math.min(traumaCount * 0.1, 0.25); // Up to 25% from trauma
+  truthScore -= Math.min(majorPlotEvents * 0.05, 0.25); // Up to 25% from major plot reveals
+  truthScore = Math.max(0, truthScore); // Ensure score doesn't go below 0
 
   // Convert score to truth level
   if (truthScore >= 0.7) {
@@ -1111,21 +1113,23 @@ function updateHiddenState(state: StoryState): void {
   }
 
   // ========================
-  // THREAT PROXIMITY CALCULATION
+  // MEMORY INTEGRITY (Calculated before Reality)
   // ========================
-  let threatScore = pageProgress * 0.4; // 40% from progress
-  threatScore += (state.difficulty === 'nightmare' ? 0.3 : 0.2); // 20-30% from difficulty
-  threatScore += Math.min(traumaCount * 0.05, 0.2); // Up to 20% from trauma
-  threatScore += Math.min(majorEventCount * 0.1, 0.3); // Up to 30% from major events
-  threatScore = Math.min(threatScore, 1.0); // Cap at 1.0
+  let memoryScore = 1.0;
+  
+  if (state.hiddenState.truthLevel === 'mostly_false') memoryScore -= 0.3;
+  else if (state.hiddenState.truthLevel === 'partially_true') memoryScore -= 0.15;
+  
+  memoryScore -= Math.min(traumaCount * 0.08, 0.3);
+  memoryScore -= pageProgress * 0.3;
+  memoryScore = Math.max(0, memoryScore);
 
-  // Convert score to threat proximity
-  if (threatScore >= 0.7) {
-    state.hiddenState.threatProximity = "immediate";
-  } else if (threatScore >= 0.4) {
-    state.hiddenState.threatProximity = "near";
+  if (memoryScore <= 0.3) {
+    state.memoryIntegrity = "corrupted";
+  } else if (memoryScore <= 0.6) {
+    state.memoryIntegrity = "fragmented";
   } else {
-    state.hiddenState.threatProximity = "distant";
+    state.memoryIntegrity = "stable";
   }
 
   // ========================
@@ -1133,20 +1137,14 @@ function updateHiddenState(state: StoryState): void {
   // ========================
   let stabilityScore = 1.0;
   
-  // Reduce stability based on truth level
-  if (state.hiddenState.truthLevel === 'mostly_false') stabilityScore -= 0.4;
-  else if (state.hiddenState.truthLevel === 'partially_true') stabilityScore -= 0.2;
-  
-  // Reduce stability based on memory integrity
+  // Reduce stability based on truth level and memory integrity
+  if (state.hiddenState.truthLevel === 'mostly_false') stabilityScore -= 0.3;
   if (state.memoryIntegrity === 'corrupted') stabilityScore -= 0.3;
   else if (state.memoryIntegrity === 'fragmented') stabilityScore -= 0.15;
   
-  // Reduce stability based on major events
-  stabilityScore -= Math.min(majorEventCount * 0.08, 0.25);
-  
-  // Reduce stability based on progress
+  // Reduce stability based on stressful actions
+  stabilityScore -= Math.min(stressfulActionCount * 0.05, 0.2);
   stabilityScore -= pageProgress * 0.2;
-  
   stabilityScore = Math.max(0, stabilityScore);
 
   // Convert score to reality stability
@@ -1159,42 +1157,28 @@ function updateHiddenState(state: StoryState): void {
   }
 
   // ========================
-  // MEMORY INTEGRITY CALCULATION
+  // THREAT PROXIMITY CALCULATION
   // ========================
-  let memoryScore = 1.0;
-  
-  // Reduce memory based on truth level
-  if (state.hiddenState.truthLevel === 'mostly_false') memoryScore -= 0.3;
-  else if (state.hiddenState.truthLevel === 'partially_true') memoryScore -= 0.15;
-  
-  // Reduce memory based on trauma
-  memoryScore -= Math.min(traumaCount * 0.08, 0.4);
-  
-  // Reduce memory based on progress
-  memoryScore -= pageProgress * 0.3;
-  
-  // Reduce memory based on major events
-  memoryScore -= Math.min(majorEventCount * 0.06, 0.2);
-  
-  memoryScore = Math.max(0, memoryScore);
+  let threatScore = pageProgress * 0.4; 
+  threatScore += (state.difficulty === 'nightmare' ? 0.3 : 0.15); 
+  threatScore += Math.min(stressfulActionCount * 0.05, 0.25); 
+  threatScore = Math.min(threatScore, 1.0); 
 
-  // Convert score to memory integrity
-  if (memoryScore <= 0.3) {
-    state.memoryIntegrity = "corrupted";
-  } else if (memoryScore <= 0.6) {
-    state.memoryIntegrity = "fragmented";
+  if (threatScore >= 0.7) {
+    state.hiddenState.threatProximity = "immediate";
+  } else if (threatScore >= 0.4) {
+    state.hiddenState.threatProximity = "near";
   } else {
-    state.memoryIntegrity = "stable";
+    state.hiddenState.threatProximity = "distant";
   }
 
   // ========================
   // DIFFICULTY CALCULATION
   // ========================
-  let difficultyScore = pageProgress * 0.3; // 30% from progress
-  difficultyScore += (1.0 - truthScore) * 0.4; // 40% from truth degradation
-  difficultyScore += traumaCount * 0.05; // 5% per trauma
-  difficultyScore += majorEventCount * 0.03; // 3% per major event
-  difficultyScore = Math.min(difficultyScore, 1.0); // Cap at 1.0
+  let difficultyScore = pageProgress * 0.35; 
+  difficultyScore += (1.0 - truthScore) * 0.4; 
+  difficultyScore += Math.min(traumaCount * 0.05, 0.25); 
+  difficultyScore = Math.min(difficultyScore, 1.0); 
 
   // Convert score to difficulty
   if (difficultyScore >= 0.8) {
@@ -1224,64 +1208,56 @@ function updateHiddenState(state: StoryState): void {
  * ```
  */
 export function derivePsychologicalProfile(state: StoryState): PsychologicalProfile {
-  const { flags, actionsHistory, traumaTags, difficulty } = state;
+  const { flags, actionsHistory, traumaTags, difficulty, hiddenState, memoryIntegrity } = state;
   
   // Determine archetype based on dominant behavioral patterns
   let archetype: Archetype = "the_explorer";
-  let dominantTraits: string[] = [];
   let manipulationAffinity: ManipulationAffinity = "fear";
   
-  // Explorer: High curiosity, low fear
+  // Use a Set to automatically prevent duplicate traits (e.g., "curious", "curious")
+  const traitSet = new Set<string>();
+  
+  // 1. Determine Archetype (Priority Queue)
   if (flags.curiosity === "high" && flags.fear !== "high") {
     archetype = "the_explorer";
-    dominantTraits = ["curious", "investigative"];
     manipulationAffinity = "confusion";
-  }
-  
-  // Paranoid: High fear + low trust
+    traitSet.add("curious").add("investigative");
+  } 
   else if (flags.fear === "high" && flags.trust === "low") {
     archetype = "the_paranoid";
-    dominantTraits = ["fearful", "suspicious", "cautious"];
     manipulationAffinity = "fear";
-  }
-  
-  // Risk Taker: High curiosity + high fear (brave but scared)
+    traitSet.add("fearful").add("suspicious").add("cautious");
+  } 
   else if (flags.curiosity === "high" && flags.fear === "high") {
     archetype = "the_risk_taker";
-    dominantTraits = ["bold", "impulsive", "conflicted"];
     manipulationAffinity = "control_loss";
-  }
-  
-  // Guilty: High guilt + trauma related to past actions
-  else if (flags.guilt === "high" && traumaTags.some(tag => 
-    tag.includes("abandoned") || tag.includes("hurt") || tag.includes("failed"))) {
+    traitSet.add("bold").add("impulsive").add("conflicted");
+  } 
+  else if (flags.guilt === "high" && traumaTags.length > 0) {
+    // Relies on mechanical guilt flag rather than brittle string matching
     archetype = "the_guilty";
-    dominantTraits = ["remorseful", "self-blaming", "haunted"];
     manipulationAffinity = "guilt";
-  }
-  
-  // Avoider: High fear + low curiosity
+    traitSet.add("remorseful").add("self-blaming").add("haunted");
+  } 
   else if (flags.fear === "high" && flags.curiosity === "low") {
     archetype = "the_avoider";
-    dominantTraits = ["cautious", "hesitant", "safety-seeking"];
     manipulationAffinity = "control_loss";
-  }
-  
-  // Denier: Inconsistent patterns + memory issues
-  else if (state.memoryIntegrity !== "stable" && flags.trust === "medium") {
+    traitSet.add("cautious").add("hesitant").add("safety-seeking");
+  } 
+  else if (memoryIntegrity !== "stable" && flags.trust === "medium") {
     archetype = "the_denier";
-    dominantTraits = ["rationalizing", "avoidant", "conflicted"];
     manipulationAffinity = "confusion";
+    traitSet.add("rationalizing").add("avoidant").add("conflicted");
   }
-  
-  // Determine stability based on multiple factors
+
+  // 2. Determine Stability Level
   let stability: StabilityLevel = "stable";
   
   const instabilityFactors = [
     flags.fear === "high",
     flags.guilt === "high", 
-    state.memoryIntegrity === "corrupted",
-    state.hiddenState.realityStability === "broken",
+    memoryIntegrity === "corrupted",
+    hiddenState.realityStability === "broken",
     traumaTags.length >= MAX_TRAUMA_TAGS - 1,
     difficulty === "nightmare"
   ].filter(Boolean).length;
@@ -1292,70 +1268,26 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
     stability = "cracking";
   }
   
-  // Add secondary traits based on recent actions
+  // 3. Inject Dynamic Traits from Recent Actions
   if (actionsHistory.length > 0) {
-    const recentActions = actionsHistory.slice(-MAX_ACTION_HISTORY); // Increased window for better analysis
+    const recentActions = actionsHistory.slice(-5); // Analyze last 5 actions
     
-    // Fear-based behaviors
-    if (recentActions.some(d => d.type === 'escape')) {
-      dominantTraits.push("fearful");
-    }
-    
-    // Social behaviors
-    if (recentActions.some(d => d.type === 'social')) {
-      dominantTraits.push("social");
-    }
-    
-    // Curiosity and investigation
-    if (recentActions.some(d => d.type === 'explore')) {
-      dominantTraits.push("curious");
-    }
-    
-    // Aggressive behaviors
-    if (recentActions.some(d => d.type === 'attack')) {
-      dominantTraits.push("aggressive");
-    }
-    
-    // Leadership behaviors
-    if (recentActions.some(d => d.type === 'protect')) {
-      dominantTraits.push("leader");
-    }
-    
-    // Deceptive behaviors
-    if (recentActions.some(d => d.type === 'deceive')) {
-      dominantTraits.push("deceptive");
-    }
-    
-    // Risk-taking behaviors
-    if (recentActions.some(d => d.type === 'risk')) {
-      dominantTraits.push("risk_taker");
-    }
-    
-    // Passive behaviors
-    if (recentActions.some(d => d.type === 'ignore')) {
-      dominantTraits.push("passive");
-    }
-    
-    // Creative behaviors
-    if (recentActions.some(d => d.type === 'create')) {
-      dominantTraits.push("creative");
-    }
-    
-    // Hopeful behaviors
-    if (recentActions.some(d => d.type === 'heal')) {
-      dominantTraits.push("hopeful");
-    }
+    if (recentActions.some(d => d.type === 'escape')) traitSet.add("fearful");
+    if (recentActions.some(d => d.type === 'social')) traitSet.add("social");
+    if (recentActions.some(d => d.type === 'explore')) traitSet.add("curious");
+    if (recentActions.some(d => d.type === 'attack')) traitSet.add("aggressive");
+    if (recentActions.some(d => d.type === 'protect')) traitSet.add("protective");
+    if (recentActions.some(d => d.type === 'deceive')) traitSet.add("deceptive");
+    if (recentActions.some(d => d.type === 'risk')) traitSet.add("risk_taker");
+    if (recentActions.some(d => d.type === 'heal')) traitSet.add("hopeful");
   }
   
-  // Add difficulty-based traits
-  if (difficulty === "nightmare") {
-    dominantTraits.push("overwhelmed");
-  } else if (difficulty === "high") {
-    dominantTraits.push("stressed");
-  }
+  // 4. Add Difficulty Impacts
+  if (difficulty === "nightmare") traitSet.add("overwhelmed");
+  else if (difficulty === "high") traitSet.add("stressed");
   
-  // Limit traits to most relevant ones
-  dominantTraits = dominantTraits.slice(0, MAX_DOMINANT_TRAITS);
+  // Convert Set back to Array and slice to max (e.g., 5) to keep prompt clean
+  const dominantTraits = Array.from(traitSet).slice(0, MAX_DOMINANT_TRAITS);
   
   return {
     archetype,
