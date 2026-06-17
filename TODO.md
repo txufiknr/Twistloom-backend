@@ -10,37 +10,8 @@
 [ ] Routine retry cron buat sequential aja (github action strategy)
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
-[ ] more LLM SDK: OpenRouter, Cloudflare Workers AI, Hugging Face Serverless Inference API, Together AI
-[ ] consider threadId (instead of by name)
-[x] place `locationHints` jadiin array of string aja
-[x] place `knownCharacters` jadiin array of object aja
-[x] place & inventory `traits` jadiin array of object { "trait": "...", "value": "..." }
-[x] place update add: `removeTraits`
-[x] place update remove: `visitCount`, `familiarity` & `lastVisitedAtPage`
-[x] place calculate `familiarity` using `calculatePlaceFamiliarity`
-[x] place calculate `lastVisitedAtPage`, `visitCount` (compare with previous page's place)
-[x] update place by placeId
-[x] update character by characterId
-[x] Consider place & character key (generate like future note key)
-[x] replace all "real full name" -> character_id
-[x] Previous pages → Plot flags: kosong
-[x] charactersPresent jadiin pake id aja
-[x] Slugify character name nama tengah & belakang 1 huruf aja
-[x] Initialize book firstPage gausah chatactersPresent
-[x] Initialize book chatactersPresent infer dari initialCharacters
-[x] scene harusnya pake placeId
-[x] page table place harusnya placeId
-[x] pageTranslations table take out `place`
-[x] firstpage & nextpage place harusnya placeId
-[x] add thread urgency decay
-[x] place prompt tambah actual name, isRealNameKnown (known name jadi primary)
-[x] implement openrouter & cloudflare
-[x] Future notes key `generateUniqueId` vs `ensureUniqueId` (buat DRY)
-[x] thread_id langsung generate AI aja (karena masuk ke future note `relatedThreadId`)
-[x] env api keys openrouter & cloudflare -> also add on github & vercel
-[x] charactersPresent jadiin SceneCharacter[]
-[x] charactersPresent adain lagi di initial story page generation
-[x] restore rules charactersPresent match with initialCharacters
+
+[ ] README.ms add LLM providers: OpenRouter, Cloudflare Workers AI
 [ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [ ] translate action hint
 [ ] db reset & pnpm check
@@ -76,8 +47,8 @@ types/story.ts
 
 next:
 
-I've updated my codes
-can you continue?
+I've updated my codes to translate more fields (actionsHistory, inventory, injuries, threads)
+can re-check and you continue?
 
 db/schema.ts
 schema/book.ts

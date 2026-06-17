@@ -292,6 +292,7 @@ export function formatPlacesForPrompt(
     if (keyObjects?.length) {
       lines.push('  - Key objects:');
       keyObjects.forEach(item => {
+        // TODO: make DRY (traitEntries)
         const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
         const itemInfo = [item.where, ...traitEntries].filter(Boolean).join(', ');
         lines.push(`    → ${item.amount}x ${item.name}${itemInfo ? ` (${itemInfo})` : ''}`);

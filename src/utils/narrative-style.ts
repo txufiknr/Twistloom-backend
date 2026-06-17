@@ -216,12 +216,12 @@ export function determineNarrativeMode(vector: StyleVector, sanity: number, isEn
  */
 function primaryWeaknessProseHint(weakness: PrimaryWeakness): string {
   switch (weakness) {
-    case 'truth_seeking':    return 'The MC scans everything as if it might be a clue. Write observations with latent significance.';
+    case 'truth_seeking':    return 'MC scans everything as if it might be a clue. Write observations with latent significance.';
     case 'fear_of_loss':     return 'Anchor details in what the MC values. Let those things feel quietly, persistently fragile.';
     case 'need_for_control': return 'Emphasize constraints and what the MC cannot reach, change, or predict.';
-    case 'trust_hunger':     return 'The MC reads too much into others\' behavior. Every tone of voice, every pause, is analyzed.';
+    case 'trust_hunger':     return 'MC reads too much into others\' behavior. Every tone of voice, every pause, is analyzed.';
     case 'guilt':            return 'Filter sensory details through residue of past choices. Familiar things carry weight.';
-    case 'avoidance':        return 'The MC\'s attention drifts away from the most important things. The truth is always slightly off-frame.';
+    case 'avoidance':        return 'MC\'s attention drifts away from the most important things. The truth is always slightly off-frame.';
   }
 }
 

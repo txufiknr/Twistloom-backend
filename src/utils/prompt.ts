@@ -314,7 +314,7 @@ export const RULES_NEXT_PAGE_GENERATION = [
   RULES_STORY_CONSISTENCY, // for next page continuity
   RULES_FUTURE_NOTES, // after future notes exists
   RULES_FALSE_PREVIEW, // after future notes exists
-  ...RULES_FIRST_PAGE_GENERATION
+  RULES_FIRST_PAGE_GENERATION
 ].join('\n\n---\n');
 
 const PROMPT_SYSTEM_FIRST_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n${RULES_FIRST_PAGE_GENERATION}`;

@@ -279,6 +279,7 @@ export function getMainCharacterInfo(params: {
       parts.push(`${item.amount}x`);
       parts.push(item.name);
       
+      // TODO: make DRY (traitEntries)
       const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
       const details = [item.where, ...traitEntries].filter(Boolean);
       

@@ -29,7 +29,7 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 💻 **TypeScript** | 6.0+ | Type safety, modern features, and excellent IDE support |
 | 🧩 **Node.js** | 24+ | Proven runtime with excellent async/await support and large ecosystem |
 | 🌐 **Express.js** | 5.2+ | Mature, lightweight, and extensive middleware ecosystem |
-| 🗄️ **Neon (Postgres)** | 17 | Serverless, auto-scaling, and excellent TypeScript support |
+| 🗄️ **Neon (Postgres)** | 18 | Serverless, auto-scaling, and excellent TypeScript support |
 | 🔧 **Drizzle ORM** | 0.45+ | Type-safe, excellent migrations, and modern query builder |
 | 🚀 **Vercel** | Serverless | Perfect for serverless TypeScript apps with zero-config deployment |
 | 📦 **pnpm** | 10+ | Fast, efficient, and monorepo support |
@@ -400,65 +400,7 @@ This algorithm enables **instantaneous story navigation** and **enterprise-scale
 
 ## 🔧 Configuration
 
-### **Story Settings**
-- `BOOK_MIN_PAGES`: 80 minimum pages per book
-- `BOOK_MAX_PAGES`: 200 maximum pages per book
-- `MIN_CHARS_PER_PAGE`: 200 minimum characters per page
-- `MAX_WORDS_PER_PAGE`: 120 words per page limit
-- `MAX_WORDS_SUMMARIZED_CONTEXT`: 300 words context limit
-- `MAX_CHARACTERS`: 6 active characters limit
-- `MIN_CHARACTER_AGE`: 13 minimum character age
-- `MAX_CHARACTER_AGE`: 25 maximum character age
-- `MAX_PLACES`: 6 maximum places per story
-- `MAX_ACTIVE_THREADS`: 5 maximum active narrative threads
-- `MAX_THREADS_PER_PAGE`: 2 maximum threads per page
-- `MIN_ACTION_CHOICES`: 1 minimum action choices
-- `MAX_ACTION_CHOICES`: 3 maximum action choices
-- `MAX_ACTION_CHOICES_FIRST_PAGE`: 2 maximum choices on first page
-- `MAX_BRANCHING_RETRIES`: 3 maximum branching retry attempts
-- `MAX_BRANCHING_PREGENERATION_DEPTH`: 2 maximum pre-generation depth
-- `MAX_BRANCHING_PREGENERATION_LIMIT`: 3 maximum pre-generated candidates
-- `MAX_TRAUMA_TAGS`: 5 maximum trauma tags per story
-- `MAX_DOMINANT_TRAITS`: 3 maximum dominant traits per character
-- `MAX_PAST_INTERACTIONS`: 5 maximum past interactions per character
-- `MAX_PLACE_EVENTS`: 8 maximum event tags per place
-- `MAX_CHARACTER_PLACES`: 5 maximum character-place relations
-- `MAX_PAGE_HISTORY`: 3 maximum past pages for context
-- `MAX_ACTION_HISTORY`: 5 maximum action history entries
-- `SNAPSHOT_INTERVAL`: 10 pages between snapshots
-
-### **Branch Traversal Settings**
-- `MAX_TRAVERSAL_DEPTH`: Maximum depth for branch exploration (200 pages)
-- `GET_STORY_STATE_CIRCUIT_THRESHOLD`: 3 failures before circuit opens
-- `GET_STORY_STATE_CIRCUIT_TIMEOUT`: 30000ms timeout for state operations
-- `GET_BRANCH_PATH_CIRCUIT_THRESHOLD`: 5 failures before circuit opens
-- `GET_BRANCH_PATH_CIRCUIT_TIMEOUT`: 60000ms timeout for branch operations
-- `GET_PAGE_BY_ID_CIRCUIT_THRESHOLD`: 3 failures before circuit opens
-- `GET_PAGE_BY_ID_CIRCUIT_TIMEOUT`: 30000ms timeout for page operations
-- `GET_BOOK_CIRCUIT_THRESHOLD`: 3 failures before circuit opens
-- `GET_BOOK_CIRCUIT_TIMEOUT`: 30000ms timeout for book operations
-- `BRANCH_PATH_MAX_RETRIES`: 3 maximum retry attempts for branch path
-- `BRANCH_PATH_BASE_DELAY`: 1000ms base delay for branch path retries
-- `SNAPSHOT_SELECTION_MAX_RETRIES`: 2 maximum retry attempts for snapshot selection
-- `SNAPSHOT_SELECTION_BASE_DELAY`: 500ms base delay for snapshot retries
-- `DELTA_APPLICATION_MAX_RETRIES`: 2 maximum retry attempts for delta application
-- `DELTA_APPLICATION_BASE_DELAY`: 200ms base delay for delta retries
-- `RECONSTRUCTION_MAX_RETRIES`: 2 maximum retry attempts for reconstruction
-- `RECONSTRUCTION_BASE_DELAY`: 2000ms base delay for reconstruction retries
-
-### **Candidate Generation Settings**
-- `MAX_GENERATION_DURATION_MS`: 30 minutes maximum generation duration
-- `MAX_GENERATION_PARALLEL_DURATION_MS`: 13 minutes for cron jobs
-- `MAX_PENDING_BOOK_COVER_PER_RUN`: 0 (disabled to reduce cost)
-- `ALLOW_DEEPER_LEVEL_UNTIL_PAGE`: 3 pages allowing deeper pre-generation
-
 ### **AI Configuration**
-- `DEFAULT_MAX_OUTPUT_TOKEN`: 3000 maximum output tokens
-- `NVIDIA_REQUEST_TIMEOUT_MS`: 60000ms NVIDIA API timeout
-- `DEFAULT_TEMPERATURE`: 0.7 default temperature (0.6-0.85 range)
-- `DEFAULT_TOP_P`: 0.9 nucleus sampling parameter
-- `DEFAULT_TOP_K`: 40 top-k sampling parameter
-- `DEFAULT_STOP_SEQUENCES`: Triple newline stop sequences
 - Multi-provider model selection (GitHub, Gemini, Mistral, Cohere, Groq, Cerebras, NVIDIA)
 - Configurable temperature and output limits
 - Rate limiting and caching strategies
