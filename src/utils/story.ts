@@ -77,7 +77,7 @@ export function calculateThreadPressure(threads: StoryThread[], currentPage: num
  * Character contribution is a focus-weighted average across all present
  * characters, so a single high-focus threat reads as more dangerous than
  * several low-focus ones, and a background opposition character doesn't
- * dominate. A `narrativeFlags.isSuspicious` character gets a small boost
+ * dominate. A character who suspicious towards the MC gets a small boost
  * on top of their role score — hidden threat is worse than declared threat.
  */
 export function calculateDangerLevel(state: StoryState, charactersPresent?: SceneCharacter[]): number {
@@ -106,7 +106,7 @@ export function calculateDangerLevel(state: StoryState, charactersPresent?: Scen
 
       // A suspicious character (secret threat) is worse than a declared one —
       // small bump, capped at 1.0 per character
-      const suspicionBoost = memory?.narrativeFlags.isSuspicious ? 0.2 : 0;
+      const suspicionBoost = memory?.relationshipToMC?.status === 'suspicious' ? 0.2 : 0;
       const characterScore = Math.min(1, roleScore + suspicionBoost);
 
       weightedSum += characterScore * sc.sceneFocus;

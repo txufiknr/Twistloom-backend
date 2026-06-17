@@ -474,10 +474,10 @@ const firstBookOutputFormat: string = `{
       "knownName": "Narration Alias",
       "realName": "Real Full Name",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
-      "role": "e.g. 'schoolmate', 'neighbor'",
+      "role": "Role or occupation (e.g. 'schoolmate', 'librarian')",
       "gender": "One of: ${formatOneOf(genders)}",
       "status": "One of: ${formatOneOf(characterStatuses)}",
-      "secrets": "Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).",
+      "secrets": "Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).",
       "relationshipToMC": {
         "type": "One of: ${formatOneOf(relationshipTypes)}",
         "status": "One of: ${formatOneOf(relationshipStatuses)}",
@@ -486,10 +486,6 @@ const firstBookOutputFormat: string = `{
       "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
       "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc).",
       "narrativeFlags": {
-        "isSuspicious": <boolean>,
-        "isMissing": <boolean>,
-        "isDead": <boolean>,
-        "hasSecret": <boolean>,
         "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
       },
       "injuries": [
@@ -669,10 +665,6 @@ const nextPageOutputFormat: string = `{
         },
         "pastInteractions": ["..."],
         "narrativeFlags": {
-          "isSuspicious": <boolean>,
-          "isMissing": <boolean>,
-          "isDead": <boolean>,
-          "hasSecret": <boolean>,
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
         "injuries": []
@@ -696,10 +688,6 @@ const nextPageOutputFormat: string = `{
         },
         "newInteractions": ["..."],
         "narrativeFlags": {
-          "isSuspicious": <boolean>,
-          "isMissing": <boolean>,
-          "isDead": <boolean>,
-          "hasSecret": <boolean>,
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
         "injuries": []
@@ -3112,13 +3100,7 @@ export async function initializeBook(
         ...char,
         pastInteractions: char.pastInteractions?.map<PastInteraction>(i => ({ page: 1, interaction: i, placeId })) ?? [],
         narrativeFlags: {
-          ...{
-            isSuspicious: false,
-            isMissing: false,
-            isDead: false,
-            hasSecret: false,
-            potentialTwist: 'none'
-          },
+          ...{ potentialTwist: 'none' },
           ...char.narrativeFlags
         },
         introducedAtPage: 1,

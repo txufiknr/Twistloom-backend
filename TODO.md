@@ -14,7 +14,7 @@
 [ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
 [ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [ ] translate action hint
-[ ] db reset & pnpm check
+[ ] kayanya `hasSecret`, `isMissing`, `isDead` redundant
 
 [ ] Does very verbose and lengthy system prompt really necessary, worth, and benefits?
 
@@ -148,8 +148,11 @@ future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)
 
 paid infra:
-[ ] beli domain twistloom.com -> buat email dev@twistloom.com
-[ ] migrate semua akun AI pake email dev@twistloom.com -> replace all API keys -> delete old api keys & project
+[ ] rebrand Loore (by TARRA Soft)
+[ ] upgrade vercel hobby -> pro
+[ ] beli domain loore.com -> buat email dev@loore.com
+[ ] migrate semua akun AI pake email dev@loore.com -> replace all API keys -> delete old api keys & project
+[ ] host express backend di always-on server (like Render, Railway, or Fly.io)
 [ ] purchase premium AI chat API keys
 [ ] migrate: GitHub models 8K context -> Official OpenAI 128K context
 [ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.

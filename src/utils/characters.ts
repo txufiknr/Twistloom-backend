@@ -49,7 +49,7 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
 //  *   bio: "Cheerful but secretive",
 //  *   visualDescription: "tall, pale, messy black hair, hollow eyes",
 //  *   status: "trusting",
-//  *   narrativeFlags: { isSuspicious: false, isMissing: false, isDead: false, hasSecret: false, potentialTwist: "none" },
+//  *   narrativeFlags: { potentialTwist: "none" },
 //  *   relationshipToMC: { type: "friend", context: "Childhood best friend, incredibly loyal." }
 //  * });
 //  * ```
@@ -64,10 +64,6 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
 //     pastInteractions: [],
 //     narrativeFlags: {
 //       ...narrativeFlags,
-//       isSuspicious: narrativeFlags.isSuspicious || status === "suspicious",
-//       isMissing: narrativeFlags.isMissing || status === "missing",
-//       isDead: narrativeFlags.isDead || status === "dead",
-//       hasSecret: narrativeFlags.hasSecret || status === "suspicious" || status === "hostile",
 //       potentialTwist: narrativeFlags.potentialTwist || (status === "suspicious" ? "betrayal" : "none")
 //     },
 //     injuries: [],
@@ -89,7 +85,7 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
  * const updated = updateCharacter(existing, {
  *   status: "suspicious",
  *   pastInteractions: [{"page": 6, "interaction": "Refused to explain what she saw"}],
- *   narrativeFlags: { isSuspicious: true }
+ *   narrativeFlags: { potentialTwist: "betrayal" }
  * });
  * ```
  */
@@ -321,53 +317,49 @@ export function getMainCharacterInfo(params: {
 /**
  * Formats characters for prompt injection with comprehensive narrative context
  * 
- * Creates a rich, detailed string representation of characters including narrative flags,
- * twist potential, relationships, and psychological state for inclusion in AI prompts.
+ * Creates a rich, detailed string representation of characters utilizing a clean 
+ * separation of physical state, emotional relationship, and plot mechanics.
  * 
+ * @param mc - Main character profile
  * @param characters - Record of character memories
  * @returns Formatted string for prompt inclusion
  * 
  * @example
  * ```typescript
- * const characterText = formatCharactersForPrompt(book.mc, state);
+ * const characterText = formatCharactersForPrompt(book.mc, state.characters);
  * ```
  * 
  * Output example:
  * · Sarah Chen (MC) - 28 years old, female
- *   Bio: Shy librarian with hidden past and mysterious family connections
- *   Known as: Sarah
+ * Bio: Shy librarian with hidden past and mysterious family connections
+ * Known as: Sarah
  * 
- * · Tom Martinez (friend) - male, healthy, active - [ID: tom_martinez]
+ * · Tom Martinez (friend) - male [trusting] - [ID: tom_martinez]
  *   Real name: "Tom Martinez" (Recognition: full_name_known)
  *   Bio: Former military medic, now works as security guard
  *   Visual description: Tall, muscular build with military haircut and tired eyes
  *   Introduced at page: 5
- *   Relationship to MC: protective friend with secret knowledge
+ *   Relationship to MC: (friend - trusting - full_name_known) protective friend with secret knowledge
  *   Recent interactions:
- *     - Page 12: Helped treat Sarah's arm injury
- *     - Page 8: Warned about basement dangers
- *     - Page 5: Shared military medical training
+ *   - Page 12: Helped treat Sarah's arm injury
+ *   - Page 8: Warned about basement dangers
  *   Relationships:
- *     - Lisa (rival - hostile)
- *     - Sarah (friend - protective)
- *   Narrative flags: has secret, potential twist: knows about Sarah's past
- *   Status: healthy, active
+ *   - lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
+ *   Narrative mechanics: potential twist: none
+ *   Physical state: healthy, active
  * 
- * · Lisa (mentor) - female, suspicious [suspicious, secret] - [ID: lisa_park]
+ * · Lisa (mentor) - female [suspicious, has secret, missing] - [ID: lisa_park]
  *   Real name: "Lisa Park" (Recognition: first_name_known)
  *   Bio: Quiet girl who knows more than she lets on
  *   Visual description: Small frame, dark hair always in ponytail, avoids eye contact
  *   Introduced at page: 5
- *   Relationship to MC: childhood friend with hidden agenda
+ *   Relationship to MC: (mentor - suspicious - first_name_known) childhood friend with hidden agenda
+ *   Secrets (spoiler, don't reveal too early):
+ *   - She knows what happened in the basement 10 years ago
  *   Recent interactions:
- *     - Page 15: First meeting here, seemed nervous
- *     - Page 10: Avoided questions about parents
- *     - Page 3: Shared secret about basement
- *   Relationships:
- *     - Tom (rival - hostile)
- *     - Sarah (mentor - protective)
- *   Narrative flags: missing, potential twist: not actually dead
- *   Status: disappeared
+ *   - Page 15: First meeting here, seemed nervous
+ *   Narrative mechanics: potential twist: identity
+ *   Physical state: disappeared
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
   const mcDetails = [];
@@ -400,27 +392,35 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const useDifferentReference = knownName !== realName;
       const nameUnknown = useDifferentReference && ['never_seen', 'seen', 'alias_known'].includes(recognitionLevel);
 
-      // Basic character information
-      const statusFlags = [];
-      if (narrativeFlags.isSuspicious) statusFlags.push('suspicious');
-      if (narrativeFlags.isMissing) statusFlags.push('missing');
-      if (narrativeFlags.isDead) statusFlags.push('dead');
-      if (narrativeFlags.hasSecret) statusFlags.push('secret');
+      // 1. Resolve Physical Status (SSOT for narrative physical presence)
+      let physicalStatusDisplay = 'healthy, active';
+      if (status === 'dead') physicalStatusDisplay = 'deceased';
+      else if (status === 'missing') physicalStatusDisplay = 'disappeared';
+      else if (status === 'injured' || injuries?.filter(i => i.severity).length) physicalStatusDisplay = 'injured';
+
+      // 2. Resolve Header Tags (Emotional state and quick-glance flags)
+      const headerTags = [];
+      if (relationshipToMC?.status) headerTags.push(relationshipToMC.status); // e.g. "suspicious", "trusting"
+      if (secrets?.length) headerTags.push('has secret');
+      if (status === 'dead' || status === 'missing') headerTags.push(status); // Add extreme physical states to header
+
+      const flagString = headerTags.length ? ` [${headerTags.join(', ')}]` : '';
+      const mainInfo = `· ${knownName} (${role}) - ${gender}${flagString} - [ID: ${id}]`;
       
-      const flagString = statusFlags.length ? ` [${statusFlags.join(', ')}]` : '';
-      const mainInfo = `· ${knownName} (${role}) - ${gender}, ${status}${flagString} - [ID: ${id}]`;
-      const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status, relationshipToMC.recognitionLevel].filter(Boolean).join(' - ');
       const details = [];
       
       // Basic information
-      if (useDifferentReference) details.push(`  Real name: "${name}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
+      if (useDifferentReference) details.push(`  Real name: "${realName}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
       details.push(`  Bio: ${bio}`);
       details.push(`  Visual description: ${visualDescription}`);
-      details.push(`  Introduced at page: ${introducedAtPage || '-'}`);
+      details.push(`  Introduced at page: ${introducedAtPage}`);
+      
+      // Relationship to MC
+      const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status, relationshipToMC.recognitionLevel].filter(Boolean).join(' - ');
       details.push(`  Relationship to MC: ${relationshipToMCStatus ? `(${relationshipToMCStatus}) ` : ''}${relationshipToMC.context}`);
 
       // Character secrets with nested bullets (spoiler for AI, not shown to player)
-      if (secrets.length) {
+      if (secrets?.length) {
         details.push(`  Secrets (spoiler, don't reveal too early):`);
         secrets.forEach((secret) => {
           details.push(`    - ${secret}`);
@@ -428,7 +428,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       }
 
       // Recent interactions with nested bullets
-      if (pastInteractions.length) {
+      if (pastInteractions?.length) {
         const recentInteractions = pastInteractions.sort((a, b) => a.page - b.page).slice(-MAX_PAST_INTERACTIONS);
         details.push(`  Recent interactions:`);
         const interactionsByPage = recentInteractions.reduce<Record<number, string[]>>((acc, interaction) => {
@@ -447,11 +447,11 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       }
       
       // Character relationships with nested bullets
-      if (relationships.length) {
+      if (relationships?.length) {
         details.push(`  Relationships:`);
         relationships.forEach(r => {
-          const relationshipStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
-          details.push(`    - ${r.targetId}: ${relationshipStatus ? `(${relationshipStatus}) ` : ''}${r.context}`);
+          const relStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
+          details.push(`    - ${r.targetId}: ${relStatus ? `(${relStatus}) ` : ''}${r.context}`);
         });
       }
       
@@ -463,43 +463,26 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
           const severityLabel = getInjurySeverityLabel(injury);
           if (injury.description) injuryParts.push(injury.description);
           if (injury.bodyPart) injuryParts.push(`Location: ${injury.bodyPart}`);
-          if (injury.severity) injuryParts.push(`Severity: ${injury.severity}`);
+          if (injury.severity !== undefined) injuryParts.push(`Severity: ${injury.severity}`);
           if (injury.consequences) injuryParts.push(`Consequences (${severityLabel}): ${injury.consequences}`);
-          if (injury.pageAcquired) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
+          if (injury.pageAcquired !== undefined) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
           
           const injuryInfo = injuryParts.length ? ` (${injuryParts.join(', ')})` : '';
           details.push(`    - Injury ${index + 1}${injuryInfo}`);
         });
       }
       
-      // Narrative flags (excluding injuries which are now separate)
+      // Narrative mechanics (Strictly plot planning constraints now)
       const narrativeInfo = [];
-      if (narrativeFlags.isSuspicious) narrativeInfo.push('suspicious');
-      if (narrativeFlags.isMissing) narrativeInfo.push('missing');
-      if (narrativeFlags.isDead) narrativeInfo.push('dead');
-      if (narrativeFlags.hasSecret) narrativeInfo.push('has secret');
-      
-      if (narrativeFlags.potentialTwist && narrativeFlags.potentialTwist !== 'none') {
+      if (narrativeFlags?.potentialTwist && narrativeFlags.potentialTwist !== 'none') {
         narrativeInfo.push(`potential twist: ${narrativeFlags.potentialTwist}`);
       }
-      
       if (narrativeInfo.length) {
-        details.push(`  Narrative flags: ${narrativeInfo.join(', ')}`);
+        details.push(`  Narrative mechanics: ${narrativeInfo.join(', ')}`);
       }
       
-      // Character status details
-      const statusDetails = [];
-      if (status === 'dead') {
-        statusDetails.push('deceased');
-      } else if (status === 'missing') {
-        statusDetails.push('disappeared');
-      } else if (status === 'injured' || injuries?.filter(i => i.severity).length) {
-        statusDetails.push('injured');
-      } else {
-        statusDetails.push('healthy, active');
-      }
-      
-      details.push(`  Status: ${statusDetails.join(', ')}`);
+      // Concluding Physical Status
+      details.push(`  Physical state: ${physicalStatusDisplay}`);
       
       return `${mainInfo}\n${details.join('\n')}`;
     })

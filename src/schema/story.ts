@@ -88,13 +88,9 @@ export const INJURY_SCHEMA: AIJsonProperty = {
 export const CHARACTER_NARRATIVE_FLAGS_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
-    isSuspicious: { type: 'boolean' },
-    isMissing: { type: 'boolean' },
-    isDead: { type: 'boolean' },
-    hasSecret: { type: 'boolean' },
     potentialTwist: { type: 'string', enum: [...potentialTwistTypes] }
   } satisfies Record<keyof NarrativeFlags, AIJsonProperty>,
-  required: ['isSuspicious', 'isMissing', 'isDead', 'hasSecret', 'potentialTwist'] satisfies (keyof NarrativeFlags)[],
+  required: ['potentialTwist'] satisfies (keyof NarrativeFlags)[],
   additionalProperties: false
 };
 

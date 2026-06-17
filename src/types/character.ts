@@ -143,10 +143,10 @@ export type CharacterRecognitionLevel = typeof characterRecognitionLevels[number
  * driving their behavior more than basic demographics.
  */
 export const characterStatuses = [
-  ...relationshipStatuses,
-  "missing",     // Disappeared, absent from story
-  "injured",     // 
-  "dead"         // Deceased, may appear in memories/ghosts
+  "active",      // Present and healthy
+  "injured",     // Sustained an injury (mirrors your injuries array)
+  "missing",     // Disappeared from the current setting
+  "dead"         // Deceased
 ] as const;
 
 /**
@@ -180,16 +180,9 @@ export type PotentialTwistType = typeof potentialTwistTypes[number];
  * They serve as the control layer for character-driven plot developments.
  */
 export type NarrativeFlags = {
-  /** Whether character is hiding something important */
-  isSuspicious: boolean;
-  /** Whether character has disappeared from the story */
-  isMissing: boolean;
-  /** Whether character is deceased */
-  isDead: boolean;
-  /** Whether character holds a secret that could be revealed */
-  hasSecret: boolean;
-  /** Potential twist type for this character */
+  /** Potential twist type planned for this character */
   potentialTwist: PotentialTwistType;
+  // Any other non-status mechanical flags (e.g., isPlotEssential: boolean)
 };
 
 /**
