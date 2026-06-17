@@ -10,6 +10,22 @@
  * - Next.js rewrites proxy /api/backend/* requests, so the browser sends
  *   cookies automatically (same-origin from the browser's perspective)
  *
+ * Cookie Name Alignment:
+ * @auth/express getSession() auto-detects which cookie to look for by
+ * inspecting the request URL scheme:
+ * - HTTP → 'authjs.session-token',
+ * - HTTPS → '__Secure-authjs.session-token'.
+ * 
+ * When Express sits behind a proxy:
+ * that terminates TLS (Next.js rewrite → Express over plain HTTP internally),
+ * it sees HTTP and looks for 'authjs.session-token' — even though the frontend
+ * wrote '__Secure-authjs.session-token' because DEV_USE_SECURE_COOKIES=true
+ * or NODE_ENV=production.
+ *
+ * Fix: explicitly pass cookies.sessionToken.name to getSession(), derived from
+ * the same NODE_ENV / DEV_USE_SECURE_COOKIES env vars the frontend uses. Both
+ * processes share .env, so the names stay in sync automatically.
+ *
  * User Creation Policy:
  * Users are created in the backend database at sign-in time via the
  * dedicated endpoints called from the NextAuth jwt() callback:
@@ -30,6 +46,19 @@ import { handleUnauthorizedError } from '../utils/error.js';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 import { updateSessionMetadata } from '../services/session-manager.js';
 import { getUserIdByEmail, invalidateByEmail } from '../services/user.js';
+import { DEV_USE_SECURE_COOKIES, IS_PRODUCTION } from '../config/env.js';
+
+// ---------------------------------------------------------------------------
+// Cookie name alignment (mirror the logic in the frontend's src/auth.ts)
+//
+// Without this explicit config, @auth/express auto-detects from the request URL
+// scheme and gets it wrong when TLS is terminated at a proxy (Express receives
+// plain HTTP internally even in production / local HTTPS).
+// ---------------------------------------------------------------------------
+const useSecureCookies = IS_PRODUCTION || DEV_USE_SECURE_COOKIES;
+const cookieNamePrefix = useSecureCookies ? '__Secure-authjs' : 'authjs';
+
+const AUTH_COOKIE_NAME = `${cookieNamePrefix}.session-token`;
 
 // ---------------------------------------------------------------------------
 // In-flight request deduplication
@@ -70,8 +99,23 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
   try {
     session = await getSession(req, {
       providers: [], // Backend only verifies; it doesn't handle OAuth flows
-      trustHost: true, // Trust the domain forwarding headers sent by hosting environments (like Vercel, AWS, or Docker) instead of strictly checking the origin domain.
+      trustHost: true, // Trust x-forwarded-* headers set by Vercel, AWS, Docker, etc.
       secret,
+      // Explicit cookie name — prevents auto-detection mismatch when TLS is
+      // terminated at a proxy and Express sees plain HTTP internally.
+      // Value is computed from the same env vars as the frontend (src/auth.ts),
+      // so they always stay in sync.
+      cookies: {
+        sessionToken: {
+          name: AUTH_COOKIE_NAME,
+          options: {
+            httpOnly: true,
+            sameSite: useSecureCookies ? 'none' : 'lax',
+            secure: useSecureCookies,
+            path: '/',
+          },
+        },
+      },
     });
   } catch (error) {
     console.error('[nextauth] ❌ getSession error:', error);
@@ -79,28 +123,44 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
   }
 
   if (!session?.user?.email) {
-    // TODO: I got this 401 when user is just logged in (via Google) in frontend
-    // and just redirected back to reader page (where user did the login)
-    // is it possible that cookie propagation delay also the cause?
-    // but I also have waited for that in frontend (via `isAuthReady`), so what's wrong?
+    // ── Diagnostic logging — three distinct failure modes ──────────────────
+    //
+    //  (a) No cookies at all
+    //      → Cookie header not forwarded by Next.js rewrite / proxy.
+    //        Check next.config.js rewrites and any stripping middleware.
+    //
+    //  (b) Cookie present but wrong name
+    //      → NODE_ENV or DEV_USE_SECURE_COOKIES differs between frontend and
+    //        backend. Both processes must read from the same .env.
+    //
+    //  (c) Correct cookie present but session is still null
+    //      → AUTH_SECRET mismatch between frontend and backend, or the token
+    //        has genuinely expired.
 
-    // GET /api/user?ref=users-api (401)
-    // [verifyNextAuthToken] ✨ No valid session found
-    // [verifyNextAuthToken] 📊 Session object: null
+    const incomingCookieNames = req.headers.cookie
+      ? req.headers.cookie.split(';').map(c => c.trim().split('=')[0])
+      : [];
 
-    // Common causes:
-    // • Cookie has expired (maxAge reached)
-    // • AUTH_SECRET mismatch between frontend and backend
-    // • Cookie was stripped by browser (missing Next.js rewrite)
     console.log('[verifyNextAuthToken] ✨ No valid session found');
-    console.log('[verifyNextAuthToken] 📊 Session object:', JSON.stringify(session, null, 2));
+    console.log(`[verifyNextAuthToken] 🍪 Expected cookie: "${AUTH_COOKIE_NAME}"`);
 
-    // Debug: Log incoming cookies
-    const cookies = req.headers.cookie;
-    if (!cookies) {
-      console.log('[verifyNextAuthToken] ⚠️ No cookies in request headers');
+    if (incomingCookieNames.length === 0) {
+      console.error(
+        '[verifyNextAuthToken] ❌ (a) No cookies in request — ' +
+        'Cookie header not forwarded by Next.js rewrite or upstream proxy.',
+      );
+    } else if (!incomingCookieNames.includes(AUTH_COOKIE_NAME)) {
+      console.error(
+        `[verifyNextAuthToken] ❌ (b) Cookie name mismatch — ` +
+        `request has [${incomingCookieNames.join(', ')}] ` +
+        `but expected "${AUTH_COOKIE_NAME}". ` +
+        `Ensure NODE_ENV and DEV_USE_SECURE_COOKIES are identical on frontend and backend.`,
+      );
     } else {
-      console.log('[verifyNextAuthToken] 🍪 Cookies present:', cookies);
+      console.error(
+        `[verifyNextAuthToken] ❌ (c) Cookie "${AUTH_COOKIE_NAME}" is present but could not be decoded — ` +
+        `check that AUTH_SECRET matches between frontend and backend, or whether the token has expired.`,
+      );
     }
 
     return null;
@@ -170,7 +230,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
  * @param req - Express request object
  * @param res - Express response object
  * @param next - Express next middleware function
- * 
+ *
  * @example
  * router.get('/protected', requireAuth, (req, res) => {
  *   res.json({ userId: req.userId });
@@ -197,7 +257,7 @@ export async function requireAuth(
  * @param req - Express request object
  * @param res - Express response object
  * @param next - Express next middleware function
- * 
+ *
  * @example
  * router.get('/public', optionalAuth, (req, res) => {
  *   if (req.user) {

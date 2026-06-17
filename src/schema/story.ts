@@ -29,10 +29,16 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
 } };
 
 export const INITIAL_INVENTORY_ITEM_PROPERTIES: Record<keyof InitialInventoryItem, AIJsonProperty> = {
-  name:   { type: 'string', description: 'Name of the inventory item' },
-  traits: { type: 'object', description: 'Traits or properties of the item (key-value pairs)' },
+  name: { type: 'string', description: 'Name of the inventory item' },
+  traits: {
+    type: 'array',
+    description: 'Traits or properties of the item',
+    items: buildTraitItemSchema({
+      keyDescription: 'e.g., color, size, material, condition',
+    })
+  },
   amount: { type: 'integer', description: 'Quantity of the item' },
-  where:  { type: 'string', description: 'Where the item is located' },
+  where: { type: 'string', description: 'Where the item is located' },
 };
 
 export const INITIAL_INVENTORY_ITEM_KEYS: (keyof InitialInventoryItem)[] = ['name', 'amount', 'where'];
@@ -98,7 +104,7 @@ export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
     name: { type: 'string' },
     traits: {
       type: 'array',
-      description: 'Any relevant details for the object (key-value pairs)',
+      description: 'Any relevant details for the object',
       items: buildTraitItemSchema({
         keyDescription: 'e.g., color, size, material',
       })
@@ -112,7 +118,7 @@ export const PLACE_KEY_OBJECT_SCHEMA: AIJsonProperty = {
 
 const placeTraitsExample = 'e.g., smell, sound, visual, feeling, dimension, wall color';
 
-function buildTraitItemSchema(params?: {
+export function buildTraitItemSchema(params?: {
   keyDescription?: string,
   valueDescription?: string
   keyEnum?: string[],

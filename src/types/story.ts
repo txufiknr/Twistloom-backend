@@ -1035,6 +1035,12 @@ export type EnrichedStoryPageContext = {
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { placeId: string; name: string; };
 export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; };
 
+export type NarrativeContext = {
+  momentum?: StoryMomentum;
+  sceneType?: SceneType;
+  phase?: StoryPhase;
+};
+
 export type Action = {
   /** Action text (serves as unique identifier) */
   text: string;
@@ -1064,6 +1070,8 @@ export type ActionTranslation = {
   originalText: string;
   /** Translated action text */
   text: string;
+  /** Translated action hint */
+  hint: string;
 };
 
 export type TagItem = string | { key: string };

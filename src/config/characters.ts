@@ -51,7 +51,7 @@ export const CHARACTER_NAMES = {
     'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Aubrey', 'Ellie', 'Ellen', 'Eleanor',
     'Stella', 'Natalie', 'Zoe', 'Leah', 'Hazel', 'Violet', 'Aurora', 'Savannah', 'Liliana',
     'Audrey', 'Brooklyn', 'Bella', 'Claire', 'Skylar', 'Lucy', 'Paisley', 'Everly', 'Ashlee',
-    'Anna', 'Caroline', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya', 'Mindy', 'Lydia',
+    'Anna', 'Caroline', 'Genesis', 'Emilia', 'Kennedy', 'Samantha', 'Maya', 'Mindy', 'Lydia', 'Dia',
     'Kinsley', 'Naomi', 'Aaliyah', 'Elena', 'Sarah', 'Ariana', 'Allison', 'Kara', 'Lux',
     'Mackenzie', 'Adeline', 'Vivian', 'Gianna', 'Sadie', 'Dreamy', 'Xana', 'Kaylee',
     'Gabriella', 'Alice', 'Madelyn', 'Cora', 'Ruby', 'Eva', 'Seraphina', 'Lucien', 'Emina',

@@ -6,7 +6,7 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation } from "../types/story.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -544,11 +544,17 @@ function removeHealedInjuries(injuries: Injury[]): Injury[] {
  * // This advancedState is used as base for generating page 2
  * ```
  */
-export async function advanceStoryState(state: StoryState, actionedPage: Pick<CandidateGenerationPage, 'page' | 'actions' | 'action'>): Promise<StoryState> {
-  // Find the index of selected action to get the letter
+export async function advanceStoryState(state: StoryState, actionedPage: Pick<CandidateGenerationPage, 'page' | 'actions' | 'action' | 'momentum' | 'sceneType'>): Promise<StoryState> {
   const { actions: allActions, action, page } = actionedPage;
+  const { phase } = getStoryStateInfo(state);
+
   const selectedIndex = allActions.findIndex(action => action.text === action.text);
   const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
+  const narrativeContext: NarrativeContext = {
+    momentum: actionedPage.momentum,
+    sceneType: actionedPage.sceneType,
+    phase
+  };
 
   console.log(`[advanceStoryState] ⚡ Advancing story state from page ${page} for selecting: ${selectedLetter}. ${action.text} (type: ${action.type})`);
   const updatedState = structuredClone(state);
@@ -583,10 +589,10 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   updateFlags(updatedState, actionedPage.action);
 
   // Escalate story tension and hidden state
-  updateHiddenState(updatedState);
+  updateHiddenState(updatedState, narrativeContext);
 
   // Update psychological profile based on new state
-  updatePsychologicalProfile(updatedState);
+  updatePsychologicalProfile(updatedState, narrativeContext);
 
   // Update advanced ending systems (profile shifts, fake endings)
   updateAdvancedEndingSystems(updatedState);
@@ -1068,137 +1074,128 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
 }
 
 /**
- * Updates hidden story state based on progression and difficulty
+ * Updates hidden story state based on dynamic momentum, scene context,
+ * and progression.
  * 
  * Escalates threat proximity, reality stability, memory integrity,
- * and difficulty based on page progression and current state.
- * Uses multi-factor analysis to determine all state properties dynamically.
- * 
- * PSYCHOLOGICAL PROGRESSION:
- * As pages increase: MC becomes less reliable, perception more distorted, reality less stable.
- * Uses a cascading degradation model (Truth -> Memory -> Reality).
+ * and difficulty based on current state and momentum. Escapes the "linear death
+ * march" by allowing reality and memory to fluctuate based on immediate
+ * narrative pressure, while still trending downward over time.
  * 
  * @param state - Current story state to update
+ * @param context - The current momentum, scene type, and overarching story phase
  */
-export function updateHiddenState(state: StoryState): void {
-  // Safeguard division by zero just in case
+export function updateHiddenState(state: StoryState, context: NarrativeContext): void {
+  const { momentum = 'building', sceneType = 'transition', phase = 'EARLY' } = context;
+  
   const pageProgress = state.maxPage > 0 ? (state.page / state.maxPage) : 0; 
   const traumaCount = state.traumaTags.length;
-  
-  // Track stressful actions rather than calling them "major events"
   const stressfulActionCount = state.actionsHistory.filter(
     a => a.type === 'attack' || a.type === 'ignore' || a.type === 'escape'
   ).length;
 
-  // Track actual narrative plot milestones
-  const majorPlotEvents = state.plotFlags.filter(f => f.isMajorEvent).length;
+  // 1. Calculate Dynamic Modifiers based on Momentum & Scene
+  let momentumModifier = 0;
+  if (momentum === 'critical') momentumModifier = 0.35;
+  else if (momentum === 'rising') momentumModifier = 0.15;
+  else if (momentum === 'resolution') momentumModifier = -0.20; // Healing effect
+
+  let sceneStress = 0;
+  if (['horror', 'dream', 'escape'].includes(sceneType)) sceneStress = 0.2;
+  else if (['confrontation', 'revelation'].includes(sceneType)) sceneStress = 0.1;
+  else if (['aftermath', 'dialogue', 'transition'].includes(sceneType)) sceneStress = -0.15; // Grounding effect
+
+  const isFinale = phase === 'FINALE';
 
   // ========================
   // TRUTH LEVEL CALCULATION
   // ========================
-  let truthScore = 1.0; // Start at 100% truth
-  
-  truthScore -= pageProgress * 0.5; // Up to 50% reduction from time
-  truthScore -= Math.min(traumaCount * 0.1, 0.25); // Up to 25% from trauma
-  truthScore -= Math.min(majorPlotEvents * 0.05, 0.25); // Up to 25% from major plot reveals
-  truthScore = Math.max(0, truthScore); // Ensure score doesn't go below 0
+  let truthScore = 1.0; 
+  truthScore -= pageProgress * 0.3; // Less reliant on pure time
+  truthScore -= Math.min(traumaCount * 0.08, 0.2); 
+  truthScore -= momentumModifier; 
+  truthScore -= sceneStress;
 
-  // Convert score to truth level
-  if (truthScore >= 0.7) {
-    state.hiddenState.truthLevel = "mostly_true";
-  } else if (truthScore >= 0.4) {
-    state.hiddenState.truthLevel = "partially_true";
-  } else {
-    state.hiddenState.truthLevel = "mostly_false";
-  }
+  if (isFinale) truthScore = Math.min(truthScore, 0.5); // Hard cap in the finale
+  truthScore = Math.max(0, truthScore);
+
+  if (truthScore >= 0.7) state.hiddenState.truthLevel = "mostly_true";
+  else if (truthScore >= 0.4) state.hiddenState.truthLevel = "partially_true";
+  else state.hiddenState.truthLevel = "mostly_false";
 
   // ========================
-  // MEMORY INTEGRITY (Calculated before Reality)
+  // MEMORY INTEGRITY CALCULATION
   // ========================
   let memoryScore = 1.0;
+  if (state.hiddenState.truthLevel === 'mostly_false') memoryScore -= 0.25;
   
-  if (state.hiddenState.truthLevel === 'mostly_false') memoryScore -= 0.3;
-  else if (state.hiddenState.truthLevel === 'partially_true') memoryScore -= 0.15;
+  memoryScore -= Math.min(traumaCount * 0.1, 0.3);
+  memoryScore -= (momentumModifier * 0.8); // High momentum splinters focus
   
-  memoryScore -= Math.min(traumaCount * 0.08, 0.3);
-  memoryScore -= pageProgress * 0.3;
-  memoryScore = Math.max(0, memoryScore);
+  memoryScore = Math.max(0, Math.min(1.0, memoryScore));
 
-  if (memoryScore <= 0.3) {
-    state.memoryIntegrity = "corrupted";
-  } else if (memoryScore <= 0.6) {
-    state.memoryIntegrity = "fragmented";
-  } else {
-    state.memoryIntegrity = "stable";
-  }
+  if (memoryScore <= 0.35) state.memoryIntegrity = "corrupted";
+  else if (memoryScore <= 0.65) state.memoryIntegrity = "fragmented";
+  else state.memoryIntegrity = "stable";
 
   // ========================
   // REALITY STABILITY CALCULATION
   // ========================
   let stabilityScore = 1.0;
+  if (state.hiddenState.truthLevel === 'mostly_false') stabilityScore -= 0.25;
+  if (state.memoryIntegrity === 'corrupted') stabilityScore -= 0.25;
   
-  // Reduce stability based on truth level and memory integrity
-  if (state.hiddenState.truthLevel === 'mostly_false') stabilityScore -= 0.3;
-  if (state.memoryIntegrity === 'corrupted') stabilityScore -= 0.3;
-  else if (state.memoryIntegrity === 'fragmented') stabilityScore -= 0.15;
+  stabilityScore -= Math.min(stressfulActionCount * 0.05, 0.15);
+  stabilityScore -= momentumModifier; // Directly impacts how physical laws hold up
+  stabilityScore -= sceneStress;
   
-  // Reduce stability based on stressful actions
-  stabilityScore -= Math.min(stressfulActionCount * 0.05, 0.2);
-  stabilityScore -= pageProgress * 0.2;
-  stabilityScore = Math.max(0, stabilityScore);
+  if (isFinale) stabilityScore -= 0.3; // The world inherently breaks in the finale
+  stabilityScore = Math.max(0, Math.min(1.0, stabilityScore));
 
-  // Convert score to reality stability
-  if (stabilityScore <= 0.3) {
-    state.hiddenState.realityStability = "broken";
-  } else if (stabilityScore <= 0.6) {
-    state.hiddenState.realityStability = "slipping";
-  } else {
-    state.hiddenState.realityStability = "stable";
-  }
+  if (stabilityScore <= 0.3) state.hiddenState.realityStability = "broken";
+  else if (stabilityScore <= 0.6) state.hiddenState.realityStability = "slipping";
+  else state.hiddenState.realityStability = "stable";
 
   // ========================
   // THREAT PROXIMITY CALCULATION
   // ========================
-  let threatScore = pageProgress * 0.4; 
-  threatScore += (state.difficulty === 'nightmare' ? 0.3 : 0.15); 
-  threatScore += Math.min(stressfulActionCount * 0.05, 0.25); 
-  threatScore = Math.min(threatScore, 1.0); 
+  // Threat is now purely driven by momentum and scene, NOT page count.
+  let threatScore = 0.2; // Base baseline
+  threatScore += momentumModifier * 1.5; // Critical momentum pushes this extremely high
+  if (['escape', 'confrontation', 'horror'].includes(sceneType)) threatScore += 0.3;
+  if (['resolution', 'aftermath'].includes(sceneType)) threatScore -= 0.4;
+  
+  threatScore = Math.max(0, Math.min(1.0, threatScore));
 
-  if (threatScore >= 0.7) {
-    state.hiddenState.threatProximity = "immediate";
-  } else if (threatScore >= 0.4) {
-    state.hiddenState.threatProximity = "near";
-  } else {
-    state.hiddenState.threatProximity = "distant";
-  }
+  if (threatScore >= 0.7) state.hiddenState.threatProximity = "immediate";
+  else if (threatScore >= 0.4) state.hiddenState.threatProximity = "near";
+  else state.hiddenState.threatProximity = "distant";
 
   // ========================
   // DIFFICULTY CALCULATION
   // ========================
-  let difficultyScore = pageProgress * 0.35; 
-  difficultyScore += (1.0 - truthScore) * 0.4; 
-  difficultyScore += Math.min(traumaCount * 0.05, 0.25); 
+  let difficultyScore = pageProgress * 0.2; 
+  difficultyScore += (1.0 - truthScore) * 0.3; 
+  difficultyScore += Math.max(0, momentumModifier); // Difficulty scales up with tension, but doesn't easily scale down
+  difficultyScore += Math.min(traumaCount * 0.05, 0.2); 
+
+  if (isFinale) difficultyScore += 0.3;
   difficultyScore = Math.min(difficultyScore, 1.0); 
 
-  // Convert score to difficulty
-  if (difficultyScore >= 0.8) {
-    state.difficulty = "nightmare";
-  } else if (difficultyScore >= 0.5) {
-    state.difficulty = "high";
-  } else if (difficultyScore >= 0.3) {
-    state.difficulty = "medium";
-  } else {
-    state.difficulty = "low";
-  }
+  if (difficultyScore >= 0.8) state.difficulty = "nightmare";
+  else if (difficultyScore >= 0.5) state.difficulty = "high";
+  else if (difficultyScore >= 0.3) state.difficulty = "medium";
+  else state.difficulty = "low";
 }
 
 /**
- * Derives psychological profile from current story state using deterministic rules
+ * Derives psychological profile from current story state using dynamic scene context
  * 
  * This function analyzes the MC's behavior patterns, flags, and actions to
  * create a structured psychological profile for adaptive narrative manipulation.
  * 
- * @param state - Current story state with flags and actions
+ * @param state - Current story state
+ * @param context - The current momentum, scene type, and overarching story phase
  * @returns Derived psychological profile for the MC
  * 
  * @example
@@ -1207,8 +1204,9 @@ export function updateHiddenState(state: StoryState): void {
  * // Returns: { archetype: "the_paranoid", stability: "cracking", ... }
  * ```
  */
-export function derivePsychologicalProfile(state: StoryState): PsychologicalProfile {
+export function derivePsychologicalProfile(state: StoryState, context: NarrativeContext): PsychologicalProfile {
   const { flags, actionsHistory, traumaTags, difficulty, hiddenState, memoryIntegrity } = state;
+  const { momentum = 'building', sceneType = 'transition', phase = 'EARLY' } = context;
   
   // Determine archetype based on dominant behavioral patterns
   let archetype: Archetype = "the_explorer";
@@ -1217,7 +1215,7 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
   // Use a Set to automatically prevent duplicate traits (e.g., "curious", "curious")
   const traitSet = new Set<string>();
   
-  // 1. Determine Archetype (Priority Queue)
+  // 1. Determine Archetype (Same priority queue logic)
   if (flags.curiosity === "high" && flags.fear !== "high") {
     archetype = "the_explorer";
     manipulationAffinity = "confusion";
@@ -1234,7 +1232,6 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
     traitSet.add("bold").add("impulsive").add("conflicted");
   } 
   else if (flags.guilt === "high" && traumaTags.length > 0) {
-    // Relies on mechanical guilt flag rather than brittle string matching
     archetype = "the_guilty";
     manipulationAffinity = "guilt";
     traitSet.add("remorseful").add("self-blaming").add("haunted");
@@ -1250,27 +1247,32 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
     traitSet.add("rationalizing").add("avoidant").add("conflicted");
   }
 
-  // 2. Determine Stability Level
+  // 2. Determine Stability Level dynamically based on Momentum
   let stability: StabilityLevel = "stable";
   
-  const instabilityFactors = [
-    flags.fear === "high",
-    flags.guilt === "high", 
-    memoryIntegrity === "corrupted",
-    hiddenState.realityStability === "broken",
-    traumaTags.length >= MAX_TRAUMA_TAGS - 1,
-    difficulty === "nightmare"
-  ].filter(Boolean).length;
+  let instabilityScore = 0;
+  if (flags.fear === "high") instabilityScore += 1;
+  if (flags.guilt === "high") instabilityScore += 1;
+  if (memoryIntegrity === "corrupted") instabilityScore += 2;
+  if (hiddenState.realityStability === "broken") instabilityScore += 2;
+  if (traumaTags.length >= 3) instabilityScore += 1;
   
-  if (instabilityFactors >= 4) {
+  // Immediate scene context heavily influences perceived stability
+  if (momentum === 'critical') instabilityScore += 2;
+  else if (momentum === 'resolution') instabilityScore -= 2; // Grounding effect
+  
+  if (sceneType === 'dream' || sceneType === 'horror') instabilityScore += 1;
+  if (phase === 'FINALE') instabilityScore += 2; // Hard to stay sane in the finale
+
+  if (instabilityScore >= 5) {
     stability = "unstable";
-  } else if (instabilityFactors >= 2) {
+  } else if (instabilityScore >= 3) {
     stability = "cracking";
   }
   
   // 3. Inject Dynamic Traits from Recent Actions
   if (actionsHistory.length > 0) {
-    const recentActions = actionsHistory.slice(-MAX_ACTION_HISTORY); // Analyze last 5 actions
+    const recentActions = actionsHistory.slice(-MAX_ACTION_HISTORY);
     
     if (recentActions.some(d => d.type === 'escape')) traitSet.add("fearful");
     if (recentActions.some(d => d.type === 'social')) traitSet.add("social");
@@ -1305,8 +1307,8 @@ export function derivePsychologicalProfile(state: StoryState): PsychologicalProf
  * 
  * @param state - Current story state to update
  */
-export function updatePsychologicalProfile(state: StoryState) {
-  state.psychologicalProfile = derivePsychologicalProfile(state);
+export function updatePsychologicalProfile(state: StoryState, context: NarrativeContext) {
+  state.psychologicalProfile = derivePsychologicalProfile(state, context);
 }
 
 /**

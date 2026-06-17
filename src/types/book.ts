@@ -1,4 +1,4 @@
-import type { NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
+import type { CharacterMemoryTranslation, InjuryTranslation, InventoryItemTranslation, NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
 import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
 import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
@@ -6,6 +6,7 @@ import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
+import type { StoryThreadTranslation } from "./story-thread.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
@@ -319,6 +320,7 @@ export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<
  * Page translation structure for AI generation
  */
 export type PageTranslation = {
+  // page translations
   text: string;
   timeOfDay?: string | null;
   mood?: string | null;
@@ -326,11 +328,16 @@ export type PageTranslation = {
   keyEvents: string[];
   importantObjects: string[];
   actions: ActionTranslation[];
+  // state translations
+  actionsHistory: ActionTranslation[];
   contextHistory?: string | null;
+  characters?: CharacterMemoryTranslation[];
   places?: PlaceMemoryTranslation[];
+  inventory?: InventoryItemTranslation[];
+  injuries?: InjuryTranslation[];
+  threads?: StoryThreadTranslation[];
 };
 
-// export type PageToTranslate = Pick<PersistedStoryPage, 'id' | 'text' | 'place' | 'keyEvents' | 'importantObjects' | 'actions'>;
 export type PageToTranslate = PersistedStoryPage & { state: StoryState } & { book: Book };
 export type PageTranslationWithID = PageTranslation & { pageId: string };
 export type PageTranslationBulk = { translations: PageTranslationWithID[] };

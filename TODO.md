@@ -41,12 +41,51 @@
 [x] charactersPresent jadiin SceneCharacter[]
 [x] charactersPresent adain lagi di initial story page generation
 [x] restore rules charactersPresent match with initialCharacters
-[ ] translate story state (places {name}, inventory {name, where}, actionsHistory {text}, contextHistory)
+[ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
+[ ] translate action hint
 [ ] db reset & pnpm check
 
 [ ] Does very verbose and lengthy system prompt really necessary, worth, and benefits?
 
 https://www.tokengratis.id/
+
+---
+
+about momentum calculation: yes, it's derived from previous AI page generation result, mainly based on updated story state and previous momentum
+you can see my current`calculateStoryMomentum` function implementation and `CalculateStoryMomentumParams` type (from previous types file)
+and yes, it also accounts for previously selected actions (see `calculateDangerLevel` function)
+
+please thoroughly examine and review
+tell me if you have any concerns or suggestions
+
+---
+
+please fully review my updated translation implementation (cron, AI, Libre)
+are they already correct, optimal, efficient, saves token and API calls with smart bulk processing?
+it has incomplete translate implementation for: action.hint, place.type, characters, inventory, actionsHistory
+please work on those cleanly & optimally, and if you spotted any issues or have any concern, suggestions, recommendations, please tell me and elaborate
+finally, please give me fully corrected code files, complete with refined jsdoc and comments
+
+cron/auto-translate-indonesian.ts
+@db/schema.ts
+@schema/book.ts
+@services/translation.ts
+@types/book.ts
+types/story.ts
+@utils/prompt-translation.ts
+
+next:
+
+I've updated my codes
+can you continue?
+
+db/schema.ts
+schema/book.ts
+types/book.ts
+types/character.ts
+types/story-thread.ts
+services/translation.ts
+utils/prompt-translation.ts
 
 ---
 

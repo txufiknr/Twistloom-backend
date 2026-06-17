@@ -1,13 +1,14 @@
 import { difficulties, endingTypes, factTypes, flagLevels, storyMomentums } from "../types/story.js";
-import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA, THREADS_SCHEMA } from "./story.js";
+import { buildTraitItemSchema, FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA, THREADS_SCHEMA } from "./story.js";
 import { BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
-import type { StoryMC, StoryMCTranslation } from "../types/character.js";
+import type { CharacterMemoryTranslation, InjuryTranslation, InventoryItemTranslation, StoryMC, StoryMCTranslation } from "../types/character.js";
 import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import type { KnownGender } from "../types/user.js";
 import type { PlaceMemoryTranslation } from "../types/places.js";
+import type { StoryThreadTranslation, ThreadClueTranslation } from "../types/story-thread.js";
 
 /**
  * Schema definition for AI validation response
@@ -218,7 +219,7 @@ export const BOOK_TRANSLATION_SCHEMA_DEFINITION = {
     type: 'object',
     properties: {
       bio: { type: 'string' },
-    },
+    } satisfies Record<keyof StoryMCTranslation, AIJsonProperty>,
     required: ['bio'] satisfies (keyof StoryMCTranslation)[],
     additionalProperties: false
   }
@@ -250,6 +251,26 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   weather: { type: 'string' },
   keyEvents: { type: 'array', items: { type: 'string' } },
   importantObjects: { type: 'array', items: { type: 'string' } },
+  actions: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      originalText: { type: 'string', description: 'Before translation' },
+      text: { type: 'string' },
+      hint: { type: 'string' },
+    },
+    required: ['originalText', 'text', 'hint'] satisfies (keyof ActionTranslation)[],
+    additionalProperties: false
+  } },
+  actionsHistory: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      originalText: { type: 'string', description: 'Before translation' },
+      text: { type: 'string' },
+      hint: { type: 'string' },
+    },
+    required: ['originalText', 'text', 'hint'] satisfies (keyof ActionTranslation)[],
+    additionalProperties: false
+  } },
   contextHistory: { type: 'string' },
   places: { type: 'array', items: {
     type: 'object',
@@ -257,19 +278,67 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
       placeId: { type: 'string' },
       knownName: { type: 'string' },
       realName: { type: 'string' },
-    },
-    required: ['placeId', 'knownName', 'realName'] satisfies (keyof PlaceMemoryTranslation)[],
+      context: { type: 'string' },
+      type: { type: 'string' },
+    } satisfies Record<keyof PlaceMemoryTranslation, AIJsonProperty>,
+    required: ['placeId', 'knownName', 'realName', 'type'] satisfies (keyof PlaceMemoryTranslation)[],
     additionalProperties: false
   } },
-  actions: { type: 'array', items: {
+  characters: { type: 'array', items: {
     type: 'object',
     properties: {
-      originalText: { type: 'string' },
-      text: { type: 'string' },
-    },
-    required: ['originalText', 'text'] satisfies (keyof ActionTranslation)[],
+      characterId: { type: 'string' },
+      role: { type: 'string' },
+      bio: { type: 'string' },
+    } satisfies Record<keyof CharacterMemoryTranslation, AIJsonProperty>,
+    required: ['characterId', 'role', 'bio'] satisfies (keyof CharacterMemoryTranslation)[],
     additionalProperties: false
-  } }
+  } },
+  inventory: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      originalName: { type: 'string', description: 'Before translation' },
+      name: { type: 'string' },
+      traits: {
+        type: 'array',
+        description: 'Traits or properties of the item',
+        items: buildTraitItemSchema()
+      },
+      where: { type: 'string' },
+    } satisfies Record<keyof InventoryItemTranslation, AIJsonProperty>,
+    required: ['originalName', 'name', 'traits', 'where'] satisfies (keyof InventoryItemTranslation)[],
+    additionalProperties: false
+  } },
+  injuries: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      bodyPart: { type: 'string' },
+      description: { type: 'string' },
+      consequences: { type: 'string' },
+    } satisfies Record<keyof InjuryTranslation, AIJsonProperty>,
+    required: ['bodyPart', 'description', 'consequences'] satisfies (keyof InjuryTranslation)[],
+    additionalProperties: false
+  } },
+  threads: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      threadId: { type: 'string' },
+      title: { type: 'string' },
+      question: { type: 'string' },
+      summary: { type: 'string' },
+      clues: { type: 'array', items: {
+        type: 'object',
+        properties: {
+          originalClue: { type: 'string', description: 'Before translation' },
+          clue: { type: 'string' },
+        } satisfies Record<keyof ThreadClueTranslation, AIJsonProperty>,
+        required: ['originalClue', 'clue'] satisfies (keyof ThreadClueTranslation)[],
+        additionalProperties: false
+      } },
+    } satisfies Record<keyof StoryThreadTranslation, AIJsonProperty>,
+    required: ['threadId', 'title', 'question', 'summary', 'clues'] satisfies (keyof StoryThreadTranslation)[],
+    additionalProperties: false
+  } },
 } satisfies Record<keyof PageTranslation, AIJsonProperty>;
 
 export const PAGE_TRANSLATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof PageTranslation>;

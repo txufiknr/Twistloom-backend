@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
-import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
+import type { CharacterMemoryTranslation, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -10,7 +10,7 @@ import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryInteg
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
-import type { StoryThread } from "../types/story-thread.js";
+import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import type { ResourceAIProvider, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
@@ -1129,8 +1129,13 @@ export const pageTranslations = pgTable(
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
     importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
     contextHistory: text("context_history"),
-    places: jsonb("places").$type<PlaceMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`), // Place records
-    actions: jsonb("actions").$type<ActionTranslation[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions
+    characters: jsonb("characters").$type<CharacterMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`),
+    places: jsonb("places").$type<PlaceMemoryTranslation[]>().notNull().default(sql`'[]'::jsonb`),
+    inventory: jsonb("inventory").$type<InventoryItemTranslation[]>().notNull().default(sql`'[]'::jsonb`),
+    injuries: jsonb("injuries").$type<InjuryTranslation[]>().notNull().default(sql`'[]'::jsonb`),
+    threads: jsonb("threads").$type<StoryThreadTranslation[]>().notNull().default(sql`'[]'::jsonb`),
+    actions: jsonb("actions").$type<ActionTranslation[]>().notNull().default(sql`'[]'::jsonb`),
+    actionsHistory: jsonb("actions_history").$type<ActionTranslation[]>().notNull().default(sql`'[]'::jsonb`),
     providerType: text("provider_type").$type<ResourceTranslatorType>(), // AI or translator
     providerName: text("provider_name"), // Provider name
     aiModel: text("ai_model"), // AI model name

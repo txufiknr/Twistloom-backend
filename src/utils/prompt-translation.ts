@@ -229,21 +229,61 @@ const pageTranslationOutputFormat: string = `{
   "timeOfDay": "Translated time of day",
   "mood": "Translated mood",
   "weather": "Translated weather",
-  "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
-  "importantObjects": ["translated-object-1", "translated-object-2", "..."],
+  "keyEvents": ["Translated key event 1", "Translated key event 2"],
+  "importantObjects": ["translated-object-1", "translated-object-2"],
   "contextHistory": "Translated context history",
   "places": [
     {
-      "placeId": "place_id",
+      "placeId": "place_id_1",
       "knownName": "Translated known name",
       "realName": "Translated real name",
-      "context": "Translated context"
-    },
+      "context": "Translated short description of place",
+      "type": "house"
+    }
+  ],
+  "characters": [
+    {
+      "characterId": "character_id_1",
+      "role": "Translated role/occupation",
+      "bio": "Translated one-sentence bio"
+    }
+  ],
+  "inventory": [
+    {
+      "originalName": "rusty key",
+      "name": "Translated rusty key",
+      "traits": [ { "key": "material", "value": "iron" }, { "key": "state", "value": "rusty" } ],
+      "where": "Translated location (e.g. in the drawer)"
+    }
+  ],
+  "injuries": [
+    {
+      "bodyPart": "hand",
+      "description": "Translated short injury description",
+      "consequences": "Translated consequences (e.g. cannot grip)"
+    }
+  ],
+  "threads": [
+    {
+      "threadId": "thread_id_1",
+      "title": "Translated thread title",
+      "question": "Translated investigative question",
+      "summary": "Translated short summary",
+      "clues": [ { "originalClue": "blood on the floor", "clue": "Translated clue text" } ]
+    }
   ],
   "actions": [
     {
       "originalText": "Original action text (keep unchanged)",
-      "text": "Translated action text"
+      "text": "Translated action text",
+      "hint": "Translated hint text"
+    }
+  ],
+  "actionsHistory": [
+    {
+      "originalText": "Look under the bed",
+      "text": "Translated historical action text",
+      "hint": "Translated hint for the historical action"
     }
   ]
 }`;
@@ -256,45 +296,61 @@ const bulkPageTranslationOutputFormat: string = `{
       "timeOfDay": "Translated time of day",
       "mood": "Translated mood",
       "weather": "Translated weather",
-      "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
-      "importantObjects": ["translated-object-1", "translated-object-2", "..."],
+      "keyEvents": ["Translated key event 1", "Translated key event 2"],
+      "importantObjects": ["translated-object-1", "translated-object-2"],
       "contextHistory": "Translated context history",
       "places": [
         {
-          "placeId": "place_id",
+          "placeId": "place_id_1",
           "knownName": "Translated known name",
           "realName": "Translated real name",
-          "context": "Translated context"
-        },
-      ],
-      "actions": [
-        {
-          "originalText": "Original action text (keep unchanged)",
-          "text": "Translated action text"
+          "context": "Translated short description",
+          "type": "house"
         }
-      ]
-    },
-    {
-      "pageId": "page-uuid-2",
-      "text": "Translated page text",
-      "timeOfDay": "Translated time of day",
-      "mood": "Translated mood",
-      "weather": "Translated weather",
-      "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
-      "importantObjects": ["translated-object-1", "translated-object-2", "..."],
-      "contextHistory": "Translated context history",
-      "places": [
+      ],
+      "characters": [
         {
-          "placeId": "place_id",
-          "knownName": "Translated known name",
-          "realName": "Translated real name",
-          "context": "Translated context"
-        },
+          "characterId": "character_id_1",
+          "role": "Translated role",
+          "bio": "Translated bio"
+        }
+      ],
+      "inventory": [
+        {
+          "originalName": "rusty key",
+          "name": "Translated rusty key",
+          "traits": [ { "key": "material", "value": "iron" } ],
+          "where": "Translated location"
+        }
+      ],
+      "injuries": [
+        {
+          "bodyPart": "hand",
+          "description": "Translated injury description",
+          "consequences": "Translated consequences"
+        }
+      ],
+      "threads": [
+        {
+          "threadId": "thread_id_1",
+          "title": "Translated title",
+          "question": "Translated question",
+          "summary": "Translated summary",
+          "clues": [ { "originalClue": "old note", "clue": "Translated clue" } ]
+        }
       ],
       "actions": [
         {
-          "originalText": "Original action text (keep unchanged)",
-          "text": "Translated action text"
+          "originalText": "Open the door",
+          "text": "Translated action text",
+          "hint": "Translated hint"
+        }
+      ],
+      "actionsHistory": [
+        {
+          "originalText": "Look under the bed",
+          "text": "Translated historical action text",
+          "hint": "Translated hint for historical action"
         }
       ]
     }
@@ -315,8 +371,14 @@ const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk: bo
 - keyEvents: Translate key events. Preserve the sequence and importance.
 - importantObjects: Translate important objects. Keep them relevant to the story.
 - contextHistory: Translate story summary until current page — key plot developments, hard facts, major events.
-- places: Translate place names, type, and contexts.
-- actions: Include both the original text (unchanged) and the translated text.`;
+- places: For each place object translate 'placeId'-identified fields: 'knownName', 'realName', and 'context'. Keep 'placeId' and 'type' unchanged unless the source 'type' is a free-text that requires naturalization.
+- characters: For each character preserve 'characterId' and translate 'role' and 'bio'. Do not invent new characters or change identities.
+- inventory: Translate 'name' and 'where'. Preserve 'originalName'. Translate trait values but keep trait keys identical.
+- injuries: Translate 'bodyPart', 'description', and 'consequences'. Preserve meaning and severity implications.
+- threads: Translate 'title', 'question', and 'summary'. For 'clues' provide 'originalClue' unchanged and 'clue' translated.
+- actions: Include both the 'originalText' (unchanged) and the translated 'text'. Also translate 'hint' but keep intent identical.
+- actionsHistory: Translate historical actions similarly (preserve 'originalText', provide 'text' and 'hint').
+- Formatting rules: Preserve paragraph breaks, dialogue formatting, and emphasis markers (asterisks) when present. Do not add, remove or alter facts, names, or plot-critical details.`;
 };
 
 /**
@@ -369,13 +431,13 @@ export async function translatePage(
   const translatedActions = response.result.actions || [];
   
   // Map translated actions back to original actions by matching text
+  // TODO: make these DRY (finalActions)
   const finalActions: ActionTranslation[] = originalActions.map(originalAction => {
-    const translatedAction = translatedActions.find(
-      ta => ta.originalText === originalAction.text
-    );
+    const translatedAction = translatedActions.find(ta => ta.originalText === originalAction.text);
     return {
       originalText: originalAction.text,
       text: translatedAction?.text || originalAction.text,
+      hint: translatedAction?.hint || originalAction.hint.text,
     };
   });
 
@@ -444,13 +506,13 @@ export async function translatePagesBulk(
     const translatedActions = translation.actions || [];
     
     // Map translated actions back to original actions by matching text
+    // TODO: make these DRY (finalActions)
     const finalActions: ActionTranslation[] = originalActions.map(originalAction => {
-      const translatedAction = translatedActions.find(
-        ta => ta.originalText === originalAction.text
-      );
+      const translatedAction = translatedActions.find(ta => ta.originalText === originalAction.text);
       return {
         originalText: originalAction.text,
         text: translatedAction?.text || originalAction.text,
+        hint: translatedAction?.text || originalAction.hint.text,
       };
     });
 

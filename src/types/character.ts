@@ -233,6 +233,8 @@ export type CharacterMemory = {
   recognitionLevel: CharacterRecognitionLevel;
 };
 
+export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio'> & { characterId: string };
+
 export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & {
   characterId: string;
   pastInteractions?: string[];
@@ -280,6 +282,8 @@ export type InventoryItem = {
   placeId?: string;
 }
 
+export type InventoryItemTranslation = Pick<InventoryItem, 'name' | 'traits' | 'where'> & { originalName: string };
+
 export type InitialInventoryItem = Omit<InventoryItem, 'pageAcquired' | 'placeId'>;
 
 /** Represents an injury sustained by a character */
@@ -299,6 +303,8 @@ export type Injury = {
   /** Place ID where the injury acquired (optional). */
   placeId?: string;
 };
+
+export type InjuryTranslation = Pick<Injury, 'bodyPart' | 'description' | 'consequences'>;
 
 export type InitialInjury = Omit<Injury, 'pageAcquired' | 'placeId'>;
 

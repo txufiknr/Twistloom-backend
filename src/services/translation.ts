@@ -28,6 +28,9 @@ import type { DBBookTranslations, DBPage, DBPageTranslations } from "../types/sc
 import type { ActionTranslation, PersistedStoryPage, TranslatedStoryPage } from "../types/story.js";
 import type { BookTranslation, PageToTranslate, PageTranslation } from "../types/book.js";
 import type { PlaceMemoryTranslation } from "../types/places.js";
+import type { CharacterMemoryTranslation, InventoryItemTranslation, InjuryTranslation } from "../types/character.js";
+import type { TraitItem } from "../types/story.js";
+import type { StoryThreadTranslation, ThreadClueTranslation } from "../types/story-thread.js";
 import { isValidLanguageCode } from "../utils/search.js";
 import { getBook, mapToPersistedStoryPage } from "./book.js";
 import { getStoryStateFromPage } from "./story.js";
@@ -157,14 +160,19 @@ export async function getPageTranslation({
  *
  * Fields Translated:
  * · text
- * · place
  * · timeOfDay
  * · mood
  * · weather
+ * · keyEvents
+ * · importantObjects
+ * · actions (text, hint)
+ * · actionsHistory (text, hint)
  * · contextHistory
- * · keyEvents[]
- * · importantObjects[]
- * · actions[].text
+ * · places (knownName, realName, type, context)
+ * · characters (knownName, realName, role, bio)
+ * · inventory (name, where, traits)
+ * · injuries (bodyPart, description, consequences)
+ * · threads (title, question, summary, clues)
  */
 async function translatePageWithLibre({
   page,
@@ -229,10 +237,70 @@ async function translatePageWithLibre({
     batch.push(...page.importantObjects);
   }
 
+  // Optional: characters (Record<string, CharacterMemory>) — translate role + bio per character
+  let characterIds: string[] = [];
+  let charactersStartMap: Record<string, number> | undefined;
+  if (page.state?.characters && Object.keys(page.state.characters).length) {
+    characterIds = Object.keys(page.state.characters);
+    charactersStartMap = {};
+    for (const cid of characterIds) {
+      const ch = page.state.characters[cid];
+      charactersStartMap[cid] = batch.length;
+      batch.push(ch.role ?? '', ch.bio ?? '');
+    }
+  }
+
+  // Optional: inventory — translate name, where, plus trait values (preserve trait keys)
+  let inventoryStartMap: Record<number, { start: number; traitKeys: string[]; traitCount: number }> | undefined;
+  let inventoryCount = 0;
+  if (page.state?.inventory && page.state.inventory.length) {
+    inventoryStartMap = {};
+    for (let i = 0; i < page.state.inventory.length; i++) {
+      const item = page.state.inventory[i];
+      const traitKeys: string[] = (item.traits ?? []).map((t) => t.key);
+      inventoryStartMap[i] = { start: batch.length, traitKeys, traitCount: (item.traits ?? []).length };
+      batch.push(item.name ?? '', item.where ?? '');
+      // push trait values
+      for (const t of (item.traits ?? [])) batch.push(t.value ?? '');
+      inventoryCount++;
+    }
+  }
+
+  // Optional: injuries — translate bodyPart, description, consequences per injury
+  let injuriesStart: number | undefined;
+  if (page.state?.injuries && page.state.injuries.length) {
+    injuriesStart = batch.length;
+    for (const inj of page.state.injuries) {
+      batch.push(inj.bodyPart ?? '', inj.description ?? '', inj.consequences ?? '');
+    }
+  }
+
+  // Optional: threads — translate title, question, summary, plus clues
+  let threadIds: string[] = [];
+  let threadsStartMap: Record<string, { start: number; clueCount: number }> | undefined;
+  if (page.state?.threads && page.state.threads.length) {
+    threadIds = page.state.threads.map((t) => t.threadId);
+    threadsStartMap = {};
+    for (const th of page.state.threads) {
+      threadsStartMap[th.threadId] = { start: batch.length, clueCount: (th.clues ?? []).length };
+      batch.push(th.title ?? '', th.question ?? '', th.summary ?? '');
+      for (const clue of (th.clues ?? [])) batch.push(clue.clue ?? '');
+    }
+  }
+
+  // Optional: actions history (SelectedAction[]) — translate text + hint per history item
+  let actionsHistoryStart: number | undefined;
+  if (page.state?.actionsHistory && page.state.actionsHistory.length) {
+    actionsHistoryStart = batch.length;
+    for (const sa of page.state.actionsHistory) {
+      batch.push(sa.text ?? '', sa.hint?.text ?? '');
+    }
+  }
+
   let actionsStart: number | undefined;
   if (page.actions?.length) {
     actionsStart = batch.length;
-    batch.push(...page.actions.map((a) => a.text));
+    for (const a of page.actions) batch.push(a.text ?? '', a.hint?.text ?? '');
   }
 
   // ── Single API call for the whole page ───────────────────────────────────────
@@ -262,23 +330,104 @@ async function translatePageWithLibre({
   const translatedActions: ActionTranslation[] = actionsStart !== undefined
     ? page.actions!.map((action, i) => ({
         originalText: action.text,
-        text: translated[actionsStart! + i],
+        text: translated[actionsStart! + i * 2],
+        hint: translated[actionsStart! + i * 2 + 1],
       }))
     : [];
 
-  // ── Map translated places back to PlaceMemoryTranslation array ────
+  // ── Map translated places back to PlaceMemoryTranslation array ─────────
   const translatedPlaces: PlaceMemoryTranslation[] = [];
   if (placesStartMap) {
     for (const placeId of placeIds) {
       const start = placesStartMap[placeId];
+      const originalPlace = page.state.places[placeId];
       translatedPlaces.push({
         placeId,
         knownName: translated[start],
         realName:  translated[start + 1],
         context:   translated[start + 2],
+        type: originalPlace?.type,
       });
     }
   }
+
+  // ── Map translated characters ────────────────────────────────────────
+  const translatedCharacters: CharacterMemoryTranslation[] = [];
+  if (charactersStartMap) {
+    for (const cid of characterIds) {
+      const start = charactersStartMap[cid];
+      translatedCharacters.push({
+        characterId: cid,
+        role: translated[start],
+        bio:  translated[start + 1],
+      });
+    }
+  }
+
+  // ── Map translated inventory ─────────────────────────────────────────
+  const translatedInventory: InventoryItemTranslation[] = [];
+  if (inventoryStartMap) {
+    for (let i = 0; i < inventoryCount; i++) {
+      const meta = inventoryStartMap[i];
+      const start = meta.start;
+      const name = translated[start];
+      const where = translated[start + 1];
+      const traits: TraitItem[] = [];
+      for (let t = 0; t < meta.traitCount; t++) {
+        const translatedValue = translated[start + 2 + t];
+        traits.push({ key: meta.traitKeys[t], value: translatedValue });
+      }
+      translatedInventory.push({ originalName: page.state.inventory[i].name, name, where, traits });
+    }
+  }
+
+  // ── Map translated injuries ─────────────────────────────────────────
+  const translatedInjuries: InjuryTranslation[] = [];
+  if (injuriesStart !== undefined) {
+    for (let i = 0; i < page.state.injuries.length; i++) {
+      const start = injuriesStart + i * 3;
+      translatedInjuries.push({
+        bodyPart: translated[start],
+        description: translated[start + 1],
+        consequences: translated[start + 2],
+      });
+    }
+  }
+
+  // ── Map translated threads ──────────────────────────────────────────
+  const translatedThreads: StoryThreadTranslation[] = [];
+  if (threadsStartMap) {
+    for (const tid of threadIds) {
+      const meta = threadsStartMap[tid];
+      const tstart = meta.start;
+      const title = translated[tstart];
+      const question = translated[tstart + 1];
+      const summary = translated[tstart + 2];
+      const clues: ThreadClueTranslation[] = [];
+      for (let c = 0; c < meta.clueCount; c++) {
+        const original = page.state.threads.find((th) => th.threadId === tid)!.clues[c].clue;
+        const translatedClue = translated[tstart + 3 + c];
+        clues.push({ originalClue: original, clue: translatedClue });
+      }
+      translatedThreads.push({ threadId: tid, title, question, summary, clues });
+    }
+  }
+
+  // ── Map translated actionsHistory ───────────────────────────────────
+  const translatedActionsHistory: ActionTranslation[] = [];
+  if (actionsHistoryStart !== undefined) {
+    for (let i = 0; i < page.state.actionsHistory.length; i++) {
+      const start = actionsHistoryStart + i * 2;
+      const orig = page.state.actionsHistory[i];
+      translatedActionsHistory.push({ originalText: orig.text, text: translated[start], hint: translated[start + 1] });
+    }
+  }
+
+  // TODO: also translate characters
+  // TODO: also translate inventory (name, where, traits)
+  // TODO: also translate injuries (bodyPart, description, consequences)
+  // TODO: also translate threads (title, question, summary, clues)
+  // TODO: also translate actionsHistory (SelectedAction[] -> ActionTranslation[])
 
   // ── Persist to database for future cache hits ────────────────────────────────
   const [newTranslation] = await dbWrite
@@ -292,9 +441,14 @@ async function translatePageWithLibre({
       weather:          translatedWeather,
       keyEvents:        translatedKeyEvents,
       importantObjects: translatedImportantObjects,
-      contextHistory:   translatedContextHistory,
-      places:           translatedPlaces,
       actions:          translatedActions,
+      // actionsHistory:       translatedActionsHistory,
+      contextHistory:   translatedContextHistory,
+      // characters:       translatedCharacters,
+      places:           translatedPlaces,
+      // inventory:       translatedInventory,
+      // injuries:       translatedInjuries,
+      // threads:       translatedThreads,
       providerType:     'translator',
       providerName:     'libre',
       updatedAt:        new Date(),
@@ -358,8 +512,13 @@ export function mapToPageTranslation(dbPageTranslations: DBPageTranslations): Pa
     keyEvents:        dbPageTranslations.keyEvents,
     importantObjects: dbPageTranslations.importantObjects,
     actions:          dbPageTranslations.actions,
+    actionsHistory:   dbPageTranslations.actionsHistory,
     contextHistory:   dbPageTranslations.contextHistory,
+    characters:       dbPageTranslations.characters,
     places:           dbPageTranslations.places,
+    inventory:        dbPageTranslations.inventory,
+    injuries:         dbPageTranslations.injuries,
+    threads:          dbPageTranslations.threads,
   } satisfies Record<keyof PageTranslation, unknown>;
 }
 

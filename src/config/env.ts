@@ -3,7 +3,8 @@ import type { GitHubRepoConfig } from "../types/github-workflow.js";
 /** Environment flag for development vs production behavior */
 export const IS_PRODUCTION = process.env.NODE_ENV === "production";
 export const IS_DEVELOPMENT = process.env.NODE_ENV === "development";
-export const IS_TEST = process.env.NODE_ENV === "test" || process.env.NODE_ENV === undefined;
+export const IS_TEST = (process.env.NODE_ENV ?? "test") === "test";
+export const DEV_USE_SECURE_COOKIES = process.env.DEV_USE_SECURE_COOKIES === 'true';
 
 /** Default server port */
 export const PORT: number = Number(process.env.PORT) || 3000;

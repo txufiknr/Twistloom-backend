@@ -129,7 +129,7 @@ export type PlaceMemory = {
   isRealNameKnown?: boolean;
 };
 
-export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context'> & { placeId: string };
+export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context'> & { placeId: string; type?: string };
 
 /**
  * Place creation structure for AI output

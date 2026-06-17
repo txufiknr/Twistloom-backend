@@ -91,6 +91,10 @@ export interface StoryThread {
   resolution?: string;
 }
 
+export type StoryThreadTranslation = Pick<StoryThread, 'threadId' | 'title' | 'question' | 'summary'> & {
+  clues: ThreadClueTranslation[];
+};
+
 /**
  * Thread update operations for AI-generated content
  * 
@@ -133,6 +137,11 @@ export type ThreadClue = {
   clue: string;
   isFalse?: boolean;
   discoveredAtPage: number;
+};
+
+export type ThreadClueTranslation = {
+  originalClue: string;
+  clue: string;
 };
 
 export type InitialThreadClue = Omit<ThreadClue, 'discoveredAtPage'>;
