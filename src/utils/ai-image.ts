@@ -69,7 +69,7 @@ import { cleanupObject } from "./parser.js";
  * // Basic usage with automatic rate limiting and fallback
  * const result = await generateImageWithFallback(
  *   'imagen',
- *   ['imagen-3.0-generate-001', 'imagen-3.0-fast-generate-001'],
+ *   ['gemini-3.1-flash-image'],
  *   'A futuristic cityscape at night',
  *   { numberOfImages: 1, aspectRatio: '16:9' },
  *   imagenAPICall,

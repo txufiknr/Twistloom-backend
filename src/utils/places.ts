@@ -72,7 +72,7 @@ export function updatePlace(params: {
   // Update basic properties if provided
   if (update.type) updated.type = update.type;
   if (update.context) updated.context = update.context;
-  if (update.isRealNameKnown) updated.isRealNameKnown = update.isRealNameKnown;
+  if (update.isRealNameKnown !== undefined) updated.isRealNameKnown = update.isRealNameKnown;
 
   // Add or remove hints if provided
   if (addHints.length || removeHints.length) {
@@ -263,7 +263,7 @@ export function formatPlacesForPrompt(
     lines.push(`• ${place.knownName} (${place.type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]`);
 
     // Real name and whether it's revealed to the MC (matches jsdoc example format)
-    lines.push(`  - Real name: ${place.realName} (revealed: ${String(place.isRealNameKnown)})`);
+    lines.push(`  - Real name: ${place.realName} (revealed: ${place.isRealNameKnown ? 'true' : 'false'})`);
     lines.push(`  - Visited ${place.visitCount ?? 1} time${(place.visitCount ?? 1) > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
     lines.push(`  - Context: ${place.context}`);
 

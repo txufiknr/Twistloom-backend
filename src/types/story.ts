@@ -429,6 +429,21 @@ export type EndingPlan = {
   fakeToReal?: boolean;
 };
 
+/**
+ * Structured recommendation for the optimal story ending
+ */
+export type EndingRecommendation = {
+  /** The specific ending archetype recommended */
+  type: EndingType;
+  /** Human-readable summary of why this ending was chosen */
+  summary: string;
+  /** Traceable data object explaining the heuristic logic (excellent for debugging) */
+  because: {
+    tier: "ending_plan" | "profile_shift" | "base_archetype" | "fallback";
+    [key: string]: string | number | boolean | undefined;
+  };
+};
+
 export const majorEventTypes = [
   "revelation", // Important truth discovered
   "betrayal", // Trust broken
@@ -578,39 +593,40 @@ export const difficulties = ["low", "medium", "high", "nightmare"] as const;
 export type Difficulty = typeof difficulties[number];
 
 /**
- * Available psychological archetypes for MC behavior patterns
+ * Available psychological archetypes and their AI narrative tactics
  * 
- * These define the primary behavioral patterns that influence how the MC
- * approaches challenges and responds to narrative events.
+ * These define the primary behavioral patterns and give the AI explicit 
+ * instructions on how to exploit those patterns to generate personalized horror.
  */
 export const archetypes = {
   /** Curious, seeks knowledge, investigates */
-  "the_explorer": "Curious, seeks knowledge, investigates",
+  "the_explorer": "Exploit their curiosity. Lure them deeper with partial answers, then trap them with terrifying truths.",
   /** Cautious, avoids danger, prefers safety */
-  "the_avoider": "Cautious, avoids danger, prefers safety",
+  "the_avoider": "Punish their hesitation. Slowly close off safe routes and force claustrophobic, unavoidable confrontations.",
   /** Bold, takes chances, confrontational */
-  "the_risk_taker": "Bold, takes chances, confrontational",
+  "the_risk_taker": "Turn their boldness against them. Let their rash actions trigger immediate, devastating environmental consequences.",
   /** Suspicious, distrustful, fearful */
-  "the_paranoid": "Suspicious, distrustful, fearful",
+  "the_paranoid": "Validate their worst fears. Scatter subtle, unreliable clues that make every shadow and ally seem like a lethal threat.",
   /** Remorseful, self-blaming, haunted */
-  "the_guilty": "Remorseful, self-blaming, haunted",
+  "the_guilty": "Haunt them with their past. Echo their past mistakes in the environment and leverage heavy moral pressure.",
   /** In denial, avoids truth, rationalizes */
-  "the_denier": "In denial, avoids truth, rationalizes"
+  "the_denier": "Shatter their rationalizations. Introduce undeniable, grotesque reality breaks that force them to face the horrifying truth."
 };
 
 /**
  * Available stability levels for psychological profiles
  * 
- * These define the current mental coherence and stability of the MC.
+ * These define the MC's mental coherence and act as a strict "narrative lens"
+ * for the AI, dictating how reliably it is allowed to describe reality.
  * Answers: "How psychologically compromised is the MC?"
  */
 export const stabilityLevels = {
   /** Mentally coherent, rational thinking → Subtle manipulation, gradual escalation */
-  stable: "Mentally coherent and rational. Trusts perception and reasoning. → Interpret events objectively.",
+  stable: "Mentally coherent and rational → Describe events objectively. Shadows are just shadows. Noises have logical sources. Do NOT introduce impossible geometry. Rarely introduce subtle hallucinations.",
   /** Under stress, showing cracks in composure → More direct psychological attacks, visible stress */
-  cracking: "Under psychological stress. Experiencing paranoia, doubt, intrusive thoughts, or growing instability. → Interpret ambiguous events with growing suspicion.",
+  cracking: "Under psychological stress → Distort sensory details. Describe ordinary objects in sinister, threatening ways, with growing suspicion. Make the MC question if what they saw/heard was real or just their imagination.",
   /** Severely distressed, reality breakdown → Full psychological warfare, reality breakdown */
-  unstable: "Severely psychologically compromised. Reality perception is unreliable, with possible delusions, hallucinations, or identity breakdown. → Unreliable perception. Increased paranoia, self-doubt, and distorted interpretations while preserving narrative coherence."
+  unstable: "Severely psychologically compromised → Present broken perception, delusions, hallucinations, impossible events, identity breakdown, increased paranoia, and distorted interpretations while preserving narrative coherence."
 } as const;
 
 /**
@@ -1016,8 +1032,8 @@ export type EnrichedStoryPageContext = {
   plotFlags: PlotFlag[];
 };
 
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { id: string; name: string; };
-export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { id: string; name: string; };
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { placeId: string; name: string; };
+export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; };
 
 export type Action = {
   /** Action text (serves as unique identifier) */

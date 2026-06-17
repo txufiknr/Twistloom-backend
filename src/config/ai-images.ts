@@ -6,12 +6,13 @@
 import type { AIImageGenerationOptions } from "../types/ai-images.js";
 
 /** Default image generation model (by priority)
- * @see https://ai.google.dev/gemini-api/docs/models/imagen
+ * @see https://ai.google.dev/gemini-api/docs/models/imagen (discontinued)
  */
 export const AI_IMAGE_MODEL_IMAGEN: string[] = [
-  "imagen-4.0-generate-001",
-  "imagen-4.0-ultra-generate-001",
-  "imagen-4.0-fast-generate-001",
+  // "imagen-4.0-generate-001",
+  // "imagen-4.0-ultra-generate-001",
+  // "imagen-4.0-fast-generate-001",
+  "gemini-3.1-flash-image",
 ];
 
 /**

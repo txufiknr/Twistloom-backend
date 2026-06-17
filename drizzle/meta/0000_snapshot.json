@@ -1,5 +1,5 @@
 {
-  "id": "8cd1a02f-2aa2-4825-8782-39d14ef87061",
+  "id": "ba92fd86-f64c-4f37-a8fe-63d7a9fa71d3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1119,12 +1119,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "place": {
-          "name": "place",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "time_of_day": {
           "name": "time_of_day",
           "type": "text",
@@ -1334,8 +1328,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "place": {
-          "name": "place",
+        "place_id": {
+          "name": "place_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1352,12 +1346,24 @@
           "primaryKey": false,
           "notNull": false
         },
-        "characters": {
-          "name": "characters",
-          "type": "text[]",
+        "scene_type": {
+          "name": "scene_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "momentum": {
+          "name": "momentum",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "characters_present": {
+          "name": "characters_present",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
-          "default": "ARRAY[]::text[]"
+          "default": "'[]'::jsonb"
         },
         "key_events": {
           "name": "key_events",

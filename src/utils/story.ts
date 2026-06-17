@@ -6,7 +6,7 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter } from "../types/story.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -625,19 +625,19 @@ function updateFlags(state: StoryState, action?: Action): void {
   
   // Base action influence
   switch (action.type) {
-    case "social": trustScore += 0.3; break;     // Social builds trust
-    case "explore": trustScore += 0.1; break;    // Exploration builds some trust
-    case "protect": trustScore += 0.4; break;    // Protecting others strongly builds trust
-    case "heal": trustScore += 0.3; break;       // Healing builds trust
-    case "create": trustScore += 0.1; break;     // Creation builds some trust
+    case "social":   trustScore += 0.3; break;   // Social builds trust
+    case "explore":  trustScore += 0.1; break;   // Exploration builds some trust
+    case "protect":  trustScore += 0.4; break;   // Protecting others strongly builds trust
+    case "heal":     trustScore += 0.3; break;   // Healing builds trust
+    case "create":   trustScore += 0.1; break;   // Creation builds some trust
     case "dialogue": trustScore += 0.2; break;   // Dialogue builds trust
-    case "risk": trustScore -= 0.4; break;       // Risky actions damage trust
-    case "escape": trustScore -= 0.3; break;     // Escape shows distrust
-    case "ignore": trustScore -= 0.2; break;     // Ignoring erodes trust
-    case "attack": trustScore -= 0.3; break;     // Attack damages trust
-    case "deceive": trustScore -= 0.5; break;    // Deception severely damages trust
-    case "custom": trustScore += 0.05; break;    // Custom actions have minimal trust impact
-    case "other": trustScore += 0.05; break;     // Other actions have minimal trust impact
+    case "risk":     trustScore -= 0.4; break;   // Risky actions damage trust
+    case "escape":   trustScore -= 0.3; break;   // Escape shows distrust
+    case "ignore":   trustScore -= 0.2; break;   // Ignoring erodes trust
+    case "attack":   trustScore -= 0.3; break;   // Attack damages trust
+    case "deceive":  trustScore -= 0.5; break;   // Deception severely damages trust
+    case "custom":   trustScore += 0.05; break;  // Custom actions have minimal trust impact
+    case "other":    trustScore += 0.05; break;  // Other actions have minimal trust impact
   }
 
   // Context modifiers
@@ -657,19 +657,19 @@ function updateFlags(state: StoryState, action?: Action): void {
   
   // Base action influence
   switch (action.type) {
-    case "escape": fearScore += 0.4; break;      // Escape increases fear
-    case "risk": fearScore += 0.3; break;        // Risk increases fear
-    case "attack": fearScore += 0.2; break;      // Attack can create fear
-    case "explore": fearScore += 0.2; break;     // Exploration can be scary
-    case "ignore": fearScore += 0.1; break;      // Ignoring creates fear
-    case "deceive": fearScore += 0.2; break;     // Deception creates fear
-    case "social": fearScore -= 0.1; break;      // Social reduces fear slightly
-    case "protect": fearScore -= 0.1; break;     // Protecting reduces fear
-    case "heal": fearScore -= 0.2; break;        // Healing reduces fear
-    case "create": fearScore -= 0.1; break;      // Creation reduces fear
+    case "escape":   fearScore += 0.4; break;    // Escape increases fear
+    case "risk":     fearScore += 0.3; break;    // Risk increases fear
+    case "attack":   fearScore += 0.2; break;    // Attack can create fear
+    case "explore":  fearScore += 0.2; break;    // Exploration can be scary
+    case "ignore":   fearScore += 0.1; break;    // Ignoring creates fear
+    case "deceive":  fearScore += 0.2; break;    // Deception creates fear
+    case "social":   fearScore -= 0.1; break;    // Social reduces fear slightly
+    case "protect":  fearScore -= 0.1; break;    // Protecting reduces fear
+    case "heal":     fearScore -= 0.2; break;    // Healing reduces fear
+    case "create":   fearScore -= 0.1; break;    // Creation reduces fear
     case "dialogue": fearScore -= 0.05; break;   // Dialogue reduces fear
-    case "custom": fearScore += 0.05; break;     // Custom actions have minimal fear impact
-    case "other": fearScore += 0.05; break;      // Other actions have minimal fear impact
+    case "custom":   fearScore += 0.05; break;   // Custom actions have minimal fear impact
+    case "other":    fearScore += 0.05; break;   // Other actions have minimal fear impact
   }
 
   // Context modifiers
@@ -722,19 +722,19 @@ function updateFlags(state: StoryState, action?: Action): void {
   
   // Base action influence
   switch (action.type) {
-    case "explore": curiosityScore += 0.4; break;   // Exploration drives curiosity
-    case "risk": curiosityScore += 0.3; break;      // Risk requires curiosity
-    case "create": curiosityScore += 0.3; break;    // Creation drives curiosity
-    case "dialogue": curiosityScore += 0.2; break;  // Dialogue creates curiosity
-    case "social": curiosityScore += 0.1; break;    // Social creates curiosity
-    case "ignore": curiosityScore += 0.2; break;    // Ignoring increases curiosity
-    case "deceive": curiosityScore += 0.1; break;   // Deception requires curiosity
-    case "protect": curiosityScore += 0.05; break;  // Protecting creates some curiosity
-    case "heal": curiosityScore += 0.1; break;      // Healing creates curiosity
-    case "attack": curiosityScore += 0.05; break;   // Attack creates minimal curiosity
-    case "escape": curiosityScore -= 0.2; break;    // Escape reduces curiosity
-    case "custom": curiosityScore += 0.1; break;    // Custom actions create curiosity
-    case "other": curiosityScore += 0.05; break;    // Other actions create minimal curiosity
+    case "explore":  curiosityScore += 0.4; break;   // Exploration drives curiosity
+    case "risk":     curiosityScore += 0.3; break;   // Risk requires curiosity
+    case "create":   curiosityScore += 0.3; break;   // Creation drives curiosity
+    case "dialogue": curiosityScore += 0.2; break;   // Dialogue creates curiosity
+    case "social":   curiosityScore += 0.1; break;   // Social creates curiosity
+    case "ignore":   curiosityScore += 0.2; break;   // Ignoring increases curiosity
+    case "deceive":  curiosityScore += 0.1; break;   // Deception requires curiosity
+    case "protect":  curiosityScore += 0.05; break;  // Protecting creates some curiosity
+    case "heal":     curiosityScore += 0.1; break;   // Healing creates curiosity
+    case "attack":   curiosityScore += 0.05; break;  // Attack creates minimal curiosity
+    case "escape":   curiosityScore -= 0.2; break;   // Escape reduces curiosity
+    case "custom":   curiosityScore += 0.1; break;   // Custom actions create curiosity
+    case "other":    curiosityScore += 0.05; break;  // Other actions create minimal curiosity
   }
 
   // Context modifiers
@@ -1380,12 +1380,12 @@ export function updatePsychologicalProfile(state: StoryState) {
 /**
  * Determines optimal ending archetype based on current story state
  * 
- * This function analyzes the complete story state including psychological profile,
+ * Analyzes the complete story state including psychological profile,
  * flags, hidden state, and profile shifts to recommend the most
  * appropriate ending archetype for maximum narrative impact.
  * 
  * @param state - Current story state with psychological profile and flags
- * @returns The most suitable ending archetype for this state
+ * @returns A structured recommendation object detailing the target ending
  * 
  * @example
  * ```typescript
@@ -1393,40 +1393,126 @@ export function updatePsychologicalProfile(state: StoryState) {
  * // Returns: "false_reality" for high-curiosity explorers
  * ```
  */
-export function determineOptimalEnding(state: StoryState): EndingType {
-  const { flags, psychologicalProfile, hiddenState } = state;
+export function determineOptimalEnding(state: StoryState): EndingRecommendation {
+  const { flags, psychologicalProfile, hiddenState, viableEnding } = state;
   const { archetype, stability } = psychologicalProfile;
 
-  // Highest priority: respect an active ending plan
+  // ---------------------------------------------------------
+  // TIER 1: Respect an Active Ending Plan (Highest Priority)
+  // ---------------------------------------------------------
   if (hiddenState.endingPlan?.armed) {
-    // Map execution type to narrative ending type
+    let targetEnding: EndingType;
+    let summary: string;
+
     switch (hiddenState.endingPlan.type) {
-      case "fake_relief_twist": return hiddenState.endingPlan.fakeToReal
-        ? (state.viableEnding?.type ?? "fake_escape")  // rug-pull: deliver the real ending
-        : "fake_escape";                                // build-up: steer toward false safety
-      case "loop_trap":        return "loop";
-      case "identity_reveal":  return "identity_twist";
+      case "fake_relief_twist":
+        targetEnding = hiddenState.endingPlan.fakeToReal ? (viableEnding?.type ?? "fake_escape") : "fake_escape";
+        summary = "Active plan: False sense of security followed by the rug-pull.";
+        break;
+      case "loop_trap":
+        targetEnding = "loop";
+        summary = "Active plan: Forcing a cyclical nightmare or time loop.";
+        break;
+      case "identity_reveal":
+        targetEnding = "identity_twist";
+        summary = "Active plan: Building toward a shocking truth about MC's identity.";
+        break;
+      case "unreliable_reality":
+        targetEnding = "false_reality";
+        summary = "Active plan: The world rules are breaking down completely.";
+        break;
+      case "possession":
+        targetEnding = "possession";
+        summary = "Active plan: External control or supernatural possession.";
+        break;
+      case "silent_void":
+        targetEnding = "irreversible_loss";
+        summary = "Active plan: Existential dread culminating in permanent loss.";
+        break;
+      case "observer_twist":
+        targetEnding = "simulation";
+        summary = "Active plan: Breaking the fourth wall or revealing the simulation.";
+        break;
     }
+
+    return {
+      type: targetEnding,
+      summary,
+      because: {
+        tier: "ending_plan",
+        planType: hiddenState.endingPlan.type,
+        fakeToReal: hiddenState.endingPlan.fakeToReal
+      }
+    };
   }
 
-  // Second priority: profile shift mutation
+  // ---------------------------------------------------------
+  // TIER 2: Profile Shift Mutation
+  // ---------------------------------------------------------
   if (hiddenState.profileShift?.detected) {
-    const shiftedEnding = getShiftedEnding(state);
-    if (shiftedEnding) {
-      console.log(`[determineOptimalEnding] 🔄 Profile shift detected, using shifted ending: ${shiftedEnding}`);
-      return shiftedEnding;
+    const shiftData = getShiftedEnding(hiddenState.profileShift.shiftType, viableEnding?.type);
+    
+    if (shiftData) {
+      return {
+        type: shiftData.type,
+        summary: shiftData.summary,
+        because: {
+          tier: "profile_shift",
+          shiftType: hiddenState.profileShift.shiftType,
+          originalEnding: viableEnding?.type
+        }
+      };
     }
   }
 
-  // Base archetype logic
+  // ---------------------------------------------------------
+  // TIER 3: Base Archetype Logic
+  // ---------------------------------------------------------
+  const baseBecause = {
+    tier: "base_archetype" as const,
+    archetype,
+    stability,
+    curiosity: flags.curiosity,
+    fear: flags.fear
+  };
+
   switch (archetype) {
-    case "the_explorer":   return flags.curiosity === "high" ? "false_reality" : "fake_escape";
-    case "the_avoider":    return "irreversible_loss";
-    case "the_risk_taker": return flags.fear === "low" ? "fake_escape" : "irreversible_loss";
-    case "the_paranoid":   return stability === "unstable" ? "loop" : "false_reality";
-    case "the_guilty":     return "irreversible_loss";
-    case "the_denier":     return stability === "unstable" ? "mental_fabrication" : "identity_twist";
-    default:               return state.viableEnding?.type ?? "ambiguity";
+    case "the_explorer":
+      return flags.curiosity === "high"
+        ? { type: "false_reality", summary: "High curiosity leads to discovering impossible, uncomfortable truths.", because: baseBecause }
+        : { type: "fake_escape", summary: "Explorer's curiosity waned; they settled for a false exit.", because: baseBecause };
+    
+    case "the_avoider":
+      return { type: "irreversible_loss", summary: "Avoidance eventually demands a permanent, irreversible toll.", because: baseBecause };
+    
+    case "the_risk_taker":
+      return flags.fear === "low"
+        ? { type: "fake_escape", summary: "Blind bravery walks directly into an illusion of safety.", because: baseBecause }
+        : { type: "irreversible_loss", summary: "Taking risks while fearful leads to permanent, punishing consequences.", because: baseBecause };
+    
+    case "the_paranoid":
+      return stability === "unstable"
+        ? { type: "loop", summary: "Complete instability traps the paranoid mind in a familiar nightmare.", because: baseBecause }
+        : { type: "false_reality", summary: "Paranoia pays off: the world actually isn't real.", because: baseBecause };
+    
+    case "the_guilty":
+      return { type: "pyrrhic_victory", summary: "Guilt demands sacrifice; success comes at an unacceptable moral cost.", because: baseBecause };
+    
+    case "the_denier":
+      return stability === "unstable"
+        ? { type: "mental_fabrication", summary: "Denial shatters into full mental fabrication of events.", because: baseBecause }
+        : { type: "identity_twist", summary: "Denial masks the fact that the MC is not who they think they are.", because: baseBecause };
+    
+    default:
+      return {
+        type: viableEnding?.type ?? "ambiguity",
+        summary: "No strong archetype traits detected. Defaulting to viable ending or ambiguity.",
+        because: {
+          tier: "fallback",
+          archetype,
+          viableEnding: viableEnding?.type
+        }
+      };
   }
 }
 
@@ -1658,13 +1744,14 @@ export function detectProfileShift(state: StoryState): boolean {
 }
 
 /**
- * Gets mutated ending based on profile shift
+ * Gets mutated ending logic based on profile shift type
  * 
  * If a behavioral shift was detected, this function returns a
  * psychologically appropriate ending that reflects the change.
  * 
- * @param state - Current story state
- * @returns The mutated ending archetype
+ * @param shiftType - The detected behavioral shift
+ * @param fallbackEnding - The current viable ending to fall back on
+ * @returns Object containing the new archetype and a descriptive summary
  * 
  * @example
  * ```typescript
@@ -1672,46 +1759,38 @@ export function detectProfileShift(state: StoryState): boolean {
  * // Returns "possession" for aggression turn
  * ```
  */
-export function getShiftedEnding(state: StoryState): EndingType | undefined {
-  const { hiddenState, viableEnding } = state;
-  const { profileShift } = hiddenState;
-
-  if (!profileShift?.detected) return viableEnding?.type;
-
-  switch (profileShift.shiftType) {
+function getShiftedEnding(shiftType: ProfileShiftType, fallbackEnding?: EndingType): { type: EndingType, summary: string } | undefined {
+  switch (shiftType) {
     // "You stopped asking questions... but something kept answering anyway"
-    case "curiosity_collapse":      return "mental_fabrication";
+    case "curiosity_collapse": return { type: "mental_fabrication", summary: "You stopped asking questions... but something kept answering anyway." };
     // "It didn't chase you because you were slow — it chased you because you understood"
-    case "fear_spike":              return "loop";
+    case "fear_spike": return { type: "loop", summary: "It didn't chase you because you were slow — it chased you because you understood." };
     // "You weren't trying to survive anymore. You were trying to win."
-    case "aggression_turn":         return "identity_twist";
+    case "aggression_turn": return { type: "become_threat", summary: "You weren't trying to survive anymore. You became the monster you fought." };
     // "The explorer became the trapped"
-    case "archetype_collapse":      return "possession";
+    case "archetype_collapse": return { type: "possession", summary: "The core identity collapsed, leaving an empty vessel for control." };
     // "When reality shattered, you found the truth in the pieces"
-    case "reality_breakdown":       return "false_reality";
+    case "reality_breakdown": return { type: "false_reality", summary: "When reality shattered, you found the truth in the pieces." };
     // "You finally stopped fighting... and accepted the lie as truth"
-    case "manipulation_acceptance": return "mental_fabrication";
+    case "manipulation_acceptance": return { type: "mental_fabrication", summary: "You finally stopped fighting... and accepted the lie as truth." };
     // "The curious became fearful — the perfect victim"
-    case "trait_inversion":         return "loop";
+    case "trait_inversion": return { type: "loop", summary: "The curious became fearful — stepping perfectly back to the beginning." };
     // "Fear turned to rage, and rage opened the wrong door"
-    case "fear_to_aggression":      return "possession";
-
-    // Previously missing — now handled:
+    case "fear_to_aggression": return { type: "possession", summary: "Fear turned to rage, and rage opened the door to outside influence." };
     // "You started lying and couldn't stop — even to yourself"
-    case "deception_onset":         return "identity_twist";
+    case "deception_onset": return { type: "identity_twist", summary: "You started lying and couldn't stop — even to yourself about who you are." };
     // "You pushed everyone away. No one was left to hear you scream."
-    case "social_withdrawal":       return "irreversible_loss";
+    case "social_withdrawal": return { type: "irreversible_loss", summary: "You pushed everyone away. Now, there is no one left to lose." };
     // "The protector became the thing everyone needed protecting from"
-    case "protective_to_aggressive": return "possession";
+    case "protective_to_aggressive": return { type: "become_threat", summary: "The protector became the thing everyone needed protecting from." };
     // "You built something beautiful. Then you burned it."
-    case "creative_to_destructive": return "irreversible_loss";
+    case "creative_to_destructive": return { type: "escalation", summary: "You built something beautiful, then burned it, creating a worse threat." };
 
     // Handled here but currently never detected — keep them for when
     // detectProfileShift gains those detection paths:
-    case "denial_break":            return "false_reality";
-    case "trust_betrayal":          return "fake_escape";
-
-    default: return viableEnding?.type;
+    case "denial_break": return { type: "false_reality", summary: "The dam broke. The world as you knew it never existed." };
+    case "trust_betrayal": return { type: "betrayal", summary: "The safety was a lie; the true villain was the one you trusted." };
+    default: return fallbackEnding ? { type: fallbackEnding, summary: "Profile shift mapped to current viable ending." } : undefined;
   }
 }
 

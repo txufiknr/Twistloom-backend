@@ -124,7 +124,7 @@ export type PlaceMemory = {
   keyObjects?: InitialInventoryItem[];
   /** Characters encountered here with context */
   knownCharacters?: TraitItem[];
-  /** Whether place's real name known to MC */
+  /** Whether the place's real name known to MC */
   isRealNameKnown?: boolean;
 };
 

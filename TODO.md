@@ -41,60 +41,12 @@
 [x] charactersPresent jadiin SceneCharacter[]
 [x] charactersPresent adain lagi di initial story page generation
 [x] restore rules charactersPresent match with initialCharacters
-[ ] translate story state (place name, inventory, actionsHistory, contextHistory)
+[ ] translate story state (places {name}, inventory {name, where}, actionsHistory {text}, contextHistory)
 [ ] db reset & pnpm check
 
-Migrate imagen
-Endpoints to be discontinued	Recommended migration path
-imagen-4.0-generate-001	gemini-3.1-flash-image
-imagen-4.0-ultra-generate-001	gemini-3.1-flash-image
-imagen-4.0-fast-generate-001	gemini-3.1-flash-image
-
-Backend:
-Does very verbose and lengthy system prompt really necessary, worth, and benefits?
+[ ] Does very verbose and lengthy system prompt really necessary, worth, and benefits?
 
 https://www.tokengratis.id/
-
----
-
-[ ] claude investigate 401 error
-
-backend:
-src/middleware/nextauth.ts
-
-frontend:
-src/auth.ts
-
----
-
-here's my Groq chat completions limit I copy-pasted from: https://console.groq.com/settings/limits
-
-Chat Completions
-Model	Requests per Minute	Requests per Day	Tokens per Minute	Tokens per Day	Actions
-allam-2-7b	30	7K	6K	500K	
-groq/compound	30	250	70K	No limit	
-groq/compound-mini	30	250	70K	No limit	
-llama-3.1-8b-instant	30	14.4K	6K	500K	
-llama-3.3-70b-versatile	30	1K	12K	100K	
-meta-llama/llama-4-scout-17b-16e-instruct	30	1K	30K	500K	
-meta-llama/llama-prompt-guard-2-22m	30	14.4K	15K	500K	
-meta-llama/llama-prompt-guard-2-86m	30	14.4K	15K	500K	
-openai/gpt-oss-120b	30	1K	8K	200K	
-openai/gpt-oss-20b	30	1K	8K	200K	
-openai/gpt-oss-safeguard-20b	30	1K	8K	200K	
-qwen/qwen3-32b	60	1K	6K	500K	
-
-based on that, can you:
-- filter which models fit for creative thriller story writing in priority order (by most creative)
-- correct my Groq `rpm` & `rpd`
-- should we add `rpmo` as well for Cohere case (monthly quota)?
-- correct my `canUseAIToday` logic to account montly quota correctly (if `rpmo` value defined)
-
-and also for rate limit differentiation across models in single provider, I think I'm no problem to use the highest RPM & RPD
-because my waterfall logic handles that quota exceeded error gracefully and goes to next provider-model fallback
-so I prefer ceiling values instead of minimum conservative values (which risk of ignoring actual quota remaining), but just add notes in the jsdoc or inline comments
-
-please continue
 
 ---
 
@@ -108,11 +60,8 @@ what's your proposal?
 
 ---
 
-Recent Momentum Trend:
-Building → Rising → Critical
-
-Current Narrative Pressure:
-High
+Recent Momentum Trend (from previous 5 pages):
+Building (page 4-5) → Rising (page 6-7) → Critical (page 8)
 
 Sesuaiin sama real values aja:
 Example: High curiosity leads to discovering uncomfortable truths
@@ -122,15 +71,136 @@ Example: High curiosity leads to discovering uncomfortable truths
 
 ---
 
-[ ] ask claude to review and incorporate new LLM providers
+please thoroughly examine my functions to heuristically propose ending archetype recommendation
+can you:
+- review and tell me if you have any concern or suggestions
+- make it also return like verdict or summary for the recommendation
 
-docs/TODO-more-llm-sdk.md
-docs/TODO-more-llm-sdk-2.md
-config/ai-clients.ts
-utils/ai-chat.ts
-utils/ai-chat-stream.ts
-utils/ai-limiters.ts
-utils/ai-clients.ts
+so the desired return shape is more or less like below (if possible):
+{
+  recommendation: "false_reality" // EndingType
+  summary: "High curiosity leads to discovering uncomfortable truths",
+  // Optionally:
+  because: {
+    archetype: "the_explorer",
+    curiosity: "high",
+    stability: "cracking"
+  },
+  ...etc
+}
+
+I attached my `types/story.ts` for complete type definitions
+
+/**
+ * Determines optimal ending archetype based on current story state
+ * 
+ * This function analyzes the complete story state including psychological profile,
+ * flags, hidden state, and profile shifts to recommend the most
+ * appropriate ending archetype for maximum narrative impact.
+ * 
+ * @param state - Current story state with psychological profile and flags
+ * @returns The most suitable ending archetype for this state
+ * 
+ * @example
+ * ```typescript
+ * const ending = determineOptimalEnding(state);
+ * // Returns: "false_reality" for high-curiosity explorers
+ * ```
+ */
+export function determineOptimalEnding(state: StoryState): EndingType {
+  const { flags, psychologicalProfile, hiddenState } = state;
+  const { archetype, stability } = psychologicalProfile;
+
+  // Highest priority: respect an active ending plan
+  if (hiddenState.endingPlan?.armed) {
+    // Map execution type to narrative ending type
+    switch (hiddenState.endingPlan.type) {
+      case "fake_relief_twist": return hiddenState.endingPlan.fakeToReal
+        ? (state.viableEnding?.type ?? "fake_escape")  // rug-pull: deliver the real ending
+        : "fake_escape";                                // build-up: steer toward false safety
+      case "loop_trap":        return "loop";
+      case "identity_reveal":  return "identity_twist";
+    }
+  }
+
+  // Second priority: profile shift mutation
+  if (hiddenState.profileShift?.detected) {
+    const shiftedEnding = getShiftedEnding(state);
+    if (shiftedEnding) {
+      console.log(`[determineOptimalEnding] 🔄 Profile shift detected, using shifted ending: ${shiftedEnding}`);
+      return shiftedEnding;
+    }
+  }
+
+  // Base archetype logic
+  switch (archetype) {
+    case "the_explorer":   return flags.curiosity === "high" ? "false_reality" : "fake_escape";
+    case "the_avoider":    return "irreversible_loss";
+    case "the_risk_taker": return flags.fear === "low" ? "fake_escape" : "irreversible_loss";
+    case "the_paranoid":   return stability === "unstable" ? "loop" : "false_reality";
+    case "the_guilty":     return "irreversible_loss";
+    case "the_denier":     return stability === "unstable" ? "mental_fabrication" : "identity_twist";
+    default:               return state.viableEnding?.type ?? "ambiguity";
+  }
+}
+
+/**
+ * Gets mutated ending based on profile shift
+ * 
+ * If a behavioral shift was detected, this function returns a
+ * psychologically appropriate ending that reflects the change.
+ * 
+ * @param state - Current story state
+ * @returns The mutated ending archetype
+ * 
+ * @example
+ * ```typescript
+ * const mutatedEnding = getShiftedEnding(state);
+ * // Returns "possession" for aggression turn
+ * ```
+ */
+export function getShiftedEnding(state: StoryState): EndingType | undefined {
+  const { hiddenState, viableEnding } = state;
+  const { profileShift } = hiddenState;
+
+  if (!profileShift?.detected) return viableEnding?.type;
+
+  switch (profileShift.shiftType) {
+    // "You stopped asking questions... but something kept answering anyway"
+    case "curiosity_collapse":      return "mental_fabrication";
+    // "It didn't chase you because you were slow — it chased you because you understood"
+    case "fear_spike":              return "loop";
+    // "You weren't trying to survive anymore. You were trying to win."
+    case "aggression_turn":         return "identity_twist";
+    // "The explorer became the trapped"
+    case "archetype_collapse":      return "possession";
+    // "When reality shattered, you found the truth in the pieces"
+    case "reality_breakdown":       return "false_reality";
+    // "You finally stopped fighting... and accepted the lie as truth"
+    case "manipulation_acceptance": return "mental_fabrication";
+    // "The curious became fearful — the perfect victim"
+    case "trait_inversion":         return "loop";
+    // "Fear turned to rage, and rage opened the wrong door"
+    case "fear_to_aggression":      return "possession";
+
+    // Previously missing — now handled:
+    // "You started lying and couldn't stop — even to yourself"
+    case "deception_onset":         return "identity_twist";
+    // "You pushed everyone away. No one was left to hear you scream."
+    case "social_withdrawal":       return "irreversible_loss";
+    // "The protector became the thing everyone needed protecting from"
+    case "protective_to_aggressive": return "possession";
+    // "You built something beautiful. Then you burned it."
+    case "creative_to_destructive": return "irreversible_loss";
+
+    // Handled here but currently never detected — keep them for when
+    // detectProfileShift gains those detection paths:
+    case "denial_break":            return "false_reality";
+    case "trust_betrayal":          return "fake_escape";
+
+    default: return viableEnding?.type;
+  }
+}
 
 ---
 

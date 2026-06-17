@@ -1271,13 +1271,13 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       plotFlags,
       // Filter only necessary fields for frontend
       places: Object.entries(places).map(([placeId, place]) => ({
-        id: placeId,
-        name: place.isRealNameKnown === true ? place.realName : place.knownName,
+        placeId,
+        name: place.isRealNameKnown ? place.realName : place.knownName,
         type: place.type,
         context: place.context
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.entries(characters).map(([characterId, character]) => ({
-        id: characterId,
+        characterId,
         name: ['full_name_known', 'first_name_known'].includes(character.recognitionLevel) ? character.realName : character.knownName,
         gender: character.gender,
         role: character.role,

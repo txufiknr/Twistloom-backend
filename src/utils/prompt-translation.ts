@@ -226,9 +226,12 @@ const pageTranslationReview: string = `
 
 const pageTranslationOutputFormat: string = `{
   "text": "Translated page text",
-  "place": "Translated place name",
+  "timeOfDay": "Translated time of day",
+  "mood": "Translated mood",
+  "weather": "Translated weather",
   "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
   "importantObjects": ["translated-object-1", "translated-object-2", "..."],
+  "contextHistory": "Translated context history",
   "actions": [
     {
       "originalText": "Original action text (keep unchanged)",
@@ -242,9 +245,12 @@ const bulkPageTranslationOutputFormat: string = `{
     {
       "pageId": "page-uuid-1",
       "text": "Translated page text",
-      "place": "Translated place name",
+      "timeOfDay": "Translated time of day",
+      "mood": "Translated mood",
+      "weather": "Translated weather",
       "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
       "importantObjects": ["translated-object-1", "translated-object-2", "..."],
+      "contextHistory": "Translated context history",
       "actions": [
         {
           "originalText": "Original action text (keep unchanged)",
@@ -255,9 +261,12 @@ const bulkPageTranslationOutputFormat: string = `{
     {
       "pageId": "page-uuid-2",
       "text": "Translated page text",
-      "place": "Translated place name",
+      "timeOfDay": "Translated time of day",
+      "mood": "Translated mood",
+      "weather": "Translated weather",
       "keyEvents": ["Translated key event 1", "Translated key event 2", "..."],
       "importantObjects": ["translated-object-1", "translated-object-2", "..."],
+      "contextHistory": "Translated context history",
       "actions": [
         {
           "originalText": "Original action text (keep unchanged)",
@@ -275,7 +284,6 @@ const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk: bo
   const asteriskInstruction = hasAsterisks ? 'Keep text styling using asterisks (if any).' : '';
   return `${isBulk ? `- pageId: Don't change. Should match to its source page.` : ''}
 - text: Translate page narrative. ${asteriskInstruction}
-- place: Translate place name. Keep it atmospheric and descriptive.
 - timeOfDay: Translate time of day.
 - mood: Translate current mood.
 - weather: Translate current weather.

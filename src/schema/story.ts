@@ -137,7 +137,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
-  isRealNameKnown: { type: 'boolean', description: `Whether place's real name known to MC`},
+  isRealNameKnown: { type: 'boolean', description: `Whether the place's real name known to MC`},
   hints: { type: 'array', items: { type: 'string' }, description: 'Known clues, obstacles, spatial relationship to other places' },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place' },
   keyObjects: {
@@ -255,7 +255,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
     },
     removeTraits: { type: 'array', items: { type: 'string' } },
     familiarityCorrection: { type: 'number', description: 'Always 0 except on major condition. Use small conservative values (between -0.5 to 0.5).' },
-    addHints: { type: 'array', items: { type: 'string' } },
+    addHints: { type: 'array', items: { type: 'string' }, description: 'Known clues, obstacles, spatial relationship to other places' },
     removeHints: { type: 'array', items: { type: 'string' } },
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
   required: ['placeId', 'type', 'context', 'addKeyEvents'] satisfies (keyof PlaceUpdate)[],
@@ -426,8 +426,8 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
           truth: { type: 'string', enum: [...threadTruths] },
           importance: { type: 'number' },
           urgencyCorrection: { type: 'number', description: 'Only for exceptional shifts in narrative momentum (between -0.5 to 0.5). Not for normal development.' },
-          resolution: { type: 'string' },
           summary: { type: 'string' },
+          resolution: { type: 'string' },
         } satisfies Record<keyof UpdateThread, AIJsonProperty>,
         required: ['threadId'] satisfies (keyof UpdateThread)[],
         additionalProperties: false

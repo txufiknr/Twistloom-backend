@@ -1,12 +1,12 @@
-import type { AIJsonProperty } from "../types/ai-chat.js";
-import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
-import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
-import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
-import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import { difficulties, endingTypes, factTypes, flagLevels, storyMomentums } from "../types/story.js";
-import { type KnownGender } from "../types/user.js";
 import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA, THREADS_SCHEMA } from "./story.js";
 import { BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import type { AIJsonProperty } from "../types/ai-chat.js";
+import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
+import type { StoryMC, StoryMCTranslation } from "../types/character.js";
+import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
+import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
+import type { KnownGender } from "../types/user.js";
 
 /**
  * Schema definition for AI validation response
@@ -99,8 +99,8 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
       description: 'Note about ending plan shift or changes.',
       properties: {
         reason: { type: 'string', description: `Terse. 1-2 sentence.` },
-        viabilityBefore: { type: 'number', description: '0-1' },
-        viabilityAfter: { type: 'number', description: '0-1' },
+        viabilityBefore: { type: 'number', description: '0-1 (lower)' },
+        viabilityAfter: { type: 'number', description: '0-1 (higher)' },
       } satisfies Record<keyof EndingChangeNote, AIJsonProperty>,
       required: ['reason'] satisfies (keyof EndingChangeNote)[],
       additionalProperties: false

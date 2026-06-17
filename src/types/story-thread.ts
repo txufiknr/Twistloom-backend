@@ -26,6 +26,7 @@ export const threadPriorities = [
 
 /**
  * Available thread truth values for reality tracking
+ * Answers: "Does this mystery correspond to something real?"
  * 
  * These track the fundamental nature of thread content
  * and whether it reflects actual reality.

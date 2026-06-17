@@ -285,10 +285,10 @@ ${formatKeyValueList(endingTypes)}`;
  * Used to inform pacing and escalation behavior in the prompt.
  */
 export const RULES_STORY_MOMENTUMS = `STORY MOMENTUM GUIDANCE:
-- Current momentum indicates recent narrative pressure or urgency level. Use it as continuation context rather than a requirement.
+- Story momentum indicates recent narrative pressure or urgency level. Use it as continuation context rather than a requirement.
 - Allow momentum to evolve naturally from story events. It may increase, decrease, remain stable, or begin resolving when justified.
 
-Story Momentums:
+Momentums:
 ${formatKeyValueList(storyMomentums)}`;
 
 /**
@@ -753,6 +753,7 @@ const nextPageOutputFormat: string = `{
         "knownName": "...",
         "type": "One of: ${formatOneOf(placeTypes)}",
         "context": "...",
+        "familiarityCorrection": <number between -0.5 to 0.5>,
         "isRealNameKnown": <boolean>,
         "addKeyEvents": ["..."],
         "addHints": [],
@@ -792,7 +793,7 @@ const nextPageOutputFormat: string = `{
         "priority": "One of: ${formatOneOf(threadPriorities)}",
         "truth": "One of: ${formatOneOf(threadTruths)}",
         "importance": <number between 0.0 and 1.0>,
-        "urgency": <number between 0.0 and 1.0>,
+        "urgencyCorrection": <number between -0.5 and 0.5>,
         "summary": "...",
         "resolution": "..."
       }
@@ -1054,7 +1055,7 @@ threadUpdates.updateThreads
   - Update existing threads when their status, priority, or urgency meaningfully changes.
   - threadId: must match an existing thread ID.
   - status: ${isLatePhase ? 'update to "revealed" or "closed" as threads converge toward the ending.' : '"open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved).'}
-  - urgencyCorrection: explicit adjustment to how close a thread is to resolution (e.g., +0.20 = major breakthrough, -0.15 = mystery became more complicated). Do not use for normal progression, new clues, or routine thread development. The system already handles those automatically.
+  - urgencyCorrection: explicit closeness adjustment to a reveal/twist/resolution (e.g., +0.20 = major breakthrough, -0.15 = mystery became more complicated). Do not use for normal progression, new clues, or routine thread development. The system already handles those automatically.
   - summary: running summary of thread development (from the start to current).
   - resolution: only include when thread is being closed or resolved (brief summary of the answer).
   - If this page develops, complicates, advances, or revisits an active thread, include a summary update for that thread.
@@ -1904,6 +1905,7 @@ export function getThreadState(
  *   → page 2: She wasn't in yearbook
  *   Priority: main
  *   Urgency: 0.85
+ *   Reality: true
  */
 function formatActiveThreads(threads: StoryThread[]): string {
   if (!threads || threads.length === 0) return 'No active threads yet.';
@@ -1928,24 +1930,35 @@ function formatActiveThreads(threads: StoryThread[]): string {
 
     return [
       header,
-      recent.length ? `  Recent clues:\n${recent.join('\n')}` : '',
+      recent.length && `  Recent clues:\n${recent.join('\n')}`,
       `  Priority: ${t.priority}`,
       `  Urgency: ${t.urgency.toFixed(2)}`,
+      t.truth !== 'unknown' && `  Reality: ${t.truth}`,
     ].filter(Boolean).join('\n');
   }).join('\n');
 }
 
 /**
- * Generates thread management rules based on story progression and current state
- * 
+ * Generates thread-management guidance for AI story generation.
+ *
  * This function provides context-specific guidance for handling story threads
  * at different stages of the narrative. Rules vary based on whether the story
  * is in its initial phase, mid-game progression, or finale, ensuring appropriate
  * pacing and resolution of mysteries.
  * 
- * @param threads - Array of current story thread objects
- * @param stateInfo - Story state information including phase flags and page progress
- * @returns Formatted string with thread management rules
+ * Story threads represent active mysteries, questions, and narrative
+ * tensions that drive the thriller forward.
+ *
+ * Goals:
+ * - Introduce mysteries gradually
+ * - Avoid thread sprawl
+ * - Focus attention on a small number of threads per page
+ * - Encourage convergence of mysteries
+ * - Ensure major threads resolve by the finale
+ *
+ * @param threads - Current story threads
+ * @param stateInfo - Current story progression information
+ * @returns Prompt-ready thread management rules
  * 
  * @example
  * ```typescript
@@ -1973,78 +1986,77 @@ function formatThreadRules(threads: StoryThread[], stateInfo: StoryStateInfo): s
   if (isFinale) {
     return `
 - Do NOT introduce new threads
+- Focus on resolving remaining mysteries
+- Prioritize threads closest to resolution
+- Reveal the truth behind major false clues before resolution
+- Connect thread resolutions where possible
 - Every main thread must resolve
-- Tie threads to the viable ending
-- Reveal critical truths gradually
-- Leave some ambiguity for unsettling effect`;
+- Leave limited ambiguity only for lingering unease or interpretation`;
   }
 
-  // No threads yet: Initial thread creation rules
-  if (threads.length === 0) {
+  // No active mysteries: Initial thread creation rules
+  if (activeThreads.length === 0) {
     if (isEarlyPhase) {
       // Early phase (pages 1-25%): Introduce 1-2 core mysteries
       return `
-- Introduce 1-2 core mysteries (main threads)
-- Each thread should have a compelling question
-- Threads must connect to the psychological premise
-- Avoid overwhelming the reader
-- Focus on atmosphere and unease over answers`;
+- Introduce 1-2 compelling mysteries
+- Each thread should pose a clear unanswered question
+- Prioritize mysteries connected to the core premise
+- Avoid introducing too many unanswered questions at once
+- Keep initial mysteries open-ended and difficult to explain`;
     }
 
     if (isMidPhase) {
       // Mid phase (pages 25-70%): Can introduce additional threads
       return `
-- Introduce 1 new thread if story momentum allows
-- New threads should branch from existing mysteries
-- Ensure each thread has resolution potential
-- Balance mystery with character development`;
+- Introduce 1 important mystery
+- Prefer mysteries that emerge naturally from existing events
+- Ensure the new thread can influence future story progression
+- Avoid creating mysteries with no clear development path`;
     }
 
     // Late phase with no threads: Unusual state, allow cautious introduction
     return `
-- Introduce 1 critical thread immediately
-- Must be high-impact and psychologically relevant
-- Ensure quick path to development and resolution`;
+- Introduce 1 high-impact mystery only if needed
+- Ensure it can develop and resolve quickly
+- Avoid opening threads that cannot be resolved before the ending`;
   }
 
-  // Active threads: Development and management rules
+  // Early phase: Development and management rules
   if (isEarlyPhase) {
-    // Early phase: Focus on development
     return `
-${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} active threads limit)` : `- Do NOT introduce new threads unless absolutely necessary`}
-- Focus on 1-2 threads per page (do not expand all)
-${atThreadLimit ? `- Pause or collapse one thread before introducing new ones` : ``}
-- If thread is "developing" → deepen mystery or add clue
-- If urgency is high → build toward reveal or twist
-- If thread is false → reinforce wrong belief subtly
-- Add false clues to mislead reader and enforce wrong beliefs
-- Plant seeds for future threads, but don't activate yet
-- Every main thread must eventually resolve`;
+${atThreadLimit ? `- Do NOT introduce new threads (active thread limit reached)` : `- Avoid introducing new threads unless necessary`}
+- Focus on 1-2 threads per page
+- Deepen mysteries through clues, contradictions, or unsettling discoveries
+- When a thread is revisited or meaningfully developed, update that thread even if no new clue is added
+- Use false clues sparingly to create plausible but incorrect conclusions
+- Plant seeds for future mysteries without fully activating them
+- Prefer developing existing threads over creating new ones`;
   }
 
+  // Mid phase: Balance development with progression
   if (isMidPhase) {
-    // Mid phase: Balance development with progression
     return `
-${atThreadLimit ? `- Do NOT introduce new threads (at ${MAX_ACTIVE_THREADS} active threads limit)` : `- Introduce new threads only if essential to plot`}
-${atThreadLimit ? `- Collapse or close one thread before introducing new ones` : `- Maximum 1 new thread per page (if needed)`}
-- Focus on 1-2 threads per page (do not expand all)
-- If thread is "developing" → deepen mystery or add clue
-- If urgency is high → move toward reveal or twist
-- If thread is false → reinforce wrong belief subtly
-- Add false clues to manipulate reader's mind and enforce wrong beliefs
-- Start closing low-priority threads
-- Avoid opening threads you cannot resolve
-- Every main thread must eventually resolve`;
+${atThreadLimit ? `- Do NOT introduce new threads (active thread limit reached)` : `- Introduce at most 1 new thread if truly needed`}
+- Focus on 1-2 threads per page
+- Advance, complicate, or partially reveal existing mysteries
+- When a thread is revisited or meaningfully developed, update that thread even if no new clue is added
+- Threads nearing resolution should move closer to answers, revelations, or major reversals
+- Use false clues sparingly to create believable misdirection
+- Start resolving minor threads
+- Prefer connecting mysteries together over creating unrelated new threads
+- Avoid opening threads that have no clear path to resolution`;
   }
 
   // Late phase: Focus on resolution
   return `
-- Do NOT introduce new threads${atThreadLimit ? ` (at ${MAX_ACTIVE_THREADS} active threads limit)` : ''}
-- Focus on resolving existing threads
-- Prioritize high-urgency threads
-- Reveal false clues as misdirection before resolving
-- Connect thread resolutions to each other
-- Every main thread must resolve before finale`;
+- Do NOT introduce new threads
+- Focus on advancing existing mysteries toward resolution
+- Prioritize threads closest to resolution
+- Reveal the truth behind false clues and misdirection
+- Connect separate mysteries where possible
+- Resolve minor threads before major ones
+- Ensure every remaining main thread is moving toward a conclusion`;
 }
 
 function formatEndingPlan(ending?: Ending): string {
@@ -2054,7 +2066,7 @@ function formatEndingPlan(ending?: Ending): string {
   return [
     `Type: ${endingTypes[type as keyof typeof endingTypes]}`,
     `Hint: ${text}`,
-    outline && outline.length > 0 && `Outline:\n${formatOutline(outline)}`
+    outline?.length && `Outline:\n${formatOutline(outline)}`
   ].filter(Boolean).join('\n');
 }
 
@@ -2149,10 +2161,48 @@ Open the door
 }
 
 /**
- * Formats the current situation information for a story page in a readable format
- * 
+ * Formats the current situation information for a story page in a readable format.
+ *
  * @param page - The current page
+ * @param state - The current story state, used to resolve character details
  * @returns Formatted string with current situation details
+ *
+ * @example
+ * const page = {
+ *   mood: 'tense',
+ *   placeId: 'Old Library',
+ *   weather: 'stormy',
+ *   timeOfDay: 'midnight',
+ *   sceneType: 'investigation',
+ *   momentum: 'building tension',
+ *   charactersPresent: [
+ *     { characterId: 'enemy', sceneRole: 'opposition', sceneFocus: 1 },
+ *     { characterId: 'ally', sceneRole: 'supporting', sceneFocus: 0.5 }
+ *   ],
+ *   importantObjects: ['mysterious book'],
+ *   keyEvents: ['heard a distant scream']
+ * };
+ * const state = {
+ *   characters: {
+ *     enemy: { knownName: 'Ari', role: 'investigator' },
+ *     ally: { knownName: 'Juno', role: 'friend' }
+ *   }
+ * };
+ *
+ * Returns:
+ * - Story momentum: rising
+ * - Scene type: investigation
+ * - Place: Old Library
+ * - Time: midnight
+ * - Mood: tense
+ * - Weather: stormy
+ * - Characters present:
+ *   · Ari (investigator - opposition, focus: 1) [ID: enemy]
+ *   · Juno (friend - supporting, focus: 0.5) [ID: ally]
+ * - Important objects:
+ *   · mysterious book
+ * - Key events:
+ *   · heard a distant scream
  */
 function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: StoryState): string {
   const { mood, placeId, weather, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
@@ -2241,11 +2291,10 @@ ${createNarrativeStyle(state).instructions}
 PSYCHOLOGICAL FLAGS (Accumulated):
 ${formatPsychologicalFlags(flags, memoryIntegrity)}
 
-PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
+PSYCHOLOGICAL PROFILE (Behavioral analysis):
 ${formatPsychologicalProfile(psychologicalProfile)}
 
-Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
-
+---
 HIDDEN STATE (Influence writing, don't reveal):
 ${formatHiddenState(hiddenState, currentPage)}
 
@@ -2304,24 +2353,24 @@ ENDING PRESSURE:
 
   // Non-finale: build toward the ending, possibly with an active trap
   const trapDirective = buildEndingTrapDirective(endingPlan);
+  const optimalEnding = determineOptimalEnding(state);
 
   return `- Gradually steer story toward viable ending plan
 - IMPORTANT: NEVER SPOIL this ending plan
 - Plant small hints across pages; don't fully explain or reveal early
 - Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect
-${trapDirective ? `\n${trapDirective}\n` : ""}
+${trapDirective ? `\n${trapDirective}\n` : ''}
 If the current viable ending is no longer viable, re-determine based on:
 - Psychological profile (archetype and stability)
 - Profile archetype: ${psychologicalProfile.archetype}
 - Profile stability: ${psychologicalProfile.stability}
 - Psychological flags
 - Detected shift: ${profileShift?.detected ? profileShift.shiftType : "none"}
-- Recommended ending type: ${determineOptimalEnding(state)}
 
-Example: High curiosity leads to discovering uncomfortable truths
-- Profile archetype: "the_explorer"
-- Curiosity flag: "high"
-- Recommended ending type: "false_reality"`.trim();
+Recommended ending type (heuristic): ${optimalEnding.type}
+${optimalEnding.summary}
+Because:
+${formatKeyValueList(optimalEnding.because)}`;
 }
 
 /**
@@ -2335,42 +2384,42 @@ function buildEndingTrapDirective(endingPlan?: EndingPlan): string | null {
     // Trap is springing — tell the AI exactly what to execute
     const executionGuide: Record<string, string> = {
       fake_relief_twist:
-        "The MC has just been given false hope. Now destroy it.\n" +
+        "MC has just been given false hope. Now destroy it.\n" +
         "• Show the escape route closing\n" +
         "• The 'safe' person reveals something wrong\n" +
         "• The relief was the trap — make the reader feel the rug pulled",
       loop_trap:
-        "The MC believes the ordeal is over. It isn't.\n" +
+        "MC believes the ordeal is over. It isn't.\n" +
         "• Introduce one detail that echoes the very beginning\n" +
         "• Something familiar appears in the wrong context\n" +
         "• End with the reader realizing the loop never broke",
       identity_reveal:
-        "The MC believes they finally understand who they are. They are wrong.\n" +
+        "MC believes they finally understand who they are. They are wrong.\n" +
         "• Contradict a core assumption the MC has held all story\n" +
         "• Show a detail that reframes every prior action in a darker light\n" +
-        "• The revelation should feel inevitable in hindsight",
+        "• Revelation should feel inevitable in hindsight",
     };
-    const guide = executionGuide[endingPlan.type] ?? "Shatter the false resolution — the horror was always here.";
+    const guide = executionGuide[endingPlan.type] ?? "Shatter the false resolution — horror was always here.";
     return `ACTIVE TRAP — EXECUTE NOW:\n${guide}`;
   }
 
   // Trap is armed but not yet springing — build the false calm
   const buildUpGuide: Record<string, string> = {
     fake_relief_twist:
-      "BUILD FALSE SAFETY: The MC should be moving toward something that looks like escape.\n" +
+      "BUILD FALSE SAFETY: MC should be moving toward something that looks like escape.\n" +
       "• Reduce immediate threat slightly — don't remove tension, soften its edge\n" +
       "• Let a character seem trustworthy for once\n" +
       "• Plant one small 'almost normal' detail that feels like progress",
     loop_trap:
       "BUILD CYCLICAL FAMILIARITY: Plant echoes of earlier pages.\n" +
       "• Repeat a sensory detail from a much earlier scene in a slightly wrong context\n" +
-      "• The MC should begin to feel 'this is almost over'\n" +
+      "• MC should begin to feel 'this is almost over'\n" +
       "• Don't close the loop yet — hint that closure is near",
     identity_reveal:
-      "BUILD MISPLACED CERTAINTY: Let the MC feel they've understood something.\n" +
+      "BUILD MISPLACED CERTAINTY: Let MC feel they've understood something.\n" +
       "• Reinforce a belief they hold about themselves or another character\n" +
-      "• Make the MC feel competent, observant, correct — just this once\n" +
-      "• The reader should feel safe. They are not.",
+      "• Make MC feel competent, observant, correct — just this once\n" +
+      "• Reader should feel safe. They are not.",
   };
   const buildUp = buildUpGuide[endingPlan.type] ?? "Steer toward false resolution — safety is the trap.";
   return `ENDING TRAP ARMED — PREP PHASE:\n${buildUp}`;
@@ -2385,6 +2434,14 @@ function buildEndingTrapDirective(endingPlan?: EndingPlan): string | null {
  * 
  * @param flags - Psychological flags object
  * @returns Formatted string for prompt inclusion
+ * 
+ * @example
+ * PSYCHOLOGICAL FLAGS (Accumulated):
+ * • Trust: low
+ * • Fear: medium
+ * • Guilt: medium
+ * • Curiosity: high
+ * • Memory Integrity: fragmented
  */
 function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: MemoryIntegrity): string {
   return `• Trust: ${flags.trust}
@@ -2406,31 +2463,25 @@ function formatPsychologicalFlags(flags: PsychologicalFlags, memoryIntegrity: Me
  * @returns Formatted string for prompt inclusion
  * 
  * @example
- * PSYCHOLOGICAL PROFILE (Structured behavioral analysis):
- * - Archetype: the_paranoid
- * - Stability: cracking
- * - Traits: suspicion, anxiety, hypervigilance
+ * PSYCHOLOGICAL PROFILE (Behavioral analysis):
+ * • Archetype: the_paranoid — Tactics: Validate their worst fears. Scatter subtle, unreliable clues that make every shadow and ally seem like a lethal threat.
+ * • Stability: cracking — Impact: Under psychological stress. Experiencing paranoia, doubt, intrusive thoughts, or growing instability. → Interpret ambiguous events with growing suspicion.
+ * • Traits: suspicion, anxiety, hypervigilance
  * 
- * Archetype-specific tactics:
- * Suspicious of everyone, questions motives, sees threats everywhere
- * 
- * Stability impact:
- * Under stress, showing cracks in composure → More direct psychological attacks, visible stress
- * 
- * Personalized horror (manipulation vector):
- * Contradictions, unclear reality, question perceptions
- * 
- * Goal: Make the MC feel "This story knows exactly how I think and is using it against me."
+ * PERSONALIZED HORROR (Manipulation Vector):
+ * Target reasoning patterns, distorted reality, question perceptions
  */
 function formatPsychologicalProfile(profile: PsychologicalProfile): string {
   const { archetype, stability, dominantTraits, manipulationAffinity } = profile;
 
   return `• Archetype: ${archetype} — Tactics: ${archetypes[archetype]}
 • Stability: ${stability} — Impact: ${stabilityLevels[stability]}
-• Traits: ${dominantTraits.join(', ')}
+• Dominant traits: ${dominantTraits.length ? dominantTraits.join(', ') : 'none established'}
 
-Personalized horror (manipulation vector):
-${manipulationAffinities[manipulationAffinity]}`;
+PERSONALIZED HORROR (Manipulation Vector):
+${manipulationAffinities[manipulationAffinity]}
+
+Goal: Make the MC feel "This story knows exactly how I think and is actively using it against me."`;
 }
 
 /**
