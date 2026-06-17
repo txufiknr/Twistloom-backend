@@ -1,7 +1,7 @@
 import { getErrorMessage } from './error.js';
 import { and, eq, sql } from 'drizzle-orm';
 import { usage } from '../db/schema.js';
-import { getTodayDate } from './time.js';
+import { getCurrentMonthBounds, getTodayDate } from './time.js';
 import { dbRead, dbWrite } from '../db/client.js';
 import { AI_RATE_LIMITS, AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT } from "../config/ai-clients.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -227,42 +227,68 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
 }
 
 /**
- * Checks if AI provider can be used today based on daily request limits
- * 
- * @param provider - The AI provider to check
- * @returns Promise resolving to true if provider can be used today, false otherwise
- * 
- * @example
- * ```typescript
- * const canUse = await canUseAIToday('gemini');
- * if (canUse) {
- *   // Make AI request
- * } else {
- *   // Use fallback method
- * }
- * ```
+ * Checks whether an AI provider can still be used based on its configured
+ * rate limits. Supports daily (`rpd`) and monthly (`rpmo`) caps independently.
+ * Providers with neither configured (mistral, cerebras, nvidia) always pass —
+ * their real ceilings are token-budget-based and not tracked here.
+ *
+ * Both checks query the existing `usage` table with no schema changes:
+ * - Daily: SUM(requests) WHERE date = today AND provider = X
+ * - Monthly: SUM(requests) WHERE date >= month_start AND date < month_end AND provider = X
+ *
+ * Why monthly for Cohere: Cohere trial keys cap at 1,000 calls/month with no
+ * per-day sublimit. A daily average (1000/30 ≈ 33) would be wrong in both
+ * directions — blocking on a day where quota remains, allowing through on a day
+ * where monthly quota is already exhausted. Summing the current month is exact.
+ *
+ * Note on ceiling values: rpd/rpmo in AI_RATE_LIMITS use the ceiling across all
+ * models for that provider. Individual models may have lower limits — the
+ * waterfall's 429 handling covers the per-model gap gracefully.
  */
 export async function canUseAIToday(provider: AIChatProvider): Promise<boolean> {
-  const maxAllowed = AI_RATE_LIMITS[provider].rpd || 0;
-  if (maxAllowed === 0) return true;
-  try {
-    const today = getTodayDate(); // YYYY-MM-DD
-    const rows = await dbRead
-      .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
-      .from(usage)
-      .where(and(eq(usage.date, today), eq(usage.provider, provider)))
-      .limit(1);
+  const limits = AI_RATE_LIMITS[provider];
 
-    const used = rows?.[0]?.requests ?? 0;
-    const canUse = used < maxAllowed;
-    if (!canUse) {
-      console.warn(`[${provider}] ⚠️ Daily limit has been reached (${used}/${maxAllowed})`);
+  try {
+    // --- Daily cap check ---
+    if (limits.rpd) {
+      const today = getTodayDate(); // 'YYYY-MM-DD'
+      const rows = await dbRead
+        .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
+        .from(usage)
+        .where(and(eq(usage.date, today), eq(usage.provider, provider)))
+        .limit(1);
+
+      const usedToday = rows?.[0]?.requests ?? 0;
+      if (usedToday >= limits.rpd) {
+        console.warn(`[${provider}] ⚠️ Daily limit reached (${usedToday}/${limits.rpd})`);
+        return false;
+      }
     }
-    return canUse;
+
+    // --- Monthly cap check ---
+    if (limits.rpmo) {
+      const { start, end } = getCurrentMonthBounds();
+      const rows = await dbRead
+        .select({ requests: sql`SUM(${usage.requests})`.mapWith(Number) })
+        .from(usage)
+        .where(and(
+          sql`${usage.date} >= ${start}`,
+          sql`${usage.date} < ${end}`,
+          eq(usage.provider, provider)
+        ))
+        .limit(1);
+
+      const usedThisMonth = rows?.[0]?.requests ?? 0;
+      if (usedThisMonth >= limits.rpmo) {
+        console.warn(`[${provider}] ⚠️ Monthly limit reached (${usedThisMonth}/${limits.rpmo})`);
+        return false;
+      }
+    }
+
+    return true;
   } catch (err) {
-    console.error(`[${provider}] ❌ Daily usage check error:`, getErrorMessage(err));
-    // Fail-safe: disallow AI prompt if DB check fails
-    return false;
+    console.error(`[${provider}] ❌ Usage check error:`, getErrorMessage(err));
+    return false; // fail-safe: block rather than overshoot
   }
 }
 

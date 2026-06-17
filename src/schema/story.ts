@@ -2,10 +2,10 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
-import { actionHintTypes, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
+import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem } from "../types/story.js";
-import { type ThreadClue, threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, AddThreadClue, InitialThreadClue } from "../types/story-thread.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter } from "../types/story.js";
+import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
 
@@ -17,8 +17,8 @@ export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
     hint: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'What will happen as a consequence for the action' },
-        type: { type: 'string', description: 'The type of the hint', enum: [...actionHintTypes] },
+        text: { type: 'string', description: 'What will happen as a consequence. 1-2 sentence.' },
+        type: { type: 'string', description: 'Type of the hint', enum: [...actionHintTypes] },
       } satisfies Record<keyof ActionHint, AIJsonProperty>,
       required: ['text', 'type'] satisfies (keyof ActionHint)[],
       additionalProperties: false
@@ -131,7 +131,7 @@ function buildTraitItemSchema(params?: {
 }
 
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
-  placeId: { type: 'string', description: 'Slug identifier (e.g., "abandoned_hotel")' },
+  placeId: { type: 'string', description: 'Lowercase slug identifier (e.g., "abandoned_hotel")' },
   knownName: { type: 'string', description: `Place name as it appears in the narrative (preferred name)` },
   realName: { type: 'string', description: 'Original name unrevealed (e.g., institution name)' },
   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
@@ -181,6 +181,7 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
     tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
     targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
     targetPageRange: { type: 'string', description: 'When this note should become relevant (optional): "<min>-<max>"' },
+    relatedThreadId: { type: 'string', description: 'Related thread ID if any. Omit or "none" if none.' }
   } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
   required: ['note'] satisfies (keyof FutureNoteGeneration)[],
   additionalProperties: false
@@ -200,6 +201,34 @@ export const PLOT_FLAGS_SCHEMA: AIJsonProperty = {
     additionalProperties: false
   }
 };
+
+export const THREADS_SCHEMA: AIJsonProperty = { type: 'array', description: 'New important core mysteries if any.', items: {
+  type: 'object',
+  properties: {
+    threadId: { type: 'string', description: 'Lowercase slug identifier (use "t_" prefix)' },
+    title: { type: 'string' },
+    question: { type: 'string' },
+    priority: { type: 'string', enum: [...threadPriorities] },
+    summary: { type: 'string' },
+    truth: { type: 'string', enum: [...threadTruths] },
+    importance: { type: 'number' },
+    clues: {
+      type: 'array',
+      description: 'Initial clues if any',
+      items: {
+        type: 'object',
+        properties: {
+          clue: { type: 'string' },
+          isFalse: { type: 'boolean', description: 'Whether the clue is true or misleading' },
+        } satisfies Record<keyof InitialThreadClue, AIJsonProperty>,
+        required: ['clue', 'isFalse'] satisfies (keyof InitialThreadClue)[],
+        additionalProperties: false
+      },
+    },
+  } satisfies Record<keyof NewThread, AIJsonProperty>,
+  required: ['threadId', 'title', 'question', 'priority', 'truth', 'importance', 'clues'] satisfies (keyof NewThread)[],
+  additionalProperties: false
+} };
 
 export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   ...INITIAL_PLACE_SCHEMA,
@@ -233,7 +262,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
 };
 
 export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
-  characterId: { type: 'string', description: 'Slug identifier (e.g., "Lisa Park" → "lisa_p")' },
+  characterId: { type: 'string', description: 'Lowercase slug identifier (e.g., "Lisa Park" → "lisa_p")' },
   knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
   realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
   recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
@@ -308,13 +337,26 @@ function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, i
 };
 
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {
-  text: { type: 'string', description: `Main story page content. First-person central ("I") POV as MC. Max ${MAX_WORDS_PER_PAGE} words.` },
+  text: { type: 'string', description: `Main story page content (max ${MAX_WORDS_PER_PAGE} words). First-person central ("I") POV as MC.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
-  placeId: { type: 'string', description: 'Current place ID' },
+  placeId: { type: 'string', description: 'Current place ID or "unknown"' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
   timeOfDay: { type: 'string', description: `Current time mark (e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range)` },
   sceneType: { type: 'string', enum: [...Object.keys(sceneTypes)] },
-  charactersPresent: { type: 'array', items: { type: 'string' }, description: 'Character IDs present in this page (besides MC)' },
+  charactersPresent: {
+    type: 'array',
+    description: 'Characters physically present in this page (besides MC)',
+    items: {
+      type: 'object',
+      properties: {
+        characterId: { type: 'string' },
+        sceneRole: { type: 'string', enum: [...characterSceneRoles] },
+        sceneFocus: { type: 'number', description: 'Relative narrative importance in current scene (0-1).' },
+      } satisfies Record<keyof SceneCharacter, AIJsonProperty>,
+      required: ['characterId', 'sceneRole', 'sceneFocus'] satisfies (keyof SceneCharacter)[],
+      additionalProperties: false
+    },
+  },
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
   importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page' },
   actions: STORY_ACTION_SCHEMA
@@ -374,31 +416,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     type: 'object',
     description: 'Updates to narrative threads. Omit if no update.',
     properties: {
-      newThreads: { type: 'array', description: 'New important core mysteries if any.', items: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          question: { type: 'string' },
-          priority: { type: 'string', enum: [...threadPriorities] },
-          truth: { type: 'string', enum: [...threadTruths] },
-          importance: { type: 'number' },
-          clues: {
-            type: 'array',
-            description: 'Initial clues if any',
-            items: {
-              type: 'object',
-              properties: {
-                clue: { type: 'string' },
-                isFalse: { type: 'boolean', description: 'Whether the clue is true or misleading' },
-              } satisfies Record<keyof InitialThreadClue, AIJsonProperty>,
-              required: ['clue', 'isFalse'] satisfies (keyof InitialThreadClue)[],
-              additionalProperties: false
-            },
-          },
-        } satisfies Record<keyof NewThread, AIJsonProperty>,
-        required: ['title', 'question', 'priority', 'truth', 'importance', 'clues'] satisfies (keyof NewThread)[],
-        additionalProperties: false
-      } },
+      newThreads: THREADS_SCHEMA,
       updateThreads: { type: 'array', description: 'Updates to existing threads if any.', items: {
         type: 'object',
         properties: {
@@ -409,6 +427,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
           importance: { type: 'number' },
           urgencyCorrection: { type: 'number', description: 'Only for exceptional shifts in narrative momentum (between -0.5 to 0.5). Not for normal development.' },
           resolution: { type: 'string' },
+          summary: { type: 'string' },
         } satisfies Record<keyof UpdateThread, AIJsonProperty>,
         required: ['threadId'] satisfies (keyof UpdateThread)[],
         additionalProperties: false

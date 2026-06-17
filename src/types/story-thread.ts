@@ -86,6 +86,7 @@ export interface StoryThread {
   clues: ThreadClue[];
 
   // Resolution
+  summary?: string;
   resolution?: string;
 }
 
@@ -108,11 +109,13 @@ export interface ThreadUpdates {
 }
 
 export type NewThread = Pick<StoryThread,
+  | 'threadId'
   | 'title'
   | 'question'
   | 'priority'
   | 'truth'
-  | 'importance'> & { clues?: InitialThreadClue[] };
+  | 'importance'
+  | 'summary'> & { clues?: InitialThreadClue[] };
 
 export type UpdateThread = {
   threadId: string;
@@ -121,6 +124,7 @@ export type UpdateThread = {
   truth?: ThreadTruth;
   importance?: number;
   urgencyCorrection?: number;
+  summary?: string;
   resolution?: string;
 };
 

@@ -1,4 +1,4 @@
-import type { ActionType, AIActionConfig, SceneType, StoryMomentum, ThreatProximity } from "../types/story.js";
+import type { ActionType, AIActionConfig, CharacterSceneRole, SceneType, StoryMomentum, ThreatProximity } from "../types/story.js";
 import type { ThreadPriority } from "../types/story-thread.js";
 
 export const BOOK_MIN_PAGES = 80;
@@ -20,6 +20,7 @@ export const MAX_INVENTORY_ITEM = 5;
 export const MIN_ACTION_CHOICES = 1;
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
+export const MAX_ACTION_CHOICES_FINALE = 2;
 export const MAX_OLDER_PLOT_FLAGS = 15;
 
 export const MAX_BRANCHING_RETRIES = 3;
@@ -332,6 +333,18 @@ export const SCENE_TYPE_URGENCY: Record<SceneType, number> = {
 };
 
 export const DEFAULT_SCENE_URGENCY = 0.4;
+
+/**
+ * Base danger score per character scene role.
+ * Weighted by sceneFocus before accumulation, so a background threat
+ * contributes less than a focused one.
+ */
+export const SCENE_ROLE_DANGER: Record<CharacterSceneRole, number> = {
+  threat:     1.0,
+  opposition: 0.55,
+  neutral:    0.0,
+  supporting: 0.0,   // safe presence; threat/fear signals already capture base danger
+};
 
 // previous-momentum → baseline score, used both for smoothing and
 // for detecting a drop-from-peak ("resolving")

@@ -19,7 +19,6 @@
 [x] place update remove: `visitCount`, `familiarity` & `lastVisitedAtPage`
 [x] place calculate `familiarity` using `calculatePlaceFamiliarity`
 [x] place calculate `lastVisitedAtPage`, `visitCount` (compare with previous page's place)
-
 [x] update place by placeId
 [x] update character by characterId
 [x] Consider place & character key (generate like future note key)
@@ -35,11 +34,67 @@
 [x] firstpage & nextpage place harusnya placeId
 [x] add thread urgency decay
 [x] place prompt tambah actual name, isRealNameKnown (known name jadi primary)
-[ ] implement openrouter & cloudflare
-[ ] Future notes key pakein slugify juga aja (DRY)
+[x] implement openrouter & cloudflare
+[x] Future notes key `generateUniqueId` vs `ensureUniqueId` (buat DRY)
+[x] thread_id langsung generate AI aja (karena masuk ke future note `relatedThreadId`)
+[x] env api keys openrouter & cloudflare -> also add on github & vercel
+[x] charactersPresent jadiin SceneCharacter[]
+[x] charactersPresent adain lagi di initial story page generation
+[x] restore rules charactersPresent match with initialCharacters
 [ ] translate story state (place name, inventory, actionsHistory, contextHistory)
-[ ] db reset
-[ ] env openrouter & cloudflare -> also add on github & vercel
+[ ] db reset & pnpm check
+
+Migrate imagen
+Endpoints to be discontinued	Recommended migration path
+imagen-4.0-generate-001	gemini-3.1-flash-image
+imagen-4.0-ultra-generate-001	gemini-3.1-flash-image
+imagen-4.0-fast-generate-001	gemini-3.1-flash-image
+
+Backend:
+Does very verbose and lengthy system prompt really necessary, worth, and benefits?
+
+https://www.tokengratis.id/
+
+---
+
+[ ] claude investigate 401 error
+
+backend:
+src/middleware/nextauth.ts
+
+frontend:
+src/auth.ts
+
+---
+
+here's my Groq chat completions limit I copy-pasted from: https://console.groq.com/settings/limits
+
+Chat Completions
+Model	Requests per Minute	Requests per Day	Tokens per Minute	Tokens per Day	Actions
+allam-2-7b	30	7K	6K	500K	
+groq/compound	30	250	70K	No limit	
+groq/compound-mini	30	250	70K	No limit	
+llama-3.1-8b-instant	30	14.4K	6K	500K	
+llama-3.3-70b-versatile	30	1K	12K	100K	
+meta-llama/llama-4-scout-17b-16e-instruct	30	1K	30K	500K	
+meta-llama/llama-prompt-guard-2-22m	30	14.4K	15K	500K	
+meta-llama/llama-prompt-guard-2-86m	30	14.4K	15K	500K	
+openai/gpt-oss-120b	30	1K	8K	200K	
+openai/gpt-oss-20b	30	1K	8K	200K	
+openai/gpt-oss-safeguard-20b	30	1K	8K	200K	
+qwen/qwen3-32b	60	1K	6K	500K	
+
+based on that, can you:
+- filter which models fit for creative thriller story writing in priority order (by most creative)
+- correct my Groq `rpm` & `rpd`
+- should we add `rpmo` as well for Cohere case (monthly quota)?
+- correct my `canUseAIToday` logic to account montly quota correctly (if `rpmo` value defined)
+
+and also for rate limit differentiation across models in single provider, I think I'm no problem to use the highest RPM & RPD
+because my waterfall logic handles that quota exceeded error gracefully and goes to next provider-model fallback
+so I prefer ceiling values instead of minimum conservative values (which risk of ignoring actual quota remaining), but just add notes in the jsdoc or inline comments
+
+please continue
 
 ---
 
@@ -146,6 +201,8 @@ future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)
 
 paid infra:
+[ ] beli domain twistloom.com -> buat email dev@twistloom.com
+[ ] migrate semua akun AI pake email dev@twistloom.com -> replace all API keys
 [ ] purchase premium AI chat API keys
 [ ] migrate: GitHub models 8K context -> Official OpenAI 128K context
 [ ] migrate: LRU & in-memory cache (for static configurations or public API metadata) -> Vercel KV or Upstash Redis for true, shared cross-user in-memory storage.

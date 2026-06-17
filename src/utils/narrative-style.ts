@@ -319,7 +319,7 @@ export function generateStyleInstructions(style: Pick<NarrativeStyle, 'mode' | '
   // ── 3. Prose texture from primary weakness ─────────────────────────────────
   // A single writing-technique hint based on the player's behavioral archetype.
   // This colors the MC's perspective without duplicating exploitation logic.
-  const primaryWeakness = profile.primaryWeakness as PrimaryWeakness | undefined;
+  const primaryWeakness = profile.primaryWeakness;
   const textureHint = primaryWeakness ? primaryWeaknessProseHint(primaryWeakness) : null;
 
   // ── Build output ────────────────────────────────────────────────────────────

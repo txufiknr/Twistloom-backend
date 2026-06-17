@@ -4,7 +4,7 @@ import type { Book, PageTranslation } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
 import type { PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
-import type { StoryThread, ThreadUpdates } from "./story-thread.js";
+import type { NewThread, StoryThread, ThreadUpdates } from "./story-thread.js";
 
 /**
  * Available moods for story pages
@@ -368,6 +368,8 @@ export type FutureNote = {
   targetPhase?: StoryPhase;
   /** Optional target page number for when this note should become relevant */
   targetPageRange?: string;
+  /** Optional if related to any active thread */
+  relatedThreadId?: string;
 };
 
 export type FutureNoteGeneration = Omit<FutureNote, 'key' | 'addedAtPage'>;
@@ -685,7 +687,7 @@ export type PsychologicalProfileMetrics = {
   /** Cognitive state: memory clarity and perception (0.0-1.0) */
   cognitiveState: number;
   /** Direct core psychological vulnerability to leverage in choices */
-  primaryWeakness?: string;
+  primaryWeakness?: PrimaryWeakness;
   // /** Secondary or environmental vulnerability backing the narrative tension */
   // secondaryWeakness?: string;
 } & PsychologicalProfileTraits;
@@ -731,16 +733,60 @@ export type StoryScene = {
   weather?: PlaceWeather;
   /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
   timeOfDay?: string;
-  /** Current narrative function */
+  /** Current narrative function (scene purpose) */
   sceneType?: SceneType;
-  /** Current pressure level */
+  /** Current narrative pressure (tension level) */
   momentum?: StoryMomentum;
+  /** Characters IDs present in the page */
+  charactersPresent?: SceneCharacter[];
 };
 
 /**
- * Current narrative pressure and urgency level.
+ * Representation of a character who is physically present and
+ * actively influences the current scene.
  *
-*/
+ * Used to generate focused prompts, prioritize context and memories,
+ * and balance which characters receive narrative attention on the next
+ * page or scene.
+ */
+export type SceneCharacter = {
+  /**
+   * Unique identifier of the character (character ID string).
+   */
+  characterId: string;
+  /**
+   * Role the character plays within this scene's dynamics.
+   * Use values from {@link CharacterSceneRole} (e.g. 'supporting', 'opposition').
+   */
+  sceneRole: CharacterSceneRole;
+  /**
+   * Relative narrative importance or focus weight for this scene.
+   * Higher values indicate the character should receive more attention
+   * or drive the upcoming narrative actions.
+   */
+  sceneFocus: number;
+}
+
+/**
+ * Enumerates possible roles a character can have within a scene.
+ *
+ * - 'supporting': assists or allies the protagonist or focal characters.
+ * - 'opposition': actively opposes the focal characters but is not an existential threat.
+ * - 'neutral': present without strong alignment or impact on immediate conflict.
+ * - 'threat': poses a danger or significant obstacle in the scene.
+ */
+export const characterSceneRoles = [
+  'supporting',
+  'opposition',
+  'neutral',
+  'threat'
+];
+
+/**
+ * Type union of allowed CharacterSceneRole string literals derived from
+ * the characterSceneRoles array.
+ */
+export type CharacterSceneRole = typeof characterSceneRoles[number];
 
 /**
  * Narrative pressure and urgency level guidance for story generation.
@@ -781,7 +827,7 @@ export interface CalculateStoryMomentumParams {
   /** Scene type for the new page (StoryGeneration.sceneType). */
   sceneType?: SceneType;
   /** Characters IDs present in the new page's scene. */
-  charactersPresent: string[];
+  charactersPresent?: SceneCharacter[];
   /** Momentum of the parent page (actionedPage.momentum), if known. */
   previousMomentum?: StoryMomentum;
 }
@@ -856,11 +902,9 @@ export type SceneType = keyof typeof sceneTypes;
  * 
  * @interface StoryPage
  */
-export type StoryPage = {
+export type StoryPage = StoryScene & {
   /** Main story page content (60-120 words, first-person POV) */
   text: string;
-  /** Characters IDs present in the page */
-  charactersPresent?: string[];
   /** Key events that occurred in the page */
   keyEvents?: string[];
   /** Important objects mentioned in the page */
@@ -869,7 +913,7 @@ export type StoryPage = {
   actions: Action[];
   /** Changes to the story state */
   stateDelta: StateDelta;
-} & StoryScene;
+};
 
 export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> & {
   // /** Optional selected action that triggered this page generation (for duplicate prevention) */
@@ -938,7 +982,7 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
 };
 export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
-export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'charactersPresent' | 'placeId'>;
+export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & Pick<StoryPage, 'momentum'>;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | ResourceAIProvider | ResourceTimestamp>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
@@ -1232,6 +1276,7 @@ export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' 
   injuries: InitialInjury[];
   futureNotes: FutureNoteGeneration[];
   viableEnding: InitialEnding;
+  threads: NewThread[];
 }>;
 
 /**
@@ -1241,7 +1286,7 @@ export const storyPhases = {
   EARLY: `(Intrigue & Seeding) — Ground the character and introduce the core mystery. Establish an atmosphere of subtle unease by planting initial seeds of unreliability and doubt. Keep tension light, prioritizing intrigue over outright dread.`,
   MID: `(Escalation & Rhythm) — Warp the MC's grip on reality and actively escalate psychological pressure. Balance active threads using varied build-and-release tension cycles, exploiting established character patterns to complicate the horror.`,
   LATE: `(Convergence & Fracture) — Drive tensions to a volatile flashpoint where mental distortions reach full parity. Introduce no new major threads; focus strictly on converging existing storylines and collapsing open questions toward the viable ending.`,
-  FINALE: `(Collapse & Resolution) — Execute full psychological and narrative collapse at maximum "NIGHTMARE" difficulty. Introduce no new characters or mysteries—every active thread must definitively resolve or deliberately shatter.`,
+  FINALE: `(Collapse & Resolution) — Execute full psychological and narrative collapse at maximum "NIGHTMARE" difficulty. Prefer a focused cast. Introduce no new characters or mysteries—every active thread must definitively resolve or deliberately shatter.`,
 };
 
 export const finalePhases = {

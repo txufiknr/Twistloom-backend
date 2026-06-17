@@ -1,15 +1,33 @@
-import { DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_TYPE_URGENCY, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
+import { DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult } from "../types/story.js";
+import { ensureUniqueId } from "./text-processing.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
-import type { ThreadUpdates, StoryThread } from "../types/story-thread.js";
+import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
-import { slugify } from "./text-processing.js";
+import type { NewThread } from "../types/story-thread.js";
+
+/**
+ * Create a StoryThread object from a NewThread-like spec.
+ * Exported so other modules (prompt initialization) can reuse the same
+ * construction logic and remain consistent.
+ */
+export function createStoryThread(spec: NewThread, page: number): StoryThread {
+  return {
+    ...spec,
+    importance: spec.importance ?? 0.5,
+    clues: spec.clues?.map<ThreadClue>(c => ({ ...c, discoveredAtPage: page })) ?? [],
+    status: 'open',
+    introducedAt: page,
+    lastUpdatedAt: page,
+    urgency: 0.27, // Start with low urgency
+  } satisfies StoryThread;
+}
 
 /**
  * Pressure from recent major plot flags. A major event introduced this page
@@ -53,10 +71,16 @@ export function calculateThreadPressure(threads: StoryThread[], currentPage: num
 
 /**
  * Immediate danger: hiddenState.threatProximity (primary signal), recent
- * dangerous/safe actions (most recent weighted higher), hostile/suspicious
- * characters present, and current fear flag.
+ * dangerous/safe actions (most recent weighted higher), character scene
+ * roles weighted by sceneFocus, and current fear flag.
+ *
+ * Character contribution is a focus-weighted average across all present
+ * characters, so a single high-focus threat reads as more dangerous than
+ * several low-focus ones, and a background opposition character doesn't
+ * dominate. A `narrativeFlags.isSuspicious` character gets a small boost
+ * on top of their role score — hidden threat is worse than declared threat.
  */
-export function calculateDangerLevel(state: StoryState, charactersPresent: string[]): number {
+export function calculateDangerLevel(state: StoryState, charactersPresent?: SceneCharacter[]): number {
   const threatScore = THREAT_PROXIMITY_SCORE[state.hiddenState.threatProximity] ?? 0.2;
 
   const recent = state.actionsHistory.slice(-2);
@@ -68,22 +92,39 @@ export function calculateDangerLevel(state: StoryState, charactersPresent: strin
   });
   actionScore = Math.max(0, Math.min(1, actionScore));
 
-  const hostileCount = charactersPresent.filter(characterId => {
-    const c = state.characters[characterId];
-    if (!c) return false;
-    return c.relationshipToMC.status === 'hostile'
-      || c.relationshipToMC.status === 'afraid'
-      || c.narrativeFlags.isSuspicious;
-  }).length;
+  // Focus-weighted average of per-character danger scores.
+  // sceneFocus is the weight — a high-focus threat dominates, a
+  // low-focus one lurks quietly in the background.
+  let characterDangerScore = 0;
+  if (charactersPresent?.length) {
+    let weightedSum = 0;
+    let totalFocus = 0;
 
-  const hostilityScore = Math.min(1, hostileCount * 0.3);
+    for (const sc of charactersPresent) {
+      const memory = state.characters[sc.characterId];
+      const roleScore = SCENE_ROLE_DANGER[sc.sceneRole] ?? 0;
+
+      // A suspicious character (secret threat) is worse than a declared one —
+      // small bump, capped at 1.0 per character
+      const suspicionBoost = memory?.narrativeFlags.isSuspicious ? 0.2 : 0;
+      const characterScore = Math.min(1, roleScore + suspicionBoost);
+
+      weightedSum += characterScore * sc.sceneFocus;
+      totalFocus  += sc.sceneFocus;
+    }
+
+    characterDangerScore = totalFocus > 0
+      ? Math.min(1, weightedSum / totalFocus)
+      : 0;
+  }
+
   const fearScore = state.flags.fear === 'high' ? 1 : state.flags.fear === 'medium' ? 0.5 : 0.2;
 
   return Math.min(1,
-    threatScore   * 0.4 +
-    actionScore   * 0.25 +
-    hostilityScore * 0.2 +
-    fearScore     * 0.15
+    threatScore          * 0.35 +
+    actionScore          * 0.25 +
+    characterDangerScore * 0.25 +
+    fearScore            * 0.15,
   );
 }
 
@@ -231,10 +272,11 @@ export function extractStateDelta(generation: StoryGeneration, expectedPageNumbe
 }
 
 export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, expectedPageNumber: number, futureNoteKeys: string[]): FutureNote[] {
-  return notes?.map(note => {
+  return notes?.map<FutureNote>(note => {
     const tag = note.tag || 'other';
-    const key = generateUniqueId(tag, futureNoteKeys);
+    const key = ensureUniqueId(tag, new Set(futureNoteKeys), { alwaysShowSuffix: true });
     futureNoteKeys.push(key);
+    if (note.relatedThreadId === 'none') delete note.relatedThreadId; // Exclude `relatedThreadId` key if value is "none"
     return { ...note, addedAtPage: expectedPageNumber, key };
   }) ?? [];
 }
@@ -550,25 +592,6 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   updateAdvancedEndingSystems(updatedState);
 
   return updatedState;
-}
-
-/**
- * Generates a unique key by appending an incrementing numeric suffix.
- * @param key - The base string (e.g., "location")
- * @param existingKeys - Array of keys that already exist
- * @returns A unique string guaranteed not to be in existingKeys (e.g., "location_1")
- */
-export function generateUniqueId(key: string, existingKeys: string[]): string {
-  const existingSet = new Set(existingKeys);
-  let counter = 1;
-  
-  while (true) {
-    const candidateId = `${key}_${counter}`;
-    if (!existingSet.has(candidateId)) {
-      return candidateId;
-    }
-    counter++;
-  }
 }
 
 /**
@@ -987,20 +1010,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
   // Create new threads
   if (threadUpdates.newThreads?.length) {
     for (const newThread of threadUpdates.newThreads) {
-      const threadId = slugify(newThread.title);
-      const thread: StoryThread = {
-        threadId: threadId,
-        title: newThread.title,
-        question: newThread.question,
-        priority: newThread.priority,
-        truth: newThread.truth,
-        importance: newThread.importance ?? 0.5,
-        clues: newThread.clues?.map(c => ({ ...c, discoveredAtPage: state.page })) ?? [],
-        status: 'open',
-        introducedAt: state.page,
-        lastUpdatedAt: state.page,
-        urgency: 0.27, // Start with low urgency
-      };
+      const thread = createStoryThread(newThread, state.page);
       state.threads.push(thread);
     }
   }
@@ -1017,6 +1027,7 @@ export function processThreadUpdates(state: StoryState, threadUpdates?: ThreadUp
         if (update.urgencyCorrection !== undefined && update.urgencyCorrection !== 0) {
           existingThread.urgency = Math.max(Math.min(existingThread.urgency + update.urgencyCorrection, 1.0), 0);
         }
+        if (update.summary) existingThread.summary = update.summary;
         if (update.resolution) existingThread.resolution = update.resolution;
         existingThread.lastUpdatedAt = state.page;
       }

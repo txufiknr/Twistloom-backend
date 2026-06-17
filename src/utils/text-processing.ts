@@ -394,6 +394,28 @@ export function slugify(text: string, separator: string = "_"): string {
     );
 }
 
+/**
+ * Optimized pure function.
+ * Note: Caller must pass a Set, not an Array, to prevent O(N^2) recreation.
+ * 
+ * @example
+ * const baseId = generateCharacterId(name);
+ * const uniqueId = ensureUniqueId(baseId, existingIds);
+ */
+export function ensureUniqueId(id: string, existingIds: Set<string>, options?: { separator?: string, alwaysShowSuffix?: boolean }): string {
+  const { separator = "_", alwaysShowSuffix = false } = options ?? {};
+  
+  // if `alwaysShowSuffix` true, always show "_1" counter suffix when no duplicate
+  if (!existingIds.has(id)) return alwaysShowSuffix ? `${id}${separator}1` : id;
+  
+  let suffix = 2;
+  while (existingIds.has(`${id}${separator}${suffix}`)) {
+    suffix++;
+  }
+
+  return `${id}${separator}${suffix}`;
+}
+
 export function sanitizeText(text: string): string {
   return correctDoubleQuotes(sanitizeTextForDB(text.trim()));
 }

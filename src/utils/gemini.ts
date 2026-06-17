@@ -469,18 +469,53 @@ export function convertToGeminiSchema(
   } = options ?? {};
 
   /**
-   * Strips parenthetical "supplementary" asides from a description.
+   * Shortens a schema field description by extracting the primary sentence and
+   * intelligently stripping supplementary parenthetical asides.
    *
-   * Example:
-   * "Haunting experiences referenced by story (and affect MC's psychological profile)."
-   * -> "Haunting experiences referenced by story."
+   * Features:
+   * - Truncates trailing sentences gracefully, respecting abbreviations.
+   * - Prevents the accidental removal of technical schema constraints (like max/min, 
+   * defaults, or variables) that a naive regex would destroy.
    *
-   * Only handles a single level of (non-nested) parentheses — sufficient for
-   * the short, flat descriptions used in this schema. Collapses any resulting
-   * double spaces and trims the result.
+   * Example 1 (Strips narrative asides):
+   * `Haunting experiences referenced by story (and affect MC's psychological profile).`
+   * → `Haunting experiences referenced by story.`
+   * 
+   * Example 2 (Truncates trailing sentences but KEEPS constraints):
+   * `Main story page content (max ${MAX_WORDS_PER_PAGE} words). First-person central ("I") POV as MC.`
+   * → `Main story page content (max ${MAX_WORDS_PER_PAGE} words).`
+   *
+   * @param {string} description - The raw schema description field.
+   * @returns {string} The shortened, cleanly formatted description.
    */
-  const removeSupplementary = (description: string): string =>
-    description.replace(/\s*\([^()]*\)/g, '').replace(/\s{2,}/g, ' ').trim();
+  const removeSupplementary = (description: string): string => {
+    if (!description) return '';
+
+    // 1. Extract the primary sentence.
+    // Matches everything up to a sentence terminator (.?!) followed by optional 
+    // closing quotes/parens, a space, and an uppercase letter (or end of string).
+    // This safely avoids prematurely splitting on abbreviations like "e.g." or "i.e."
+    const sentenceMatch = description.match(/^[\s\S]*?[.!?][)"']?(?=\s+[A-Z]|\s*$)/);
+    const firstSentence = sentenceMatch ? sentenceMatch[0] : description;
+
+    // 2. Intelligently remove supplementary parentheticals.
+    // We use a replacer function to evaluate the contents of the parenthesis. 
+    const cleanedSentence = firstSentence.replace(/\s*\([^()]*\)/g, (match) => {
+      const lowerMatch = match.toLowerCase();
+      
+      // Preserve parentheses that contain variables ($), numbers (\d), or technical keywords
+      const isImportantConstraint = /max|min|limit|default|optional|required|\d|\$/.test(lowerMatch);
+      
+      // Keep the constraint intact (including its preceding space)
+      if (isImportantConstraint) return match;
+      
+      // Strip the narrative aside
+      return '';
+    });
+
+    // 3. Collapse double spaces and trim.
+    return cleanedSentence.replace(/\s{2,}/g, ' ').trim();
+  };
 
   /**
    * Resolves the description to keep for a schema node.

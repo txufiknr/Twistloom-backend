@@ -3,9 +3,9 @@ import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTr
 import { type StoryMC, type StoryMCTranslation } from "../types/character.js";
 import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
-import { difficulties, endingTypes, factTypes, flagLevels } from "../types/story.js";
+import { difficulties, endingTypes, factTypes, flagLevels, storyMomentums } from "../types/story.js";
 import { type KnownGender } from "../types/user.js";
-import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA } from "./story.js";
+import { FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA, THREADS_SCHEMA } from "./story.js";
 import { BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 
 /**
@@ -98,7 +98,7 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
       type: 'object',
       description: 'Note about ending plan shift or changes.',
       properties: {
-        reason: { type: 'string', description: `Concise. 1-2 sentence.` },
+        reason: { type: 'string', description: `Terse. 1-2 sentence.` },
         viabilityBefore: { type: 'number', description: '0-1' },
         viabilityAfter: { type: 'number', description: '0-1' },
       } satisfies Record<keyof EndingChangeNote, AIJsonProperty>,
@@ -108,10 +108,15 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
   } satisfies Record<keyof Ending, AIJsonProperty>
 }
 
-const { charactersPresent: _cp, placeId: _pi, ...initialStoryPageGeneration} = STORY_PAGE_GENERATION_SCHEMA;
+const { placeId: _pi, ...initialStoryPageGeneration} = STORY_PAGE_GENERATION_SCHEMA;
 
 export const INITIAL_STORY_PAGE_GENERATION_SCHEMA: Record<keyof InitialStoryPageGeneration, AIJsonProperty> = {
   ...initialStoryPageGeneration,
+  momentum: { type: 'string', enum: [...Object.keys(storyMomentums)], description: 'Narrative pressure or urgency level in the first page.' },
+  charactersPresent: {
+    ...initialStoryPageGeneration.charactersPresent,
+    description: 'Characters physically present in this page (besides MC). Must match characters in initialCharacters exactly.',
+  }
 };
 
 /**
@@ -157,10 +162,11 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
         items: FUTURE_NOTE_SCHEMA
       },
       plotFlags: PLOT_FLAGS_SCHEMA,
+      threads: THREADS_SCHEMA,
       inventory: { type: 'array', items: INITIAL_INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
     } satisfies Record<keyof InitialStoryState, AIJsonProperty>,
-    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags'] satisfies (keyof InitialStoryState)[],
+    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'threads'] satisfies (keyof InitialStoryState)[],
     additionalProperties: false
   },
   initialFacts: {

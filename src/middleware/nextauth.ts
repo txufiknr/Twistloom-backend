@@ -82,7 +82,8 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     // TODO: I got this 401 when user is just logged in (via Google) in frontend
     // and just redirected back to reader page (where user did the login)
     // is it possible that cookie propagation delay also the cause?
-    // but I also have waited for that in frontend, so what's wrong?
+    // but I also have waited for that in frontend (via `isAuthReady`), so what's wrong?
+
     // GET /api/user?ref=users-api (401)
     // [verifyNextAuthToken] ✨ No valid session found
     // [verifyNextAuthToken] 📊 Session object: null

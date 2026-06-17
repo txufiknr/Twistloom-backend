@@ -205,7 +205,7 @@ export function processCharacterUpdates(
   
     // Add new characters
     for (const character of newCharacters) {
-      const characterId = ensureUniqueId(character.characterId, Object.keys(state.characters));
+      const characterId = character.characterId;
       state.characters[characterId] = {
         ...character,
         introducedAtPage: page,
@@ -217,7 +217,7 @@ export function processCharacterUpdates(
     
     // Update existing characters
     for (const update of updatedCharacters) {
-      const updateId = slugify(update.characterId);
+      const updateId = update.characterId;
       const existing = state.characters[updateId];
       if (existing) {
         state.characters[updateId] = updateCharacter(existing, update, page, placeId);
@@ -250,10 +250,8 @@ export function processCharacterUpdates(
  * // Character with inventory and injuries
  * - Bio: Lisa Carter ("Lisa"), female, 16 — Shy teenager with social anxiety.
  * - Inventory:
- *   - Cellphone (amount: 1, where: right pants pocket) - acquired: page 1
- *     → traits: color: black
- *   - Rugged rope (where: backpack) - acquired: page 5 at Haunted House
- *     → traits: color: brown, length: 5-meter
+ *   - 1x Cellphone (right pants pocket, color: black) - acquired: page 1
+ *   - 1x Rugged rope (backpack, color: brown, length: 5-meter) - acquired: page 5 at Haunted House
  * - Injuries:
  *   - Deep cut (left arm, severity: 0.7) - acquired: page 5 at Haunted House
  *     → Consequence (high): Cannot lift heavy objects
@@ -276,21 +274,18 @@ export function getMainCharacterInfo(params: {
 
   // Format inventory items with detailed nested information
   if (inventory.length) {
-    const inventoryList = inventory.map(invItem => {
+    const inventoryList = inventory.map(item => {
       const parts = [];
-      parts.push(`${invItem.amount}x`);
-      parts.push(invItem.name);
+      parts.push(`${item.amount}x`);
+      parts.push(item.name);
       
-      const details = [];
-      if (invItem.where) details.push(`where: ${invItem.where}`);
-      if (invItem.pageAcquired) details.push(`acquired: page ${invItem.pageAcquired}`);
+      const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
+      const details = [item.where, ...traitEntries].filter(Boolean);
       
       let inventoryLine = `  - ${parts.join(' ')}`;
       if (details.length) inventoryLine += ` (${details.join(', ')})`;
-      if (invItem.traits && Object.keys(invItem.traits).length) {
-        const traitEntries = Object.entries(invItem.traits).map(([key, value]) => `${key}: ${value}`);
-        inventoryLine += `\n    → traits: ${traitEntries.join(', ')}`;
-      }
+      
+      if (item.pageAcquired) inventoryLine += ` - acquired: page ${item.pageAcquired}`;
       return inventoryLine;
     });
 
@@ -435,9 +430,19 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       if (pastInteractions.length) {
         const recentInteractions = pastInteractions.sort((a, b) => a.page - b.page).slice(-MAX_PAST_INTERACTIONS);
         details.push(`  Recent interactions:`);
-        recentInteractions.forEach((i) => {
-          details.push(`    - Page ${i.page}: ${i.interaction}`);
-        });
+        const interactionsByPage = recentInteractions.reduce<Record<number, string[]>>((acc, interaction) => {
+          acc[interaction.page] = acc[interaction.page] || [];
+          acc[interaction.page].push(interaction.interaction);
+          return acc;
+        }, {});
+
+        Object.keys(interactionsByPage)
+          .map(Number)
+          .sort((a, b) => a - b)
+          .forEach((page) => {
+            const interactionsText = interactionsByPage[page].join(' ');
+            details.push(`    - Page ${page}: ${interactionsText}`);
+          });
       }
       
       // Character relationships with nested bullets
@@ -666,31 +671,4 @@ export function generateCharacterId(name: string): string {
   const parts = name.trim().split(/\s+/).map(part => slugify(part)).filter(Boolean);
   const [first = "", ...rest] = parts;
   return [first, ...rest.map(part => part[0])].join("_");
-}
-
-/**
- * 
- * @param id 
- * @param existingIds 
- * @param separator 
- * @returns 
- * 
- * @example
- * const baseId = generateCharacterId(name);
- * const uniqueId = ensureUniqueId(baseId, existingIds);
- */
-export function ensureUniqueId(
-  id: string,
-  existingIds: readonly string[],
-  separator = "_",
-): string {
-  const existing = new Set(existingIds);
-  if (!existing.has(id)) return id;
-  let suffix = 2;
-
-  while (existing.has(`${id}${separator}${suffix}`)) {
-    suffix++;
-  }
-
-  return `${id}${separator}${suffix}`;
 }

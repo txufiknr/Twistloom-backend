@@ -45,6 +45,7 @@ export const CHARACTER_NAMES = {
 
   femaleNames: [
     'Olivia', 'Emma', 'Ava', 'Sophia', 'Isabella', 'Mia', 'Mira', 'Charlotte', 'Amelia',
+    'Leira', 'Lennie', 'Olera', 'Lara', 'Laura', 'Sonia', 'Tania', 'Tanya', 'Monica', 'Jessica',
     'Harper', 'Evelyn', 'Abigail', 'Emily', 'Elizabeth', 'Sofia', 'Avery', 'Ella', 'Anya',
     'Madison', 'Scarlett', 'Victoria', 'Grace', 'Chloe', 'Camila', 'Penelope', 'Jane',
     'Riley', 'Zoey', 'Nora', 'Hannah', 'Lily', 'Addison', 'Aubrey', 'Ellie', 'Ellen', 'Eleanor',
@@ -115,4 +116,15 @@ export const CHARACTER_NAMES = {
   ]
 }
 
-export const blacklistedNames: string[] = ['Elara', 'Elias', 'Vance', 'Voss', 'Thorne', 'Julian', 'Silas'];
+export const blacklistedNames: string[] = [
+  // AI-memes
+  'Elara',
+  'Elias',
+  'Vance',
+  'Voss',
+  'Thorne',
+  'Julian',
+  'Silas',
+  // Religious & sensitive names
+  'Muhammad'
+];

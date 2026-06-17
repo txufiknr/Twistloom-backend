@@ -1,12 +1,12 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
-import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
-import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey } from "./story.js";
+import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
 import { getMainCharacterInfo } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
@@ -23,7 +23,7 @@ import { generateBranchId, getStoryStateWithBranch } from "../services/story-bra
 import { CANDIDATE_GENERATION_REQUIRED_FIELDS, CANDIDATE_GENERATION_SCHEMA_DEFINITION, STORY_GENERATION_REQUIRED_FIELDS, STORY_GENERATION_SCHEMA_DEFINITION } from "../schema/story.js";
 import { BOOK_CREATION_REQUIRED_FIELDS, BOOK_CREATION_SCHEMA_DEFINITION } from "../schema/book.js";
 import { formatPageTextForPrompt } from "./books.js";
-import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread, ThreadStatus } from "../types/story-thread.js";
+import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread, type ThreadStatus } from "../types/story-thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
 import { filterObjectEntries, stripEmptyLines } from "./parser.js";
@@ -35,7 +35,7 @@ import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
-import type { AIChatConfig, AIChatConfigCaps, AIPromptDocuments, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
+import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
@@ -62,8 +62,8 @@ WRITING STYLE:
 - Actions imply feeling. Never name the emotion directly.
 - Don't begin sentences with "The" too often. Direct object heavily preferred.
 - Write with evocative, visceral, poetic, punchy prose.
-- Avoid purple prose, predictable emotional cliches, and tidy resolutions.
-- Avoid predictable AI cliches, melodrama, and repetitive metaphors.
+- No purple prose, predictable emotional cliches, and tidy resolutions.
+- No predictable cliches, melodrama, and repetitive metaphors.
 - Prioritizes subtext over flat explanations.
 - Let scenes linger in tension.
 
@@ -91,13 +91,8 @@ HORROR MECHANICS:
 
 CHARACTERS RULES:
 - No one is safe. No one is predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode. The reader should never feel certain who to trust — including the MC.
-- Don't introduce character (including MC) with these first/last names (except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
 - No two characters have the same first name.
-
-BRANCHING STORY RULES:
-- Choices feel meaningful. Some are traps. Some are illusions.
-- No choice should feel truly safe.
-- Exploit the gap between what the MC knows and what the reader suspects.
+- Blacklisted names (Do NOT use, except explicitly stated in theme input): ${formatOneOf(blacklistedNames)}.
 
 HARD RULES:
 - NEVER write sexually explicit words.
@@ -262,20 +257,20 @@ PAGE NARRATIVE RULES:
  * Action rules and a human-readable list of action types (excluding
  * the internal 'custom' type). Each action type is emitted as `- key: desc`.
  */
-export const RULES_ACTIONS = `ACTION TYPES:
+export const RULES_ACTIONS = `BRANCHING STORY RULES:
+- Choices feel meaningful. Some are traps. Some are illusions.
+- No choice should feel truly safe.
+- Exploit the gap between what the MC knows and what the reader suspects.
+
+ACTION TYPES:
 ${formatKeyValueList(Object.fromEntries(Object.entries(actionTypes).filter(([key]) => key !== 'custom')))}
 
 DIALOGUE ACTIONS:
-- Use sparingly for internal scenes or interactions
-- Write as direct speech (no quotes)
-- Keep the tone and style of the MC
-- Must be short, natural, and emotionally meaningful
-- Reflect different tones (fear, denial, curiosity, anger, etc.)
-- MC may say something inappropriate or with unintended consequences
-
-ACTION HINT:
-- Each action should have a hint that provides key continuity
-- Purpose: guide AI build the next page and continue the story`;
+- Use sparingly for internal scenes or interactions.
+- Write as direct speech (no quotes), short, natural, and emotionally meaningful.
+- Keep the tone and style of the MC.
+- Reflect different tones (fear, denial, curiosity, anger, etc).
+- MC may say something inappropriate or with unintended consequences.`;
 
 /**
  * Human-readable list of ending archetypes used by the prompt system.
@@ -290,7 +285,7 @@ ${formatKeyValueList(endingTypes)}`;
  * Used to inform pacing and escalation behavior in the prompt.
  */
 export const RULES_STORY_MOMENTUMS = `STORY MOMENTUM GUIDANCE:
-- Current momentum indicates the recent level of narrative pressure or urgency. Use it as continuation context rather than a requirement.
+- Current momentum indicates recent narrative pressure or urgency level. Use it as continuation context rather than a requirement.
 - Allow momentum to evolve naturally from story events. It may increase, decrease, remain stable, or begin resolving when justified.
 
 Story Momentums:
@@ -302,12 +297,8 @@ ${formatKeyValueList(storyMomentums)}`;
 export const RULES_SCENE_TYPES = `SCENE TYPES (sorted by most important):
 ${formatKeyValueList(sceneTypes)}`;
 
-export const RULES_PAGE_GENERATION = [
-  RULES_ROUTE_MEMORY,
-  RULES_STORY_CONSISTENCY,
+export const RULES_FIRST_PAGE_GENERATION = [
   RULES_DIFFICULTY_SCALING,
-  RULES_FUTURE_NOTES,
-  RULES_FALSE_PREVIEW,
   RULES_ENDING_ARCHETYPES,
   RULES_STORY_MOMENTUMS,
   RULES_SCENE_TYPES,
@@ -317,6 +308,17 @@ export const RULES_PAGE_GENERATION = [
   RULES_PAGE_TEXT,
   RULES_ACTIONS,
 ].join('\n\n---\n');
+
+export const RULES_NEXT_PAGE_GENERATION = [
+  RULES_ROUTE_MEMORY, // based on past actions
+  RULES_STORY_CONSISTENCY, // for next page continuity
+  RULES_FUTURE_NOTES, // after future notes exists
+  RULES_FALSE_PREVIEW, // after future notes exists
+  ...RULES_FIRST_PAGE_GENERATION
+].join('\n\n---\n');
+
+const PROMPT_SYSTEM_FIRST_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n${RULES_FIRST_PAGE_GENERATION}`;
+const PROMPT_SYSTEM_NEXT_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n${RULES_NEXT_PAGE_GENERATION}`;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -329,18 +331,6 @@ export const RULES_PAGE_GENERATION = [
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-function buildSystemPrompt(
-  book?: Book,
-  state?: Pick<StoryState, 'characters' | 'places' | 'page'>,
-  staticRules?: string
-): AIPromptDocuments & { systemPrompt: string } {
-  const bookMeta = buildBookMetaDocuments(book, state);
-  return {
-    systemPrompt: `${PROMPT_SYSTEM}${staticRules ? `\n\n${staticRules}` : ''}`,
-    ...bookMeta,
-  };
-}
-
 const firstBookOutputFormat: string = `{
   "title": "Book Title",
   "alternativeTitles": ["Alternative Title", "..."],
@@ -362,7 +352,14 @@ const firstBookOutputFormat: string = `{
     "weather": "One of: ${formatOneOf(placeWeathers)}",
     "timeOfDay": "e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range",
     "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
-    "charactersPresent": [],
+    "charactersPresent": [
+      {
+        "characterId": "<character_id>",
+        "sceneRole": "One of: ${formatOneOf(characterSceneRoles)}",
+        "sceneFocus": <number between 0.0 and 1.0>
+      }
+    ],
+    "momentum": "One of: ${formatOneOf(Object.keys(storyMomentums))}",
     "keyEvents": [],
     "importantObjects": [],
     "actions": [
@@ -397,10 +394,26 @@ const firstBookOutputFormat: string = `{
         "isMajorEvent": <boolean>
       }
     ],
+    "threads": [
+      {
+        "threadId": "<new_thread_id>",
+        "title": "...",
+        "question": "...",
+        "priority": "One of: ${formatOneOf(threadPriorities)}",
+        "truth": "One of: ${formatOneOf(threadTruths)}",
+        "importance": <number between 0.0 and 1.0>,
+        "summary": "...",
+        "clues": [
+          { "clue": "...", "isFalse": <boolean> }
+        ]
+      }
+    ],
     "inventory": [
       {
         "name": "...",
-        "traits": {"...": "..."},
+        "traits": [
+          { "key": "...", "value": "..." }
+        ],
         "amount": <number>,
         "where": "..."
       }
@@ -418,9 +431,10 @@ const firstBookOutputFormat: string = `{
       {
         "note": "...",
         "isMajor": <boolean>,
-        "targetPhase": "One of: ${formatOneOf(Object.keys(storyPhases))}",
-        "targetPageRange": "<min>-<max>",
-        "tag": "One of: ${formatOneOf(Object.keys(factTypes))}"
+        "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
+        "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
+        "targetPageRange": "Optional. '<min>-<max>'",
+        "relatedThreadId": "<thread_id> or 'none'"
       }
     ]
   },
@@ -533,6 +547,7 @@ const firstBookReviewChecklist: string = `
   □ Does at least one action feel subtly wrong or inadvisable? → If NO: add one.
 
 5. Character & Place Integrity
+  □ Do charactersPresent IDs exactly match IDs in initialCharacters? → If NO: align them.
   □ Does at least one initial character have a relationship that can corrupt? → If NO: adjust bio or relationship.
   □ Does the initial place familiarity reflect the MC's actual history with it? → If NO: correct the value.
   □ Is the place context evocative (atmosphere) rather than descriptive (facts)? → If NO: rewrite.
@@ -556,7 +571,13 @@ const nextPageOutputFormat: string = `{
   "weather": "One of: ${formatOneOf(placeWeathers)}",
   "timeOfDay": "...",
   "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
-  "charactersPresent": [],
+  "charactersPresent": [
+    {
+      "characterId": "<character_id>",
+      "sceneRole": "One of: ${formatOneOf(characterSceneRoles)}",
+      "sceneFocus": <number between 0.0 and 1.0>
+    }
+  ],
   "keyEvents": [],
   "importantObjects": [],
   "traumaTagUpdates": {
@@ -571,7 +592,9 @@ const nextPageOutputFormat: string = `{
   "inventory": [
     {
       "name": "...",
-      "traits": {"...": "..."},
+      "traits": [
+        { "key": "...", "value": "..." }
+      ],
       "amount": <number>,
       "where": "...",
       "pageAcquired": <number>
@@ -595,7 +618,8 @@ const nextPageOutputFormat: string = `{
         "isMajor": <boolean>,
         "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
         "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
-        "targetPageRange": "Optional. '<min>-<max>'"
+        "targetPageRange": "Optional. '<min>-<max>'",
+        "relatedThreadId": "<thread_id> or 'none'"
       }
     ],
     "remove": [<key>]
@@ -749,11 +773,13 @@ const nextPageOutputFormat: string = `{
   "threadUpdates": {
     "newThreads": [
       {
+        "threadId": "<new_thread_id>",
         "title": "...",
         "question": "...",
         "priority": "One of: ${formatOneOf(threadPriorities)}",
         "truth": "One of: ${formatOneOf(threadTruths)}",
         "importance": <number between 0.0 and 1.0>,
+        "summary": "...",
         "clues": [
           { "clue": "...", "isFalse": <boolean> }
         ]
@@ -767,6 +793,7 @@ const nextPageOutputFormat: string = `{
         "truth": "One of: ${formatOneOf(threadTruths)}",
         "importance": <number between 0.0 and 1.0>,
         "urgency": <number between 0.0 and 1.0>,
+        "summary": "...",
         "resolution": "..."
       }
     ],
@@ -833,7 +860,7 @@ mood
 ${isFinale ? `  - Mood should feel terminal — no neutrality, no ambiguity in register.` : ''}
 
 placeId
-  - Use an existing place ID if the MC hasn't moved.
+  - Use same place ID if the MC hasn't moved.
   - Use "unknown" only if location is genuinely ambiguous to the MC.
 ${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now — same name, different atmosphere.` : ''}
 
@@ -848,10 +875,14 @@ sceneType
   - Use "transition" only when no stronger narrative function dominates the page.
 
 charactersPresent
-  - IDs of side characters in the scene besides MC.
-  - Only side characters, exclude MC, MC is central POV and always on the scene.
-  - Must match names in known characters or newCharacters on this page. No invented names.
-${isFinale ? `  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.` : ''}
+  - Side characters physically present in the scene besides MC.
+  - Only side characters, exclude MC. MC is central POV and always on the scene.
+  - Do not include characters who are only mentioned, remembered, referenced, contacted remotely, or discussed.
+  - Every ID must match an existing known character${isFinale ? `.
+  - Keep the cast minimal. Finale scenes should feel claustrophobic, not populated.`
+: ` or a character introduced in newCharacters on this page.`}
+  - sceneRole: One of: ${formatOneOf(characterSceneRoles)}
+  - sceneFocus: between 0.0 to 1.0. Relative narrative importance in the current scene (highest = character to focus).
 
 keyEvents
   - ${KEY_EVENT_LENGTH}. Plot-level facts only — what objectively happened (situation/exact hard facts).
@@ -866,14 +897,14 @@ ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unl
 inventory
   - Items the MC brings to the scene. Can include the amount, traits, and where it located.
   - Limit it to ${MAX_INVENTORY_ITEM} items. Only include items that actually matters to the plot.
-  - To remove an item, explicitly set its amount to 0 - system will auto-remove.
+  - To remove an item, explicitly set its amount to 0 (system will auto-remove).
   - If no changes, output empty array or omit this field entirely.
   - Otherwise, include all current items in MC possession with updated values.
 
 injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
   - If an action is taken to heal, or anything made injury worse, update the injury severity and description accordingly.
-  - If healed, set severity to 0 - system will auto-remove fully healed injuries.
+  - If healed, set severity to 0 (system will auto-remove fully healed injuries).
   - If healed but leaves permanent scar/story relevance, move to character's visualDescription.
   - If no meaningful injury-related action occurs, output empty array or omit this field entirely.
   - Otherwise, include all previous injuries with updated values.
@@ -927,7 +958,8 @@ addPlotFlags
 contextHistory
   - Running summary from page 1 until now — key plot developments, hard facts, major events.
   - Incorporate the overall story context while keeping all essential narrative elements.
-  - Write in 3rd person POV. Single paragraph or bullet points. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.
+  - Single paragraph or bullet points (max ${MAX_WORDS_SUMMARIZED_CONTEXT} words).
+  - Write in 3rd person POV.
   - Maintain the continuity of the story.
 
 flagUpdates
@@ -939,7 +971,7 @@ ${isLatePhase || isFinale ? `  - Flags should reflect escalation. Fear and guilt
 actions
 ${isLastPage ? `  - This is the last page, just provide a single action that concludes the story.` : `  - text: first-person action or dialogue (${ACTION_TEXT_LENGTH}). No subject ("I"). Directly begin with verb (e.g. Pretend not to hear) or saying (e.g. "Yes, of course.").
   - hint.text: what will happen as a consequence — written as a story beat, not a label. Invisible to the player.
-  - ${isFinale ? `Max 2 choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
+  - ${isFinale ? `Max ${MAX_ACTION_CHOICES_FINALE} choices — the story is closing in.` : `${MIN_ACTION_CHOICES}-${MAX_ACTION_CHOICES} choices.`} Each must be meaningfully distinct.
   - Vary across: reckless / cautious / emotional / avoidant.
   - ${isLatePhase ? `Each action text should be distinct despite similar outcomes` : `Each action text should be distinct and convey unique consequences.`}
   - At least one should feel subtly wrong or inadvisable.
@@ -1013,26 +1045,26 @@ ${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`
 : isMidPhase ? `  - Introduce new threads only if essential to plot (max 1 per page). New threads should branch from existing mysteries.`
 : `  - New threads should be rare now.`}
 ${isEarlyPhase || isMidPhase ? `  - title: Short, evocative name for the mystery (e.g., "Lisa's Identity", "The River Incident")
-  - question: The central mystery question (e.g., "Who is Lisa really?", "What happened at the river that night?")
+  - question: central mystery question (e.g., "Who is Lisa really?", "What happened at the river that night?")
   - priority: "main" for central mysteries, "secondary" for supporting mysteries, "minor" for background details
   - truth: "true" if the thread leads to genuine revelation, "false" if it's a deliberate misdirection, "unknown" if ambiguous
   - importance: 0.0-1.0 (how frequently this thread should appear in the narrative)` : ''}
 
 threadUpdates.updateThreads
-${isEarlyPhase || isMidPhase ? `  - Update existing threads when their status, priority, or urgency meaningfully changes.
-  - threadId: Must match an existing thread ID
-  - status: "open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved)
-  - urgencyCorrection: -0.5 to 0.5 (Optional adjustment to how close a thread is to resolution). Do not use for normal progression, new clues, or routine thread development. The system already handles those automatically.
-  - resolution: Only include when thread is being closed or resolved (brief summary of the answer)` : ''}
-  - Include when a page significantly develops, complicates, advances, or revisits an active thread, even if no new clue is added.
-${isLatePhase ? `  - Update thread status to "revealed" or "closed" as threads converge toward the ending.` : ''}
+  - Update existing threads when their status, priority, or urgency meaningfully changes.
+  - threadId: must match an existing thread ID.
+  - status: ${isLatePhase ? 'update to "revealed" or "closed" as threads converge toward the ending.' : '"open" (newly introduced), "developing" (active investigation), "revealed" (truth partially shown), "closed" (resolved).'}
+  - urgencyCorrection: explicit adjustment to how close a thread is to resolution (e.g., +0.20 = major breakthrough, -0.15 = mystery became more complicated). Do not use for normal progression, new clues, or routine thread development. The system already handles those automatically.
+  - summary: running summary of thread development (from the start to current).
+  - resolution: only include when thread is being closed or resolved (brief summary of the answer).
+  - If this page develops, complicates, advances, or revisits an active thread, include a summary update for that thread.
 ${isFinale ? `  - Every main thread must be resolved (status: "closed" with resolution text).` : ''}
 
 threadUpdates.addClues
 ${isEarlyPhase || isMidPhase ? `  - Add clues to existing threads to advance mysteries.
-  - threadId: Must match an existing thread ID
-  - clue: Short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water")
-  - isFalse: Set to true if this is a deliberate misdirection (false clue)` : ''}
+  - threadId: must match an existing thread ID.
+  - clue: short, evocative clue that advances the mystery (e.g., "She knows my mother", "Flashbacks of water").
+  - isFalse: set to true if this is a deliberate misdirection (false clue).` : ''}
 ${isLatePhase ? `  - Add revealing clues that push threads toward resolution.` : ''}
 ${isFinale ? `  - Add final clues that complete thread resolutions.` : ''}
 
@@ -1044,8 +1076,8 @@ ${isFinale ? `  - All remaining threads must be closed in the finale.` : ''}
 viableEnding
   - Don't output viableEnding if unchanged
   - Only output if story trajectory has meaningfully shifted and the previously planned ending no longer fits, or if outline should be updated.
-${futureNotes.length > 0 ? `  - Ensure it supports or aligns with future notes` : ''}
-  - text: ${VIABLE_ENDING_LENGTH}. Specific to this MC and theme — not a genre template.
+${futureNotes.length ? `  - Ensure it supports or aligns with future notes` : ''}
+  - text: Summary of the desired doom (${VIABLE_ENDING_LENGTH}). Specific to this MC and theme — not a genre template.
   - outline: A roadmap to reach the ending. 1-2 sentence per item. Align done count with current ${phase} phase. Don't change what have been done, only adjust what haven't done.
 ${isEarlyPhase ? `  - Rarely needed this early. Only revise if the theme has fundamentally diverged from the original plan.` : ''}
 ${isMidPhase ? `  - Revise if a major twist has made the original ending implausible or redundant.` : ''}
@@ -1129,7 +1161,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage, candidateCount } = params;
-  const { isEarlyPhase, isMidPhase, isLatePhase, isFinale } = getStoryStateInfo(state);
+  const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
   const { action } = actionedPage;
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
@@ -1248,7 +1280,7 @@ Flag any choice that fails — include in issues.
 ---
 JSON INTEGRITY CHECKS (flag any violation):
 - familiarity is a decimal between 0.0 and 1.0
-- charactersPresent IDs exist in "KNOWN CHARACTERS"
+- charactersPresent IDs exist in "KNOWN CHARACTERS"${isFinale || charactersSlot === 0 ? '' : ` or in characterUpdates.newCharacters`}
 - All mandatory fields present and filled
 
 ---
@@ -1374,9 +1406,11 @@ SCORING RUBRIC:
    Award points for:
    - Initial place context evocative and specific to the theme — not generic
    - Place familiarity appropriate to MC's established history with it
+   - charactersPresent matches characters in initialCharacters exactly
    - timeOfDay and location consistent with the opening scene's mood
    Deduct points for:
    - Generic place descriptions (e.g. "a dark and eerie location")
+   - Character IDs in charactersPresent not present in initialCharacters
    - Familiarity value contradicting MC's stated history with the place
 
 5. INITIAL STATE CALIBRATION (0-15) — Threshold: 11
@@ -1703,10 +1737,8 @@ function formatActionChoices(actions: Action[]): string {
  * 4. addedAtPage (ascending, tie-breaker only)
  *
  * @example
- * - clue_123: Reveal that Evelyn forged the diary (MAJOR)
- *   • Payoff: LATE - pages 18-22
- * - other_456: Mention the broken pocket watch
- *   • Payoff: pages 8-12
+ * - character_1: Introduce Professor Thorne as a potential architect of the simulation. (MAJOR, related thread ID: diary_owner, payoff: LATE - pages 18-22)
+ * - character_2: Chloe’s behavior after syncing with the app suggests she is no longer fully in control of her actions. (MAJOR)
  */
 function formatFutureNotes(
   futureNotes: FutureNote[],
@@ -1763,15 +1795,43 @@ function formatFutureNotes(
     unscheduled.push(note);
   }
 
+  const sortNotes = (notes: FutureNote[]) => {
+    notes.sort((a, b) => {
+      const aStart = getPageRangeStart(a.targetPageRange) ?? Infinity;
+      const bStart = getPageRangeStart(b.targetPageRange) ?? Infinity;
+      if (aStart !== bStart) return aStart - bStart;
+
+      const aPhase = a.targetPhase ? phaseOrder[a.targetPhase] : Infinity;
+      const bPhase = b.targetPhase ? phaseOrder[b.targetPhase] : Infinity;
+      if (aPhase !== bPhase) return aPhase - bPhase;
+
+      if (a.isMajor !== b.isMajor) return a.isMajor ? -1 : 1;
+
+      const aAdded = a.addedAtPage ?? Infinity;
+      const bAdded = b.addedAtPage ?? Infinity;
+      if (aAdded !== bAdded) return aAdded - bAdded;
+
+      return 0;
+    });
+  };
+
+  sortNotes(becomingRelevant);
+  sortNotes(later);
+  sortNotes(unscheduled);
+
+  const formatOneLine = (n: FutureNote): string => {
+    const parts: string[] = [];
+    if (n.relatedThreadId && n.relatedThreadId !== 'none') parts.push(`related thread ID: ${n.relatedThreadId}`);
+    const payoff = [n.targetPhase, n.targetPageRange ? `pages ${n.targetPageRange}` : ''].filter(Boolean).join(' - ');
+    if (payoff) parts.push(`payoff: ${payoff}`);
+
+    const noteInfo = [...(n.isMajor ? ['MAJOR'] : []), ...parts].join(', ');
+    return `- ${n.key}: ${n.note}${noteInfo ? ` (${noteInfo})` : ''}`;
+  };
+
   const formatSection = (title: string, notes: FutureNote[]): string => {
     if (!notes.length) return '';
-
-    const body = notes.map((n) => {
-      const lines = [`  - ${n.key}: ${n.note}${n.isMajor ? ' (MAJOR)' : ''}`];
-      if (n.targetPageRange) lines.push(`    • Payoff: ${[n.targetPhase, n.targetPageRange ? `pages ${n.targetPageRange}` : ''].filter(Boolean).join(' - ')}`);
-      return lines.join('\n');
-    }).join('\n');
-
+    const body = notes.map(formatOneLine).join('\n');
     return `${title}\n${body}`;
   };
 
@@ -2000,7 +2060,7 @@ function formatEndingPlan(ending?: Ending): string {
 
 function formatOutline(outline: StoryOutline[]): string {
   return outline
-    .map(item => `- ${item.text} ${item.isDone ? '✅' : '⬜'}`)
+    .map(item => `${item.isDone ? '✅' : '⬜'} ${item.text}`)
     .join('\n');
 }
 
@@ -2107,10 +2167,15 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
   if (weather) situation.push(`Weather: ${weather}`);
   
   // Add characters if present
-  if (charactersPresent.length) situation.push(`Characters present:\n${charactersPresent.map(characterId => {
-    const { knownName } = state.characters[characterId];
-    return `  · ${knownName} [ID: ${characterId}]`;
-  }).join('\n')}`);
+  if (charactersPresent.length) {
+    // Order characters by sceneFocus (desc)
+    const ordered = [...charactersPresent].sort((a, b) => (b.sceneFocus ?? 0) - (a.sceneFocus ?? 0));
+    situation.push(`Characters present:\n${ordered.map(sceneCharacter => {
+      const { characterId, sceneRole, sceneFocus } = sceneCharacter;
+      const { knownName, role } = state.characters[characterId];
+      return `  · ${knownName} (${role} - ${sceneRole}, focus: ${sceneFocus}) [ID: ${characterId}]`;
+    }).join('\n')}`);
+  }
   
   // Add important objects if any
   if (importantObjects.length) situation.push(`Important objects:\n${importantObjects.map(obj => `  · ${obj}`).join('\n')}`);
@@ -2797,7 +2862,9 @@ Initial Relationships:
 First Page:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
+- charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
 - importantObjects: objects introduced or used this page that may have future narrative significance.
+- momentum: narrative pressure or urgency level in the first page. Thriller openings often start at "rising" or sometimes "critial", just saying.
 
 Initial State:
 - Set flags based on opening scene — not defaults.
@@ -2901,6 +2968,7 @@ export async function initializeBook(
           modelSelection: AI_CHAT_MODELS_WRITING,
           context: 'book-creation',
           logPrompts: true,
+          systemPrompt: PROMPT_SYSTEM_FIRST_PAGE_GENERATION
         },
       } satisfies AIPromptForJson<BookCreationResponse>,
       jsonStructure: firstBookOutputFormat,
@@ -3029,8 +3097,6 @@ export async function initializeBook(
     // 5. Persist first page as root page of the book
     const pageToInsert: StoryPage = {
       ...generatedFirstPage,
-      momentum: 'building',
-      charactersPresent: Object.keys(characters),
       stateDelta: {},
       placeId,
     };
@@ -3053,6 +3119,7 @@ export async function initializeBook(
       ...{
         ...generatedInitialState,
         plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, timeOfDay })) || [],
+        threads: generatedInitialState.threads?.map<StoryThread>((thread) => createStoryThread(thread, 1)) || [],
         inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId })) || [],
         injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [],
         futureNotes: mapFutureNoteWithKey(generatedInitialState.futureNotes, 1, []),
@@ -3304,7 +3371,7 @@ async function prepareNextPageGenerationSetup(
   };
 
   const prompt = buildNextPagePrompt(promptParams);
-  const systemPromptWithDocuments = buildSystemPrompt(book, advancedState, RULES_PAGE_GENERATION);
+  const bookMeta = buildBookMetaDocuments(book, advancedState);
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
   const config = determineAIConfig(advancedState);
@@ -3317,8 +3384,9 @@ async function prepareNextPageGenerationSetup(
     generationContext,
     promptParams,
     prompt,
-    ...systemPromptWithDocuments,
     config,
+    ...bookMeta,
+    systemPrompt: PROMPT_SYSTEM_NEXT_PAGE_GENERATION,
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action),
     thinkThenOutput: buildNextPageReviewChecklist(advancedState),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
@@ -3441,7 +3509,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
         meta: {
           bookId: book.id
         }
-      },
+      }
     } satisfies AIPromptForJson<StoryGeneration>,
     jsonStructure: nextPageOutputFormat,
     fieldInstructions,

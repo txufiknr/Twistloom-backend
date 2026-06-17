@@ -6,7 +6,7 @@ import type { InventoryItem, StoryMC, StoryMCCandidate, StoryMCTranslation } fro
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -66,7 +66,7 @@ export const pages = pgTable(
     timeOfDay: text("time_of_day"), // Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'
     sceneType: text("scene_type").$type<SceneType>(), // Current narrative function
     momentum: text("momentum").$type<StoryMomentum>(), // Current pressure level
-    charactersPresent: text("character_ids").array().notNull().default(sql`ARRAY[]::text[]`), // Character IDs present
+    charactersPresent: jsonb("characters_present").$type<SceneCharacter[]>().notNull().default(sql`'[]'::jsonb`), // Characters present
     keyEvents: text("key_events").array().notNull().default(sql`ARRAY[]::text[]`),
     importantObjects: text("important_objects").array().notNull().default(sql`ARRAY[]::text[]`),
     actions: jsonb("actions").$type<Action[]>().notNull().default(sql`'[]'::jsonb`), // 2-3 branching actions

@@ -401,7 +401,7 @@ export async function persistPageWithState(params: {
     state: newState,
     currentPage: expectedPageNumber,
     sceneType: generatedStoryPage.sceneType,
-    charactersPresent: generatedStoryPage.charactersPresent ?? [],
+    charactersPresent: generatedStoryPage.charactersPresent,
     previousMomentum: actionedPage.momentum,
   });
 

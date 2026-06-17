@@ -215,26 +215,25 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *   - Context: narrow river behind the school
  *   - Location: 500 meters south of the school
  *   - Traits:
- *     • Smell: ...
+ *     → Smell: ...
  *   - Key events:
- *     • Page 3: Body discovered
- *     • Page 14: First meeting with Lisa
+ *     → Page 3: Body discovered
+ *     → Page 14: First meeting with Lisa
  *   - Key objects:
- *     • 1x Large Mirror (in the corner of the room)
- *       → traits: color: black
+ *     → 1x Large Mirror (in the corner of the room, color: black)
  *   - Associated characters:
- *     • Lisa (first met here)
- *     • Tom (saved from drowning here)
+ *     → Lisa (first met here)
+ *     → Tom (saved from drowning here)
  * 
  * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church]
  *   - Real name: Project Lazarus Research Facility (revealed: false)
  *   - Visited 2 times (last visited: page 30)
  *   - Context: abandoned stone church outside town
  *   - Key events:
- *     • Page 24: Hidden tunnel discovered
- *     • Page 30: Cult symbol found
+ *     → Page 24: Hidden tunnel discovered
+ *     → Page 30: Cult symbol found
  *   - Associated characters:
- *     • Marcus (first met here)
+ *     → Marcus (first met here)
  */
 export function formatPlacesForPrompt(
   places: Record<string, PlaceMemory>,
@@ -272,11 +271,10 @@ export function formatPlacesForPrompt(
       lines.push(`  - Hints: ${place.hints.join('; ')}`);
     }
 
-    const traits = Object.entries(place.traits ?? {});
-    if (traits.length) {
+    if (place.traits?.length) {
       lines.push('  - Traits:');
-      traits.forEach(([traitName, traitValue]) => {
-        lines.push(`    • ${traitName}: ${traitValue}`);
+      place.traits.forEach(t => {
+        lines.push(`    → ${t.key}: ${t.value}`);
       });
     }
 
@@ -286,7 +284,7 @@ export function formatPlacesForPrompt(
         .slice(-MAX_PLACE_EVENTS)
         .sort((a, b) => a.page - b.page)
         .forEach(event => {
-          lines.push(`    • Page ${event.page}: ${event.event}`);
+          lines.push(`    → Page ${event.page}: ${event.event}`);
         });
     }
 
@@ -294,18 +292,16 @@ export function formatPlacesForPrompt(
     if (keyObjects?.length) {
       lines.push('  - Key objects:');
       keyObjects.forEach(item => {
-        lines.push(`    • ${item.amount}x ${item.name} (${item.where})`);
-        if (item.traits && Object.keys(item.traits).length > 0) {
-          const traitEntries = Object.entries(item.traits).map(([key, value]) => `${key}: ${value}`);
-          lines.push(`      → traits: ${traitEntries.join(', ')}`);
-        }
+        const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
+        const itemInfo = [item.where, ...traitEntries].filter(Boolean).join(', ');
+        lines.push(`    → ${item.amount}x ${item.name}${itemInfo ? ` (${itemInfo})` : ''}`);
       });
     }
 
     if (place.knownCharacters?.length) {
       lines.push('  - Associated characters:');
       Object.entries(place.knownCharacters).sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
-        lines.push(`    • ${name}${context ? ` (${context})` : ''}`);
+        lines.push(`    → ${name}${context ? ` (${context})` : ''}`);
       });
     }
 

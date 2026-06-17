@@ -181,6 +181,18 @@ export function formatDateToYYYYMMDD(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** Returns ISO date strings for the first day of the current month and the first day of next month */
+export function getCurrentMonthBounds(): { start: string; end: string } {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1; // 1-indexed
+  const start = `${year}-${String(month).padStart(2, '0')}-01`;
+  const end = month === 12
+    ? `${year + 1}-01-01`
+    : `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  return { start, end };
+}
+
 /**
  * Check if a timestamp is within cooldown period
  * @description Reusable helper for time-based cooldown checks

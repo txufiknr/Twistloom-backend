@@ -408,3 +408,21 @@ export interface StreamUsage {
  * this type so the orchestrator can read usage uniformly via `.next()`.
  */
 export type AIStreamGenerator = AsyncGenerator<string, StreamUsage | void, unknown>;
+
+export type AIProviderRateLimit = {
+  /** Requests per minute — used by RateLimiter.throttle() for inter-call spacing */
+  rpm: number;
+  /**
+   * Requests per day — used by canUseAIToday() for daily gate.
+   * Where multiple models share a provider entry, this reflects the ceiling
+   * across all models you'd realistically call; individual models may be lower.
+   * The waterfall's 429 handling covers the gap.
+   */
+  rpd?: number;
+  /**
+   * Requests per month — used by canUseAIToday() for monthly gate.
+   * Mutually exclusive with rpd in practice: set one or the other,
+   * not both, unless the provider genuinely enforces separate daily AND monthly caps.
+   */
+  rpmo?: number;
+};
