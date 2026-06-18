@@ -14,7 +14,7 @@
 [ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
 [ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [ ] translate action hint
-[ ] kayanya `hasSecret`, `isMissing`, `isDead` redundant
+[x] kayanya `hasSecret`, `isMissing`, `isDead` redundant
 
 [ ] Does very verbose and lengthy system prompt really necessary, worth, and benefits?
 
@@ -148,7 +148,7 @@ future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)
 
 paid infra:
-[ ] rebrand Loore (by TARRA Soft)
+[ ] rebrand Loore (L∞re) (by TARRA Soft)
 [ ] upgrade vercel hobby -> pro
 [ ] beli domain loore.com -> buat email dev@loore.com
 [ ] migrate semua akun AI pake email dev@loore.com -> replace all API keys -> delete old api keys & project

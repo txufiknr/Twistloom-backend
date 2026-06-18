@@ -888,7 +888,7 @@ inventory
   - Limit it to ${MAX_INVENTORY_ITEM} items. Only include items that actually matters to the plot.
   - To remove an item, explicitly set its amount to 0 (system will auto-remove).
   - If no changes, output empty array or omit this field entirely.
-  - Otherwise, include all current items in MC possession with updated values.
+  - Otherwise, MUST include all current items in MC possession with updated values and/or new item if any.
 
 injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
@@ -896,7 +896,7 @@ injuries
   - If healed, set severity to 0 (system will auto-remove fully healed injuries).
   - If healed but leaves permanent scar/story relevance, move to character's visualDescription.
   - If no meaningful injury-related action occurs, output empty array or omit this field entirely.
-  - Otherwise, include all previous injuries with updated values.
+  - Otherwise, MUST include all previous injuries with updated values and/or new injury if any.
   - consequences: update any that affect the storyline (e.g. "Can't run fast, can't lift heavy objects").
 
 traumaTagUpdates
@@ -995,7 +995,7 @@ ${isLatePhase || isFinale
   - bio: only gradually update character's bio if new information is revealed in this page.
   - knownName: gradually update mysterious character's known name as the MC learns more about his/her real identity.
   - recognitionLevel: how well does MC recognize this character at this point.
-  - narrativeFlags: adjust to reflect plot developments
+  - narrativeFlags: adjust to reflect plot developments.
   - secrets: remove any revealed secret.
 
 relationshipUpdates

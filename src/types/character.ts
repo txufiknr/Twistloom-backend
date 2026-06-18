@@ -144,7 +144,6 @@ export type CharacterRecognitionLevel = typeof characterRecognitionLevels[number
  */
 export const characterStatuses = [
   "active",      // Present and healthy
-  "injured",     // Sustained an injury (mirrors your injuries array)
   "missing",     // Disappeared from the current setting
   "dead"         // Deceased
 ] as const;
@@ -206,17 +205,17 @@ export type CharacterMemory = {
   bio: string;
   /** Character visual description, e.g. "tall, pale, messy black hair, hollow eyes" */
   visualDescription: string;
-  /** Current relationship status affecting behavior */
+  /** Physical narrative state (active/missing/dead) */
   status: CharacterStatus;
   /** Secret or hint for AI guidance (spoiler) */
   secrets: string[];
-  /** Relationship to main character */
+  /** Relationship to main character/behavioral state (trusting/suspicious/etc.) */
   relationshipToMC: CharacterRelationshipContext;
   /** Directional relationships to other characters (max 3) */
   relationships: CharacterRelationship[];
   /** Recent important interactions (max MAX_PAST_INTERACTIONS, sliding window) */
   pastInteractions: PastInteraction[];
-  /** Narrative control flags for plot development */
+  /** Narrative control flags (strict structural plot setup) */
   narrativeFlags: NarrativeFlags;
   /** Whether character has injury */
   injuries: Injury[];
@@ -260,7 +259,7 @@ export type CharacterUpdates = {
   updatedCharacters?: CharacterUpdate[];
 };
 
-export type InventoryItem = {
+export type ObjectItem = {
   /** The name of the item */
   name: string;
   /** The traits of the item (e.g., color, size, length, material, state, rules) */
@@ -269,15 +268,18 @@ export type InventoryItem = {
   amount?: number;
   /** The location or context of the item (e.g., "in backpack", "on the table", "worn by the character") */
   where?: string;
+}
+
+export type InventoryItem = ObjectItem & {
   /** The page number where the item was acquired */
   pageAcquired?: number;
   /** Place ID where the item acquired (optional). */
   placeId?: string;
 }
 
-export type InventoryItemTranslation = Pick<InventoryItem, 'name' | 'traits' | 'where'> & { originalName: string };
+export type InventoryItemTranslation = Pick<ObjectItem, 'name' | 'traits' | 'where'> & { originalName: string };
 
-export type InitialInventoryItem = Omit<InventoryItem, 'pageAcquired' | 'placeId'>;
+export type InitialInventoryItem = ObjectItem;
 
 /** Represents an injury sustained by a character */
 export type Injury = {
@@ -307,6 +309,7 @@ export const injurySeverities = [
   "severe",
   "critical",
   "permanent",
+  "requires_treatment",
   "none"
 ] as const;
 

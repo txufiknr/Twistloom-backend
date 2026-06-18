@@ -13,20 +13,22 @@ import { slugify } from "./text-processing.js";
 /**
  * Calculates the injury severity label based on severity and decay rate
  * @param injury - Injury object with severity and decayPerPage
- * @returns Severity label: 'permanent', 'critical', 'severe', 'moderate', 'mild', or 'none'
+ * @returns Severity label: 'requires_treatment', 'permanent', 'critical', 'severe', 'moderate', 'mild', or 'none'
  * 
  * @example
  * ```typescript
  * getInjurySeverityLabel({ severity: 0.9, decayPerPage: 0.1 }); // 'critical'
  * getInjurySeverityLabel({ severity: 0.7, decayPerPage: 0.1 }); // 'severe'
- * getInjurySeverityLabel({ severity: 0.5, decayPerPage: 0 }); // 'permanent'
+ * getInjurySeverityLabel({ severity: 0.5, decayPerPage: 0 }); // 'requires_treatment'
  * getInjurySeverityLabel({ severity: 0.3, decayPerPage: 0.05 }); // 'mild'
  * getInjurySeverityLabel({ severity: 0.1, decayPerPage: 0.05 }); // 'none'
  * ```
  */
 export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
   const { severity = 0.5, decayPerPage = 0 } = injury;
-  if (decayPerPage === 0) return 'permanent';
+  if (decayPerPage === 0) {
+    return severity > 0.5 ? 'permanent' : 'requires_treatment';
+  }
   if (severity >= 0.8) return 'critical';
   if (severity >= 0.6) return 'severe';
   if (severity >= 0.4) return 'moderate';
@@ -396,7 +398,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       let physicalStatusDisplay = 'healthy, active';
       if (status === 'dead') physicalStatusDisplay = 'deceased';
       else if (status === 'missing') physicalStatusDisplay = 'disappeared';
-      else if (status === 'injured' || injuries?.filter(i => i.severity).length) physicalStatusDisplay = 'injured';
+      else if (injuries?.filter(i => i.severity).length) physicalStatusDisplay = 'injured';
 
       // 2. Resolve Header Tags (Emotional state and quick-glance flags)
       const headerTags = [];

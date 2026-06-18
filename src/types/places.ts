@@ -1,4 +1,4 @@
-import type { InitialInventoryItem } from "./character.js";
+import type { ObjectItem } from "./character.js";
 import type { Mood, PastEvent, TraitItem } from "./story.js";
 
 /**
@@ -122,7 +122,7 @@ export type PlaceMemory = {
   /** Emotional and narrative associations */
   keyEvents?: PastEvent[]; // [{page: 1, event: "MC discovered the place"}, {page: 3, event: "first meeting with Character A"}]
   /** Objects associated to this place (e.g., wooden chair, cupboard, large mirror, etc) */
-  keyObjects?: InitialInventoryItem[];
+  keyObjects?: ObjectItem[];
   /** Characters encountered here with context */
   knownCharacters?: TraitItem[];
   /** Whether the place's real name known to MC */
