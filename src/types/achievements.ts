@@ -1,12 +1,20 @@
-export type AchievementMetric = 'booksGenerated' | 'booksCompleted' | 'pagesRead' | 'branchesOpened';
 export type AchievementTier = 'bronze' | 'silver' | 'gold' | 'platinum';
+export type AchievementMetric = 
+  | 'booksGenerated' 
+  | 'booksCompleted' 
+  | 'pagesRead' 
+  | 'branchesOpened'
+  | 'topupCredits'
+  | 'referredUsers'
+  | 'followersCount'
+  | 'maxCheckinStreak';
 
-export type AchievementRule = {
+export interface AchievementRule {
   id: string;
   title: string;
   description: string;
   metric: AchievementMetric;
   threshold: number;
-  badgeIcon: string; // Asset key or image URL
+  badgeIcon: string;
   tier: AchievementTier;
-};
+}

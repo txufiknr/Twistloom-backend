@@ -1174,13 +1174,13 @@ export function updateHiddenState(state: StoryState, context: NarrativeContext):
   // ========================
   // DIFFICULTY CALCULATION
   // ========================
-  let difficultyScore = pageProgress * 0.2; 
-  difficultyScore += (1.0 - truthScore) * 0.3; 
+  let difficultyScore = pageProgress * 0.2; // Escalate naturally as page count increases.
+  difficultyScore += (1.0 - truthScore) * 0.3;
   difficultyScore += Math.max(0, momentumModifier); // Difficulty scales up with tension, but doesn't easily scale down
-  difficultyScore += Math.min(traumaCount * 0.05, 0.2); 
+  difficultyScore += Math.min(traumaCount * 0.05, 0.2);
 
-  if (isFinale) difficultyScore += 0.3;
-  difficultyScore = Math.min(difficultyScore, 1.0); 
+  if (isFinale) difficultyScore += 0.3; // Near the ending, behave as at least 'high' regardless of setting.
+  difficultyScore = Math.min(difficultyScore, 1.0);
 
   if (difficultyScore >= 0.8) state.difficulty = "nightmare";
   else if (difficultyScore >= 0.5) state.difficulty = "high";

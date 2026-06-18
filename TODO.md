@@ -14,11 +14,7 @@
 [ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
 [ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [ ] translate action hint
-[x] kayanya `hasSecret`, `isMissing`, `isDead` redundant
-
-[ ] Does very verbose and lengthy system prompt really necessary, worth, and benefits?
-
-https://www.tokengratis.id/
+[ ] include semua yang di table userCounters ke UserStats
 
 ---
 
@@ -72,12 +68,6 @@ what's your proposal?
 
 Recent Momentum Trend (from previous 5 pages):
 Building (page 4-5) → Rising (page 6-7) → Critical (page 8)
-
-Sesuaiin sama real values aja:
-Example: High curiosity leads to discovering uncomfortable truths
-  - Profile archetype: "the_explorer"
-  - Curiosity flag: "high"
-  - Recommended ending type: "false_reality"
 
 ---
 

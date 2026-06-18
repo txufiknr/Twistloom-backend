@@ -1854,8 +1854,8 @@ export async function insertUserCompletedBook(
 ): Promise<{ id: string; completedAt: Date } | null> {
   try {
     const [result] = await client
-    .insert(userCompletedBooks)
-    .values({
+      .insert(userCompletedBooks)
+      .values({
         userId,
         bookId,
         pageId,

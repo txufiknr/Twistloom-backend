@@ -303,7 +303,7 @@ async function markPageVisitedWithClient(params: {
   pageId: string, // visited page id
   pageNumber: number, // visited page number
   branchId: string,
-  totalPages: number | null,
+  totalPages: number,
   visitCount: number,
   stats: BookStats,
   actionedPageId?: string, // previous actioned page id
@@ -342,11 +342,10 @@ async function markPageVisitedWithClient(params: {
 
   // Calculate visit statistics using denormalized data (centralized helper)
   const { nthVisit, visitorPercentage } = computeVisitStats({ rawVisitCount: visitCount, readerCount: stats.readCount, addOne: true });
-
   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
 
   // Insert completion record if user reached the last page
-  if (totalPages && pageNumber === totalPages) {
+  if (pageNumber === totalPages) {
     const completion = await insertUserCompletedBook(userId, bookId, pageId, branchId, client);
     if (completion) {
       console.log(`[markPageVisited] 🎉 User ${userId} completed book ${bookId} (page ${pageNumber}/${totalPages})`);

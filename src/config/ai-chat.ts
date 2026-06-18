@@ -1,6 +1,6 @@
 import type { AIChatConfig } from "../types/ai-chat.js";
 
-export const DEFAULT_MAX_OUTPUT_TOKEN: number = 3000;
+export const DEFAULT_MAX_OUTPUT_TOKEN: number = 4000;
 export const EVALUATION_SCORING_OUTPUT_TOKEN: number = 2000;
 
 /**

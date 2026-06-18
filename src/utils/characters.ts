@@ -333,40 +333,40 @@ export function getMainCharacterInfo(params: {
  * 
  * Output example:
  * · Sarah Chen (MC) - 28 years old, female
- * Bio: Shy librarian with hidden past and mysterious family connections
- * Known as: Sarah
+ *   - Bio: Shy librarian with hidden past and mysterious family connections
+ *   - Known as: Sarah
  * 
- * · Tom Martinez (friend) - male [trusting] - [ID: tom_martinez]
- *   Real name: "Tom Martinez" (Recognition: full_name_known)
- *   Bio: Former military medic, now works as security guard
- *   Visual description: Tall, muscular build with military haircut and tired eyes
- *   Introduced at page: 5
- *   Relationship to MC: (friend - trusting - full_name_known) protective friend with secret knowledge
- *   Recent interactions:
- *   - Page 12: Helped treat Sarah's arm injury
- *   - Page 8: Warned about basement dangers
- *   Relationships:
- *   - lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
- *   Narrative mechanics: potential twist: none
- *   Physical state: healthy, active
+ * · Tom Martinez (schoolmate) - male [trusting] - [ID: tom_martinez]
+ *   - Real name: "Tom Martinez" (Recognition: full_name_known)
+ *   - Bio: Former military medic, now works as security guard
+ *   - Visual description: Tall, muscular build with military haircut and tired eyes
+ *   - Introduced at page: 5
+ *   - Relationship to MC: (friend - trusting - full_name_known) protective friend with secret knowledge
+ *   - Recent interactions:
+ *     → Page 12: Helped treat Sarah's arm injury
+ *     → Page 8: Warned about basement dangers
+ *   - Relationships:
+ *     → lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
+ *   - Narrative mechanics: potential twist: none
+ *   - Physical state: healthy, active
  * 
- * · Lisa (mentor) - female [suspicious, has secret, missing] - [ID: lisa_park]
- *   Real name: "Lisa Park" (Recognition: first_name_known)
- *   Bio: Quiet girl who knows more than she lets on
- *   Visual description: Small frame, dark hair always in ponytail, avoids eye contact
- *   Introduced at page: 5
- *   Relationship to MC: (mentor - suspicious - first_name_known) childhood friend with hidden agenda
- *   Secrets (spoiler, don't reveal too early):
- *   - She knows what happened in the basement 10 years ago
- *   Recent interactions:
- *   - Page 15: First meeting here, seemed nervous
- *   Narrative mechanics: potential twist: identity
- *   Physical state: disappeared
+ * · Lisa (teacher) - female [suspicious, has secret, missing] - [ID: lisa_park]
+ *   - Real name: "Lisa Park" (Recognition: first_name_known)
+ *   - Bio: Quiet girl who knows more than she lets on
+ *   - Visual description: Small frame, dark hair always in ponytail, avoids eye contact
+ *   - Introduced at page: 5
+ *   - Relationship to MC: (mentor - suspicious - first_name_known) childhood friend with hidden agenda
+ *   - Secrets (spoiler, don't reveal too early):
+ *     → She knows what happened in the basement 10 years ago
+ *   - Recent interactions:
+ *     → Page 15: First meeting here, seemed nervous
+ *   - Narrative mechanics: potential twist: identity
+ *   - Physical state: disappeared
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
   const mcDetails = [];
-  if (mc.bio) mcDetails.push(`  Bio: ${mc.bio}`);
-  if (mc.knownName) mcDetails.push(`  Known as: ${mc.knownName}`);
+  if (mc.bio) mcDetails.push(`  - Bio: ${mc.bio}`);
+  if (mc.knownName) mcDetails.push(`  - Known as: ${mc.knownName}`);
 
   const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
   const mcInfo = mcDetails.length ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
@@ -412,27 +412,27 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const details = [];
       
       // Basic information
-      if (useDifferentReference) details.push(`  Real name: "${realName}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
-      details.push(`  Bio: ${bio}`);
-      details.push(`  Visual description: ${visualDescription}`);
-      details.push(`  Introduced at page: ${introducedAtPage}`);
+      if (useDifferentReference) details.push(`  - Real name: "${realName}" (Recognition: ${recognitionLevel}${nameUnknown ? ` - Don't spoil unless revealed` : ''})`);
+      details.push(`  - Bio: ${bio}`);
+      details.push(`  - Visual description: ${visualDescription}`);
+      details.push(`  - Introduced at page: ${introducedAtPage}`);
       
       // Relationship to MC
       const relationshipToMCStatus = [relationshipToMC.type, relationshipToMC.status, relationshipToMC.recognitionLevel].filter(Boolean).join(' - ');
-      details.push(`  Relationship to MC: ${relationshipToMCStatus ? `(${relationshipToMCStatus}) ` : ''}${relationshipToMC.context}`);
+      details.push(`  - Relationship to MC: ${relationshipToMCStatus ? `(${relationshipToMCStatus}) ` : ''}${relationshipToMC.context}`);
 
       // Character secrets with nested bullets (spoiler for AI, not shown to player)
       if (secrets?.length) {
-        details.push(`  Secrets (spoiler, don't reveal too early):`);
+        details.push(`  - Secrets (spoiler, don't reveal too early):`);
         secrets.forEach((secret) => {
-          details.push(`    - ${secret}`);
+          details.push(`    → ${secret}`);
         });
       }
 
       // Recent interactions with nested bullets
       if (pastInteractions?.length) {
         const recentInteractions = pastInteractions.sort((a, b) => a.page - b.page).slice(-MAX_PAST_INTERACTIONS);
-        details.push(`  Recent interactions:`);
+        details.push(`  - Recent interactions:`);
         const interactionsByPage = recentInteractions.reduce<Record<number, string[]>>((acc, interaction) => {
           acc[interaction.page] = acc[interaction.page] || [];
           acc[interaction.page].push(interaction.interaction);
@@ -444,33 +444,30 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
           .sort((a, b) => a - b)
           .forEach((page) => {
             const interactionsText = interactionsByPage[page].join(' ');
-            details.push(`    - Page ${page}: ${interactionsText}`);
+            details.push(`    → Page ${page}: ${interactionsText}`);
           });
       }
       
       // Character relationships with nested bullets
       if (relationships?.length) {
-        details.push(`  Relationships:`);
+        details.push(`  - Relationships:`);
         relationships.forEach(r => {
           const relStatus = [r.type, r.status, r.recognitionLevel].filter(Boolean).join(' - ');
-          details.push(`    - ${r.targetId}: ${relStatus ? `(${relStatus}) ` : ''}${r.context}`);
+          details.push(`    → ${r.targetId}: ${relStatus ? `(${relStatus}) ` : ''}${r.context}`);
         });
       }
       
       // Detailed injuries section
       if (injuries?.length) {
-        details.push(`  Injuries:`);
-        injuries.forEach((injury: Injury, index: number) => {
-          const injuryParts = [];
-          const severityLabel = getInjurySeverityLabel(injury);
-          if (injury.description) injuryParts.push(injury.description);
+        details.push(`  - Injuries:`);
+        injuries.forEach((injury: Injury) => {
+          const injuryParts: string[] = [];
           if (injury.bodyPart) injuryParts.push(`Location: ${injury.bodyPart}`);
           if (injury.severity !== undefined) injuryParts.push(`Severity: ${injury.severity}`);
-          if (injury.consequences) injuryParts.push(`Consequences (${severityLabel}): ${injury.consequences}`);
-          if (injury.pageAcquired !== undefined) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
+          if (injury.consequences) injuryParts.push(`Consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}`);
+          if (injury.pageAcquired) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
           
-          const injuryInfo = injuryParts.length ? ` (${injuryParts.join(', ')})` : '';
-          details.push(`    - Injury ${index + 1}${injuryInfo}`);
+          details.push(`    → ${injury.description}${injuryParts.length ? ` (${injuryParts.join(', ')})` : ''}`);
         });
       }
       
@@ -480,11 +477,11 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
         narrativeInfo.push(`potential twist: ${narrativeFlags.potentialTwist}`);
       }
       if (narrativeInfo.length) {
-        details.push(`  Narrative mechanics: ${narrativeInfo.join(', ')}`);
+        details.push(`  - Narrative mechanics: ${narrativeInfo.join(', ')}`);
       }
       
       // Concluding Physical Status
-      details.push(`  Physical state: ${physicalStatusDisplay}`);
+      details.push(`  - Physical state: ${physicalStatusDisplay}`);
       
       return `${mainInfo}\n${details.join('\n')}`;
     })

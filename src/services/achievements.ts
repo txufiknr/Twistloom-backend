@@ -59,12 +59,18 @@ export async function getUserMetrics(userId: string) {
     booksCompleted: stats?.booksCompleted ?? 0,
     pagesRead: stats?.pagesRead ?? 0,
     branchesOpened: stats?.branchesOpened ?? 0,
-  };
+    topupCredits: stats?.topupCredits ?? 0,
+    referredUsers: stats?.referredUsers ?? 0,
+    followersCount: stats?.followersCount ?? 0,
+    maxCheckinStreak: stats?.maxCheckinStreak ?? 0,
+  } satisfies Record<AchievementMetric, number>;
 }
 
 /**
  * Call this inside your book-generation routes or branch navigation logic
  * e.g., await incrementUserMetric(req.userId, 'pagesRead');
+ * 
+ * @deprecated Replaced by automatic db triggers instead of manual increment
  */
 export async function incrementUserMetric(userId: string, metric: AchievementMetric, amount = 1) {
   await dbWrite

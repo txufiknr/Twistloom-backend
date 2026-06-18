@@ -505,6 +505,243 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
 }
 
 /**
+ * Creates highly optimized O(1) delta triggers to keep the `user_counters` 
+ * denormalized table in perfect sync.
+ * 
+ * - books -> books_generated
+ * - user_completed_books -> books_completed
+ * - user_page_progress -> pages_read
+ * - pages -> branches_opened
+ */
+export async function ensureUserCountersTriggers(): Promise<void> {
+  try {
+    console.log("⚙️ Ensuring user_counters DB triggers...");
+
+    // ==========================================
+    // 1. PAGES READ (user_page_progress)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_pages_read() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          INSERT INTO user_counters (user_id, pages_read, updated_at) VALUES (NEW.user_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET pages_read = user_counters.pages_read + 1, updated_at = NOW();
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+          UPDATE user_counters SET pages_read = GREATEST(0, pages_read - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
+          RETURN OLD;
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_page_progress_pages_read_trigger ON user_page_progress;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_page_progress_pages_read_trigger
+        AFTER INSERT OR DELETE ON user_page_progress
+        FOR EACH ROW EXECUTE FUNCTION update_user_pages_read();
+    `);
+    console.log("✅ Trigger created: Pages Read");
+
+    // ==========================================
+    // 2. BOOKS GENERATED (books)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_books_generated() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          INSERT INTO user_counters (user_id, books_generated, updated_at) VALUES (NEW.user_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET books_generated = user_counters.books_generated + 1, updated_at = NOW();
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+          UPDATE user_counters SET books_generated = GREATEST(0, books_generated - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
+          RETURN OLD;
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS books_user_generated_trigger ON books;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER books_user_generated_trigger
+        AFTER INSERT OR DELETE ON books
+        FOR EACH ROW EXECUTE FUNCTION update_user_books_generated();
+    `);
+    console.log("✅ Trigger created: Books Generated");
+
+    // ==========================================
+    // 3. BOOKS COMPLETED (user_completed_books)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_books_completed() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' THEN
+          INSERT INTO user_counters (user_id, books_completed, updated_at) VALUES (NEW.user_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET books_completed = user_counters.books_completed + 1, updated_at = NOW();
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+          UPDATE user_counters SET books_completed = GREATEST(0, books_completed - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
+          RETURN OLD;
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_completed_books_trigger ON user_completed_books;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_completed_books_trigger
+        AFTER INSERT OR DELETE ON user_completed_books
+        FOR EACH ROW EXECUTE FUNCTION update_user_books_completed();
+    `);
+    console.log("✅ Trigger created: Books Completed");
+
+    // ==========================================
+    // 4. FOLLOWERS COUNT (user_follows)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_followers_count() RETURNS TRIGGER AS $$
+      BEGIN
+        -- Note: We track followers_count for the person BEING followed (following_id)
+        IF TG_OP = 'INSERT' THEN
+          INSERT INTO user_counters (user_id, followers_count, updated_at) VALUES (NEW.following_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET followers_count = user_counters.followers_count + 1, updated_at = NOW();
+          RETURN NEW;
+        ELSIF TG_OP = 'DELETE' THEN
+          UPDATE user_counters SET followers_count = GREATEST(0, followers_count - 1), updated_at = NOW() WHERE user_id = OLD.following_id;
+          RETURN OLD;
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_follows_count_trigger ON user_follows;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_follows_count_trigger
+        AFTER INSERT OR DELETE ON user_follows
+        FOR EACH ROW EXECUTE FUNCTION update_user_followers_count();
+    `);
+    console.log("✅ Trigger created: Followers Count");
+
+    // ==========================================
+    // 5. TOPUP CREDITS (transactions)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_topup_credits() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' AND NEW.type = 'purchase' THEN
+          INSERT INTO user_counters (user_id, topup_credits, updated_at) VALUES (NEW.user_id, NEW.credits, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET topup_credits = user_counters.topup_credits + NEW.credits, updated_at = NOW();
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS transactions_topup_trigger ON transactions;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER transactions_topup_trigger
+        AFTER INSERT ON transactions
+        FOR EACH ROW EXECUTE FUNCTION update_user_topup_credits();
+    `);
+    console.log("✅ Trigger created: Topup Credits");
+
+    // ==========================================
+    // 6. REFERRED USERS (users)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_referred_users() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' AND NEW.referrer_id IS NOT NULL THEN
+          INSERT INTO user_counters (user_id, referred_users, updated_at) VALUES (NEW.referrer_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET referred_users = user_counters.referred_users + 1, updated_at = NOW();
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS users_referral_trigger ON users;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER users_referral_trigger
+        AFTER INSERT ON users
+        FOR EACH ROW EXECUTE FUNCTION update_referred_users();
+    `);
+    console.log("✅ Trigger created: Referred Users");
+
+    // ==========================================
+    // 7. CHECK-IN STREAK (user_checkins)
+    // ==========================================
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_checkin_streak() RETURNS TRIGGER AS $$
+      DECLARE
+        prev_date DATE;
+        new_active_streak INT;
+      BEGIN
+        -- Find the user's most recent check-in before this new one
+        SELECT check_in_date INTO prev_date
+        FROM user_checkins
+        WHERE user_id = NEW.user_id AND id != NEW.id
+        ORDER BY check_in_date DESC LIMIT 1;
+
+        -- Check if it was exactly yesterday
+        IF prev_date = NEW.check_in_date - 1 THEN
+          new_active_streak := COALESCE((SELECT active_checkin_streak FROM user_counters WHERE user_id = NEW.user_id), 0) + 1;
+        ELSE
+          new_active_streak := 1;
+        END IF;
+
+        INSERT INTO user_counters (user_id, active_checkin_streak, max_checkin_streak, updated_at)
+        VALUES (NEW.user_id, new_active_streak, new_active_streak, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
+          active_checkin_streak = new_active_streak,
+          max_checkin_streak = GREATEST(user_counters.max_checkin_streak, new_active_streak),
+          updated_at = NOW();
+
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_checkins_streak_trigger ON user_checkins;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER user_checkins_streak_trigger
+        AFTER INSERT ON user_checkins
+        FOR EACH ROW EXECUTE FUNCTION update_user_checkin_streak();
+    `);
+    console.log("✅ Trigger created: Check-in Streak");
+
+    // ==========================================
+    // 8. BRANCHES OPENED (pages)
+    // ==========================================
+    // Note: Due to distinct branches, we use a scoped subquery just for accuracy, 
+    // but ONLY trigger it on insert to avoid bogging down page updates.
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_branches_opened() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' AND NEW.branch_id IS NOT NULL THEN
+          INSERT INTO user_counters (user_id, branches_opened, updated_at)
+          VALUES (NEW.user_id, (SELECT COUNT(DISTINCT branch_id) FROM pages WHERE user_id = NEW.user_id AND branch_id IS NOT NULL), NOW())
+          ON CONFLICT (user_id) DO UPDATE SET
+            branches_opened = (SELECT COUNT(DISTINCT branch_id) FROM pages WHERE user_id = NEW.user_id AND branch_id IS NOT NULL),
+            updated_at = NOW();
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS pages_user_branches_opened_trigger ON pages;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER pages_user_branches_opened_trigger
+        AFTER INSERT ON pages
+        FOR EACH ROW EXECUTE FUNCTION update_user_branches_opened();
+    `);
+    console.log("✅ Trigger created: Branches Opened");
+
+    console.log("🎉 All user_counters DB triggers successfully deployed.");
+  } catch (error) {
+    console.error("❌ Failed to create user_counters triggers:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates trigger to decrement book branches count when the last page of a branch is deleted
  * 
  * This trigger fires AFTER DELETE on pages table:
@@ -778,6 +1015,9 @@ export async function ensureTriggers(): Promise<void> {
     await ensurePageVisitCountIncrementTrigger();
     await ensureBookCommentsCountTrigger();
     await ensureBookCompleteCountTrigger();
+
+    // Create user_counters synchronization triggers
+    await ensureUserCountersTriggers();
 
     // Create user favorites cleanup trigger
     await ensureUserFavoritesCleanupTrigger();

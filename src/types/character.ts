@@ -284,9 +284,9 @@ export type InitialInventoryItem = ObjectItem;
 /** Represents an injury sustained by a character */
 export type Injury = {
   /** The body part that was injured */
-  bodyPart?: string;
+  bodyPart: string;
   /** Description of the injury */
-  description?: string;
+  description: string;
   /** Severity level of the injury (0.0-1.0), decays overtime */
   severity?: number;
   /** Severity decay rate per page (0.0-1.0) */

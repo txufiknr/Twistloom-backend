@@ -167,7 +167,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
 
 export const { keyEvents: placeEvents, familiarity: _f, realName: _n, ...placeUpdateProperties } = INITIAL_PLACE_PROPERTIES;
 
-export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['placeId', 'realName', 'type', 'context', 'familiarity'];
+export const INITIAL_PLACE_KEYS: (keyof NewPlace)[] = ['placeId', 'knownName', 'realName', 'type', 'context', 'familiarity'];
 
 export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
   type: 'object',
@@ -296,7 +296,7 @@ export const { realName: _cn, pastInteractions: _pi, ...updateCharacterPropertie
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['characterId', 'realName', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 

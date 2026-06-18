@@ -1196,11 +1196,23 @@ export const userCheckins = pgTable(
 export const userCounters = pgTable(
   "user_counters",
   {
-    userId: userId().primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+    userId: uuid("user_id").primaryKey().references(() => users.userId, { onDelete: "cascade" }),
+
+    // Reading experiences
     booksGenerated: integer("books_generated").notNull().default(0),
     booksCompleted: integer("books_completed").notNull().default(0),
     pagesRead: integer("pages_read").notNull().default(0),
     branchesOpened: integer("branches_opened").notNull().default(0),
+    
+    // Engagement metrics
+    topupCredits: integer("topup_credits").notNull().default(0),
+    referredUsers: integer("referred_users").notNull().default(0),
+    followersCount: integer("followers_count").notNull().default(0),
+    
+    // Check-in streak tracking
+    activeCheckinStreak: integer("active_checkin_streak").notNull().default(0),
+    maxCheckinStreak: integer("max_checkin_streak").notNull().default(0),
+    
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
   }
 );

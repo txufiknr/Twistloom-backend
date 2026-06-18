@@ -753,8 +753,14 @@ export type StoryScene = {
   sceneType?: SceneType;
   /** Current narrative pressure (tension level) */
   momentum?: StoryMomentum;
-  /** Characters IDs present in the page */
+  /** Characters physically present in the scene */
   charactersPresent?: SceneCharacter[];
+
+  // /** How much time duration of this page? */
+  // timeElapsed: { // Or ISO 8601 format: 'P1D', 'PT24H', etc
+  //   value: number;
+  //   unit: 'seconds' | 'minutes' | 'hours' | 'days' | 'months' | 'years';
+  // };
 };
 
 /**
@@ -884,13 +890,13 @@ export interface StoryMomentumResult {
  */
 export const sceneTypes = {
   /** Expose important truths, hidden information, or major twists. */
-  "revelation": "Focus on meaningful discoveries, hidden truths, connections, and shifts in understanding that reframe what came before.",
+  "revelation": "Reveal hidden truths, connect clues, and permanently twist the MC's understanding of the plot.",
   /** Direct conflict, forced choices, or decisive confrontations. */
-  "confrontation": "Focus on conflict, difficult choices, opposing goals, emotional clashes, and decisive moments with real consequences.",
+  "confrontation": "Drive direct conflict. Force a high-stakes clash of motives, difficult choices, and immediate consequences.",
   /** Immediate danger requiring flight, pursuit, or survival. */
-  "escape": "Focus on urgency, pursuit, survival, quick decisions, and immediate consequences.",
+  "escape": "Maximize urgency and pacing. Write frantic, survival-focused action with immediate physical threats and zero time to think.",
   /** Gather clues, explore surroundings, or build understanding. */
-  "investigation": "Focus on observation, discovery, clues, questions, unfamiliar surroundings, and gradual understanding.",
+  "investigation": "Focus heavily on environmental storytelling, sensory details, clues, and gradual understanding.",
   /** Conceal intentions, manipulate perceptions, or mislead. */
   "deception": "Focus on secrets, lies, manipulation, hidden motives, and unreliable information.",
   /** Evoke dread, fear, or psychological threat — anticipated or active. */
@@ -900,7 +906,7 @@ export const sceneTypes = {
   /** Character interaction and relationship development. */
   "dialogue": "Focus on conversation, subtext, relationships, emotions, motives, and interpersonal dynamics.",
   /** Process consequences, recover, or move toward what's next. */
-  "aftermath": "Focus on reflection, consequences, recovery, emotional impact, and movement or preparation toward the next development.",
+  "aftermath": "Focus on the emotional fallout, physical exhaustion, and the realization of what was just lost or survived.",
   /** Connect major scenes or story developments. */
   "transition": "Focus on movement, preparation, travel, recovery, or progression toward the next major event.",
 } as const;
@@ -1235,6 +1241,16 @@ export type StoryState = {
 
   /** Important notes for future AI turns */
   futureNotes: FutureNote[];
+
+  // /** How much time duration until this page? */
+  // planning & concerns:
+  // - track and handle time skips (but this is a fast-paced thriller story)
+  // - if total duration >= 1 year, increment MC's age (inaccurate and not really important)
+  // - how can timeOfDay of next page generation be consistent?
+  // - but sometimes time elapsed is unknown/unreliable in mystery story
+  //
+  // timePassed: // ISO 8601 format: 'P1D', 'PT24H', etc
+  // only if `timeElapsed` implemented
 };
 
 export type StoryMCState = Pick<StoryState, 'inventory' | 'injuries'>;

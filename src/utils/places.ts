@@ -257,30 +257,32 @@ export function formatPlacesForPrompt(
 
   return sortedEntries.map(([id, place]) => {
     const lines: string[] = [];
-    const currentMarker = place.lastVisitedAtPage === currentPage ? ' [CURRENT]' : '';
+    const { type, context, hints, traits, knownName, realName, isRealNameKnown = false, lastVisitedAtPage, visitCount = 1, keyEvents, knownCharacters } = place;
+    const currentMarker = lastVisitedAtPage === currentPage ? ' [CURRENT]' : '';
+    const placeName = knownName || (isRealNameKnown ? realName : 'Unknown');
 
     // Main place info and identifier
-    lines.push(`• ${place.knownName} (${place.type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]`);
+    lines.push(`• ${placeName} (${type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]`);
 
     // Real name and whether it's revealed to the MC (matches jsdoc example format)
-    lines.push(`  - Real name: ${place.realName} (revealed: ${place.isRealNameKnown ? 'true' : 'false'})`);
-    lines.push(`  - Visited ${place.visitCount ?? 1} time${(place.visitCount ?? 1) > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
-    lines.push(`  - Context: ${place.context}`);
+    lines.push(`  - Real name: ${realName} (revealed: ${place.isRealNameKnown ? 'true' : 'false'})`);
+    lines.push(`  - Visited ${visitCount} time${visitCount > 1 ? 's' : ''} (last visited: page ${place.lastVisitedAtPage}${place.lastMood ? `, last mood: ${place.lastMood}`: ''}${place.lastWeather ? `, last weather: ${place.lastWeather}`: ''})`);
+    lines.push(`  - Context: ${context}`);
 
-    if (place.hints?.length) {
-      lines.push(`  - Hints: ${place.hints.join('; ')}`);
+    if (hints?.length) {
+      lines.push(`  - Hints: ${hints.join('; ')}`);
     }
 
-    if (place.traits?.length) {
+    if (traits?.length) {
       lines.push('  - Traits:');
-      place.traits.forEach(t => {
+      traits.forEach(t => {
         lines.push(`    → ${t.key}: ${t.value}`);
       });
     }
 
-    if (place.keyEvents?.length) {
+    if (keyEvents?.length) {
       lines.push('  - Key events:');
-      place.keyEvents
+      keyEvents
         .slice(-MAX_PLACE_EVENTS)
         .sort((a, b) => a.page - b.page)
         .forEach(event => {
@@ -299,9 +301,9 @@ export function formatPlacesForPrompt(
       });
     }
 
-    if (place.knownCharacters?.length) {
+    if (knownCharacters?.length) {
       lines.push('  - Associated characters:');
-      Object.entries(place.knownCharacters).sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
+      Object.entries(knownCharacters).sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
         lines.push(`    → ${name}${context ? ` (${context})` : ''}`);
       });
     }

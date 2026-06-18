@@ -162,9 +162,7 @@ Guiding principle: Confusing, but never meaningless.`;
  * based on difficulty settings and story progression.
  */
 export const RULES_DIFFICULTY_SCALING = `DIFFICULTY SCALING:
-
-Escalate naturally as page count increases. Near the ending, behave as at least 'high' regardless of setting. Higher difficulty = more unreliable narration and reality distortion.
-
+Higher difficulty = more unreliable narration and reality distortion.
 Levels:
 - 'low': Stable narrative, occasional relief
 - 'medium': Tension, misdirection, occasional betrayal
@@ -206,7 +204,6 @@ I remembered this.
 It ends badly if I go inside.`;
 
 export const RULES_PLACE = `PLACE RULES:
-
 - Use existing places whenever possible.
 - Reflect last mood and event history in descriptions.
 - Reflect traits and key objects consistently.
@@ -214,7 +211,6 @@ export const RULES_PLACE = `PLACE RULES:
 - Apply trauma tags to atmosphere — a betrayal place stays tense.`;
 
 export const RULES_CHARACTER = `CHARACTER RULES:
-
 - NEVER reveal hidden character data unless explicitly discovered.
 - NEVER refer to character using their real name. Use their known name.
 - If name is undisclosed, use descriptions, pronouns, roles, or known aliases.
@@ -228,9 +224,7 @@ export const RULES_CHARACTER = `CHARACTER RULES:
 - Sometimes they also misunderstand, reinforcing illusion or false theory through dialog or action.`;
 
 export const RULES_CHARACTER_RECOGNITION = `CHARACTER RECOGNITION LEVEL:
-
 Notice how characters should refer to each other based on recognitionLevel.
-
 Levels:
 - 'never_seen': Character is unseen by the source character (e.g., "someone", "a figure").
 - 'seen': Use descriptions only. Never use any name (e.g., "the tall man", "the woman in red").
@@ -317,8 +311,8 @@ export const RULES_NEXT_PAGE_GENERATION = [
   RULES_FIRST_PAGE_GENERATION
 ].join('\n\n---\n');
 
-const PROMPT_SYSTEM_FIRST_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n${RULES_FIRST_PAGE_GENERATION}`;
-const PROMPT_SYSTEM_NEXT_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n${RULES_NEXT_PAGE_GENERATION}`;
+const PROMPT_SYSTEM_FIRST_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n---\n${RULES_FIRST_PAGE_GENERATION}`;
+const PROMPT_SYSTEM_NEXT_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n---\n${RULES_NEXT_PAGE_GENERATION}`;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -859,6 +853,7 @@ timeOfDay
 
 sceneType
   - Select the single dominant narrative function of the page.
+  - Analyze user's selected action to either maintain previous scene type or transition to a new, logical scene type.
   - Choose the scene type that best represents the page's primary narrative purpose, not merely its setting, mood, or individual actions.
   - If multiple scene types apply, choose the most important narrative function.
   - Use "transition" only when no stronger narrative function dominates the page.
@@ -1521,6 +1516,20 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
  * @param page - The page data
  * @param action - The action taken on this page if any
  * @returns Formatted string for this page entry
+ * 
+ * @example
+ * • Page 3 (place: classroom, time: morning)
+ *   I walked into the empty classroom, the chalkboards still covered in
+ *   yesterday's equations. Sarah was already there.
+ *   → Scene type: transition (momentum: building)
+ *   → Selected action: Ask about the book (type: dialogue)
+ *   → Hint for page 4: Sarah will reveal the book contains ancient symbols (type: mystery)
+ * • Page 4 (place: classroom, time: morning)
+ *   The symbols glowed faintly as Sarah traced them with her finger.
+ *   → Scene type: investigation (momentum: rising)
+ *   → Plot flag: [artifact_revealed] The symbols form a map (MAJOR)
+ *   → Selected action: Examine the map closely (type: investigate)
+ *   → Hint for page 5: The map shows a hidden passage beneath the school (type: discovery)
  */
 function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPage, plotFlags?: PlotFlag[]): string {
   const pageText = formatPageTextForPrompt(page.text);
@@ -1531,8 +1540,9 @@ function formatPreviousPageEntry(page: ActionedStoryPage | CandidateGenerationPa
     page.weather && page.weather !== 'unknown' ? `weather: ${page.weather}` : '',
   ].filter(Boolean).join(', ')
   
-  // Base page and plot flag information
+  // Base page, momentum, and plot flag information
   let entry = `• Page ${page.page} (${sceneInfo})\n  ${pageText}`;
+  if (page.sceneType) entry += `\n  → Scene type: ${page.sceneType}${page.momentum ? ` (momentum: ${page.momentum})` : ''}`;
   if (plotFlags?.length) entry += `\n  → Plot flags: ${plotFlags.sort((a, b) => Number(b.isMajorEvent) - Number(a.isMajorEvent)).map(plotFlag => formatPlotFlag(plotFlag, { showPageHeader: false })).join('; ')}`;
 
   // Add action information if present
@@ -2254,7 +2264,7 @@ ${formatPreviousPagesForPrompt(currentPage, previousPages, plotFlags)}
 CURRENT PAGE:
 ${formatPreviousPageEntry(page, plotFlags.filter(f => f.page === currentPage))}
 
-CURRENT SITUATION:
+CURRENT SITUATION (What just happened):
 ${formatCurrentSituationForPrompt(page, state)}
 
 ACTION SELECTION:
