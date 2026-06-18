@@ -12,9 +12,28 @@
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
 [ ] incrementUserMetric for achievement
 [ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
-[ ] translate story state (inventory {name, where, traits}, actionsHistory {text})
-[ ] translate action hint
-[ ] include semua yang di table userCounters ke UserStats
+[x] translate story state (inventory {name, where, traits}, actionsHistory {text})
+[x] translate action hint
+[x] include semua yang di table userCounters ke UserStats
+
+---
+
+PAGE OPENING RULES:
+- Continue directly from the final moment of the previous page.
+- First sentence must begin from the immediate aftermath of the selected action.
+- Show the next physical, sensory, or mental step taken by the MC.
+- Do not skip necessary intermediate actions, movements, or objects.
+- Do not jump directly to later consequences if an intermediate action is required.
+- Skip recap and unnecessary setup, but do not skip causally required actions.
+- Maintain continuous time and space unless an intentional scene transition occurs.
+
+PAGE CONTINUITY:
+- The opening 1-3 sentences must show the MC carrying out the selected action.
+- Start at the earliest interesting moment after the selected action.
+- Avoid narrative teleportation. The reader should always understand how the story moved from the previous page to the current moment.
+- Maintain continuous time, location, and perspective unless a deliberate scene transition is occurring.
+- Do not recap previous events, but do not skip required connecting actions.
+- If the selected action requires an object, movement, or preparation, show or imply how it happens before showing the result.
 
 ---
 

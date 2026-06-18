@@ -19,7 +19,7 @@
  * - Avoids N+1 query problem
  */
 
-import { sql, and, or, eq, desc } from "drizzle-orm";
+import { sql, and, or, eq, desc, arrayOverlaps } from "drizzle-orm";
 import { books, users } from '../db/schema.js';
 import { applySorting } from '../utils/pagination.js';
 import { dbRead } from "../db/client.js";
@@ -377,7 +377,7 @@ export function buildTimeFilterCondition(lastUpdated?: string) {
 export function buildTagsFilterCondition(tags: string[]) {
   if (!tags || tags.length === 0) return null;
 
-  return sql`${books.keywords} && ${tags}`;
+  return arrayOverlaps(books.keywords, tags);
 }
 
 /**

@@ -145,20 +145,20 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     console.log(`[verifyNextAuthToken] 🍪 Expected cookie: "${AUTH_COOKIE_NAME}"`);
 
     if (incomingCookieNames.length === 0) {
-      console.error(
-        '[verifyNextAuthToken] ❌ (a) No cookies in request — ' +
+      console.log(
+        '[verifyNextAuthToken] ⏩ (a) No cookies in request — ' +
         'Cookie header not forwarded by Next.js rewrite or upstream proxy.',
       );
     } else if (!incomingCookieNames.includes(AUTH_COOKIE_NAME)) {
-      console.error(
-        `[verifyNextAuthToken] ❌ (b) Cookie name mismatch — ` +
+      console.warn(
+        `[verifyNextAuthToken] ⚠️ (b) Cookie name mismatch — ` +
         `request has [${incomingCookieNames.join(', ')}] ` +
         `but expected "${AUTH_COOKIE_NAME}". ` +
         `Ensure NODE_ENV and DEV_USE_SECURE_COOKIES are identical on frontend and backend.`,
       );
     } else {
-      console.error(
-        `[verifyNextAuthToken] ❌ (c) Cookie "${AUTH_COOKIE_NAME}" is present but could not be decoded — ` +
+      console.warn(
+        `[verifyNextAuthToken] ⚠️ (c) Cookie "${AUTH_COOKIE_NAME}" is present but could not be decoded — ` +
         `check that AUTH_SECRET matches between frontend and backend, or whether the token has expired.`,
       );
     }

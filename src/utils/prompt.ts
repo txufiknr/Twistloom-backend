@@ -34,7 +34,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -245,7 +245,13 @@ PAGE NARRATIVE RULES:
 - Maintain continuity with established story canon, history, characters, and events.
 - Preserve a consistent narrative voice and style across pages.
 - Keep pacing tight; focus on plot-relevant details.
-- End on tension, uncertainty, discovery, or a new problem — never resolution.`;
+- End on tension, uncertainty, discovery, or a new problem — never resolution.
+
+PAGE OPENING RULES:
+- You must maintain continuous time, location, and perspective from the previous page. Never skip required causal or connecting actions, movements, or preparations (e.g., if an object is used, show or imply it being retrieved first). Avoid "narrative teleportation" or skipping directly to later consequences.
+- The opening 1-3 sentences MUST begin at the earliest interesting moment following the user's selected choice. The very first sentence must plunge directly into the immediate physical, sensory, or mental aftermath of that choice.
+- Do not write any recaps, summaries, or repetitive setup loops. Trust that the reader remembers the previous page.
+- The only exception to continuous time and space is if the structural node explicitly demands an intentional, deliberate scene transition.`;
 
 /**
  * Action rules and a human-readable list of action types (excluding
@@ -823,15 +829,16 @@ function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   ].filter(Boolean).join(`\n\n---\n`);
 }
 
-function buildNextPageFieldInstructions(state: StoryState, action: Action): string {
+function buildNextPageFieldInstructions(state: StoryState, action: Action, sceneType: SceneType = 'transition'): string {
   const { traumaTags, futureNotes } = state;
   const { isEarlyPhase, isLatePhase, isMidPhase, isFinale, isLastPage, charactersSlot, placesSlot, phase } = getStoryStateInfo(state);
   const isDialogueAction = action.type === 'dialogue';
 
   return `text
   - Use "I". Never refer to the MC as "the protagonist" or "the narrator".
-  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I decide to [...]," or "I [verb]."`}
-  - Open mid-moment. Avoid setup or recap.
+  - Continue seamlessly from the previous page.${sceneType === 'transition' ? '' : ` No time skip. No location jump. No off-screen actions.`}
+  - ${isDialogueAction ? `It's a dialogue action, so begin directly with "[dialogue]."` : `Begin immediately with the chosen action. Example: "I [verb]." or any necessary causal steps.`}
+  - Open mid-moment, but maintain causal continuity. Avoid recap or unnecessary setup.
   - This is a fast-paced story, don't over explain small details (e.g. clothing, accessories) unless they're plot important.
 ${isEarlyPhase ? `  - Tone: unsettling, not terrifying. Something is wrong — but not yet catastrophic.` : ''}
 ${isMidPhase ? `  - Tone: escalating. Dread should feel earned and personal by now.` : ''}
@@ -1146,7 +1153,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage, candidateCount } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
-  const { action } = actionedPage;
+  const { action, sceneType } = actionedPage;
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
@@ -1163,7 +1170,7 @@ ${candidateCount > 1 ? multiNextPageOutputFormat : nextPageOutputFormat}
 
 ---
 FIELD INSTRUCTIONS:
-${buildNextPageFieldInstructions(state, action)}`;
+${buildNextPageFieldInstructions(state, action, sceneType)}`;
 
   const instructionsPrompt = `INSTRUCTIONS — FOLLOW IN ORDER:
 
@@ -2264,6 +2271,8 @@ ${formatPreviousPagesForPrompt(currentPage, previousPages, plotFlags)}
 CURRENT PAGE:
 ${formatPreviousPageEntry(page, plotFlags.filter(f => f.page === currentPage))}
 
+The next page opening must directly continue from that last sentence while carrying out selected action.
+
 CURRENT SITUATION (What just happened):
 ${formatCurrentSituationForPrompt(page, state)}
 
@@ -2272,7 +2281,10 @@ Available choices:
 ${formatActionChoices(actions)}
 
 Selected:
-${formatSelectedAction(page)}`;
+${formatSelectedAction(page)}
+
+The next page opening should answer: "What happened immediately after MC ("I") chose this action?"
+Write that moment before advancing the scene.`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
@@ -3399,7 +3411,7 @@ async function prepareNextPageGenerationSetup(
 ) {
   const { book, actionedPage } = params;
   const { currentState, advancedState, expectedPageNumber, previousPages } = await prepareNextPageGenerationContext(params);
-  const { action, actions } = actionedPage;
+  const { action, actions, sceneType } = actionedPage;
 
   const letter = String.fromCharCode(65 + actions.findIndex(a => a.text === action.text));
   const generationContext = `"${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${action.text} (type: ${action.type})`;
@@ -3430,7 +3442,7 @@ async function prepareNextPageGenerationSetup(
     config,
     ...bookMeta,
     systemPrompt: PROMPT_SYSTEM_NEXT_PAGE_GENERATION,
-    fieldInstructions: buildNextPageFieldInstructions(advancedState, action),
+    fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
     thinkThenOutput: buildNextPageReviewChecklist(advancedState),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
   };
