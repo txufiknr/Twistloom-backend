@@ -215,13 +215,13 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
 export const AI_CHAT_MODELS_THEME: AIModelSelection = {
   ...AI_CHAT_MODELS_OPENAI,
   gemini: [
-    'gemini-3-flash-preview', 
-    'gemini-2.5-flash', 
-    'gemini-2.5-flash-lite', 
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
     'gemini-1.5-flash-8b'
   ],
   mistral: [
-    'mistral-small-latest', 
+    'mistral-small-latest',
     'mistral-medium-latest'
   ],
   openrouter: [

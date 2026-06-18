@@ -2227,7 +2227,12 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
     const ordered = [...charactersPresent].sort((a, b) => (b.sceneFocus ?? 0) - (a.sceneFocus ?? 0));
     situation.push(`Characters present:\n${ordered.map(sceneCharacter => {
       const { characterId, sceneRole, sceneFocus } = sceneCharacter;
-      const { knownName, role } = state.characters[characterId];
+      const character = state.characters[characterId];
+      if (!character) {
+        console.log(`[charactersPresent] ⚠️ Character ID "${characterId}" does not exist`)
+        return `  · ${characterId} (${sceneRole}, focus: ${sceneFocus}) [not present in known characters, add it via characterUpdates.newCharacters]`;
+      }
+      const { knownName, role } = character;
       return `  · ${knownName} (${role} - ${sceneRole}, focus: ${sceneFocus}) [ID: ${characterId}]`;
     }).join('\n')}`);
   }
@@ -2243,8 +2248,8 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
 
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage: page, previousPages, book } = params;
-  const { actions } = page;
-  const { page: currentPage, contextHistory, plotFlags, factsHistory, inventory, injuries } = state;
+  const { actions, page: currentPage } = page;
+  const { contextHistory, plotFlags, factsHistory, inventory, injuries } = state;
   const { phase, phaseGoal } = getStoryStateInfo(state);
 
   // MC current state: inventory + injuries change every few pages,

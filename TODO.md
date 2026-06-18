@@ -18,6 +18,13 @@
 
 ---
 
+TypeError: Cannot destructure property 'knownName' of 'state.characters[characterId]' as it is undefined.
+    at file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:2129:21
+    at Array.map (<anonymous>)
+    at formatCurrentSituationForPrompt (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:2127:56)
+    
+---
+
 PAGE OPENING RULES:
 - Continue directly from the final moment of the previous page.
 - First sentence must begin from the immediate aftermath of the selected action.
