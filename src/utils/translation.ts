@@ -1,29 +1,4 @@
 /**
- * Translation Service Module
- * 
- * Provides text translation functionality using LibreTranslate API.
- * Supports automatic language detection and multi-language translation.
- * 
- * @example
- * ```typescript
- * // Basic translation
- * const translated = await translateText({
- *   text: "Hello world",
- *   target: "es"
- * });
- * 
- * // Translation with explicit source language
- * const translated = await translateText({
- *   text: "Bonjour le monde",
- *   source: "fr",
- *   target: "en"
- * });
- * ```
- */
-
-import { LANGUAGE_NAMES } from "../config/translation.js";
-
-/**
  * Translates text using LibreTranslate API
  * 
  * @param params - Translation parameters
@@ -155,9 +130,24 @@ export async function translateTexts({
  * ```
  */
 export function formatLanguage(languageCode: string): string {
-  const languageName = LANGUAGE_NAMES[languageCode];
-  if (languageName) {
-    return `${languageName} (${languageCode})`;
-  }
+  const languageName = getLanguageName(languageCode);
+  if (languageName) return `${languageName} (${languageCode})`;
   return languageCode;
+}
+
+/**
+ * Convert a BCP 47 / ISO 639-1 code into a human-readable language name.
+ *
+ * @example
+ * getLanguageName('id')  // "Indonesian"
+ * getLanguageName('fr')  // "French"
+ * getLanguageName('xyz') // "xyz" (unknown codes returned as-is)
+ */
+export function getLanguageName(languageCode: string): string | null {
+  try {
+    const display = new Intl.DisplayNames(['en'], { type: 'language' });
+    return display.of(languageCode) ?? null;
+  } catch {
+    return null;
+  }
 }

@@ -42,7 +42,7 @@
 import type { Router as RouterType } from 'express';
 import type { Request, Response } from 'express';
 import type { DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
-import type { LikeTargetType, User, UserActivityType } from "../types/user.js";
+import type { LikeTargetType, User, UserActivityType, UserStats } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth } from '../middleware/nextauth.js';
@@ -381,13 +381,11 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
     
     // Fetch function for cache
     const fetchUserProfile = async () => {
-      const userWithCounts = await dbRead
+      const [userData] = await dbRead
         .select(getEnrichedUserSelect())
         .from(users)
         .where(whereCondition)
         .limit(1);
-
-      const userData = userWithCounts.length > 0 ? userWithCounts[0] : null;
 
       if (!userData) {
         throw new Error("User profile not found");
@@ -406,16 +404,23 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
         stats: {
-          booksCount: userData.booksCount,
           readsCount: userData.readsCount,
           likedBooksCount: userData.likedBooksCount,
           savedBooksCount: userData.savedBooksCount,
-          followersCount: userData.followersCount,
           likesReceived: userData.likesReceived,
           accountDaysOld: userData.accountDaysOld,
           emailVerified: userData.emailVerified,
           havePurchased: userData.havePurchased,
-        },
+          booksGenerated: userData.booksGenerated,
+          booksCompleted: userData.booksCompleted,
+          pagesRead: userData.pagesRead,
+          branchesOpened: userData.branchesOpened,
+          topupCredits: userData.topupCredits,
+          referredUsers: userData.referredUsers,
+          followersCount: userData.followersCount,
+          activeCheckinStreak: userData.activeCheckinStreak,
+          maxCheckinStreak: userData.maxCheckinStreak,
+        } satisfies UserStats,
       };
 
       return {

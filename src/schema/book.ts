@@ -350,7 +350,7 @@ export const BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   translations: { type: 'array', items: {
     type: 'object',
     properties: { pageId: { type: 'string' }, ...PAGE_TRANSLATION_SCHEMA_DEFINITION } satisfies Record<keyof PageTranslationWithID, AIJsonProperty>,
-    required: ['pageId', 'text', 'keyEvents', 'importantObjects', 'actions'] satisfies (keyof PageTranslationWithID)[],
+    required: ['pageId', 'text', 'keyEvents', 'importantObjects', 'actions', 'actionsHistory'] satisfies (keyof PageTranslationWithID)[],
     additionalProperties: false
   } }
 } satisfies Record<keyof PageTranslationBulk, AIJsonProperty>;

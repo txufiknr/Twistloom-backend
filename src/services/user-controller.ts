@@ -67,10 +67,8 @@ export function getEnrichedUserSelect() {
     lastActive:   users.lastActive,
     createdAt:    users.createdAt,
     updatedAt:    users.updatedAt,
-    // Engagement metrics using SQL subqueries (indexed by userId)
-    booksCount: sql<number>`COALESCE((
-      SELECT COUNT(*) FROM books WHERE user_id = users.user_id
-    ), 0)`,
+    // Consolidated counters: prefer values from `user_counters` (SSOT).
+    // Keep fallbacks for metrics not yet tracked in the counters table.
     readsCount: sql<number>`COALESCE((
       SELECT COUNT(*) FROM user_sessions WHERE user_id = users.user_id
     ), 0)`,
@@ -79,9 +77,6 @@ export function getEnrichedUserSelect() {
     ), 0)`,
     savedBooksCount: sql<number>`COALESCE((
       SELECT COUNT(*) FROM user_favorites WHERE user_id = users.user_id
-    ), 0)`,
-    followersCount: sql<number>`COALESCE((
-      SELECT COUNT(*) FROM user_follows WHERE following_id = users.user_id
     ), 0)`,
     likesReceived: sql<number>`COALESCE((
       SELECT COUNT(*) FROM books
@@ -99,6 +94,34 @@ export function getEnrichedUserSelect() {
       SELECT 1 FROM transactions t
       WHERE t.user_id = users.user_id AND t.type = 'purchase'
     )`,
+    // Expose the rest of the `user_counters` columns as SSOT-backed fields.
+    booksGenerated: sql<number>`COALESCE((
+      SELECT uc.books_generated FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    booksCompleted: sql<number>`COALESCE((
+      SELECT uc.books_completed FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    pagesRead: sql<number>`COALESCE((
+      SELECT uc.pages_read FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    branchesOpened: sql<number>`COALESCE((
+      SELECT uc.branches_opened FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    topupCredits: sql<number>`COALESCE((
+      SELECT uc.topup_credits FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    referredUsers: sql<number>`COALESCE((
+      SELECT uc.referred_users FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    followersCount: sql<number>`COALESCE((
+      SELECT uc.followers_count FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    activeCheckinStreak: sql<number>`COALESCE((
+      SELECT uc.active_checkin_streak FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
+    maxCheckinStreak: sql<number>`COALESCE((
+      SELECT uc.max_checkin_streak FROM user_counters uc WHERE uc.user_id = users.user_id
+    ), 0)`,
   };
 }
 

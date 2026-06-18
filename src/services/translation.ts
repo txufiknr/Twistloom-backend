@@ -1,19 +1,20 @@
 /**
  * Translation Service Module
  *
- * Provides cached translation functionality for page text using LibreTranslate API.
- * Implements LRU cache to reduce database reads and improve performance.
+ * Three-tier translation strategy for Twistloom story pages:
+ *  1. LRU in-memory cache   — sub-ms, for repeated hits within an hour
+ *  2. PostgreSQL cache      — persistent, survives restarts
+ *  3. LibreTranslate API    — on-demand for missing translations
+ *
+ * The AI-based translation path (for cron backfills) lives in
+ * `utils/prompt-translation.ts` and writes through the same DB table.
  *
  * @example
  * ```typescript
- * // Get page translation with caching
- * const result = await getPageTranslation({
- *   page: dbPage,
- *   bookLanguage: "en",
- *   targetLanguage: "es"
- * });
+ * const result = await getPageTranslation({ page: pageToTranslate, bookLanguage: 'en', targetLanguage: 'id' });
  * if (result.translation) {
- *   const enriched = applyPageTranslation(persistedPage, result.translation);
+ *   const translated = applyPageTranslation(persistedPage, result.translation);
+ *   const translatedState = applyStateTranslation(state, result.translation);
  * }
  * ```
  */
@@ -25,7 +26,7 @@ import { eq, and } from "drizzle-orm";
 import { LRUCache } from "lru-cache";
 import { translateTexts } from "../utils/translation.js";
 import type { DBBookTranslations, DBPage, DBPageTranslations } from "../types/schema.js";
-import type { ActionTranslation, PersistedStoryPage, TranslatedStoryPage } from "../types/story.js";
+import type { ActionTranslation, PersistedStoryPage, TranslatedStoryPage, StoryState } from "../types/story.js";
 import type { BookTranslation, PageToTranslate, PageTranslation } from "../types/book.js";
 import type { PlaceMemoryTranslation } from "../types/places.js";
 import type { CharacterMemoryTranslation, InventoryItemTranslation, InjuryTranslation } from "../types/character.js";
@@ -37,7 +38,7 @@ import { getStoryStateFromPage } from "./story.js";
 
 // Global translation cache instance using lru-cache package
 const translationCache = new LRUCache<string, PageTranslation>({
-  max: 1000,
+  max: 1000, // max entries
   ttl: 1000 * 60 * 60, // 1 hour TTL
   allowStale: false,
   updateAgeOnGet: true,
@@ -47,7 +48,7 @@ const translationCache = new LRUCache<string, PageTranslation>({
  * Translation request parameters
  */
 interface GetPageTranslationParams {
-  /** Page object for caching and database storage */
+  /** Full page-with-state object (used by the LibreTranslate path for field extraction) */
   page: PageToTranslate;
   /** Source language code (ISO 639-1) */
   bookLanguage: string;
@@ -69,32 +70,17 @@ export interface PageTranslationResult {
   };
 }
 
+// ── Public API ─────────────────────────────────────────────────────────────────
+
 /**
- * Gets translated page text with multi-level caching and database persistence
+ * Fetches a page translation using a three-tier caching strategy:
+ *   LRU cache → PostgreSQL → LibreTranslate API
  *
- * This function implements a three-tier caching strategy:
- * 1. Memory cache (LRU) - Fastest, for frequently accessed translations
- * 2. Database cache - Persistent storage for all translations
- * 3. Translation API - LibreTranslate for new translations
+ * The LibreTranslate path translates ALL translatable fields for the page
+ * and its associated state in a single bulk API call (see `translatePageWithLibre`).
  *
- * Translation Scope:
- * Translates all page content in a single bulk API call for efficiency:
- * - Main page text
- * - Time of day (if present)
- * - Mood (if present)
- * - Weather (if present)
- * - Key events (if present)
- * - Important objects (if present)
- * - Action texts (if present)
- * - Context history (from state, if present)
- * - Places (from state, if present)
- *
- * Error Handling:
- * Returns error metadata instead of throwing to allow graceful fallback.
- * The caller can display the original text if translation fails.
- *
- * @param params - Translation parameters
- * @returns Translation result with complete page translation data or error information
+ * On failure, returns an error descriptor rather than throwing so callers
+ * can fall back gracefully to the original text.
  */
 export async function getPageTranslation({
   page,
@@ -104,20 +90,15 @@ export async function getPageTranslation({
   const cacheKey = `${page.id}|${targetLanguage}`;
 
   // Check memory cache first (fastest path)
-  const cachedTranslation = translationCache.get(cacheKey);
-  if (cachedTranslation) return { translation: cachedTranslation };
+  const cached = translationCache.get(cacheKey);
+  if (cached) return { translation: cached };
 
   try {
     // Check database for existing translation (second fastest path)
     const [dbTranslation] = await dbRead
       .select()
       .from(pageTranslations)
-      .where(
-        and(
-          eq(pageTranslations.pageId, page.id),
-          eq(pageTranslations.language, targetLanguage)
-        )
-      )
+      .where(and(eq(pageTranslations.pageId, page.id), eq(pageTranslations.language, targetLanguage)))
       .limit(1);
 
     if (dbTranslation) {
@@ -130,49 +111,233 @@ export async function getPageTranslation({
     const translation = await translatePageWithLibre({ page, bookLanguage, targetLanguage, cacheKey });
     return { translation };
   } catch (error) {
-    const errorMessage = getErrorMessage(error);
-    console.warn(`[translate] ⚠️ Failed to translate page ${page.id} to ${targetLanguage}:`, errorMessage);
-
-    return {
-      error: {
-        message: "Translation failed",
-        details: errorMessage,
-        originalText: page.text,
-      },
-    };
+    const details = getErrorMessage(error);
+    console.warn(`[translate] ⚠️ Failed page ${page.id} → ${targetLanguage}:`, details);
+    return { error: { message: "Translation failed", details, originalText: page.text } };
   }
 }
 
 /**
- * Translates page content using LibreTranslate API with bulk optimisation.
+ * Applies a `PageTranslation` overlay onto a `PersistedStoryPage`.
  *
- * All translatable fields are collected into a single flat array so the API is
- * called exactly once, regardless of how many optional fields the page has.
- * Indices are tracked up-front; after the call each field is sliced/indexed back
- * out of the result array.
+ * Covers **page-level fields only**: text, timeOfDay, mood, weather,
+ * keyEvents, importantObjects, and actions.
+ *
+ * State-level translations (contextHistory, places, characters, inventory,
+ * injuries, threads, actionsHistory) must be applied separately via
+ * `applyStateTranslation`.
+ *
+ * Action merging rules:
+ * - Matched by `originalText` so all other Action fields are preserved
+ * - Both `action.text` AND `action.hint.text` are updated when a match exists
+ * - Unmatched actions are returned unchanged (safety fallback)
+ *
+ * @param page        - Original persisted page
+ * @param translation - Translation from DB or LibreTranslate
+ * @returns New page object with translated fields merged in
+ */
+export function applyPageTranslation(
+  page: PersistedStoryPage,
+  translation: PageTranslation
+): TranslatedStoryPage {
+  const translatedActions = (page.actions ?? []).map((action) => {
+    const match = translation.actions.find((t) => t.originalText === action.text);
+    if (!match) return action;
+    return {
+      ...action,
+      text: match.text,
+      // Preserve hint.type; only overwrite hint.text
+      hint: { ...action.hint, text: match.hint },
+    };
+  });
+
+  return {
+    ...page,
+    text: translation.text,
+    // Use != null (not &&): empty string is a valid translation result
+    ...(translation.timeOfDay  != null && { timeOfDay: translation.timeOfDay }),
+    ...(translation.mood       != null && { mood:      translation.mood }),
+    ...(translation.weather    != null && { weather:   translation.weather }),
+    // Arrays: only override when the translated array is non-empty
+    ...(translation.keyEvents.length        > 0 && { keyEvents:        translation.keyEvents }),
+    ...(translation.importantObjects.length > 0 && { importantObjects: translation.importantObjects }),
+    actions: translatedActions,
+  };
+}
+
+/**
+ * Applies state-level translations from a `PageTranslation` onto a `StoryState`.
+ *
+ * Covers all state fields that can be translated:
+ * - `contextHistory` — AI-summarized story context
+ * - `places`         — Record<placeId, PlaceMemory>: knownName, realName, context, type
+ * - `characters`     — Record<characterId, CharacterMemory>: role, bio
+ * - `inventory`      — InventoryItem[]: name, where, traits values (matched by originalName)
+ * - `injuries`       — Injury[]: bodyPart, description, consequences (matched by index)
+ * - `threads`        — StoryThread[]: title, question, summary, clues (matched by threadId)
+ * - `actionsHistory` — SelectedAction[]: text, hint.text (matched by originalText)
+ *
+ * All overrides are non-destructive: if the translated value is empty/missing,
+ * the original is preserved.
+ *
+ * @param state       - Original story state
+ * @param translation - Translation from DB or AI
+ * @returns New state object with translated fields merged in
+ */
+export function applyStateTranslation(state: StoryState, translation: PageTranslation): StoryState {
+  // ── contextHistory ──────────────────────────────────────────────────────────
+  const contextHistory = translation.contextHistory ?? state.contextHistory;
+
+  // ── places ─────────────────────────────────────────────────────────────────
+  let places = state.places;
+  if (translation.places && translation.places.length > 0) {
+    places = { ...state.places };
+    for (const pt of translation.places) {
+      const orig = state.places[pt.placeId];
+      if (!orig) continue;
+      places[pt.placeId] = {
+        ...orig,
+        ...(pt.knownName && { knownName: pt.knownName }),
+        ...(pt.realName  && { realName:  pt.realName }),
+        ...(pt.context   && { context:   pt.context }),
+        ...(pt.type      && { type:      pt.type as typeof orig.type }),
+      };
+    }
+  }
+
+  // ── characters ─────────────────────────────────────────────────────────────
+  let characters = state.characters;
+  if (translation.characters && translation.characters.length > 0) {
+    characters = { ...state.characters };
+    for (const ct of translation.characters) {
+      const orig = state.characters[ct.characterId];
+      if (!orig) continue;
+      characters[ct.characterId] = {
+        ...orig,
+        ...(ct.role && { role: ct.role }),
+        ...(ct.bio  && { bio:  ct.bio }),
+      };
+    }
+  }
+
+  // ── inventory ──────────────────────────────────────────────────────────────
+  let inventory = state.inventory;
+  if (translation.inventory && translation.inventory.length > 0) {
+    inventory = state.inventory.map((item) => {
+      const it = translation.inventory!.find((t) => t.originalName === item.name);
+      if (!it) return item;
+      return {
+        ...item,
+        ...(it.name  && { name:  it.name }),
+        ...(it.where && { where: it.where }),
+        ...(it.traits && it.traits.length > 0 && { traits: it.traits }),
+      };
+    });
+  }
+
+  // ── injuries ───────────────────────────────────────────────────────────────
+  // Injuries have no stable identifier, so matched by array position.
+  let injuries = state.injuries;
+  if (translation.injuries && translation.injuries.length > 0) {
+    injuries = state.injuries.map((inj, i) => {
+      const it = translation.injuries![i];
+      if (!it) return inj;
+      return {
+        ...inj,
+        ...(it.bodyPart     && { bodyPart:     it.bodyPart }),
+        ...(it.description  && { description:  it.description }),
+        ...(it.consequences && { consequences: it.consequences }),
+      };
+    });
+  }
+
+  // ── threads ────────────────────────────────────────────────────────────────
+  let threads = state.threads;
+  if (translation.threads && translation.threads.length > 0) {
+    threads = state.threads.map((th) => {
+      const tt = translation.threads!.find((t) => t.threadId === th.threadId);
+      if (!tt) return th;
+      return {
+        ...th,
+        ...(tt.title    && { title:    tt.title }),
+        ...(tt.question && { question: tt.question }),
+        ...(tt.summary  && { summary:  tt.summary }),
+        clues: th.clues.map((clue) => {
+          const ct = tt.clues.find((c) => c.originalClue === clue.clue);
+          return ct ? { ...clue, clue: ct.clue } : clue;
+        }),
+      };
+    });
+  }
+
+  // ── actionsHistory ─────────────────────────────────────────────────────────
+  // SelectedAction.hint is ActionHint { text, type }; ActionTranslation.hint is a flat string.
+  let actionsHistory = state.actionsHistory;
+  if (translation.actionsHistory && translation.actionsHistory.length > 0) {
+    actionsHistory = state.actionsHistory.map((action) => {
+      const at = translation.actionsHistory!.find((t) => t.originalText === action.text);
+      if (!at) return action;
+      return {
+        ...action,
+        ...(at.text && { text: at.text }),
+        hint: { ...action.hint, ...(at.hint && { text: at.hint }) },
+      };
+    });
+  }
+
+  return {
+    ...state,
+    contextHistory,
+    places,
+    characters,
+    inventory,
+    injuries,
+    threads,
+    actionsHistory,
+  };
+}
+
+// ── LibreTranslate bulk engine ─────────────────────────────────────────────────
+
+/**
+ * Translates every translatable field on a page and its state in a single
+ * LibreTranslate API call.
+ *
+ * **Strategy — flat index batch:**
+ * All strings are pushed into one flat array (`batch`). Each field records the
+ * index at which its strings start. After the API call, values are sliced/indexed
+ * back out using those pre-recorded indices.
  *
  * Index Tracking Rules:
- * - Use `!== undefined` (never truthiness) when reading back optional indices,
- *   because an index of `0` is falsy but perfectly valid.
- * - Each optional scalar gets a dedicated index variable.
- * - Each optional array gets a start-index variable; the slice length equals the
- *   original array length, which is known before the API call.
+ * - Always use `!== undefined` when reading optional start indices — `0` is falsy
+ *   but a valid index.
+ * - Scalar fields: one index per field.
+ * - Array fields: a start index + the original array's length (known up-front).
+ * - Struct fields (places, characters, inventory, injuries, threads): a start index
+ *   per struct, recording the fixed number of strings pushed per entry.
  *
- * Fields Translated:
- * · text
- * · timeOfDay
- * · mood
- * · weather
- * · keyEvents
- * · importantObjects
- * · actions (text, hint)
- * · actionsHistory (text, hint)
- * · contextHistory
- * · places (knownName, realName, type, context)
- * · characters (knownName, realName, role, bio)
- * · inventory (name, where, traits)
- * · injuries (bodyPart, description, consequences)
- * · threads (title, question, summary, clues)
+ * Fields Translated (in batch order):
+ * ```
+ *  0        : page.text
+ *  1?       : page.timeOfDay
+ *  2?       : page.mood
+ *  3?       : page.weather
+ *  4?       : state.contextHistory
+ *  places   : [knownName, realName, context, type] × N places
+ *  keyEvts  : keyEvents[] × M
+ *  impObjs  : importantObjects[] × M
+ *  chars    : [role, bio] × N characters
+ *  inventory: [name, where, trait₀.value, …] × N items
+ *  injuries : [bodyPart, description, consequences] × N injuries
+ *  threads  : [title, question, summary, clue₀, clue₁, …] × N threads
+ *  actHist  : [text, hint.text] × N history entries
+ *  actions  : [text, hint.text] × N actions
+ * ```
+ *
+ * @param params.page           - Full page-with-state object
+ * @param params.bookLanguage   - Source language
+ * @param params.targetLanguage - Target language
+ * @param params.cacheKey       - LRU cache key for post-insert warm-up
  */
 async function translatePageWithLibre({
   page,
@@ -181,144 +346,134 @@ async function translatePageWithLibre({
   cacheKey,
 }: GetPageTranslationParams & { cacheKey: string }): Promise<PageTranslation> {
 
-  // ── Build the flat batch array ───────────────────────────────────────────────
-  const batch: string[] = [page.text]; // index 0 is always the main text
+  // ── Build flat batch ─────────────────────────────────────────────────────────
+  const batch: string[] = [page.text]; // index 0 — always present
 
-  // Optional scalar fields — each may or may not exist
-  let timeOfDayIndex: number | undefined;
-  if (page.timeOfDay) {
-    timeOfDayIndex = batch.length;
-    batch.push(page.timeOfDay);
-  }
-
-  let moodIndex: number | undefined;
-  if (page.mood) {
-    moodIndex = batch.length;
-    batch.push(page.mood);
-  }
-
-  let weatherIndex: number | undefined;
-  if (page.weather) {
-    weatherIndex = batch.length;
-    batch.push(page.weather);
-  }
-
+  // — scalar fields ——————————————————————————————————————————————————————————
+  let timeOfDayIndex:      number | undefined;
+  let moodIndex:           number | undefined;
+  let weatherIndex:        number | undefined;
   let contextHistoryIndex: number | undefined;
-  if (page.state.contextHistory) {
-    contextHistoryIndex = batch.length;
-    batch.push(page.state.contextHistory);
-  }
 
-  // Optional places map — translate select fields for each place (knownName, realName, context)
-  // We push three strings per place and remember start indices per place key.
+  if (page.timeOfDay)           { timeOfDayIndex      = batch.length; batch.push(page.timeOfDay); }
+  if (page.mood)                { moodIndex           = batch.length; batch.push(page.mood); }
+  if (page.weather)             { weatherIndex        = batch.length; batch.push(page.weather); }
+  if (page.state.contextHistory){ contextHistoryIndex = batch.length; batch.push(page.state.contextHistory); }
+
+  // — places (4 strings per place: knownName, realName, context, type) ————————
+  // FIX: `type` was previously omitted from the batch; all four fields are now translated.
+  type PlaceFieldIndices = { start: number };
   let placeIds: string[] = [];
-  let placesStartMap: Record<string, number> | undefined;
+  let placesMap: Record<string, PlaceFieldIndices> | undefined;
+
   if (page.state?.places && Object.keys(page.state.places).length) {
     placeIds = Object.keys(page.state.places);
-    placesStartMap = {};
-    for (const placeKey of placeIds) {
-      const place = page.state.places[placeKey];
-      // Record the start index for this place and push the three fields
-      placesStartMap[placeKey] = batch.length;
-      batch.push(place.knownName ?? '', place.realName ?? '', place.context ?? '');
+    placesMap = {};
+    for (const pid of placeIds) {
+      const p = page.state.places[pid];
+      placesMap[pid] = { start: batch.length };
+      // Fixed 4-slot layout: [knownName, realName, context, type]
+      batch.push(p.knownName ?? '', p.realName ?? '', p.context ?? '', p.type ?? '');
     }
   }
 
-  // Optional array fields — push all elements; remember where each starts
-  let keyEventsStart: number | undefined;
+  // — keyEvents & importantObjects ────────────────────────────────────────────
+  let keyEventsStart:         number | undefined;
+  let importantObjectsStart:  number | undefined;
+
   if (page.keyEvents?.length) {
     keyEventsStart = batch.length;
     batch.push(...page.keyEvents);
   }
-
-  let importantObjectsStart: number | undefined;
   if (page.importantObjects?.length) {
     importantObjectsStart = batch.length;
     batch.push(...page.importantObjects);
   }
 
-  // Optional: characters (Record<string, CharacterMemory>) — translate role + bio per character
+  // — characters (2 strings per character: role, bio) ─────────────────────────
   let characterIds: string[] = [];
-  let charactersStartMap: Record<string, number> | undefined;
+  let charactersMap: Record<string, number> | undefined;
+
   if (page.state?.characters && Object.keys(page.state.characters).length) {
     characterIds = Object.keys(page.state.characters);
-    charactersStartMap = {};
+    charactersMap = {};
     for (const cid of characterIds) {
       const ch = page.state.characters[cid];
-      charactersStartMap[cid] = batch.length;
+      charactersMap[cid] = batch.length;
       batch.push(ch.role ?? '', ch.bio ?? '');
     }
   }
 
-  // Optional: inventory — translate name, where, plus trait values (preserve trait keys)
-  let inventoryStartMap: Record<number, { start: number; traitKeys: string[]; traitCount: number }> | undefined;
+  // — inventory (variable width: name, where, then one slot per trait value) ──
+  type InventoryMeta = { start: number; traitKeys: string[]; };
+  let inventoryMap: Record<number, InventoryMeta> | undefined;
   let inventoryCount = 0;
-  if (page.state?.inventory && page.state.inventory.length) {
-    inventoryStartMap = {};
+
+  if (page.state?.inventory?.length) {
+    inventoryMap = {};
     for (let i = 0; i < page.state.inventory.length; i++) {
       const item = page.state.inventory[i];
-      const traitKeys: string[] = (item.traits ?? []).map((t) => t.key);
-      inventoryStartMap[i] = { start: batch.length, traitKeys, traitCount: (item.traits ?? []).length };
+      const traitKeys = (item.traits ?? []).map((t) => t.key);
+      inventoryMap[i] = { start: batch.length, traitKeys };
       batch.push(item.name ?? '', item.where ?? '');
-      // push trait values
-      for (const t of (item.traits ?? [])) batch.push(t.value ?? '');
+      for (const t of item.traits ?? []) batch.push(t.value ?? '');
       inventoryCount++;
     }
   }
 
-  // Optional: injuries — translate bodyPart, description, consequences per injury
+  // — injuries (3 strings per injury: bodyPart, description, consequences) ────
   let injuriesStart: number | undefined;
-  if (page.state?.injuries && page.state.injuries.length) {
+  if (page.state?.injuries?.length) {
     injuriesStart = batch.length;
     for (const inj of page.state.injuries) {
       batch.push(inj.bodyPart ?? '', inj.description ?? '', inj.consequences ?? '');
     }
   }
 
-  // Optional: threads — translate title, question, summary, plus clues
+  // — threads (3 + clueCount strings per thread: title, question, summary, clues…) ─
+  type ThreadMeta = { start: number; clueCount: number };
   let threadIds: string[] = [];
-  let threadsStartMap: Record<string, { start: number; clueCount: number }> | undefined;
-  if (page.state?.threads && page.state.threads.length) {
+  let threadsMap: Record<string, ThreadMeta> | undefined;
+
+  if (page.state?.threads?.length) {
     threadIds = page.state.threads.map((t) => t.threadId);
-    threadsStartMap = {};
+    threadsMap = {};
     for (const th of page.state.threads) {
-      threadsStartMap[th.threadId] = { start: batch.length, clueCount: (th.clues ?? []).length };
+      const clues = th.clues ?? [];
+      threadsMap[th.threadId] = { start: batch.length, clueCount: clues.length };
       batch.push(th.title ?? '', th.question ?? '', th.summary ?? '');
-      for (const clue of (th.clues ?? [])) batch.push(clue.clue ?? '');
+      for (const c of clues) batch.push(c.clue ?? '');
     }
   }
 
-  // Optional: actions history (SelectedAction[]) — translate text + hint per history item
+  // — actionsHistory (2 strings per entry: text, hint.text) ───────────────────
   let actionsHistoryStart: number | undefined;
-  if (page.state?.actionsHistory && page.state.actionsHistory.length) {
+  if (page.state?.actionsHistory?.length) {
     actionsHistoryStart = batch.length;
     for (const sa of page.state.actionsHistory) {
       batch.push(sa.text ?? '', sa.hint?.text ?? '');
     }
   }
 
+  // — current page actions (2 strings per action: text, hint.text) ────────────
   let actionsStart: number | undefined;
   if (page.actions?.length) {
     actionsStart = batch.length;
     for (const a of page.actions) batch.push(a.text ?? '', a.hint?.text ?? '');
   }
 
-  // ── Single API call for the whole page ───────────────────────────────────────
-  const translated = await translateTexts({
-    texts: batch,
-    target: targetLanguage,
-    source: bookLanguage,
-  });
+  // ── Single API call ──────────────────────────────────────────────────────────
+  const translated = await translateTexts({ texts: batch, target: targetLanguage, source: bookLanguage });
 
-  // ── Extract results using pre-calculated indices ─────────────────────────────
-  // IMPORTANT: use `!== undefined` (not truthiness) — index 0 would be falsy.
-  const translatedText = translated[0];
-
+  // ── Extract — scalars ────────────────────────────────────────────────────────
+  // Use !== undefined guards: index 0 is falsy but valid.
+  const translatedText           = translated[0];
   const translatedTimeOfDay      = timeOfDayIndex      !== undefined ? translated[timeOfDayIndex]      : undefined;
   const translatedMood           = moodIndex           !== undefined ? translated[moodIndex]           : undefined;
   const translatedWeather        = weatherIndex        !== undefined ? translated[weatherIndex]        : undefined;
   const translatedContextHistory = contextHistoryIndex !== undefined ? translated[contextHistoryIndex] : undefined;
 
+  // ── Extract — keyEvents / importantObjects ───────────────────────────────────
   const translatedKeyEvents: string[] = keyEventsStart !== undefined
     ? translated.slice(keyEventsStart, keyEventsStart + (page.keyEvents?.length ?? 0))
     : [];
@@ -327,110 +482,114 @@ async function translatePageWithLibre({
     ? translated.slice(importantObjectsStart, importantObjectsStart + (page.importantObjects?.length ?? 0))
     : [];
 
+  // ── Extract — actions ────────────────────────────────────────────────────────
   const translatedActions: ActionTranslation[] = actionsStart !== undefined
-    ? page.actions!.map((action, i) => ({
-        originalText: action.text,
+    ? page.actions!.map((a, i) => ({
+        originalText: a.text,
         text: translated[actionsStart! + i * 2],
         hint: translated[actionsStart! + i * 2 + 1],
       }))
     : [];
 
-  // ── Map translated places back to PlaceMemoryTranslation array ─────────
+  // ── Extract — places (4-slot layout: knownName, realName, context, type) ────
   const translatedPlaces: PlaceMemoryTranslation[] = [];
-  if (placesStartMap) {
-    for (const placeId of placeIds) {
-      const start = placesStartMap[placeId];
-      const originalPlace = page.state.places[placeId];
+  if (placesMap) {
+    for (const pid of placeIds) {
+      const { start } = placesMap[pid];
+      const orig = page.state.places[pid];
       translatedPlaces.push({
-        placeId,
-        knownName: translated[start],
-        realName:  translated[start + 1],
-        context:   translated[start + 2],
-        type: originalPlace?.type,
+        placeId:   pid,
+        knownName: translated[start]     || orig.knownName,
+        realName:  translated[start + 1] || orig.realName,
+        context:   translated[start + 2] || orig.context,
+        type:      translated[start + 3] || orig.type,
       });
     }
   }
 
-  // ── Map translated characters ────────────────────────────────────────
+  // ── Extract — characters ─────────────────────────────────────────────────────
   const translatedCharacters: CharacterMemoryTranslation[] = [];
-  if (charactersStartMap) {
+  if (charactersMap) {
     for (const cid of characterIds) {
-      const start = charactersStartMap[cid];
+      const start = charactersMap[cid];
+      const orig  = page.state.characters[cid];
       translatedCharacters.push({
         characterId: cid,
-        role: translated[start],
-        bio:  translated[start + 1],
+        role: translated[start]     || orig.role,
+        bio:  translated[start + 1] || orig.bio,
       });
     }
   }
 
-  // ── Map translated inventory ─────────────────────────────────────────
+  // ── Extract — inventory ──────────────────────────────────────────────────────
   const translatedInventory: InventoryItemTranslation[] = [];
-  if (inventoryStartMap) {
+  if (inventoryMap) {
     for (let i = 0; i < inventoryCount; i++) {
-      const meta = inventoryStartMap[i];
-      const start = meta.start;
-      const name = translated[start];
-      const where = translated[start + 1];
-      const traits: TraitItem[] = [];
-      for (let t = 0; t < meta.traitCount; t++) {
-        const translatedValue = translated[start + 2 + t];
-        traits.push({ key: meta.traitKeys[t], value: translatedValue });
-      }
-      translatedInventory.push({ originalName: page.state.inventory[i].name, name, where, traits });
+      const { start, traitKeys } = inventoryMap[i];
+      const orig = page.state.inventory[i];
+      const traits: TraitItem[] = traitKeys.map((key, t) => ({
+        key,
+        value: translated[start + 2 + t] || (orig.traits?.[t].value ?? ''),
+      }));
+      translatedInventory.push({
+        originalName: orig.name,
+        name:  translated[start]     || orig.name,
+        where: translated[start + 1] || orig.where,
+        traits,
+      });
     }
   }
 
-  // ── Map translated injuries ─────────────────────────────────────────
+  // ── Extract — injuries ───────────────────────────────────────────────────────
   const translatedInjuries: InjuryTranslation[] = [];
   if (injuriesStart !== undefined) {
     for (let i = 0; i < page.state.injuries.length; i++) {
       const start = injuriesStart + i * 3;
+      const orig  = page.state.injuries[i];
       translatedInjuries.push({
-        bodyPart: translated[start],
-        description: translated[start + 1],
-        consequences: translated[start + 2],
+        bodyPart:     translated[start]     || orig.bodyPart,
+        description:  translated[start + 1] || orig.description,
+        consequences: translated[start + 2] || orig.consequences,
       });
     }
   }
 
-  // ── Map translated threads ──────────────────────────────────────────
+  // ── Extract — threads ────────────────────────────────────────────────────────
   const translatedThreads: StoryThreadTranslation[] = [];
-  if (threadsStartMap) {
+  if (threadsMap) {
     for (const tid of threadIds) {
-      const meta = threadsStartMap[tid];
-      const tstart = meta.start;
-      const title = translated[tstart];
-      const question = translated[tstart + 1];
-      const summary = translated[tstart + 2];
-      const clues: ThreadClueTranslation[] = [];
-      for (let c = 0; c < meta.clueCount; c++) {
-        const original = page.state.threads.find((th) => th.threadId === tid)!.clues[c].clue;
-        const translatedClue = translated[tstart + 3 + c];
-        clues.push({ originalClue: original, clue: translatedClue });
-      }
-      translatedThreads.push({ threadId: tid, title, question, summary, clues });
+      const { start, clueCount } = threadsMap[tid];
+      const origThread = page.state.threads.find((t) => t.threadId === tid)!;
+      const clues: ThreadClueTranslation[] = origThread.clues.slice(0, clueCount).map((c, i) => ({
+        originalClue: c.clue,
+        clue: translated[start + 3 + i] || c.clue,
+      }));
+      translatedThreads.push({
+        threadId: tid,
+        title:    translated[start]     || origThread.title,
+        question: translated[start + 1] || origThread.question,
+        summary:  translated[start + 2] || origThread.summary,
+        clues,
+      });
     }
   }
 
-  // ── Map translated actionsHistory ───────────────────────────────────
+  // ── Extract — actionsHistory ─────────────────────────────────────────────────
   const translatedActionsHistory: ActionTranslation[] = [];
   if (actionsHistoryStart !== undefined) {
     for (let i = 0; i < page.state.actionsHistory.length; i++) {
       const start = actionsHistoryStart + i * 2;
-      const orig = page.state.actionsHistory[i];
-      translatedActionsHistory.push({ originalText: orig.text, text: translated[start], hint: translated[start + 1] });
+      const orig  = page.state.actionsHistory[i];
+      translatedActionsHistory.push({
+        originalText: orig.text,
+        text: translated[start]     || orig.text,
+        hint: translated[start + 1] || orig.hint.text,
+      });
     }
   }
 
-  // TODO: also translate characters
-  // TODO: also translate inventory (name, where, traits)
-  // TODO: also translate injuries (bodyPart, description, consequences)
-  // TODO: also translate threads (title, question, summary, clues)
-  // TODO: also translate actionsHistory (SelectedAction[] -> ActionTranslation[])
-
-  // ── Persist to database for future cache hits ────────────────────────────────
-  const [newTranslation] = await dbWrite
+  // ── Persist ──────────────────────────────────────────────────────────────────
+  const [newRow] = await dbWrite
     .insert(pageTranslations)
     .values({
       pageId:           page.id,
@@ -442,152 +601,34 @@ async function translatePageWithLibre({
       keyEvents:        translatedKeyEvents,
       importantObjects: translatedImportantObjects,
       actions:          translatedActions,
-      // actionsHistory:       translatedActionsHistory,
+      actionsHistory:   translatedActionsHistory,
       contextHistory:   translatedContextHistory,
-      // characters:       translatedCharacters,
+      characters:       translatedCharacters,
       places:           translatedPlaces,
-      // inventory:       translatedInventory,
-      // injuries:       translatedInjuries,
-      // threads:       translatedThreads,
+      inventory:        translatedInventory,
+      injuries:         translatedInjuries,
+      threads:          translatedThreads,
       providerType:     'translator',
       providerName:     'libre',
       updatedAt:        new Date(),
     })
     .returning();
 
-  const translation = mapToPageTranslation(newTranslation);
+  const translation = mapToPageTranslation(newRow);
   translationCache.set(cacheKey, translation);
   return translation;
 }
 
-/**
- * Applies a `PageTranslation` overlay onto a `PersistedStoryPage`.
- *
- * Only overrides fields that have a non-null translation value; optional fields
- * that were absent or untranslatable fall back silently to the original page data.
- *
- * **Action merging:** translated action texts are matched back to their original
- * action objects via `originalText`, so every other action field
- * (destinationPageIds, id, …) is preserved intact.
- *
- * @param page        - Original persisted story page
- * @param translation - Translation data from DB or LibreTranslate
- * @returns New page object with translated fields merged in
- */
-export function applyPageTranslation(
-  page: PersistedStoryPage,
-  translation: PageTranslation
-// ): PageTranslation {
-): TranslatedStoryPage {
-  // Re-map translated action texts onto the original action objects
-  const translatedActions = (page.actions ?? []).map((action) => {
-    const match = translation.actions.find((t) => t.originalText === action.text);
-    return match ? { ...action, text: match.text } : action;
-  });
-
-  return {
-    ...page,
-    text: translation.text,
-    // Scalar fields: only override when the translation has a non-null value
-    ...(translation.timeOfDay      && { timeOfDay:      translation.timeOfDay }),
-    ...(translation.mood           && { mood:           translation.mood }),
-    ...(translation.weather        && { weather:        translation.weather }),
-    ...(translation.contextHistory && { contextHistory: translation.contextHistory }),
-    ...(translation.places         && { places:         translation.places }),
-    // Array fields: only override when the translated array is non-empty
-    ...(translation.keyEvents.length        && { keyEvents:        translation.keyEvents }),
-    ...(translation.importantObjects.length && { importantObjects: translation.importantObjects }),
-    actions: translatedActions,
-  };
-}
-
-// ── Mapper helpers ─────────────────────────────────────────────────────────────
-
-export function mapToPageTranslation(dbPageTranslations: DBPageTranslations): PageTranslation {
-  return {
-    text:             dbPageTranslations.text,
-    timeOfDay:        dbPageTranslations.timeOfDay,
-    mood:             dbPageTranslations.mood,
-    weather:          dbPageTranslations.weather,
-    keyEvents:        dbPageTranslations.keyEvents,
-    importantObjects: dbPageTranslations.importantObjects,
-    actions:          dbPageTranslations.actions,
-    actionsHistory:   dbPageTranslations.actionsHistory,
-    contextHistory:   dbPageTranslations.contextHistory,
-    characters:       dbPageTranslations.characters,
-    places:           dbPageTranslations.places,
-    inventory:        dbPageTranslations.inventory,
-    injuries:         dbPageTranslations.injuries,
-    threads:          dbPageTranslations.threads,
-  } satisfies Record<keyof PageTranslation, unknown>;
-}
-
-export function mapToBookTranslation(dbBookTranslations: DBBookTranslations): BookTranslation {
-  return {
-    title:    dbBookTranslations.title,
-    hook:     dbBookTranslations.hook,
-    summary:  dbBookTranslations.summary,
-    keywords: dbBookTranslations.keywords,
-    mc:       dbBookTranslations.mc,
-  } satisfies Record<keyof BookTranslation, unknown>;
-}
-
-// ── Public helpers ─────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 /**
- * Checks if translation is needed based on language codes.
- *
- * @param bookLanguage   - Source language code of the book (e.g. "en")
- * @param headerLanguage - Accept-Language header value from the request
- * @returns Target language code if translation is needed, `undefined` otherwise
- *
- * @example
- * shouldTranslate("en", "es-MX")  // → "es"
- * shouldTranslate("en", "en-US")  // → undefined (same language)
- * shouldTranslate("en", null)     // → undefined (no header)
+ * Builds a `PageToTranslate` from a raw `DBPage` by hydrating its book and state.
+ * Returns `null` if either cannot be resolved (e.g. deleted book or missing state).
  */
-export function shouldTranslate(
-  bookLanguage: string,
-  headerLanguage?: string | null
-): string | undefined {
-  if (!headerLanguage || !bookLanguage) return undefined;
-
-  // Extract primary language code (e.g. "en-US" → "en")
-  const targetLanguage = headerLanguage.split('-')[0].toLowerCase();
-
-  if (!isValidLanguageCode(targetLanguage) || !isValidLanguageCode(bookLanguage)) {
-    console.warn(`[translate] ❓ Invalid language codes — book: ${bookLanguage}, target: ${targetLanguage}`);
-    return undefined;
-  }
-
-  return targetLanguage !== bookLanguage.toLowerCase() ? targetLanguage : undefined;
-}
-
-/**
- * Returns current LRU cache statistics for monitoring / health checks.
- */
-export function getTranslationCacheStats() {
-  return {
-    size:      translationCache.size,
-    maxSize:   translationCache.max,
-    itemCount: translationCache.size,
-    ttl:       translationCache.ttl,
-  };
-}
-
-/**
- * Clears the in-memory translation cache.
- * Useful for testing or emergency memory management.
- */
-export function clearTranslationCache() {
-  translationCache.clear();
-}
-
 export async function getPageToTranslate(dbPage: DBPage): Promise<PageToTranslate | null> {
   const page = mapToPersistedStoryPage(dbPage);
   const [book, state] = await Promise.all([
     getBook(page.bookId),
-    // getStoryStateWithBranch(page.bookId, page.id),
     getStoryStateFromPage(dbPage),
   ]);
 
@@ -597,4 +638,99 @@ export async function getPageToTranslate(dbPage: DBPage): Promise<PageToTranslat
   }
 
   return { ...page, book, state };
+}
+
+// ── Mapper helpers ─────────────────────────────────────────────────────────────
+
+export function mapToPageTranslation(row: DBPageTranslations): PageTranslation {
+  return {
+    text:             row.text,
+    timeOfDay:        row.timeOfDay,
+    mood:             row.mood,
+    weather:          row.weather,
+    keyEvents:        row.keyEvents,
+    importantObjects: row.importantObjects,
+    actions:          row.actions,
+    actionsHistory:   row.actionsHistory,
+    contextHistory:   row.contextHistory,
+    characters:       row.characters,
+    places:           row.places,
+    inventory:        row.inventory,
+    injuries:         row.injuries,
+    threads:          row.threads,
+  } satisfies Record<keyof PageTranslation, unknown>;
+}
+
+export function mapToBookTranslation(row: DBBookTranslations): BookTranslation {
+  return {
+    title:    row.title,
+    hook:     row.hook,
+    summary:  row.summary,
+    keywords: row.keywords,
+    mc:       row.mc,
+  } satisfies Record<keyof BookTranslation, unknown>;
+}
+
+// ── Language utilities ─────────────────────────────────────────────────────────
+
+/**
+ * Determines whether translation is needed by comparing the book's source
+ * language to the request's Accept-Language header.
+ *
+ * Returns the target language code if translation is needed, `undefined` if
+ * - the header is absent or invalid
+ * - either code fails ISO 639-1 validation
+ * - source and target are the same language
+ *
+ * @example
+ * shouldTranslate('en', 'id-ID')  // → 'id'
+ * shouldTranslate('en', 'en-US')  // → undefined
+ * shouldTranslate('en', null)     // → undefined
+ */
+export function shouldTranslate(
+  bookLanguage: string,
+  headerLanguage?: string | null
+): string | undefined {
+  if (!headerLanguage || !bookLanguage) return undefined;
+
+  const target = headerLanguage.split('-')[0].toLowerCase();
+
+  if (!isValidLanguageCode(target) || !isValidLanguageCode(bookLanguage)) {
+    console.warn(`[translate] ❓ Invalid language codes — book: ${bookLanguage}, target: ${target}`);
+    return undefined;
+  }
+
+  return target !== bookLanguage.toLowerCase() ? target : undefined;
+}
+
+/**
+ * Formats a BCP 47 / ISO 639-1 code into a human-readable language name.
+ *
+ * @example
+ * formatLanguage('id')  // → 'Indonesian'
+ * formatLanguage('fr')  // → 'French'
+ * formatLanguage('xyz') // → 'xyz' (unknown codes returned as-is)
+ */
+export function formatLanguage(code: string): string {
+  try {
+    const display = new Intl.DisplayNames(['en'], { type: 'language' });
+    return display.of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+/** Returns LRU cache statistics for monitoring / health checks. */
+export function getTranslationCacheStats() {
+  return {
+    size:      translationCache.size,
+    maxSize:   translationCache.max,
+    itemCount: translationCache.size,
+    ttl:       translationCache.ttl,
+  };
+}
+
+/** Clears the in-memory translation cache (testing / emergency memory relief). */
+export function clearTranslationCache() {
+  translationCache.clear();
 }

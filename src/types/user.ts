@@ -29,15 +29,25 @@ export type LikeTargetType = typeof likeTargetTypes[number];
  * User statistics for profile display
  */
 export interface UserStats {
-  booksCount: number;
   readsCount: number;
   likedBooksCount: number;
   savedBooksCount: number;
-  followersCount: number;
   likesReceived: number;
   accountDaysOld: number;
   emailVerified: Date | null;
   havePurchased: boolean;
+
+  // Denormalized counters from the `user_counters` table (single source of truth)
+  // These are included so callers can read SSOT fields directly when available.
+  booksGenerated: number;
+  booksCompleted: number;
+  pagesRead: number;
+  branchesOpened: number;
+  topupCredits: number;
+  referredUsers: number;
+  followersCount: number;
+  activeCheckinStreak: number;
+  maxCheckinStreak: number;
 }
 
 export type UserTier = 'standard' | 'vip';

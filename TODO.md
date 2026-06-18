@@ -27,35 +27,6 @@ tell me if you have any concerns or suggestions
 
 ---
 
-please fully review my updated translation implementation (cron, AI, Libre)
-are they already correct, optimal, efficient, saves token and API calls with smart bulk processing?
-it has incomplete translate implementation for: action.hint, place.type, characters, inventory, actionsHistory
-please work on those cleanly & optimally, and if you spotted any issues or have any concern, suggestions, recommendations, please tell me and elaborate
-finally, please give me fully corrected code files, complete with refined jsdoc and comments
-
-cron/auto-translate-indonesian.ts
-@db/schema.ts
-@schema/book.ts
-@services/translation.ts
-@types/book.ts
-types/story.ts
-@utils/prompt-translation.ts
-
-next:
-
-I've updated my codes to translate more fields (actionsHistory, inventory, injuries, threads)
-can re-check and you continue?
-
-db/schema.ts
-schema/book.ts
-types/book.ts
-types/character.ts
-types/story-thread.ts
-services/translation.ts
-utils/prompt-translation.ts
-
----
-
 utils/prompt.ts: formatActiveThreads, getThreadState
 utils/story.ts: processThreadUpdates
 types/story-thread.ts
