@@ -833,7 +833,7 @@ export const storyMomentums = {
   /** Maximum urgency, danger, or emotional intensity. */
   critical: "Characterized by urgency, major consequences, decisive actions, revelations, and strong emotional intensity.",
   /** Recovery, reflection, resolution, and emotional payoff. */
-  resolution: "Characterized by consequences, reflection, recovery, closure, and emotional payoff. Resolve existing tensions where appropriate rather than introducing major new escalation.",
+  resolution: "Characterized by consequences, reflection, recovery, closure, and emotional payoff for what just happened. Resolve prior tension rather than escalate — but still close the page on a forward-pulling beat per PAGE NARRATIVE RULES (a new doubt or quiet wrongness), never total closure.",
 } as const;
 
 /**
