@@ -10,21 +10,17 @@
  * - Next.js rewrites proxy /api/backend/* requests, so the browser sends
  *   cookies automatically (same-origin from the browser's perspective)
  *
- * Cookie Name Alignment:
- * @auth/express getSession() auto-detects which cookie to look for by
- * inspecting the request URL scheme:
- * - HTTP → 'authjs.session-token',
- * - HTTPS → '__Secure-authjs.session-token'.
- * 
- * When Express sits behind a proxy:
- * that terminates TLS (Next.js rewrite → Express over plain HTTP internally),
- * it sees HTTP and looks for 'authjs.session-token' — even though the frontend
- * wrote '__Secure-authjs.session-token' because DEV_USE_SECURE_COOKIES=true
- * or NODE_ENV=production.
+ * Cookie Name Detection:
+ * Auth.js v5 uses one of two session-token cookie names depending on the
+ * frontend's IS_PRODUCTION || DEV_USE_SECURE_COOKIES flag:
+ *   - '__Secure-authjs.session-token'  (production / local HTTPS)
+ *   - 'authjs.session-token'           (plain HTTP development)
  *
- * Fix: explicitly pass cookies.sessionToken.name to getSession(), derived from
- * the same NODE_ENV / DEV_USE_SECURE_COOKIES env vars the frontend uses. Both
- * processes share .env, so the names stay in sync automatically.
+ * Rather than mirroring that env-var logic here (error-prone across separate
+ * projects, frameworks, and deployment domains), we inspect the incoming Cookie
+ * header and use whichever variant is actually present. Security is unaffected:
+ * the JWT is still validated against AUTH_SECRET regardless of the name we look
+ * it up under — the name is just a key, not a trust boundary.
  *
  * User Creation Policy:
  * Users are created in the backend database at sign-in time via the
@@ -46,19 +42,33 @@ import { handleUnauthorizedError } from '../utils/error.js';
 import { createOrUpdateOAuthUser } from '../services/user-controller.js';
 import { updateSessionMetadata } from '../services/session-manager.js';
 import { getUserIdByEmail, invalidateByEmail } from '../services/user.js';
-import { DEV_USE_SECURE_COOKIES, IS_PRODUCTION } from '../config/env.js';
 
 // ---------------------------------------------------------------------------
-// Cookie name alignment (mirror the logic in the frontend's src/auth.ts)
+// Cookie name detection
 //
-// Without this explicit config, @auth/express auto-detects from the request URL
-// scheme and gets it wrong when TLS is terminated at a proxy (Express receives
-// plain HTTP internally even in production / local HTTPS).
+// Auth.js v5 writes the session token under one of these two names,
+// depending on whether the frontend runs with secure cookies enabled.
+// We detect which one is present rather than mirroring the frontend's env
+// config, which would require keeping two separate projects in sync.
 // ---------------------------------------------------------------------------
-const useSecureCookies = IS_PRODUCTION || DEV_USE_SECURE_COOKIES;
-const cookieNamePrefix = useSecureCookies ? '__Secure-authjs' : 'authjs';
+const SESSION_COOKIE_SECURE = '__Secure-authjs.session-token';
+const SESSION_COOKIE_PLAIN  = 'authjs.session-token';
 
-const AUTH_COOKIE_NAME = `${cookieNamePrefix}.session-token`;
+/**
+ * Returns the name of whichever Auth.js session-token cookie is present in
+ * the Cookie header, or null if neither is found.
+ *
+ * Prefers the secure variant when both are present — this shouldn't happen
+ * in practice, but handles edge cases such as a client whose cookie jar
+ * still holds an old plain cookie after the environment was switched to HTTPS.
+ */
+function detectSessionCookieName(cookieHeader: string | undefined): string | null {
+  if (!cookieHeader) return null;
+  const names = new Set(cookieHeader.split(';').map(c => c.trim().split('=')[0]));
+  if (names.has(SESSION_COOKIE_SECURE)) return SESSION_COOKIE_SECURE;
+  if (names.has(SESSION_COOKIE_PLAIN))  return SESSION_COOKIE_PLAIN;
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // In-flight request deduplication
@@ -77,13 +87,14 @@ const inFlightRequests = new Map<string, Promise<AuthUser | null>>();
  * Verifies the Auth.js session cookie and returns the authenticated user.
  *
  * Flow:
- *   1. Decrypt and verify the session cookie via @auth/express getSession()
- *   2. Extract email from the verified session
- *   3. Deduplicate concurrent requests for the same email
- *   4. Look up userId in the DB (LRU-cached via getUserIdByEmail)
- *   5. If not found: create user as a fallback for edge cases
- *   6. Update session metadata (userAgent, IP) — fire-and-forget, non-blocking
- *   7. Return AuthUser { id, email, name, sessionId }
+ *   1. Detect which session-token cookie variant is present in the request
+ *   2. Decrypt and verify it via @auth/express getSession()
+ *   3. Extract email from the verified session
+ *   4. Deduplicate concurrent requests for the same email
+ *   5. Look up userId in the DB (LRU-cached via getUserIdByEmail)
+ *   6. If not found: create user as a fallback for edge cases
+ *   7. Update session metadata (userAgent, IP) — fire-and-forget, non-blocking
+ *   8. Return AuthUser { id, email, name, sessionId }
  *
  * @returns AuthUser if the cookie is valid, null otherwise
  */
@@ -94,24 +105,47 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
     return null;
   }
 
-  // ── 1. Verify session cookie ───────────────────────────────────────────────
+  // ── 1. Detect which session cookie is present ──────────────────────────────
+  const detectedCookieName = detectSessionCookieName(req.headers.cookie);
+
+  if (!detectedCookieName) {
+    // No session cookie at all — nothing to verify.
+    // Common causes:
+    //   • Unauthenticated request (guest) — completely normal
+    //   • Cookie header stripped by Next.js rewrite or upstream proxy
+    //   • Client is sending to the wrong domain / path
+    const presentNames = req.headers.cookie
+      ? req.headers.cookie.split(';').map(c => c.trim().split('=')[0]).join(', ')
+      : 'none';
+    console.log(
+      `[verifyNextAuthToken] 🍪 No session cookie found. ` +
+      `Looked for: ["${SESSION_COOKIE_SECURE}", "${SESSION_COOKIE_PLAIN}"]. ` +
+      `Present cookies: [${presentNames}]`,
+    );
+    return null;
+  }
+
+  // ── 2. Decrypt and verify the session cookie ───────────────────────────────
   let session: Session | null;
   try {
     session = await getSession(req, {
       providers: [], // Backend only verifies; it doesn't handle OAuth flows
       trustHost: true, // Trust x-forwarded-* headers set by Vercel, AWS, Docker, etc.
       secret,
-      // Explicit cookie name — prevents auto-detection mismatch when TLS is
-      // terminated at a proxy and Express sees plain HTTP internally.
-      // Value is computed from the same env vars as the frontend (src/auth.ts),
-      // so they always stay in sync.
+      // Use the detected cookie name so @auth/express looks in exactly the
+      // right place — bypassing its own environment-based auto-detection,
+      // which fails when TLS is terminated at a proxy (Express sees plain HTTP
+      // internally even though the frontend set a __Secure-prefixed cookie).
       cookies: {
         sessionToken: {
-          name: AUTH_COOKIE_NAME,
+          name: detectedCookieName,
+          // options are only relevant when Auth.js *writes* cookies (SetCookie
+          // response header). For read-only verification they have no effect,
+          // but we keep them accurate for completeness.
           options: {
             httpOnly: true,
-            sameSite: useSecureCookies ? 'none' : 'lax',
-            secure: useSecureCookies,
+            sameSite: detectedCookieName === SESSION_COOKIE_SECURE ? 'none' : 'lax',
+            secure:   detectedCookieName === SESSION_COOKIE_SECURE,
             path: '/',
           },
         },
@@ -123,66 +157,34 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
   }
 
   if (!session?.user?.email) {
-    // ── Diagnostic logging — three distinct failure modes ──────────────────
-    //
-    //  (a) No cookies at all
-    //      → Cookie header not forwarded by Next.js rewrite / proxy.
-    //        Check next.config.js rewrites and any stripping middleware.
-    //
-    //  (b) Cookie present but wrong name
-    //      → NODE_ENV or DEV_USE_SECURE_COOKIES differs between frontend and
-    //        backend. Both processes must read from the same .env.
-    //
-    //  (c) Correct cookie present but session is still null
-    //      → AUTH_SECRET mismatch between frontend and backend, or the token
-    //        has genuinely expired.
-
-    const incomingCookieNames = req.headers.cookie
-      ? req.headers.cookie.split(';').map(c => c.trim().split('=')[0])
-      : [];
-
-    console.log('[verifyNextAuthToken] ✨ No valid session found');
-    console.log(`[verifyNextAuthToken] 🍪 Expected cookie: "${AUTH_COOKIE_NAME}"`);
-
-    if (incomingCookieNames.length === 0) {
-      console.log(
-        '[verifyNextAuthToken] ⏩ (a) No cookies in request — ' +
-        'Cookie header not forwarded by Next.js rewrite or upstream proxy.',
-      );
-    } else if (!incomingCookieNames.includes(AUTH_COOKIE_NAME)) {
-      console.warn(
-        `[verifyNextAuthToken] ⚠️ (b) Cookie name mismatch — ` +
-        `request has [${incomingCookieNames.join(', ')}] ` +
-        `but expected "${AUTH_COOKIE_NAME}". ` +
-        `Ensure NODE_ENV and DEV_USE_SECURE_COOKIES are identical on frontend and backend.`,
-      );
-    } else {
-      console.warn(
-        `[verifyNextAuthToken] ⚠️ (c) Cookie "${AUTH_COOKIE_NAME}" is present but could not be decoded — ` +
-        `check that AUTH_SECRET matches between frontend and backend, or whether the token has expired.`,
-      );
-    }
-
+    // Cookie was detected but could not be decoded. Most likely causes:
+    //   • AUTH_SECRET differs between frontend and backend
+    //   • Token has expired
+    //   • Token was issued by a different Auth.js instance (e.g. staging vs prod)
+    console.warn(
+      `[verifyNextAuthToken] ⚠️ Cookie "${detectedCookieName}" is present but could not be decoded — ` +
+      `check that AUTH_SECRET is identical on frontend and backend, and that the token has not expired.`,
+    );
     return null;
   }
 
-  // ── 2. Extract session fields ──────────────────────────────────────────────
+  // ── 3. Extract session fields ──────────────────────────────────────────────
   const email     = session.user.email as string;
   const name      = session.user.name  as string | undefined;
   const image     = session.user.image as string | undefined;
   const sessionId = (session.user as User & { sessionId?: string }).sessionId;
 
-  // ── 3. Deduplicate concurrent in-flight verifications ─────────────────────
+  // ── 4. Deduplicate concurrent in-flight verifications ─────────────────────
   const existing = inFlightRequests.get(email);
   if (existing) return existing;
 
   const verificationPromise = (async (): Promise<AuthUser | null> => {
     try {
-      // ── 4. Resolve userId ──────────────────────────────────────────────────
+      // ── 5. Resolve userId ──────────────────────────────────────────────────
       let userId = await getUserIdByEmail(email);
 
       if (!userId) {
-        // ── 5. Fallback: user missing from DB ────────────────────────────────
+        // ── 6. Fallback: user missing from DB ────────────────────────────────
         // Expected only in edge cases (DB reset, data inconsistency).
         // In normal operation, users are created at sign-in time by the
         // /auth/google-oauth or /auth/google-one-tap endpoints.
@@ -192,7 +194,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
         invalidateByEmail(email);
       }
 
-      // ── 6. Update session metadata (fire-and-forget) ───────────────────────
+      // ── 7. Update session metadata (fire-and-forget) ───────────────────────
       // Non-blocking: a failure here should never fail the request.
       if (sessionId) {
         updateSessionMetadata(
@@ -204,7 +206,7 @@ export async function verifyNextAuthToken(req: Request): Promise<AuthUser | null
         });
       }
 
-      // ── 7. Return resolved user ────────────────────────────────────────────
+      // ── 8. Return resolved user ────────────────────────────────────────────
       return { id: userId, email, name, sessionId };
 
     } finally {

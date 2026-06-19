@@ -248,7 +248,7 @@ PAGE NARRATIVE RULES:
 - End on tension, uncertainty, discovery, or a new problem — never resolution.
 
 PAGE OPENING RULES:
-- You must maintain continuous time, location, and perspective from the previous page. Never skip required causal or connecting actions, movements, or preparations (e.g., if an object is used, show or imply it being retrieved first). Avoid "narrative teleportation" or skipping directly to later consequences.
+- Maintain continuous time, location, and perspective from the previous page. Never skip required causal or connecting actions, movements, or preparations (e.g., if an object is used, show or imply it being retrieved first). Avoid "narrative teleportation" or skipping directly to later consequences.
 - The opening 1-3 sentences MUST begin at the earliest interesting moment following the user's selected choice. The very first sentence must plunge directly into the immediate physical, sensory, or mental aftermath of that choice.
 - Do not write any recaps, summaries, or repetitive setup loops. Trust that the reader remembers the previous page.
 - The only exception to continuous time and space is if the structural node explicitly demands an intentional, deliberate scene transition.`;

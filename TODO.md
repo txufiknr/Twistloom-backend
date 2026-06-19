@@ -18,29 +18,15 @@
 
 ---
 
-TypeError: Cannot destructure property 'knownName' of 'state.characters[characterId]' as it is undefined.
-    at file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:2129:21
-    at Array.map (<anonymous>)
-    at formatCurrentSituationForPrompt (file:///home/runner/work/Twistloom-backend/Twistloom-backend/dist/utils/prompt.js:2127:56)
-    
----
-
 PAGE OPENING RULES:
 - Continue directly from the final moment of the previous page.
 - First sentence must begin from the immediate aftermath of the selected action.
 - Show the next physical, sensory, or mental step taken by the MC.
 - Do not skip necessary intermediate actions, movements, or objects.
 - Do not jump directly to later consequences if an intermediate action is required.
-- Skip recap and unnecessary setup, but do not skip causally required actions.
-- Maintain continuous time and space unless an intentional scene transition occurs.
-
-PAGE CONTINUITY:
-- The opening 1-3 sentences must show the MC carrying out the selected action.
-- Start at the earliest interesting moment after the selected action.
-- Avoid narrative teleportation. The reader should always understand how the story moved from the previous page to the current moment.
-- Maintain continuous time, location, and perspective unless a deliberate scene transition is occurring.
 - Do not recap previous events, but do not skip required connecting actions.
-- If the selected action requires an object, movement, or preparation, show or imply how it happens before showing the result.
+- Maintain continuous time and space unless an intentional scene transition occurs.
+- Trust that the reader remembers the previous page and understand how the story moved from it to the current moment.
 
 ---
 
