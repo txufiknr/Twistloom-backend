@@ -1005,7 +1005,7 @@ export type FlagUpdate = {
 
 export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 
-export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent'> & {
+export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent' | 'elapsedDays'> & {
   futureNoteUpdates?: {
     add?: FutureNoteGeneration[];
     remove?: string[];

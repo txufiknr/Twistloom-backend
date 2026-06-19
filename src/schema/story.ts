@@ -347,7 +347,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   placeId: { type: 'string', description: 'Current place ID or "unknown"' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
-  calendarDate: { type: 'string', description: `Current in-world date in 'yyyy-MM-dd' format (e.g., "2026-07-26")` },
+  calendarDate: { type: 'string', description: `Current in-world date in 'yyyy-MM-dd' format` },
   timeOfDay: { type: 'string', description: `Current time mark (e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range)` },
   sceneType: { type: 'string', enum: [...Object.keys(sceneTypes)] },
   charactersPresent: {
@@ -471,9 +471,9 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   },
 
   addPlotFlags: PLOT_FLAGS_SCHEMA,
-  elapsedDays: { type: 'integer', description: '0 or 1 if the day has changed. Could be more for time skips.' },
 
   // Optional objects, can omit or empty if no updates
+  // TODO: need schema?
   viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
 
   // Provide full to overwrite current. Can omit or empty if no changes.

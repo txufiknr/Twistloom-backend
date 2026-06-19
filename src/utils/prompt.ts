@@ -177,8 +177,9 @@ Notice how characters refer to each other based on recognitionLevel:
 - first_name_known / full_name_known: use the known name normally.`;
 
 export const RULES_PAGE_TEXT = `PAGE FORMAT:
-- Max ${MAX_WORDS_PER_PAGE} words. Tight. Tense.
-- Multiple short paragraphs with varying length (1-4 sentences each).
+- Max ${MAX_WORDS_PER_PAGE} words.
+- Tight. Tense — but always legible: the reader should never have to re-read a line to know who did what, or where. Let the story be unreliable, not the syntax.
+- Multiple short/fragmented paragraphs with varying length (1-4 sentences each).
 - 4-8 paragraphs, each on its own line (Goosebumps-style spacing).
 - No markdown except optional *italic* emphasis.
 - Write in the target language.
@@ -512,7 +513,6 @@ const nextPageOutputFormat: string = `{
   "weather": "One of: ${formatOneOf(placeWeathers)}",
   "calendarDate": "<yyyy-MM-dd>",
   "timeOfDay": "...",
-  "elapsedDays": <integer>,
   "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
   "charactersPresent": [
     {
@@ -810,10 +810,6 @@ calendarDate:
 timeOfDay
   - Any string: "2 AM", "dusk", "HH:mm", time range, or "unknown".
   - Must be consistent with previous page unless a transition is written into the text.
-
-elapsedDays:
-  - 1 if the day has changed. 0 otherwise.
-  - Could be more than 1 day for time skips.
 
 sceneType
   - Select the single dominant narrative function of the page.
@@ -2335,13 +2331,18 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
 
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage: page, previousPages, book } = params;
-  const { actions, page: currentPage } = page;
+  const { actions, page: currentPage, calendarDate } = page;
+  const { mc, storyStartDate } = book;
   const { contextHistory, plotFlags, factsHistory, inventory, injuries } = state;
   const { phase, phaseGoal } = getStoryStateInfo(state);
 
   // MC current state: inventory + injuries change every few pages,
   // so they live here in the dynamic prompt rather than in the cached documents.
-  const mcCurrentState = getMainCharacterInfo({mc: book.mc, state: { inventory, injuries }});
+  const mcCurrentState = getMainCharacterInfo({mc, state: { inventory, injuries }});
+  const currentDay = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
+  if (currentDay !== state.currentDay) {
+    console.warn(`[formatNextPageStoryContextPrompt] ⚠️ Current day count mismatch`);
+  }
 
   return `CURRENT PHASE:
 ${phase} ${phaseGoal}
@@ -2351,9 +2352,9 @@ ${mcCurrentState}
 
 STORY CONTEXT:
 - Summary: ${contextHistory || 'No story summary yet.'}
-- Story started on: ${book.storyStartDate ?? '-'}
-- Current date: ${page.calendarDate ?? '-'}
-- Day: ${state.currentDay}
+- Story started on: ${storyStartDate ?? '-'}
+- Current date: ${calendarDate ?? '-'}
+- Day: ${currentDay}
 
 ${formatRecentMajorEvents(plotFlags)}
 
@@ -3500,13 +3501,10 @@ async function determineBranchIdForPage(params: {
  * Shared setup logic for page generation contexts, AI configurations, and prompts.
  * Extracts the heavy boilerplate out of the main generator functions.
  */
-async function prepareNextPageGenerationSetup(
-  params: BuildNextPageParams,
-  candidateCount: number,
-) {
+async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candidateCount: number) {
   const { book, actionedPage } = params;
   const { currentState, advancedState, expectedPageNumber, previousPages } = await prepareNextPageGenerationContext(params);
-  const { action, actions, sceneType } = actionedPage;
+  const { action, actions, sceneType, calendarDate: previousDate } = actionedPage;
 
   const letter = String.fromCharCode(65 + actions.findIndex(a => a.text === action.text));
   const generationContext = `"${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${action.text} (type: ${action.type})`;
@@ -3530,6 +3528,7 @@ async function prepareNextPageGenerationSetup(
     currentState,
     advancedState,
     expectedPageNumber,
+    previousDate,
     action,
     generationContext,
     promptParams,
@@ -3546,26 +3545,27 @@ async function prepareNextPageGenerationSetup(
 /**
  * Shared logic to calculate state deltas, apply them, correct mismatches, 
  * and merge psychological states cleanly.
- * 
- * @todo need to check - it seems psychological state never resulted by generation, thus never updates
  */
-function resolvePageDelta(
+function resolvePageDelta(params: {
   generatedStoryPage: StoryGeneration,
   advancedState: StoryState,
   currentState: StoryState,
   expectedPageNumber: number,
-  contextLabel: string,
+  previousDate?: string,
+  context: string,
   fateIndex?: number
-) {
+}) {
+  const { generatedStoryPage, advancedState, currentState, expectedPageNumber, previousDate, context, fateIndex } = params;
   const futureNoteKeys = advancedState.futureNotes.map(note => note.key);
   console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
-  const stateDelta = extractStateDelta(generatedStoryPage, expectedPageNumber, futureNoteKeys);
+
+  const stateDelta = extractStateDelta({ generatedStoryPage, expectedPageNumber, futureNoteKeys, previousDate });
   const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage);
 
   // Provided story state might mismatch, but still respect what provided
   if (newState.page !== expectedPageNumber) {
     const fateLog = fateIndex !== undefined ? ` for alternative fate ${fateIndex}` : '';
-    console.warn(`[${contextLabel}] ⚠️ newState.page mismatch${fateLog}: expected ${expectedPageNumber}, got ${newState.page}. Correcting.`);
+    console.warn(`[${context}] ⚠️ newState.page mismatch${fateLog}: expected ${expectedPageNumber}, got ${newState.page}. Correcting.`);
     newState.page = expectedPageNumber;
   }
   
@@ -3640,7 +3640,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, previousDate, action } = await prepareNextPageGenerationSetup(params, 1);
   console.log(`[${context}] 💭 Conceptualizing continuation for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (single story context)
@@ -3675,14 +3675,19 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   }
 
   // 5. Apply state updates
-  const generatedStoryPage = response.result;
-  const { newState, fullStateDelta } = resolvePageDelta(
-    generatedStoryPage, 
-    advancedState, 
-    currentState, 
-    expectedPageNumber, 
+  const generatedStoryPage: StoryGeneration = {
+    ...response.result,
+    calendarDate: response.result.calendarDate ?? actionedPage.calendarDate,
+  };
+
+  const { newState, fullStateDelta } = resolvePageDelta({
+    generatedStoryPage,
+    advancedState,
+    currentState,
+    expectedPageNumber,
+    previousDate,
     context
-  );
+  });
 
   // 6. Determine Branch ID
   const parentBranchId = actionedPage.branchId ?? "main";
@@ -3747,7 +3752,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   const context = "generateNextPages";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, previousDate, action } = await prepareNextPageGenerationSetup(params, candidateCount);
   console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)
@@ -3793,18 +3798,23 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   let lastError: unknown = null;
 
   // 5. Per-page state processing and persistence
-  for (const [index, generatedStoryPage] of generatedStoryPages.entries()) {
+  for (const [index, generatedStoryPageResult] of generatedStoryPages.entries()) {
     const isFirstAlternative = index === 0;
+    const generatedStoryPage: StoryGeneration = {
+      ...generatedStoryPageResult,
+      calendarDate: generatedStoryPageResult.calendarDate ?? actionedPage.calendarDate,
+    };
 
     // Resolve state updates using the helper
-    const { newState, fullStateDelta } = resolvePageDelta(
+    const { newState, fullStateDelta } = resolvePageDelta({
       generatedStoryPage,
       advancedState,
       currentState,
       expectedPageNumber,
+      previousDate,
       context,
-      index + 1
-    );
+      fateIndex: index + 1
+    });
 
     // Determine branchId
     let branchId: string;

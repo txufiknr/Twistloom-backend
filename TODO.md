@@ -15,6 +15,7 @@
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] translate action hint
 [x] include semua yang di table userCounters ke UserStats
+[ ] isn't `currentDay` state redundant?
 
 ---
 

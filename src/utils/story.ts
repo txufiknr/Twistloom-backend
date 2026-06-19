@@ -6,7 +6,8 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction } from "../types/story.js";
+import { daysBetween } from "./time.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -243,9 +244,17 @@ export function calculateStoryMomentum(params: CalculateStoryMomentumParams): St
  * const delta = extractStateDelta(generatedPage);
  * ```
  */
-export function extractStateDelta(generation: StoryGeneration, expectedPageNumber: number, futureNoteKeys: string[]): StateDelta {
-  if (expectedPageNumber === 1) return {};
+export function extractStateDelta(params: {
+  generatedStoryPage: StoryGeneration,
+  expectedPageNumber: number,
+  futureNoteKeys: string[],
+  previousDate?: string,
+}): StateDelta {
+  const { generatedStoryPage: generation, expectedPageNumber, futureNoteKeys, previousDate } = params;
   const { placeId, futureNoteUpdates } = generation;
+  if (expectedPageNumber === 1) return {}; // No story state delta for page 1
+
+  const elapsedDays = previousDate && generation.calendarDate ? daysBetween(previousDate, generation.calendarDate) : undefined;
 
   const stateDelta: StateDelta = {
     flagUpdates: generation.flagUpdates,
@@ -263,11 +272,12 @@ export function extractStateDelta(generation: StoryGeneration, expectedPageNumbe
     isMajorEvent: generation.addPlotFlags?.some(p => p.isMajorEvent),
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
-    elapsedDays: generation.elapsedDays ?? 0,
+    elapsedDays,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
-  } satisfies Record<keyof StateDeltaGeneration | 'isMajorEvent', unknown>;
+  // } satisfies Record<keyof StateDeltaGeneration | 'elapsedDays' | 'isMajorEvent', unknown>;
+  } satisfies StateDelta;
 
   return stateDelta;
 }
