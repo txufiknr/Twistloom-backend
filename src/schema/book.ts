@@ -246,6 +246,7 @@ export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies 
  */
 export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   text: { type: 'string' },
+  // TODO: add calendarDate
   timeOfDay: { type: 'string' },
   mood: { type: 'string' },
   weather: { type: 'string' },

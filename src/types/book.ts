@@ -94,6 +94,10 @@ export type Book = {
   isOriginal: boolean;
   /** Credits to pay to continue reading */
   creditsPrice: number;
+  /** Original theme input from user (undefined if hidden by author) */
+  originalThemeInput?: string;
+  /** Calendar date of the first page (auto-filled via insertStoryPage) */
+  storyStartDate?: string;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */
@@ -119,6 +123,7 @@ export type EnrichedBookData = Pick<DBBook,
   | 'topPick'
   | 'isOriginal'
   | 'creditsPrice'
+  | 'originalThemeInput'
   | 'createdAt'
   | 'updatedAt'
   | 'mc'
@@ -322,6 +327,7 @@ export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<
 export type PageTranslation = {
   // page translations
   text: string;
+  // TODO: add calendarDate
   timeOfDay?: string | null;
   mood?: string | null;
   weather?: string | null;

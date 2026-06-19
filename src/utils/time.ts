@@ -3,6 +3,7 @@
  */
 
 import { getErrorMessage } from "./error.js";
+// import { differenceInCalendarDays, parse } from 'date-fns';
 
 /**
  * @summary Validates and parses a date string with comprehensive error handling
@@ -131,16 +132,37 @@ export function isDateToday(date: Date = new Date()): boolean {
 }
 
 /**
- * Calculate the number of days between two dates (UTC)
+ * Parse a date into a UTC midnight timestamp.
+ */
+export function toUtcMidnight(date: Date | string): number {
+  // Fast path for strict YYYY-MM-DD format
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    const [year, month, day] = date.split('-').map(Number);
+    return Date.UTC(year, month - 1, day);
+  }
+
+  // Fallback for Date objects or complex strings (e.g., ISO with time)
+  const d = new Date(date);
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/**
+ * Calculate the whole calendar days between two dates.
+ * Ignores time components and handles DST safely via UTC.
+ * 
  * @param date1 - First date
  * @param date2 - Second date
  * @returns Number of days between dates (can be negative)
+ * 
+ * Example: daysBetween('2025-06-10', '2025-06-23') === 13
  */
-export function daysBetween(date1: Date, date2: Date): number {
-  const start1 = startOfDay(date1);
-  const start2 = startOfDay(date2);
-  const msDiff = start1.getTime() - start2.getTime();
-  return Math.round(msDiff / (1000 * 60 * 60 * 24));
+export function daysBetween(startDate: Date | string, endDate: Date | string): number {
+  const msPerDay = 24 * 60 * 60 * 1000; // 86400000
+  
+  // Math.round purely as a safety net for any JS engine quirks
+  return Math.round(
+    (toUtcMidnight(endDate) - toUtcMidnight(startDate)) / msPerDay
+  );
 }
 
 /**

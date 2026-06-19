@@ -180,10 +180,13 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
     note: { type: 'string' },
+    // all fields below are optional (can omit)
     isMajor: { type: 'boolean', description: 'Whether the note contains a major event that significantly impacts story trajectory. Major events include: death, betrayal, major secrets revealed, critical evidence discovered, key relationship changes, significant story direction pivots.' },
     tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
-    targetPhase: { type: 'string', description: 'When this note should become relevant', enum: [...Object.keys(storyPhases)] },
+    targetPhase: { type: 'string', description: 'When this note should become relevant (optional)', enum: [...Object.keys(storyPhases)] },
     targetPageRange: { type: 'string', description: 'When this note should become relevant (optional): "<min>-<max>"' },
+    targetDate: { type: 'string', description: 'When this note should become relevant (optional): "<yyyy-MM-dd>"' },
+    targetDay: { type: 'integer', description: 'When this note should become relevant (optional)' },
     relatedThreadId: { type: 'string', description: 'Related thread ID if any. Omit or "none" if none.' }
   } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
   required: ['note'] satisfies (keyof FutureNoteGeneration)[],
@@ -344,6 +347,7 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   placeId: { type: 'string', description: 'Current place ID or "unknown"' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
+  calendarDate: { type: 'string', description: `Current in-world date in 'yyyy-MM-dd' format (e.g., "2026-07-26")` },
   timeOfDay: { type: 'string', description: `Current time mark (e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range)` },
   sceneType: { type: 'string', enum: [...Object.keys(sceneTypes)] },
   charactersPresent: {
@@ -467,6 +471,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   },
 
   addPlotFlags: PLOT_FLAGS_SCHEMA,
+  elapsedDays: { type: 'integer', description: '0 or 1 if the day has changed. Could be more for time skips.' },
 
   // Optional objects, can omit or empty if no updates
   viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
@@ -641,4 +646,5 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   isMajorEvent: false,
   inventory: [],
   injuries: [],
+  currentDay: 0
 };

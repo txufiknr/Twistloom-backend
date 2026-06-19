@@ -43,6 +43,7 @@ export const KEYWORDS_COUNT = '3-5';
 export const FACT_KEY_FORMAT = '3-segment dot-separated key: "{type}.{entity_name}.{property_name}"';
 
 export const FUTURE_NOTE_LOOKAHEAD_PAGES = 2;
+export const FUTURE_NOTE_LOOKAHEAD_DAYS = 2;
 export const MAX_RECENT_MAJOR_EVENTS = 5;
 
 /**

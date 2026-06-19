@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clien
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
-import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
@@ -42,6 +42,7 @@ import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPa
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
+import { daysBetween, toUtcMidnight } from "./time.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -143,7 +144,7 @@ Becoming Relevant:
 - Prioritize opportunities to advance these notes naturally.
 - Advancement does not require immediate resolution.
 
-For Later:
+Future Payoffs & Scheduled Events:
 - Keep these in mind for future planning.
 - Do not force them into the current page unless naturally justified.`;
 
@@ -169,7 +170,7 @@ export const RULES_CHARACTER = `CHARACTER RULES:
 - Characters may shift suddenly if narrativeFlags suggest it — never explain the change. Use relationships to build tension triangles. They may also misunderstand, reinforcing illusion or false theory through dialogue or action.`;
 
 export const RULES_CHARACTER_RECOGNITION = `CHARACTER RECOGNITION LEVEL:
-Notice how characters refer to each other, based on recognitionLevel:
+Notice how characters refer to each other based on recognitionLevel:
 - never_seen: unseen by the source character ("someone", "a figure").
 - seen: description only, never a name ("the tall man", "the woman in red").
 - alias_known: alias/codename only ("The Janitor").
@@ -177,7 +178,8 @@ Notice how characters refer to each other, based on recognitionLevel:
 
 export const RULES_PAGE_TEXT = `PAGE FORMAT:
 - Max ${MAX_WORDS_PER_PAGE} words. Tight. Tense.
-- Multiple short paragraphs (1-4 sentences each), at least 4 paragraphs, each on its own line (Goosebumps-style spacing).
+- Multiple short paragraphs with varying length (1-4 sentences each).
+- 4-8 paragraphs, each on its own line (Goosebumps-style spacing).
 - No markdown except optional *italic* emphasis.
 - Write in the target language.
 
@@ -290,6 +292,7 @@ const firstBookOutputFormat: string = `{
     "text": "...",
     "mood": "One of: ${formatOneOf(moods)}",
     "weather": "One of: ${formatOneOf(placeWeathers)}",
+    "calendarDate": "<yyyy-MM-dd>",
     "timeOfDay": "e.g., 'night', 'HH:mm', '2 AM', 'unknown', time range",
     "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
     "charactersPresent": [
@@ -374,6 +377,8 @@ const firstBookOutputFormat: string = `{
         "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
         "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
         "targetPageRange": "Optional. '<min>-<max>'",
+        "targetDate": "Optional. '<yyyy-MM-dd>'",
+        "targetDay": <integer>,
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ]
@@ -505,7 +510,9 @@ const nextPageOutputFormat: string = `{
   "mood": "One of: ${formatOneOf(moods)}",
   "placeId": "<place_id>",
   "weather": "One of: ${formatOneOf(placeWeathers)}",
+  "calendarDate": "<yyyy-MM-dd>",
   "timeOfDay": "...",
+  "elapsedDays": <integer>,
   "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
   "charactersPresent": [
     {
@@ -555,6 +562,8 @@ const nextPageOutputFormat: string = `{
         "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
         "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
         "targetPageRange": "Optional. '<min>-<max>'",
+        "targetDate": "Optional. '<yyyy-MM-dd>'",
+        "targetDay": <integer>,
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ],
@@ -794,9 +803,17 @@ placeId
   - Use "unknown" only if location is genuinely ambiguous to the MC.
 ${isLatePhase || isFinale ? `  - Familiar places should feel subtly wrong now — same name, different atmosphere.` : ''}
 
+calendarDate:
+  - Increment if the day has changed.
+  - Write in 'yyyy-MM-dd' format (e.g., "2026-07-26").
+
 timeOfDay
   - Any string: "2 AM", "dusk", "HH:mm", time range, or "unknown".
   - Must be consistent with previous page unless a transition is written into the text.
+
+elapsedDays:
+  - 1 if the day has changed. 0 otherwise.
+  - Could be more than 1 day for time skips.
 
 sceneType
   - Select the single dominant narrative function of the page.
@@ -1042,7 +1059,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 3. Continuity & State Integrity
   □ Characters present consistent with story state? → If NO: remove or justify.
   □ Character behaviors consistent with traits, trauma tags, and current flags? → If NO: adjust dialogue or action.
-  □ Location and timeOfDay consistent with previous page? → If NO: fix transition or write the change explicitly.
+  □ Location, calendarDate, and timeOfDay consistent with previous page? → If NO: fix transition or write the change explicitly.
   □ Referencing objects, places, or events not yet established? → Remove or align with known state.
   □ Important unresolved element from previous page missing? → Reintroduce it${isEarlyPhase ? ' subtly' : ' — more directly now'}.
   □ Movement between locations spatially coherent? → If NO: fix the transition.
@@ -1148,7 +1165,7 @@ ${isLatePhase || isFinale ? `   - Any moment of genuine comfort or safety that i
 
 2. COHERENCE (0-20) — Threshold: 15
    Internal (0-10): Page makes logical sense on its own. No contradictory actions or unwritten scene breaks.
-   External (0-10): Matches prior pages — characters, location, timeOfDay, established facts, unresolved threads.
+   External (0-10): Matches prior pages — characters, location, calendarDate, timeOfDay, established facts, unresolved threads.
 ${isLatePhase || isFinale ? `   Note: Reality distortion is intentional — penalize only contradictions not grounded in narrator unreliability.` : ''}
 
 3. STYLE (0-15) — Threshold: 11
@@ -1437,9 +1454,8 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
 - Make actions feel constrained, inevitable, or repetitive
 - Example actions: A. Open the door / B. Knock first
   Both → door opens` : `ACTION RULES:
-- Actions must be short, meaningful, each lead to very different path
-- Actions must be meaningfully distinct — vary between: reckless, cautious, emotional, avoidant
-- Action text must be unique (important) - it's used for identifier
+- Actions must be short, meaningfully distinct — each lead to very different path
+- Action text must be unique (important) — it's used for identifier
 - No two actions should lead to the same implied consequence
 - Choice pattern: safe / risky / ambiguous
 - Occasionally include deceptive choice
@@ -1674,22 +1690,56 @@ function formatActionChoices(actions: Action[]): string {
 }
 
 /**
- * Pretty-format FutureNotes for AI prompts.
+ * Formats FutureNotes into a structured prompt section for story generation.
  *
- * Sort priority (by payoff timing):
- * 1. targetPageRange (ascending start page)
- * 2. targetPhase (EARLY → MID → LATE → FINALE)
- * 3. Major notes before minor notes
- * 4. addedAtPage (ascending, tie-breaker only)
+ * The output helps the AI distinguish between:
+ * - Notes that are becoming relevant soon and should begin influencing the story.
+ * - Notes that are scheduled for later and should remain unresolved for now.
+ * - Notes without scheduling information.
  *
- * @example
- * - character_1: Introduce Professor Thorne as a potential architect of the simulation. (MAJOR, related thread ID: diary_owner, payoff: LATE - pages 18-22)
- * - character_2: Chloe’s behavior after syncing with the app suggests she is no longer fully in control of her actions. (MAJOR)
+ * Scheduling priority (highest → lowest):
+ * 1. targetDay
+ * 2. targetDate
+ * 3. targetPageRange
+ * 4. targetPhase
+ *
+ * Notes enter the "Becoming Relevant" section when their trigger falls within
+ * the configured lookahead window. This encourages gradual setup, foreshadowing,
+ * and advancement before the actual payoff occurs.
+ *
+ * "Future Payoffs & Scheduled Events" provides long-term story awareness so the AI can
+ * avoid forgetting major future developments, recurring cycles, festivals,
+ * revelations, character arcs, or other planned events.
+ *
+ * Example output:
+ *
+ * Becoming Relevant (advance naturally, do not force immediate resolution):
+ * - entity_cycle: Strange electrical disturbances increase throughout town.
+ *   (MAJOR, Day 52 (3 days away), thread: disappearance_cycle)
+ * - town_festival: Festival preparations become increasingly visible.
+ *   (2025-06-14 (4 days away))
+ *
+ * Future Payoffs & Scheduled Events:
+ * - Day 65 (16 days away): The next disappearance in the cycle occurs. (MAJOR) [ID: entity_cycle]
+ * - Pages 52-60: Reveal the contents of the hidden journal. [ID: diary_owner]
+ * - FINALE phase: Expose the architect behind the simulation. (MAJOR) [ID: conspiracy]
+ *
+ * Unscheduled:
+ * - relationship_1: Tension between Maya and Ethan continues to grow.
+ *
+ * @param futureNotes Future notes accumulated throughout the story.
+ * @param currentPage Current story page number.
+ * @param currentPhase Current story phase.
+ * @param currentDay Current in-story day number since story start.
+ * @param currentDate Current in-story calendar date in YYYY-MM-DD format.
+ * @returns Prompt-ready text for injection into story generation context.
  */
 function formatFutureNotes(
   futureNotes: FutureNote[],
   currentPage: number,
   currentPhase: StoryPhase,
+  currentDay?: number,
+  currentDate?: string,
 ): string {
   if (!futureNotes.length) return 'None yet.';
 
@@ -1706,24 +1756,78 @@ function formatFutureNotes(
     return match ? Number(match[1]) : undefined;
   };
 
+  const getDayDistance = (targetDay?: number, currentDay?: number): number | undefined => {
+    if (targetDay === undefined || currentDay === undefined) return undefined;
+    return targetDay - currentDay;
+  };
+
+  const getDateDistance = (targetDate?: string, currentDate?: string): number | undefined => {
+    if (!targetDate || !currentDate) return undefined;
+    return daysBetween(currentDate, targetDate);
+  };
+
+  const getScheduleLabel = (note: FutureNote): string | undefined => {
+    if (note.targetDay !== undefined) {
+      const distance = getDayDistance(note.targetDay, currentDay);
+      return distance !== undefined && distance > 0
+        ? `Day ${note.targetDay} (${distance} day${distance === 1 ? '' : 's'} away)`
+        : `Day ${note.targetDay}`;
+    }
+
+    if (note.targetDate) {
+      const distance = currentDate ? getDateDistance(note.targetDate, currentDate) : undefined;
+      return distance !== undefined && distance > 0
+        ? `${note.targetDate} (${distance} day${distance === 1 ? '' : 's'} away)`
+        : note.targetDate;
+    }
+
+    if (note.targetPageRange) return `Pages ${note.targetPageRange}`;
+    if (note.targetPhase) return `${note.targetPhase} phase`;
+    return undefined;
+  };
+
   const becomingRelevant: FutureNote[] = [];
-  const later: FutureNote[] = [];
+  const upcomingScheduledEvents: FutureNote[] = [];
   const unscheduled: FutureNote[] = [];
 
   for (const note of futureNotes) {
-    const startPage = getPageRangeStart(note.targetPageRange);
+    // Day scheduling (highest priority)
+    if (note.targetDay !== undefined) {
+      const distance = getDayDistance(note.targetDay, currentDay);
+      if (distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS) {
+        becomingRelevant.push(note);
+      } else {
+        upcomingScheduledEvents.push(note);
+      }
 
-    // Page-based scheduling takes precedence
+      continue;
+    }
+
+    // Date scheduling
+    if (note.targetDate) {
+      const distance = getDateDistance(note.targetDate, currentDate);
+      if (distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS) {
+        becomingRelevant.push(note);
+      } else {
+        upcomingScheduledEvents.push(note);
+      }
+
+      continue;
+    }
+
+    // Page scheduling
+    const startPage = getPageRangeStart(note.targetPageRange);
     if (startPage !== undefined) {
       if (currentPage >= startPage - FUTURE_NOTE_LOOKAHEAD_PAGES) {
         becomingRelevant.push(note);
       } else {
-        later.push(note);
+        upcomingScheduledEvents.push(note);
       }
+
       continue;
     }
 
-    // Phase-based scheduling
+    // Phase scheduling
     if (note.targetPhase) {
       const targetOrder = phaseOrder[note.targetPhase];
       const currentOrder = phaseOrder[currentPhase];
@@ -1731,7 +1835,7 @@ function formatFutureNotes(
       if (targetOrder <= currentOrder) {
         becomingRelevant.push(note);
       } else {
-        later.push(note);
+        upcomingScheduledEvents.push(note);
       }
 
       continue;
@@ -1741,51 +1845,91 @@ function formatFutureNotes(
     unscheduled.push(note);
   }
 
-  const sortNotes = (notes: FutureNote[]) => {
+  const getSortValue = (note: FutureNote): [number, number] => {
+    if (note.targetDay !== undefined) return [0, note.targetDay];
+    if (note.targetDate) return [1, toUtcMidnight(note.targetDate)];
+
+    const startPage = getPageRangeStart(note.targetPageRange);
+    if (startPage !== undefined) return [2, startPage];
+    if (note.targetPhase) return [3, phaseOrder[note.targetPhase]];
+
+    return [4, Number.MAX_SAFE_INTEGER];
+  };
+
+  const sortNotes = (notes: FutureNote[]): void => {
     notes.sort((a, b) => {
-      const aStart = getPageRangeStart(a.targetPageRange) ?? Infinity;
-      const bStart = getPageRangeStart(b.targetPageRange) ?? Infinity;
-      if (aStart !== bStart) return aStart - bStart;
+      const [aType, aValue] = getSortValue(a);
+      const [bType, bValue] = getSortValue(b);
 
-      const aPhase = a.targetPhase ? phaseOrder[a.targetPhase] : Infinity;
-      const bPhase = b.targetPhase ? phaseOrder[b.targetPhase] : Infinity;
-      if (aPhase !== bPhase) return aPhase - bPhase;
-
+      if (aType !== bType) return aType - bType;
+      if (aValue !== bValue) return aValue - bValue;
       if (a.isMajor !== b.isMajor) return a.isMajor ? -1 : 1;
 
       const aAdded = a.addedAtPage ?? Infinity;
       const bAdded = b.addedAtPage ?? Infinity;
-      if (aAdded !== bAdded) return aAdded - bAdded;
 
-      return 0;
+      return aAdded - bAdded;
     });
   };
 
   sortNotes(becomingRelevant);
-  sortNotes(later);
+  sortNotes(upcomingScheduledEvents);
   sortNotes(unscheduled);
 
-  const formatOneLine = (n: FutureNote): string => {
-    const parts: string[] = [];
-    if (n.relatedThreadId && n.relatedThreadId !== 'none') parts.push(`related thread ID: ${n.relatedThreadId}`);
-    const payoff = [n.targetPhase, n.targetPageRange ? `pages ${n.targetPageRange}` : ''].filter(Boolean).join(' - ');
-    if (payoff) parts.push(`payoff: ${payoff}`);
+  const formatRelevantNote = (
+    note: FutureNote,
+  ): string => {
+    const meta: string[] = [];
 
-    const noteInfo = [...(n.isMajor ? ['MAJOR'] : []), ...parts].join(', ');
-    return `- ${n.key}: ${n.note}${noteInfo ? ` (${noteInfo})` : ''}`;
+    if (note.isMajor) meta.push('MAJOR');
+    
+    const schedule = getScheduleLabel(note);
+    if (schedule) meta.push(schedule);
+
+    if (note.relatedThreadId && note.relatedThreadId !== 'none') {
+      meta.push(`thread: ${note.relatedThreadId}`);
+    }
+
+    return `- ${note.key}: ${note.note}${meta.length ? ` (${meta.join(', ')})` : ''}`;
   };
 
-  const formatSection = (title: string, notes: FutureNote[]): string => {
-    if (!notes.length) return '';
-    const body = notes.map(formatOneLine).join('\n');
-    return `${title}\n${body}`;
+  const formatScheduledEvent = (note: FutureNote): string => {
+    const schedule = getScheduleLabel(note);
+    const prefix = schedule ? `${schedule}: ` : '';
+    const major = note.isMajor ? ' (MAJOR)' : '';
+    return `- ${prefix}${note.note}${major} [ID: ${note.key}]`;
   };
 
-  return [
-    formatSection('Becoming Relevant (prioritize advancement, not necessarily immediate resolution):', becomingRelevant),
-    formatSection('For Later:', later),
-    formatSection('Unscheduled:', unscheduled),
-  ].filter(Boolean).join('\n\n');
+  const sections: string[] = [];
+
+  if (becomingRelevant.length) {
+    sections.push(
+      [
+        'Becoming Relevant (advance naturally, do not force immediate resolution):',
+        ...becomingRelevant.map(formatRelevantNote),
+      ].join('\n'),
+    );
+  }
+
+  if (upcomingScheduledEvents.length) {
+    sections.push(
+      [
+        'Future Payoffs & Scheduled Events:',
+        ...upcomingScheduledEvents.map(formatScheduledEvent),
+      ].join('\n'),
+    );
+  }
+
+  if (unscheduled.length) {
+    sections.push(
+      [
+        'Unscheduled:',
+        ...unscheduled.map(formatRelevantNote),
+      ].join('\n'),
+    );
+  }
+
+  return sections.join('\n\n');
 }
 
 /**
@@ -2117,6 +2261,7 @@ Open the door
  *   mood: 'tense',
  *   placeId: 'Old Library',
  *   weather: 'stormy',
+ *   calendarDate: '2026-07-26',
  *   timeOfDay: 'midnight',
  *   sceneType: 'investigation',
  *   momentum: 'building tension',
@@ -2138,6 +2283,7 @@ Open the door
  * - Story momentum: rising
  * - Scene type: investigation
  * - Place: Old Library
+ * - Date: 2026-07-26
  * - Time: midnight
  * - Mood: tense
  * - Weather: stormy
@@ -2150,13 +2296,14 @@ Open the door
  *   · heard a distant scream
  */
 function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: StoryState): string {
-  const { mood, placeId, weather, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
+  const { mood, placeId, weather, calendarDate, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
   const situation: string[] = [];
   
   // Basic situation elements
   if (momentum) situation.push(`Story momentum: ${momentum}`);
   if (sceneType) situation.push(`Scene type: ${sceneType}`);
   if (placeId) situation.push(`Place: ${placeId}`);
+  if (calendarDate) situation.push(`Date: ${calendarDate}`);
   if (timeOfDay) situation.push(`Time: ${timeOfDay}`);
   if (mood) situation.push(`Mood: ${mood}`);
   if (weather) situation.push(`Weather: ${weather}`);
@@ -2203,7 +2350,10 @@ MAIN CHARACTER (POV):
 ${mcCurrentState}
 
 STORY CONTEXT:
-${contextHistory || 'No story context yet.'}
+- Summary: ${contextHistory || 'No story summary yet.'}
+- Story started on: ${book.storyStartDate ?? '-'}
+- Current date: ${page.calendarDate ?? '-'}
+- Day: ${state.currentDay}
 
 ${formatRecentMajorEvents(plotFlags)}
 
@@ -2512,9 +2662,9 @@ function formatRecentMajorEvents(plotFlags: PlotFlag[]): string {
   return `Recent Major Events (avoid repeating similar major beats too soon):\n${majorEventsFormatted}`;
 }
 
-function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, showPageHeader?: boolean, showMajorFlag?: boolean }): string {
-  const { showSceneInfo = true, showPageHeader = true, showMajorFlag = true } = options ?? {};
-  const sceneInfo = showSceneInfo ? `${[flag.placeId && `place: ${flag.placeId}`, flag.timeOfDay && `time: ${flag.timeOfDay}`].filter(Boolean).join(', ')}` : '';
+function formatPlotFlag(flag: PlotFlag, options?: { showSceneInfo?: boolean, showPageHeader?: boolean, showMajorFlag?: boolean, showDateTime?: boolean }): string {
+  const { showSceneInfo = true, showPageHeader = true, showMajorFlag = true, showDateTime = true } = options ?? {};
+  const sceneInfo = showSceneInfo ? `${[flag.placeId && `place: ${flag.placeId}`, ...(showDateTime ? [flag.calendarDate && `date: ${flag.calendarDate}`, flag.timeOfDay && `time: ${flag.timeOfDay}`] : [])].filter(Boolean).join(', ')}` : '';
   const pageHeader = showPageHeader ? `• Page ${flag.page}${sceneInfo ? ` (${sceneInfo})` : ''}: ` : '';
   return `${pageHeader}[${flag.type}] ${flag.fact}${showMajorFlag && flag.isMajorEvent ? ` (MAJOR)` : ''}`;
 }
@@ -3109,7 +3259,7 @@ export async function initializeBook(
     console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
 
     const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
-    const { timeOfDay, actions } = firstUserPage;
+    const { calendarDate, timeOfDay, actions } = firstUserPage;
 
     console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
 
@@ -3118,7 +3268,7 @@ export async function initializeBook(
       ...createEmptyStoryState(firstPage.id, 1, totalPages),
       ...{
         ...generatedInitialState,
-        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, timeOfDay })) || [],
+        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, calendarDate, timeOfDay })) || [],
         threads: generatedInitialState.threads?.map<StoryThread>((thread) => createStoryThread(thread, 1)) || [],
         inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId })) || [],
         injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [],
@@ -3407,7 +3557,9 @@ function resolvePageDelta(
   contextLabel: string,
   fateIndex?: number
 ) {
-  const stateDelta = extractStateDelta(generatedStoryPage, expectedPageNumber, advancedState.futureNotes.map(note => note.key));
+  const futureNoteKeys = advancedState.futureNotes.map(note => note.key);
+  console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
+  const stateDelta = extractStateDelta(generatedStoryPage, expectedPageNumber, futureNoteKeys);
   const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage);
 
   // Provided story state might mismatch, but still respect what provided

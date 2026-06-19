@@ -217,6 +217,7 @@ const pageTranslationReview: string = `
 □ Formatting preserved.
 □ Output reads like native fiction, not translation.`;
 
+// TODO: add calendarDate
 const pageTranslationOutputFormat: string = `{
   "text": "Translated page text",
   "timeOfDay": "Translated time of day",
@@ -281,6 +282,7 @@ const pageTranslationOutputFormat: string = `{
   ]
 }`;
 
+// TODO: add calendarDate
 const bulkPageTranslationOutputFormat: string = `{
   "translations": [
     {
@@ -311,6 +313,7 @@ const bulkPageTranslationOutputFormat: string = `{
  */
 const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk = false): string => {
   const asteriskRule = hasAsterisks ? ' Keep text styling using asterisks (if any).' : '';
+  // TODO: add calendarDate
   return `${isBulk ? `- pageId: Don't change. Must match its source page.\n` : ''}\
 - text: Translate page narrative.${asteriskRule}
 - timeOfDay: Translate time of day.
@@ -603,6 +606,7 @@ function formatPagePrompt(page: PageToTranslate): string {
   // ── PAGE-LEVEL FIELDS ───────────────────────────────────────────────────────
   const pageLines: string[] = [
     `Text:\n"""\n${page.text}\n"""`,
+    // TODO: add calendarDate
     page.timeOfDay             ? `Time: ${page.timeOfDay}` : null,
     page.mood                  ? `Mood: ${page.mood}` : null,
     page.weather               ? `Weather: ${page.weather}` : null,

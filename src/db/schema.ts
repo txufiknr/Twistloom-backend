@@ -63,7 +63,8 @@ export const pages = pgTable(
     mood: text("mood").$type<Mood>(), // Current emotional atmosphere
     placeId: text("place_id"), // Current place ID where the story is taking place
     weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
-    timeOfDay: text("time_of_day"), // Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown'
+    calendarDate: text("calendar_date"), // Current in-world date (e.g., "2026-07-26")
+    timeOfDay: text("time_of_day"), // Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown')
     sceneType: text("scene_type").$type<SceneType>(), // Current narrative function
     momentum: text("momentum").$type<StoryMomentum>(), // Current pressure level
     charactersPresent: jsonb("characters_present").$type<SceneCharacter[]>().notNull().default(sql`'[]'::jsonb`), // Characters present
@@ -163,6 +164,7 @@ export const storyStates = pgTable(
     actionsHistory: jsonb("actions_history").$type<SelectedAction[]>().notNull().default(sql`'[]'::jsonb`), // History of actions leading to this state
     injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
+    currentDay: integer("current_day").notNull().default(0),
     isMajorEvent: boolean("is_major_event").notNull().default(false),
     source: text("source").$type<StoryStateSource>().notNull().default("original"),
     createdAt,
@@ -358,6 +360,8 @@ export const books = pgTable(
     completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     creditsPrice: integer("credits_price"),
+    originalThemeInput: text("original_theme_input"),
+    storyStartDate: text("story_start_date"),
     createdAt,
     updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats'> | keyof BookStats | ResourceTimestamp, unknown>,
@@ -1123,6 +1127,7 @@ export const pageTranslations = pgTable(
     pageId: pageId("cascade"), // Delete if page is deleted
     language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
     text: text("translated_text").notNull(), // Translated page text
+    // TODO: add calendarDate
     timeOfDay: text("time_of_day"),
     mood: text("mood"),
     weather: text("weather"),

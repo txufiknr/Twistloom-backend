@@ -263,6 +263,7 @@ export function extractStateDelta(generation: StoryGeneration, expectedPageNumbe
     isMajorEvent: generation.addPlotFlags?.some(p => p.isMajorEvent),
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
+    elapsedDays: generation.elapsedDays ?? 0,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
@@ -420,6 +421,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     hiddenStateUpdates,
     memoryIntegrity,
     difficulty,
+    elapsedDays = 0
   } = stateDelta;
 
   // Explicitly copy every mutable array/object field so that
@@ -448,6 +450,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     hiddenState: hiddenStateUpdates ? { ...baseState.hiddenState, ...hiddenStateUpdates } : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
     difficulty: difficulty ?? baseState.difficulty,
+    currentDay: baseState.currentDay + elapsedDays,
   };
 
   const [previousPlaceId] = Object.entries(baseState.places).find(([, place]) => place.lastVisitedAtPage === newState.page - 1) ?? [];
@@ -911,12 +914,12 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
 export function processPlotFlagUpdates(state: StoryState, addPlotFlags?: InitialPlotFlag[], scene?: StoryScene): void {
   if (!addPlotFlags?.length) return;
 
-  const { placeId, timeOfDay } = scene ?? {};
+  const { placeId, calendarDate, timeOfDay } = scene ?? {};
 
   for (const addPlotFlag of addPlotFlags) {
     // Validate / normalise type
     const validType = plotFlagTypes.includes(addPlotFlag.type as any) ? addPlotFlag.type : "other";
-    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, placeId, timeOfDay, type: validType };
+    const normalized: PlotFlag = { ...addPlotFlag, page: state.page, placeId, calendarDate, timeOfDay, type: validType };
   
     // Guard against duplicates (same page + type + fact).
     // This mirrors the deduplication in processTagUpdates and provides a safety

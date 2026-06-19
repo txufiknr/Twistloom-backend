@@ -255,6 +255,7 @@ export async function insertStoryPage(
     mood: page.mood,
     placeId: page.placeId,
     weather: page.weather,
+    calendarDate: page.calendarDate,
     timeOfDay: page.timeOfDay,
     sceneType: page.sceneType,
     momentum: page.momentum,
@@ -280,6 +281,18 @@ export async function insertStoryPage(
     // can read code: '23505' directly.
     try {
       const [newPage] = await client.insert(pages).values(newPageData).returning();
+
+      // If this is the first page, set the book's storyStartDate to the
+      // page's calendarDate so the book records when the story begins.
+      if (pageNumber === 1 && page.calendarDate) {
+        try {
+          await client.update(books).set({ storyStartDate: page.calendarDate }).where(eq(books.id, bookId));
+          console.log(`[insertStoryPage] ✅ Set books.storyStartDate for book ${bookId} to ${page.calendarDate}`);
+        } catch (err) {
+          console.error(`[insertStoryPage] ⚠️ Failed to update books.storyStartDate for book ${bookId}:`, err);
+        }
+      }
+
       return mapToPersistedStoryPage(newPage);
     } catch (error) {
       console.error(`[insertStoryPage] ❌ Insert failed (tx mode) for page ${pageNumber}:`, getErrorMessage(error));
@@ -291,7 +304,7 @@ export async function insertStoryPage(
   // Retry with a fresh branchId on constraint violation. Safe here because
   // each retry is an independent statement with no enclosing transaction.
   try {
-    return await retryWithBranchConflict(
+    const persisted = await retryWithBranchConflict(
       async (data: DBNewPage) => {
         const [newPage] = await client.insert(pages).values(data).returning();
         return mapToPersistedStoryPage(newPage);
@@ -310,6 +323,18 @@ export async function insertStoryPage(
         // Keeping it as documentation of intent only.
       }
     );
+
+    // If this was the first page, update the book's storyStartDate (best-effort).
+    if (pageNumber === 1 && page.calendarDate) {
+      try {
+        await client.update(books).set({ storyStartDate: page.calendarDate }).where(eq(books.id, bookId));
+        console.log(`[insertStoryPage] ✅ Set books.storyStartDate for book ${bookId} to ${page.calendarDate}`);
+      } catch (err) {
+        console.error(`[insertStoryPage] ⚠️ Failed to update books.storyStartDate for book ${bookId}:`, err);
+      }
+    }
+
+    return persisted;
   } catch (error) {
     // const errorMessage = getErrorMessage(error);
     // console.error(`[insertStoryPage] ❌ Failed to insert story page ${pageNumber}:`, errorMessage);
@@ -1007,6 +1032,7 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     mood: dbPage.mood || undefined,
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
+    calendarDate: dbPage.calendarDate || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1048,6 +1074,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     mood: dbPage.mood || undefined,
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
+    calendarDate: dbPage.calendarDate || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1305,6 +1332,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     mood: dbPage.mood || undefined,
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || undefined,
+    calendarDate: dbPage.calendarDate || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1394,9 +1422,11 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     topPick: dbBook.topPick || undefined,
     isOriginal: dbBook.isOriginal ?? false,
     creditsPrice: dbBook.creditsPrice || 0,
+    originalThemeInput: dbBook.originalThemeInput || undefined,
+    storyStartDate: dbBook.storyStartDate || undefined,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
-  };
+  } satisfies Record<keyof Omit<Book, 'stats'>, unknown>;
 }
 
 /**

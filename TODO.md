@@ -10,11 +10,23 @@
 [ ] Routine retry cron buat sequential aja (github action strategy)
 [ ] story state: elapsedDays
 [ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
-[ ] incrementUserMetric for achievement
 [ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
+[x] incrementUserMetric for achievement
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] translate action hint
 [x] include semua yang di table userCounters ke UserStats
+
+---
+
+src\services\story.ts
+src\services\story-branch.ts
+src\types\story.ts
+src\utils\branch-traversal.ts
+
+next:
+story.utils.ts
+
+can you also ensure `applyStateDelta` function and all functions under it calculates & applying state update completely, correctly, and optimally?
 
 ---
 

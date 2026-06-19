@@ -325,9 +325,9 @@ export type PlotFlag = {
   type: PlotFlagType;
   /** Indicates whether the flagged event is a major plot point. */
   isMajorEvent: boolean;
-} & Pick<StoryScene, 'placeId' | 'timeOfDay'>;
+} & Pick<StoryScene, 'placeId' | 'calendarDate' | 'timeOfDay'>;
 
-export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'placeId' | 'timeOfDay'>;
+export type InitialPlotFlag = Omit<PlotFlag, 'page' | 'placeId' | 'calendarDate' | 'timeOfDay'>;
 
 export const factTypes = {
   character: "About characters, including status, goals, traits, conditions, locations, and major developments.",
@@ -368,6 +368,10 @@ export type FutureNote = {
   targetPhase?: StoryPhase;
   /** Optional target page number for when this note should become relevant */
   targetPageRange?: string;
+  /** Optional target date for when this note should become relevant */
+  targetDate?: string;
+  /** Optional target day for when this note should become relevant */
+  targetDay?: number;
   /** Optional if related to any active thread */
   relatedThreadId?: string;
 };
@@ -747,7 +751,9 @@ export type StoryScene = {
   placeId?: string;
   /** Current weather conditions at the place */
   weather?: PlaceWeather;
-  /** Current time mark, e.g. time range, 'night', 'HH:mm', 'unknown' */
+  /** Current in-world date (e.g., "2026-07-26") */
+  calendarDate?: string; // Good for: immersion, newspapers, journals, police reports, anniversaries, holidays, birthdays
+  /** Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown') */
   timeOfDay?: string;
   /** Current narrative function (scene purpose) */
   sceneType?: SceneType;
@@ -987,6 +993,9 @@ export type StateDelta = {
   hiddenStateUpdates?: Partial<HiddenState>;
   memoryIntegrity?: MemoryIntegrity;
   difficulty?: Difficulty;
+
+  /** Days to increment in {@link StoryState.currentDay} */
+  elapsedDays?: number;
 };
 
 export type FlagUpdate = {
@@ -1251,6 +1260,9 @@ export type StoryState = {
   //
   // timePassed: // ISO 8601 format: 'P1D', 'PT24H', etc
   // only if `timeElapsed` implemented
+
+  /** Day counter since story start, incremented via {@link StateDelta.elapsedDays} */
+  currentDay: number; // Good for: recurring events, countdowns, rituals, investigations, story pacing, "3 days later", AI reasoning
 };
 
 export type StoryMCState = Pick<StoryState, 'inventory' | 'injuries'>;
@@ -1309,6 +1321,8 @@ export type StoryStateInfo = {
   /** Number of places remaining can be added */
   placesSlot: number;
 }
+
+export type StoryStateSnapshotType = "interval" | "first" | "middle" | "last" | "checkpoint";
 
 export type StoryStateSource = 'original' | 'reconstructed';
 

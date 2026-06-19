@@ -120,7 +120,7 @@ export async function getPageTranslation({
 /**
  * Applies a `PageTranslation` overlay onto a `PersistedStoryPage`.
  *
- * Covers **page-level fields only**: text, timeOfDay, mood, weather,
+ * Covers page-level fields only: text, calendarDate, timeOfDay, mood, weather,
  * keyEvents, importantObjects, and actions.
  *
  * State-level translations (contextHistory, places, characters, inventory,
@@ -155,6 +155,7 @@ export function applyPageTranslation(
     ...page,
     text: translation.text,
     // Use != null (not &&): empty string is a valid translation result
+    // TODO: add calendarDate
     ...(translation.timeOfDay  != null && { timeOfDay: translation.timeOfDay }),
     ...(translation.mood       != null && { mood:      translation.mood }),
     ...(translation.weather    != null && { weather:   translation.weather }),
@@ -355,6 +356,7 @@ async function translatePageWithLibre({
   let weatherIndex:        number | undefined;
   let contextHistoryIndex: number | undefined;
 
+  // TODO: add calendarDate
   if (page.timeOfDay)           { timeOfDayIndex      = batch.length; batch.push(page.timeOfDay); }
   if (page.mood)                { moodIndex           = batch.length; batch.push(page.mood); }
   if (page.weather)             { weatherIndex        = batch.length; batch.push(page.weather); }
@@ -595,6 +597,7 @@ async function translatePageWithLibre({
       pageId:           page.id,
       language:         targetLanguage,
       text:             translatedText,
+      // TODO: add calendarDate
       timeOfDay:        translatedTimeOfDay,
       mood:             translatedMood,
       weather:          translatedWeather,
@@ -645,6 +648,7 @@ export async function getPageToTranslate(dbPage: DBPage): Promise<PageToTranslat
 export function mapToPageTranslation(row: DBPageTranslations): PageTranslation {
   return {
     text:             row.text,
+    // TODO: add calendarDate
     timeOfDay:        row.timeOfDay,
     mood:             row.mood,
     weather:          row.weather,
