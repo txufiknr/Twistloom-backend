@@ -82,7 +82,7 @@ import { retryOperation, withCircuitBreaker, createReliabilityMeasurement, compl
 // import { createStateDelta, applyStateDelta } from '../services/deltas.bak.js';
 import { getErrorMessage } from "./error.js";
 import { getPageFromDB, mapToPersistedStoryPage } from "../services/book.js";
-import { applyStateDelta, createEmptyStoryState } from "./story.js";
+import { applyStateDelta, createEmptyStoryState, appendActionsHistory } from "./story.js";
 
 /**
  * Gets cached branch path if valid
@@ -551,7 +551,7 @@ async function findOptimalSnapshot(
  * 
  * Delta Application Process:
  * - Loop from `snapshotInfo.snapshotIndex + 1` to `currentPageIndex`
- * - Each iteration: `currentState = applyStateDelta(currentState, page.stateDelta)`
+ * - Each iteration: page/pageId synced to the page being applied, then `currentState = applyStateDelta(currentState, page.stateDelta, page)`
  * - Ensures proper state accumulation from oldest to newest
  * - Includes error handling for individual delta failures
  * 
@@ -743,7 +743,15 @@ export async function reconstructStoryState(
           // is semantically wrong: each retry would re-apply the same delta to the
           // same base, giving correct output only because it's now pure. Keeping it
           // simple and direct is clearer and avoids any future confusion.
-          currentState = applyStateDelta(currentState, delta, page);
+          //
+          // Sync page/pageId to THIS page before applying its delta.
+          // applyStateDelta's contract assumes baseState.page is already the
+          // page being applied (true in the live flow, since advanceStoryState
+          // increments .page first) — without this, every page-stamped field
+          // written during reconstruction (plot flag page, thread
+          // introducedAt/lastUpdatedAt, clue discoveredAtPage) would be
+          // tagged with the snapshot's page instead of this page's.
+          currentState = applyStateDelta({ ...currentState, pageId: page.id, page: page.page }, delta, page);
           deltasApplied++;
 
           console.log(`[reconstructStoryState] 🔄 Applied delta ${i - snapshotInfo.snapshotIndex}/${snapshotInfo.deltasNeeded} (page ${page.page})`);
@@ -758,30 +766,17 @@ export async function reconstructStoryState(
       currentState.page = actualPageNumber;
       currentState.maxPage = totalPages;
 
-      // Rebuild actionsHistory from branch path
-      // The snapshot's actionsHistory only covers pages up to the snapshot;
-      // we need to extend it through the delta pages.
-      currentState.actionsHistory = [];
-      for (let i = 1; i <= currentPageIndex; i++) {
-        const page = branchPath.pages[i];
-        const parentPage = branchPath.pages[i - 1];
-        
-        // Find the action in parent page that led to this page
-        const selectedAction = parentPage.actions?.find(action => action.destinationPageIds?.some(p => p === page.id));
-        
-        if (selectedAction) {
-          currentState.actionsHistory.push({
-            text: selectedAction.text,
-            type: selectedAction.type,
-            hint: selectedAction.hint,
-            page: parentPage.page, // Page where action was taken, not destination
-            pageId: parentPage.id, // Page where action was taken, not destination
-            nextPageId: page.id,
-          });
-        } else {
-          console.warn(`[reconstructStoryState] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
-        }
-      }
+      // Extend the snapshot's own actionsHistory through the delta pages,
+      // instead of rebuilding the whole thing from the branch root every
+      // time — actionsHistory isn't part of StateDelta, so the delta loop
+      // above never touches it. Using appendActionsHistory (shared with the
+      // shallow parent-chain reconstruction) also keeps deltasApplied's
+      // "fewest deltas" optimization meaningful for this field too, instead
+      // of always doing O(full branch depth) work regardless of snapshot choice.
+      currentState.actionsHistory = appendActionsHistory(
+        snapshotInfo.baseState.actionsHistory,
+        branchPath.pages.slice(snapshotInfo.snapshotIndex, currentPageIndex + 1)
+      );
 
       // Ensure threads array is initialised
       if (!currentState.threads || currentState.threads.length === 0) {

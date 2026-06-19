@@ -6,7 +6,7 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext } from "../types/story.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, StateDeltaGeneration, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -445,7 +445,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     flags:          { ...baseState.flags },
     isMajorEvent:   isMajorEvent ?? baseState.isMajorEvent,
     contextHistory: contextHistory || baseState.contextHistory,
-    viableEnding: viableEnding ? { text: viableEnding.text || baseState.viableEnding?.text, type: viableEnding.type || baseState.viableEnding?.type } : baseState.viableEnding,
+    viableEnding: viableEnding ? { ...baseState.viableEnding, ...viableEnding } : baseState.viableEnding,
     psychologicalProfile: psychologicalProfileUpdates ? { ...baseState.psychologicalProfile, ...psychologicalProfileUpdates } : baseState.psychologicalProfile,
     hiddenState: hiddenStateUpdates ? { ...baseState.hiddenState, ...hiddenStateUpdates } : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
@@ -472,12 +472,81 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     }
   }
 
-  // Apply inventory updates (full replacements, remove which has amount of 0)
+  // Apply inventory updates (full replacements, remove which has amount of 0).
+  // Note: Empty array or ommited means no change.
   if (inventory?.length) newState.inventory = cleanUpInventory(inventory);
-  // Apply injury updates (full replacements, remove which has severity of 0)
+  // Apply injury updates (full replacements, remove which has severity of 0).
   if (injuries?.length) newState.injuries = removeHealedInjuries(injuries);
 
   return newState;
+}
+
+/**
+ * Applies an ordered chain of page deltas on top of a base state.
+ *
+ * This is the shared core of both reconstruction paths
+ * ({@link reconstructStoryStateFromParentChain} and the heavier
+ * `reconstructStoryState` branch-traversal function) — previously each
+ * implemented its own copy of this loop, and both copies independently
+ * had the same bug: `state.page` was left at the base state's page number
+ * for the entire loop instead of being advanced per page, so every
+ * page-stamped field written by a `processXxx` helper during
+ * reconstruction (plot flag `page`, thread `introducedAt`/`lastUpdatedAt`,
+ * clue `discoveredAtPage`) ended up tagged with the snapshot's page
+ * instead of the actual page the delta came from.
+ *
+ * `applyStateDelta`'s contract (see its docs) is that `baseState.page` is
+ * already the page being applied — true in the live generation flow
+ * because `advanceStoryState` increments `.page` first. This helper makes
+ * the same contract hold true for every step of a reconstruction loop.
+ *
+ * @param baseState - Starting state (typically a stored snapshot)
+ * @param pages - Pages to apply, in chronological order, NOT including the page baseState was loaded from
+ */
+export function applyDeltaChain(baseState: StoryState, pages: PersistedStoryPage[]): StoryState {
+  let currentState = baseState;
+  for (const page of pages) {
+    // Sync page/pageId to the delta being applied BEFORE applying it, so
+    // any page-stamped fields written inside are stamped correctly.
+    currentState = applyStateDelta({ ...currentState, pageId: page.id, page: page.page }, page.stateDelta, page);
+  }
+  return currentState;
+}
+
+/**
+ * Extends an existing actionsHistory with entries for a chain of pages.
+ *
+ * `actionsHistory` is accumulated directly on `StoryState` (not part of
+ * `StateDelta`), so `applyDeltaChain`/`applyStateDelta` never touch it.
+ * This walks consecutive page pairs and finds, on each parent page's
+ * `actions`, the one whose `destinationPageIds` led to the next page.
+ *
+ * @param existingHistory - History to extend (e.g. the base snapshot's actionsHistory)
+ * @param pages - Full ordered chain INCLUDING the page `existingHistory` already accounts for as pages[0]
+ */
+export function appendActionsHistory(existingHistory: SelectedAction[], pages: PersistedStoryPage[]): SelectedAction[] {
+  const appended: SelectedAction[] = [];
+
+  for (let i = 1; i < pages.length; i++) {
+    const page = pages[i];
+    const parentPage = pages[i - 1];
+    const selectedAction = parentPage.actions?.find(action => action.destinationPageIds?.some(id => id === page.id));
+
+    if (selectedAction) {
+      appended.push({
+        text: selectedAction.text,
+        type: selectedAction.type,
+        hint: selectedAction.hint,
+        page: parentPage.page,   // Page where action was taken, not destination
+        pageId: parentPage.id,   // Page where action was taken, not destination
+        nextPageId: page.id,
+      });
+    } else {
+      console.warn(`[appendActionsHistory] ⚠️ No matching action found for page ${page.id} from parent ${parentPage.id}`);
+    }
+  }
+
+  return [...existingHistory, ...appended];
 }
 
 /**
@@ -837,11 +906,11 @@ function processTagUpdates<T extends TagItem>(
 ): void {
   if (!updates) return;
 
-  const isSameItem = (a: TagItem, b: TagItem): boolean => {
-    if (typeof a === 'string' && typeof b === 'string') return a === b;
-    if (typeof a === 'object' && typeof b === 'object') return a.key === b.key;
-    return false;
-  };
+  // `remove` is always `string[]` (keys), even when T is an object TagItem
+  // (e.g. FutureNote). Compare by extracted key so object-vs-string-key
+  // comparisons work, not just same-typeof comparisons.
+  const keyOf = (item: TagItem): string => typeof item === 'string' ? item : item.key;
+  const isSameItem = (a: TagItem, b: TagItem): boolean => keyOf(a) === keyOf(b);
 
   // 1. Remove specified items
   if (updates.remove && updates.remove.length > 0) {
@@ -925,7 +994,7 @@ export function processPlotFlagUpdates(state: StoryState, addPlotFlags?: Initial
     // This mirrors the deduplication in processTagUpdates and provides a safety
     // net against double-application from retries or repeated reconstruction.
     const isDuplicate = state.plotFlags.some(f => f.page === normalized.page && f.type === normalized.type && f.fact === normalized.fact);
-    if (isDuplicate) return;
+    if (isDuplicate) continue;
   
     state.plotFlags.push(normalized);
     if (normalized.isMajorEvent) state.isMajorEvent = true;

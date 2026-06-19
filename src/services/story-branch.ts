@@ -50,10 +50,10 @@ export function generateBranchId(): string {
  * 
  * Note on actionsHistory and plotFlags:
  * - actionsHistory is accumulated directly in StoryState by persistPageWithState on every
- *   page generation — it is NOT part of StateDelta. Reconstruction via snapshots + deltas
- *   therefore restores actionsHistory only up to the base snapshot. For a fully
- *   accurate actionsHistory after reconstruction, the caller should prefer persisting
- *   the reconstructed state (persistState: true) so future reads hit the DB directly.
+ *   page generation — it is NOT part of StateDelta. Both reconstruction paths
+ *   (the shallow parent-chain path and this branch-aware path) extend the base
+ *   snapshot's actionsHistory via the shared `appendActionsHistory` helper, so
+ *   it is fully restored through the target page, not just up to the snapshot.
  * - plotFlags IS accumulated via StateDelta.addPlotFlag and will be fully restored
  *   through delta application.
  * 

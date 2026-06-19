@@ -11,7 +11,7 @@ import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY, MAX_TRAVERSAL_DEPTH_SHALLOW } from "../config/story.js";
 import type { BookPageVisit, BookStats, EnrichedBookData } from "../types/book.js";
 import { getErrorMessage } from "../utils/error.js";
-import { applyStateDelta } from "../utils/story.js";
+import { applyDeltaChain, appendActionsHistory } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
 import { ucfirst } from "../utils/formatter.js";
 import type { Request } from "express";
@@ -601,14 +601,15 @@ async function reconstructStoryStateFromParentChain(
     // Collect all pages in the parent chain from current to oldest
     const pageChain: DBPage[] = [];
     let currentPage: DBPage | null = dbPage;
+    let baseState: DBStoryState | null = null;
     
     // Traverse up the parent chain with depth limit and respect for page 1 boundary
     for (let depth = 0; depth < maxTraversalDepth && currentPage; depth++) {
       pageChain.unshift(currentPage); // Add to beginning to build oldest-to-newest order
       
       // Check if this page has a story state
-      const pageState = await getStoryStateFromDB(currentPage.id);
-      if (pageState) {
+      baseState = await getStoryStateFromDB(currentPage.id);
+      if (baseState) {
         // Found the nearest previous state - this is our base state
         break;
       }
@@ -617,23 +618,31 @@ async function reconstructStoryStateFromParentChain(
       currentPage = currentPage.parentId ? await getPageFromDB(currentPage.parentId) : null;
     }
 
-    // If no state found in the traversed chain, return null
-    if (!currentPage) {
+    // No state found anywhere in the traversed chain — either we ran out of
+    // parents (currentPage null) or hit maxTraversalDepth without a hit
+    // (baseState still null even though currentPage isn't).
+    if (!currentPage || !baseState) {
       console.log(`[reconstructStoryStateFromParentChain] ⚠️ No story state found in parent chain for page ${dbPage.id} (traversed ${pageChain.length} pages)`);
       return null;
     }
 
-    // Apply deltas incrementally from base state to current page
-    const baseState = await getStoryStateFromDB(pageChain[0].id);
-    if (!baseState) return null;
-    let currentState = mapStoryStateFromDb(baseState);
-    
-    // Start from index 1 (skip the base state page) and apply each page's delta
-    for (let i = 1; i < pageChain.length; i++) {
-      const page = mapToPersistedStoryPage(pageChain[i]);
-      console.log(`[reconstructStoryStateFromParentChain] 🧩 Applying state delta from page ${page.page}`);
-      currentState = applyStateDelta(currentState, page.stateDelta, page);
-    }
+    const baseDomainState = mapStoryStateFromDb(baseState);
+
+    // Map the chain once for the shared reconstruction helpers below
+    const mappedChain = pageChain.map(mapToPersistedStoryPage);
+
+    // Apply each subsequent page's delta on top of the base state. Uses the
+    // shared applyDeltaChain helper (also used by the heavier branch-traversal
+    // reconstruction) so `state.page` is correctly advanced before each delta
+    // is applied, instead of staying pinned to the base snapshot's page.
+    console.log(`[reconstructStoryStateFromParentChain] 🧩 Applying ${mappedChain.length - 1} state delta(s) from page ${mappedChain[0].page} to page ${dbPage.page}`);
+    const currentState = applyDeltaChain(baseDomainState, mappedChain.slice(1));
+
+    // actionsHistory is accumulated on StoryState directly and is NOT part of
+    // StateDelta, so applyDeltaChain never touches it. Extend the base
+    // snapshot's actionsHistory with the actions taken across this chain so
+    // it stays complete rather than frozen at the snapshot's page.
+    currentState.actionsHistory = appendActionsHistory(baseDomainState.actionsHistory, mappedChain);
 
     // Ensure reconstructed state matches current page
     currentState.pageId = dbPage.id;

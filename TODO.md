@@ -26,7 +26,9 @@ src\utils\branch-traversal.ts
 next:
 story.utils.ts
 
+here's the file
 can you also ensure `applyStateDelta` function and all functions under it calculates & applying state update completely, correctly, and optimally?
+please continue
 
 ---
 

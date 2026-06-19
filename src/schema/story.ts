@@ -478,11 +478,11 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
 
   // Provide full to overwrite current. Can omit or empty if no changes.
   contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
-  inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Empty array if no changes.` },
+  inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Omit or empty if no changes.` },
   injuries: {
     type: 'array',
     items: INJURY_SCHEMA,
-    description: 'All injuries sustained on this page. Empty array if no changes. Note: Injuries severity are automatically decaying.'
+    description: 'All injuries sustained on this page. Omit or empty if no changes. Note: Injuries severity are automatically decaying.'
   },
 }
 
