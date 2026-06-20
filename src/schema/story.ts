@@ -288,7 +288,7 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
   },
   bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
   visualDescription: { type: 'string', description: "Character visual description (e.g., height, skin color, eye color, hair)." },
-  secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has that the MC doesn't know (max ${MAX_CHARACTER_SECRETS}).` },
+  secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).` },
   narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
   injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
   pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
@@ -497,7 +497,7 @@ export const STORY_GENERATION_SCHEMA_DEFINITION = {
   ...STORY_STATE_GENERATION_SCHEMA // State Delta
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
-export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions'] satisfies Array<keyof StoryGeneration>;
+export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions', 'calendarDate'] satisfies Array<keyof StoryGeneration>;
 
 /**
  * Schema definition for PageTranslation type

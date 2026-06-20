@@ -377,7 +377,7 @@ const firstBookOutputFormat: string = `{
         "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
         "targetPageRange": "Optional. '<min>-<max>'",
         "targetDate": "Optional. '<yyyy-MM-dd>'",
-        "targetDay": <integer>,
+        "targetDay": <integer or omit>,
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ]
@@ -561,7 +561,7 @@ const nextPageOutputFormat: string = `{
         "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
         "targetPageRange": "Optional. '<min>-<max>'",
         "targetDate": "Optional. '<yyyy-MM-dd>'",
-        "targetDay": <integer>,
+        "targetDay": <integer or omit>,
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ],
@@ -1761,7 +1761,7 @@ function formatFutureNotes(
   };
 
   const getScheduleLabel = (note: FutureNote): string | undefined => {
-    if (note.targetDay !== undefined) {
+    if (note.targetDay) {
       const distance = getDayDistance(note.targetDay, currentDay);
       return distance !== undefined && distance > 0
         ? `Day ${note.targetDay} (${distance} day${distance === 1 ? '' : 's'} away)`
@@ -1786,7 +1786,7 @@ function formatFutureNotes(
 
   for (const note of futureNotes) {
     // Day scheduling (highest priority)
-    if (note.targetDay !== undefined) {
+    if (note.targetDay) {
       const distance = getDayDistance(note.targetDay, currentDay);
       if (distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS) {
         becomingRelevant.push(note);
@@ -1840,7 +1840,7 @@ function formatFutureNotes(
   }
 
   const getSortValue = (note: FutureNote): [number, number] => {
-    if (note.targetDay !== undefined) return [0, note.targetDay];
+    if (note.targetDay) return [0, note.targetDay];
     if (note.targetDate) return [1, toUtcMidnight(note.targetDate)];
 
     const startPage = getPageRangeStart(note.targetPageRange);
