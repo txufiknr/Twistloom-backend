@@ -12,10 +12,8 @@ import { getMainCharacterInfo } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
-import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage } from "../services/book.js";
+import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook } from "../services/book.js";
 import { dbWrite } from "../db/client.js";
-import { books } from "../db/schema.js";
-import { eq } from "drizzle-orm";
 import { insertStoryState } from "../services/story.js";
 import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache, invalidatePopularTagsCache } from "../services/cache.js";
 import { logUserActivity } from "../services/user.js";
@@ -2339,10 +2337,9 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   // MC current state: inventory + injuries change every few pages,
   // so they live here in the dynamic prompt rather than in the cached documents.
   const mcCurrentState = getMainCharacterInfo({mc, state: { inventory, injuries }});
+  // Day counter since the beginning of the story
+  // good for: recurring events, countdowns, rituals, investigations, story pacing, "3 days later", AI reasoning
   const currentDay = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
-  if (currentDay !== state.currentDay) {
-    console.warn(`[formatNextPageStoryContextPrompt] ⚠️ Current day count mismatch`);
-  }
 
   return `CURRENT PHASE:
 ${phase} ${phaseGoal}
@@ -3173,18 +3170,17 @@ export async function initializeBook(
     if (draftBookId) {
       // Update existing book record (async book creation flow)
       // Update with generated content
-      await client.update(books)
-        .set({
-          title,
-          hook,
-          summary,
-          keywords,
-          mc,
-          totalPages,
-          language, // Match with theme input
-          status: 'active', // Book is now complete (published)
-        })
-        .where(eq(books.id, draftBookId));
+      await updateBook(draftBookId, {
+        title,
+        hook,
+        summary,
+        keywords,
+        mc,
+        totalPages,
+        language, // Match with theme input
+        status: 'active', // Book is now complete (published)
+        originalThemeInput: theme
+      }, { client });
       
       // Fetch the updated book
       const dbBook = await getBookFromDB(draftBookId, { client });
@@ -3206,6 +3202,7 @@ export async function initializeBook(
         keywords,
         mc,
         isOriginal,
+        originalThemeInput: theme
       };
       const dbBook = await insertBook(newBookData, { client, alternativeTitles });
       book = mapBookFromDb(dbBook);
@@ -3504,7 +3501,7 @@ async function determineBranchIdForPage(params: {
 async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candidateCount: number) {
   const { book, actionedPage } = params;
   const { currentState, advancedState, expectedPageNumber, previousPages } = await prepareNextPageGenerationContext(params);
-  const { action, actions, sceneType, calendarDate: previousDate } = actionedPage;
+  const { action, actions, sceneType } = actionedPage;
 
   const letter = String.fromCharCode(65 + actions.findIndex(a => a.text === action.text));
   const generationContext = `"${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${action.text} (type: ${action.type})`;
@@ -3528,7 +3525,6 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     currentState,
     advancedState,
     expectedPageNumber,
-    previousDate,
     action,
     generationContext,
     promptParams,
@@ -3551,15 +3547,14 @@ function resolvePageDelta(params: {
   advancedState: StoryState,
   currentState: StoryState,
   expectedPageNumber: number,
-  previousDate?: string,
   context: string,
   fateIndex?: number
 }) {
-  const { generatedStoryPage, advancedState, currentState, expectedPageNumber, previousDate, context, fateIndex } = params;
+  const { generatedStoryPage, advancedState, currentState, expectedPageNumber, context, fateIndex } = params;
   const futureNoteKeys = advancedState.futureNotes.map(note => note.key);
   console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
 
-  const stateDelta = extractStateDelta({ generatedStoryPage, expectedPageNumber, futureNoteKeys, previousDate });
+  const stateDelta = extractStateDelta({ generatedStoryPage, expectedPageNumber, futureNoteKeys });
   const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage);
 
   // Provided story state might mismatch, but still respect what provided
@@ -3640,7 +3635,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, previousDate, action } = await prepareNextPageGenerationSetup(params, 1);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
   console.log(`[${context}] 💭 Conceptualizing continuation for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (single story context)
@@ -3685,7 +3680,6 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     advancedState,
     currentState,
     expectedPageNumber,
-    previousDate,
     context
   });
 
@@ -3752,7 +3746,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   const context = "generateNextPages";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, previousDate, action } = await prepareNextPageGenerationSetup(params, candidateCount);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
   console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)
@@ -3811,7 +3805,6 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
       advancedState,
       currentState,
       expectedPageNumber,
-      previousDate,
       context,
       fateIndex: index + 1
     });

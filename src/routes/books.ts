@@ -965,35 +965,25 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
   try {
     const { id } = req.params;
     const userId = req.userId!;
-    const { 
-      title, 
-      hook, 
-      summary, 
-      keywords, 
-      imageUrl 
-    } = req.body;
+    const { title, hook, summary, keywords, imageUrl } = req.body;
 
     // Verify book ownership
-    const existingBook = await dbRead
-      .select({ 
-        id: books.id,
-        userId: books.userId,
-        title: books.title,
-        keywords: books.keywords,
-        imageId: books.imageId
-      })
-      .from(books)
-      .where(and(
-        eq(books.id, id as string),
-        eq(books.userId, userId)
-      ))
-      .limit(1);
+    const [book] = await dbRead.select({ 
+      id: books.id,
+      userId: books.userId,
+      title: books.title,
+      keywords: books.keywords,
+      imageId: books.imageId
+    })
+    .from(books)
+    .where(and(
+      eq(books.id, id as string),
+      eq(books.userId, userId)
+    ))
+    .limit(1);
 
-    if (!existingBook.length) {
-      return handleNotFoundError(res, "Book not found");
-    }
+    if (!book) return handleNotFoundError(res, "Book not found");
 
-    const book = existingBook[0];
     let newImageUrl: string | undefined;
     let newImageId: string | undefined;
     let oldImageIdQueued = false;

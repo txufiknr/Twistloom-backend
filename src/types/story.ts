@@ -993,9 +993,6 @@ export type StateDelta = {
   hiddenStateUpdates?: Partial<HiddenState>;
   memoryIntegrity?: MemoryIntegrity;
   difficulty?: Difficulty;
-
-  /** Days to increment in {@link StoryState.currentDay} */
-  elapsedDays?: number;
 };
 
 export type FlagUpdate = {
@@ -1005,7 +1002,7 @@ export type FlagUpdate = {
 
 export type PsychologicalStateDelta = Pick<StateDelta, 'psychologicalProfileUpdates' | 'hiddenStateUpdates' | 'memoryIntegrity' | 'difficulty'>;
 
-export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent' | 'elapsedDays'> & {
+export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelta | 'futureNoteUpdates' | 'isMajorEvent'> & {
   futureNoteUpdates?: {
     add?: FutureNoteGeneration[];
     remove?: string[];
@@ -1260,9 +1257,6 @@ export type StoryState = {
   //
   // timePassed: // ISO 8601 format: 'P1D', 'PT24H', etc
   // only if `timeElapsed` implemented
-
-  /** Day counter since story start, incremented via {@link StateDelta.elapsedDays} */
-  currentDay: number; // Good for: recurring events, countdowns, rituals, investigations, story pacing, "3 days later", AI reasoning
 };
 
 export type StoryMCState = Pick<StoryState, 'inventory' | 'injuries'>;

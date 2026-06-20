@@ -15,6 +15,13 @@
       "when": 1781758384606,
       "tag": "0001_noisy_bill_hollister",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781912443501,
+      "tag": "0002_parched_wrecker",
+      "breakpoints": true
     }
   ]
 }

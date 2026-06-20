@@ -646,5 +646,4 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   isMajorEvent: false,
   inventory: [],
   injuries: [],
-  currentDay: 0
 };

@@ -164,7 +164,6 @@ export const storyStates = pgTable(
     actionsHistory: jsonb("actions_history").$type<SelectedAction[]>().notNull().default(sql`'[]'::jsonb`), // History of actions leading to this state
     injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
-    currentDay: integer("current_day").notNull().default(0),
     isMajorEvent: boolean("is_major_event").notNull().default(false),
     source: text("source").$type<StoryStateSource>().notNull().default("original"),
     createdAt,

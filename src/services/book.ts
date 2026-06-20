@@ -798,9 +798,11 @@ export async function getEnrichedBook(
  */
 export async function updateBook(
   bookId: string,
-  updates: DBUpdateBook
+  updates: DBUpdateBook,
+  options?: { client?: DBClient }
 ): Promise<DBBook> {
-  const result = await dbWrite
+  const { client = dbWrite } = options ?? {};
+  const [updated] = await client
     .update(books)
     .set({ ...updates, updatedAt: new Date() })
     .where(eq(books.id, bookId))
@@ -810,7 +812,7 @@ export async function updateBook(
   invalidateBookCache(bookId);
   invalidateEnrichedBookCache(bookId);
 
-  return result[0];
+  return updated;
 }
 
 /**

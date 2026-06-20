@@ -6,8 +6,7 @@ import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
-import { daysBetween } from "./time.js";
-import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction } from "../types/story.js";
+import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction, StateDeltaGeneration } from "../types/story.js";
 import type { Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
@@ -248,13 +247,10 @@ export function extractStateDelta(params: {
   generatedStoryPage: StoryGeneration,
   expectedPageNumber: number,
   futureNoteKeys: string[],
-  previousDate?: string,
 }): StateDelta {
-  const { generatedStoryPage: generation, expectedPageNumber, futureNoteKeys, previousDate } = params;
+  const { generatedStoryPage: generation, expectedPageNumber, futureNoteKeys } = params;
   const { placeId, futureNoteUpdates } = generation;
   if (expectedPageNumber === 1) return {}; // No story state delta for page 1
-
-  const elapsedDays = previousDate && generation.calendarDate ? daysBetween(previousDate, generation.calendarDate) : undefined;
 
   const stateDelta: StateDelta = {
     flagUpdates: generation.flagUpdates,
@@ -272,12 +268,11 @@ export function extractStateDelta(params: {
     isMajorEvent: generation.addPlotFlags?.some(p => p.isMajorEvent),
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
-    elapsedDays,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
-  // } satisfies Record<keyof StateDeltaGeneration | 'elapsedDays' | 'isMajorEvent', unknown>;
-  } satisfies StateDelta;
+  } satisfies Record<keyof StateDeltaGeneration | 'isMajorEvent', unknown>;
+  // } satisfies StateDelta;
 
   return stateDelta;
 }
@@ -430,8 +425,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     psychologicalProfileUpdates,
     hiddenStateUpdates,
     memoryIntegrity,
-    difficulty,
-    elapsedDays = 0
+    difficulty
   } = stateDelta;
 
   // Explicitly copy every mutable array/object field so that
@@ -460,7 +454,6 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     hiddenState: hiddenStateUpdates ? { ...baseState.hiddenState, ...hiddenStateUpdates } : baseState.hiddenState,
     memoryIntegrity: memoryIntegrity ?? baseState.memoryIntegrity,
     difficulty: difficulty ?? baseState.difficulty,
-    currentDay: baseState.currentDay + elapsedDays,
   };
 
   const [previousPlaceId] = Object.entries(baseState.places).find(([, place]) => place.lastVisitedAtPage === newState.page - 1) ?? [];
