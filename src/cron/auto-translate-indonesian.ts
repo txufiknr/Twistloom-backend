@@ -128,7 +128,6 @@ async function translatePagesToIndonesianBulk(dbPages: DBPage[]): Promise<void> 
     for (const translation of translations) {
       const translationValues = {
         text:             translation.text,
-        // TODO: add calendarDate
         timeOfDay:        translation.timeOfDay,
         mood:             translation.mood,
         weather:          translation.weather,

@@ -64,6 +64,7 @@ export const pages = pgTable(
     placeId: text("place_id"), // Current place ID where the story is taking place
     weather: text("weather").$type<PlaceWeather>(), // Current weather conditions at the place
     calendarDate: text("calendar_date"), // Current in-world date (e.g., "2026-07-26")
+    elapsedDays: integer("elapsed_days"), // Days elapsed since the story begin
     timeOfDay: text("time_of_day"), // Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown')
     sceneType: text("scene_type").$type<SceneType>(), // Current narrative function
     momentum: text("momentum").$type<StoryMomentum>(), // Current pressure level
@@ -92,7 +93,7 @@ export const pages = pgTable(
     visitCount: integer("visit_count").notNull().default(0), // Count of times this page has been visited (denormalized for performance)
     createdAt,
     updatedAt,
-  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | ResourceAIProvider | ResourceTimestamp, unknown>,
+  } satisfies Record<keyof StoryPage | 'id' | 'userId' | 'parentId' | 'branchId' | 'bookId' | 'page' | 'pendingGenerationCount' | 'isGeneratingStartedAt' | 'visitCount' | 'elapsedDays' | ResourceAIProvider | ResourceTimestamp, unknown>,
   (t) => [
     // Index for book pagination
     index("pages_book_page_idx").on(t.bookId, t.page),
@@ -1126,7 +1127,6 @@ export const pageTranslations = pgTable(
     pageId: pageId("cascade"), // Delete if page is deleted
     language: text("language").notNull(), // Target language code (ISO 639-1: en, es, fr, etc.)
     text: text("translated_text").notNull(), // Translated page text
-    // TODO: add calendarDate
     timeOfDay: text("time_of_day"),
     mood: text("mood"),
     weather: text("weather"),

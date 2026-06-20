@@ -744,6 +744,7 @@ export type PsychologicalProfileTraits = {
   denial: number;
 };
 
+// TODO: pisahin TemporalContext
 export type StoryScene = {
   /** Current emotional atmosphere */
   mood?: Mood;
@@ -753,6 +754,8 @@ export type StoryScene = {
   weather?: PlaceWeather;
   /** Current in-world date (e.g., "2026-07-26") */
   calendarDate?: string; // Good for: immersion, newspapers, journals, police reports, anniversaries, holidays, birthdays
+  /** Days elapsed since the story begin */
+  elapsedDays?: number; // Good for: recurring events, countdowns, rituals, investigations, story pacing, "3 days later", AI reasoning
   /** Current time mark (e.g., time range, 'night', 'HH:mm', 'unknown') */
   timeOfDay?: string;
   /** Current narrative function (scene purpose) */
@@ -947,6 +950,7 @@ export type StoryPageMeta = Pick<DBNewPage, 'bookId' | 'branchId' | 'parentId'> 
   // /** Optional selected action that triggered this page generation (for duplicate prevention) */
   // selectedAction?: SelectedAction;
   aiResponseProvider: AIResponseProvider;
+  storyStartDate?: string;
 };
 
 /**
@@ -1008,7 +1012,7 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
     remove?: string[];
   }
 };
-export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum'>;
+export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
 export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & Pick<StoryPage, 'momentum'>;
 
@@ -1016,11 +1020,12 @@ export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'bra
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
 export type EnrichedStoryPage = Partial<UserStoryPage> & {
-  originalActionsCount: number,
-  translation?: PageTranslation,
-  sourceAction?: SelectedAction,
-  shownActionHint: string[],
-  context?: EnrichedStoryPageContext
+  originalActionsCount: number;
+  translation?: PageTranslation;
+  sourceAction?: SelectedAction;
+  shownActionHint: string[];
+  context?: EnrichedStoryPageContext;
+  elapsedDays?: number;
 };
 
 export type TranslatedStoryPage = Omit<PersistedStoryPage, 'weather' | 'mood'> & { weather?: string; mood?: string; };

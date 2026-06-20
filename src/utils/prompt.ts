@@ -837,11 +837,11 @@ ${isMidPhase ? `  - Only include objects with clear narrative weight. No new red
 ${isLatePhase || isFinale ? `  - Reuse established objects only. No new ones unless absolutely necessary.` : ''}
 
 inventory
-  - Items the MC brings to the scene. Can include the amount, traits, and where it located.
-  - Limit it to ${MAX_INVENTORY_ITEM} items. Only include items that actually matters to the plot.
+  - Items currently in MC's possession. Can include the amount, traits, and where it currently located.
+  - Max ${MAX_INVENTORY_ITEM} different items. Only include that actually matters to the plot.
   - To remove an item, explicitly set its amount to 0 (system will auto-remove).
   - If no changes, output empty array or omit this field entirely.
-  - Otherwise, MUST include all current items in MC possession with updated values and/or new item if any.
+  - Otherwise, MUST include all current items with updated values and/or new item if any.
 
 injuries
   - Injuries are auto-decaying, ONLY update when character takes action that treats/worsens injury.
@@ -1728,13 +1728,14 @@ function formatActionChoices(actions: Action[]): string {
  * @param currentDate Current in-story calendar date in YYYY-MM-DD format.
  * @returns Prompt-ready text for injection into story generation context.
  */
-function formatFutureNotes(
+function formatFutureNotes(params: {
   futureNotes: FutureNote[],
   currentPage: number,
   currentPhase: StoryPhase,
   currentDay?: number,
   currentDate?: string,
-): string {
+}): string {
+  const { futureNotes, currentPage, currentPhase, currentDay, currentDate } = params;
   if (!futureNotes.length) return 'None yet.';
 
   const phaseOrder: Record<StoryPhase, number> = {
@@ -2328,8 +2329,8 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
 }
 
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage: page, previousPages, book } = params;
-  const { actions, page: currentPage, calendarDate } = page;
+  const { advancedState: state, actionedPage, previousPages, book } = params;
+  const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
   const { mc, storyStartDate } = book;
   const { contextHistory, plotFlags, factsHistory, inventory, injuries } = state;
   const { phase, phaseGoal } = getStoryStateInfo(state);
@@ -2337,9 +2338,20 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   // MC current state: inventory + injuries change every few pages,
   // so they live here in the dynamic prompt rather than in the cached documents.
   const mcCurrentState = getMainCharacterInfo({mc, state: { inventory, injuries }});
-  // Day counter since the beginning of the story
-  // good for: recurring events, countdowns, rituals, investigations, story pacing, "3 days later", AI reasoning
-  const currentDay = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
+
+  // Story summary up until now with temporal context
+  // To consider: should we consolidate temporal context into "current situation"?
+  const storySummary = contextHistory || 'No story summary yet.';
+  const storyContext = ((): string => {
+    const temporalContext = [
+      storyStartDate ? `Story started on: ${storyStartDate}` : '',
+      calendarDate ? `Current date: ${calendarDate}` : '',
+      elapsedDays ? `Day: ${elapsedDays + 1}` : '',
+    ].filter(Boolean);
+
+    if (temporalContext.length) return `- Summary: ${storySummary}\n${temporalContext.join('\n- ')}`;
+    return storySummary;
+  })();
 
   return `CURRENT PHASE:
 ${phase} ${phaseGoal}
@@ -2348,10 +2360,7 @@ MAIN CHARACTER (POV):
 ${mcCurrentState}
 
 STORY CONTEXT:
-- Summary: ${contextHistory || 'No story summary yet.'}
-- Story started on: ${storyStartDate ?? '-'}
-- Current date: ${calendarDate ?? '-'}
-- Day: ${currentDay}
+${storyContext}
 
 ${formatRecentMajorEvents(plotFlags)}
 
@@ -2362,29 +2371,30 @@ PREVIOUS PAGES:
 ${formatPreviousPagesForPrompt(currentPage, previousPages, plotFlags)}
 
 CURRENT PAGE:
-${formatPreviousPageEntry(page, plotFlags.filter(f => f.page === currentPage))}
+${formatPreviousPageEntry(actionedPage, plotFlags.filter(f => f.page === currentPage))}
 
 The next page opening must directly continue from that last sentence while carrying out selected action.
 
 CURRENT SITUATION (What just happened):
-${formatCurrentSituationForPrompt(page, state)}
+${formatCurrentSituationForPrompt(actionedPage, state)}
 
 ACTION SELECTION:
 Available choices:
 ${formatActionChoices(actions)}
 
 Selected:
-${formatSelectedAction(page)}
+${formatSelectedAction(actionedPage)}
 
 The next page opening should answer: "What happened immediately after MC ("I") chose this action?"
 Write that moment before advancing the scene.`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state } = params;
+  const { advancedState: state, actionedPage } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase, isFinale } = stateInfo;
+  const { calendarDate, elapsedDays } = actionedPage;
 
   console.log(`[formatNextPageNarrativePrompt] 🥂 isFinale?`, {phase, isFinale});
 
@@ -2405,7 +2415,13 @@ ROUTE MEMORY (Influence writing, don't reveal):
 ${formatRouteContext(state)}
 
 FUTURE NOTES (What should happen later?):
-${formatFutureNotes(futureNotes, currentPage, phase)}
+${formatFutureNotes({
+  futureNotes,
+  currentPage,
+  currentPhase: phase,
+  currentDay: elapsedDays ? (elapsedDays + 1) : undefined,
+  currentDate: calendarDate
+})}
 
 ---
 ${formatThreadsPrompt(threads, stateInfo)}
@@ -3027,7 +3043,7 @@ Initial State:
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
 - plotFlags: significant plot development that affect the overall story trajectory (max 2 per page).
-- inventory: if any, what items MC brings, can include the amount, traits, and where it located (max ${MAX_INVENTORY_ITEM} item).
+- inventory: if any, what items MC brings, can include the amount, traits, and where is it located now (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
 
 Initial Facts:
@@ -3251,7 +3267,8 @@ export async function initializeBook(
     const firstPage = await insertStoryPage(userId, 1, pageToInsert, {
       bookId,
       branchId: 'main',
-      aiResponseProvider: response
+      aiResponseProvider: response,
+      storyStartDate: generatedFirstPage.calendarDate
     }, { client });
 
     console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
@@ -3712,6 +3729,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     branchId,
     usedBranchIds,
     context,
+    book,
   });
 }
 
@@ -3843,6 +3861,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
         branchId,
         usedBranchIds,
         context,
+        book,
       });
 
       newPages.push(newPage);

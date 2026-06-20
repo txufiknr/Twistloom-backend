@@ -150,15 +150,15 @@ export type AIValidationResult = {
   /** List of detected items with details */
   detectedItems: AIDetectedItem[];
   /** Suggestion for how to fix the issue */
-  suggestion: string;
+  suggestion?: string;
   /** Complimentary comment about the theme idea using creative & thriller-themed wording in the same language as the input */
-  comment: string;
+  comment?: string;
   /** Detected language code (ISO 639-1) */
   language: string;
   /** Book title idea for the story based on the theme */
-  titleIdea: string;
+  titleIdea?: string;
   /** Inferred main character who perfectly fit with the story theme */
-  mcCandidate: StoryMCCandidate;
+  mcCandidate?: StoryMCCandidate;
 }
 
 /**

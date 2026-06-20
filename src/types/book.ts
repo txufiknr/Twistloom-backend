@@ -285,7 +285,7 @@ export type VisitBookPageResult = {
 
 export type EnrichedPageOptions = {
   userId?: string,
-  bookLanguage?: string,
+  book?: Pick<Book, 'language'>,
   headerLanguage?: string | null,
   translate?: boolean
 } & TakeActionValidity;
@@ -327,7 +327,6 @@ export type BookTranslationBulkResponse = BookTranslationBulk & Pick<AIResponse<
 export type PageTranslation = {
   // page translations
   text: string;
-  // TODO: add calendarDate
   timeOfDay?: string | null;
   mood?: string | null;
   weather?: string | null;

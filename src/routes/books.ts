@@ -2290,7 +2290,7 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
     // Handle translation if Accept-Language header is provided and differs from book language
     const page = await mapToEnrichedPage(dbPage, {
       userId,
-      bookLanguage: book.language,
+      book,
       headerLanguage,
       translate,
       sourceAction,

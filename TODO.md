@@ -15,21 +15,20 @@
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] translate action hint
 [x] include semua yang di table userCounters ke UserStats
-[ ] isn't `currentDay` state redundant?
+[x] isn't `currentDay` state redundant?
+[x] enriched page tambah elapsedDays
+[x] currentDay harusnya 1-based (kalo 0 elapsedDays)
+[x] hapus semua "TODO: add calendarDate"
+[x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
+[ ] do we need to add MC's birth date (month & day)?
 
 ---
 
-src\services\story.ts
-src\services\story-branch.ts
-src\types\story.ts
-src\utils\branch-traversal.ts
-
-next:
-story.utils.ts
-
-here's the file
-can you also ensure `applyStateDelta` function and all functions under it calculates & applying state update completely, correctly, and optimally?
-please continue
+update google app name:
+- Go to the Google Cloud Console.
+- Navigate to APIs & Services > Credentials.
+- Select OAuth consent screen.
+- Edit your App information and ensure your Application Name, Support Email, and Authorized Domains are all correctly configured and verified.
 
 ---
 

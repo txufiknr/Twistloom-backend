@@ -32,6 +32,9 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
 
 export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER', 'NONE'];
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
+
+// TODO: [github] 💥 Model openai/gpt-4o failed, trying next model: INVALID_SCHEMA
+// `INVALID_SCHEMA` is classified by `classifyGenAIError`
 export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonProperty> = {
   isViolating: { type: 'boolean', description: 'If theme is valid and safe, output false' },
   category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES, description: 'If theme is valid and safe, output "NONE"' },
@@ -51,13 +54,13 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
       additionalProperties: false
     }
   },
-  suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Empty string if theme is valid.' },
-  comment: { type: 'string', description: 'Your complimentary comment (follow comment structure & example). Empty string if theme is invalid.' },
-  language: { type: 'string', description: 'Detected language code (must be a valid ISO 639-1 code)' },
-  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Empty string if theme is invalid.` },
+  suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Omit if theme is valid.' },
+  comment: { type: 'string', description: 'Your complimentary comment (follow comment structure & example). Omit if theme is invalid.' },
+  language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
+  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Omit if theme is invalid.` },
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
-    description: `${MAIN_CHARACTER_SCHEMA.description}. Output empty object "{}" if theme is invalid.`
+    description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`
   }
 };
 
@@ -246,7 +249,6 @@ export const BULK_BOOK_TRANSLATION_REQUIRED_FIELDS = ['translations'] satisfies 
  */
 export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
   text: { type: 'string' },
-  // TODO: add calendarDate
   timeOfDay: { type: 'string' },
   mood: { type: 'string' },
   weather: { type: 'string' },

@@ -38,7 +38,7 @@ export const INITIAL_INVENTORY_ITEM_PROPERTIES: Record<keyof InitialInventoryIte
     })
   },
   amount: { type: 'integer', description: 'Quantity of the item' },
-  where: { type: 'string', description: 'Where the item is located' },
+  where: { type: 'string', description: 'Where is it located now. 1-6 words (e.g., "left pocket").' },
 };
 
 export const INITIAL_INVENTORY_ITEM_KEYS: (keyof InitialInventoryItem)[] = ['name', 'amount', 'where'];

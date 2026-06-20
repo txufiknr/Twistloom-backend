@@ -36,6 +36,7 @@ import { calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import { createCacheKey } from "../utils/cache.js";
+import { daysBetween } from "../utils/time.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIDocument, AIPromptDocuments, AIResponseProvider } from "../types/ai-chat.js";
 import type { StoryMC } from "../types/character.js";
@@ -223,7 +224,8 @@ export async function insertStoryPage(
   options: { client?: DBClient } = {},
 ): Promise<PersistedStoryPage> {
   const { client = dbWrite } = options;
-  const { bookId, branchId, parentId, aiResponseProvider } = pageMeta;
+  const { bookId, branchId, parentId, aiResponseProvider, storyStartDate } = pageMeta;
+  const { calendarDate } = page;
 
   // Validation runs the same regardless of mode
   if (pageNumber > 1) {
@@ -245,6 +247,7 @@ export async function insertStoryPage(
     evalModel: aiEvalModel,
   } = aiResponseProvider;
 
+  const elapsedDays = storyStartDate && calendarDate ? daysBetween(storyStartDate, calendarDate) : undefined;
   const newPageData: DBNewPage = {
     userId,
     bookId,
@@ -255,7 +258,8 @@ export async function insertStoryPage(
     mood: page.mood,
     placeId: page.placeId,
     weather: page.weather,
-    calendarDate: page.calendarDate,
+    calendarDate,
+    elapsedDays,
     timeOfDay: page.timeOfDay,
     sceneType: page.sceneType,
     momentum: page.momentum,
@@ -271,6 +275,7 @@ export async function insertStoryPage(
     createdAt: new Date(),
     updatedAt: new Date()
   } satisfies Record<keyof Omit<DBNewPage, 'id' | 'isGeneratingStartedAt' | 'visitCount'>, unknown>;
+  // } satisfies DBNewPage;
 
   if (isTransaction(client)) {
     // ── Transaction mode ────────────────────────────────────────────────────
@@ -408,6 +413,7 @@ export async function persistPageWithState(params: {
   branchId: string;
   usedBranchIds: Set<string>; // must be passed in for within-call collision safety on retry
   context?: string;
+  book: Pick<Book, 'storyStartDate'>
 }): Promise<PersistedStoryPage> {
   const {
     userId,
@@ -420,7 +426,10 @@ export async function persistPageWithState(params: {
     action,
     usedBranchIds,
     context = "persistPageWithState",
+    book
   } = params;
+
+  const { storyStartDate } = book;
 
   const { momentum: calculatedMomentum } = calculateStoryMomentum({
     state: newState,
@@ -447,6 +456,7 @@ export async function persistPageWithState(params: {
           branchId: currentBranchId,
           parentId: actionedPage.id,
           aiResponseProvider,
+          storyStartDate,
         };
 
         // insertStoryPage detects tx client → skips internal retry → bubbles original error
@@ -1035,6 +1045,7 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
     calendarDate: dbPage.calendarDate || undefined,
+    elapsedDays: dbPage.elapsedDays || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1077,6 +1088,7 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
     calendarDate: dbPage.calendarDate || undefined,
+    elapsedDays: dbPage.elapsedDays || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1121,11 +1133,13 @@ export async function mapToTranslatedPage(
   options: EnrichedPageOptions
 ): Promise<TranslatedStoryPage> {
   const page = mapToPersistedStoryPage(dbPage);
+  const { translate, book, headerLanguage } = options;
+  const { language } = book ?? {};
 
   // Skip translation when not requested or book language is unavailable
-  if (!options.translate || !options.bookLanguage) return page;
+  if (!translate || !language) return page;
 
-  const targetLanguage = shouldTranslate(options.bookLanguage, options.headerLanguage);
+  const targetLanguage = shouldTranslate(language, headerLanguage);
   if (!targetLanguage) return page; // Same language — no translation needed
 
   const pageToTranslate = await getPageToTranslate(dbPage);
@@ -1133,7 +1147,7 @@ export async function mapToTranslatedPage(
 
   const { translation, error } = await getPageTranslation({
     page: pageToTranslate,
-    bookLanguage: options.bookLanguage,
+    language,
     targetLanguage,
   });
 
@@ -1241,7 +1255,9 @@ export async function mapToTranslatedPage(
  * ```
  */
 export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOptions): Promise<EnrichedStoryPage | null> {
-  const { userId, bookLanguage = 'en', headerLanguage, translate = false, sourceAction, isUserTakeAction } = options;
+  const { userId, book, headerLanguage, translate = false, sourceAction, isUserTakeAction } = options;
+  const { language = 'en' } = book ?? {};
+
   const allActions = dbPage.actions;
   const visibleActions = allActions.filter(action => action.destinationPageIds?.length);
   const hasIncompleteActions = allActions.length > visibleActions.length;
@@ -1255,7 +1271,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   }
 
   // Determine if translation is needed (synchronous check)
-  const targetLanguage = translate ? shouldTranslate(bookLanguage, headerLanguage) : undefined;
+  const targetLanguage = translate ? shouldTranslate(language, headerLanguage) : undefined;
   const pageToTranslate = targetLanguage ? await getPageToTranslate(dbPage) : undefined;
 
   // Parallelize independent database queries and API calls
@@ -1270,7 +1286,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     // Handle translation if needed
     targetLanguage && pageToTranslate ? getPageTranslation({
       page: pageToTranslate,
-      bookLanguage,
+      language,
       targetLanguage
     }).then(result => result.translation) : Promise.resolve(undefined),
 
@@ -1335,6 +1351,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || undefined,
     calendarDate: dbPage.calendarDate || undefined,
+    elapsedDays: dbPage.elapsedDays || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,

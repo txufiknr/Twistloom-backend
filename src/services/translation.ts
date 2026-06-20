@@ -51,7 +51,7 @@ interface GetPageTranslationParams {
   /** Full page-with-state object (used by the LibreTranslate path for field extraction) */
   page: PageToTranslate;
   /** Source language code (ISO 639-1) */
-  bookLanguage: string;
+  language: string;
   /** Target language code (ISO 639-1) */
   targetLanguage: string;
 }
@@ -84,7 +84,7 @@ export interface PageTranslationResult {
  */
 export async function getPageTranslation({
   page,
-  bookLanguage,
+  language,
   targetLanguage,
 }: GetPageTranslationParams): Promise<PageTranslationResult> {
   const cacheKey = `${page.id}|${targetLanguage}`;
@@ -108,7 +108,7 @@ export async function getPageTranslation({
     }
 
     // No existing translation — translate all fields via LibreTranslate in one call
-    const translation = await translatePageWithLibre({ page, bookLanguage, targetLanguage, cacheKey });
+    const translation = await translatePageWithLibre({ page, language, targetLanguage, cacheKey });
     return { translation };
   } catch (error) {
     const details = getErrorMessage(error);
@@ -155,7 +155,6 @@ export function applyPageTranslation(
     ...page,
     text: translation.text,
     // Use != null (not &&): empty string is a valid translation result
-    // TODO: add calendarDate
     ...(translation.timeOfDay  != null && { timeOfDay: translation.timeOfDay }),
     ...(translation.mood       != null && { mood:      translation.mood }),
     ...(translation.weather    != null && { weather:   translation.weather }),
@@ -342,7 +341,7 @@ export function applyStateTranslation(state: StoryState, translation: PageTransl
  */
 async function translatePageWithLibre({
   page,
-  bookLanguage,
+  language,
   targetLanguage,
   cacheKey,
 }: GetPageTranslationParams & { cacheKey: string }): Promise<PageTranslation> {
@@ -356,7 +355,6 @@ async function translatePageWithLibre({
   let weatherIndex:        number | undefined;
   let contextHistoryIndex: number | undefined;
 
-  // TODO: add calendarDate
   if (page.timeOfDay)           { timeOfDayIndex      = batch.length; batch.push(page.timeOfDay); }
   if (page.mood)                { moodIndex           = batch.length; batch.push(page.mood); }
   if (page.weather)             { weatherIndex        = batch.length; batch.push(page.weather); }
@@ -465,7 +463,7 @@ async function translatePageWithLibre({
   }
 
   // ── Single API call ──────────────────────────────────────────────────────────
-  const translated = await translateTexts({ texts: batch, target: targetLanguage, source: bookLanguage });
+  const translated = await translateTexts({ texts: batch, target: targetLanguage, source: language });
 
   // ── Extract — scalars ────────────────────────────────────────────────────────
   // Use !== undefined guards: index 0 is falsy but valid.
@@ -597,7 +595,6 @@ async function translatePageWithLibre({
       pageId:           page.id,
       language:         targetLanguage,
       text:             translatedText,
-      // TODO: add calendarDate
       timeOfDay:        translatedTimeOfDay,
       mood:             translatedMood,
       weather:          translatedWeather,
@@ -648,7 +645,6 @@ export async function getPageToTranslate(dbPage: DBPage): Promise<PageToTranslat
 export function mapToPageTranslation(row: DBPageTranslations): PageTranslation {
   return {
     text:             row.text,
-    // TODO: add calendarDate
     timeOfDay:        row.timeOfDay,
     mood:             row.mood,
     weather:          row.weather,
