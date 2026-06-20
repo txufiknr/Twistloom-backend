@@ -194,7 +194,14 @@ PAGE OPENING RULES:
 - Maintain continuous time, location, and perspective from the previous page. Never skip required causal or connecting actions (e.g., if an object is used, show it retrieved first). Avoid "narrative teleportation" — never skip directly to later consequences.
 - The opening 1-3 sentences MUST begin at the earliest interesting moment following the selected choice — the very first sentence plunges directly into its immediate physical, sensory, or mental aftermath.
 - No recaps, summaries, or repetitive setup loops. Trust that the reader remembers the previous page.
-- Exception: an intentional, deliberate scene transition, only if the structural node explicitly demands it.`;
+- Exception: an intentional, deliberate scene transition, only if the structural node explicitly demands it.
+
+DIALOGUE FORMATTING:
+- Every spoken line MUST use quotation marks — even a single word (e.g., "Wait.", "No.", "Run.").
+- Never output bare spoken sentences in narration.
+- Dialogue tags do not remove the need for quotation marks.
+- Audible speech = use quotation marks.
+- Silent thought = no quotation marks, but emphasize them with *italic* emphasis.`;
 
 /**
  * Action rules and a human-readable list of action types (excluding

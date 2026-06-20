@@ -198,6 +198,13 @@ Never use predictable AI framing phrases.
 
 ---
 
+DIALOGUE FORMATTING:
+- Any words that are physically spoken, heard, vocalized, whispered, shouted, broadcast, transmitted, or otherwise audible MUST be wrapped in quotation marks.
+- Never write spoken words as plain narration without quotation marks.
+- Exception: Internal thoughts, silent realizations, memories, and narration are not dialogue and do not require quotation marks, but emphasize them with *italic* emphasis.
+
+---
+
 Story Phase: Early
 
 Narrative Objectives:
