@@ -21,10 +21,12 @@
 [x] hapus semua "TODO: add calendarDate"
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [ ] do we need to add MC's birth date (month & day)?
+[ ] Mistral 2 rpm?
+[ ] Readme: add new AI providers
 
 ---
 
-update google app name:
+[ ] update google app name:
 - Go to the Google Cloud Console.
 - Navigate to APIs & Services > Credentials.
 - Select OAuth consent screen.
@@ -135,10 +137,10 @@ future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)
 
 paid infra:
-[ ] rebrand Loore (L∞re) (by TARRA Soft)
+[ ] upgrade devin pro
 [ ] upgrade vercel hobby -> pro
-[ ] beli domain loore.com -> buat email dev@loore.com
-[ ] migrate semua akun AI pake email dev@loore.com -> replace all API keys -> delete old api keys & project
+[ ] beli domain twistloom.com -> buat email dev@twistloom.com
+[ ] migrate semua akun AI pake email dev@twistloom.com -> replace all API keys -> delete old api keys & project
 [ ] host express backend di always-on server (like Render, Railway, or Fly.io)
 [ ] purchase premium AI chat API keys
 [ ] migrate: GitHub models 8K context -> Official OpenAI 128K context

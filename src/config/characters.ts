@@ -59,7 +59,7 @@ export const CHARACTER_NAMES = {
     'Poppy', 'Briar', 'Fern', 'Olive', 'Jade', 'Pearl', 'Orla', 'Hermione', 'Hilda',
     'Kehlani', 'Billie', 'Zendaya', 'Remi', 'Nyla', 'Kai', 'Indigo', 'Aurelia', 'Aurelie', 'Sienna',
     'Calliope', 'Juniper', 'Marlowe', 'Thea', 'Elodie', 'Wrenley', 'Arden', 'Loxley',
-    'Sloane', 'Blair', 'Quinn', 'Reese', 'Presley', 'Rachel', 'Lena',
+    'Sloane', 'Blair', 'Quinn', 'Reese', 'Presley', 'Rachel', 'Lena', 'Ada', 'Anita', 'Marie', 'Wendy',
     'Monroe', 'Harlow', 'Kinslee', 'Ensley', 'Finley', 'Tinsley', 'Brinley', 'Rylie',
     'Oakley', 'Ember', 'Athena', 'Freya', 'Lilith', 'Persephone', 'Katniss', 'Elize', 'Lizy',
     'Ophelia', 'Cassia', 'Seraphine', 'Evangeline', 'Genevieve', 'Maxine', 'Max', 'Michelle',

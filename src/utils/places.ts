@@ -257,7 +257,7 @@ export function formatPlacesForPrompt(
 
   return sortedEntries.map(([id, place]) => {
     const lines: string[] = [];
-    const { type, context, hints, traits, knownName, realName, isRealNameKnown = false, lastVisitedAtPage, visitCount = 1, keyEvents, knownCharacters } = place;
+    const { type, context, hints, traits, knownName, realName, isRealNameKnown = false, lastVisitedAtPage, visitCount = 1, keyEvents, knownCharacters = [] } = place;
     const currentMarker = lastVisitedAtPage === currentPage ? ' [CURRENT]' : '';
     const placeName = knownName || (isRealNameKnown ? realName : 'Unknown');
 
@@ -301,10 +301,10 @@ export function formatPlacesForPrompt(
       });
     }
 
-    if (knownCharacters?.length) {
+    if (knownCharacters.length) {
       lines.push('  - Associated characters:');
-      Object.entries(knownCharacters).sort(([a], [b]) => a.localeCompare(b)).forEach(([name, context]) => {
-        lines.push(`    → ${name}${context ? ` (${context})` : ''}`);
+      knownCharacters.forEach(character => {
+        lines.push(`    → ${character.key}: ${character.value}`);
       });
     }
 

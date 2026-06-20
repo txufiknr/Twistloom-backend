@@ -2356,7 +2356,11 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
       elapsedDays ? `Day: ${elapsedDays + 1}` : '',
     ].filter(Boolean);
 
-    if (temporalContext.length) return `- Summary: ${storySummary}\n${temporalContext.join('\n- ')}`;
+    if (temporalContext.length) return [
+      `- Summary: ${storySummary}`,
+      ...temporalContext
+    ].join('\n- ');
+
     return storySummary;
   })();
 

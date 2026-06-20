@@ -229,6 +229,7 @@ type GenAIErrorCode =
   | 'VALIDATION_ERROR'
   | 'BAD_REQUEST'
   | 'SERVICE_UNAVAILABLE'
+  | 'REQUEST_TIMEOUT'
   | 'UNKNOWN';
 
 /**
@@ -254,6 +255,17 @@ type GenAIErrorCode =
 export function classifyGenAIError(err: unknown): GenAIErrorCode {
   console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
   const msg = getErrorMessage(err).toLowerCase();
+
+  // Check for timeout/transport aborts — treat as request timeout for retry/backoff
+  if (
+    msg.includes('timeout') ||
+    msg.includes('timed out') ||
+    msg.includes('request timeout') ||
+    getErrorName(err).toLowerCase().includes('timeout') ||
+    isUndiciAbortError(err)
+  ) {
+    return 'REQUEST_TIMEOUT';
+  }
 
   // Check for schema validation errors
   if (

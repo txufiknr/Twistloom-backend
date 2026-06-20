@@ -26,7 +26,7 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
     bio: { type: 'string', description: 'Trait-forward description. Include at least one psychological vulnerability.' },
     knownName: { type: 'string', description: 'Preferred alias or nick referred by other characters.' },
   } satisfies Record<keyof StoryMC, AIJsonProperty>,
-  required: ['name', 'age', 'gender', 'bio'] satisfies (keyof StoryMC)[],
+  required: ['name', 'age', 'gender', 'bio', 'knownName'] satisfies (keyof StoryMC)[],
   additionalProperties: false
 };
 
