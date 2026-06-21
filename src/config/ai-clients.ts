@@ -49,6 +49,7 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // Free "Experiment" tier: ~1 req/sec, ~1B tokens/month.
   // No published request-count daily cap — token budget is the real ceiling,
   // which this config doesn't track. Omitting rpd; RateLimiter throttle() handles rpm.
+  // Need to confirm: some sources say it's actually just 2 RPM?
   mistral:    { rpm: 60 }, // before: { rpm: 60, rpd: 86_400 },
 
   // RPM ceiling: qwen/qwen3-32b at 60 RPM (all other models are 30 RPM).

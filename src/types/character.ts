@@ -223,6 +223,8 @@ export type CharacterMemory = {
   introducedAtPage: number;
   /** How well does MC know this character */
   recognitionLevel: CharacterRecognitionLevel;
+  // /** Specific person they trust in an urgent situation */
+  // emergencyContacts: string[];
 };
 
 export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio'> & { characterId: string };

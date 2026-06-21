@@ -290,7 +290,7 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
  *     → Lisa (first met here)
  *     → Tom (saved from drowning here)
  * 
- * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church]
+ * • Abandoned Church (building) - familiarity: 0.6 [ID: abandoned_church] [Parent ID: oakhaven_city]
  *   - Real name: Project Lazarus Research Facility (revealed: false)
  *   - Visited 2 times (last visited: page 30)
  *   - Context: abandoned stone church outside town
@@ -299,12 +299,12 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
  *     → Page 30: Cult symbol found
  *   - Associated characters:
  *     → Marcus (first met here)
+ *   - Known routes:
+ *     → old_river: route-specific details (2 minutes walk, alley, open)
  */
 export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, currentPage: number): string {
   const placeEntries = Object.entries(places);
   if (!placeEntries.length) return 'No known places.';
-
-  // TODO: also display place.knownConnections & parentPlaceId in prompt
 
   const sortedEntries = [...placeEntries].sort(([, a], [, b]) => {
     const aCurrent = a.lastVisitedAtPage === currentPage ? 1 : 0;
@@ -326,7 +326,8 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
     const placeName = knownName || (isRealNameKnown ? realName : 'Unknown');
 
     // Main place info and identifier
-    lines.push(`• ${placeName} (${type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]`);
+    const parentMarker = place.parentPlaceId ? ` [Parent ID: ${place.parentPlaceId}]` : '';
+    lines.push(`• ${placeName} (${type})${currentMarker} - familiarity: ${place.familiarity.toFixed(1)} [ID: ${id}]${parentMarker}`);
 
     // Real name and whether it's revealed to the MC (matches jsdoc example format)
     lines.push(`  - Real name: ${realName} (revealed: ${place.isRealNameKnown ? 'true' : 'false'})`);
@@ -369,6 +370,24 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
       lines.push('  - Associated characters:');
       knownCharacters.forEach(character => {
         lines.push(`    → ${character.key}: ${character.value}`);
+      });
+    }
+
+    // if (place.parentPlaceId) {
+    //   // Also include explicit parent reference (helpful for nested places)
+    //   // Note: parent already appears in header, but keep a separate line for clarity
+    //   // to match the jsdoc example style.
+    //   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    //   lines.push(`  - Parent ID: ${place.parentPlaceId}`);
+    // }
+
+    if (place.knownConnections?.length) {
+      lines.push('  - Known routes:');
+      place.knownConnections.forEach(conn => {
+        const parts = [conn.travelTime, conn.routeType, conn.accessibility].filter(Boolean);
+        const details = parts.length ? ` (${parts.join(', ')})` : '';
+        const notes = conn.notes ? ` ${conn.notes}` : '';
+        lines.push(`    → ${conn.targetId}:${notes}${details}`);
       });
     }
 

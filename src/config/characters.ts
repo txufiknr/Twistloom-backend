@@ -24,7 +24,7 @@ export const CHARACTER_NAMES = {
     'Onyx', 'Jet', 'Coal', 'Slate', 'Flint', 'Obsidian', 'Graphite', 'Charcoal',
     'Zenith', 'Nadir', 'Apex', 'Summit', 'Pinnacle', 'Crest', 'Peak', 'Vertex',
     'Rogue', 'Rebel', 'Maverick', 'Renegade', 'Outlaw', 'Vandal', 'Bandit', 'Ranger',
-    'Myth', 'Fable', 'Saga'
+    'Myth', 'Fable', 'Saga', 'Jesse', 'Dwight'
   ],
 
   // Male-preferring last names (stronger masculine associations)
@@ -68,10 +68,10 @@ export const CHARACTER_NAMES = {
     'Primrose', 'Bluebell', 'Snowdrop', 'Lisa', 'Lavender', 'Amanda', 'Yuna', 'Katrena',
     'Aria', 'Celeste', 'Stella', 'Luna', 'Aurora', 'Vega', 'Nova', 'Lyra', 'Kael', 'Orion',
     'Serenity', 'Harmony', 'Melody', 'Rhythm', 'Cadence', 'Lyric', 'Sonnet', 'Verse',
-    'Willow', 'Ivy', 'Fern', 'Briar', 'Meadow', 'Daisy', 'Clover', 'Sage', 'Hazel',
+    'Willow', 'Ivy', 'Briar', 'Meadow', 'Daisy', 'Clover', 'Sage', 'Hazel',
     'Ocean', 'River', 'Rain', 'Storm', 'Sky', 'Star', 'Moon', 'Sun', 'Cloud', 'Angie', 'Lou',
     'Zephyr', 'Breeze', 'Gale', 'Mist', 'Dew', 'Frost', 'Snow', 'Ice', 'Crystal',
-    'Phoenix', 'Raven', 'Wren', 'Dove',
+    'Phoenix', 'Raven', 'Wren', 'Dove', 'Jules', 'Verne', 'Velma',
     'Onyx', 'Jade', 'Ruby', 'Pearl', 'Amber', 'Garnet', 'Opal', 'Topaz', 'Emerald',
     'Zion', 'Eden', 'Arcadia', 'Shangri-La', 'Utopia', 'Elysium', 'Valhalla', 'Olympus',
     'Electra', 'Cassiopeia', 'Callisto', 'Europa', 'Io', 'Ganymede',
