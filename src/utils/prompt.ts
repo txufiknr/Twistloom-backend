@@ -2338,7 +2338,6 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
   if (momentum) situation.push(`Story momentum: ${momentum}`);
   if (sceneType) situation.push(`Scene type: ${sceneType}`);
   if (placeId) situation.push(`Place: ${placeId}`);
-  if (calendarDate) situation.push(`Date: ${calendarDate}`);
   if (timeOfDay) situation.push(`Time: ${timeOfDay}`);
   if (mood) situation.push(`Mood: ${mood}`);
   if (weather) situation.push(`Weather: ${weather}`);

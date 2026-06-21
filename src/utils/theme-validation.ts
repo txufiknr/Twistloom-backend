@@ -13,7 +13,7 @@ import { THEME_BLACKLIST, THEME_SUSPICIOUS_PATTERNS, INVALID_POV_PATTERNS, INVAL
 import { THEME_VALIDATION_CATEGORIES, THEME_VALIDATION_DETECTED_ITEM_TYPES, THEME_VALIDATION_SCHEMA } from '../schema/book.js';
 import { BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
 import { AI_CHAT_CONFIG_DEFAULT } from '../config/ai-chat.js';
-import { AI_CHAT_MODELS_THEME } from '../config/ai-clients.js';
+import { AI_CHAT_MODELS_VALIDATOR } from '../config/ai-clients.js';
 import { executePromptForJSON, formatOneOf } from './prompt.js';
 import { hasKeywords } from './text-processing.js';
 import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResult, ThemeValidationErrorDetails, ThemeValidationCategory } from '../types/theme-validation.js';
@@ -208,7 +208,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
         fallbackField: 'suggestion',
         baseOptions: {
           config: AI_CHAT_CONFIG_DEFAULT,
-          modelSelection: AI_CHAT_MODELS_THEME,
+          modelSelection: AI_CHAT_MODELS_VALIDATOR,
           context: 'theme-validation',
           logPrompts: true,
         },

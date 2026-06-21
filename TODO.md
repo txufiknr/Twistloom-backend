@@ -7,9 +7,6 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] Routine retry cron buat sequential aja (github action strategy)
-[ ] story state: elapsedDays
-[ ] story delta: elapsedDays (replace), mcAgeDelta (increment)
 [ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
 [x] incrementUserMetric for achievement
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
@@ -24,14 +21,12 @@
 [x] ensure realityStability based on momentum and sceneType, not page count
 [x] enriched page context tambah threads: StoryThread[]; (only open/developing status)
 [x] display place.knownConnections & parentPlaceId in prompt
-[ ] antigravity/opencode: custom action claude roadmap
-[ ] ask claude to write refined github profile readme based on past chats, highlight about AI/LLM + video + live demo
-
----
-
-action strict handling:
-[ ] if reader need certain object, check for inventory or search around the scene. don't invent non-existent things.
-[ ] keep story continue towards the viableEnding. don't wander/deviate too far.
+[x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
+[x] CURRENT SITUATION (What just happened): gausah date
+[x] genaiclassify error log invalid_schema
+[ ] antigravity/opencode: custom action claude roadmap, 80days roadmap
+[ ] ask claude to write refined github profile readme.md based on our past chats, highlight about my AI/LLM skills
+[ ] github profile readme: video + live demo
 
 ---
 
@@ -40,25 +35,6 @@ action strict handling:
 - Navigate to APIs & Services > Credentials.
 - Select OAuth consent screen.
 - Edit your App information and ensure your Application Name, Support Email, and Authorized Domains are all correctly configured and verified.
-
----
-
-about momentum calculation: yes, it's derived from previous AI page generation result, mainly based on updated story state and previous momentum
-you can see my current`calculateStoryMomentum` function implementation and `CalculateStoryMomentumParams` type (from previous types file)
-and yes, it also accounts for previously selected actions (see `calculateDangerLevel` function)
-
-please thoroughly examine and review
-tell me if you have any concerns or suggestions
-
----
-
-utils/prompt.ts: formatActiveThreads, getThreadState
-utils/story.ts: processThreadUpdates
-types/story-thread.ts
-
-I want to enhance my story thread system for reader experience, while also keeping it not too complex for AI
-here's suggestions from ChatGPT (uploaded)
-what's your proposal?
 
 ---
 

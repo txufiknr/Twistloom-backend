@@ -274,6 +274,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('json schema') ||
     msg.includes('array schema')
   ) {
+    console.log(`[classifyGenAIError] ❓ Schema invalid:`, err, typeof err);
     return 'INVALID_SCHEMA';
   }
 

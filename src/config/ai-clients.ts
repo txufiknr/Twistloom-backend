@@ -140,7 +140,7 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
  * GitHub Models inference (OpenAI-compatible). 
  * Primary model first; mini as fallback. Ideal for absolute JSON structure rescue.
  */
-export const AI_CHAT_MODELS_OPENAI: AIModelSelection = {
+export const AI_CHAT_MODELS_TINY: AIModelSelection = {
   github: ['openai/gpt-4o', 'openai/gpt-4o-mini']
 };
 
@@ -210,11 +210,26 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
 };
 
 /**
- * Generating story theme ideas and meta-directives.
- * Prefers fast, highly structured, smaller models that excel at brainstorming.
+ * Lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
  */
-export const AI_CHAT_MODELS_THEME: AIModelSelection = {
-  ...AI_CHAT_MODELS_OPENAI,
+export const AI_CHAT_MODELS_FAST: AIModelSelection = {
+  groq: [
+    'llama-3.3-70b-versatile',
+    'openai/gpt-oss-120b',
+    'llama-3.1-8b-instant',
+  ],
+  cerebras: ['llama-3.3-70b'],
+  nvidia: [
+    'meta/llama-3.3-70b-instruct', 
+    'mistralai/mistral-7b-instruct'
+  ],
+};
+
+/**
+ * Small but creative model for idea brainstorming
+ */
+export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
+  ...AI_CHAT_MODELS_TINY,
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash',
@@ -234,16 +249,24 @@ export const AI_CHAT_MODELS_THEME: AIModelSelection = {
     '@cf/qwen/qwen1.5-7b-chat-awq'
   ],
   cohere: ['command-r-08-2024'],
-  groq: [
-    'llama-3.3-70b-versatile',
-    'openai/gpt-oss-120b',
-    'llama-3.1-8b-instant',
-  ],
-  cerebras: ['llama-3.3-70b'],
-  nvidia: [
-    'meta/llama-3.3-70b-instruct', 
-    'mistralai/mistral-7b-instruct'
-  ],
+};
+
+/**
+ * Generating story theme ideas and meta-directives.
+ * Prefers fast, highly structured, smaller models that excel at brainstorming.
+ */
+export const AI_CHAT_MODELS_THEME: AIModelSelection = {
+  ...AI_CHAT_MODELS_IDEA,
+  ...AI_CHAT_MODELS_FAST,
+};
+
+/**
+ * Validating story theme ideas and meta-directives.
+ * Prefers fast, highly structured, smaller models that excel at analyzing.
+ */
+export const AI_CHAT_MODELS_VALIDATOR: AIModelSelection = {
+  ...AI_CHAT_MODELS_FAST,
+  ...AI_CHAT_MODELS_IDEA,
 };
 
 /**
