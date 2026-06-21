@@ -192,13 +192,11 @@ PAGE NARRATIVE RULES:
 
 PAGE OPENING RULES:
 - Continue directly from the final moment of the previous page.
-- First sentence must begin from the immediate aftermath of the selected action.
-- Show the next physical, sensory, or mental step taken by the MC.
-- Do not skip necessary intermediate actions, movements, or objects.
-- Do not jump directly to later consequences if an intermediate action is required.
-- Do not recap previous events, but do not skip required connecting actions.
-- Maintain continuous time and space unless an intentional scene transition occurs.
-- Trust that the reader remembers the previous page and understand how the story moved from it to the current moment.
+- Begin with the immediate execution or consequence of the selected action.
+- Show the next physical, sensory, or mental step taken by the MC (POV).
+- Do not skip causally required actions, movements, objects, or transitions.
+- Maintain continuous time, location, and perspective unless an intentional scene transition occurs.
+- Do not recap previous events; trust that the reader remembers the previous page.
 
 DIALOGUE FORMATTING:
 - Every spoken line MUST use quotation marks — even a single word (e.g., "Wait.", "No.", "Run.").
@@ -208,16 +206,14 @@ DIALOGUE FORMATTING:
 - Silent thought = no quotation marks, but emphasize them with *italic* emphasis.
 
 PAGE ENDING RULES:
-- Each page should end with a stronger narrative pull than it began with.
-- End the page at a point of maximum narrative tension.
-- Last 1-3 sentences should introduce: a new question, a new threat, a revelation, a difficult choice, an unexpected complication, or an unanswered mystery.
-- By the final sentence, at least one of the following should have increased: danger, uncertainty, urgency, suspicion, emotional stakes, or mystery.
+- End at the point of strongest narrative pull appropriate for the current scene and story momentum.
+- The final 1-3 sentences should introduce or escalate a question, threat, revelation, difficult choice, unexpected complication, or mystery.
+- By the final sentence, increase at least one of: danger, uncertainty, urgency, suspicion, emotional stakes, or mystery.
 - The final line should contain concrete story information that changes the reader's understanding of the situation or increases uncertainty about what happens next.
-- The reader should feel compelled to continue. Do not fully resolve the current tension before the page ends.
+- Do not fully resolve the current tension before the page ends.
 - Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
-- Never allow tension to plateau for multiple consecutive pages.
-- Never end a page after the interesting thing has happened.
-- End the page at the moment the reader realizes something important is about to happen, has just been revealed, or must be acted upon.`;
+- End the page just before, during, or immediately after a meaningful development, leaving the reader eager to see what happens next.
+- End as late as possible, but before the reader's curiosity is satisfied.`;
 
 /**
  * Action rules and a human-readable list of action types (excluding
