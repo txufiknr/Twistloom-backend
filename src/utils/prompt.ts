@@ -191,17 +191,33 @@ PAGE NARRATIVE RULES:
 - End on tension, uncertainty, discovery, or a new problem — never full resolution, even on a "resolution"-momentum page (see STORY MOMENTUM GUIDANCE): close on a lingering doubt rather than total closure.
 
 PAGE OPENING RULES:
-- Maintain continuous time, location, and perspective from the previous page. Never skip required causal or connecting actions (e.g., if an object is used, show it retrieved first). Avoid "narrative teleportation" — never skip directly to later consequences.
-- The opening 1-3 sentences MUST begin at the earliest interesting moment following the selected choice — the very first sentence plunges directly into its immediate physical, sensory, or mental aftermath.
-- No recaps, summaries, or repetitive setup loops. Trust that the reader remembers the previous page.
-- Exception: an intentional, deliberate scene transition, only if the structural node explicitly demands it.
+- Continue directly from the final moment of the previous page.
+- First sentence must begin from the immediate aftermath of the selected action.
+- Show the next physical, sensory, or mental step taken by the MC.
+- Do not skip necessary intermediate actions, movements, or objects.
+- Do not jump directly to later consequences if an intermediate action is required.
+- Do not recap previous events, but do not skip required connecting actions.
+- Maintain continuous time and space unless an intentional scene transition occurs.
+- Trust that the reader remembers the previous page and understand how the story moved from it to the current moment.
 
 DIALOGUE FORMATTING:
 - Every spoken line MUST use quotation marks — even a single word (e.g., "Wait.", "No.", "Run.").
 - Never output bare spoken sentences in narration.
 - Dialogue tags do not remove the need for quotation marks.
 - Audible speech = use quotation marks.
-- Silent thought = no quotation marks, but emphasize them with *italic* emphasis.`;
+- Silent thought = no quotation marks, but emphasize them with *italic* emphasis.
+
+PAGE ENDING RULES:
+- Each page should end with a stronger narrative pull than it began with.
+- End the page at a point of maximum narrative tension.
+- Last 1-3 sentences should introduce: a new question, a new threat, a revelation, a difficult choice, an unexpected complication, or an unanswered mystery.
+- By the final sentence, at least one of the following should have increased: danger, uncertainty, urgency, suspicion, emotional stakes, or mystery.
+- The final line should contain concrete story information that changes the reader's understanding of the situation or increases uncertainty about what happens next.
+- The reader should feel compelled to continue. Do not fully resolve the current tension before the page ends.
+- Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
+- Never allow tension to plateau for multiple consecutive pages.
+- Never end a page after the interesting thing has happened.
+- End the page at the moment the reader realizes something important is about to happen, has just been revealed, or must be acted upon.`;
 
 /**
  * Action rules and a human-readable list of action types (excluding

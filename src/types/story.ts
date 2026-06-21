@@ -1047,6 +1047,8 @@ export type EnrichedStoryPageContext = {
   characters: EnrichedStoryPageCharacter[];
   /** Collection of narrative flags and hints for the current page */
   plotFlags: PlotFlag[];
+  /** Collection of ongoing narrative threads in the story */
+  threads: StoryThread[];
 };
 
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { placeId: string; name: string; };

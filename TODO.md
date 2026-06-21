@@ -23,6 +23,15 @@
 [ ] do we need to add MC's birth date (month & day)?
 [ ] Mistral 2 rpm?
 [ ] Readme: add new AI providers
+[ ] ensure realityStability based on momentum and sceneType, not page count
+[ ] placesRelationship / knownRoutes (link with revious place): source, target (placeId), distance, obstacle
+[ ] enriched page context tambah threads: StoryThread[]; (only open/developing status)
+
+---
+
+custom action strict handling:
+[ ] if reader need certain object, check for inventory or search around the scene. don't invent non-existent things.
+[ ] keep story continue towards the viableEnding. don't wander/deviate too far.
 
 ---
 
@@ -31,18 +40,6 @@
 - Navigate to APIs & Services > Credentials.
 - Select OAuth consent screen.
 - Edit your App information and ensure your Application Name, Support Email, and Authorized Domains are all correctly configured and verified.
-
----
-
-PAGE OPENING RULES:
-- Continue directly from the final moment of the previous page.
-- First sentence must begin from the immediate aftermath of the selected action.
-- Show the next physical, sensory, or mental step taken by the MC.
-- Do not skip necessary intermediate actions, movements, or objects.
-- Do not jump directly to later consequences if an intermediate action is required.
-- Do not recap previous events, but do not skip required connecting actions.
-- Maintain continuous time and space unless an intentional scene transition occurs.
-- Trust that the reader remembers the previous page and understand how the story moved from it to the current moment.
 
 ---
 
@@ -200,10 +197,42 @@ Never use predictable AI framing phrases.
 
 ---
 
+PAGE OPENING RULES:
+- Maintain continuous time, location, and perspective from the previous page. Never skip required causal or connecting actions (e.g., if an object is used, show it retrieved first). Avoid "narrative teleportation" — never skip directly to later consequences.
+- The opening 1-3 sentences MUST begin at the earliest interesting moment following the selected choice — the very first sentence plunges directly into its immediate physical, sensory, or mental aftermath.
+- No recaps, summaries, or repetitive setup loops. Trust that the reader remembers the previous page.
+- Exception: an intentional, deliberate scene transition, only if the structural node explicitly demands it.
+
+PAGE OPENING RULES:
+- Continue directly from the final moment of the previous page.
+- First sentence must begin from the immediate aftermath of the selected action.
+- Show the next physical, sensory, or mental step taken by the MC.
+- Do not skip necessary intermediate actions, movements, or objects.
+- Do not jump directly to later consequences if an intermediate action is required.
+- Skip recap and unnecessary setup, but do not skip causally required actions.
+- Maintain continuous time and space unless an intentional scene transition occurs.
+
+PAGE CONTINUITY:
+- The opening 1-3 sentences must show the MC carrying out the selected action.
+- Start at the earliest interesting moment after the selected action.
+- Avoid narrative teleportation. The reader should always understand how the story moved from the previous page to the current moment.
+- Maintain continuous time, location, and perspective unless a deliberate scene transition is occurring.
+- Do not recap previous events, but do not skip required connecting actions.
+- If the selected action requires an object, movement, or preparation, show or imply how it happens before showing the result.
+
 DIALOGUE FORMATTING:
 - Any words that are physically spoken, heard, vocalized, whispered, shouted, broadcast, transmitted, or otherwise audible MUST be wrapped in quotation marks.
 - Never write spoken words as plain narration without quotation marks.
 - Exception: Internal thoughts, silent realizations, memories, and narration are not dialogue and do not require quotation marks, but emphasize them with *italic* emphasis.
+
+PAGE ENDING RULES:
+- Always freeze the page narrative at the absolute peak of friction, momentum, or danger. Never allow tension to plateau or resolve before the page ends. Never end a page after a major event has fully finished playing out; instead, drop the curtain right as the protagonist realizes they must act, or right as a revelation lands.
+- The final 1-3 sentences MUST introduce a concrete narrative pivot. You are strictly required to inject exactly one of the following: a fresh threat, an unanswered mystery, a shifting realization, or a high-stakes dilemma.
+- By the final punctuation mark, at least one mechanical vector must be higher than it was at the start of the page: danger, urgency, psychological trauma, suspicion, or situational uncertainty.
+- Strictly avoid artificial or generic cliffhangers (e.g., "And then everything went black," "She couldn't believe her eyes," or cheap jump-scare gasps). The cliffhanger must rely entirely on concrete, newly revealed story facts that disrupt the reader's understanding of the immediate situation.
+- Align the final lines strictly with current scene type and story momentum:
+  → If state is high-pressure (e.g., sceneType: "escape", "horror" | momentum: "critical"): The ending MUST escalate physical danger, urgency, or immediate threat.
+  → If state is a cooling/grounding phase (e.g., sceneType: "aftermath", "investigation" | momentum: "resolution"): Honor the drop in physical tension. DO NOT fake an active threat. Instead, pivot the ending on a psychological vector—introduce a subtle creeping suspicion, an emotional realization of what was lost, or a quiet, haunting mystery.
 
 ---
 
