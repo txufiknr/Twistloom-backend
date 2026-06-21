@@ -6,8 +6,10 @@ import {
   FAMILIARITY_MAX_VISITS,
   SIGNIFICANT_EVENT_KEYWORDS,
   FAMILIARITY_MAX_SIGNIFICANT_EVENTS,
-  FAMILIARITY_VISIT_WEIGHT} from "../config/story.js";
-import type { NewPlace, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
+  FAMILIARITY_VISIT_WEIGHT,
+  MAX_PLACES
+} from "../config/story.js";
+import type { NewPlace, PlaceConnectionUpdate, PlaceMemory, PlaceUpdate, PlaceUpdates } from "../types/places.js";
 import type { PastEvent, StoryScene, StoryState } from "../types/story.js";
 import { cleanUpInventory } from "./story.js";
 import { slugify } from "./text-processing.js";
@@ -34,6 +36,7 @@ export function createPlace(params: NewPlace, currentPage: number, scene?: Story
     keyEvents: params.keyEvents ? params.keyEvents.map<PastEvent>(e => ({ page: currentPage, event: e })) : undefined,
     lastWeather: scene?.weather,
     lastMood: scene?.mood,
+    knownConnections: [] // will be processed later in `processPlaceUpdates`
   } satisfies PlaceMemory;
 }
 
@@ -156,34 +159,96 @@ export function updatePlace(params: {
  * processPlaceUpdates(state, storyPage);
  * ```
  */
-export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, scene?: StoryScene, previousPlaceId?: string): void {
+export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdates, placeConnectionUpdates?: PlaceConnectionUpdate[], scene?: StoryScene, previousPlaceId?: string): void {
   const { newPlaces = [], updatedPlaces = [] } = placeUpdates || {};
 
   // Early exit: if no updates to process
-  if (!newPlaces.length && !updatedPlaces.length) return;
+  if (!newPlaces.length && !updatedPlaces.length && !placeConnectionUpdates?.length) return;
   
   // Add new places into place memory
-  for (const newPlace of newPlaces) {
-    const place = createPlace(newPlace, state.page, scene);
-    const placeId = slugify(newPlace.placeId);
-    state.places[placeId] = place;
+  if (newPlaces.length) {
+    for (const newPlace of newPlaces) {
+      const place = createPlace(newPlace, state.page, scene);
+      const placeId = slugify(newPlace.placeId);
+      state.places[placeId] = place;
+    }
   }
   
   // Update existing places
-  for (const update of updatedPlaces) {
-    const placeId = slugify(update.placeId);
-    const existing = state.places[placeId];
-    if (existing) {
-      state.places[placeId] = updatePlace({
-        existing,
-        update,
-        page: state.page,
-        scene,
-        placeId,
-        previousPlaceId
-      });
+  if (updatedPlaces.length) {
+    for (const update of updatedPlaces) {
+      const placeId = slugify(update.placeId);
+      const existing = state.places[placeId];
+      if (existing) {
+        state.places[placeId] = updatePlace({
+          existing,
+          update,
+          page: state.page,
+          scene,
+          placeId,
+          previousPlaceId
+        });
+      }
     }
   }
+
+  // Process relationship updates
+  if (placeConnectionUpdates?.length) {
+    for (const conUpdate of placeConnectionUpdates) {
+      const sourcePlace = state.places[conUpdate.sourceId];
+      if (sourcePlace) {
+        state.places[conUpdate.sourceId] = updateConnection(sourcePlace, conUpdate, state.page);
+      }
+    }
+  }
+}
+
+/**
+ * 
+ * @param place 
+ * @param update 
+ * @param currentPage 
+ * @returns 
+ */
+export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpdate, currentPage: number): PlaceMemory {
+  const updated: PlaceMemory = structuredClone(place);
+  
+  // Find existing relationship to target
+  const existingIndex = updated.knownConnections.findIndex(r => r.targetId === update.targetId);
+  
+  if (existingIndex >= 0) {
+    // Update existing relationship
+    updated.knownConnections[existingIndex] = {
+      ...updated.knownConnections[existingIndex],
+      ...(update.travelTime ? {travelTime: update.travelTime} : {}),
+      ...(update.routeType ? {routeType: update.routeType} : {}),
+      ...(update.accessibility ? {accessibility: update.accessibility} : {}),
+      ...(update.bidirectional ? {bidirectional: update.bidirectional} : {}),
+      ...(update.notes ? {notes: update.notes} : {}),
+      updatedAtPage: currentPage,
+    };
+
+    // Update obstacles
+    const { add: addObstacles = [], remove: removeObstacles = [] } = update.updateObstacles;
+    updated.knownConnections[existingIndex].obstacles = [
+      ...updated.knownConnections[existingIndex].obstacles.filter(o => !removeObstacles.includes(o)),
+      ...addObstacles
+    ];
+  } else if (updated.knownConnections.length < MAX_PLACES - 1) {
+    // Create new relationship
+    updated.knownConnections.push({
+      targetId: update.targetId,
+      travelTime: update.travelTime,
+      routeType: update.routeType,
+      accessibility: update.accessibility || "open",
+      obstacles: update.updateObstacles.add ?? [],
+      bidirectional: update.bidirectional ?? true,
+      notes: update.notes,
+      updatedAtPage: currentPage,
+    });
+  }
+  
+  return updated;
 }
 
 /**
@@ -235,12 +300,11 @@ export function processPlaceUpdates(state: StoryState, placeUpdates?: PlaceUpdat
  *   - Associated characters:
  *     → Marcus (first met here)
  */
-export function formatPlacesForPrompt(
-  places: Record<string, PlaceMemory>,
-  currentPage: number,
-): string {
+export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, currentPage: number): string {
   const placeEntries = Object.entries(places);
   if (!placeEntries.length) return 'No known places.';
+
+  // TODO: also display place.knownConnections & parentPlaceId in prompt
 
   const sortedEntries = [...placeEntries].sort(([, a], [, b]) => {
     const aCurrent = a.lastVisitedAtPage === currentPage ? 1 : 0;

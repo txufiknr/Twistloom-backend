@@ -1,7 +1,7 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
 import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
-import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates } from "../types/places.js";
+import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter } from "../types/story.js";
@@ -135,6 +135,7 @@ export function buildTraitItemSchema(params?: {
 
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
   placeId: { type: 'string', description: 'Lowercase slug identifier (e.g., "abandoned_hotel")' },
+  parentPlaceId: { type: 'string', description: `If it's a sub-place (e.g., 'canteen' in a 'school')` },
   knownName: { type: 'string', description: `Place name as it appears in the narrative (preferred name)` },
   realName: { type: 'string', description: 'Original name unrevealed (e.g., institution name)' },
   type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
@@ -145,7 +146,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   keyEvents: { type: 'array', items: { type: 'string' }, description: 'Meaningful events that occurred at this place' },
   keyObjects: {
     type: 'array',
-    description: 'Objects associated to this place (e.g., wooden chair, cupboard, large mirror)',
+    description: 'Objects associated to this place (e.g., wooden chair, large mirror)',
     items: PLACE_KEY_OBJECT_SCHEMA
   },
   knownCharacters: {
@@ -328,6 +329,24 @@ export const RELATIONSHIP_UPDATE_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
+export const PLACE_CONNECTION_UPDATE_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: 'Connection between places. Add on first connection; update only for significant route changes.',
+  properties: {
+    sourceId: { type: 'string', description: 'Place ID (from).' },
+    targetId: { type: 'string', description: 'Target place ID (to).' },
+    travelTime: { type: 'string', description: 'Narrative travel duration (e.g., "5 minutes walk", "20 minutes drive").' },
+    routeType: { type: 'string', description: 'Main route used between places (e.g., "alley")' },
+    accessibility: { type: 'string', enum: [...placeAccessibilities] },
+    // obstacles: { type: 'string', description: 'Relevant barriers, hazards, or restrictions (e.g., "police checkpoint", "flooded alley")' },
+    updateObstacles: getTagUpdatesSchema<string>({ description: 'Relevant barriers, hazards, or restrictions (e.g., "police checkpoint", "flooded alley")' }),
+    bidirectional: { type: 'boolean', description: `false if we can't go back to source place` },
+    notes: { type: 'string', description: 'Optional route-specific details.' },
+  } satisfies Record<keyof PlaceConnectionUpdate, AIJsonProperty>,
+  required: ['sourceId', 'targetId', 'travelTime'] satisfies (keyof PlaceConnectionUpdate)[],
+  additionalProperties: false
+};
+
 function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, items?: AIJsonProperty}): AIJsonProperty {
   const { description, items } = params;
   return {
@@ -413,11 +432,8 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     additionalProperties: false
   },
 
-  relationshipUpdates: {
-    type: 'array',
-    description: 'Updates to relationships between side characters if any.',
-    items: RELATIONSHIP_UPDATE_SCHEMA,
-  },
+  relationshipUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to relationships between side characters if any.' },
+  placeConnectionUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
 
   threadUpdates: {
     type: 'object',

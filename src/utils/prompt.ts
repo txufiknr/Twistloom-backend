@@ -30,7 +30,7 @@ import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
 import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
-import { type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
+import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
@@ -206,13 +206,12 @@ DIALOGUE FORMATTING:
 - Silent thought = no quotation marks, but emphasize them with *italic* emphasis.
 
 PAGE ENDING RULES:
-- End at the point of strongest narrative pull appropriate for the current scene and story momentum.
-- The final 1-3 sentences should introduce or escalate a question, threat, revelation, difficult choice, unexpected complication, or mystery.
-- By the final sentence, increase at least one of: danger, uncertainty, urgency, suspicion, emotional stakes, or mystery.
-- The final line should contain concrete story information that changes the reader's understanding of the situation or increases uncertainty about what happens next.
+- End at the point of strongest narrative pull appropriate for the current scene type and story momentum.
+- The final 1-3 sentences should introduce or escalate a question, threat, revelation, difficult choice, unexpected complication, emotional consequence, or mystery.
+- Increase at least one of: danger, uncertainty, urgency, suspicion, emotional stakes, curiosity, or mystery.
+- The final line should contain concrete story information that changes the reader's understanding of the situation or raises a meaningful new question.
 - Do not fully resolve the current tension before the page ends.
 - Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
-- End the page just before, during, or immediately after a meaningful development, leaving the reader eager to see what happens next.
 - End as late as possible, but before the reader's curiosity is satisfied.`;
 
 /**
@@ -465,8 +464,8 @@ const firstBookOutputFormat: string = `{
   ],
   "initialRelationships": [
     {
-      "source": "<character_id_1>",
-      "target": "<character_id_2>",
+      "sourceId": "<character_id_1>",
+      "targetId": "<character_id_2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
@@ -662,8 +661,8 @@ const nextPageOutputFormat: string = `{
   },
   "relationshipUpdates": [
     {
-      "source": "<character_id_1>",
-      "target": "<character_id_2>",
+      "sourceId": "<character_id_1>",
+      "targetId": "<character_id_2>",
       "type": "One of: ${formatOneOf(relationshipTypes)}",
       "status": "One of: ${formatOneOf(relationshipStatuses)}"
     }
@@ -672,6 +671,7 @@ const nextPageOutputFormat: string = `{
     "newPlaces": [
       {
         "placeId": "<new_place_id>",
+        "parentPlaceId": "Optional. <parent_place_id>",
         "knownName": "...",
         "realName": "...",
         "type": "One of: ${formatOneOf(placeTypes)}",
@@ -725,6 +725,18 @@ const nextPageOutputFormat: string = `{
       }
     ]
   },
+  "placeConnectionUpdates": [
+    {
+      "sourceId": "<place_id_1>",
+      "targetId": "<place_id_2>",
+      "travelTime": "...",
+      "routeType": "...",
+      "accessibility": "One of: ${formatOneOf(placeAccessibilities)}",
+      "obstacles": ["..."],
+      "bidirectional": <boolean>,
+      "notes": "..."
+    }
+  ],
   "threadUpdates": {
     "newThreads": [
       {
@@ -998,6 +1010,15 @@ placeUpdates.updatedPlaces
     → memory loss/confusion, familiar assumptions are proven false, environment becomes unrecognizable.
     → Do NOT use for ordinary visits, repeated exposure, spending time in a place, or learning the place gradually. Those changes are handled automatically by the system.
 ${isLatePhase || isFinale ? `  - High-familiarity places revisited now should feel distorted.` : ''}
+
+placeConnectionUpdates
+  - Add new if visiting/adding a new place or when a place is first connected.
+  - Only update existing if route conditions meaningfully change on revisit.
+  - travelTime: Estimated travel duration (e.g., "5 minutes walk", "20 minutes drive").
+  - routeType: Primary route description (e.g., "main street", "alley", "tunnel").
+  - accessibility: One of: ${formatOneOf(placeAccessibilities)}.
+  - obstacles: Current story-relevant barriers, hazards, or access requirements.
+  - notes: Short route details not covered elsewhere.
 
 threadUpdates.newThreads
 ${isFinale ? `  - Do NOT introduce new threads. The story is in finale.`
@@ -3278,6 +3299,7 @@ export async function initializeBook(
         visitCount: 1,
         lastVisitedAtPage: 1,
         keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
+        knownConnections: []
       } satisfies PlaceMemory
     };
 

@@ -23,7 +23,7 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
     name: { type: 'string' },
     age: { type: 'integer', description: `Between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}` },
     gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
-    bio: { type: 'string', description: 'Trait-forward description. Include at least one psychological vulnerability.' },
+    bio: { type: 'string', description: 'Trait-forward description. Include at least one psychological vulnerability. Can include birth date (month and day) if relevant to story.' },
     knownName: { type: 'string', description: 'Preferred alias or nick referred by other characters.' },
   } satisfies Record<keyof StoryMC, AIJsonProperty>,
   required: ['name', 'age', 'gender', 'bio', 'knownName'] satisfies (keyof StoryMC)[],

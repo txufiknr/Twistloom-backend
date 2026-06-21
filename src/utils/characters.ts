@@ -145,7 +145,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
  * ```
  */
 export function updateRelationship(character: CharacterMemory, update: RelationshipUpdate): CharacterMemory {
-  const updated = { ...character };
+  const updated: CharacterMemory = structuredClone(character);
   
   // Find existing relationship to target
   const existingIndex = updated.relationships.findIndex(r => r.targetId === update.targetId);
@@ -194,14 +194,16 @@ export function processCharacterUpdates(
   relationshipUpdates?: RelationshipUpdate[],
   placeId?: string
 ): void {
-  if (!characterUpdates && !relationshipUpdates) return;
+  const { newCharacters = [], updatedCharacters = [] } = characterUpdates || {};
+
+  // Early exit: if no updates to process
+  if (!newCharacters.length && !updatedCharacters.length && !relationshipUpdates?.length) return;
   
   // Process character updates if they exist
-  if (characterUpdates) {
-    const { newCharacters = [], updatedCharacters = [] } = characterUpdates;
-    const { page } = state;
-  
-    // Add new characters
+  const { page } = state;
+
+  // Add new characters
+  if (newCharacters.length) {
     for (const character of newCharacters) {
       const characterId = character.characterId;
       state.characters[characterId] = {
@@ -212,8 +214,10 @@ export function processCharacterUpdates(
         relationships: [], // Will be processed later via `relationshipUpdates`
       };
     }
+  }
     
-    // Update existing characters
+  // Update existing characters
+  if (updatedCharacters.length) {
     for (const update of updatedCharacters) {
       const updateId = update.characterId;
       const existing = state.characters[updateId];

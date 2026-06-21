@@ -1,5 +1,5 @@
 import type { ObjectItem } from "./character.js";
-import type { Mood, PastEvent, TraitItem } from "./story.js";
+import type { Mood, PastEvent, TagUpdates, TraitItem } from "./story.js";
 
 /**
  * Available place types for categorizing locations
@@ -127,7 +127,49 @@ export type PlaceMemory = {
   knownCharacters?: TraitItem[];
   /** Whether the place's real name known to MC */
   isRealNameKnown?: boolean;
+  /** If it's a sub-place (e.g., 'canteen' in a 'school') */
+  parentPlaceId?: string;
+  /** Place connections to build a spatial graph */
+  knownConnections: PlaceConnection[];
 };
+
+export const placeAccessibilities = ['open', 'blocked', 'dangerous', 'restricted', 'unknown', 'destroyed'];
+
+/**
+ * Union type of all possible accessibilities values
+ */
+export type PlaceAccessibility = typeof placeAccessibilities[number];
+
+/**
+ * Navigable connection between two known places in the story world.
+ * Connections represent how characters typically travel from one location
+ * to another and help maintain spatial consistency, travel continuity,
+ * route availability, and environmental changes over time.
+ *
+ * @example
+ * {
+ *   sourceId: "police_station",
+ *   targetId: "underground_tunnel",
+ *   travelTime: "2 minutes walk",
+ *   routeType: "maintenance staircase",
+ *   accessibility: "restricted",
+ *   obstacles: ["locked security gate", "keycard access"],
+ *   notes: "Accessible only to authorized personnel.",
+ *   updatedAtPage: 51
+ * }
+ */
+export type PlaceConnection = {
+  targetId: string;
+  travelTime?: string; // e.g., "5 minutes walk", "20 minutes drive"
+  routeType?: string; // e.g., "alley"
+  accessibility?: PlaceAccessibility;
+  obstacles: string[]; // e.g., "police checkpoint", "flooded alley"
+  bidirectional?: boolean; // false if can't go back to source place
+  notes?: string;
+  updatedAtPage?: number;
+}
+
+export type PlaceConnectionUpdate = Omit<PlaceConnection, 'updatedAtPage' | 'obstacles'> & { updateObstacles: TagUpdates<string>; sourceId: string; };
 
 export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context'> & { placeId: string; type?: string };
 
@@ -141,7 +183,7 @@ export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' 
  * - Initial visitCount (always 1 for new places)
  * - Initial lastVisitedAtPage (always current page)
  */
-export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'lastWeather' | 'lastMood' | 'keyEvents'> & {
+export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'lastWeather' | 'lastMood' | 'keyEvents' | 'knownConnections'> & {
   placeId: string;
   keyEvents?: string[];
 };
@@ -152,7 +194,7 @@ export type NewPlace = Omit<PlaceMemory, 'visitCount' | 'lastVisitedAtPage' | 'l
  * When AI modifies existing places, it provides updates in this format
  * to maintain place development and narrative consistency.
  */
-export type PlaceUpdate = Partial<Omit<NewPlace, 'realName' | 'keyEvents' | 'familiarity' | 'traits' | 'hints'>> & {
+export type PlaceUpdate = Partial<Omit<NewPlace, 'realName' | 'keyEvents' | 'familiarity' | 'traits' | 'hints' | 'parentPlaceId'>> & {
   placeId: string;
   updateTraits?: TraitItem[];
   addKeyEvents?: string[];

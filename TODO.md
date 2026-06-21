@@ -20,12 +20,12 @@
 [x] currentDay harusnya 1-based (kalo 0 elapsedDays)
 [x] hapus semua "TODO: add calendarDate"
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
-[ ] do we need to add MC's birth date (month & day)?
 [ ] Mistral 2 rpm?
 [ ] Readme: add new AI providers
-[ ] ensure realityStability based on momentum and sceneType, not page count
-[ ] placesRelationship / knownRoutes (link with revious place): source, target (placeId), distance, obstacle
-[ ] enriched page context tambah threads: StoryThread[]; (only open/developing status)
+[ ] placesRelationship / knownRoutes (when MC move to another place, link with previous place): source, target (placeId), distance, obstacle
+[x] ensure realityStability based on momentum and sceneType, not page count
+[x] enriched page context tambah threads: StoryThread[]; (only open/developing status)
+[ ] display place.knownConnections & parentPlaceId in prompt
 
 ---
 

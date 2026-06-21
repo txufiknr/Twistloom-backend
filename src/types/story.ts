@@ -2,7 +2,7 @@ import type { AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
-import type { PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
+import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { NewThread, StoryThread, ThreadUpdates } from "./story-thread.js";
 
@@ -977,6 +977,8 @@ export type StateDelta = {
   characterUpdates?: CharacterUpdates;
   /** Updates to character relationships and dynamics */
   relationshipUpdates?: RelationshipUpdate[];
+  /** Updates to connection between places */
+  placeConnectionUpdates?: PlaceConnectionUpdate[];
   /** Updates to places (new and existing) with modifications */
   placeUpdates?: PlaceUpdates;
   /** Updates to story threads (new, modify, add clues, close) */
