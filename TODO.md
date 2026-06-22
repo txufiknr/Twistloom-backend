@@ -25,8 +25,9 @@
 [x] CURRENT SITUATION (What just happened): gausah date
 [x] genaiclassify error log invalid_schema
 [x] calculate action tendency
-[ ] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
-[ ] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
+[@] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
+[@] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
+[ ] isn't WorldClock redundant with timeOfDay?
 [ ] page generation output: `images`: prompt, importanceScore
 [ ] page generation output text with "[image_0]"
 [ ] page generation output image rules:
@@ -34,6 +35,12 @@
   - [ ] new character introduced
   - [ ] new place visited
   - [ ] new discovery
+
+---
+
+can you:
+- update MD roadmap: add API endpoints frontend should connect to
+- ask AI validator also detect custom action input language (add in CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION), put value to language column in customActions
 
 ---
 
@@ -141,6 +148,7 @@ https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155
 
 future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)
+[ ] text to speech audio book/storyteller (noiz)
 
 paid infra:
 [ ] upgrade devin pro

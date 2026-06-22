@@ -1,6 +1,6 @@
 # Twistloom vs. *80 Days* — Competitive Roadmap
 
-**Status:** Design doc, sorted easiest → hardest
+**Status:** Implementation in progress. Backend items completed; frontend items deferred.
 **Reviews:** `80days-success-roadmap-gemini.md` (Gemini)
 **Grounded against:** `types/story.ts`, `story_utils.ts` (`derivePsychologicalProfile`, `updateHiddenState`, `determineOptimalEnding`, `calculateStoryMomentum`), `types/places.ts`
 
@@ -30,7 +30,9 @@ These are directional, complexity-weighted estimates for prioritization — not 
 
 ---
 
-## 1. Surface the psychological profile you already compute (EASIEST)
+## 1. Surface the psychological profile you already compute (EASIEST) ✅ BACKEND DONE
+
+**Backend:** `GET /api/books/:identifier/psychological-profile` — returns archetype, stability, dominant traits, the ending reached, and teasers for what the reader didn't trigger. No AI calls needed: purely templated from already-computed data. Implemented in `src/services/psychological-profile.ts` + route in `books.ts`.
 
 **Complexity:** Low — almost entirely reuses existing data; the only new thing is presentation.
 **What's already there:** `PsychologicalProfile` (`archetype`, `stability`, `dominantTraits`, `manipulationAffinity`), `HiddenState.realityStability`, `determineOptimalEnding`'s 3-tier reasoning (`endingPlan` → `profileShift` → base archetype), and the full set of `EndingType`s your engine already supports (`fake_escape`, `loop`, `identity_twist`, `false_reality`, `possession`, `irreversible_loss`, `pyrrhic_victory`, `mental_fabrication`, `ambiguity`, `simulation`).
@@ -43,7 +45,9 @@ Implementation is mostly: one new lightweight summary call (or even zero AI call
 
 ---
 
-## 2. Make "locked path" consequences visible (EASY)
+## 2. Make "locked path" consequences visible (EASY) ✅ BACKEND DONE
+
+**Backend:** `GET /api/books/:identifier/locked-paths` — scans story state history to detect when place connections became blocked/destroyed/restricted and when story threads were closed. Returns a timeline of locked-path events. Implemented in `src/services/locked-paths.ts` + route in `books.ts`.
 
 **Complexity:** Low — mostly prompt guidance + a small UI affordance.
 **What's already there:** `PlaceAccessibility` already includes `'destroyed'`/`'blocked'`/`'restricted'`, `StoryThread.status` already includes `'closed'`. The schema already supports a choice permanently locking something out — it just isn't narratively/visually *announced* as a loss right now.
@@ -54,7 +58,9 @@ Implementation is mostly: one new lightweight summary call (or even zero AI call
 
 ---
 
-## 3. A stylized, obscured tension HUD (EASY–MODERATE)
+## 3. A stylized, obscured tension HUD (EASY–MODERATE) 🚧 FRONTEND ONLY
+
+> Backend data already exists (`momentum`, `injuries[]`, `difficulty`, `hiddenState.realityStability` — all computed every page). The sanity state (Item 7) and world clock (Item 8) also now provide additional data points. Remaining work is frontend visualization only.
 
 **Complexity:** Low–moderate — frontend-heavy, backend data already exists.
 **What's already there:** `momentum`, `injuries[]`, `difficulty`, `hiddenState.realityStability` — all computed every page already.
@@ -65,7 +71,9 @@ Implementation is mostly: one new lightweight summary call (or even zero AI call
 
 ---
 
-## 4. Custom actions / unbound agency (MODERATE–COMPLEX)
+## 4. Custom actions / unbound agency (MODERATE–COMPLEX) ✅ BACKEND DONE
+
+> Types (`ActionSource`, `Action.source`), config, Gates 0–2 service, DB schema (`customActions`, `customActionTemplates`), and both route endpoints (`POST /api/books/:id/pages/:pageId/custom-actions/preview` and `/submit`) were already implemented. Remaining work is frontend integration (StoryActionButton, ConfirmationDialog) and template reuse tiers.
 
 **Complexity:** Moderate–complex — fully scoped in a dedicated companion document (`TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md`), not duplicated here.
 **What's already there:** `ActionType`/`ActionHintType` already include a `'custom'` slot, `getHintGuidanceForAI` already has a case for it — the page-generation layer is already custom-action-ready.
@@ -76,7 +84,9 @@ This is Gemini's "Unbound Player Agency" item, and it's the one place free-text 
 
 ---
 
-## 5. Achievement / progress-gradient system (MODERATE)
+## 5. Achievement / progress-gradient system (MODERATE) ✅ BACKEND DONE
+
+> Fully implemented: types (`src/types/achievements.ts`), config registry (`src/config/achievements.ts` with 24 badge definitions), evaluation service (`src/services/achievements.ts` with auto-award), DB schema (`userCounters`, `userAchievements` tables), and route endpoints (`GET /api/user/achievements` + `POST /api/user/achievements/acknowledge`).
 
 **Complexity:** Moderate — genuinely net-new (no existing registry, per §0's fact-check). New types, new DB tables, new frontend badge UI.
 **What's already there:** Nothing directly — this is the one item on the list that needs to be built from scratch, not extended.
@@ -87,7 +97,9 @@ This is Gemini's "Unbound Player Agency" item, and it's the one place free-text 
 
 ---
 
-## 6. Interactive place-graph map visualization (MODERATE–COMPLEX)
+## 6. Interactive place-graph map visualization (MODERATE–COMPLEX) 🚧 FRONTEND ONLY
+
+> Backend data already exists (`PlaceMemory` + `PlaceConnection` form a real graph). Locked paths (Item 2) now also track which connections became blocked. Remaining work is frontend visualization only.
 
 **Complexity:** Moderate–complex, but **backend-light** — the data this needs already exists (`PlaceMemory` + `PlaceConnection` form a real graph with `travelTime`, `accessibility`, `obstacles`). The complexity is almost entirely a frontend visualization problem: a force-directed or manually-laid-out graph of visited/known places and their connections, updating as the AI introduces new locations.
 
@@ -97,7 +109,9 @@ This is Gemini's "Unbound Player Agency" item, and it's the one place free-text 
 
 ---
 
-## 7. A horror-themed "ticking clock" / consumable resource mechanic (COMPLEX)
+## 7. A horror-themed "ticking clock" / consumable resource mechanic (COMPLEX) ✅ BACKEND DONE
+
+**Backend:** `SanityState` type (composure 0–100, maxComposure, decayRate, hasCrashed), `updateSanity()` function in `story.ts`, and integration into `advanceStoryState()`. Sanity decays under sustained critical momentum (not fixed page count), is amplified by threat proximity and trauma, and can force crisis outcomes on depletion. Persisted in `storyStates.sanityState` JSONB column. Exposed automatically via page API through the story state.
 
 **Complexity:** High — new state fields, decay logic mirroring your existing `Injury.decayPerPage` pattern, new prompt rules, and (the hard part) integration with the ending system so resource depletion can actually force a bad ending rather than just being flavor text.
 **What's already there:** The decay pattern itself isn't new — `decayInjuries()` already implements page-based decay for injury severity, which is the right template to extend rather than invent.
@@ -108,7 +122,9 @@ This is Gemini's "Unbound Player Agency" item, and it's the one place free-text 
 
 ---
 
-## 8. NPC schedules / "the world doesn't wait" time-of-day system (HARDEST)
+## 8. NPC schedules / "the world doesn't wait" time-of-day system (HARDEST) ✅ BACKEND DONE (LIGHTWEIGHT)
+
+**Backend:** `CharacterSchedule` type (availability window, location, missed consequence), `WorldClock` type (timeOfDay, calendarDate, hoursElapsed, totalDaysElapsed), `updateWorldClock()` function in `story.ts` that advances time based on scene type, and integration into `advanceStoryState()`. NPC schedule is exposed on `CharacterMemory.schedule` and available via the page API. The world clock advances naturally through the story and can be used by the frontend to show time-of-day transitions and schedule-based character availability.
 
 **Complexity:** Highest on this list — requires new character/place schedule fields, prompt logic to enforce them, UI to communicate them, and the same variable-AI-pacing risk as item #7 but compounded across every character instead of one global clock.
 **What's already there:** `PastInteraction` tracks *that* something happened at a page, not *when* in an in-fiction timeline; there's no existing time-of-day or schedule concept to extend.
@@ -121,15 +137,15 @@ This is Gemini's "Unbound Player Agency" item, and it's the one place free-text 
 
 ## Summary table
 
-| # | Item | Complexity | Impact (rough) | New build vs. already-built |
-|---|---|---|---|---|
-| 1 | Surface psychological profile (results screen) | Easiest | Major (~15–25%) | Already built — surfacing only |
-| 2 | Visible "locked path" consequences | Easy | Moderate–Major (~10–15%) | Already built — surfacing only |
-| 3 | Stylized tension HUD | Easy–Moderate | Major (~10–20%) | Already built — abstraction layer only |
-| 4 | Custom actions | Moderate–Complex | Major (structural, not %) | New (see companion doc) — page-gen layer already ready |
-| 5 | Achievements/progress gradients | Moderate | Moderate (~5–10%) | Fully new |
-| 6 | Interactive place map | Moderate–Complex | Major (~10–15%) | Frontend-new, backend data already exists |
-| 7 | Sanity/clock resource mechanic | Complex | Major (~15–25%, high risk) | Fully new, extends existing decay pattern |
-| 8 | NPC schedules / world clock | Hardest | Moderate (~5–15%, high risk) | Fully new, no existing pattern to extend |
+| # | Item | Complexity | Impact (rough) | Backend status | Frontend status |
+|---|---|---|---|---|---|
+| 1 | Surface psychological profile (results screen) | Easiest | Major (~15–25%) | ✅ Done — API endpoint | 🚧 Pending |
+| 2 | Visible "locked path" consequences | Easy | Moderate–Major (~10–15%) | ✅ Done — API endpoint | 🚧 Pending |
+| 3 | Stylized tension HUD | Easy–Moderate | Major (~10–20%) | ✅ Data exists (sanity, momentum, injuries) | 🚧 Pending (abstraction layer) |
+| 4 | Custom actions | Moderate–Complex | Major (structural, not %) | ✅ Done — types, config, gates, DB, routes | 🚧 Pending (frontend integration) |
+| 5 | Achievements/progress gradients | Moderate | Moderate (~5–10%) | ✅ Done — types, registry, service, DB, routes | 🚧 Pending (badge UI) |
+| 6 | Interactive place map | Moderate–Complex | Major (~10–15%) | ✅ Data exists (PlaceMemory + PlaceConnection graph) | 🚧 Pending (visualization) |
+| 7 | Sanity/clock resource mechanic | Complex | Major (~15–25%, high risk) | ✅ Done — SanityState, updateSanity, DB persistence | 🚧 Pending (HUD display) |
+| 8 | NPC schedules / world clock | Hardest | Moderate (~5–15%, high risk) | ✅ Done — CharacterSchedule, WorldClock, updateWorldClock | 🚧 Pending (UI display) |
 
 Items 1–3 are the standout move here: they're the cheapest things on the list *and* among the highest-impact, because the engine work is already done — Twistloom built a more sophisticated psychological-tracking system than *80 Days* has months before this comparison ever came up, it's just invisible to the reader right now.

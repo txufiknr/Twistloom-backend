@@ -5,6 +5,17 @@
 **v2 changes:** incorporates `story_utils.ts` (resolves the Action.type open decision with hard evidence) and a second Gemini review (`TWISTLOOM_CUSTOM_ACTIONS_GEMINI.md`) — see §0.1 for what changed and why.
 **Grounded against:** `types/story.ts`, `types/character.ts`, `types/places.ts`, `prompt.ts`, `story_utils.ts` (current next-page generation + state-update pipeline)
 
+> **Backend implementation status (Jun 22, 2026):** ✅ = done, 🚧 = partial/needs wiring, 📝 = todo/frontend, ⏳ = not started
+>
+> **Still needed before deploy:**
+> 1. 🚧 Generate DB migration (`pnpm db:generate`)
+> 2. 🚧 Add `Action.source?: 'ai' | 'custom' | 'community'` to `types/story.ts:Action` (§15)
+> 3. 🚧 Wire rate limiting (per-user, per-page) to Redis/middleware
+> 4. 🚧 Add feature flag (default off) for phased rollout
+> 5. 📝 Frontend: `StoryActionButton.tsx`, `ConfirmationDialog.tsx`, credit-store integration (§10)
+> 6. ⏳ Telemetry dashboard + threshold tuning (§14)
+> 7. ⏳ Template reuse (§9)
+
 ---
 
 ## 0. How this differs from the ChatGPT draft
@@ -162,7 +173,7 @@ Four conceptual layers from the draft collapse into two real gates plus one AI c
 
 ---
 
-## 3. Gate 0 — Eligibility, rate limiting, credits
+## 3. Gate 0 — Eligibility, rate limiting, credits ✅
 
 Not in the original draft (it jumped straight to security), but it's the cheapest filter you have and it's where abuse economics actually get decided.
 
@@ -183,7 +194,7 @@ export const CUSTOM_ACTION_DISABLED_PHASES: StoryPhase[] = ['FINALE'];
 
 ---
 
-## 4. Gate 1 — Deterministic security filter
+## 4. Gate 1 — Deterministic security filter ✅
 
 Keep the draft's core idea (regex denylist, no LLM), but harden it and don't leak it.
 
@@ -245,7 +256,7 @@ export interface CustomActionSecurityResult {
 
 ---
 
-## 5. Gate 2 — Consolidated AI interpreter
+## 5. Gate 2 — Consolidated AI interpreter ✅
 
 This is the one new AI call, and it's deliberately built to mirror your existing `buildNextPageEvaluatorPrompt` / `executePromptForJSON` pattern rather than introduce a new calling convention.
 
@@ -411,7 +422,7 @@ This is also a more honest fit for "intent proposals, not commands" than a hard 
 
 ---
 
-## 6. Canonical Action construction — resolved, not a decision point
+## 6. Canonical Action construction ✅ (backlog: `Action.source` field not yet added to `types/story.ts` — see §15) — resolved, not a decision point
 
 v1 framed this as an open fork between two options. It's now settled — see §0.1 for the evidence.
 
@@ -454,7 +465,7 @@ Note this function runs identically for `outcome: 'allow'` and `outcome: 'allow_
 
 ---
 
-## 7. Hooking into page generation — and why most of it needs zero changes
+## 7. Hooking into page generation — and why most of it needs zero changes ✅
 
 Once `buildCanonicalAction` produces a conforming `Action`, it becomes `actionedPage.action` exactly as if the reader had clicked an AI-generated choice. Every function downstream — `buildNextPageFieldInstructions`, `formatPreviousPageEntry`, `formatSelectedAction`, `formatActionChoices` (for the *next* page's choices, not this one), `appendActionsHistory`, momentum calculation — consumes `Action`/`SelectedAction` shapes that are unaware of provenance. **No changes needed there.**
 
@@ -478,7 +489,7 @@ Concretely: pass `state.hiddenState.realityStability` and `state.psychologicalPr
 
 ---
 
-## 9. Reframing "community action storage" for a per-book narrative
+## 9. Reframing "community action storage" for a per-book narrative ⏳ (table exists, logic not implemented)
 
 The draft's `SharedAction` pool assumes actions generalize across stories via `genre`/`storyType`. They mostly don't in Twistloom — "examine the locked door" only means something relative to *this* book's places, characters, and threads. Treat reuse in two tiers:
 
@@ -503,7 +514,7 @@ Note `approvalScore` is deliberately *not* just a popularity counter — feed it
 
 ---
 
-## 10. Credit pricing & frontend integration checklist
+## 10. Credit pricing & frontend integration checklist ✅ (backend pricing done, frontend 📝)
 
 The draft's pricing table is a reasonable starting point — keep it as a **configurable constant**, not a hardcoded UI string, since you'll want to tune it:
 
@@ -527,7 +538,7 @@ export const EXPANDED_COMMUNITY_ACTION_COST = 1;  // Tier 1 reuse, §9
 
 ---
 
-## 11. Rejection & forced-failure UX — never leak hidden state
+## 11. Rejection & forced-failure UX — never leak hidden state ✅
 
 The most Twistloom-specific rule in this whole document: your prompt system goes to real lengths to keep `HiddenState`, `viableEnding`, and thread `truth` away from the reader (`RULES_CHARACTER`: *"NEVER reveal hidden character data unless explicitly discovered"*; the whole `HiddenState` type is explicitly *"not directly visible to users"*). A naive rejection message can undo that instantly — e.g. rejecting "I read Lisa's mind" with *"this would bypass the mystery of Lisa's true identity"* just told the reader Lisa's identity **is** the mystery.
 
@@ -548,7 +559,7 @@ Same logic from Gate 1: never surface which regex/keyword fired. One generic mes
 
 ---
 
-## 12. API surface proposal
+## 12. API surface proposal ✅ (both endpoints implemented)
 
 Two endpoints, matching the confirm-then-commit UX from §10:
 
@@ -570,7 +581,7 @@ The `confirmationToken` matters: between preview and submit, story state could h
 
 ---
 
-## 13. Database schema (Drizzle / Neon Postgres)
+## 13. Database schema (Drizzle / Neon Postgres) ✅ (both tables defined in schema.ts)
 
 Illustrative — adapt field/relation names to your existing `schema.ts` conventions; I haven't seen that file's current shape.
 
@@ -624,7 +635,7 @@ One logging-hygiene note matching the care you put into this on the auth-debuggi
 
 ---
 
-## 14. Telemetry & threshold tuning
+## 14. Telemetry & threshold tuning 🚧 (thresholds set at 0.5, no dashboards yet)
 
 `plausibilityScore` and `progressionScore` are continuous, not boolean — log them on every attempt (all three outcomes) so you can tune the pass threshold empirically instead of guessing. Suggested v1 thresholds, treat as a starting point:
 
@@ -637,7 +648,7 @@ Watch two failure modes once this ships: false-rejects (annoyed paying readers, 
 
 ---
 
-## 15. New/modified types — summary diff
+## 15. New/modified types — summary diff ✅ (backlog: `Action.source` in `types/story.ts` not added)
 
 ```ts
 // types/story.ts — additive only, non-breaking
@@ -714,17 +725,42 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS = [
 
 ## 16. Implementation roadmap
 
-**Phase 0 — Foundations** (types, config constants, DB migration). No runtime behavior change. Exit criteria: `custom_actions` table exists, types compile, feature flag exists and defaults off.
+> Legend: ✅ done | 🚧 partial | 📝 todo (frontend) | ⏳ not started
 
-**Phase 1 — Gates 0 + 1, shadow mode.** Wire eligibility + security filter behind the API endpoints, but stop before Gate 2 — log what *would* pass to Gate 2 without calling it. Validates rate-limit/credit-gate plumbing and security regex coverage against real input with zero AI cost. Exit criteria: a week of shadow data, false-positive rate on the security filter reviewed manually.
+**Phase 0 — Foundations** (types, config constants, DB migration). 🚧
+- ✅ `types/custom-action.ts` — all types defined
+- ✅ `config/custom-actions.ts` — all config constants
+- ✅ `db/schema.ts` — `customActions` and `customActionTemplates` tables defined
+- 🚧 No DB migration generated yet (need `pnpm db:generate` before deploy)
+- 🚧 No feature flag to gate the system off by default
 
-**Phase 2 — Gate 2 + canonical Action construction, internal-only.** Wire the consolidated validator, feed its output into the existing page-generation pipeline, but gate the whole feature to internal/test accounts. This is where you validate the single-call consolidation actually produces coherent verdicts (§5.2's stated goal) and tune thresholds (§14) before any reader sees it. Exit criteria: manual review of a batch of allowed/rejected pages for narrative coherence and hidden-state leakage (§11).
+**Phase 1 — Gates 0 + 1**. ✅ (both active, not shadow mode)
+- ✅ Gate 0 — story phase gate (FINALE disabled), credit check (delegated to caller), all deterministic checks
+- ✅ Gate 1 — security patterns, denylist, length validation (3–60), valid-text pattern (no emoji/control chars), NFKC normalization, zero-width strip
+- 🚧 Rate limiting (per-user per-hour, per-page cooldown) referenced in code but not wired to middleware/Redis
 
-**Phase 3 — Frontend + credits, limited rollout.** `StoryActionButton.tsx` entry point, `ConfirmationDialog.tsx` confirm flow, credit debit wired to `credit-purchase-store.ts`, polling reuse from `ReaderPageClient.tsx` (§7). Ship to a small reader cohort or a subset of books. Exit criteria: completion rate (preview → submit) and rejection-rate-driven support volume both healthy.
+**Phase 2 — Gate 2 + canonical Action construction**. ✅
+- ✅ Single consolidated AI call using `AI_CHAT_MODELS_THEME` (light tier)
+- ✅ Context builder (inventory, accessible places + `keyObjects`, threads, ending, facts, reality distortion)
+- ✅ Three-outcome model (reject / allow_as_attempt / allow)
+- ✅ `buildCanonicalAction()` with real `ActionType` classification (not `'custom'`)
+- 🚧 `Action.source` field not yet added to `types/story.ts` (code constructs it, but compile-time type is missing)
 
-**Phase 4 — General availability + tuning.** Full rollout, dashboards on `plausibilityScore`/`progressionScore` distributions and downstream page-evaluator scores joined back to custom-action rows (§14). Exit criteria: stable thresholds, abuse rate within tolerance.
+**Phase 3 — Backend integration + credit charging**. ✅ (backend side)
+- ✅ `POST .../custom-actions/preview` — runs Gates 0+1+2, returns outcome + cost, no charge
+- ✅ `POST .../custom-actions/submit` — re-runs validation, charges credits via `executeWithCredits`, persists audit row, logs activity, returns polling info
+- ✅ Credits charged only after validation passes (`allow` / `allow_as_attempt`), never for `reject`
+- ✅ Rejection messages use bland categories (§11), never leak hidden state or matched regex
+- 📝 Frontend: `StoryActionButton.tsx`, `ConfirmationDialog.tsx`, `credit-purchase-store.ts` wiring — not started
 
-**Phase 5 — Template reuse (optional, only if Phase 4 data supports it).** Tier 1 per-book reuse first (cheap, low-risk), then Tier 2 cross-book templates via the Jaccard-similarity approach (§9) only once you have enough validated intents to mine patterns from.
+**Phase 4 — General availability + tuning**. ⏳
+- ⏳ Threshold tuning (`plausibilityScore`/`progressionScore` at 0.5, not yet empirically validated)
+- ⏳ Distribution dashboards / monitoring
+
+**Phase 5 — Template reuse (optional)**. ⏳
+- ✅ `customActionTemplates` DB table defined (empty, unused)
+- ⏳ Tier 1 per-book reuse (Jaccard-similarity intent dedup within book)
+- ⏳ Tier 2 cross-book templates (only after Phase 4 data supports it)
 
 ---
 

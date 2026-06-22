@@ -76,6 +76,17 @@ import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent } from "../uti
 import type { StoryMC } from "../types/character.js";
 import { triggerCandidateGenerationWorkflow, validateAndRetrievePageForGeneration } from "../utils/candidate-generation.js";
 import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
+import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
+import { getLockedPaths } from "../services/locked-paths.js";
+import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS } from "../services/custom-actions.js";
+import { CUSTOM_ACTION_CREDIT_COST } from "../config/custom-actions.js";
+import { customActions } from "../db/schema.js";
+import { getStoryStateFromPage } from "../services/story.js";
+import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
+import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
+import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
+import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
+import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
@@ -2853,6 +2864,486 @@ router.post("/:identifier/purchase", requireAuth, async (req: Request, res: Resp
     }
 
     handleApiError(res, "Failed to purchase book", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/psychological-profile
+ *
+ * Returns the post-ending "psychological autopsy" — who the MC became,
+ * the ending they reached, and teasers for what they didn't trigger.
+ *
+ * Uses the final page's story state to derive the profile and ending
+ * recommendation. No AI calls: purely templated from already-computed data.
+ *
+ * **Authentication:** Required (via `requireAuth`)
+ *
+ * @param identifier - Book slug or UUID
+ * @returns Psychological profile result with missed-ending teasers
+ *
+ * @example
+ * GET /api/books/the-haunting/psychological-profile
+ *
+ * Response (200):
+ * {
+ *   "archetype": "the_paranoid",
+ *   "stability": "cracking",
+ *   "dominantTraits": ["fearful", "suspicious", "cautious"],
+ *   "manipulationAffinity": "fear",
+ *   "ending": {
+ *     "type": "false_reality",
+ *     "summary": "Paranoia pays off: the world actually isn't real."
+ *   },
+ *   "missedTeasers": [
+ *     {
+ *       "archetype": "the_explorer",
+ *       "trigger": "you let fear close your eyes",
+ *       "wouldHaveEnded": "loop",
+ *       "teaser": "If you'd trusted just once, you'd have uncovered the truth beneath the lies."
+ *     }
+ *   ]
+ * }
+ */
+router.get("/:identifier/psychological-profile", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const userId = req.userId!;
+
+    // Fetch the book to verify ownership/access
+    const book = await resolveBook(bookIdentifier);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Only the book owner can view the psychological profile
+    if (book.userId !== userId) {
+      return handleForbiddenError(res, "You do not have access to this book's psychological profile");
+    }
+
+    const result = await getPsychologicalProfileResult(book.id);
+    if (!result) {
+      return handleNotFoundError(res, "No psychological profile data found for this book");
+    }
+
+    return res.json(result);
+  } catch (error) {
+    console.error("[GET /psychological-profile] ❌ Error:", error);
+    handleApiError(res, "Failed to get psychological profile", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/locked-paths
+ *
+ * Returns a timeline of places, connections, and threads that became
+ * permanently locked or closed during the story — the "paths not taken."
+ *
+ * Scans story state history to detect when:
+ * - Place connections became blocked/destroyed/restricted
+ * - Story threads were closed/resolved
+ *
+ * **Authentication:** Required (via `requireAuth`)
+ *
+ * @param identifier - Book slug or UUID
+ * @returns Array of locked path events, sorted by page
+ *
+ * @example
+ * GET /api/books/the-haunting/locked-paths
+ *
+ * Response (200):
+ * {
+ *   "lockedPaths": [
+ *     {
+ *       "kind": "place_connection",
+ *       "label": "Abandoned Station → Underground Tunnel",
+ *       "restriction": "Route blocked",
+ *       "page": 12,
+ *       "context": "The route between Abandoned Station and Underground Tunnel is now blocked."
+ *     },
+ *     {
+ *       "kind": "thread",
+ *       "label": "Who left the footsteps?",
+ *       "restriction": "Closed",
+ *       "page": 18,
+ *       "context": "The thread \"Who left the footsteps?\" is now closed."
+ *     }
+ *   ]
+ * }
+ */
+router.get("/:identifier/locked-paths", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const userId = req.userId!;
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book) {
+      return handleNotFoundError(res, "Book not found");
+    }
+
+    // Only the book owner can view locked paths
+    if (book.userId !== userId) {
+      return handleForbiddenError(res, "You do not have access to this book's locked path data");
+    }
+
+    const lockedPaths = await getLockedPaths(book.id);
+    return res.json({ lockedPaths });
+  } catch (error) {
+    console.error("[GET /locked-paths] ❌ Error:", error);
+    handleApiError(res, "Failed to get locked paths", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/custom-actions/preview
+ *
+ * Preview a custom action without charging credits.
+ * Runs Gate 0 (eligibility, no charge) + Gate 1 (security) + Gate 2 (AI interpreter).
+ *
+ * **Authentication:** Required (via `requireAuth`)
+ *
+ * @param identifier - Book slug or UUID
+ * @param pageId - Current page ID
+ * @body text - Custom action text (3-60 chars)
+ *
+ * @example
+ * POST /api/books/the-haunting/page123/custom-actions/preview
+ * Body: { "text": "I try to pick the lock with my hairpin" }
+ *
+ * Response (200) - Allowed:
+ * {
+ *   "outcome": "allow",
+ *   "preview": {
+ *     "canonicalIntent": "attempt lockpicking escape",
+ *     "cost": 3
+ *   }
+ * }
+ *
+ * Response (200) - Rejected:
+ * {
+ *   "outcome": "reject",
+ *   "message": "That doesn't match what's true in this story so far."
+ * }
+ */
+router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId: pageIdParam } = req.params;
+    const { text } = req.body;
+    const userId = req.userId!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    // Validate input
+    if (!text || typeof text !== 'string') {
+      return handleValidationError(res, "text is required");
+    }
+
+    // Validate pageId format
+    if (!isValidUuid(pageId)) {
+      return handleValidationError(res, "Invalid pageId format");
+    }
+
+    // Fetch the page and book
+    const dbPage = await getPageFromDB(pageId);
+    if (!dbPage) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book || book.id !== dbPage.bookId) {
+      return handleNotFoundError(res, "Book not found or page does not belong to this book");
+    }
+
+    // Fetch story state
+    const storyState = await getStoryStateFromPage(dbPage);
+    if (!storyState) {
+      return handleNotFoundError(res, "Story state not found for this page");
+    }
+
+    // Gate 0 — Eligibility (no credit check for preview)
+    const gate0Result = runGate0(storyState, userId, book.id, pageId);
+    if (!gate0Result.passed) {
+      return res.json({
+        outcome: 'reject',
+        message: gate0Result.message,
+      } satisfies CustomActionPreviewResponse);
+    }
+
+    // Gate 1 — Security filter
+    const gate1Result = runGate1(text);
+    if (!gate1Result.passed) {
+      return res.json({
+        outcome: 'reject',
+        message: getRejectionMessage(gate1Result.category),
+      } satisfies CustomActionPreviewResponse);
+    }
+
+    // Gate 2 — AI validation (light tier)
+    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage);
+
+    const evalConfig: AIPromptForJson<CustomActionValidationResult> = {
+      schema: CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION,
+      requiredFields: CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS,
+      fallbackField: 'interpretedIntent',
+      baseOptions: {
+        modelSelection: AI_CHAT_MODELS_THEME,
+        context: 'custom-action-validation',
+        config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 400 },
+      },
+    };
+
+    const options = createAIOptionsWithSchema<CustomActionValidationResult>(evalConfig);
+    const response = await aiPrompt<CustomActionValidationResult>(userPrompt, options);
+
+    if (!response.result) {
+      console.error('[POST /custom-actions/preview] ❌ AI returned no result');
+      return handleApiError(res, "Failed to validate custom action");
+    }
+
+    const result = response.result;
+
+    // Map outcome to response
+    if (result.outcome === 'reject') {
+      return res.json({
+        outcome: 'reject',
+        rejectionCategory: result.rejectionCategory,
+        message: getRejectionMessage(result.rejectionCategory),
+      } satisfies CustomActionPreviewResponse);
+    }
+
+    // allow or allow_as_attempt — return preview
+    return res.json({
+      outcome: result.outcome,
+      preview: {
+        canonicalIntent: result.interpretedIntent,
+        cost: CUSTOM_ACTION_CREDIT_COST,
+      },
+    } satisfies CustomActionPreviewResponse);
+
+  } catch (error) {
+    console.error('[POST /custom-actions/preview] ❌ Error:', error);
+    handleApiError(res, "Failed to preview custom action", error);
+  }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/custom-actions/submit
+ *
+ * Submit a custom action. Charges credits and triggers page generation.
+ *
+ * Flow:
+ * 1. Re-runs Gate 0 (including credit charge) — do NOT trust preview result for charging
+ * 2. Re-runs Gate 1 + Gate 2 (state may have changed since preview)
+ * 3. Constructs canonical Action
+ * 4. Persists audit record
+ * 5. Returns polling info for the generated page
+ *
+ * **Authentication:** Required (via `requireAuth`)
+ *
+ * @param identifier - Book slug or UUID
+ * @param pageId - Current page ID
+ * @body text - Custom action text (3-60 chars)
+ * @body [confirmationToken] - Token from preview (optional, for idempotency)
+ *
+ * @example
+ * POST /api/books/the-haunting/page123/custom-actions/submit
+ * Body: { "text": "I try to pick the lock with my hairpin" }
+ *
+ * Response (202):
+ * {
+ *   "nextPageId": "page456",
+ *   "pollingInfo": {
+ *     "pollingUrl": "/api/books/the-haunting/page456/candidates/status",
+ *     "pollingIntervalMs": 2000,
+ *     "maxPollingTimeMs": 80000
+ *   }
+ * }
+ */
+router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier, pageId: pageIdParam } = req.params;
+    const { text } = req.body;
+    const userId = req.userId!;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+    const pageId = Array.isArray(pageIdParam) ? pageIdParam[0] : pageIdParam;
+
+    // Validate input
+    if (!text || typeof text !== 'string') {
+      return handleValidationError(res, "text is required");
+    }
+
+    // Validate pageId format
+    if (!isValidUuid(pageId)) {
+      return handleValidationError(res, "Invalid pageId format");
+    }
+
+    // Fetch the page and book
+    const dbPage = await getPageFromDB(pageId);
+    if (!dbPage) {
+      return handleNotFoundError(res, "Page not found");
+    }
+
+    const book = await resolveBook(bookIdentifier);
+    if (!book || book.id !== dbPage.bookId) {
+      return handleNotFoundError(res, "Book not found or page does not belong to this book");
+    }
+
+    // Fetch story state
+    const storyState = await getStoryStateFromPage(dbPage);
+    if (!storyState) {
+      return handleNotFoundError(res, "Story state not found for this page");
+    }
+
+    // Gate 0 — Eligibility with credit check
+    const gate0Result = runGate0(storyState, userId, book.id, pageId);
+    if (!gate0Result.passed) {
+      return res.status(400).json({
+        message: gate0Result.message,
+      });
+    }
+
+    // Gate 1 — Security filter
+    const gate1Result = runGate1(text);
+    if (!gate1Result.passed) {
+      return res.status(400).json({
+        message: getRejectionMessage(gate1Result.category),
+      });
+    }
+
+    // Gate 2 — AI validation
+    const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage);
+
+    const evalConfig: AIPromptForJson<CustomActionValidationResult> = {
+      schema: CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION,
+      requiredFields: CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS,
+      fallbackField: 'interpretedIntent',
+      baseOptions: {
+        modelSelection: AI_CHAT_MODELS_THEME,
+        context: 'custom-action-validation',
+        config: { ...AI_CHAT_CONFIG_DEFAULT, maxOutputToken: 400 },
+      },
+    };
+
+    const options = createAIOptionsWithSchema<CustomActionValidationResult>(evalConfig);
+    const aiResponse = await aiPrompt<CustomActionValidationResult>(userPrompt, options);
+
+    if (!aiResponse.result) {
+      console.error('[POST /custom-actions/submit] ❌ AI returned no result');
+      return handleApiError(res, "Failed to validate custom action");
+    }
+
+    const result = aiResponse.result;
+
+    // Check if hard reject (no generation, no charge)
+    if (result.outcome === 'reject') {
+      // Persist rejection to audit log (no credit charge for rejections)
+      const auditId = generateId();
+      await dbWrite.insert(customActions).values({
+        id: auditId,
+        bookId: book.id,
+        pageId,
+        userId,
+        originalText: text,
+        canonicalIntent: result.interpretedIntent,
+        actionType: result.actionType,
+        hintType: result.hintType,
+        outcome: 'reject',
+        rejectionCategory: result.rejectionCategory,
+        plausibilityScore: result.plausibilityScore,
+        progressionScore: result.progressionScore,
+        creditsCharged: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      return res.status(400).json({
+        message: getRejectionMessage(result.rejectionCategory),
+      });
+    }
+
+    // Construct canonical Action
+    const canonicalAction = buildCanonicalAction(text, result);
+
+    // Charge credits and persist action in a transaction
+    await executeWithCredits(
+      userId,
+      CUSTOM_ACTION_CREDIT_COST,
+      async (tx) => {
+        // Persist audit record
+        const auditId = generateId();
+        await tx.insert(customActions).values({
+          id: auditId,
+          bookId: book.id,
+          pageId,
+          userId,
+          originalText: text,
+          canonicalIntent: result.interpretedIntent,
+          actionType: result.actionType,
+          hintType: result.hintType,
+          outcome: result.outcome,
+          rejectionCategory: result.rejectionCategory,
+          plausibilityScore: result.plausibilityScore,
+          progressionScore: result.progressionScore,
+          creditsCharged: CUSTOM_ACTION_CREDIT_COST,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      },
+      {
+        context: 'custom_action_submit',
+        metadata: {
+          bookId: book.id,
+          pageId,
+          outcome: result.outcome,
+          actionType: result.actionType,
+        },
+        req,
+      },
+    );
+
+    console.log(`[POST /custom-actions/submit] ✅ Custom action "${canonicalAction.text}" submitted for page ${pageId} (outcome: ${result.outcome})`);
+
+    // Log user activity
+    await logUserActivity({
+      userId,
+      activityType: 'credits_consumed',
+      targetType: 'page',
+      targetId: pageId,
+      metadata: {
+        actionType: 'custom_action',
+        canonicalIntent: result.interpretedIntent,
+        bookId: book.id,
+        outcome: result.outcome,
+      },
+    }, { req });
+
+    // Return success with generation info
+    // The frontend should poll for the next page using the existing candidates/status endpoint
+    const pollingUrl = `/api/books/${bookIdentifier}/${pageId}/candidates/status`;
+
+    return res.status(202).json({
+      message: 'Custom action submitted successfully. Page generation in progress.',
+      pollingInfo: {
+        pollingUrl,
+        pollingIntervalMs: 2000,
+        maxPollingTimeMs: 80000,
+      },
+    } satisfies CustomActionSubmitResponse);
+
+  } catch (error) {
+    const errorMessage = getErrorMessage(error);
+
+    // Handle insufficient credits error
+    if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
+      return res.status(402).json({
+        error: 'Insufficient credits',
+        message: `You need at least ${CUSTOM_ACTION_CREDIT_COST} credits to submit a custom action`,
+      });
+    }
+
+    console.error('[POST /custom-actions/submit] ❌ Error:', error);
+    handleApiError(res, 'Failed to submit custom action', error);
   }
 });
 

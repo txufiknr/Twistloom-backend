@@ -192,6 +192,21 @@ export type NarrativeFlags = {
  * 
  * @interface CharacterMemory
  */
+/**
+ * Schedule window for an NPC — when they are available / present.
+ *
+ * The world doesn't wait for the reader; characters have routines
+ * that create natural friction and consequence.
+ */
+export type CharacterSchedule = {
+  /** When in the day this character is typically present */
+  availabilityWindow: string; // e.g., "night", "day", "evening", "dawn", "all", "unknown"
+  /** Location/placeId they are usually found at during their window */
+  locationId: string;
+  /** Optional description of what happens if the reader misses them */
+  missedConsequence?: string;
+};
+
 export type CharacterMemory = {
   /** Character's known name in narrative (e.g., "The Janitor") */
   knownName: string;
@@ -225,11 +240,17 @@ export type CharacterMemory = {
   recognitionLevel: CharacterRecognitionLevel;
   // /** Specific person they trust in an urgent situation */
   // emergencyContacts: string[];
+  /**
+   * NPC schedule: when/where this character can be found.
+   * If set, the AI should respect these windows when deciding
+   * whether a character is present.
+   */
+  schedule?: CharacterSchedule;
 };
 
 export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio'> & { characterId: string };
 
-export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & {
+export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships' | 'schedule'> & {
   characterId: string;
   pastInteractions?: string[];
   injuries?: InitialInjury[];

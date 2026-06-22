@@ -1,16 +1,17 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean, varchar } from "drizzle-orm/pg-core";
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState, WorldClock } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
 import type { StoryThread, StoryThreadTranslation } from "../types/story-thread.js";
+import type { CustomActionOutcome, CustomActionRejectionCategory } from "../types/custom-action.js";
 import type { TransactionType } from "../types/credits.js";
 import type { SubscriptionStatus, SubscriptionTransactionType } from "../types/subscription.js";
 import type { ResourceAIProvider, ResourceTimestamp, ResourceTranslatorType } from "../types/api.js";
@@ -165,6 +166,8 @@ export const storyStates = pgTable(
     actionsHistory: jsonb("actions_history").$type<SelectedAction[]>().notNull().default(sql`'[]'::jsonb`), // History of actions leading to this state
     injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     healthStatus: jsonb("health_status").$type<HealthStatus>(), // MC's health status
+    sanityState: jsonb("sanity_state").$type<SanityState>(), // Reader-facing sanity resource
+    worldClock: jsonb("world_clock").$type<WorldClock>(), // In-fiction world clock tracking
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     isMajorEvent: boolean("is_major_event").notNull().default(false),
     source: text("source").$type<StoryStateSource>().notNull().default("original"),
@@ -1445,5 +1448,83 @@ export const userPromptHistory = pgTable(
     index("user_prompt_history_prompt_idx").on(t.promptId),
     // Index for conversion tracking
     index("user_prompt_history_used_idx").on(t.usedForBook),
+  ]
+);
+
+/**
+ * Custom actions table
+ * @summary Store custom action validation results for analytics and audit
+ *
+ * Records every custom action attempt (allow, allow_as_attempt, reject)
+ * to support threshold tuning, abuse detection, and telemetry.
+ *
+ * @example
+ * {
+ *   "id": "ca123",
+ *   "book_id": "book456",
+ *   "page_id": "page789",
+ *   "user_id": "user012",
+ *   "original_text": "I try to pick the lock",
+ *   "canonical_intent": "attempt lockpicking escape",
+ *   "outcome": "allow",
+ *   "plausibility_score": 0.85,
+ *   "created_at": "2026-06-22T00:00:00.000Z"
+ * }
+ */
+export const customActions = pgTable(
+  "custom_actions",
+  {
+    id: id(),
+    bookId: bookId("cascade"),
+    pageId: pageId("cascade"),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+
+    originalText: text("original_text").notNull(),
+    canonicalIntent: text("canonical_intent"),
+    actionType: text("action_type"),
+    hintType: text("hint_type"),
+
+    outcome: text("outcome").$type<CustomActionOutcome>().notNull(),
+    rejectionCategory: text("rejection_category").$type<CustomActionRejectionCategory>(),
+    plausibilityScore: real("plausibility_score"),
+    progressionScore: real("progression_score"),
+
+    creditsCharged: integer("credits_charged").default(0).notNull(),
+    nextPageId: uuid("next_page_id"),
+    language: text("language"), // TODO: AI should detect custom action language (ISO 639-1)
+
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("custom_actions_book_idx").on(t.bookId),
+    index("custom_actions_user_idx").on(t.userId),
+    index("custom_actions_outcome_idx").on(t.outcome),
+  ]
+);
+
+/**
+ * Custom action templates table
+ * @summary Curated cross-book template pool for community action reuse (Tier 2)
+ *
+ * Populated offline from high-quality custom actions. Uses Jaccard similarity
+ * for deduplication rather than pgvector/embeddings.
+ */
+export const customActionTemplates = pgTable(
+  "custom_action_templates",
+  {
+    id: id(),
+    canonicalIntent: text("canonical_intent").notNull(),
+    sceneType: varchar("scene_type", { length: 32 }),
+    momentum: varchar("momentum", { length: 16 }),
+    actionType: varchar("action_type", { length: 32 }),
+    usageCount: integer("usage_count").default(1).notNull(),
+    approvalScore: real("approval_score").default(0.5).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("custom_action_templates_scene_momentum_idx").on(t.sceneType, t.momentum),
   ]
 );

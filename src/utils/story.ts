@@ -1,5 +1,5 @@
 import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
-import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
+import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS, SANITY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { calculateHealthStatus, processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
@@ -709,6 +709,12 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   // Escalate story tension and hidden state
   updateHiddenState(updatedState, narrativeContext);
 
+  // Update sanity/composure resource (momentum-driven ticking clock)
+  updateSanity(updatedState, narrativeContext);
+
+  // Advance the in-fiction world clock (NPC schedules)
+  updateWorldClock(updatedState, actionedPage.sceneType);
+
   // Update psychological profile based on new state
   updatePsychologicalProfile(updatedState, narrativeContext);
 
@@ -1304,6 +1310,126 @@ export function updateHiddenState(state: StoryState, context: NarrativeContext):
   else if (difficultyScore >= 0.5) state.difficulty = "high";
   else if (difficultyScore >= 0.3) state.difficulty = "medium";
   else state.difficulty = "low";
+}
+
+/**
+ * Updates the reader-facing sanity/composure resource.
+ *
+ * Decays composure under sustained critical momentum.
+ * Can be spent to resist realityStability collapse (not implemented here —
+ * the spending decision is a reader-facing action choice).
+ *
+ * Key design principle: tie decay to momentum + threatProximity, NOT to
+ * a fixed page count, to avoid fighting the AI's variable scene pacing.
+ *
+ * @param state - Current story state (mutated in place)
+ * @param context - Current momentum, scene type, and phase
+ */
+export function updateSanity(state: StoryState, context: NarrativeContext): void {
+  const { momentum = 'building' } = context;
+
+  // Initialize sanity state if not present
+  if (!state.sanityState) {
+    state.sanityState = { ...SANITY_STATE_DEFAULTS };
+  }
+
+  const sanity = state.sanityState;
+
+  // Only decay if we haven't already crashed
+  if (sanity.hasCrashed) return;
+
+  // Rate-limited decay:
+  // - critical: full decayRate
+  // - rising: half decayRate
+  // - building/resolution: no decay (recovery opportunity)
+  let decayThisPage = 0;
+  if (momentum === 'critical') {
+    decayThisPage = sanity.decayRate;
+  } else if (momentum === 'rising') {
+    decayThisPage = Math.round(sanity.decayRate * 0.5);
+  }
+
+  // Threat proximity amplifies decay
+  if (state.hiddenState.threatProximity === 'immediate') {
+    decayThisPage = Math.round(decayThisPage * 1.5);
+  } else if (state.hiddenState.threatProximity === 'near') {
+    decayThisPage = Math.round(decayThisPage * 1.2);
+  }
+
+  // Every 3 trauma tags adds +1 decay
+  if (state.traumaTags.length >= 3) {
+    decayThisPage += Math.floor(state.traumaTags.length / 3);
+  }
+
+  // Apply decay
+  sanity.composure = Math.max(0, sanity.composure - decayThisPage);
+
+  // Check for crash
+  if (sanity.composure <= 0 && !sanity.hasCrashed) {
+    sanity.hasCrashed = true;
+    sanity.crashedAtPage = state.page;
+  }
+
+  // Small recovery in resolution phase (healing effect)
+  if (momentum === 'resolution' && sanity.composure < sanity.maxComposure) {
+    sanity.composure = Math.min(sanity.maxComposure, sanity.composure + 3);
+  }
+}
+
+/**
+ * Simple time-of-day progression labels for the world clock.
+ */
+const TIME_OF_DAY_PROGRESSION = ['dawn', 'morning', 'afternoon', 'evening', 'night', 'late_night'] as const;
+type TimeOfDayLabel = typeof TIME_OF_DAY_PROGRESSION[number];
+
+/**
+ * Advances the in-fiction world clock based on scene type and momentum.
+ *
+ * Updates timeOfDay, calendarDate, hoursElapsed, and totalDaysElapsed.
+ * The amount of time elapsed depends on the scene type (horror scenes
+ * may advance more slowly than transitions).
+ *
+ * @param state - Current story state (mutated in place)
+ * @param sceneType - The narrative function of the current page
+ */
+export function updateWorldClock(state: StoryState, sceneType?: SceneType): void {
+  // Initialize with defaults
+  if (!state.worldClock) {
+    state.worldClock = {
+      timeOfDay: 'night',
+      calendarDate: 'Day 1',
+      hoursElapsed: 0,
+      totalDaysElapsed: 0,
+    };
+  }
+
+  const clock = state.worldClock;
+
+  // Determine time passage based on scene type
+  // Relaxed scenes: more time passes (travel, waiting, recovery)
+  // Intense scenes: less time passes (focused moments)
+  let hoursPassed = 1;
+  if (sceneType === 'transition' || sceneType === 'aftermath') {
+    hoursPassed = 3;
+  } else if (sceneType === 'horror' || sceneType === 'dream') {
+    hoursPassed = 0.5;
+  } else if (sceneType === 'investigation') {
+    hoursPassed = 2;
+  }
+
+  clock.hoursElapsed = hoursPassed;
+
+  // Advance timeOfDay
+  const currentIdx = TIME_OF_DAY_PROGRESSION.indexOf(clock.timeOfDay as TimeOfDayLabel);
+  if (currentIdx >= 0 && currentIdx < TIME_OF_DAY_PROGRESSION.length - 1) {
+    // Move to next time window
+    clock.timeOfDay = TIME_OF_DAY_PROGRESSION[currentIdx + 1];
+  } else {
+    // Wrap around — new day
+    clock.timeOfDay = 'dawn';
+    clock.totalDaysElapsed += 1;
+    clock.calendarDate = `Day ${clock.totalDaysElapsed + 1}`;
+  }
 }
 
 /**

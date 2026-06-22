@@ -693,6 +693,106 @@ export type PsychologicalProfile = {
   manipulationAffinity: ManipulationAffinity;
 };
 
+/**
+ * Post-ending psychological profile result surfaced to the reader
+ *
+ * This is the "psychological autopsy" — shows the reader who they became,
+ * what drove it, and what they missed by not playing differently.
+ */
+export type PsychologicalProfileResult = {
+  /** The MC's dominant behavioral archetype */
+  archetype: Archetype;
+  /** Mental stability at story end */
+  stability: StabilityLevel;
+  /** Prominent traits that defined the MC's journey */
+  dominantTraits: string[];
+  /** Most effective manipulation vector */
+  manipulationAffinity: ManipulationAffinity;
+  /** The ending the MC reached */
+  ending: {
+    type: EndingType;
+    summary: string;
+  };
+  /** Teasers for paths/endings NOT triggered, driving replay curiosity */
+  missedTeasers: MissedEndingTeaser[];
+};
+
+/**
+ * A teaser about an ending/archetype the reader didn't trigger
+ */
+export type MissedEndingTeaser = {
+  /** The archetype they didn't become */
+  archetype: Archetype;
+  /** What would have driven them toward this archetype */
+  trigger: string;
+  /** The ending they would have faced */
+  wouldHaveEnded: EndingType;
+  /** Human-readable teaser text */
+  teaser: string;
+};
+
+/**
+ * In-fiction world clock — tracks time passage to enable
+ * NPC schedules and the "world doesn't wait" feeling.
+ *
+ * Ties into existing StoryScene.timeOfDay and calendarDate fields
+ * on each page, adding a read-only concept of "how much time has
+ * passed since last page" for schedule enforcement.
+ */
+export type WorldClock = {
+  /** Current time-of-day label */
+  timeOfDay: string;
+  /** Current calendar date (e.g., "2026-07-26") */
+  calendarDate: string;
+  /** Number of in-fiction hours since the reader's last action */
+  hoursElapsed: number;
+  /** Running total of in-fiction days elapsed */
+  totalDaysElapsed: number;
+};
+
+/**
+ * Reader-facing sanity/composure resource — the horror-themed "ticking clock."
+ *
+ * Decays under sustained critical momentum and can be deliberately spent
+ * by the reader to resist realityStability collapse. Depletion at high
+ * danger forces bad endings rather than being purely flavor text.
+ *
+ * Unlike a fixed-page timer (which fights variable AI pacing), this
+ * is threat-proximity-driven and momentum-aware — the inputs
+ * `updateHiddenState` already computes.
+ */
+export type SanityState = {
+  /** Current composure 0–100. At 0, the reader is in crisis. */
+  composure: number;
+  /** Maximum composure (starts at 100, can be permanently reduced by trauma). */
+  maxComposure: number;
+  /** Base decay per page when momentum is critical (default ~5). */
+  decayRate: number;
+  /** Whether the reader has hit 0 composure this story. */
+  hasCrashed: boolean;
+  /** Page number when composure last hit 0 (for ending forcing). */
+  crashedAtPage?: number;
+};
+
+/**
+ * A record of something becoming permanently inaccessible to the reader.
+ *
+ * Surfaced to the player as "this path is now closed" — the *80 Days*-style
+ * visible consequence that makes choices feel irreversible.
+ */
+export type LockedPathEvent = {
+  /** Type of what was locked */
+  kind: 'place' | 'place_connection' | 'thread';
+  /** Human-readable name of what was lost */
+  label: string;
+  /** The restriction that was applied */
+  restriction: string;
+  /** Page number when this happened */
+  page: number;
+  /** Optional explanation of what closed this path */
+  context?: string;
+};
+
 export type PsychologicalProfileMetrics = {
   /** Trust level affecting social interactions and paranoia (0.0-1.0) */
   trust: number;
@@ -1279,6 +1379,20 @@ export type StoryMCState = {
 
   /** Deterministically derived (never authored by AI). */
   healthStatus?: HealthStatus;
+
+  /**
+   * Reader-facing sanity/composure resource.
+   * Decays under pressure, can be spent to resist reality collapse.
+   * At 0, forces crisis mode that can lock in bad endings.
+   */
+  sanityState?: SanityState;
+
+  /**
+   * In-fiction world clock tracking time passage.
+   * Enables NPC schedules and schedule-based consequences.
+   * Updated each time the story advances.
+   */
+  worldClock?: WorldClock;
 };
 
 /**
