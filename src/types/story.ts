@@ -1062,6 +1062,8 @@ export type NarrativeContext = {
   phase?: StoryPhase;
 };
 
+export type ActionSource = 'ai' | 'custom' | 'community';
+
 export type Action = {
   /** Action text (serves as unique identifier) */
   text: string;
@@ -1071,9 +1073,15 @@ export type Action = {
   hint: ActionHint;
   /** Destination meta for the action */
   destinationPageIds?: string[];
+  source?: ActionSource;
+  /**
+   * 0–1 alignment score between this action and the reader's established
+   * psychological pattern (computed post-generation).
+   */
+  tendency?: number;
 };
 
-export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint'> & {
+export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint' | 'source'> & {
   /** Action source */
   pageId: string;
   /** Action source page number */
@@ -1084,7 +1092,7 @@ export type SelectedAction = Pick<Action, 'text' | 'type' | 'hint'> & {
   // isPaid?: boolean;
 };
 
-export type ActionGeneration = Omit<Action, 'destinationPageIds'>;
+export type ActionGeneration = Omit<Action, 'destinationPageIds' | 'source' | 'tendency'>;
 // export type ActionHistory = Action & { page: number };
 export type ActionTranslation = {
   /** Original action text (serves as unique identifier) */

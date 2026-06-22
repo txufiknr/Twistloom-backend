@@ -32,7 +32,7 @@ import { generateBranchId } from "./story-branch.js";
 import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
 import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
-import { calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
+import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
 import { applyPageTranslation, getPageToTranslate, getPageTranslation, shouldTranslate } from "./translation.js";
 import { LRUCache } from "lru-cache";
 import { createCacheKey } from "../utils/cache.js";
@@ -439,10 +439,18 @@ export async function persistPageWithState(params: {
     previousMomentum: actionedPage.momentum,
   });
 
+  // Annotate actions with tendency scores against the freshly-updated state
+  const actionsWithTendency = generatedStoryPage.actions.map<Action>(action => ({
+    ...action,
+    tendency: calculateActionTendency(action, newState),
+    source: 'ai'
+  }));
+
   const pageToInsert: StoryPage = {
     ...generatedStoryPage,
     stateDelta: fullStateDelta,
     momentum: calculatedMomentum,
+    actions: actionsWithTendency,
   };
 
   const MAX_BRANCH_RETRIES = 3;
@@ -734,19 +742,10 @@ export async function resolveBook(identifier: string): Promise<Book | null> {
   const conditions = [eq(books.slug, identifier)];
   
   // Only add UUID condition if identifier is a valid UUID
-  if (isValidUuid(identifier)) {
-    conditions.push(eq(books.id, identifier));
-  }
+  if (isValidUuid(identifier)) conditions.push(eq(books.id, identifier));
 
-  const book = await dbRead
-    .select()
-    .from(books)
-    .where(or(...conditions))
-    .limit(1);
-
-  if (book.length > 0) {
-    return mapBookFromDb(book[0]);
-  }
+  const [book] = await dbRead.select().from(books).where(or(...conditions)).limit(1);
+  if (book) return mapBookFromDb(book);
 
   return null;
 }

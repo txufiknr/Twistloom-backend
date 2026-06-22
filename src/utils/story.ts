@@ -1,4 +1,4 @@
-import { DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
+import { ARCHETYPE_ACTION_AFFINITY, DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MANIPULATION_HINT_AFFINITY, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, TENDENCY_RECENCY_WINDOW, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
 import { calculateHealthStatus, processCharacterUpdates } from "./characters.js";
@@ -227,6 +227,44 @@ export function calculateStoryMomentum(params: CalculateStoryMomentumParams): St
     smoothedScore,
     factors: { plotPressure, threadPressure, dangerLevel, urgencyLevel, psychPressure },
   };
+}
+
+/**
+ * Calculates how strongly this action aligns with the reader's established
+ * behavioral pattern and psychological profile.
+ *
+ * Three weighted factors:
+ *  - Frequency:  how often has the reader chosen this action type recently?
+ *  - Archetype:  does this action type fit the derived archetype's tendencies?
+ *  - Hint:       does the hint type match what engages this reader's manipulation affinity?
+ *
+ * Returns 0.0–1.0. Higher = more "on-brand" for this reader/character.
+ *
+ * @example
+ * // Called after generation, for each action in the generated set
+ * const tendency = calculateActionTendency(action, newState);
+ */
+export function calculateActionTendency(action: Action, state: StoryState): number {
+  const { psychologicalProfile, actionsHistory } = state;
+  const { archetype, manipulationAffinity } = psychologicalProfile;
+
+  // 1. Historical frequency — how often has this action type appeared in recent choices?
+  const recent = actionsHistory.slice(-TENDENCY_RECENCY_WINDOW);
+  const frequencyScore = recent.length > 0
+    ? recent.filter(a => a.type === action.type).length / recent.length
+    : 0.5; // no history yet → neutral
+
+  // 2. Archetype affinity — does this action type fit the archetype's behavioral gravity?
+  const archetypeScore = ARCHETYPE_ACTION_AFFINITY[archetype]?.[action.type] ?? 0.35;
+
+  // 3. Hint/manipulation affinity — does the hint type engage this reader's psychology?
+  const hintScore = MANIPULATION_HINT_AFFINITY[manipulationAffinity]?.[action.hint.type] ?? 0.35;
+
+  return Math.min(1, Math.max(0,
+    frequencyScore  * 0.40 +
+    archetypeScore  * 0.40 +
+    hintScore       * 0.20,
+  ));
 }
 
 /**

@@ -24,8 +24,16 @@
 [x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
 [x] CURRENT SITUATION (What just happened): gausah date
 [x] genaiclassify error log invalid_schema
+[x] calculate action tendency
 [ ] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
 [ ] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
+[ ] page generation output: `images`: prompt, importanceScore
+[ ] page generation output text with "[image_0]"
+[ ] page generation output image rules:
+  - [ ] major event
+  - [ ] new character introduced
+  - [ ] new place visited
+  - [ ] new discovery
 
 ---
 

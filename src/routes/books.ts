@@ -2649,8 +2649,8 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
     }
 
     // Verify the book identifier matches
-    const dbBook = await getBookFromDB(bookIdentifier);
-    if (!dbBook || dbBook.id !== dbPage.bookId) {
+    const book = await resolveBook(bookIdentifier);
+    if (!book || book.id !== dbPage.bookId) {
       return handleNotFoundError(res, "Book not found or page does not belong to this book");
     }
 
@@ -2696,7 +2696,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
       },
       {
         context: "action_hint_purchase",
-        metadata: { bookId: dbBook.id, pageId, actionText }
+        metadata: { bookId: book.id, pageId, actionText }
       }
     );
 
@@ -2706,7 +2706,7 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
       activityType: 'credits_consumed',
       targetType: 'action',
       targetId: pageId,
-      metadata: { actionText, bookId: dbBook.id }
+      metadata: { actionText, bookId: book.id }
     }, { req });
 
     // // Get updated user credit balance

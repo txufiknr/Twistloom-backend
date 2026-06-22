@@ -1,4 +1,4 @@
-import type { TraitItem } from "./story.js";
+import type { TraitItem, MemoryIntegrity, FearLevel } from "./story.js";
 import type { Gender, KnownGender } from "./user.js";
 
 /**
@@ -286,8 +286,8 @@ export type InitialInventoryItem = ObjectItem;
 /**
  * Broad injury classification.
  *
- * Used by the health calculator to estimate
- * how dangerous an injury is.
+ * Used by the health calculator to determine both physical and
+ * psychological severity multipliers for each injury type.
  */
 export const injuryCategories = [
   'bruise',
@@ -311,7 +311,7 @@ export type Injury = {
   bodyPart: string;
   /** Human-readable injury description. */
   description: string;
-  /** Severity level (0-1), decays overtime (0.1 = minor, 0.3 = moderate, 0.6 = severe, 0.9 = critical). */
+  /** Severity level (0–1), decays over time (0.1 = minor, 0.3 = moderate, 0.6 = severe, 0.9 = critical). */
   severity?: number;
   /** Broad injury classification. */
   category?: InjuryCategory;
@@ -331,7 +331,7 @@ export type InitialInjury = Omit<Injury, 'pageAcquired' | 'placeId'>;
 
 export const injurySeverities = [
   "mild",
-  "moderate", 
+  "moderate",
   "severe",
   "critical",
   "permanent",
@@ -351,21 +351,124 @@ export type PastInteraction = {
   placeId?: string;
 };
 
+/**
+ * Per-dimension impact shape for a single body part.
+ *
+ * Splitting into four axes lets the config express the thriller-specific
+ * truth that a knee fracture destroys mobility but barely touches action
+ * capability, while a hand laceration destroys dexterity but doesn't
+ * slow movement at all.
+ *
+ * These values are consumed directly by `getBodyPartImpact` and
+ * `getInjuryScores` inside `calculateHealthStatus`.
+ */
+export type BodyPartImpact = {
+  /**
+   * Vitality drain — contributes to overall `healthPercent` loss.
+   * Reflects systemic risk: how dangerous is damage to this body part?
+   */
+  health: number;
+  /**
+   * Movement cost — contributes to `mobilityPercent` loss.
+   * Represents walking, running, climbing, and fleeing capability.
+   * Leg/knee/ankle injuries dominate this axis in a thriller context.
+   */
+  mobility: number;
+  /**
+   * Dexterity cost — contributes to `actionPercent` loss.
+   * Represents the ability to use hands/arms: opening doors, using tools,
+   * climbing ropes, writing, wielding improvised weapons.
+   * Shoulder/hand/wrist injuries dominate this axis.
+   */
+  action: number;
+  /**
+   * Psychological weight — multiplied by the category's `mental` factor.
+   * Captures how traumatic this body part is to injure (head/eye → very high;
+   * finger → low). Contributes to `mentalPercent` loss.
+   */
+  trauma: number;
+};
+
+/**
+ * Per-dimension impact shape for an injury category.
+ *
+ * `physical` scales all three physical stat axes uniformly because a
+ * fracture is more limiting than a bruise regardless of the affected body part.
+ * `mental` is independent — each category carries its own psychological weight
+ * (e.g. burns are far more mentally scarring than equivalent cuts; psychological
+ * injuries barely register physically but spike mental damage).
+ */
+export type InjuryCategoryImpact = {
+  /**
+   * Physical severity multiplier.
+   * Applied to all three physical damage dimensions: health, mobility, and action.
+   */
+  physical: number;
+  /**
+   * Mental/psychological impact multiplier.
+   * Applied independently to the trauma dimension, decoupled from physical scaling.
+   */
+  mental: number;
+};
+
+/**
+ * Context inputs required to compute `mentalPercent` in {@link HealthStatus}.
+ *
+ * These values come from the broader `StoryState` and are passed explicitly
+ * to keep `calculateHealthStatus` a pure function of its inputs — no
+ * implicit state threading required.
+ *
+ * When omitted, `mentalPercent` is derived from injury-based trauma only,
+ * which underestimates deterioration. Always pass `mentalInputs` whenever
+ * `StoryState` is available at the call site.
+ */
+export type MentalHealthInputs = {
+  /** Total number of accumulated trauma tags (state.traumaTags.length). */
+  traumaTagCount: number;
+  /** Memory coherence level from state.memoryIntegrity. */
+  memoryIntegrity: MemoryIntegrity;
+  /** Current fear flag from state.flags.fear. */
+  fearLevel: FearLevel;
+};
+
 export type HealthCondition = 'healthy' | 'injured' | 'wounded' | 'critical' | 'dying';
 
+/**
+ * Complete health status derived deterministically from `StoryMCState.injuries`
+ * and optional `MentalHealthInputs`.
+ *
+ * Never authored by AI — always computed by `calculateHealthStatus`.
+ *
+ * Four independently-scaled 0–100 percentages (higher = better):
+ *
+ * | Stat             | Driven by                                                      |
+ * |------------------|----------------------------------------------------------------|
+ * | `healthPercent`  | Physical vitality — severity × category × body part (health)  |
+ * | `mobilityPercent`| Flee/escape capability — lower-body and back injuries dominate |
+ * | `actionPercent`  | Tool/hand use — upper-limb injuries dominate                   |
+ * | `mentalPercent`  | Psychological integrity — injury trauma + memory + fear + tags |
+ *
+ * `condition` is a narrative label derived from `healthPercent` thresholds:
+ * ≥ 85 → healthy | ≥ 65 → injured | ≥ 40 → wounded | ≥ 15 → critical | < 15 → dying
+ *
+ * Rename note: `combatPercent` was renamed to `actionPercent` for thriller
+ * appropriateness. Twistloom MCs don't "fight" — they manipulate objects,
+ * open doors, climb, and wield improvised items. Project-wide replace:
+ * `combatPercent` → `actionPercent`.
+ */
 export type HealthStatus = {
-  /** Narrative label useful for UI. */
+  /** Narrative label useful for UI display. */
   condition: HealthCondition;
   /** Overall physical health (100 = fully healthy, 0 = near death). */
   healthPercent: number;
-  /** Movement capability. */
+  /** Movement capability: running, climbing, fleeing (100 = unimpaired). */
   mobilityPercent: number;
-  /** Ability to fight, defend, use weapons, perform physical actions. */
-  combatPercent: number;
-  // TODO: can you also add and calculate this?
-  // TODO: might be relevant with calculations of `player-profile.ts` and/or `updateHiddenState`
-  // mentalPercent: number;
-  // Because thriller/horror stories frequently have: panic attacks, sleep deprivation, trauma, hallucinations, corruption, sanity loss
-  // that don't fit physical health.
-  // Can be surprisingly useful for both UI progression and AI storytelling guidance
+  /** Action capability: using hands/arms/tools, defending self (100 = unimpaired). */
+  actionPercent: number;
+  /**
+   * Psychological integrity (100 = mentally intact, 0 = complete breakdown).
+   * Requires `MentalHealthInputs` passed to `calculateHealthStatus` for accurate
+   * computation; without them, only injury-based trauma is counted.
+   */
+  mentalPercent: number;
 };

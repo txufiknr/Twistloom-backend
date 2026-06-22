@@ -254,7 +254,7 @@ export function processCharacterUpdates(
  * - Condition: wounded
  * - Health: 58%
  * - Mobility: 34%
- * - Combat Capability: 62%
+ * - Action Capability: 62%
  * - Inventory:
  *   - 1x Cellphone (right pants pocket, color: black) - acquired: page 1
  *   - 1x Rugged rope (backpack, color: brown, length: 5-meter) - acquired: page 5 at Haunted House
@@ -280,11 +280,11 @@ export function getMainCharacterInfo(params: {
 
   // Format main character's health status
   // TODO: add `mentalPercent` when implemented
-  const { condition = 'healthy', healthPercent = 100, mobilityPercent = 100, combatPercent = 100 } = healthStatus ?? {};
+  const { condition = 'healthy', healthPercent = 100, mobilityPercent = 100, actionPercent = 100 } = healthStatus ?? {};
   mcInfo.push(`- Condition: ${condition}`);
   mcInfo.push(`- Health: ${healthPercent}%`);
   mcInfo.push(`- Mobility: ${mobilityPercent}%`);
-  mcInfo.push(`- Combat Capability: ${combatPercent}%`);
+  mcInfo.push(`- Action Capability: ${actionPercent}%`);
 
   // Format inventory items with detailed nested information
   if (inventory.length) {
@@ -698,7 +698,7 @@ function getInjuryDamageScore(injury: Injury): number {
 export function calculateHealthStatus(injuries: Injury[]): HealthStatus {
   let totalDamage = 0;
   let mobilityDamage = 0;
-  let combatDamage = 0;
+  let actionDamage = 0;
 
   for (const injury of injuries) {
     const damage = getInjuryDamageScore(injury);
@@ -713,17 +713,17 @@ export function calculateHealthStatus(injuries: Injury[]): HealthStatus {
     }
 
     if (['arm', 'hand', 'finger', 'shoulder'].includes(bodyPart)) {
-      combatDamage += damage * 1.3;
+      actionDamage += damage * 1.3;
     }
 
     if (['head', 'eye', 'neck'].includes(bodyPart)) {
-      combatDamage += damage;
+      actionDamage += damage;
       mobilityDamage += damage * 0.5;
     }
 
     if (injury.category === 'exhaustion') {
       mobilityDamage += severity;
-      combatDamage += severity;
+      actionDamage += severity;
     }
   }
 
@@ -756,12 +756,12 @@ export function calculateHealthStatus(injuries: Injury[]): HealthStatus {
     ),
   );
 
-  const combatPercent = Math.max(
+  const actionPercent = Math.max(
     0,
     Math.min(
       100,
       Math.round(
-        100 - (combatDamage / 4) * 100,
+        100 - (actionDamage / 4) * 100,
       ),
     ),
   );
@@ -783,7 +783,8 @@ export function calculateHealthStatus(injuries: Injury[]): HealthStatus {
   return {
     healthPercent,
     mobilityPercent,
-    combatPercent,
+    actionPercent,
+    mentalPercent: 100, // TODO
     condition,
   };
 }
