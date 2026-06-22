@@ -1,7 +1,7 @@
 import type { AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { NewThread, StoryThread, ThreadUpdates } from "./story-thread.js";
@@ -1243,17 +1243,6 @@ export type StoryState = {
    */
   plotFlags: PlotFlag[];
 
-  /**
-   * Collection of items and resources present in the world at the current page
-   * 
-   * Stores information about items and resources that are available
-   * in the world at the current page and their potential impact on the story.
-   */
-  inventory: InventoryItem[];
-
-  /** Represents injuries sustained by the MC */
-  injuries: Injury[];
-
   /** Important notes for future AI turns */
   futureNotes: FutureNote[];
 
@@ -1266,9 +1255,23 @@ export type StoryState = {
   //
   // timePassed: // ISO 8601 format: 'P1D', 'PT24H', etc
   // only if `timeElapsed` implemented
-};
+} & StoryMCState;
 
-export type StoryMCState = Pick<StoryState, 'inventory' | 'injuries'>;
+export type StoryMCState = {
+  /**
+   * Collection of items and resources present in the world at the current page
+   * 
+   * Stores information about items and resources that are available
+   * in the world at the current page and their potential impact on the story.
+   */
+  inventory: InventoryItem[];
+
+  /** Represents injuries sustained by the MC */
+  injuries: Injury[];
+
+  /** Deterministically derived (never authored by AI). */
+  healthStatus?: HealthStatus;
+};
 
 /**
  * Comprehensive information about the current state of a story

@@ -1,6 +1,6 @@
-import { CHARACTER_NAMES } from "../config/characters.js";
+import { BODY_PART_WEIGHTS, CHARACTER_NAMES, INJURY_CATEGORY_WEIGHTS } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus } from "../types/character.js";
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -251,13 +251,17 @@ export function processCharacterUpdates(
  * @example
  * // Character with inventory and injuries
  * - Bio: Lisa Carter ("Lisa"), female, 16 — Shy teenager with social anxiety.
+ * - Condition: wounded
+ * - Health: 58%
+ * - Mobility: 34%
+ * - Combat Capability: 62%
  * - Inventory:
  *   - 1x Cellphone (right pants pocket, color: black) - acquired: page 1
  *   - 1x Rugged rope (backpack, color: brown, length: 5-meter) - acquired: page 5 at Haunted House
  * - Injuries:
- *   - Deep cut (left arm, severity: 0.7) - acquired: page 5 at Haunted House
+ *   - Deep cut (left arm, cut, severity: 0.7) - acquired: page 5 at Haunted House
  *     → Consequence (high): Cannot lift heavy objects
- *   - Sprained ankle (right foot, severity: 0.4) - acquired: page 18 at School
+ *   - Sprained ankle (right foot, exhaustion, severity: 0.4) - acquired: page 18 at School
  *     → Consequence (medium): Cannot run fast
  */
 export function getMainCharacterInfo(params: {
@@ -265,7 +269,7 @@ export function getMainCharacterInfo(params: {
   state?: StoryMCState
 }): string | null {
   const { mc, state } = params;
-  const { inventory = [], injuries = [] } = state ?? {};
+  const { inventory = [], injuries = [], healthStatus } = state ?? {};
   const mcInfo: string[] = [];
 
   // Format main character's bio
@@ -274,6 +278,14 @@ export function getMainCharacterInfo(params: {
     mcInfo.push(`- Bio: ${info}${mc.bio ? ` — ${mc.bio}` : ''}`);
   }
 
+  // Format main character's health status
+  // TODO: add `mentalPercent` when implemented
+  const { condition = 'healthy', healthPercent = 100, mobilityPercent = 100, combatPercent = 100 } = healthStatus ?? {};
+  mcInfo.push(`- Condition: ${condition}`);
+  mcInfo.push(`- Health: ${healthPercent}%`);
+  mcInfo.push(`- Mobility: ${mobilityPercent}%`);
+  mcInfo.push(`- Combat Capability: ${combatPercent}%`);
+
   // Format inventory items with detailed nested information
   if (inventory.length) {
     const inventoryList = inventory.map(item => {
@@ -281,12 +293,11 @@ export function getMainCharacterInfo(params: {
       parts.push(`${item.amount}x`);
       parts.push(item.name);
       
-      // TODO: make DRY (traitEntries)
       const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
-      const details = [item.where, ...traitEntries].filter(Boolean);
+      const itemInfo = [item.where, ...traitEntries].filter(Boolean);
       
       let inventoryLine = `  - ${parts.join(' ')}`;
-      if (details.length) inventoryLine += ` (${details.join(', ')})`;
+      if (itemInfo.length) inventoryLine += ` (${itemInfo.join(', ')})`;
       
       if (item.pageAcquired) inventoryLine += ` - acquired: page ${item.pageAcquired}`;
       return inventoryLine;
@@ -295,12 +306,12 @@ export function getMainCharacterInfo(params: {
     const inventoryDetails = `\n${inventoryList.join('\n')}`;
     mcInfo.push(`- Inventory: ${inventoryDetails}`);
   }
-  
+
   // Format detailed injury information with nested bullet points
   if (injuries.length) {
     const injuryList = injuries.map(injury => {
       const parts = [];
-      const injuryLocation = [injury.bodyPart, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
+      const injuryLocation = [injury.bodyPart, injury.category, injury.severity ? `severity: ${injury.severity}` : ''].filter(Boolean).join(', ');
       if (injury.description) parts.push(injury.description);
       if (injuryLocation) parts.push(`(${injuryLocation})`);
       if (injury.pageAcquired) parts.push(`- acquired: page ${injury.pageAcquired}${injury.placeId ? ` at ${injury.placeId}` : ''}`);
@@ -334,6 +345,8 @@ export function getMainCharacterInfo(params: {
  * ```typescript
  * const characterText = formatCharactersForPrompt(book.mc, state.characters);
  * ```
+ * 
+ * @todo add side character's injuries example
  * 
  * Output example:
  * · Sarah Chen (MC) - 28 years old, female
@@ -466,10 +479,11 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
         details.push(`  - Injuries:`);
         injuries.forEach((injury: Injury) => {
           const injuryParts: string[] = [];
-          if (injury.bodyPart) injuryParts.push(`Location: ${injury.bodyPart}`);
-          if (injury.severity !== undefined) injuryParts.push(`Severity: ${injury.severity}`);
-          if (injury.consequences) injuryParts.push(`Consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}`);
-          if (injury.pageAcquired) injuryParts.push(`Acquired: page ${injury.pageAcquired}`);
+          if (injury.category) injuryParts.push(injury.category);
+          if (injury.bodyPart) injuryParts.push(`location: ${injury.bodyPart}`);
+          if (injury.severity !== undefined) injuryParts.push(`severity: ${injury.severity}`);
+          if (injury.consequences) injuryParts.push(`consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}`);
+          if (injury.pageAcquired) injuryParts.push(`acquired: page ${injury.pageAcquired}`);
           
           details.push(`    → ${injury.description}${injuryParts.length ? ` (${injuryParts.join(', ')})` : ''}`);
         });
@@ -658,4 +672,118 @@ export function generateCharacterId(name: string): string {
   const parts = name.trim().split(/\s+/).map(part => slugify(part)).filter(Boolean);
   const [first = "", ...rest] = parts;
   return [first, ...rest.map(part => part[0])].join("_");
+}
+
+function getBodyPartWeight(bodyPart?: string): number {
+  if (!bodyPart) return 1;
+
+  // TODO: this should use string contains/include logic, so "left eye" bodyPart will match "eye" in BODY_PART_WEIGHTS
+  return BODY_PART_WEIGHTS[
+    bodyPart.trim().toLowerCase()
+  ] ?? 1;
+}
+
+function getInjuryDamageScore(injury: Injury): number {
+  const severity = injury.severity ?? 0.5;
+  const categoryWeight = injury.category ? INJURY_CATEGORY_WEIGHTS[injury.category] : 1;
+  const bodyPartWeight = getBodyPartWeight(injury.bodyPart);
+
+  return (
+    severity *
+    categoryWeight *
+    bodyPartWeight
+  );
+}
+
+export function calculateHealthStatus(injuries: Injury[]): HealthStatus {
+  let totalDamage = 0;
+  let mobilityDamage = 0;
+  let combatDamage = 0;
+
+  for (const injury of injuries) {
+    const damage = getInjuryDamageScore(injury);
+    totalDamage += damage;
+
+    const bodyPart = injury.bodyPart.toLowerCase();
+    const severity = injury.severity ?? 0.5;
+
+    // TODO: same with these below (about body part string match "eye" vs "left eye")
+    if (['hip', 'leg', 'knee', 'ankle', 'foot'].includes(bodyPart)) {
+      mobilityDamage += damage * 1.5;
+    }
+
+    if (['arm', 'hand', 'finger', 'shoulder'].includes(bodyPart)) {
+      combatDamage += damage * 1.3;
+    }
+
+    if (['head', 'eye', 'neck'].includes(bodyPart)) {
+      combatDamage += damage;
+      mobilityDamage += damage * 0.5;
+    }
+
+    if (injury.category === 'exhaustion') {
+      mobilityDamage += severity;
+      combatDamage += severity;
+    }
+  }
+
+  /**
+   * Calibration constants.
+   *
+   * Increase denominator
+   * => injuries matter less.
+   *
+   * Decrease denominator
+   * => injuries matter more.
+   */
+  const healthPercent = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        100 - (totalDamage / 6) * 100,
+      ),
+    ),
+  );
+
+  const mobilityPercent = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        100 - (mobilityDamage / 4) * 100,
+      ),
+    ),
+  );
+
+  const combatPercent = Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(
+        100 - (combatDamage / 4) * 100,
+      ),
+    ),
+  );
+
+  let condition: HealthCondition;
+
+  if (healthPercent >= 85) {
+    condition = 'healthy';
+  } else if (healthPercent >= 65) {
+    condition = 'injured';
+  } else if (healthPercent >= 40) {
+    condition = 'wounded';
+  } else if (healthPercent >= 15) {
+    condition = 'critical';
+  } else {
+    condition = 'dying';
+  }
+
+  return {
+    healthPercent,
+    mobilityPercent,
+    combatPercent,
+    condition,
+  };
 }

@@ -1,5 +1,5 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
-import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import { characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
@@ -61,14 +61,15 @@ export const INVENTORY_ITEM_SCHEMA: AIJsonProperty = {
 };
 
 export const INITIAL_INJURY_PROPERTIES: Record<keyof InitialInjury, AIJsonProperty> = {
-  bodyPart:      { type: 'string', description: 'Body part that was injured' },
-  description:   { type: 'string', description: 'Description of the injury' },
-  consequences:  { type: 'string', description: 'Consequences of the injury that can affect the storyline' },
-  severity:      { type: 'number', description: 'Severity of the injury (0-1)' },
-  decayPerPage:  { type: 'number', description: 'Rate at which the injury decays per page' },
+  bodyPart:      { type: 'string', description: 'Body part affected' },
+  description:   { type: 'string', description: 'Injury description' },
+  consequences:  { type: 'string', description: 'Functional consequences that can affect the storyline' },
+  category:      { type: 'string', description: 'Broad injury classification', enum: [...injuryCategories] },
+  severity:      { type: 'number', description: 'Severity level (0-1)' },
+  decayPerPage:  { type: 'number', description: 'RSeverity reduction applied per page' },
 };
 
-export const INITIAL_INJURY_KEYS: (keyof InitialInjury)[] = ['bodyPart', 'description', 'severity', 'decayPerPage'];
+export const INITIAL_INJURY_KEYS: (keyof InitialInjury)[] = ['bodyPart', 'description', 'category', 'severity', 'decayPerPage'];
 export const INITIAL_INJURY_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_INJURY_PROPERTIES,

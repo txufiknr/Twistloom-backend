@@ -1,6 +1,6 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { characterRecognitionLevels, characterStatuses, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import { characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
@@ -8,7 +8,7 @@ import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
-import { getMainCharacterInfo } from "./characters.js";
+import { calculateHealthStatus, getMainCharacterInfo } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
@@ -383,6 +383,7 @@ const firstBookOutputFormat: string = `{
         "bodyPart": "...",
         "description": "...",
         "consequences": "...",
+        "category": "One of: ${formatOneOf(injuryCategories)}",
         "severity": <number between 0.0 and 1.0>,
         "decayPerPage": <number between 0.0 and 1.0>
       }
@@ -455,6 +456,7 @@ const firstBookOutputFormat: string = `{
           "bodyPart": "...",
           "description": "...",
           "consequences": "...",
+          "category": "One of: ${formatOneOf(injuryCategories)}",
           "severity": <number between 0.0 and 1.0>,
           "decayPerPage": <number between 0.0 and 1.0>,
         }
@@ -564,6 +566,7 @@ const nextPageOutputFormat: string = `{
       "bodyPart": "...",
       "description": "...",
       "consequences": "...",
+      "category": "One of: ${formatOneOf(injuryCategories)}",
       "severity": <number between 0.0 and 1.0>,
       "decayPerPage": <number between 0.0 and 1.0>,
       "pageAcquired": <number>
@@ -2331,7 +2334,7 @@ Open the door
  *   · heard a distant scream
  */
 function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: StoryState): string {
-  const { mood, placeId, weather, calendarDate, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
+  const { mood, placeId, weather, timeOfDay, sceneType, momentum, charactersPresent = [], importantObjects = [], keyEvents = [] } = page;
   const situation: string[] = [];
   
   // Basic situation elements
@@ -3315,22 +3318,22 @@ export async function initializeBook(
       storyStartDate: generatedFirstPage.calendarDate
     }, { client });
 
+    const { id: pageId, calendarDate, timeOfDay, actions } = firstPage;
     console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
-
-    const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
-    const { calendarDate, timeOfDay, actions } = firstUserPage;
-
     console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
+    const injuries = generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [];
+    const healthStatus = calculateHealthStatus(injuries);
 
     // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
-      ...createEmptyStoryState(firstPage.id, 1, totalPages),
+      ...createEmptyStoryState(pageId, 1, totalPages),
       ...{
         ...generatedInitialState,
         plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, calendarDate, timeOfDay })) || [],
         threads: generatedInitialState.threads?.map<StoryThread>((thread) => createStoryThread(thread, 1)) || [],
         inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId })) || [],
-        injuries: generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [],
+        injuries,
+        healthStatus,
         futureNotes: mapFutureNoteWithKey(generatedInitialState.futureNotes, 1, []),
         viableEnding: generatedInitialState.viableEnding ? { ...generatedInitialState.viableEnding, outline: generatedInitialState.viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
       },
@@ -3356,10 +3359,11 @@ export async function initializeBook(
     }
 
     // 8. Persist story state to database
-    await insertStoryState(bookId, firstPage.id, initialState, "original", { client });
+    await insertStoryState(bookId, pageId, initialState, "original", { client });
 
     // 9. Pre-generate candidate pages for each action in the first page
     if (isOriginal) { // GitHub cron job, use github-action strategy
+      const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
       await ensureCandidatesForPageWithStrategy({
         strategy: 'github-action',
         userId,
@@ -3368,11 +3372,9 @@ export async function initializeBook(
         currentBook: book,
       });
     } else { // Fire-and-forget for fast user generated book result (immediate background processing)
-      // await ensureCandidatesForPageAsync(userId, firstUserPage, initialState, book); // pg-boss, up to 24 hours cron delay
-      // await ensureCandidatesForPage(userId, firstUserPage, initialState, book); // 4.5 minute Vercel limit
       triggerCandidateGenerationWorkflow({
         userId,
-        pageId: firstUserPage.id,
+        pageId: pageId,
         bookId: book.id,
         bookTitle: book.title,
         maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths

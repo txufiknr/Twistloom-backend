@@ -1,7 +1,7 @@
 import { DANGEROUS_ACTIONS, DEFAULT_SCENE_URGENCY, MAJOR_EVENT_CLIMAX_FLOOR, MAX_ACTION_HISTORY, MAX_CHARACTERS, MAX_DOMINANT_TRAITS, MAX_FUTURE_NOTES, MAX_PLACES, MAX_TRAUMA_TAGS, MOMENTUM_BASELINE_SCORE, MOMENTUM_PERSISTENCE, MOMENTUM_RECENCY_WINDOW, MOMENTUM_THRESHOLDS, MOMENTUM_WEIGHTS, RESOLVING_DROP_THRESHOLD, SAFE_ACTIONS, SCENE_ROLE_DANGER, SCENE_TYPE_URGENCY, THREAD_PRIORITY_WEIGHT, THREAT_PROXIMITY_SCORE } from "../config/story.js";
 import { HIDDEN_STATE_DEFAULTS, STORY_STATE_DEFAULTS } from "../schema/story.js";
 import { storyPhases, plotFlagTypes } from "../types/story.js";
-import { processCharacterUpdates } from "./characters.js";
+import { calculateHealthStatus, processCharacterUpdates } from "./characters.js";
 import { processPlaceUpdates } from "./places.js";
 import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
@@ -481,7 +481,10 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   // Note: Empty array or ommited means no change.
   if (inventory?.length) newState.inventory = cleanUpInventory(inventory);
   // Apply injury updates (full replacements, remove which has severity of 0).
-  if (injuries?.length) newState.injuries = removeHealedInjuries(injuries);
+  if (injuries?.length) {
+    newState.injuries = removeHealedInjuries(injuries);
+    newState.healthStatus = calculateHealthStatus(newState.injuries);
+  }
 
   return newState;
 }

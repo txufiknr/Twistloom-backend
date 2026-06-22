@@ -23,7 +23,7 @@ import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPag
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
-import { formatCharactersForPrompt } from "../utils/characters.js";
+import { calculateHealthStatus, formatCharactersForPrompt } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
@@ -477,6 +477,9 @@ export async function persistPageWithState(params: {
         // Ensure new state matches the new page
         newState.page = newPage.page;
         newState.pageId = newPage.id;
+
+        // Calculate health status
+        newState.healthStatus = calculateHealthStatus(newState.injuries);
 
         // If this throws, the transaction auto-rolls back — no orphan page
         await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });

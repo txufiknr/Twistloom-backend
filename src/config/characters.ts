@@ -1,3 +1,5 @@
+import type { InjuryCategory } from "../types/character.js";
+
 export const CHARACTER_NAMES = {
   // Random name pools by gender with Gen-Z appropriate names
   maleNames: [
@@ -116,6 +118,7 @@ export const CHARACTER_NAMES = {
   ]
 }
 
+/** Never generate a character with these names. */
 export const blacklistedNames: string[] = [
   // AI-memes
   'Elara',
@@ -128,3 +131,44 @@ export const blacklistedNames: string[] = [
   // Religious & sensitive names
   'Muhammad'
 ];
+
+/** Represent how dangerous an injury type is. */
+export const INJURY_CATEGORY_WEIGHTS: Record<InjuryCategory, number> = {
+  bruise: 0.4,
+  cut: 1.0,
+  fracture: 1.4,
+  burn: 1.2,
+  internal: 2.0,
+  poison: 1.8,
+  infection: 1.5,
+  exhaustion: 0.8,
+  psychological: 0.6,
+};
+
+/** These represent how important the body part is. */
+export const BODY_PART_WEIGHTS: Record<string, number> = {
+  head: 2.0,
+  face: 1.2,
+  eye: 1.8,
+  neck: 2.2,
+
+  chest: 1.8,
+  heart: 3.0,
+  lung: 2.5,
+
+  abdomen: 1.6,
+  stomach: 1.4,
+  back: 1.2,
+
+  shoulder: 0.9,
+  arm: 0.8,
+  elbow: 0.7,
+  hand: 0.6,
+  finger: 0.2,
+
+  hip: 1.0,
+  leg: 1.0,
+  knee: 1.2,
+  ankle: 0.8,
+  foot: 0.6,
+};

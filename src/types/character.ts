@@ -283,21 +283,45 @@ export type InventoryItemTranslation = Pick<ObjectItem, 'name' | 'traits' | 'whe
 
 export type InitialInventoryItem = ObjectItem;
 
-/** Represents an injury sustained by a character */
+/**
+ * Broad injury classification.
+ *
+ * Used by the health calculator to estimate
+ * how dangerous an injury is.
+ */
+export const injuryCategories = [
+  'bruise',
+  'cut',
+  'fracture',
+  'burn',
+  'internal',
+  'poison',
+  'infection',
+  'exhaustion',
+  'psychological',
+] as const;
+
+export type InjuryCategory = typeof injuryCategories[number];
+
+/**
+ * Represents an injury sustained by a character.
+ */
 export type Injury = {
-  /** The body part that was injured */
+  /** Body part affected. */
   bodyPart: string;
-  /** Description of the injury */
+  /** Human-readable injury description. */
   description: string;
-  /** Severity level of the injury (0.0-1.0), decays overtime */
+  /** Severity level (0-1), decays overtime (0.1 = minor, 0.3 = moderate, 0.6 = severe, 0.9 = critical). */
   severity?: number;
-  /** Severity decay rate per page (0.0-1.0) */
+  /** Broad injury classification. */
+  category?: InjuryCategory;
+  /** Severity reduction applied per page. */
   decayPerPage?: number;
-  /** Consequences of the injury, e.g. "Cannot run fast" */
+  /** Functional consequences (e.g., "Cannot run", "Breathing is painful", "Left hand unusable"). */
   consequences?: string;
-  /** The page number where the injury was acquired */
+  /** Page where injury occurred. */
   pageAcquired?: number;
-  /** Place ID where the injury acquired (optional). */
+  /** Place where injury occurred. */
   placeId?: string;
 };
 
@@ -325,4 +349,23 @@ export type PastInteraction = {
   interaction: string;
   /** Place ID where the interaction occurred. */
   placeId?: string;
+};
+
+export type HealthCondition = 'healthy' | 'injured' | 'wounded' | 'critical' | 'dying';
+
+export type HealthStatus = {
+  /** Narrative label useful for UI. */
+  condition: HealthCondition;
+  /** Overall physical health (100 = fully healthy, 0 = near death). */
+  healthPercent: number;
+  /** Movement capability. */
+  mobilityPercent: number;
+  /** Ability to fight, defend, use weapons, perform physical actions. */
+  combatPercent: number;
+  // TODO: can you also add and calculate this?
+  // TODO: might be relevant with calculations of `player-profile.ts` and/or `updateHiddenState`
+  // mentalPercent: number;
+  // Because thriller/horror stories frequently have: panic attacks, sleep deprivation, trauma, hallucinations, corruption, sanity loss
+  // that don't fit physical health.
+  // Can be surprisingly useful for both UI progression and AI storytelling guidance
 };

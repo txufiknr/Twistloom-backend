@@ -24,7 +24,32 @@
 [x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
 [x] CURRENT SITUATION (What just happened): gausah date
 [x] genaiclassify error log invalid_schema
-[ ] antigravity/opencode: custom action claude roadmap, 80days roadmap
+[ ] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
+[ ] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
+
+---
+
+src\config\characters.ts
+src\types\character.ts
+src\types\story.ts
+src\utils\characters.ts
+src\utils\player-profile.ts
+src\utils\story.ts
+
+please examine my StoryState about `injuries` state and `healthStatus` calculation logic
+to focus:
+`INJURY_CATEGORY_WEIGHTS` and `BODY_PART_WEIGHTS` configs
+`calculateHealthStatus` and underlying functions
+
+my goal is to obtain a "health bar" for gamified Twistloom UIX and maybe also for AI prompt context itself (so AI can see MC's status at-a-glance without re-calculate from injuries array)
+can you review and correct my implementation, including the concerns in TODO comments, add `mentalPercent` in `HealthStatus`?
+should we refactor `BODY_PART_WEIGHTS` to weight mobility & combat granularly?
+is it really fits with Twistloom which is thriller, not a fantasy?
+please elaborate
+finally, provide me fully refined files drop-in, complete with refined jsdocs
+
+---
+
 [ ] ask claude to write refined github profile readme.md based on our past chats, highlight about my AI/LLM skills
 [ ] github profile readme: video + live demo
 
