@@ -23,7 +23,7 @@ import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPag
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
 import { formatBookMetaForPrompt } from "../utils/books.js";
-import { calculateHealthStatus, formatCharactersForPrompt } from "../utils/characters.js";
+import { calculateHealthStatus, formatCharactersForPrompt, formatPlannedCharactersForPrompt } from "../utils/characters.js";
 import { formatSystemPromptWithDocuments } from "../utils/ai-chat.js";
 import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
@@ -1459,12 +1459,13 @@ export function mapBookFromDb(dbBook: DBBook): Book {
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'places' | 'page'>): AIPromptDocuments {
+export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'plannedCharacters' | 'places' | 'page'>): AIPromptDocuments {
   const documents: AIDocument[] = [];
 
   if (book) {
     documents.push({ title: `BOOK META`, snippet: formatBookMetaForPrompt(book) });
     documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}) });
+    if (state?.plannedCharacters?.length) documents.push({ title: `PLANNED CHARACTERS`, snippet: formatPlannedCharactersForPrompt(state.plannedCharacters) });
   }
   if (state) {
     documents.push({ title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state.places, state.page) });
@@ -1474,6 +1475,7 @@ export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'ch
   const cachedContentId = createCacheKey([
     book?.id,
     state?.characters ? Object.values(state.characters) : undefined,
+    state?.plannedCharacters ? state.plannedCharacters : undefined,
     state?.places ? Object.values(state.places) : undefined,
   ].filter(Boolean));
 

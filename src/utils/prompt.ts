@@ -214,6 +214,12 @@ PAGE ENDING RULES:
 - Avoid generic cliffhangers, vague shock reactions, or artificial suspense.
 - End as late as possible, but before the reader's curiosity is satisfied.`;
 
+export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
+- These characters exist in the story canon but have not yet appeared on-page.
+- Add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
+- Introduce them naturally when appropriate for the current scene, pacing, and story momentum.
+- Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.`;
+
 /**
  * Action rules and a human-readable list of action types (excluding
  * the internal 'custom' type). Each action type is emitted as `- key: desc`.
@@ -463,6 +469,19 @@ const firstBookOutputFormat: string = `{
           "decayPerPage": <number between 0.0 and 1.0>,
         }
       ]
+    }
+  ],
+  "plannedCharacters": [
+    {
+      "characterId": "<character_id>",
+      "plannedIntroduction": "...",
+      "importance": "One of: ${formatOneOf(characterImportances)}",
+      "knownName": "...",
+      "realName": "...",
+      "gender": "One of: ${formatOneOf(genders)}",
+      "role": "...",
+      "bio": "...",
+      "visualDescription": "..."
     }
   ],
   "initialRelationships": [
@@ -805,17 +824,11 @@ function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, candidateCount } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
 
-  // TODO: add only if characterPlans.length
-  // UNINTRODUCED CHARACTERS RULES
-  // - These characters exist in the story canon but have not yet appeared on-page.
-  // - Add to characterUpdates.newCharacters when an unintroduced character is genuinely introduced (physically present) in this page.
-  // - Introduce them naturally when appropriate for the current scene, pacing, and story momentum.
-  // - Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.
-
   return [
     `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}`,
     formatNextPageStoryContextPrompt(params),
     formatNextPageNarrativePrompt(params),
+    state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
     isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale })}`
   ].filter(Boolean).join(`\n\n---\n`);
 }
@@ -3074,12 +3087,16 @@ Initial Place:
 - hints: any known clue about the place.
 
 Initial Characters:
-- It's meant for characters beside MC (the POV). Don't include MC here.
+- It's meant for characters beside MC who are physically present in the scene. Don't include MC (the POV) here.
 - If MC is alone in this first page, then it should be an empty array.
 - Include only side characters who meaningfully exist at story start.
 - At least one should have a relationship that can be corrupted.
 - bio: must include one trait that could become a source of threat or betrayal.
 - narrativeFlags: set to match behavior and twist setup.
+
+Planned Characters:
+- Infer any side characters from the theme input that haven't appeared on this first page.
+- plannedIntroduction: explain how this character planned to be introduced, what their relationship is to other characters, etc.
 
 Initial Relationships:
 - Only between side characters (excluding MC). If initial characters is less than two, omit it.
@@ -3221,6 +3238,7 @@ export async function initializeBook(
       firstPage: generatedFirstPage,
       initialPlace,
       initialCharacters,
+      plannedCharacters,
       initialRelationships,
       initialFacts,
       mainCharacter: mc,
@@ -3349,6 +3367,7 @@ export async function initializeBook(
       },
       hiddenState: createInitialHiddenState(),
       characters,
+      plannedCharacters,
       places,
       factsHistory: initialFacts?.length ?
         Object.fromEntries<FactHistory[]>(

@@ -451,6 +451,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     flagUpdates,
     traumaTagUpdates,
     futureNoteUpdates,
+    // To consider: addPlannedCharacters,
     addPlotFlags,
     factUpdates,
     characterUpdates,

@@ -1,6 +1,6 @@
-import type { CharacterMemoryTranslation, InjuryTranslation, InventoryItemTranslation, NewCharacter, RelationshipUpdate, StoryMC, StoryMCCandidate, StoryMCTranslation } from "./character.js";
+import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, NewCharacter, RelationshipUpdate, StoryMC, StoryMCTranslation } from "./character.js";
 import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -171,6 +171,8 @@ export type BookCreationResponse = {
   initialPlace: NewPlace;
   /** Initial character memories setup (excluding MC) */
   initialCharacters: NewCharacter[];
+  /** Unintroduced characters inferred from theme */
+  plannedCharacters: CharacterPlan[];
   /** Initial character relationships setup (excluding MC) */
   initialRelationships: RelationshipUpdate[];
   /** Initial facts discovered in first page */
@@ -183,23 +185,17 @@ export type BookCreationResponse = {
  * Defines the input parameters required to initialize a new book
  * with AI-generated content and setup.
  */
-export type InitializeBookParams = {
+export type InitializeBookParams = StoryPlan & {
   /** User ID who owns the book */
   userId: string;
   /** Book theme or topic for AI generation */
   theme: string;
-  /** Optional main character candidate for personalization */
-  mcCandidate?: StoryMCCandidate | null;
   /** Whether to generate a cover image for the book */
   generateCoverImage?: boolean;
   /** Whether this book is an auto-generated original (via cron job) */
   isOriginal?: boolean;
   /** Complimentary comment from AI */
   aiComment?: string | null;
-  /** Detected language code (ISO 639-1) */
-  language?: string | null;
-  /** Book title idea for the story based on the theme */
-  titleIdea?: string | null;
   /** Express request object for activity log */
   req?: Request;
   /** Optional: Update existing book by ID instead of inserting new (for async book creation) */

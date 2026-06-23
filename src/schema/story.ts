@@ -1,6 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterPlan, CharacterRelationship } from "../types/character.js";
+import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterPlan } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
@@ -280,21 +280,21 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   visualDescription: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
   plannedIntroduction: { type: 'string', description: 'Explain how this character planned to be introduced' },
   importance: { type: 'string', enum: [...characterImportances] },
-  relationships: { type: 'array', description: 'Only between side characters (excluding MC). Empty if characters is less than two.', items: {
-    type: 'object',
-    properties: {
-      targetId: { type: 'string' },
-      type: { type: 'string', enum: [...relationshipTypes] },
-      status: { type: 'string', enum: [...relationshipStatuses] },
-      context: { type: 'string' },
-      recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels] },
-    } satisfies Record<keyof CharacterRelationship, AIJsonProperty>,
-    required: ['targetId', 'type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationship)[],
-    additionalProperties: false
-  } },
+  // relationships: { type: 'array', description: 'Only between side characters (excluding MC). Empty if characters is less than two.', items: {
+  //   type: 'object',
+  //   properties: {
+  //     targetId: { type: 'string' },
+  //     type: { type: 'string', enum: [...relationshipTypes] },
+  //     status: { type: 'string', enum: [...relationshipStatuses] },
+  //     context: { type: 'string' },
+  //     recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels] },
+  //   } satisfies Record<keyof CharacterRelationship, AIJsonProperty>,
+  //   required: ['targetId', 'type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationship)[],
+  //   additionalProperties: false
+  // } },
 };
 
-const { plannedIntroduction: _pli, relationships: _r, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
+const { plannedIntroduction: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
 
 export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
   ...initialCharacterProperties,
@@ -418,6 +418,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     description: `Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
     items: FUTURE_NOTE_SCHEMA
   }),
+  // To consider: addPlannedCharacters
   factUpdates: {
     type: 'array',
     items: {
@@ -692,4 +693,5 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   injuries: [],
   sanityState: SANITY_STATE_DEFAULTS,
   worldClock: undefined,
+  plannedCharacters: []
 };

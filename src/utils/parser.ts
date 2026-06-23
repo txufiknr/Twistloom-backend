@@ -382,6 +382,7 @@ export function ensureProtocol(url: string, defaultProtocol: string = 'https://'
     : `${defaultProtocol}${trimmed}`; // Add default protocol
 }
 
+// TODO: jsdoc
 export function stripEmptyLines(prompt: string): string {
   return !prompt.trim() ? '' : prompt.trim()
     .split('\n')
@@ -389,6 +390,7 @@ export function stripEmptyLines(prompt: string): string {
     .join('\n');
 }
 
+// TODO: jsdoc
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;

@@ -198,7 +198,7 @@ export async function createBookCore(
   try {
     // STEP 2: Validate book creation parameters (before credit consumption)
     const { aiResult } = await createBookValidate(theme, initialMCCandidate, generateCoverImage, onProgress);
-    const { comment: aiComment, language, titleIdea, mcCandidate } = aiResult || {};
+    const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
     const initializeParams: InitializeBookParams = { ...params, aiComment, language, titleIdea, mcCandidate };
 
     let result: CreateBookResponse;

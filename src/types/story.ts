@@ -1,7 +1,7 @@
 import type { AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, CharacterPlan, StoryMCCandidate } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, StoryMCCandidate, CharacterPlan } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { NewThread, StoryThread, ThreadUpdates } from "./story-thread.js";
@@ -1294,6 +1294,7 @@ export type StoryState = {
    * Key: character ID
    */
   characters: Record<string, CharacterMemory>;
+  plannedCharacters: CharacterPlan[];
 
   /**
    * Place memory system for narrative consistency
@@ -1305,6 +1306,7 @@ export type StoryState = {
    * Key: place ID
    */
   places: Record<string, PlaceMemory>;
+  // To consider: plannedPlaces: PlacePlan[];
 
   /** History of all user actions made throughout the story */
   actionsHistory: SelectedAction[];
@@ -1749,8 +1751,4 @@ export type StoryPlan = {
   titleIdea?: string;
   /** Inferred main character who perfectly fit with the story theme */
   mcCandidate?: StoryMCCandidate;
-  futureNotes: FutureNote[];
-  characters: CharacterPlan[];
-  // places: PlacePlan[];
-  // threads: ThreadPlan[];
 }

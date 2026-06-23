@@ -26,7 +26,9 @@
 [x] theme validation & schema add `StoryPlan`
 [x] theme validation field instruction rules for futureNotes & characters
 [x] prompt character include importance
-[ ] initializebook: viableEnding should be based on story plan (futureNotes & characters)
+[x] initializebook: viableEnding should be based on story plan (futureNotes & characters)
+[ ] rename table: customActions -> userCustomActions
+[ ] prompt: display `state.plannedCharacters` in "UNINTRODUCED CHARACTERS:" section
 
 ---
 

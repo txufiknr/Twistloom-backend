@@ -59,14 +59,7 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`
-  },
-  futureNotes: { type: 'array', description: 'Add if theme is valid and and provide any.', items: FUTURE_NOTE_SCHEMA },
-  characters: { type: 'array', description: 'Add if theme is valid and and provide any.', items: {
-    type: 'object',
-    properties: CHARACTER_PLAN_PROPERTIES,
-    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'relationships', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],
-    additionalProperties: false
-  } },
+  }
 };
 
 export const INITIAL_VIABLE_ENDING_PROPERTIES: Record<keyof InitialEnding, AIJsonProperty> = {
@@ -195,6 +188,12 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
   },
   initialPlace: INITIAL_PLACE_SCHEMA,
   initialCharacters: { type: 'array', items: INITIAL_CHARACTER_SCHEMA },
+  plannedCharacters: { type: 'array', description: 'Any unintroduced characters inferred from theme.', items: {
+    type: 'object',
+    properties: CHARACTER_PLAN_PROPERTIES,
+    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],
+    additionalProperties: false
+  } },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
   mainCharacter: MAIN_CHARACTER_SCHEMA
 };
@@ -210,6 +209,7 @@ export const BOOK_CREATION_REQUIRED_FIELDS = [
   'initialState',
   'initialPlace',
   'initialCharacters',
+  'plannedCharacters',
   'initialRelationships',
   'initialFacts',
   'mainCharacter'

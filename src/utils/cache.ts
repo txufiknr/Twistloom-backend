@@ -494,12 +494,14 @@ export function hashContentDJB2(content: string): string {
   return (h >>> 0).toString(16);
 }
 
+// TODO: jsdoc
 export function hashContentSHA256(content: string): string {
   // Another small improvement is to hash the UTF-8 bytes rather than the JavaScript string if you're using Node.
   // That avoids any ambiguity around string encoding and is the standard approach.
   return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
+// TODO: jsdoc
 export function createCacheKey(value: unknown): string {
   const key = stableStringify(value);
   if (key.length <= CACHE_KEY_HASH_THRESHOLD) return key;

@@ -758,6 +758,7 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     memoryIntegrity: dbStoryState.memoryIntegrity,
     difficulty: dbStoryState.difficulty,
     characters: dbStoryState.characters,
+    plannedCharacters: dbStoryState.plannedCharacters,
     places: dbStoryState.places,
     factsHistory: dbStoryState.factsHistory,
     actionsHistory: dbStoryState.actionsHistory,

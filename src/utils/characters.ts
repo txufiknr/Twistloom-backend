@@ -1,7 +1,7 @@
 import { ACTION_SCORE_CAP, BODY_PART_WEIGHTS, DEFAULT_BODY_PART_IMPACT, FEAR_MENTAL_PENALTY, HEALTH_SCORE_CAP, INJURY_CATEGORY_WEIGHTS, MEMORY_INTEGRITY_MENTAL_PENALTY, MENTAL_SCORE_CAP, MOBILITY_SCORE_CAP, TRAUMA_TAG_MENTAL_WEIGHT } from "../config/characters.js";
 import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact, CharacterPlan } from "../types/character.js";
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -227,6 +227,12 @@ export function processCharacterUpdates(
         pastInteractions: character.pastInteractions?.map<PastInteraction>(i => ({ page, interaction: i, placeId })) ?? [],
         relationships: [], // Will be populated via relationshipUpdates
       };
+      // Remove any matching planned character entries now that the character
+      // has been introduced. Match by `characterId` to avoid removing
+      // unrelated plans.
+      if (state.plannedCharacters?.length) {
+        state.plannedCharacters = state.plannedCharacters.filter(p => p.characterId !== characterId);
+      }
     }
   }
 
@@ -534,6 +540,12 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
     .join('\n\n');
 
   return `${mcInfo}\n\n${sideCharactersFormatted}`;
+}
+
+// TODO: can you help me format characterPlans for prompt injection? make it DRY with formatCharactersForPrompt
+export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]): string {
+  if (!characterPlans.length) return 'No planned characters.'
+  return '';
 }
 
 /**

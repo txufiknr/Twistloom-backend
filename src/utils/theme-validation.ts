@@ -20,9 +20,6 @@ import type { HeuristicValidationResult, AIValidationResult, ThemeValidationResu
 import type { ProgressCallback } from '../types/sse.js';
 import type { Response } from "express";
 import type { ErrorResponse } from './error.js';
-import { factTypes, storyPhases } from '../types/story.js';
-import { characterImportances, characterRecognitionLevels, relationshipStatuses, relationshipTypes } from '../types/character.js';
-import { genders } from '../types/user.js';
 
 /**
  * Performs heuristic validation on theme input
@@ -189,9 +186,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
     comment: '',
     language: 'en',
     titleIdea: '',
-    mcCandidate: {},
-    futureNotes: [],
-    characters: []
+    mcCandidate: {}
   };
 
   try {
@@ -204,7 +199,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           'category',
           'confidence',
           'detectedItems',
-          'language',
+          'language'
         ] satisfies (keyof AIValidationResult)[],
         fallbackField: 'suggestion',
         baseOptions: {
@@ -257,40 +252,6 @@ Comment example (use your own wording):
   "comment": "...",
   "language": "<ISO 639-1 language code>",
   "titleIdea": "...",
-  "futureNotes": [
-    {
-      "note": "...",
-      "isMajor": <boolean>,
-      "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-      "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
-      "targetPageRange": "Optional. '<min>-<max>'",
-      "targetDate": "Optional. '<yyyy-MM-dd>'",
-      "targetDay": <integer or omit>,
-      "relatedThreadId": "<thread_id> or 'none'"
-    }
-  ],
-  "characters": [
-    {
-      "characterId": "<character_id>",
-      "plannedIntroduction": "...",
-      "importance": "One of: ${formatOneOf(characterImportances)}",
-      "knownName": "...",
-      "realName": "...",
-      "gender": "One of: ${formatOneOf(genders)}",
-      "role": "...",
-      "bio": "...",
-      "visualDescription": "...",
-      "relationships": [
-        {
-          "targetId": "<target_character_id>",
-          "type": "One of: ${formatOneOf(relationshipTypes)}",
-          "status": "One of: ${formatOneOf(relationshipStatuses)}",
-          "context": "...",
-          "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}"
-        }
-      ]
-    }
-  ],
   "mcCandidate": {
     "name": "Full Name",
     "knownName": "Preferred alias or nick",

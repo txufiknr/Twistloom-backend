@@ -157,7 +157,7 @@ export type CharacterStatus = typeof characterStatuses[number];
 export const characterImportances = ['major', 'supporting', 'minor'] as const;
 export type CharacterImportance = typeof characterImportances[number];
 
-export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'relationships' | 'importance'> & {
+export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'importance'> & {
   characterId: string;
   plannedIntroduction?: string;
 };

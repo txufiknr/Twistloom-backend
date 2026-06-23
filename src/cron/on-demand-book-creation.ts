@@ -120,6 +120,9 @@ async function processBookGeneration(bookId: string): Promise<void> {
 
     const params: InitializeBookParams = {
       ...generationData,
+      language: generationData.language || 'en',
+      titleIdea: generationData.titleIdea || undefined,
+      mcCandidate: generationData.mcCandidate || undefined,
       bookId, // IMPORTANT: Pass bookId to update existing draft
       theme
     };
