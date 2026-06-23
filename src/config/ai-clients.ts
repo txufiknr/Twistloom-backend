@@ -59,13 +59,14 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // daily gate stay open long after the primary models are actually exhausted.
   // Waterfall's 429 handling covers the per-model gap when qwen3-32b (60 RPM)
   // triggers a 429 on a model that's only rated at 30 RPM.
+  // See: https://console.groq.com/settings/limits
   groq:       { rpm: 60,  rpd: 1_000 }, // before: { rpm: 30, rpd: 14_400 },
 
   // 1M tokens/day free; 8,192-token context cap on free tier.
   // At max prompt length (~8K tokens), token budget allows ~125 requests/day —
-  // request-count rpd not meaningful here. Verify model availability: llama-3.3-70b
-  // may have been deprecated Feb 2026 — check https://cloud.cerebras.ai before relying on this.
-  cerebras:   { rpm: 30 }, // before: { rpm: 30, rpd: 14_400 },
+  // request-count rpd not meaningful here.
+  // See: https://cloud.cerebras.ai/platform/org_2ypxv2rc6j554f4f22pntket/models
+  cerebras:   { rpm: 5, rpd: 2_400 },
 
   // 40 RPM confirmed. RPD unclear: either renewable-rate or finite credit pool
   // depending on account type (see build.nvidia.com usage panel).
@@ -152,6 +153,11 @@ export const AI_CHAT_MODELS_TINY: AIModelSelection = {
  * Unlike corporate-tuned models, it natively understands gritty tension, subtext, and ambiguous 
  * thriller scenes without forcing moralizing, wrapped-up conclusions.
  * 
+ * Legacy (don't use):
+ * - mistralai/mistral-7b-instruct // Classic Mistral raw tone, completely free.
+ * - google/gemma-2-9b-it // Poetic, surprising, with highly unique vocabulary.
+ * - mistralai/mixtral-8x22b-instruct-v0.1 // Deeply artistic, excellent at environmental tension.
+ * 
  * @see https://openrouter.ai/models to see whether these IDs are still :free before relying on them.
  * @see https://console.groq.com/docs/models
  * @see https://developers.cloudflare.com/workers-ai/models for current model IDs/availability.
@@ -166,13 +172,14 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'gemini-2.5-flash' // Excellent workhorse.
   ],
   openrouter: [
-    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
-    'mistralai/mistral-7b-instruct:free', // Classic Mistral raw tone, completely free.
-    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
-    'google/gemma-2-9b-it:free', // Poetic, surprising, with highly unique vocabulary.
+    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
+    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
+    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
     'meta-llama/llama-4-maverick:free', // Large context, broad fallback
+    'nvidia/nemotron-3-super:free', // Replaces Mixtral. Massive MoE model, 1M context, exceptional atmospheric tension.
+    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
+    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
-
   groq: [
     'openai/gpt-oss-120b',                        // 120B: deepest psychological complexity, best for sustained horror dread
     'llama-3.3-70b-versatile',                    // 70B: cinematic, fast-paced action, sharp dialogue, proven thriller prose
@@ -186,15 +193,14 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // 'gemma2-9b-it', // Unique vocabulary, great for erratic/poetic internal monologues. (deprecated Aug 8, 2025)
   ],
   cerebras: [
+    'gpt-oss-120b', // Production model; strong general quality
+    'zai-glm-4.7',
     // llama-3.3-70b scheduled for deprecation Feb 16 2026 — verify at https://cloud.cerebras.ai
     'llama-3.3-70b', // Instantaneous generation. Action-oriented, direct, punchy pulp fiction. (along with qwen-3-32b - scheduled for deprecation on February 16, 2026)
-    // Replace with confirmed-active models from your console:
-    'gpt-oss-120b', // Production model; strong general quality
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
   ],
   nvidia: [
     // Verify still in NIM catalog — Mixtral variants deprecated elsewhere
-    'mistralai/mixtral-8x22b-instruct-v0.1', // Deeply artistic, excellent at environmental tension.
     'meta/llama-3.3-70b-instruct', // Tightly paced, structurally robust.
     'qwen/qwen2.5-72b-instruct', // Intricate, heavily detailed. Ideal for massive lore.
   ],
@@ -219,10 +225,7 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
     'llama-3.1-8b-instant',
   ],
   cerebras: ['llama-3.3-70b'],
-  nvidia: [
-    'meta/llama-3.3-70b-instruct', 
-    'mistralai/mistral-7b-instruct'
-  ],
+  nvidia: ['meta/llama-3.3-70b-instruct'],
 };
 
 /**
@@ -241,8 +244,12 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'mistral-medium-latest'
   ],
   openrouter: [
-    'meta-llama/llama-3.1-8b-instruct:free',
-    'google/gemma-2-9b-it:free'
+    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
+    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
+    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
+    'mistralai/mistral-small-3.2', // Surprisingly expressive and emotionally rich prose
+    'meta-llama/llama-3.1-8b-instruct:free', // Reliable but uninspiring; good at following story-state rules, weak at producing memorable prose.
+    'nvidia/nemotron-nano-9b-v2:free' // Replaces Gemma. Punchy, unique vocabulary, great for erratic character thoughts.
   ],
   cloudflare: [
     '@cf/meta/llama-3.1-8b-instruct',
@@ -286,8 +293,13 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'gemini-2.5-flash'
   ],
   openrouter: [
-    'mistralai/mistral-7b-instruct:free',
-    'google/gemma-2-9b-it:free'
+    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
+    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
+    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
+    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
+    'nvidia/nemotron-3-super:free', // MoE architecture handles multilingual subtext very well.
+    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
+    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   cloudflare: [
     '@cf/qwen/qwen1.5-14b-chat-awq', // Qwen is notoriously strong at multilingual tasks.
@@ -313,8 +325,13 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
     'gemini-2.5-flash'
   ],
   openrouter: [
-    'deepseek/deepseek-r1:free', // Incredible at analyzing strict JSON constraints and finding errors.
-    'meta-llama/llama-3.3-70b-instruct:free'
+    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
+    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
+    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
+    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
+    'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
+    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
+    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   cloudflare: [
     '@cf/meta/llama-3.1-8b-instruct'

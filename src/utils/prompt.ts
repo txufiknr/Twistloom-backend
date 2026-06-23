@@ -1,6 +1,6 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
-import { characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
@@ -437,17 +437,19 @@ const firstBookOutputFormat: string = `{
       "knownName": "Narration Alias",
       "realName": "Real Full Name",
       "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
-      "role": "Role or occupation (e.g. 'schoolmate', 'librarian')",
       "gender": "One of: ${formatOneOf(genders)}",
+      "role": "Role or occupation (e.g. 'schoolmate', 'librarian')",
+      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
+      "visualDescription": "Visual appearance (e.g. height, skin color, eye color, hair, etc).",
       "status": "One of: ${formatOneOf(characterStatuses)}",
       "secrets": "Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).",
+      "importance": "One of: ${formatOneOf(characterImportances)}",
       "relationshipToMC": {
         "type": "One of: ${formatOneOf(relationshipTypes)}",
         "status": "One of: ${formatOneOf(relationshipStatuses)}",
         "context": "${RELATIONSHIP_TO_MC_LENGTH}. Specific dynamic, not generic (e.g. 'Close childhood friend who knows too much.')"
       },
-      "bio": "Brief character description. Include one trait that could become a source of threat or betrayal.",
-      "visualDescription": "Character visual description (e.g. height, skin color, eye color, hair, etc).",
+      "pastInteractions": ["..."],
       "narrativeFlags": {
         "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
       },
@@ -460,8 +462,7 @@ const firstBookOutputFormat: string = `{
           "severity": <number between 0.0 and 1.0>,
           "decayPerPage": <number between 0.0 and 1.0>,
         }
-      ],
-      "pastInteractions": ["..."]
+      ]
     }
   ],
   "initialRelationships": [
@@ -617,8 +618,8 @@ const nextPageOutputFormat: string = `{
     "newCharacters": [
       {
         "characterId": "<new_character_id>",
-        "realName": "...",
         "knownName": "...",
+        "realName": "...",
         "recognitionLevel": "One of: ${formatOneOf(characterRecognitionLevels)}",
         "gender": "One of: ${formatOneOf(genders)}",
         "role": "...",
@@ -626,6 +627,7 @@ const nextPageOutputFormat: string = `{
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "secrets": "...",
+        "importance": "One of: ${formatOneOf(characterImportances)}",
         "relationshipToMC": {
           "type": "One of: ${formatOneOf(relationshipTypes)}",
           "status": "One of: ${formatOneOf(relationshipStatuses)}",
@@ -649,6 +651,7 @@ const nextPageOutputFormat: string = `{
         "visualDescription": "...",
         "status": "One of: ${formatOneOf(characterStatuses)}",
         "secrets": "...",
+        "importance": "One of: ${formatOneOf(characterImportances)}",
         "relationshipToMC": {
           "type": "One of: ${formatOneOf(relationshipTypes)}",
           "status": "One of: ${formatOneOf(relationshipStatuses)}",
@@ -801,6 +804,16 @@ const multiNextPageOutputFormat: string = `{
 function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, candidateCount } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
+
+  // TODO: add only if characterPlans.length
+  // UNINTRODUCED CHARACTERS RULES
+  // - These characters exist in the story canon but have not yet appeared on-page.
+  // - When an unintroduced character is genuinely introduced (physically present) in this page, add them to characterUpdates.newCharacters.
+  // - You may introduce them naturally when appropriate for the current scene, pacing, and story momentum.
+  // - Do not force introductions solely because a character is available.
+  // - Mere mentions, memories, rumors, references, text messages, documents, photographs, or second-hand discussion do NOT count as introduction.
+  // - Preserve all provided names, roles, relationships, and core details when introducing planned characters.
+  // - Major characters should generally receive a meaningful introduction scene rather than a brief mention.
 
   return [
     `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}`,
@@ -978,7 +991,7 @@ ${isLatePhase || isFinale
 ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
 : `  - Only update when bio, status, interactions, or relevance changes.`}
   - Only include characters whose state actually changed this page.
-  - Only include changed fields: knownName, bio, visualDescription, status, relationshipToMC, newInteractions, narrativeFlags, injuries, secrets.
+  - Only include changed fields: knownName, bio, visualDescription, status, importance, relationshipToMC, newInteractions, narrativeFlags, injuries, secrets.
   - bio: only gradually update character's bio if new information is revealed in this page.
   - knownName: gradually update mysterious character's known name as the MC learns more about his/her real identity.
   - recognitionLevel: how well does MC recognize this character at this point.
@@ -3614,6 +3627,7 @@ function resolvePageDelta(params: {
   fateIndex?: number
 }) {
   const { generatedStoryPage, advancedState, currentState, expectedPageNumber, context, fateIndex } = params;
+  // TODO: Investigate double key issue
   const futureNoteKeys = advancedState.futureNotes.map(note => note.key);
   console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
 
@@ -4025,6 +4039,7 @@ Output example (not strict):
 Story about [theme description]
 MC: [Name], [Gender], [Age]
 
+No filler words, preambles, meta-commentary.
 Only the theme is required. All other fields are optional - include them only if they add value to the story concept.`;
 
   const lang = formatLanguage(headerLanguage || 'en');

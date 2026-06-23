@@ -1,9 +1,9 @@
 import { difficulties, endingTypes, factTypes, flagLevels, storyMomentums } from "../types/story.js";
-import { buildTraitItemSchema, FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA, THREADS_SCHEMA } from "./story.js";
+import { buildTraitItemSchema, CHARACTER_PLAN_PROPERTIES, FUTURE_NOTE_SCHEMA, INITIAL_CHARACTER_SCHEMA, INITIAL_INJURY_SCHEMA, INITIAL_INVENTORY_ITEM_SCHEMA, INITIAL_PLACE_SCHEMA, PLOT_FLAGS_SCHEMA, RELATIONSHIP_UPDATE_SCHEMA, STORY_GENERATION_REQUIRED_FIELDS, STORY_PAGE_GENERATION_SCHEMA, THREADS_SCHEMA } from "./story.js";
 import { BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, FACT_KEY_FORMAT, MAX_CHARACTER_AGE, MAX_FUTURE_NOTES, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 import type { AIJsonProperty } from "../types/ai-chat.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
-import type { CharacterMemoryTranslation, InjuryTranslation, InventoryItemTranslation, StoryMC, StoryMCTranslation } from "../types/character.js";
+import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, StoryMC, StoryMCTranslation } from "../types/character.js";
 import type { ActionTranslation, CuriosityLevel, FearLevel, GuiltLevel, PsychologicalFlags, InitialStoryState, TrustLevel, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import type { KnownGender } from "../types/user.js";
@@ -61,7 +61,14 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`
-  }
+  },
+  futureNotes: { type: 'array', items: FUTURE_NOTE_SCHEMA },
+  characters: { type: 'array', items: {
+    type: 'object',
+    properties: CHARACTER_PLAN_PROPERTIES,
+    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'relationships', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],
+    additionalProperties: false
+  } },
 };
 
 export const INITIAL_VIABLE_ENDING_PROPERTIES: Record<keyof InitialEnding, AIJsonProperty> = {

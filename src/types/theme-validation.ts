@@ -8,7 +8,7 @@
  * across the application.
  */
 
-import type { StoryMCCandidate } from "./character.js";
+import type { StoryPlan } from "./story.js";
 
 /**
  * Theme validation error categories
@@ -153,13 +153,7 @@ export type AIValidationResult = {
   suggestion?: string;
   /** Complimentary comment about the theme idea using creative & thriller-themed wording in the same language as the input */
   comment?: string;
-  /** Detected language code (ISO 639-1) */
-  language: string;
-  /** Book title idea for the story based on the theme */
-  titleIdea?: string;
-  /** Inferred main character who perfectly fit with the story theme */
-  mcCandidate?: StoryMCCandidate;
-}
+} & StoryPlan;
 
 /**
  * Complete theme validation result

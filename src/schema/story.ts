@@ -1,6 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH } from "../config/story.js";
-import { characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
+import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterPlan, CharacterRelationship } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
@@ -8,6 +8,7 @@ import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, Psycholo
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
+import { VIABLE_ENDING_SCHEMA } from "./book.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
@@ -269,13 +270,35 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
   required: ['placeId', 'type', 'context', 'addKeyEvents'] satisfies (keyof PlaceUpdate)[],
 };
 
-export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
+export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProperty> = {
   characterId: { type: 'string', description: 'Lowercase slug identifier (e.g., "Lisa Park" → "lisa_p")' },
   knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
   realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
-  recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
   role: { type: 'string', description: 'Role or occupation known to the MC.' },
   gender: { type: "string", enum: [...genders] },
+  bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
+  visualDescription: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
+  plannedIntroduction: { type: "string" },
+  importance: { type: "string", enum: [...characterImportances] },
+  relationships: { type: 'array', items: {
+    type: 'object',
+    properties: {
+      targetId: { type: 'string' },
+      type: { type: 'string', enum: [...relationshipTypes] },
+      status: { type: 'string', enum: [...relationshipStatuses] },
+      context: { type: 'string' },
+      recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels] },
+    } satisfies Record<keyof CharacterRelationship, AIJsonProperty>,
+    required: ['targetId', 'type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationship)[],
+    additionalProperties: false
+  } },
+};
+
+const { plannedIntroduction: _pli, relationships: _r, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
+
+export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
+  ...initialCharacterProperties,
+  recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
   status: { type: 'string', enum: [...characterStatuses] },
   relationshipToMC: {
     type: 'object',
@@ -288,8 +311,6 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
     required: ['type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationshipContext)[],
     additionalProperties: false
   },
-  bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
-  visualDescription: { type: 'string', description: "Character visual description (e.g., height, skin color, eye color, hair)." },
   secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).` },
   narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
   injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
@@ -301,7 +322,7 @@ export const { realName: _cn, pastInteractions: _pi, ...updateCharacterPropertie
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -311,7 +332,7 @@ export const UPDATE_CHARACTER_SCHEMA: AIJsonProperty = {
     ...updateCharacterProperties,
     newInteractions: { type: 'array', items: { type: 'string' }, description: 'New interactions happened in this page' },
   } satisfies Record<keyof CharacterUpdate, AIJsonProperty>,
-  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions'] satisfies (keyof CharacterUpdate)[],
+  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions'] satisfies (keyof CharacterUpdate)[],
   additionalProperties: false
 };
 
@@ -490,8 +511,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   addPlotFlags: PLOT_FLAGS_SCHEMA,
 
   // Optional objects, can omit or empty if no updates
-  // TODO: need schema?
-  viableEnding: { type: 'object', description: 'Twisted ending plan for the story. Omit if no update.' },
+  viableEnding: VIABLE_ENDING_SCHEMA,
 
   // Provide full to overwrite current. Can omit or empty if no changes.
   contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },

@@ -325,7 +325,8 @@ Evaluate the action against the context below. Return a JSON object with this ex
   "progressionScore": 0.0-1.0,
   "interpretedIntent": "3-8 word canonical intent",
   "actionType": "explore" | "escape" | "social" | "risk" | "ignore" | "attack" | "deceive" | "protect" | "create" | "heal" | "dialogue" | "custom" | "other",
-  "hintType": "dark_discovery" | "relationship_revelation" | "betrayal" | "confrontation" | "truth_revelation" | "survival" | "psychological" | "custom" | "none"
+  "hintType": "dark_discovery" | "relationship_revelation" | "betrayal" | "confrontation" | "truth_revelation" | "survival" | "psychological" | "custom" | "none",
+  "language": "ISO 639-1 language code of the action text (e.g. \\"en\\", \\"ar\\", \\"fr\\", \\"tr\\")"
 }
 
 ### RULES FOR OUTCOME:
@@ -364,6 +365,7 @@ Classify the action into one of the standard action types. DO NOT default to "cu
 - For "allow_as_attempt" outcomes, set hintType and interpretedIntent to guide the page generator toward a failed/punished consequence.
 - Never reveal hidden narrative state in your reasoning.
 - The action text has already been cleaned — focus on narrative evaluation.
+- Detect the language of the action text and return its ISO 639-1 code (e.g. "en", "ar", "fr", "tr", "es", "de", "ur", "id"). Use "un" if uncertain.
 
 ${context}`;
 }
@@ -499,6 +501,7 @@ export const CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION: Record<keyof CustomActi
       'none',
     ],
   },
+  language: { type: 'string' },
 };
 
 /**
@@ -511,4 +514,5 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS: (keyof CustomActionValida
   'interpretedIntent',
   'actionType',
   'hintType',
+  'language',
 ];

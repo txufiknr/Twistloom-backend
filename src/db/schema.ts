@@ -1491,7 +1491,7 @@ export const customActions = pgTable(
 
     creditsCharged: integer("credits_charged").default(0).notNull(),
     nextPageId: uuid("next_page_id"),
-    language: text("language"), // TODO: AI should detect custom action language (ISO 639-1)
+    language: text("language"), // populated by Gate 2 AI validator — ISO 639-1 code
 
     createdAt,
     updatedAt,

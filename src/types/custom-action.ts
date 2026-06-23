@@ -62,6 +62,12 @@ export type CustomActionValidationResult = {
 
   /** Best-fit classification into existing ActionHintType union */
   hintType: ActionHintType;
+
+  /**
+   * ISO 639-1 language code of the action text (e.g. "en", "ar", "fr", "tr").
+   * Used for analytics, per-language threshold tuning, and future multilingual support.
+   */
+  language: string;
 }
 
 /**

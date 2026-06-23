@@ -3253,6 +3253,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
         plausibilityScore: result.plausibilityScore,
         progressionScore: result.progressionScore,
         creditsCharged: 0,
+        language: result.language,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -3286,6 +3287,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
           plausibilityScore: result.plausibilityScore,
           progressionScore: result.progressionScore,
           creditsCharged: CUSTOM_ACTION_CREDIT_COST,
+          language: result.language,
           createdAt: new Date(),
           updatedAt: new Date(),
         });

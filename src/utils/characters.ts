@@ -1,6 +1,7 @@
-import { BODY_PART_WEIGHTS, CHARACTER_NAMES, INJURY_CATEGORY_WEIGHTS } from "../config/characters.js";
+import { ACTION_SCORE_CAP, BODY_PART_WEIGHTS, DEFAULT_BODY_PART_IMPACT, FEAR_MENTAL_PENALTY, HEALTH_SCORE_CAP, INJURY_CATEGORY_WEIGHTS, MEMORY_INTEGRITY_MENTAL_PENALTY, MENTAL_SCORE_CAP, MOBILITY_SCORE_CAP, TRAUMA_TAG_MENTAL_WEIGHT } from "../config/characters.js";
+import { CHARACTER_NAMES } from "../config/characters.js";
 import { MAX_PAST_INTERACTIONS, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, MAX_CHARACTERS } from "../config/story.js";
-import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus } from "../types/character.js";
+import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUpdate, StoryMC, StoryMCCandidate, Injury, InjurySeverity, PastInteraction, HealthCondition, HealthStatus, MentalHealthInputs, BodyPartImpact } from "../types/character.js";
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
@@ -11,17 +12,26 @@ import { slugify } from "./text-processing.js";
 // ============================================================================
 
 /**
- * Calculates the injury severity label based on severity and decay rate
+ * Calculates the injury severity label based on severity and decay rate.
+ *
+ * Behaviour when `decayPerPage` is 0 or omitted (no healing):
+ * - `severity > 0.5` → `'permanent'`    (structural damage that won't resolve)
+ * - `severity ≤ 0.5` → `'requires_treatment'` (stable but needs care to improve)
+ *
+ * This default is intentional: if the AI doesn't supply a decay rate,
+ * the injury is treated as non-healing until explicitly addressed.
+ *
  * @param injury - Injury object with severity and decayPerPage
- * @returns Severity label: 'requires_treatment', 'permanent', 'critical', 'severe', 'moderate', 'mild', or 'none'
- * 
+ * @returns Severity label: 'permanent', 'requires_treatment', 'critical',
+ *          'severe', 'moderate', 'mild', or 'none'
+ *
  * @example
  * ```typescript
  * getInjurySeverityLabel({ severity: 0.9, decayPerPage: 0.1 }); // 'critical'
  * getInjurySeverityLabel({ severity: 0.7, decayPerPage: 0.1 }); // 'severe'
- * getInjurySeverityLabel({ severity: 0.5, decayPerPage: 0 }); // 'requires_treatment'
- * getInjurySeverityLabel({ severity: 0.3, decayPerPage: 0.05 }); // 'mild'
- * getInjurySeverityLabel({ severity: 0.1, decayPerPage: 0.05 }); // 'none'
+ * getInjurySeverityLabel({ severity: 0.5, decayPerPage: 0 });   // 'requires_treatment'
+ * getInjurySeverityLabel({ severity: 0.8, decayPerPage: 0 });   // 'permanent'
+ * getInjurySeverityLabel({ severity: 0.3, decayPerPage: 0.05 });// 'mild'
  * ```
  */
 export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
@@ -73,27 +83,29 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
 // }
 
 /**
- * Updates an existing character with new information
- * 
+ * Updates an existing character with new information.
+ *
  * Merges new interactions with existing ones, maintaining the sliding window.
  * Updates status and narrative flags as provided.
- * 
+ *
  * @param existing - Current character memory
  * @param update - Update data from AI output
+ * @param page - Current story page number
+ * @param placeId - Optional place ID for interaction context
  * @returns Updated character memory
- * 
+ *
  * @example
  * ```typescript
  * const updated = updateCharacter(existing, {
  *   status: "suspicious",
- *   pastInteractions: [{"page": 6, "interaction": "Refused to explain what she saw"}],
+ *   newInteractions: ["Refused to explain what she saw"],
  *   narrativeFlags: { potentialTwist: "betrayal" }
- * });
+ * }, page);
  * ```
  */
 export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate, page: number, placeId?: string): CharacterMemory {
   const updated = { ...existing };
-  
+
   // Update basic properties if provided
   if (update.knownName) updated.knownName = update.knownName;
   if (update.recognitionLevel) updated.recognitionLevel = update.recognitionLevel;
@@ -103,6 +115,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (update.visualDescription) updated.visualDescription = update.visualDescription;
   if (update.status) updated.status = update.status;
   if (update.secrets) updated.secrets = update.secrets;
+  if (update.importance) updated.importance = update.importance;
   if (update.relationshipToMC) updated.relationshipToMC = update.relationshipToMC;
 
   // Merge past interactions with sliding window
@@ -112,7 +125,7 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
       ...update.newInteractions.map<PastInteraction>(i => ({ page, interaction: i, placeId }))
     ].slice(-MAX_PAST_INTERACTIONS);
   }
-    
+
   // Merge narrative flags if provided
   if (update.narrativeFlags) {
     updated.narrativeFlags = {
@@ -120,36 +133,36 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
       ...update.narrativeFlags
     };
   }
-  
-  // Merge injuries (replace entire array if provided)
-  if (update.injuries) {
+
+  // Replace entire injury array if provided
+  if (update.injuries?.length) {
     updated.injuries = update.injuries;
   }
-  
+
   return updated;
 }
 
 /**
- * Updates character relationship with new information
- * 
+ * Updates character relationship with new information.
+ *
  * Creates new relationships or updates existing ones,
  * maintaining directional connections between characters.
- * 
+ *
  * @param character - Source character to update
  * @param update - Relationship update data
  * @returns Updated character memory
- * 
+ *
  * @example
  * ```typescript
- * updateRelationship("Lina", { target: "Raka", status: "fearful" });
+ * updateRelationship(lina, { sourceId: "lina", targetId: "raka", status: "afraid", context: "..." });
  * ```
  */
 export function updateRelationship(character: CharacterMemory, update: RelationshipUpdate): CharacterMemory {
   const updated: CharacterMemory = structuredClone(character);
-  
+
   // Find existing relationship to target
   const existingIndex = updated.relationships.findIndex(r => r.targetId === update.targetId);
-  
+
   if (existingIndex >= 0) {
     // Update existing relationship
     updated.relationships[existingIndex] = {
@@ -169,23 +182,24 @@ export function updateRelationship(character: CharacterMemory, update: Relations
       recognitionLevel: update.recognitionLevel,
     });
   }
-  
+
   return updated;
 }
 
 /**
- * Adds or updates characters in the story state
- * 
+ * Adds or updates characters in the story state.
+ *
  * Processes AI output for new characters and updates, maintaining
- * character dictionary structure.
- * 
- * @param state - Current story state
- * @param newCharacters - Array of new characters to add
- * @param characterUpdates - Array of character updates to apply
- * 
+ * the character dictionary structure.
+ *
+ * @param state - Current story state (mutated in place)
+ * @param characterUpdates - New characters and updates from AI output
+ * @param relationshipUpdates - Directional relationship changes to apply
+ * @param placeId - Optional place ID providing context for new interactions
+ *
  * @example
  * ```typescript
- * processCharacterUpdates(state, output);
+ * processCharacterUpdates(state, output.characterUpdates, output.relationshipUpdates, placeId);
  * ```
  */
 export function processCharacterUpdates(
@@ -211,11 +225,11 @@ export function processCharacterUpdates(
         introducedAtPage: page,
         injuries: character.injuries ?? [],
         pastInteractions: character.pastInteractions?.map<PastInteraction>(i => ({ page, interaction: i, placeId })) ?? [],
-        relationships: [], // Will be processed later via `relationshipUpdates`
+        relationships: [], // Will be populated via relationshipUpdates
       };
     }
   }
-    
+
   // Update existing characters
   if (updatedCharacters.length) {
     for (const update of updatedCharacters) {
@@ -239,15 +253,19 @@ export function processCharacterUpdates(
 }
 
 /**
- * Gets formatted main character information for prompt
- * @param mc - Main character profile
- * @param state - Current story state with inventory and injuries
- * @returns Formatted string with character details, or null if no character data
+ * Gets formatted main character information for AI prompt injection.
+ *
+ * Outputs a compact MC status block including bio, health, mobility, action
+ * capability, mental state, inventory, and injuries.
+ *
+ * @param params.mc - Main character profile
+ * @param params.state - Current MC state with inventory, injuries, and healthStatus
+ * @returns Formatted string ready for prompt inclusion, or null if no data
  * 
  * @example
  * // Basic character without state
  * "Lisa Carter, female, 16 — Shy teenager with social anxiety."
- * 
+ *
  * @example
  * // Character with inventory and injuries
  * - Bio: Lisa Carter ("Lisa"), female, 16 — Shy teenager with social anxiety.
@@ -255,12 +273,13 @@ export function processCharacterUpdates(
  * - Health: 58%
  * - Mobility: 34%
  * - Action Capability: 62%
+ * - Mental State: 71%
  * - Inventory:
  *   - 1x Cellphone (right pants pocket, color: black) - acquired: page 1
- *   - 1x Rugged rope (backpack, color: brown, length: 5-meter) - acquired: page 5 at Haunted House
+ *   - 1x Rugged rope (backpack, color: brown, length: 1m) - acquired: page 5 at Haunted House
  * - Injuries:
  *   - Deep cut (left arm, cut, severity: 0.7) - acquired: page 5 at Haunted House
- *     → Consequence (high): Cannot lift heavy objects
+ *     → Consequence (severe): Cannot lift heavy objects
  *   - Sprained ankle (right foot, exhaustion, severity: 0.4) - acquired: page 18 at School
  *     → Consequence (medium): Cannot run fast
  */
@@ -278,13 +297,22 @@ export function getMainCharacterInfo(params: {
     mcInfo.push(`- Bio: ${info}${mc.bio ? ` — ${mc.bio}` : ''}`);
   }
 
-  // Format main character's health status
-  // TODO: add `mentalPercent` when implemented
-  const { condition = 'healthy', healthPercent = 100, mobilityPercent = 100, actionPercent = 100 } = healthStatus ?? {};
+  // Format main character's health status across all four axes.
+  // When healthStatus is absent (e.g. no injuries yet), defaults communicate
+  // a fully healthy MC to the AI rather than omitting the section entirely.
+  const {
+    condition    = 'healthy',
+    healthPercent   = 100,
+    mobilityPercent = 100,
+    actionPercent   = 100,
+    mentalPercent   = 100,
+  } = healthStatus ?? {};
+
   mcInfo.push(`- Condition: ${condition}`);
   mcInfo.push(`- Health: ${healthPercent}%`);
   mcInfo.push(`- Mobility: ${mobilityPercent}%`);
   mcInfo.push(`- Action Capability: ${actionPercent}%`);
+  mcInfo.push(`- Mental State: ${mentalPercent}%`);
 
   // Format inventory items with detailed nested information
   if (inventory.length) {
@@ -292,13 +320,13 @@ export function getMainCharacterInfo(params: {
       const parts = [];
       parts.push(`${item.amount}x`);
       parts.push(item.name);
-      
+
       const traitEntries = item.traits?.map(t => `${t.key}: ${t.value}`) ?? [];
       const itemInfo = [item.where, ...traitEntries].filter(Boolean);
-      
+
       let inventoryLine = `  - ${parts.join(' ')}`;
       if (itemInfo.length) inventoryLine += ` (${itemInfo.join(', ')})`;
-      
+
       if (item.pageAcquired) inventoryLine += ` - acquired: page ${item.pageAcquired}`;
       return inventoryLine;
     });
@@ -327,38 +355,32 @@ export function getMainCharacterInfo(params: {
     const injuryDetails = `\n${injuryList.join('\n')}`;
     mcInfo.push(`- Injuries: ${injuryDetails}`);
   }
-  
+
   return mcInfo.length ? mcInfo.join('\n') : null;
 }
 
 /**
- * Formats characters for prompt injection with comprehensive narrative context
- * 
- * Creates a rich, detailed string representation of characters utilizing a clean 
+ * Formats characters for prompt injection with comprehensive narrative context.
+ *
+ * Creates a rich, detailed string representation of characters with clean
  * separation of physical state, emotional relationship, and plot mechanics.
- * 
+ *
  * @param mc - Main character profile
- * @param characters - Record of character memories
+ * @param characters - Record of character memories keyed by character ID
  * @returns Formatted string for prompt inclusion
- * 
+ *
  * @example
- * ```typescript
- * const characterText = formatCharactersForPrompt(book.mc, state.characters);
  * ```
- * 
- * @todo add side character's injuries example
- * 
- * Output example:
  * · Sarah Chen (MC) - 28 years old, female
  *   - Bio: Shy librarian with hidden past and mysterious family connections
  *   - Known as: Sarah
  * 
- * · Tom Martinez (schoolmate) - male [trusting] - [ID: tom_martinez]
+ * · Tom Martinez (security guard, major) - male [trusting] - [ID: tom_m]
  *   - Real name: "Tom Martinez" (Recognition: full_name_known)
- *   - Bio: Former military medic, now works as security guard
+ *   - Bio: Former military medic
  *   - Visual description: Tall, muscular build with military haircut and tired eyes
  *   - Introduced at page: 5
- *   - Relationship to MC: (friend - trusting - full_name_known) protective friend with secret knowledge
+ *   - Relationship to MC: (friend - trusting - full_name_known) protective, has secret knowledge
  *   - Recent interactions:
  *     → Page 12: Helped treat Sarah's arm injury
  *     → Page 8: Warned about basement dangers
@@ -367,7 +389,7 @@ export function getMainCharacterInfo(params: {
  *   - Narrative mechanics: potential twist: none
  *   - Physical state: healthy, active
  * 
- * · Lisa (teacher) - female [suspicious, has secret, missing] - [ID: lisa_park]
+ * · Lisa (teacher, supporting) - female [suspicious, has secret, missing] - [ID: lisa_park]
  *   - Real name: "Lisa Park" (Recognition: first_name_known)
  *   - Bio: Quiet girl who knows more than she lets on
  *   - Visual description: Small frame, dark hair always in ponytail, avoids eye contact
@@ -388,14 +410,15 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
   const mcMainInfo = `· ${mc.name} (MC) - ${mc.age} years old, ${mc.gender}`;
   const mcInfo = mcDetails.length ? `${mcMainInfo}\n${mcDetails.join('\n')}` : mcMainInfo;
 
-  // Exclude character with same name as MC's, it's him/herself
-  // Keep keys so we can display character ID (record key)
-  const sideCharacters = characters ? Object.entries(characters).filter(([, c]) => c.realName !== mc.name) : [];
+  // Exclude characters with the same name as the MC (that's the MC themselves)
+  const sideCharacters = characters
+    ? Object.entries(characters).filter(([, c]) => c.realName !== mc.name)
+    : [];
 
   // Early return: still no side characters yet
   if (!sideCharacters.length) return mcInfo;
 
-  // Sort side characters by most recent interaction or introduction.
+  // Sort by most recent interaction or introduction page (most recent first)
   sideCharacters.sort((a, b) => {
     const latest = (ch: CharacterMemory) => {
       const pages = (ch.pastInteractions || []).map((pi: PastInteraction) => pi.page).filter(Boolean);
@@ -407,7 +430,12 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
 
   const sideCharactersFormatted = sideCharacters
     .map(([id, character]) => {
-      const { knownName, realName, recognitionLevel, role, gender, status, bio, visualDescription, introducedAtPage, pastInteractions, secrets, relationships, relationshipToMC, narrativeFlags, injuries } = character;
+      const {
+        knownName, realName, recognitionLevel, role, gender, status,
+        bio, visualDescription, introducedAtPage, pastInteractions, importance,
+        secrets, relationships, relationshipToMC, narrativeFlags, injuries
+      } = character;
+
       const useDifferentReference = knownName !== realName;
       const nameUnknown = useDifferentReference && ['never_seen', 'seen', 'alias_known'].includes(recognitionLevel);
 
@@ -417,15 +445,16 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       else if (status === 'missing') physicalStatusDisplay = 'disappeared';
       else if (injuries?.filter(i => i.severity).length) physicalStatusDisplay = 'injured';
 
-      // 2. Resolve Header Tags (Emotional state and quick-glance flags)
+      // 2. Resolve Header Tags (quick-glance emotional state flags)
       const headerTags = [];
       if (relationshipToMC?.status) headerTags.push(relationshipToMC.status); // e.g. "suspicious", "trusting"
       if (secrets?.length) headerTags.push('has secret');
       if (status === 'dead' || status === 'missing') headerTags.push(status); // Add extreme physical states to header
 
       const flagString = headerTags.length ? ` [${headerTags.join(', ')}]` : '';
-      const mainInfo = `· ${knownName} (${role}) - ${gender}${flagString} - [ID: ${id}]`;
-      
+      const roleString = [role, importance].filter(Boolean).join(', ');
+      const mainInfo = `· ${knownName} (${roleString}) - ${gender}${flagString} - [ID: ${id}]`;
+
       const details = [];
       
       // Basic information
@@ -484,7 +513,6 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
           if (injury.severity !== undefined) injuryParts.push(`severity: ${injury.severity}`);
           if (injury.consequences) injuryParts.push(`consequences (${getInjurySeverityLabel(injury)}): ${injury.consequences}`);
           if (injury.pageAcquired) injuryParts.push(`acquired: page ${injury.pageAcquired}`);
-          
           details.push(`    → ${injury.description}${injuryParts.length ? ` (${injuryParts.join(', ')})` : ''}`);
         });
       }
@@ -500,7 +528,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       
       // Concluding Physical Status
       details.push(`  - Physical state: ${physicalStatusDisplay}`);
-      
+
       return `${mainInfo}\n${details.join('\n')}`;
     })
     .join('\n\n');
@@ -509,23 +537,23 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
 }
 
 /**
- * Generates random character profile when not provided
- * 
- * @param partial - Optional partial character data to merge with random values
- * @returns Complete character profile with random values for missing fields
+ * Generates a random character profile when one is not explicitly provided.
  * 
  * Behavior:
  * - Generates realistic random names based on gender
  * - Creates appropriate age ranges for different story contexts
  * - Ensures character diversity and believability
- * 
- * Example:
+ *
+ * @param candidate - Optional partial character data to merge with random values
+ * @returns Complete character profile with random values for any missing fields
+ *
+ * @example
  * ```typescript
  * const randomMC = generateRandomCharacter({ gender: 'female' });
- * // Returns: { name: 'Sarah Chen', age: 28, gender: 'female' }
- * 
+ * // Returns: { name: 'Sarah Chen', age: 28, gender: 'female', bio: '...' }
+ *
  * const completeMC = generateRandomCharacter({ name: 'Marcus', gender: 'male' });
- * // Returns: { name: 'Marcus', age: 35, gender: 'male' }
+ * // Returns: { name: 'Marcus Johnson', age: 35, gender: 'male', bio: '...' }
  * ```
  */
 export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
@@ -534,8 +562,8 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   // Generate or use provided values
   const gender = candidate?.gender ?? (Math.random() > 0.5 ? 'male' : 'female');
   const namePool = gender === 'male' ? maleNames : femaleNames;
-  
-  // Choose last name pool: 70% gender-specific, 30% neutral for variety
+
+  // Choose last name: 70% gender-specific, 30% neutral for variety
   const useGenderSpecific = Math.random() < 0.7;
   const lastNamePool = useGenderSpecific
     ? (gender === 'male' ? maleLastNames : femaleLastNames)
@@ -544,15 +572,15 @@ export function generateRandomCharacter(candidate?: StoryMCCandidate): StoryMC {
   // Generate random name and last name with retry logic to prevent duplicates
   const randomName = candidate?.name ?? namePool[Math.floor(Math.random() * namePool.length)];
   let randomLastName = lastNamePool[Math.floor(Math.random() * lastNamePool.length)];
-  
-  // Retry if first and last name are the same (e.g., "Parker Parker", "Rose Rose")
+
+  // Retry if first and last name are identical (e.g., "Parker Parker")
   let attempts = 0;
   const maxAttempts = 10;
   while (randomName === randomLastName && attempts < maxAttempts) {
     randomLastName = lastNamePool[Math.floor(Math.random() * lastNamePool.length)];
     attempts++;
   }
-  
+
   const name = `${randomName} ${randomLastName}`;
   const age = candidate?.age ?? Math.floor(Math.random() * (MAX_CHARACTER_AGE - MIN_CHARACTER_AGE + 1)) + MIN_CHARACTER_AGE;
   const bio = candidate?.bio ?? generateRandomCharacterBio(gender);
@@ -566,12 +594,12 @@ function generateRandomCharacterBio(gender: KnownGender): string {
     'analytical', 'logical', 'competitive', 'ambitious', 'confident', 'strategic',
     'independent', 'reserved', 'practical', 'disciplined', 'loyal', 'protective'
   ];
-  
+
   const femaleTraits = [
     'empathetic', 'intuitive', 'creative', 'adaptable', 'diplomatic', 'patient',
     'nurturing', 'expressive', 'collaborative', 'harmonious', 'perceptive'
   ];
-  
+
   const neutralTraits = [
     'balanced', 'versatile', 'thoughtful', 'reliable', 'open-minded', 'curious',
     'flexible', 'resilient', 'observant', 'fair-minded', 'authentic'
@@ -583,19 +611,19 @@ function generateRandomCharacterBio(gender: KnownGender): string {
     'adventurous', 'reserved', 'idealistic', 'pragmatic', 'competitive',
     'easygoing', 'serious', 'playful', 'conscientious', 'independent'
   ];
-  
+
   const appearanceDetails = [
     'is tall and lean', 'is short and muscular', 'has average height with distinctive features',
     'has striking eyes', 'has unusual hair color', 'has subtle scars', 'has elegant hands',
     'has weathered appearance', 'has youthful energy', 'has mature presence', 'has distinctive voice'
   ];
-  
+
   const behavioralQuirks = [
     'taps fingers when thinking', 'hums when focused', 'always early', 'collects unusual objects',
     'talks to themselves', 'excellent listener', 'remembers small details',
     'dislikes sudden noises', 'has specific routine', 'overly polite', 'secretly creative'
   ];
-  
+
   const backgroundHints = [
     'mysterious past', 'privileged upbringing', 'struggled in youth', 'traveled extensively',
     'formal training', 'self-taught skills', 'family tragedy', 'hidden talent',
@@ -610,13 +638,12 @@ function generateRandomCharacterBio(gender: KnownGender): string {
   const numTraits = Math.floor(Math.random() * 3) + 3; // 3-5 traits
   const selectedTraits: string[] = [];
   const usedIndices = new Set<number>();
-  
+
   for (let i = 0; i < numTraits && i < traitPool.length; i++) {
-    let index;
+    let index: number;
     do {
       index = Math.floor(Math.random() * traitPool.length);
     } while (usedIndices.has(index));
-    
     selectedTraits.push(traitPool[index]);
     usedIndices.add(index);
   }
@@ -649,21 +676,20 @@ function generateRandomCharacterBio(gender: KnownGender): string {
   
   // Build background sentence with proper grammar
   const backgroundSentence = `${possessive} background suggests ${background}.`;
-  
+
   return `${ucfirst(traitSentence)} ${characteristicSentence} ${quirkSentence} ${backgroundSentence}`;
 }
 
 /**
  * Generates a compact, deterministic character ID from a character name.
  *
- * The first name is preserved in full, while each subsequent name
- * contributes only its initial. Name parts are normalized via
- * {@link slugify} before the ID is constructed.
+ * The first name is preserved in full, while each subsequent name part
+ * contributes only its initial. All parts are normalized via {@link slugify}.
  *
- * Examples:
- * - "Lisa Park" → "lisa_p"
+ * @example
+ * - "Lisa Park"              → "lisa_p"
  * - "John Ronald Reuel Tolkien" → "john_r_r_t"
- * - "Crème Brûlée Smith" → "creme_b_s"
+ * - "Crème Brûlée Smith"    → "creme_b_s"
  *
  * @param name - Character name to convert into an ID.
  * @returns A deterministic, normalized character ID.
@@ -674,117 +700,177 @@ export function generateCharacterId(name: string): string {
   return [first, ...rest.map(part => part[0])].join("_");
 }
 
-function getBodyPartWeight(bodyPart?: string): number {
-  if (!bodyPart) return 1;
+// ============================================================================
+// HEALTH STATUS CALCULATION
+// ============================================================================
 
-  // TODO: this should use string contains/include logic, so "left eye" bodyPart will match "eye" in BODY_PART_WEIGHTS
-  return BODY_PART_WEIGHTS[
-    bodyPart.trim().toLowerCase()
-  ] ?? 1;
-}
+/**
+ * Resolves per-dimension impact weights for a given body part string.
+ *
+ * Resolution order:
+ * 1. Exact, case-insensitive key lookup (fastest path; e.g. `"leg"`)
+ * 2. Substring scan over all keys, longest key first, to match compound
+ *    descriptors the AI might produce: `"left knee"` → `knee`,
+ *    `"lower back"` → `back`, `"ring finger"` → `finger`.
+ *    Longest-key-first prevents a shorter sibling key from winning when a
+ *    more specific one exists (e.g. `"forearm"` matches `"arm"` correctly
+ *    because no `"forearm"` key exists, but `"shoulder blade"` won't
+ *    accidentally match `"arm"` through `"shoulder"` — `"shoulder"` is longer).
+ * 3. {@link DEFAULT_BODY_PART_IMPACT} for unrecognised strings.
+ *
+ * @param bodyPart - Raw body part string from the injury (may be compound or omitted).
+ * @returns Per-dimension impact weights for use in {@link getInjuryScores}.
+ */
+function getBodyPartImpact(bodyPart?: string): BodyPartImpact {
+  if (!bodyPart) return DEFAULT_BODY_PART_IMPACT;
+  const normalized = bodyPart.trim().toLowerCase();
 
-function getInjuryDamageScore(injury: Injury): number {
-  const severity = injury.severity ?? 0.5;
-  const categoryWeight = injury.category ? INJURY_CATEGORY_WEIGHTS[injury.category] : 1;
-  const bodyPartWeight = getBodyPartWeight(injury.bodyPart);
+  // 1. Exact match
+  if (normalized in BODY_PART_WEIGHTS) return BODY_PART_WEIGHTS[normalized];
 
-  return (
-    severity *
-    categoryWeight *
-    bodyPartWeight
-  );
-}
-
-export function calculateHealthStatus(injuries: Injury[]): HealthStatus {
-  let totalDamage = 0;
-  let mobilityDamage = 0;
-  let actionDamage = 0;
-
-  for (const injury of injuries) {
-    const damage = getInjuryDamageScore(injury);
-    totalDamage += damage;
-
-    const bodyPart = injury.bodyPart.toLowerCase();
-    const severity = injury.severity ?? 0.5;
-
-    // TODO: same with these below (about body part string match "eye" vs "left eye")
-    if (['hip', 'leg', 'knee', 'ankle', 'foot'].includes(bodyPart)) {
-      mobilityDamage += damage * 1.5;
-    }
-
-    if (['arm', 'hand', 'finger', 'shoulder'].includes(bodyPart)) {
-      actionDamage += damage * 1.3;
-    }
-
-    if (['head', 'eye', 'neck'].includes(bodyPart)) {
-      actionDamage += damage;
-      mobilityDamage += damage * 0.5;
-    }
-
-    if (injury.category === 'exhaustion') {
-      mobilityDamage += severity;
-      actionDamage += severity;
-    }
+  // 2. Substring scan — longest key first so more specific keys win ties
+  const sortedKeys = Object.keys(BODY_PART_WEIGHTS).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (normalized.includes(key)) return BODY_PART_WEIGHTS[key];
   }
 
-  /**
-   * Calibration constants.
-   *
-   * Increase denominator
-   * => injuries matter less.
-   *
-   * Decrease denominator
-   * => injuries matter more.
-   */
-  const healthPercent = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        100 - (totalDamage / 6) * 100,
-      ),
-    ),
-  );
+  return DEFAULT_BODY_PART_IMPACT;
+}
 
-  const mobilityPercent = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        100 - (mobilityDamage / 4) * 100,
-      ),
-    ),
-  );
+/**
+ * Per-dimension damage scores for a single injury.
+ *
+ * Computation per axis:
+ * - `health`   = severity × category.physical × bodyPart.health
+ * - `mobility` = severity × category.physical × bodyPart.mobility
+ * - `action`   = severity × category.physical × bodyPart.action
+ * - `mental`   = severity × category.mental   × bodyPart.trauma
+ *
+ * Physical axes share `category.physical` because a fracture is categorically
+ * more limiting than a bruise across all physical dimensions, regardless of
+ * body part. The mental axis uses `category.mental` independently to let
+ * each category carry its own psychological weight — a burn and a cut of the
+ * same severity on the same body part inflict very different mental damage.
+ */
+type InjuryScores = { health: number; mobility: number; action: number; mental: number };
 
-  const actionPercent = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(
-        100 - (actionDamage / 4) * 100,
-      ),
-    ),
-  );
-
-  let condition: HealthCondition;
-
-  if (healthPercent >= 85) {
-    condition = 'healthy';
-  } else if (healthPercent >= 65) {
-    condition = 'injured';
-  } else if (healthPercent >= 40) {
-    condition = 'wounded';
-  } else if (healthPercent >= 15) {
-    condition = 'critical';
-  } else {
-    condition = 'dying';
-  }
+function getInjuryScores(injury: Injury): InjuryScores {
+  const severity     = injury.severity ?? 0.5;
+  const catImpact    = INJURY_CATEGORY_WEIGHTS[injury.category ?? 'bruise'] ?? INJURY_CATEGORY_WEIGHTS.bruise;
+  const partImpact   = getBodyPartImpact(injury.bodyPart);
 
   return {
+    health:   severity * catImpact.physical * partImpact.health,
+    mobility: severity * catImpact.physical * partImpact.mobility,
+    action:   severity * catImpact.physical * partImpact.action,
+    mental:   severity * catImpact.mental   * partImpact.trauma,
+  };
+}
+
+/** Clamps a floating-point percentage to a whole integer in [0, 100]. */
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+/** Derives the narrative condition label from the overall health percentage. */
+function deriveCondition(healthPercent: number): HealthCondition {
+  if (healthPercent >= 85) return 'healthy';
+  if (healthPercent >= 65) return 'injured';
+  if (healthPercent >= 40) return 'wounded';
+  if (healthPercent >= 15) return 'critical';
+  return 'dying';
+}
+
+/**
+ * Derives the MC's complete {@link HealthStatus} from active injuries and
+ * optional psychological context from `StoryState`.
+ *
+ * Produces four independently-scaled 0–100 percentages (higher = better):
+ *
+ * | Stat             | Primary drivers                                              |
+ * |------------------|--------------------------------------------------------------|
+ * | `healthPercent`  | Injury severity × category.physical × bodyPart.health        |
+ * | `mobilityPercent`| Lower-body and back injuries (knee:3.0 mobility weight)      |
+ * | `actionPercent`  | Upper-limb injuries (shoulder/hand/wrist: 1.5–1.8 weight)    |
+ * | `mentalPercent`  | Psychological injuries + memory integrity + trauma tags + fear|
+ *
+ * `condition` is derived from `healthPercent` thresholds:
+ * `≥85 healthy | ≥65 injured | ≥40 wounded | ≥15 critical | <15 dying`
+ *
+ * ── mentalInputs ────────────────────────────────────────────────────────────
+ * When omitted, `mentalPercent` reflects only injury-based psychological trauma
+ * (an underestimate — no memory integrity, fear, or trauma tag contribution).
+ * Always pass `mentalInputs` when `StoryState` is available at the call site.
+ *
+ * ── Call-site update required in story.ts ───────────────────────────────────
+ * Replace the existing call in `applyStateDelta`:
+ * ```ts
+ * // Before:
+ * newState.healthStatus = calculateHealthStatus(newState.injuries);
+ *
+ * // After:
+ * newState.healthStatus = calculateHealthStatus(newState.injuries, {
+ *   traumaTagCount:  newState.traumaTags.length,
+ *   memoryIntegrity: newState.memoryIntegrity,
+ *   fearLevel:       newState.flags.fear,
+ * });
+ * ```
+ * Also add the same call at the end of `advanceStoryState`, AFTER `updateFlags`,
+ * so the AI receives an up-to-date status block for the upcoming generation:
+ * ```ts
+ * updatedState.healthStatus = calculateHealthStatus(updatedState.injuries ?? [], {
+ *   traumaTagCount:  updatedState.traumaTags.length,
+ *   memoryIntegrity: updatedState.memoryIntegrity,
+ *   fearLevel:       updatedState.flags.fear,
+ * });
+ * ```
+ * This also fixes a latent bug where `decayInjuries()` was never followed
+ * by a `healthStatus` recalculation, leaving the status stale until the next
+ * AI-authored injury delta arrived.
+ *
+ * ── Calibration ─────────────────────────────────────────────────────────────
+ * Tune the `*_SCORE_CAP` constants above this function to adjust overall
+ * difficulty feel without touching the per-injury weight tables.
+ *
+ * @param injuries - MC's active injury array (pre-healed/pre-decayed).
+ * @param mentalInputs - Psychological context from `StoryState`. Optional but recommended.
+ * @returns Fully populated {@link HealthStatus}.
+ */
+export function calculateHealthStatus(injuries: Injury[], mentalInputs?: MentalHealthInputs): HealthStatus {
+  let healthScore   = 0;
+  let mobilityScore = 0;
+  let actionScore   = 0;
+  let mentalScore   = 0;
+
+  for (const injury of injuries) {
+    const scores = getInjuryScores(injury);
+    healthScore   += scores.health;
+    mobilityScore += scores.mobility;
+    actionScore   += scores.action;
+    mentalScore   += scores.mental;
+  }
+
+  // Apply structural psychological context when available.
+  // Without these, mentalPercent only captures injury-based trauma — an
+  // optimistic reading that misses memory corruption, accumulated fear,
+  // and the cumulative weight of unresolved trauma events.
+  if (mentalInputs) {
+    const { traumaTagCount, memoryIntegrity, fearLevel } = mentalInputs;
+    mentalScore += MEMORY_INTEGRITY_MENTAL_PENALTY[memoryIntegrity] ?? 0;
+    mentalScore += traumaTagCount * TRAUMA_TAG_MENTAL_WEIGHT;
+    mentalScore += FEAR_MENTAL_PENALTY[fearLevel] ?? 0;
+  }
+
+  const healthPercent   = clampPercent(100 - (healthScore   / HEALTH_SCORE_CAP)   * 100);
+  const mobilityPercent = clampPercent(100 - (mobilityScore / MOBILITY_SCORE_CAP) * 100);
+  const actionPercent   = clampPercent(100 - (actionScore   / ACTION_SCORE_CAP)   * 100);
+  const mentalPercent   = clampPercent(100 - (mentalScore   / MENTAL_SCORE_CAP)   * 100);
+
+  return {
+    condition: deriveCondition(healthPercent),
     healthPercent,
     mobilityPercent,
     actionPercent,
-    mentalPercent: 100, // TODO
-    condition,
+    mentalPercent,
   };
 }

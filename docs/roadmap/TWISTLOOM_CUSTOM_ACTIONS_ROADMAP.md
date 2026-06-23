@@ -559,25 +559,116 @@ Same logic from Gate 1: never surface which regex/keyword fired. One generic mes
 
 ---
 
-## 12. API surface proposal ✅ (both endpoints implemented)
+## 12. API surface — frontend integration reference ✅ (both endpoints implemented)
 
-Two endpoints, matching the confirm-then-commit UX from §10:
+Two endpoints, matching the confirm-then-commit UX from §10. The frontend should call `preview` first (shows cost + canonical intent without charging), then `submit` to confirm and trigger generation.
 
-```text
-POST /api/books/:bookId/pages/:pageId/custom-actions/preview
-  body: { text: string }
-  → runs Gate 0 (minus credit charge) + Gate 1 + Gate 2
-  → 200: { outcome: 'allow' | 'allow_as_attempt', preview: { canonicalIntent, cost } }
-  → 200: { outcome: 'reject', category, message }   // friendly message per §11
+### `POST /api/books/:identifier/:pageId/custom-actions/preview`
 
-POST /api/books/:bookId/pages/:pageId/custom-actions/submit
-  body: { text: string, confirmationToken }   // token ties submit to the preview result, prevents re-validation drift
-  → re-runs Gate 0 fully (including charge) — do NOT trust the client-held preview result for charging
-  → constructs canonical Action regardless of 'allow' vs 'allow_as_attempt' (§6), triggers existing page-generation path
-  → 202: { nextPageId, polling info }   // same shape your candidate-generation polling already expects
+**Purpose:** Preview a custom action. Runs Gates 0 + 1 + 2. No credits charged.
+**Auth:** Required (`requireAuth`)
+**Body:**
+```json
+{
+  "text": "I try to pick the lock with my hairpin"
+}
 ```
 
-The `confirmationToken` matters: between preview and submit, story state could have changed (another branch, a thread closing) — re-validating on submit (cheap, same Gate 2 call) rather than trusting a stale preview avoids a stale-plausibility-check bug class.
+**Response (200) — action allowed (allow / allow_as_attempt):**
+```json
+{
+  "outcome": "allow",
+  "preview": {
+    "canonicalIntent": "attempt lockpicking escape",
+    "cost": 3
+  }
+}
+```
+- `outcome`: `"allow"` (succeeds) or `"allow_as_attempt"` (fails in-story, still narratively valid)
+- `preview.canonicalIntent`: 3–8 word summary the AI interpreted
+- `preview.cost`: credits to charge on confirm (constant: `CUSTOM_ACTION_CREDIT_COST = 3`)
+
+**Response (200) — rejected:**
+```json
+{
+  "outcome": "reject",
+  "rejectionCategory": "world_inconsistent",
+  "message": "That doesn't match what's true in this story so far."
+}
+```
+- `rejectionCategory`: one of `content_policy`, `implausible`, `world_inconsistent`, `tonally_wrong`, `bypasses_thread`, `bypasses_ending`
+- `message`: reader-safe string (never leaks hidden state or matched regex)
+
+**Response (400) — Gate 0/1 failure:**
+```json
+{
+  "outcome": "reject",
+  "message": "Custom actions are not available during the finale."
+}
+```
+- Same shape as rejection — `message` is reader-safe.
+
+**Frontend integration:**
+1. Call on textarea blur or when user taps a "preview" button
+2. Show `preview.canonicalIntent` so the reader sees what the AI understood
+3. Show `preview.cost` in the confirm button ("Spend 3 credits?")
+4. Disable submit if `outcome === 'reject'`, show `message` inline
+
+---
+
+### `POST /api/books/:identifier/:pageId/custom-actions/submit`
+
+**Purpose:** Confirm and submit a custom action. Re-runs all gates (do NOT trust the preview result — state may have changed). Charges credits.
+**Auth:** Required (`requireAuth`)
+**Body:**
+```json
+{
+  "text": "I try to pick the lock with my hairpin"
+}
+```
+> No `confirmationToken` needed — the endpoint re-validates from scratch on submit. This is intentional: between preview and submit the story state could have changed (another branch, a thread closing).
+
+**Response (202) — accepted (allow / allow_as_attempt):**
+```json
+{
+  "message": "Custom action submitted successfully. Page generation in progress.",
+  "pollingInfo": {
+    "pollingUrl": "/api/books/the-haunting/page-abc-123/candidates/status",
+    "pollingIntervalMs": 2000,
+    "maxPollingTimeMs": 80000
+  }
+}
+```
+- `pollingInfo.pollingUrl`: poll this endpoint to check when the generated page is ready
+- `pollingInfo.pollingIntervalMs`: suggested interval between polls (2s)
+- `pollingInfo.maxPollingTimeMs`: fallback timeout (80s), show error if exceeded
+
+**Response (400) — rejected (no charge):**
+```json
+{
+  "message": "That action could not be processed."
+}
+```
+- Credits are **never charged** for a rejection — `reject` outcomes cost the reader nothing
+- The reader can retry (up to `CUSTOM_ACTION_MAX_ATTEMPTS_PER_PAGE = 3`)
+
+**Response (402) — insufficient credits:**
+```json
+{
+  "error": "Insufficient credits",
+  "message": "You need at least 3 credits to submit a custom action"
+}
+```
+- The frontend should check `useUser` credit balance before showing the custom-action entry point
+
+**Frontend integration:**
+1. Show a confirmation dialog with the cost and the canonical intent from preview
+2. On confirm, call submit (re-runs validation server-side as a safety net)
+3. On 202, start polling `pollingInfo.pollingUrl` with the provided interval
+4. On 400 (reject), show the message and allow retry (track per-page retry count)
+5. On 402, redirect to credit-purchase flow
+
+**Polling behavior** reuses the exact existing `ReaderPageClient.tsx` pattern — the same `candidates/status` endpoint that tracks AI-curated candidate generation also surfaces the custom-action-generated page once it's ready. No new polling code needed.
 
 ---
 
@@ -648,7 +739,7 @@ Watch two failure modes once this ships: false-rejects (annoyed paying readers, 
 
 ---
 
-## 15. New/modified types — summary diff ✅ (backlog: `Action.source` in `types/story.ts` not added)
+## 15. New/modified types — summary diff ✅ (backlog: `Action.source` in `types/story.ts` not added; `language` field added Jun 22)
 
 ```ts
 // types/story.ts — additive only, non-breaking

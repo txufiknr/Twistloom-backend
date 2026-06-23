@@ -1,7 +1,7 @@
 import type { AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, CharacterPlan, StoryMCCandidate } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { NewThread, StoryThread, ThreadUpdates } from "./story-thread.js";
@@ -1741,3 +1741,16 @@ export type TraitItem = {
   key: string;
   value: string;
 };
+
+export type StoryPlan = {
+  /** Detected language code (ISO 639-1) */
+  language: string;
+  /** Book title idea for the story based on the theme */
+  titleIdea?: string;
+  /** Inferred main character who perfectly fit with the story theme */
+  mcCandidate?: StoryMCCandidate;
+  futureNotes: FutureNote[];
+  characters: CharacterPlan[];
+  // places: PlacePlan[];
+  // threads: ThreadPlan[];
+}

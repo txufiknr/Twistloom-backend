@@ -45,6 +45,7 @@ export const relationshipTypes = [
   "enemy",       // Hostile relationship
   "mentor",      // Teacher/student, guidance relationship
   "rival"        // Competitive relationship
+  // TODO: add "partner"?
 ] as const;
 
 /**
@@ -153,6 +154,14 @@ export const characterStatuses = [
  */
 export type CharacterStatus = typeof characterStatuses[number];
 
+export const characterImportances = ['major', 'supporting', 'minor'] as const;
+export type CharacterImportance = typeof characterImportances[number];
+
+export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'relationships' | 'importance'> & {
+  characterId: string;
+  plannedIntroduction?: string;
+};
+
 /**
  * Available potential twist types for characters
  * 
@@ -220,6 +229,8 @@ export type CharacterMemory = {
   bio: string;
   /** Character visual description, e.g. "tall, pale, messy black hair, hollow eyes" */
   visualDescription: string;
+  /** Character significance */
+  importance: CharacterImportance;
   /** Physical narrative state (active/missing/dead) */
   status: CharacterStatus;
   /** Secret or hint for AI guidance (spoiler) */

@@ -28,6 +28,8 @@
 [@] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
 [@] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
 [ ] isn't WorldClock redundant with timeOfDay?
+[ ] theme validation & schema add `StoryPlan`
+[ ] theme validation field instruction rules for futureNotes & characters
 [ ] page generation output: `images`: prompt, importanceScore
 [ ] page generation output text with "[image_0]"
 [ ] page generation output image rules:
@@ -35,12 +37,38 @@
   - [ ] new character introduced
   - [ ] new place visited
   - [ ] new discovery
+[ ] get page also include `communityActions` (include di enriched page)
+[ ] prompt character include importance
 
 ---
 
-can you:
-- update MD roadmap: add API endpoints frontend should connect to
-- ask AI validator also detect custom action input language (add in CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION), put value to language column in customActions
+Investigate Double key issue:
+Kayanya 2 type yg sama barengan di 1 turn
+[resolvePageDelta] 🔮 futureNoteKeys (6): [
+  'mystery_1',
+  'knowledge_1',
+  'character_1',
+  'mystery_1',
+  'location_1',
+  'relationship_1'
+]
+
+---
+
+UNINTRODUCED CHARACTERS:
+Sarah Morgan (Detective)
+- Personality: Analytical
+- Age: 34
+- Relationship: Jack's partner
+
+- Jack Reyes
+  Partner of Sarah.
+
+- The Surgeon
+  Serial killer.
+  Identity unknown.
+
+In applyStateDelta, process to remove introduced characters
 
 ---
 

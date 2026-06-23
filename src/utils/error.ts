@@ -319,6 +319,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for API key issues
   if (msg.includes('403') || msg.includes('401') || msg.includes('api key') || msg.includes('unauthorized')) {
+    console.log(`[classifyGenAIError] ❓ API key invalid:`, err, typeof err);
     return 'INVALID_API_KEY';
   }
 
