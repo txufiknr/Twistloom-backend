@@ -40,7 +40,7 @@ import {
   PAGE_TRANSLATION_SCHEMA_DEFINITION,
   BULK_PAGE_TRANSLATION_REQUIRED_FIELDS,
   BULK_PAGE_TRANSLATION_SCHEMA_DEFINITION,
-} from "../schema/book.js";
+} from "../schema/story.js";
 import { executePromptForJSON } from "./prompt.js";
 import { formatLanguage } from "./translation.js";
 import { getMainCharacterInfo } from "./characters.js";

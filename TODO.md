@@ -29,9 +29,7 @@
 [x] initializebook: viableEnding should be based on story plan (futureNotes & characters)
 [x] prompt: display `state.plannedCharacters` in "UNINTRODUCED CHARACTERS" doc
 [x] enriched page add: aiProvider?: string; aiModel?: string;
-[ ] rename table: customActions -> userCustomActions
-[ ] db generate & migrate
-[ ] aiPrompt should retry model on rate limit/servide unavailable
+[ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
 
 ---

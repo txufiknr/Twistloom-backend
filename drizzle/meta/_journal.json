@@ -29,6 +29,13 @@
       "when": 1781924842952,
       "tag": "0003_safe_mimic",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1782213678065,
+      "tag": "0004_empty_scarecrow",
+      "breakpoints": true
     }
   ]
 }
