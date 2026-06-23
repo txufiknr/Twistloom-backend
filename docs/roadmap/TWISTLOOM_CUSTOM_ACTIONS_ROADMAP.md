@@ -14,7 +14,6 @@
 > 4. 🚧 Add feature flag (default off) for phased rollout
 > 5. 📝 Frontend: `StoryActionButton.tsx`, `ConfirmationDialog.tsx`, credit-store integration (§10)
 > 6. ⏳ Telemetry dashboard + threshold tuning (§14)
-> 7. ⏳ Template reuse (§9)
 
 ---
 
@@ -842,6 +841,7 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS = [
 - ✅ `POST .../custom-actions/submit` — re-runs validation, charges credits via `executeWithCredits`, persists audit row, logs activity, returns polling info
 - ✅ Credits charged only after validation passes (`allow` / `allow_as_attempt`), never for `reject`
 - ✅ Rejection messages use bland categories (§11), never leak hidden state or matched regex
+- ✅ `communityActions` field in `EnrichedStoryPage` — top 5 custom actions from other readers on the same page, same language, sorted by `plausibilityScore` DESC. Frontend can show these as one-click action suggestions.
 - 📝 Frontend: `StoryActionButton.tsx`, `ConfirmationDialog.tsx`, `credit-purchase-store.ts` wiring — not started
 
 **Phase 4 — General availability + tuning**. ⏳

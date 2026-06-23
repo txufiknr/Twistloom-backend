@@ -32,35 +32,10 @@
 
 ---
 
-- I decided to skip Phase 5 (`customActionTemplates` table dropped)
-- can you ensure to add `customActions` in `EnrichedStoryPage` (for public action selection)? I think need to filter by same language as headerLanguage, and sort it by highest plausibilityScore (limit 5)
-
----
-
-- is WorldClock really property of MC state, not per-page StoryScene?
-- how WorldClock should be displayed in prompt injection? in `getMainCharacterInfo` function (mc state) or `formatCurrentSituationForPrompt` (current situation) or where?
-
----
-
-Investigate Double key issue:
-Kayanya 2 type yg sama barengan di 1 turn
-[resolvePageDelta] 🔮 futureNoteKeys (6): [
-  'mystery_1',
-  'knowledge_1',
-  'character_1',
-  'mystery_1',
-  'location_1',
-  'relationship_1'
-]
-
----
-
 UNINTRODUCED CHARACTERS:
 Sarah Morgan (Detective) - female, 34
 - plannedIntroduction: Analytical
 - Relationship: Jack's partner
-
-In applyStateDelta, process to remove introduced characters
 
 ---
 

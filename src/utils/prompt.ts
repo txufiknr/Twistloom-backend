@@ -40,7 +40,7 @@ import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPa
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
-import { daysBetween, toUtcMidnight } from "./time.js";
+import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -216,8 +216,8 @@ PAGE ENDING RULES:
 
 export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
 - These characters exist in the story canon but have not yet appeared on-page.
-- Add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
 - Introduce them naturally when appropriate for the current scene, pacing, and story momentum.
+- Add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
 - Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.`;
 
 /**
@@ -2397,7 +2397,7 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   const { advancedState: state, actionedPage, previousPages, book } = params;
   const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
   const { mc, storyStartDate } = book;
-  const { contextHistory, plotFlags, factsHistory, inventory, injuries } = state;
+  const { contextHistory, plotFlags, factsHistory, inventory, injuries, hiddenState } = state;
   const { phase, phaseGoal } = getStoryStateInfo(state);
 
   // MC current state: inventory + injuries change every few pages,
@@ -2408,10 +2408,12 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   // To consider: should we consolidate temporal context into "current situation"?
   const storySummary = contextHistory || 'No story summary yet.';
   const storyContext = ((): string => {
+    const { minutesElapsed } = hiddenState?.worldClock ?? {};
     const temporalContext = [
       storyStartDate ? `Story started on: ${storyStartDate}` : '',
       calendarDate ? `Current date: ${calendarDate}` : '',
       elapsedDays ? `Day: ${elapsedDays + 1}` : '',
+      minutesElapsed ? `Time elapsed since last action: ~${formatMinutes(minutesElapsed)}` : '',
     ].filter(Boolean);
 
     if (temporalContext.length) return [
@@ -3643,9 +3645,14 @@ function resolvePageDelta(params: {
   fateIndex?: number
 }) {
   const { generatedStoryPage, advancedState, currentState, expectedPageNumber, context, fateIndex } = params;
-  // TODO: Investigate double key issue
   const futureNoteKeys = advancedState.futureNotes.map(note => note.key);
+  const futureNoteKeysSet = new Set(futureNoteKeys);
+  const duplicateKeys = futureNoteKeys.length - futureNoteKeysSet.size;
   console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
+  if (duplicateKeys) {
+    // TODO: Investigate double key issue
+    console.warn(`[resolvePageDelta] ⚠️ ${duplicateKeys} duplicate futureNoteKeys found. Should be none.`);
+  }
 
   const stateDelta = extractStateDelta({ generatedStoryPage, expectedPageNumber, futureNoteKeys });
   const newState = applyStateDelta(advancedState, stateDelta, generatedStoryPage);

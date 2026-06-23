@@ -21,6 +21,7 @@ export const MIN_ACTION_CHOICES = 1;
 export const MAX_ACTION_CHOICES = 3;
 export const MAX_ACTION_CHOICES_FIRST_PAGE = 2;
 export const MAX_ACTION_CHOICES_FINALE = 2;
+export const MAX_ACTION_CHOICES_COMMUNITY = 5;
 export const MAX_OLDER_PLOT_FLAGS = 15;
 
 export const MAX_BRANCHING_RETRIES = 3;

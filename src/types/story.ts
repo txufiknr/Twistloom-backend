@@ -577,6 +577,8 @@ export type HiddenState = {
   endingPlan?: EndingPlan;
   /** Profile shift detection for dynamic ending mutation */
   profileShift?: ProfileShift;
+  /** In-fiction world clock tracking elapsed time between actions */
+  worldClock?: WorldClock;
 };
 
 /**
@@ -732,20 +734,17 @@ export type MissedEndingTeaser = {
 };
 
 /**
- * In-fiction world clock — tracks time passage to enable
- * NPC schedules and the "world doesn't wait" feeling.
+ * In-fiction world clock — tracks elapsed time between actions.
  *
- * Ties into existing {@link StoryScene.timeOfDay} and calendarDate fields
- * on each page, adding a read-only concept of "how much time has
- * passed since last page" for schedule enforcement.
+ * NOT a duplicate of timeOfDay and calendarDate — those are per-page
+ * sensory scene data. This tracks the *delta* between actions for
+ * schedule enforcement ("the guard leaves at dawn; 45min just passed").
+ *
+ * Minutes are the base unit; can be formatted as "1m", "45m", "2h", etc.
  */
 export type WorldClock = {
-  /** Current time-of-day label */
-  timeOfDay: string;
-  /** Current calendar date (e.g., "2026-07-26") */
-  calendarDate: string;
-  /** Number of in-fiction hours since the reader's last action */
-  hoursElapsed: number;
+  /** In-fiction minutes since the reader's last action */
+  minutesElapsed: number;
   /** Running total of in-fiction days elapsed */
   totalDaysElapsed: number;
 };
@@ -1093,6 +1092,7 @@ export type StateDelta = {
   inventory?: InventoryItem[];
   /** Represents injuries sustained by the MC */
   injuries?: Injury[];
+  // TODO: add `minutesPassed` here?
 
   /** Psychological state */
   psychologicalProfileUpdates?: Partial<PsychologicalProfile>;
@@ -1121,6 +1121,11 @@ export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | ResourceAIProvider | ResourceTimestamp>;
 export type UserStoryPage = PersistedStoryPage & { selectedActions: SelectedAction[] };
 export type ActionedStoryPage = PersistedStoryPage & { selectedAction: SelectedAction };
+export interface CommunityAction {
+  text: string;
+  plausibilityScore: number;
+}
+
 export type EnrichedStoryPage = Partial<UserStoryPage> & {
   originalActionsCount: number;
   translation?: PageTranslation;
@@ -1128,6 +1133,10 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   shownActionHint: string[];
   context?: EnrichedStoryPageContext;
   elapsedDays?: number;
+  /** Previously-submitted custom actions from other readers on this page,
+   * filtered to the same headerLanguage, sorted by plausibilityScore DESC (max 5).
+   * Frontend may surface these as one-click action suggestions. */
+  communityActions?: CommunityAction[];
 };
 
 export type TranslatedStoryPage = Omit<PersistedStoryPage, 'weather' | 'mood'> & { weather?: string; mood?: string; };
@@ -1388,13 +1397,6 @@ export type StoryMCState = {
    * At 0, forces crisis mode that can lock in bad endings.
    */
   sanityState?: SanityState;
-
-  /**
-   * In-fiction world clock tracking time passage.
-   * Enables NPC schedules and schedule-based consequences.
-   * Updated each time the story advances.
-   */
-  worldClock?: WorldClock;
 };
 
 /**

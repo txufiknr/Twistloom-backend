@@ -6,7 +6,7 @@ import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTra
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
-import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState, WorldClock } from "../types/story.js";
+import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState } from "../types/story.js";
 import type { CharacterMemory, Injury } from "../types/character.js";
 import type { PlaceMemory, PlaceMemoryTranslation, PlaceWeather } from "../types/places.js";
 import type { ActionProgressStatus } from "../types/candidate-generation.js";
@@ -168,7 +168,6 @@ export const storyStates = pgTable(
     injuries: jsonb("injuries").$type<Injury[]>().notNull().default(sql`'[]'::jsonb`), // MC injuries
     healthStatus: jsonb("health_status").$type<HealthStatus>(), // MC's health status
     sanityState: jsonb("sanity_state").$type<SanityState>(), // Reader-facing sanity resource
-    worldClock: jsonb("world_clock").$type<WorldClock>(), // In-fiction world clock tracking
     contextHistory: text("context_history").notNull().default(""), // AI-summarized story context from page 1 to current
     isMajorEvent: boolean("is_major_event").notNull().default(false),
     source: text("source").$type<StoryStateSource>().notNull().default("original"),

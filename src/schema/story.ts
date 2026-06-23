@@ -658,6 +658,7 @@ export const HIDDEN_STATE_DEFAULTS: HiddenState = {
   truthLevel: 'mostly_true' satisfies TruthLevel,
   threatProximity: 'distant' satisfies ThreatProximity,
   realityStability: 'stable' satisfies RealityStability,
+  worldClock: undefined,
 }
 
 export const SANITY_STATE_DEFAULTS: SanityState = {
@@ -691,7 +692,6 @@ export const STORY_STATE_DEFAULTS: Omit<StoryState, 'pageId' | 'page' | 'maxPage
   isMajorEvent: false,
   inventory: [],
   injuries: [],
+  plannedCharacters: [],
   sanityState: SANITY_STATE_DEFAULTS,
-  worldClock: undefined,
-  plannedCharacters: []
 };

@@ -457,9 +457,8 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       if (secrets?.length) headerTags.push('has secret');
       if (status === 'dead' || status === 'missing') headerTags.push(status); // Add extreme physical states to header
 
-      const flagString = headerTags.length ? ` [${headerTags.join(', ')}]` : '';
       const roleString = [role, importance].filter(Boolean).join(', ');
-      const mainInfo = `· ${knownName} (${roleString}) - ${gender}${flagString} - [ID: ${id}]`;
+      const mainInfo = buildCharacterHeader(knownName, roleString, gender, id, headerTags);
 
       const details = [];
       
@@ -542,10 +541,76 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
   return `${mcInfo}\n\n${sideCharactersFormatted}`;
 }
 
-// TODO: can you help me format characterPlans for prompt injection? make it DRY with formatCharactersForPrompt
+/**
+ * Shared helper: builds the header line used by both introduced and planned
+ * character formatters.
+ *
+ * @param knownName - Display name shown in the header
+ * @param roleString - Role + importance joined (e.g. `"security guard, major"`)
+ * @param gender - Character gender
+ * @param id - Unique character ID
+ * @param headerTags - Optional quick-glance flags (status, secrets, etc.)
+ * @returns Formatted header line
+ *
+ * @example
+ * ```typescript
+ * buildCharacterHeader("Tom", "security guard, major", "male", "tom_m");
+ * // → · Tom (security guard, major) - male - [ID: tom_m]
+ *
+ * buildCharacterHeader("Lisa", "teacher, supporting", "female", "lisa_park", ["suspicious", "has secret"]);
+ * // → · Lisa (teacher, supporting) - female [suspicious, has secret] - [ID: lisa_park]
+ * ```
+ */
+function buildCharacterHeader(knownName: string, roleString: string, gender: string, id: string, headerTags?: string[]): string {
+  const flagString = headerTags?.length ? ` [${headerTags.join(', ')}]` : '';
+  return `· ${knownName} (${roleString}) - ${gender}${flagString} - [ID: ${id}]`;
+}
+
+/**
+ * Formats planned characters (not yet introduced) for prompt injection.
+ *
+ * Provides a concise overview of characters that are scheduled for future
+ * introduction, including their planned narrative context.
+ *
+ * @param characterPlans - Array of planned character entries
+ * @returns Formatted string ready for prompt inclusion
+ *
+ * @example
+ * ```
+ * · Sarah Chen (major) - female - [ID: sarah_c]
+ *   - Real name: "Sarah Chen"
+ *   - Bio: Shy librarian with hidden past and mysterious family connections
+ *   - Visual description: Tall, pale, messy black hair, hollow eyes
+ *   - Planned introduction: At the library, when MC comes looking for answers
+ *
+ * · Tom Martinez (security guard, major) - male - [ID: tom_m]
+ *   - Real name: "Tom Martinez"
+ *   - Bio: Former military medic
+ *   - Visual description: Tall, muscular build with military haircut and tired eyes
+ *   - Planned introduction: During the blackout scene at the warehouse
+ */
 export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]): string {
-  if (!characterPlans.length) return 'No planned characters.'
-  return '';
+  if (!characterPlans.length) return 'No planned characters.';
+
+  return characterPlans
+    .map((plan) => {
+      const { characterId, knownName, realName, gender, role, bio, visualDescription, importance, plannedIntroduction } = plan;
+
+      const roleString = [role, importance].filter(Boolean).join(', ');
+      const mainInfo = buildCharacterHeader(knownName, roleString, gender, characterId);
+
+      const details: string[] = [];
+
+      if (realName && realName !== knownName) {
+        details.push(`  - Real name: "${realName}"`);
+      }
+      if (bio) details.push(`  - Bio: ${bio}`);
+      if (visualDescription) details.push(`  - Visual description: ${visualDescription}`);
+      if (plannedIntroduction) details.push(`  - Planned introduction: ${plannedIntroduction}`);
+
+      return details.length ? `${mainInfo}\n${details.join('\n')}` : mainInfo;
+    })
+    .join('\n\n');
 }
 
 /**

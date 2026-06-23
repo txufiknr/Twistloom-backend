@@ -767,7 +767,6 @@ export function mapStoryStateFromDb(dbStoryState: DBStoryState): StoryState {
     isMajorEvent: dbStoryState.isMajorEvent,
     injuries: dbStoryState.injuries,
     sanityState: dbStoryState.sanityState || undefined,
-    worldClock: dbStoryState.worldClock || undefined,
   };
 }
 

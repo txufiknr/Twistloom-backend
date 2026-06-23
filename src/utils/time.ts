@@ -272,7 +272,6 @@ export function iso8601DurationToSeconds(iso: string | undefined): number | unde
 
 /**
  * Gets the current UTC date in YYYY-MM-DD format
- * 
  * @returns Current UTC date string
  */
 export function getCurrentUTCDay(): string {
@@ -282,3 +281,10 @@ export function getCurrentUTCDay(): string {
   const day = String(now.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
+
+// TODO: jsdoc
+export function formatMinutes(m: number): string {
+  if (m >= 120) return `${Math.round(m / 60)}h`;
+  if (m >= 60) return `1h ${m % 60}m`;
+  return `${m}m`;
+};

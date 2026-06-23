@@ -12,9 +12,9 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, users, userPageProgress, userCompletedBooks, userActionHints } from "../db/schema.js";
+import { pages, books, users, userPageProgress, userCompletedBooks, userActionHints, customActions } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
-import { and, eq, asc, or, desc, sql } from "drizzle-orm";
+import { and, eq, asc, or, desc, ne, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
@@ -41,6 +41,7 @@ import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { AIDocument, AIPromptDocuments, AIResponseProvider } from "../types/ai-chat.js";
 import type { StoryMC } from "../types/character.js";
 import type { ImageUploadSource } from "../types/image.js";
+import { MAX_ACTION_CHOICES_COMMUNITY } from "../config/story.js";
 
 /**
  * LRU cache for enriched book data
@@ -1277,7 +1278,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   const pageToTranslate = targetLanguage ? await getPageToTranslate(dbPage) : undefined;
 
   // Parallelize independent database queries and API calls
-  const [selectedActions, storyState, translation, shownActionHint] = await Promise.all([
+  const [selectedActions, storyState, translation, shownActionHint, communityActions] = await Promise.all([
     // Query user's chosen action for this page (if authenticated)
     userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
 
@@ -1293,7 +1294,24 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     }).then(result => result.translation) : Promise.resolve(undefined),
 
     // Fetch user's purchased action hints for this page (if authenticated)
-    userId ? getUserActionHints(userId, dbPage.id) : Promise.resolve([])
+    userId ? getUserActionHints(userId, dbPage.id) : Promise.resolve([]),
+
+    // Fetch community custom actions for this page — same language, non-rejected, highest plausibility first
+    dbRead
+      .select({
+        text: customActions.originalText,
+        plausibilityScore: sql<number>`COALESCE(${customActions.plausibilityScore}, 0)`,
+      })
+      .from(customActions)
+      .where(and(
+        eq(customActions.bookId, bookId),
+        eq(customActions.pageId, pageId),
+        ...(userId ? [ne(customActions.userId, userId)] : []),
+        ne(customActions.outcome, 'reject'),
+        eq(customActions.language, headerLanguage ?? language ?? 'en'),
+      ))
+      .orderBy(desc(customActions.plausibilityScore))
+      .limit(MAX_ACTION_CHOICES_COMMUNITY),
   ]);
 
   if (targetLanguage && translation) {
@@ -1373,6 +1391,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     translation,
     shownActionHint,
     context,
+    communityActions: communityActions.length > 0 ? communityActions : undefined,
   };
 
   // Cache the result only if page has complete actions (no pending generation)

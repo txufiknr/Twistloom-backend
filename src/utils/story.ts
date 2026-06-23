@@ -1379,59 +1379,68 @@ export function updateSanity(state: StoryState, context: NarrativeContext): void
 }
 
 /**
- * Simple time-of-day progression labels for the world clock.
- */
-const TIME_OF_DAY_PROGRESSION = ['dawn', 'morning', 'afternoon', 'evening', 'night', 'late_night'] as const;
-type TimeOfDayLabel = typeof TIME_OF_DAY_PROGRESSION[number];
-
-/**
- * Advances the in-fiction world clock based on scene type and momentum.
+ * Advances the in-fiction world clock based on scene type.
  *
- * Updates timeOfDay, calendarDate, hoursElapsed, and totalDaysElapsed.
- * The amount of time elapsed depends on the scene type (horror scenes
- * may advance more slowly than transitions).
+ * Sets minutesElapsed (how much in-fiction time since last action)
+ * and increments totalDaysElapsed on wrap-around.
+ *
+ * Minutes are the base unit; can be formatted as "1m", "45m", "2h" etc.
  *
  * @param state - Current story state (mutated in place)
  * @param sceneType - The narrative function of the current page
  */
 export function updateWorldClock(state: StoryState, sceneType?: SceneType): void {
-  // Initialize with defaults
-  if (!state.worldClock) {
-    state.worldClock = {
-      timeOfDay: 'night',
-      calendarDate: 'Day 1',
-      hoursElapsed: 0,
+  if (!state.hiddenState.worldClock) {
+    state.hiddenState.worldClock = {
+      minutesElapsed: 0,
       totalDaysElapsed: 0,
     };
   }
 
-  const clock = state.worldClock;
+  const clock = state.hiddenState.worldClock;
 
-  // Determine time passage based on scene type
-  // Relaxed scenes: more time passes (travel, waiting, recovery)
-  // Intense scenes: less time passes (focused moments)
-  let hoursPassed = 1;
-  if (sceneType === 'transition' || sceneType === 'aftermath') {
-    hoursPassed = 3;
-  } else if (sceneType === 'horror' || sceneType === 'dream') {
-    hoursPassed = 0.5;
-  } else if (sceneType === 'investigation') {
-    hoursPassed = 2;
+  // TODO: this can be innacurate/redundant with `timeOfDay` which is free string (can be "morning" or "HH:mm")
+  // what about we make AI next page generation outputs `minutesPassed` (add to `StateDeltaGeneration`)?
+  // if AI not providing, then fallback to heuristic below
+
+  // Time passage by scene type (in minutes):
+  // - Horror/dream: seconds-to-minutes (tense, focused moments)
+  // - Dialogue/confrontation: minutes
+  // - Transition/aftermath: tens-of-minutes to hours
+  // - Investigation: moderate exploration time
+  let minutesPassed = 5;
+  switch (sceneType) {
+    case 'horror':
+    case 'dream':
+      minutesPassed = 2;
+      break;
+    case 'dialogue':
+    case 'confrontation':
+      minutesPassed = 5;
+      break;
+    case 'investigation':
+    case 'revelation':
+      minutesPassed = 15;
+      break;
+    case 'escape':
+      minutesPassed = 3;
+      break;
+    case 'transition':
+      minutesPassed = 45;
+      break;
+    case 'aftermath':
+      minutesPassed = 30;
+      break;
+    case 'deception':
+      minutesPassed = 10;
+      break;
   }
 
-  clock.hoursElapsed = hoursPassed;
+  clock.minutesElapsed = minutesPassed;
 
-  // Advance timeOfDay
-  const currentIdx = TIME_OF_DAY_PROGRESSION.indexOf(clock.timeOfDay as TimeOfDayLabel);
-  if (currentIdx >= 0 && currentIdx < TIME_OF_DAY_PROGRESSION.length - 1) {
-    // Move to next time window
-    clock.timeOfDay = TIME_OF_DAY_PROGRESSION[currentIdx + 1];
-  } else {
-    // Wrap around — new day
-    clock.timeOfDay = 'dawn';
-    clock.totalDaysElapsed += 1;
-    clock.calendarDate = `Day ${clock.totalDaysElapsed + 1}`;
-  }
+  // Accumulate to days (roughly, for schedule purposes)
+  const totalMinutes = (clock.totalDaysElapsed * 24 * 60) + minutesPassed;
+  clock.totalDaysElapsed = Math.floor(totalMinutes / (24 * 60));
 }
 
 /**
