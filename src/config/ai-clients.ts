@@ -138,14 +138,6 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
 };
 
 /**
- * GitHub Models inference (OpenAI-compatible). 
- * Primary model first; mini as fallback. Ideal for absolute JSON structure rescue.
- */
-export const AI_CHAT_MODELS_TINY: AIModelSelection = {
-  github: ['openai/gpt-4o', 'openai/gpt-4o-mini']
-};
-
-/**
  * Creative story writing (large and creative models) - in fallback order.
  * Sorted strictly from highest emotional/artistic prose quality down to functional/rigid prose.
  * 
@@ -195,6 +187,7 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
   cerebras: [
     'gpt-oss-120b', // Production model; strong general quality
     'zai-glm-4.7',
+    // TODO: is it really available now?
     // llama-3.3-70b scheduled for deprecation Feb 16 2026 — verify at https://cloud.cerebras.ai
     'llama-3.3-70b', // Instantaneous generation. Action-oriented, direct, punchy pulp fiction. (along with qwen-3-32b - scheduled for deprecation on February 16, 2026)
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
@@ -224,6 +217,7 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
     'openai/gpt-oss-120b',
     'llama-3.1-8b-instant',
   ],
+  // TODO: is it really available now?
   cerebras: ['llama-3.3-70b'],
   nvidia: ['meta/llama-3.3-70b-instruct'],
 };
@@ -232,7 +226,7 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
  * Small but creative model for idea brainstorming
  */
 export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
-  ...AI_CHAT_MODELS_TINY,
+  github: ['openai/gpt-4o', 'openai/gpt-4o-mini'],
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash',

@@ -275,12 +275,12 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   knownName: { type: 'string', description: `Preferred alias, known as, nick, or reference based on recognitionLevel. If really unknown, use descriptions, pronouns, roles, or words interpreted by MC.` },
   realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
   role: { type: 'string', description: 'Role or occupation known to the MC.' },
-  gender: { type: "string", enum: [...genders] },
+  gender: { type: 'string', enum: [...genders] },
   bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
   visualDescription: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
-  plannedIntroduction: { type: "string" },
-  importance: { type: "string", enum: [...characterImportances] },
-  relationships: { type: 'array', items: {
+  plannedIntroduction: { type: 'string', description: 'Explain how this character planned to be introduced' },
+  importance: { type: 'string', enum: [...characterImportances] },
+  relationships: { type: 'array', description: 'Only between side characters (excluding MC). Empty if characters is less than two.', items: {
     type: 'object',
     properties: {
       targetId: { type: 'string' },

@@ -33,8 +33,6 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
 export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROPRIATE_CONTENT', 'SUSPICIOUS_PATTERN', 'INVALID_THEME', 'POLICY_VIOLATION', 'OTHER', 'NONE'];
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
 
-// TODO: [github] 💥 Model openai/gpt-4o failed, trying next model: INVALID_SCHEMA
-// `INVALID_SCHEMA` is classified by `classifyGenAIError`
 export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonProperty> = {
   isViolating: { type: 'boolean', description: 'If theme is valid and safe, output false' },
   category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES, description: 'If theme is valid and safe, output "NONE"' },
@@ -62,8 +60,8 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`
   },
-  futureNotes: { type: 'array', items: FUTURE_NOTE_SCHEMA },
-  characters: { type: 'array', items: {
+  futureNotes: { type: 'array', description: 'Add if theme is valid and and provide any.', items: FUTURE_NOTE_SCHEMA },
+  characters: { type: 'array', description: 'Add if theme is valid and and provide any.', items: {
     type: 'object',
     properties: CHARACTER_PLAN_PROPERTIES,
     required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'relationships', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],

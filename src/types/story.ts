@@ -735,7 +735,7 @@ export type MissedEndingTeaser = {
  * In-fiction world clock — tracks time passage to enable
  * NPC schedules and the "world doesn't wait" feeling.
  *
- * Ties into existing StoryScene.timeOfDay and calendarDate fields
+ * Ties into existing {@link StoryScene.timeOfDay} and calendarDate fields
  * on each page, adding a read-only concept of "how much time has
  * passed since last page" for schedule enforcement.
  */

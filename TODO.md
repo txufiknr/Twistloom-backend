@@ -14,31 +14,29 @@
 [x] include semua yang di table userCounters ke UserStats
 [x] isn't `currentDay` state redundant?
 [x] enriched page tambah elapsedDays
-[x] currentDay harusnya 1-based (kalo 0 elapsedDays)
-[x] hapus semua "TODO: add calendarDate"
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [x] placesRelationship: source, target (placeId), distance, obstacle
 [x] ensure realityStability based on momentum and sceneType, not page count
 [x] enriched page context tambah threads: StoryThread[]; (only open/developing status)
 [x] display place.knownConnections & parentPlaceId in prompt
 [x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
-[x] CURRENT SITUATION (What just happened): gausah date
-[x] genaiclassify error log invalid_schema
 [x] calculate action tendency
-[@] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
-[@] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
-[ ] isn't WorldClock redundant with timeOfDay?
-[ ] theme validation & schema add `StoryPlan`
-[ ] theme validation field instruction rules for futureNotes & characters
-[ ] page generation output: `images`: prompt, importanceScore
-[ ] page generation output text with "[image_0]"
-[ ] page generation output image rules:
-  - [ ] major event
-  - [ ] new character introduced
-  - [ ] new place visited
-  - [ ] new discovery
-[ ] get page also include `communityActions` (include di enriched page)
-[ ] prompt character include importance
+[x] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
+[x] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
+[x] theme validation & schema add `StoryPlan`
+[x] theme validation field instruction rules for futureNotes & characters
+[x] prompt character include importance
+[ ] initializebook: viableEnding should be based on story plan (futureNotes & characters)
+
+---
+
+- I decided to skip Phase 5 (`customActionTemplates` table dropped)
+- can you ensure to add `customActions` in `EnrichedStoryPage` (for public action selection)? I think need to filter by same language as headerLanguage, and sort it by highest plausibilityScore (limit 5)
+
+---
+
+- is WorldClock really property of MC state, not per-page StoryScene?
+- how WorldClock should be displayed in prompt injection? in `getMainCharacterInfo` function (mc state) or `formatCurrentSituationForPrompt` (current situation) or where?
 
 ---
 
@@ -56,17 +54,9 @@ Kayanya 2 type yg sama barengan di 1 turn
 ---
 
 UNINTRODUCED CHARACTERS:
-Sarah Morgan (Detective)
-- Personality: Analytical
-- Age: 34
+Sarah Morgan (Detective) - female, 34
+- plannedIntroduction: Analytical
 - Relationship: Jack's partner
-
-- Jack Reyes
-  Partner of Sarah.
-
-- The Surgeon
-  Serial killer.
-  Identity unknown.
 
 In applyStateDelta, process to remove introduced characters
 

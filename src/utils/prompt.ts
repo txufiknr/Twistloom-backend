@@ -808,12 +808,9 @@ function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   // TODO: add only if characterPlans.length
   // UNINTRODUCED CHARACTERS RULES
   // - These characters exist in the story canon but have not yet appeared on-page.
-  // - When an unintroduced character is genuinely introduced (physically present) in this page, add them to characterUpdates.newCharacters.
-  // - You may introduce them naturally when appropriate for the current scene, pacing, and story momentum.
-  // - Do not force introductions solely because a character is available.
-  // - Mere mentions, memories, rumors, references, text messages, documents, photographs, or second-hand discussion do NOT count as introduction.
-  // - Preserve all provided names, roles, relationships, and core details when introducing planned characters.
-  // - Major characters should generally receive a meaningful introduction scene rather than a brief mention.
+  // - Add to characterUpdates.newCharacters when an unintroduced character is genuinely introduced (physically present) in this page.
+  // - Introduce them naturally when appropriate for the current scene, pacing, and story momentum.
+  // - Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.
 
   return [
     `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}`,

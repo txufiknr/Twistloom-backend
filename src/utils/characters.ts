@@ -309,10 +309,10 @@ export function getMainCharacterInfo(params: {
   } = healthStatus ?? {};
 
   mcInfo.push(`- Condition: ${condition}`);
-  mcInfo.push(`- Health: ${healthPercent}%`);
-  mcInfo.push(`- Mobility: ${mobilityPercent}%`);
-  mcInfo.push(`- Action Capability: ${actionPercent}%`);
-  mcInfo.push(`- Mental State: ${mentalPercent}%`);
+  mcInfo.push(`- Health (Physical vitality): ${healthPercent}%`);
+  mcInfo.push(`- Mobility (Flee/escape capability): ${mobilityPercent}%`);
+  mcInfo.push(`- Action (Tool/hand use): ${actionPercent}%`);
+  mcInfo.push(`- Mental State (Psychological integrity): ${mentalPercent}%`);
 
   // Format inventory items with detailed nested information
   if (inventory.length) {

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean, varchar } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
@@ -1500,31 +1500,5 @@ export const customActions = pgTable(
     index("custom_actions_book_idx").on(t.bookId),
     index("custom_actions_user_idx").on(t.userId),
     index("custom_actions_outcome_idx").on(t.outcome),
-  ]
-);
-
-/**
- * Custom action templates table
- * @summary Curated cross-book template pool for community action reuse (Tier 2)
- *
- * Populated offline from high-quality custom actions. Uses Jaccard similarity
- * for deduplication rather than pgvector/embeddings.
- */
-export const customActionTemplates = pgTable(
-  "custom_action_templates",
-  {
-    id: id(),
-    canonicalIntent: text("canonical_intent").notNull(),
-    sceneType: varchar("scene_type", { length: 32 }),
-    momentum: varchar("momentum", { length: 16 }),
-    actionType: varchar("action_type", { length: 32 }),
-    usageCount: integer("usage_count").default(1).notNull(),
-    approvalScore: real("approval_score").default(0.5).notNull(),
-    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).defaultNow().notNull(),
-    createdAt,
-    updatedAt,
-  },
-  (t) => [
-    index("custom_action_templates_scene_momentum_idx").on(t.sceneType, t.momentum),
   ]
 );

@@ -317,10 +317,11 @@ export function extractStateDelta(params: {
 }
 
 export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, expectedPageNumber: number, futureNoteKeys: string[]): FutureNote[] {
+  const registeredKeys = new Set(futureNoteKeys);
   return notes?.map<FutureNote>(note => {
     const tag = note.tag || 'other';
-    const key = ensureUniqueId(tag, new Set(futureNoteKeys), { alwaysShowSuffix: true });
-    futureNoteKeys.push(key);
+    const key = ensureUniqueId(tag, registeredKeys, { alwaysShowSuffix: true });
+    registeredKeys.add(key);
     if (note.relatedThreadId === 'none') delete note.relatedThreadId; // Exclude `relatedThreadId` key if value is "none"
     return { ...note, addedAtPage: expectedPageNumber, key };
   }) ?? [];
@@ -965,7 +966,7 @@ function processTagUpdates<T extends TagItem>(
   const isSameItem = (a: TagItem, b: TagItem): boolean => keyOf(a) === keyOf(b);
 
   // 1. Remove specified items
-  if (updates.remove && updates.remove.length > 0) {
+  if (updates.remove?.length) {
     targetArray.splice(
       0,
       targetArray.length,
@@ -974,7 +975,7 @@ function processTagUpdates<T extends TagItem>(
   }
 
   // 2. Add new items (avoid duplicates)
-  if (updates.add && updates.add.length > 0) {
+  if (updates.add?.length) {
     for (const item of updates.add) {
       if (!targetArray.some(existing => isSameItem(existing, item))) {
         targetArray.push(item);

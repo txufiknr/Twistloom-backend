@@ -204,11 +204,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           'category',
           'confidence',
           'detectedItems',
-          // 'suggestion',
-          // 'comment',
           'language',
-          // 'titleIdea',
-          // 'mcCandidate',
         ] satisfies (keyof AIValidationResult)[],
         fallbackField: 'suggestion',
         baseOptions: {
@@ -234,6 +230,9 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
   - knownName: Preferred alias or nick referred by other characters.
   - bio: infer from theme if provided. Must include at least one psychological trait that will be used against them.
+- futureNotes: add only if theme input is valid and provide any forward-looking narrative obligation. Don't invent.
+- characters: add only if theme input is valid and provide any side characters information (beside MC). Don't invent.
+- characters.relationships: only between side characters (excluding MC). Empty if characters is less than two.
 
 Comment structure (only if theme is valid):
 - Use creative & thriller-themed wording

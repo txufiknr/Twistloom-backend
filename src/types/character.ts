@@ -261,6 +261,7 @@ export type CharacterMemory = {
 
 export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio'> & { characterId: string };
 
+// TODO: include schedule?
 export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships' | 'schedule'> & {
   characterId: string;
   pastInteractions?: string[];
@@ -468,7 +469,14 @@ export type HealthCondition = 'healthy' | 'injured' | 'wounded' | 'critical' | '
 /**
  * Complete health status derived deterministically from `StoryMCState.injuries`
  * and optional `MentalHealthInputs`.
- *
+ * 
+ * Axis:
+ * - health: Systemic vitality drain
+ * - mobility: Ability to flee and climb — the primary thriller tension axis
+ * - action: Ability to use hands/tools — doors, phones, weapons, climbing
+ * - trauma: Psychological weight of being injured there
+ * 
+ * Note:
  * Never authored by AI — always computed by `calculateHealthStatus`.
  *
  * Four independently-scaled 0–100 percentages (higher = better):
@@ -483,10 +491,8 @@ export type HealthCondition = 'healthy' | 'injured' | 'wounded' | 'critical' | '
  * `condition` is a narrative label derived from `healthPercent` thresholds:
  * ≥ 85 → healthy | ≥ 65 → injured | ≥ 40 → wounded | ≥ 15 → critical | < 15 → dying
  *
- * Rename note: `combatPercent` was renamed to `actionPercent` for thriller
- * appropriateness. Twistloom MCs don't "fight" — they manipulate objects,
- * open doors, climb, and wield improvised items. Project-wide replace:
- * `combatPercent` → `actionPercent`.
+ * `actionPercent` for thriller appropriateness to manipulate objects,
+ * open doors, climb, and wield improvised items.
  */
 export type HealthStatus = {
   /** Narrative label useful for UI display. */

@@ -816,7 +816,7 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS = [
 
 ## 16. Implementation roadmap
 
-> Legend: ✅ done | 🚧 partial | 📝 todo (frontend) | ⏳ not started
+> Legend: ✅ done | 🚧 partial | 📝 todo (frontend) | ⏳ not started | ⏩ skipped
 
 **Phase 0 — Foundations** (types, config constants, DB migration). 🚧
 - ✅ `types/custom-action.ts` — all types defined
@@ -848,10 +848,10 @@ export const CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS = [
 - ⏳ Threshold tuning (`plausibilityScore`/`progressionScore` at 0.5, not yet empirically validated)
 - ⏳ Distribution dashboards / monitoring
 
-**Phase 5 — Template reuse (optional)**. ⏳
-- ✅ `customActionTemplates` DB table defined (empty, unused)
-- ⏳ Tier 1 per-book reuse (Jaccard-similarity intent dedup within book)
-- ⏳ Tier 2 cross-book templates (only after Phase 4 data supports it)
+**Phase 5 — Template reuse (optional)**. ⏩
+- ⏩ `customActionTemplates` DB table dropped
+- ⏩ Tier 1 per-book reuse (Jaccard-similarity intent dedup within book)
+- ⏩ Tier 2 cross-book templates (only after Phase 4 data supports it)
 
 ---
 
