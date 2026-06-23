@@ -27,39 +27,20 @@
 [x] theme validation field instruction rules for futureNotes & characters
 [x] prompt character include importance
 [x] initializebook: viableEnding should be based on story plan (futureNotes & characters)
+[x] prompt: display `state.plannedCharacters` in "UNINTRODUCED CHARACTERS" doc
+[x] enriched page add: aiProvider?: string; aiModel?: string;
 [ ] rename table: customActions -> userCustomActions
-[ ] prompt: display `state.plannedCharacters` in "UNINTRODUCED CHARACTERS:" section
+[ ] db generate & migrate
+[ ] aiPrompt should retry model on rate limit/servide unavailable
+[ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
 
 ---
 
-isn't `state.hiddenState.worldClock.totalDaysElapsed` redundant or can be inconsistent with `page.elapsedDays` (calculated from `page.calendarDate` AI-authored increment) (SSOT violation)?
-should we omit AI next page generation from outputting `calendarDate` and trust `minutesPassed` calculation to set `calendarDate` heuristically & consistently based on `totalDaysElapsed`?
+[github] ✅ openai/gpt-4o buat theme idea
+[nvidia] ✅ meta/llama-3.3-70b-instruct buat theme validation
+[cerebras] ✅ gpt-oss-120b buat page generation
 
----
-
-src\config\characters.ts
-src\types\character.ts
-src\types\story.ts
-src\utils\characters.ts
-src\utils\player-profile.ts
-src\utils\story.ts
-
-please examine my StoryState about `injuries` state and `healthStatus` calculation logic
-to focus:
-`INJURY_CATEGORY_WEIGHTS` and `BODY_PART_WEIGHTS` configs
-`calculateHealthStatus` and underlying functions
-
-my goal is to obtain a "health bar" for gamified Twistloom UIX and maybe also for AI prompt context itself (so AI can see MC's status at-a-glance without re-calculate from injuries array)
-can you review and correct my implementation, including the concerns in TODO comments, add `mentalPercent` in `HealthStatus`?
-should we refactor `BODY_PART_WEIGHTS` to weight mobility & combat granularly?
-is it really fits with Twistloom which is thriller, not a fantasy?
-please elaborate
-finally, provide me fully refined files drop-in, complete with refined jsdocs
-
----
-
-[ ] ask claude to write refined github profile readme.md based on our past chats, highlight about my AI/LLM skills
-[ ] github profile readme: video + live demo
+[classifyGenAIError] ❓ Schema invalid: BadRequestError: 400 {"error":{"message":"This model does not support response format `json_schema`. See supported models at https://console.groq.com/docs/structured-outputs#supported-models","type":"invalid_request_error","param":"response_format"}}
 
 ---
 

@@ -2415,12 +2415,12 @@ function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): st
   // To consider: should we consolidate temporal context into "current situation"?
   const storySummary = contextHistory || 'No story summary yet.';
   const storyContext = ((): string => {
-    const { minutesElapsed } = hiddenState?.worldClock ?? {};
+    const { elapsedMinutes } = hiddenState?.worldClock ?? {};
     const temporalContext = [
       storyStartDate ? `Story started on: ${storyStartDate}` : '',
       calendarDate ? `Current date: ${calendarDate}` : '',
       elapsedDays ? `Day: ${elapsedDays + 1}` : '',
-      minutesElapsed ? `Time elapsed since last action: ~${formatMinutes(minutesElapsed)}` : '',
+      elapsedMinutes ? `Time elapsed since last action: ~${formatMinutes(elapsedMinutes)}` : '',
     ].filter(Boolean);
 
     if (temporalContext.length) return [

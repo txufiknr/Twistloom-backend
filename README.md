@@ -1,4 +1,23 @@
-# Twistloom Backend
+<div align="center">
+
+<table>
+<tr>
+<td>
+<img src="https://twistloom-web.vercel.app/images/logo/logo_192.png?raw=true" width="100"/>
+</td>
+<td>
+
+<p align="left" style="font-family: Georgia, Cambria, 'Times New Roman', Times, serif; font-size: 32px; font-weight: bold; margin-bottom: 0">
+  Twistloom
+</p>
+
+</td>
+</tr>
+</table>
+
+[![Twistloom](https://img.shields.io/badge/🩸_Twistloom-AI_Horror_Interactive_Fiction-7c3aed?style=for-the-badge&labelColor=1a0533&logoColor=white)](https://twistloom-web.vercel.app)
+[![Stack](https://img.shields.io/badge/Stack-Next.js_16_•_Express_•_Neon_•_Upstash-a78bfa?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
+[![AI](https://img.shields.io/badge/AI-9_LLM_Providers-6d28d9?style=for-the-badge&labelColor=0d0d1a)](https://twistloom-web.vercel.app)
 
 ![Node.js Version](https://img.shields.io/badge/node-24+-green?logo=node.js)
 ![TypeScript](https://img.shields.io/badge/typescript-blue?logo=typescript)
@@ -9,11 +28,21 @@
 ![Vercel](https://img.shields.io/badge/vercel-000000?logo=vercel)
 ![License](https://img.shields.io/badge/license-proprietary-red)
 
-## 👋 Know Twistloom
+</div>
+
+<div style="background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 20px; color: #c9d1d9;">
+
+<p align="center" style="font-family: Georgia, Cambria, 'Times New Roman', Times, serif; font-size: 16px; font-weight: 500; margin-bottom: 0; text-align: center; color: red">
+  An AI-powered psychological horror interactive fiction platform. The story adapts to every choice — powered by a multi-LLM waterfall, narrative momentum engine, and adaptive health systems.
+</p>
+
+</div>
 
 A sophisticated psychological thriller branching story engine backend that delivers immersive, AI-powered interactive narratives. Built with cutting-edge TypeScript and modern web technologies, this platform creates dynamic, choice-driven stories where readers' decisions shape the outcome through intelligent character psychology, environmental storytelling, and multi-layered horror mechanics. The system leverages advanced AI providers to generate compelling content that adapts to user choices while maintaining narrative consistency and psychological depth.
 
 Twistloom is not merely a branching story platform. It is a multiverse storytelling engine where the same decision can lead to different realities, making every reader's journey potentially unique.
+
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&weight=500&size=16&pause=1200&color=A78BFA&center=true&vCenter=true&repeat=true&width=700&height=70&lines=🎭+Building+AI-powered+psychological+horror+fiction;🤖+Multi-LLM+orchestration+across+9+providers;⚡+Next.js+16+%7C+React+19+%7C+TypeScript;🧠+Narrative+engines%2C+momentum+systems+%26+story+AI;🩸+Where+every+choice+rewrites+the+horror...)](https://git.io/typing-svg)
 
 ## 🌐 URLs
 

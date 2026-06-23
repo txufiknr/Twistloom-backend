@@ -1048,7 +1048,7 @@ export function mapToPersistedStoryPage(dbPage: DBPage): PersistedStoryPage {
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
     calendarDate: dbPage.calendarDate || undefined,
-    elapsedDays: dbPage.elapsedDays || undefined,
+    elapsedDays: dbPage.elapsedDays,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1091,7 +1091,6 @@ export function mapToStoryPage(dbPage: DBPage): StoryPage {
     placeId: dbPage.placeId || undefined,
     weather: dbPage.weather || 'unknown',
     calendarDate: dbPage.calendarDate || undefined,
-    elapsedDays: dbPage.elapsedDays || undefined,
     timeOfDay: dbPage.timeOfDay || undefined,
     sceneType: dbPage.sceneType || undefined,
     momentum: dbPage.momentum || undefined,
@@ -1358,10 +1357,8 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   }
 
   // Return only frontend-relevant fields.
-  // Exclude backend-specific fields: userId, aiProvider, aiModel, aiEvalProvider,
+  // Exclude backend-specific fields: userId, aiEvalProvider,
   // aiEvalModel, pendingGenerationCount.
-  // context is the SSOT for full action + plot-flag history; sourceAction is the
-  // convenience shortcut for the single action that led to this page.
   const enrichedPage: EnrichedStoryPage = {
     id: dbPage.id,
     page: dbPage.page,
@@ -1387,11 +1384,15 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     actions: visibleActions, // Only actions that have a destination page
     originalActionsCount: allActions.length,
     selectedActions,
-    sourceAction,
+    sourceAction, // sourceAction is the convenience shortcut for the single action that led to this page.
     translation,
     shownActionHint,
-    context,
+    context, // context is the SSOT for full action + plot-flag history
     communityActions: communityActions.length > 0 ? communityActions : undefined,
+
+    // Provider info
+    aiProvider: dbPage.aiProvider || undefined,
+    aiModel: dbPage.aiModel || undefined
   };
 
   // Cache the result only if page has complete actions (no pending generation)

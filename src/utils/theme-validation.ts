@@ -199,7 +199,11 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           'category',
           'confidence',
           'detectedItems',
-          'language'
+          'language',
+          'comment',
+          'suggestion',
+          'mcCandidate',
+          'titleIdea'
         ] satisfies (keyof AIValidationResult)[],
         fallbackField: 'suggestion',
         baseOptions: {

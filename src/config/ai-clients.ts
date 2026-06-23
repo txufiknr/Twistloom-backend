@@ -188,8 +188,6 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'gpt-oss-120b', // Production model; strong general quality
     'zai-glm-4.7',
     // TODO: is it really available now?
-    // llama-3.3-70b scheduled for deprecation Feb 16 2026 — verify at https://cloud.cerebras.ai
-    'llama-3.3-70b', // Instantaneous generation. Action-oriented, direct, punchy pulp fiction. (along with qwen-3-32b - scheduled for deprecation on February 16, 2026)
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
   ],
   nvidia: [
@@ -217,8 +215,10 @@ export const AI_CHAT_MODELS_FAST: AIModelSelection = {
     'openai/gpt-oss-120b',
     'llama-3.1-8b-instant',
   ],
-  // TODO: is it really available now?
-  cerebras: ['llama-3.3-70b'],
+  cerebras: [
+    // TODO: is it really available now?
+    'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
+  ],
   nvidia: ['meta/llama-3.3-70b-instruct'],
 };
 

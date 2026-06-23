@@ -1383,28 +1383,29 @@ export function updateSanity(state: StoryState, context: NarrativeContext): void
 }
 
 /**
- * Advances the in-fiction world clock based on scene type.
+ * Sets the in-fiction world clock minutes elapsed for the current scene.
  *
- * Sets minutesElapsed (how much in-fiction time since last action)
- * and increments totalDaysElapsed on wrap-around.
+ * Uses AI-provided minutesPassed if available, otherwise falls back to
+ * scene-type heuristic. The "time since last action" value is per-scene
+ * (not cumulative); total day tracking is derived from the AI-authored
+ * calendarDate on each page, stored as page.elapsedDays.
  *
  * Minutes are the base unit; can be formatted as "1m", "45m", "2h" etc.
  *
  * @param state - Current story state (mutated in place)
- * @param sceneType - The narrative function of the current page
+ * @param sceneType - The narrative function of the current page (for fallback heuristic)
+ * @param minutesPassedOverride - AI-authored minutes for this scene (overrides heuristic)
  */
 export function updateWorldClock(state: StoryState, sceneType?: SceneType, minutesPassedOverride?: number): void {
   if (!state.hiddenState.worldClock) {
     state.hiddenState.worldClock = {
-      minutesElapsed: 0,
-      totalDaysElapsed: 0,
+      elapsedMinutes: 0,
     };
   }
 
   const clock = state.hiddenState.worldClock;
-
-  // Use AI-provided minutesPassed if available, otherwise fall back to scene-type heuristic
   let minutesPassed: number;
+
   if (minutesPassedOverride !== undefined) {
     minutesPassed = minutesPassedOverride;
   } else {
@@ -1442,11 +1443,7 @@ export function updateWorldClock(state: StoryState, sceneType?: SceneType, minut
     }
   }
 
-  clock.minutesElapsed = minutesPassed;
-
-  // Accumulate to days (roughly, for schedule purposes)
-  const totalMinutes = (clock.totalDaysElapsed * 24 * 60) + minutesPassed;
-  clock.totalDaysElapsed = Math.floor(totalMinutes / (24 * 60));
+  clock.elapsedMinutes = minutesPassed;
 }
 
 /**
@@ -2048,8 +2045,7 @@ export function createInitialHiddenState(): HiddenState {
   return {
     ...HIDDEN_STATE_DEFAULTS,
     worldClock: {
-      minutesElapsed: 0,
-      totalDaysElapsed: 0,
+      elapsedMinutes: 0,
     },
     endingPlan: {
       type: 'fake_relief_twist' satisfies EndingPlanType,

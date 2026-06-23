@@ -570,7 +570,7 @@ async function* cerebrasStreamGenerator(
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', options);
 
   const stream = await getCerebrasClient().chat.completions.create({
-    model: options.models?.[0] || 'llama-3.3-70b',
+    model: options.models?.[0] || 'gpt-oss-120b',
     messages: [
       { role: 'system', content: systemPromptWithDocuments },
       { role: 'user', content: prompt },
