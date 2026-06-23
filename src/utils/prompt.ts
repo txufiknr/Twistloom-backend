@@ -551,6 +551,7 @@ const nextPageOutputFormat: string = `{
   "weather": "One of: ${formatOneOf(placeWeathers)}",
   "calendarDate": "<yyyy-MM-dd>",
   "timeOfDay": "...",
+  "minutesPassed": <number>,
   "sceneType": "One of: ${formatOneOf(Object.keys(sceneTypes))}",
   "charactersPresent": [
     {
@@ -865,6 +866,12 @@ calendarDate:
 timeOfDay
   - Any string: "2 AM", "dusk", "HH:mm", time range, or "unknown".
   - Must be consistent with previous page unless a transition is written into the text.
+
+minutesPassed
+  - Realistic in-world minutes that pass during this page's events.
+  - Omit if the exact duration is ambiguous or unimportant (system will estimate from scene type).
+  - Use precise values when time is narratively significant (e.g., a 3-minute countdown, 45-minute interrogation).
+  - Values under 1 can indicate seconds (0.5 ≈ 30 seconds). Values over 120 imply multiple hours.
 
 sceneType
   - Select the single dominant narrative function of the page.

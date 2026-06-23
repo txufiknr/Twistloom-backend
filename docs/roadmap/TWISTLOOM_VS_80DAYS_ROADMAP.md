@@ -139,13 +139,30 @@ This is Gemini's "Unbound Player Agency" item, and it's the one place free-text 
 
 | # | Item | Complexity | Impact (rough) | Backend status | Frontend status |
 |---|---|---|---|---|---|
-| 1 | Surface psychological profile (results screen) | Easiest | Major (~15–25%) | ✅ Done — API endpoint | 🚧 Pending |
-| 2 | Visible "locked path" consequences | Easy | Moderate–Major (~10–15%) | ✅ Done — API endpoint | 🚧 Pending |
-| 3 | Stylized tension HUD | Easy–Moderate | Major (~10–20%) | ✅ Data exists (sanity, momentum, injuries) | 🚧 Pending (abstraction layer) |
-| 4 | Custom actions | Moderate–Complex | Major (structural, not %) | ✅ Done — types, config, gates, DB, routes | 🚧 Pending (frontend integration) |
-| 5 | Achievements/progress gradients | Moderate | Moderate (~5–10%) | ✅ Done — types, registry, service, DB, routes | 🚧 Pending (badge UI) |
-| 6 | Interactive place map | Moderate–Complex | Major (~10–15%) | ✅ Data exists (PlaceMemory + PlaceConnection graph) | 🚧 Pending (visualization) |
-| 7 | Sanity/clock resource mechanic | Complex | Major (~15–25%, high risk) | ✅ Done — SanityState, updateSanity, DB persistence | 🚧 Pending (HUD display) |
-| 8 | NPC schedules / world clock | Hardest | Moderate (~5–15%, high risk) | ✅ Done — CharacterSchedule, WorldClock, updateWorldClock | 🚧 Pending (UI display) |
+| 1 | Surface psychological profile (results screen) | Easiest | Major (~15–25%) | ✅ Done — API endpoint | 🚧 Planned — Item 1 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 2 | Visible "locked path" consequences | Easy | Moderate–Major (~10–15%) | ✅ Done — API endpoint | 🚧 Planned — Item 3 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 3 | Stylized tension HUD | Easy–Moderate | Major (~10–20%) | ✅ Data exists (sanity, momentum, injuries) | 🚧 Planned — Item 2 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 4 | Custom actions | Moderate–Complex | Major (structural, not %) | ✅ Done — types, config, gates, DB, routes | 🚧 Planned — Item 5 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 5 | Achievements/progress gradients | Moderate | Moderate (~5–10%) | ✅ Done — types, registry, service, DB, routes | 🚧 Planned — Item 4 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 6 | Interactive place map | Moderate–Complex | Major (~10–15%) | ✅ Data exists (PlaceMemory + PlaceConnection graph) | 🚧 Planned — Item 7 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 7 | Sanity/clock resource mechanic | Complex | Major (~15–25%, high risk) | ✅ Done — SanityState, updateSanity, DB persistence | 🚧 Planned — Item 6 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
+| 8 | NPC schedules / world clock | Hardest | Moderate (~5–15%, high risk) | ✅ Done — CharacterSchedule, WorldClock, updateWorldClock | 🚧 Planned — Item 8 in [FRONTEND PLAN](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md) |
 
 Items 1–3 are the standout move here: they're the cheapest things on the list *and* among the highest-impact, because the engine work is already done — Twistloom built a more sophisticated psychological-tracking system than *80 Days* has months before this comparison ever came up, it's just invisible to the reader right now.
+
+---
+
+## Frontend implementation
+
+A detailed, step-by-step implementation plan covering all 8 items (frontend only) is available at:
+[`twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md`](../twistloom-web/docs/roadmap/FRONTEND_80DAYS_IMPLEMENTATION_PLAN.md)
+
+**Priority order** (by impact ÷ complexity):
+1. Surface psychological profile (results screen)
+2. Stylized tension HUD  
+3. Visible "locked path" consequences
+4. Achievements / progress gradients
+5. Custom actions integration
+6. Sanity display polish
+7. Interactive place map
+8. NPC schedules / world clock

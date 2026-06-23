@@ -307,6 +307,7 @@ export function extractStateDelta(params: {
     isMajorEvent: generation.addPlotFlags?.some(p => p.isMajorEvent),
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
+    minutesPassed: generation.minutesPassed,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
@@ -526,6 +527,12 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     newState.healthStatus = calculateHealthStatus(newState.injuries);
   }
 
+  // Update world clock using AI-provided minutesPassed or scene-type heuristic
+  const minutesPassed = stateDelta.minutesPassed;
+  if (minutesPassed !== undefined || scene?.sceneType) {
+    updateWorldClock(newState, scene?.sceneType, minutesPassed);
+  }
+
   return newState;
 }
 
@@ -713,9 +720,6 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
 
   // Update sanity/composure resource (momentum-driven ticking clock)
   updateSanity(updatedState, narrativeContext);
-
-  // Advance the in-fiction world clock (NPC schedules)
-  updateWorldClock(updatedState, actionedPage.sceneType);
 
   // Update psychological profile based on new state
   updatePsychologicalProfile(updatedState, narrativeContext);
@@ -1389,7 +1393,7 @@ export function updateSanity(state: StoryState, context: NarrativeContext): void
  * @param state - Current story state (mutated in place)
  * @param sceneType - The narrative function of the current page
  */
-export function updateWorldClock(state: StoryState, sceneType?: SceneType): void {
+export function updateWorldClock(state: StoryState, sceneType?: SceneType, minutesPassedOverride?: number): void {
   if (!state.hiddenState.worldClock) {
     state.hiddenState.worldClock = {
       minutesElapsed: 0,
@@ -1399,41 +1403,43 @@ export function updateWorldClock(state: StoryState, sceneType?: SceneType): void
 
   const clock = state.hiddenState.worldClock;
 
-  // TODO: this can be innacurate/redundant with `timeOfDay` which is free string (can be "morning" or "HH:mm")
-  // what about we make AI next page generation outputs `minutesPassed` (add to `StateDeltaGeneration`)?
-  // if AI not providing, then fallback to heuristic below
-
-  // Time passage by scene type (in minutes):
-  // - Horror/dream: seconds-to-minutes (tense, focused moments)
-  // - Dialogue/confrontation: minutes
-  // - Transition/aftermath: tens-of-minutes to hours
-  // - Investigation: moderate exploration time
-  let minutesPassed = 5;
-  switch (sceneType) {
-    case 'horror':
-    case 'dream':
-      minutesPassed = 2;
-      break;
-    case 'dialogue':
-    case 'confrontation':
-      minutesPassed = 5;
-      break;
-    case 'investigation':
-    case 'revelation':
-      minutesPassed = 15;
-      break;
-    case 'escape':
-      minutesPassed = 3;
-      break;
-    case 'transition':
-      minutesPassed = 45;
-      break;
-    case 'aftermath':
-      minutesPassed = 30;
-      break;
-    case 'deception':
-      minutesPassed = 10;
-      break;
+  // Use AI-provided minutesPassed if available, otherwise fall back to scene-type heuristic
+  let minutesPassed: number;
+  if (minutesPassedOverride !== undefined) {
+    minutesPassed = minutesPassedOverride;
+  } else {
+    // Time passage by scene type (in minutes):
+    // - Horror/dream: seconds-to-minutes (tense, focused moments)
+    // - Dialogue/confrontation: minutes
+    // - Transition/aftermath: tens-of-minutes to hours
+    // - Investigation: moderate exploration time
+    minutesPassed = 5;
+    switch (sceneType) {
+      case 'horror':
+      case 'dream':
+        minutesPassed = 2;
+        break;
+      case 'dialogue':
+      case 'confrontation':
+        minutesPassed = 5;
+        break;
+      case 'investigation':
+      case 'revelation':
+        minutesPassed = 15;
+        break;
+      case 'escape':
+        minutesPassed = 3;
+        break;
+      case 'transition':
+        minutesPassed = 45;
+        break;
+      case 'aftermath':
+        minutesPassed = 30;
+        break;
+      case 'deception':
+        minutesPassed = 10;
+        break;
+    }
   }
 
   clock.minutesElapsed = minutesPassed;
@@ -2041,6 +2047,10 @@ export function createEmptyStoryState(pageId: string, pageNumber: number, totalP
 export function createInitialHiddenState(): HiddenState {
   return {
     ...HIDDEN_STATE_DEFAULTS,
+    worldClock: {
+      minutesElapsed: 0,
+      totalDaysElapsed: 0,
+    },
     endingPlan: {
       type: 'fake_relief_twist' satisfies EndingPlanType,
       armed: false,

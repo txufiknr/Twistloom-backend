@@ -503,10 +503,6 @@ export type HealthStatus = {
   mobilityPercent: number;
   /** Action capability: using hands/arms/tools, defending self (100 = unimpaired). */
   actionPercent: number;
-  /**
-   * Psychological integrity (100 = mentally intact, 0 = complete breakdown).
-   * Requires `MentalHealthInputs` passed to `calculateHealthStatus` for accurate
-   * computation; without them, only injury-based trauma is counted.
-   */
+  /** Psychological integrity (100 = mentally intact, 0 = complete breakdown). */
   mentalPercent: number;
 };

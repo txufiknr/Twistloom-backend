@@ -843,7 +843,7 @@ export type PsychologicalProfileTraits = {
   denial: number;
 };
 
-// TODO: pisahin TemporalContext
+// TODO: separate time-related props into new TemporalContext type
 export type StoryScene = {
   /** Current emotional atmosphere */
   mood?: Mood;
@@ -1092,7 +1092,8 @@ export type StateDelta = {
   inventory?: InventoryItem[];
   /** Represents injuries sustained by the MC */
   injuries?: Injury[];
-  // TODO: add `minutesPassed` here?
+  /** AI-authored minutes elapsed for this scene (fallback to heuristic if omitted) */
+  minutesPassed?: number;
 
   /** Psychological state */
   psychologicalProfileUpdates?: Partial<PsychologicalProfile>;

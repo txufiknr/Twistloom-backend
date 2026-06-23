@@ -32,10 +32,8 @@
 
 ---
 
-UNINTRODUCED CHARACTERS:
-Sarah Morgan (Detective) - female, 34
-- plannedIntroduction: Analytical
-- Relationship: Jack's partner
+isn't `state.hiddenState.worldClock.totalDaysElapsed` redundant or can be inconsistent with `page.elapsedDays` (calculated from `page.calendarDate` AI-authored increment) (SSOT violation)?
+should we omit AI next page generation from outputting `calendarDate` and trust `minutesPassed` calculation to set `calendarDate` heuristically & consistently based on `totalDaysElapsed`?
 
 ---
 

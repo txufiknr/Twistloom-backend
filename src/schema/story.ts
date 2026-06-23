@@ -511,11 +511,10 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
 
   addPlotFlags: PLOT_FLAGS_SCHEMA,
 
-  // Optional objects, can omit or empty if no updates
-  viableEnding: VIABLE_ENDING_SCHEMA,
-
   // Provide full to overwrite current. Can omit or empty if no changes.
+  viableEnding: VIABLE_ENDING_SCHEMA,
   contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
+  minutesPassed: { type: 'number', description: 'Realistic minutes elapsed during this page. Omit if uncertain — system will estimate from scene type.' },
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Omit or empty if no changes.` },
   injuries: {
     type: 'array',
