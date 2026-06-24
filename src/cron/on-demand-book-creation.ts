@@ -194,7 +194,7 @@ export async function generateMissingOriginalBookCovers(): Promise<void> {
     const originalBooksWithoutCovers = await dbRead
       .select()
       .from(books)
-      .where(and(eq(books.isOriginal, true), isNull(books.image)))
+      .where(and(eq(books.isOriginal, true), isNull(books.imageId)))
       .orderBy(asc(books.branchesCount), desc(books.trendingScore))
       .limit(MAX_PENDING_BOOK_COVER_PER_RUN); // Process up to N books per run
     

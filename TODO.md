@@ -31,6 +31,14 @@
 [x] enriched page add: aiProvider?: string; aiModel?: string;
 [ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
+[ ] cek `/books/${identifier}/${pageId}/custom-actions/preview`,
+[ ] cek `/books/${identifier}/${pageId}/custom-actions/submit`,
+[x] enriched page `CommunityAction` tambah `nextPageId`
+[x] enriched book mc.imageUrl & book.isMine
+[x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
+[ ] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
+[ ] translate character traits
+[ ] translate place traits
 
 ---
 

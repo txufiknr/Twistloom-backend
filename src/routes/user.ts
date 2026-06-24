@@ -46,7 +46,7 @@ import type { LikeTargetType, User, UserActivityType, UserStats } from "../types
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth } from '../middleware/nextauth.js';
-import { users, userLikes, userFavorites, userComments, userFollows, deletedImages, userActivityLogs, userAchievements } from "../db/schema.js";
+import { users, userLikes, userFavorites, userComments, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
@@ -398,7 +398,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         email: userData.email,
         name: userData.name,
         bio: userData.bio,
-        image: userData.image,
+        imageUrl: userData.imageUrl,
         tier: userData.tier,
         credits: userData.credits,
         createdAt: userData.createdAt,
@@ -727,39 +727,42 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
 
-    // Get user information including imageId before deletion
-    const [userToDelete] = await dbRead
-      .select({ 
-        userId: users.userId,
-        imageId: users.imageId
-      })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
+    // TODO: cron to automaticcaly delete imagekit file for uploadedImages which type='user' and userId user is deleted
 
-    if (!userToDelete) {
-      return handleNotFoundError(res, "User profile not found");
-    }
+    // // Get user image id before deletion
+    // const [imageToDelete] = await dbRead
+    //   .select({
+    //     userId: uploadedImages.userId,
+    //     imageId: uploadedImages.imageId,
+    //   })
+    //   .from(uploadedImages)
+    //   .where(and(
+    //     eq(uploadedImages.userId, userId),
+    //     eq(uploadedImages.type, 'user')
+    //   ))
+    //   .orderBy(desc(uploadedImages.createdAt))
+    //   .limit(1);
 
-    // Queue image for deletion if imageId exists
-    if (userToDelete.imageId) {
-      await dbWrite
-        .insert(deletedImages)
-        .values({
-          fileId: userToDelete.imageId,
-          createdAt: new Date(),
-        });
-    }
+    // if (!imageToDelete) {
+    //   return handleNotFoundError(res, "User profile not found");
+    // }
+
+    // // Queue image for deletion if imageId exists
+    // if (imageToDelete.imageId) {
+    //   await dbWrite
+    //     .insert(deletedImages)
+    //     .values({
+    //       fileId: imageToDelete.imageId,
+    //       createdAt: new Date(),
+    //     });
+    // }
 
     // Delete user - cascade delete will handle all related tables automatically
     // Tables with cascade delete on userId:
     // - userAuth, userPageProgress
     // - userFollows, userCompletedBooks, userActivityLogs, transactions
     // - userNotifications, userCheckins, userLikes, userFavorites, userComments, userSessions
-    await dbWrite
-      .delete(users)
-      .where(eq(users.userId, userId))
-      .returning();
+    await dbWrite.delete(users).where(eq(users.userId, userId));
 
     // Invalidate all relevant user cache entries
     await Promise.all([
@@ -769,7 +772,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
 
     res.json({
       message: "User account deleted successfully",
-      imageQueuedForDeletion: !!userToDelete.imageId,
+      // imageQueuedForDeletion: !!imageToDelete.imageId,
     });
 
   } catch (error) {
@@ -1877,7 +1880,7 @@ router.get("/users/:id/followers", async (req: Request, res: Response) => {
         userId: users.userId,
         name: users.name,
         username: users.username,
-        image: users.image,
+        imageUrl: users.imageUrl,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -1978,7 +1981,7 @@ router.get("/users/:id/following", async (req: Request, res: Response) => {
         userId: users.userId,
         name: users.name,
         username: users.username,
-        image: users.image,
+        imageUrl: users.imageUrl,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -2064,7 +2067,7 @@ router.get("/followers", requireAuth, async (req: Request, res: Response) => {
         userId: users.userId,
         name: users.name,
         username: users.username,
-        image: users.image,
+        imageUrl: users.imageUrl,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)
@@ -2153,7 +2156,7 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
         userId: users.userId,
         name: users.name,
         username: users.username,
-        image: users.image,
+        imageUrl: users.imageUrl,
         followedAt: userFollows.createdAt
       })
       .from(userFollows)

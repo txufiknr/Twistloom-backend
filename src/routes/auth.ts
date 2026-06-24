@@ -75,7 +75,7 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
       email: users.email,
       name: users.name,
       username: users.username,
-      image: users.image,
+      imageUrl: users.imageUrl,
       isNewUser: users.isNewUser,
     })
     .from(users)
@@ -186,7 +186,7 @@ router.post('/verify-credentials', async (req, res) => {
       email: userData.email,
       name: userData.name,
       username: userData.username,
-      image: userData.image,
+      imageUrl: userData.imageUrl,
       isNewUser: userData.isNewUser,
     } satisfies Omit<DBUserForAuth, 'passwordHash'> & { isNewUser: boolean });
   } catch (error) {

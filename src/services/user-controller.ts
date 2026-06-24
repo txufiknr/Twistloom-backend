@@ -61,7 +61,7 @@ export function getEnrichedUserSelect() {
     email:        users.email,
     bio:          users.bio,
     gender:       users.gender,
-    image:        users.image,
+    imageUrl:     users.imageUrl,
     tier:         users.tier,
     credits:      users.credits,
     lastActive:   users.lastActive,
@@ -163,11 +163,11 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
     // Only update fields that come from the OAuth provider and can legitimately
     // change between sign-ins (display name, profile picture).
     // username and email are intentionally excluded.
-    const updateData: Partial<Pick<DBNewUser, 'name' | 'image'>> = {};
+    const updateData: Partial<Pick<DBNewUser, 'name' | 'imageUrl'>> = {};
 
-    const { name: updateName, image: updateImage } = await sanitizeUserData(oAuthUser, { createNew: false }) ?? {};
+    const { name: updateName, imageUrl: updateImage } = await sanitizeUserData(oAuthUser, { createNew: false }) ?? {};
     if (updateName) updateData.name = updateName;
-    if (updateImage) updateData.image = updateImage;
+    if (updateImage) updateData.imageUrl = updateImage;
 
     // if (oAuthUser.name) {
     //   updateData.name = sanitizeTextForDB(String(oAuthUser.name).trim());
@@ -211,8 +211,10 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
       const uploadResult = await uploadUserImage(oAuthUser.image, newUserId);
       if (uploadResult) {
         // Mutate sanitized user data to include image fields returned by ImageKit
-        newUserData.image = uploadResult.url;
-        newUserData.imageId = uploadResult.fileId;
+        // TODO: insert into uploadedImages
+        // newUserData.image = uploadResult.url;
+        // newUserData.imageId = uploadResult.fileId;
+        newUserData.imageUrl = uploadResult.url;
       }
     } catch (err) {
       console.error(`[user-controller] ❌ Failed to upload OAuth user image for ${cleanEmail}:`, err);

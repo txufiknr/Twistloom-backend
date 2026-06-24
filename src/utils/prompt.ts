@@ -458,6 +458,9 @@ const firstBookOutputFormat: string = `{
       "narrativeFlags": {
         "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
       },
+      "traits": [
+        { "key": "...", "value": "..." }
+      ],
       "injuries": [
         {
           "bodyPart": "...",
@@ -656,6 +659,9 @@ const nextPageOutputFormat: string = `{
         "narrativeFlags": {
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
+        "traits": [
+          { "key": "...", "value": "..." }
+        ],
         "injuries": []
       }
     ],
@@ -680,6 +686,10 @@ const nextPageOutputFormat: string = `{
         "narrativeFlags": {
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
+        "updateTraits": [
+          { "key": "...", "value": "..." }
+        ],
+        "removeTraits": [],
         "injuries": []
       }
     ]
@@ -737,10 +747,10 @@ const nextPageOutputFormat: string = `{
         "addKeyEvents": ["..."],
         "addHints": [],
         "removeHints": [],
-        "removeTraits": [],
         "updateTraits": [
           { "key": "...", "value": "..." }
         ],
+        "removeTraits": [],
         "knownCharacters": [
           {
             "key": "<character_id>",
@@ -1001,18 +1011,25 @@ ${isEarlyPhase || isMidPhase ? `  - Name must feel authentic to the MC's age gro
   - narrativeFlags: set to match behavior and twist setup.
   - pastInteractions: dialogue or event towards MC in current page.
   - relationships: only include known relationships to other named characters. Omit if none.` : ''}
+  - traits: only story-relevant (e.g., interests).
 
 characterUpdates.updatedCharacters
 ${isLatePhase || isFinale
 ? `  - Expect significant status and flag changes now. Characters should be fracturing or revealing.`
-: `  - Only update when bio, status, interactions, or relevance changes.`}
-  - Only include characters whose state actually changed this page.
-  - Only include changed fields: knownName, bio, visualDescription, status, importance, relationshipToMC, newInteractions, narrativeFlags, injuries, secrets.
+: `  - Only include characters whose state actually changed this page.`}
+  - Only include changed fields, omit which unaltered.
   - bio: only gradually update character's bio if new information is revealed in this page.
   - knownName: gradually update mysterious character's known name as the MC learns more about his/her real identity.
   - recognitionLevel: how well does MC recognize this character at this point.
   - narrativeFlags: adjust to reflect plot developments.
   - secrets: remove any revealed secret.
+  - traits: remove or update.
+  - newInteractions: add new interactions from this page.
+  - injuries: add or update (full replacement). Set severity to zero to remove.
+  - visualDescription: only if character's appearance meaningfully changed (e.g., from permanent injury).
+  - status: One of ${formatOneOf(characterStatuses)}
+  - importance: One of ${formatOneOf(characterImportances)}
+  - relationshipToMC: based on interaction and story progression.
 
 relationshipUpdates
   - Changes in relationship between any two named characters (excluding MC).
@@ -3101,6 +3118,7 @@ Initial Characters:
 - At least one should have a relationship that can be corrupted.
 - bio: must include one trait that could become a source of threat or betrayal.
 - narrativeFlags: set to match behavior and twist setup.
+- traits: only story-relevant (e.g., skills, hobbies).
 
 Planned Characters:
 - Infer any side characters from the theme input that haven't appeared on this first page.

@@ -369,7 +369,7 @@ export async function getUserForAuth(
       email:        users.email,
       username:     users.username,
       name:         users.name,
-      image:        users.image,
+      imageUrl:     users.imageUrl,
       passwordHash: users.passwordHash,
       isNewUser:    users.isNewUser,
     })
@@ -780,10 +780,10 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
  * Name/username are derived from the email when not explicitly provided.
  */
 export async function sanitizeUserData(
-  userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'image'>>,
+  userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'imageUrl'>>,
   options?: { res?: Response; createNew?: boolean },
 ): Promise<Omit<DBNewUser, 'userId'> | null> {
-  const { name: providedName, email, username: providedUsername, gender, image } = userData;
+  const { name: providedName, email, username: providedUsername, gender, imageUrl } = userData;
   const { res, createNew = true } = options ?? {};
 
   if (!email) {
@@ -793,7 +793,7 @@ export async function sanitizeUserData(
 
   // ── Core sanitization ──────────────────────────────────────────────────────
   const cleanEmail       = sanitizeTextForDB(String(email).trim().toLowerCase());
-  const cleanImage       = image ? sanitizeTextForDB(String(image)) : undefined;
+  const cleanImage       = imageUrl ? sanitizeTextForDB(String(imageUrl)) : undefined;
   const normalizedGender = normalizeGender(gender);
 
   const resolvedName = providedName ?? convertEmailToName(email);
@@ -861,15 +861,15 @@ export function sanitizeUserBio(bio: string): string {
  */
 export async function sanitizeProfileUpdate(
   userId: string,
-  // payload: { name?: any; bio?: any; image?: any; gender?: any; username?: any },
-  payload: Record<'name' | 'bio' | 'image' | 'gender' | 'username', unknown>,
+  // payload: { name?: any; bio?: any; imageUrl?: any; gender?: any; username?: any },
+  payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username', unknown>,
   res: Response
 ): Promise<Partial<DBNewUser> | null> {
   const updateData: Partial<DBNewUser> = {};
 
   if (typeof payload.name === 'string' && payload.name) updateData.name = sanitizeTextForDB(payload.name.trim());
   if (typeof payload.bio === 'string' && payload.bio) updateData.bio = sanitizeUserBio(payload.bio);
-  if (typeof payload.image === 'string' && payload.image) updateData.image = payload.image ? sanitizeTextForDB(payload.image.trim()) : null;
+  if (typeof payload.imageUrl === 'string' && payload.imageUrl) updateData.imageUrl = payload.imageUrl ? sanitizeTextForDB(payload.imageUrl.trim()) : null;
   if (typeof payload.gender === 'string' && payload.gender) updateData.gender = normalizeGender(payload.gender) ?? null;
   if (typeof payload.username === 'string' && payload.username) {
     const cleanUsername = sanitizeUsername(String(payload.username));

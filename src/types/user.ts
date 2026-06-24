@@ -58,7 +58,7 @@ export interface User {
   username: string | null;
   name: string | null;
   bio: string | null;
-  image: string | null;
+  imageUrl: string | null;
   stats: UserStats;
   tier: UserTier | null;
   credits: number;
@@ -111,8 +111,8 @@ export interface CheckinStatusResponse {
 export type UserComment = {
   id: string;
   userId: string;
-  userName: string;
-  userImage: string;
+  name: string;
+  imageUrl: string;
   bookId: string;
   parentCommentId?: string;
   content: string;

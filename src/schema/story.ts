@@ -1,6 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate } from "../types/character.js";
+import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, StoryMCGeneration } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases, difficulties, endingTypes, storyMomentums } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
@@ -9,7 +9,7 @@ import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
 import type { BookCreationResponse, BookTranslation, BookTranslationBulk, BookTranslationWithID, PageTranslation, PageTranslationBulk, PageTranslationWithID } from "../types/book.js";
-import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, StoryMC, StoryMCTranslation } from "../types/character.js";
+import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, StoryMCTranslation } from "../types/character.js";
 import type { ActionTranslation, PsychologicalFlags, InitialStoryState, StoryOutline, InitialFact, InitialEnding, Ending, EndingChangeNote, InitialStoryPageGeneration } from "../types/story.js";
 import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValidationCategory } from "../types/theme-validation.js";
 import type { KnownGender } from "../types/user.js";
@@ -273,6 +273,7 @@ export const UPDATE_PLACE_SCHEMA: AIJsonProperty = {
     addHints: { type: 'array', items: { type: 'string' }, description: 'Known clues, obstacles, spatial relationship to other places' },
     removeHints: { type: 'array', items: { type: 'string' } },
   } satisfies Record<keyof PlaceUpdate, AIJsonProperty>,
+  // TODO: include more keys?
   required: ['placeId', 'type', 'context', 'addKeyEvents'] satisfies (keyof PlaceUpdate)[],
 };
 
@@ -321,6 +322,13 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
   narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
   injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
   pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
+  traits: {
+    type: 'array',
+    description: 'Only story-relevant (e.g., skills, hobbies).',
+    items: buildTraitItemSchema({
+      keyDescription: placeTraitsExample,
+    })
+  },
 };
 
 export const { realName: _cn, pastInteractions: _pin, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
@@ -328,7 +336,7 @@ export const { realName: _cn, pastInteractions: _pin, ...updateCharacterProperti
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: INITIAL_CHARACTER_PROPERTIES,
-  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions'] satisfies (keyof NewCharacter)[],
+  required: ['characterId', 'knownName', 'realName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'pastInteractions', 'traits'] satisfies (keyof NewCharacter)[],
   additionalProperties: false
 };
 
@@ -337,8 +345,16 @@ export const UPDATE_CHARACTER_SCHEMA: AIJsonProperty = {
   properties: {
     ...updateCharacterProperties,
     newInteractions: { type: 'array', items: { type: 'string' }, description: 'New interactions happened in this page' },
+    updateTraits: {
+      type: 'array',
+      description: 'Update details about this place (key-value pairs)',
+      items: buildTraitItemSchema({
+        keyDescription: placeTraitsExample,
+      })
+    },
+    removeTraits: { type: 'array', items: { type: 'string' } },
   } satisfies Record<keyof CharacterUpdate, AIJsonProperty>,
-  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions'] satisfies (keyof CharacterUpdate)[],
+  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions', 'updateTraits', 'removeTraits'] satisfies (keyof CharacterUpdate)[],
   additionalProperties: false
 };
 
@@ -765,8 +781,8 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
     gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
     bio: { type: 'string', description: 'Trait-forward description. Include at least one psychological vulnerability. Can include birth date (month and day) if relevant to story.' },
     knownName: { type: 'string', description: 'Preferred alias or nick referred by other characters.' },
-  } satisfies Record<keyof StoryMC, AIJsonProperty>,
-  required: ['name', 'age', 'gender', 'bio', 'knownName'] satisfies (keyof StoryMC)[],
+  } satisfies Record<keyof StoryMCGeneration, AIJsonProperty>,
+  required: ['name', 'age', 'gender', 'bio', 'knownName'] satisfies (keyof StoryMCGeneration)[],
   additionalProperties: false
 };
 

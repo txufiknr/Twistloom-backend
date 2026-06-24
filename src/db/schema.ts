@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
-import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats, UploadedImageType } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState } from "../types/story.js";
@@ -30,8 +30,6 @@ const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().n
 const updatedAt = timestamp('updated_at', { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date());
 const lastActive = timestamp("last_active", { withTimezone: true }).defaultNow().notNull();
 const branchId = text("branch_id").notNull().default("main"); // Which reality you're in
-const image = text("image"); // ImageKit URL
-const imageId = text("image_id"); // ImageKit file ID for deletion
 
 /**
  * Create story pages table
@@ -214,8 +212,7 @@ export const users = pgTable(
     penName: text("pen_name"),
     bio: text("bio"), // User bio/description
     gender,
-    image, // Profile image ImageKit URL
-    imageId, // ImageKit file ID for deletion
+    imageUrl: text("image_url"),
     tier: text("tier").$type<UserTier>(),
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     referrerId: uuid("referrer_id"),
@@ -350,8 +347,7 @@ export const books = pgTable(
     language: text("language").notNull().default('en'),
     hook: text("hook"),
     summary: text("summary"),
-    image, // Cover image ImageKit URL
-    imageId, // ImageKit file ID for deletion
+    imageId: text("image_id").references(() => uploadedImages.imageId, { onDelete: "set null" }), // Cover image
     trendingScore: real("trending_score").default(0),
     isOriginal: boolean("is_original").notNull().default(false),
     keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['reality-bending', 'psychological-horror', 'unreliable-narrator', 'time-loop-feel', 'paranormal', 'forgotten-trauma']
@@ -368,7 +364,7 @@ export const books = pgTable(
     storyStartDate: text("story_start_date"),
     createdAt,
     updatedAt,
-  } satisfies Record<keyof Omit<Book, 'stats'> | keyof BookStats | ResourceTimestamp, unknown>,
+  } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'> | keyof BookStats | ResourceTimestamp, unknown>,
   (t) => [
     // Optimize trending sorting by pre-calculated score (cron-based with time decay)
     index("books_trending_score_idx").on(t.trendingScore.desc()),
@@ -1490,7 +1486,7 @@ export const customActions = pgTable(
     progressionScore: real("progression_score"),
 
     creditsCharged: integer("credits_charged").default(0).notNull(),
-    nextPageId: uuid("next_page_id"),
+    nextPageId: uuid("next_page_id"), // generated destination page ID
     language: text("language"), // populated by Gate 2 AI validator — ISO 639-1 code
 
     createdAt,
@@ -1500,5 +1496,37 @@ export const customActions = pgTable(
     index("custom_actions_book_idx").on(t.bookId),
     index("custom_actions_user_idx").on(t.userId),
     index("custom_actions_outcome_idx").on(t.outcome),
+  ]
+);
+
+/**
+ * Uploaded images table
+ * @summary Store user-uploaded ImageKit files for cover art and main character assets
+ * @example
+ * {
+ *   "id": "upload123",
+ *   "user_id": "user456",
+ *   "image_id": "ik_abc123",
+ *   "image_url": "https://ik.imagekit.io/your_path/image.png",
+ *   "type": "cover",
+ *   "created_at": "2026-06-24T00:00:00.000Z",
+ *   "updated_at": "2026-06-24T00:00:00.000Z"
+ * }
+ */
+export const uploadedImages = pgTable(
+  "uploaded_images",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "set null" }), // orphaned images kept when user is deleted (images scheduled for deletion via cron)
+    imageId: text("image_id").notNull(), // ImageKit file ID for deletion
+    imageUrl: text("image_url").notNull(), // ImageKit URL
+    type: text("type").$type<UploadedImageType>().notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("uploaded_images_user_idx").on(t.userId),
+    index("uploaded_images_type_idx").on(t.type),
+    unique("uploaded_images_image_id_unique").on(t.imageId),
   ]
 );

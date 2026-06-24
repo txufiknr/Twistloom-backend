@@ -78,39 +78,61 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     title:        books.title,
     hook:         books.hook,
     summary:      books.summary,
-    image:        books.image,
-    keywords:     books.keywords,
-    status:       books.status,
+    // Cover image URL (fetched from uploaded_images by image_id)
+    // TODO: imageUrl subquery (is it optimal?)
+    imageUrl: sql<string | null>`(
+      SELECT ui.image_url
+      FROM uploaded_images ui
+      WHERE ui.image_id = books.image_id
+      LIMIT 1
+    )`,
+    keywords: books.keywords,
+    status: books.status,
     trendingScore: books.trendingScore,
-    totalPages:   books.totalPages,
-    language:     books.language,
-    topPick:      books.topPick,
-    isOriginal:   books.isOriginal,
+    totalPages: books.totalPages,
+    language: books.language,
+    topPick: books.topPick,
+    isOriginal: books.isOriginal,
     creditsPrice: books.creditsPrice,
     originalThemeInput: books.originalThemeInput,
-    createdAt:    books.createdAt,
-    updatedAt:    books.updatedAt,
-    mc:           books.mc,
-
+    createdAt: books.createdAt,
+    updatedAt: books.updatedAt,
+    mc: books.mc,
+    // mc: sql<StoryMC>`
+    //   books.mc ||
+    //   jsonb_build_object(
+    //     'imageUrl',
+    //     (
+    //       SELECT ui.image_url
+    //       FROM uploaded_images ui
+    //       WHERE ui.image_id = books.mc->>'imageId'
+    //       LIMIT 1
+    //     )
+    //   )
+    // `,
+    
     // Author info
     author: {
-      id:       users.userId,
-      email:    users.email,
+      id: users.userId,
+      email: users.email,
       username: users.username,
-      name:     users.penName || users.name,
-      image:    users.image,
+      name: users.penName || users.name,
+      imageUrl: users.imageUrl,
     } satisfies Record<keyof BookAuthor, unknown>,
 
     // Denormalized engagement metrics (O(1), maintained by DB triggers)
     stats: {
-      likesCount:    books.likesCount,
-      readCount:     books.readCount,
+      likesCount: books.likesCount,
+      readCount: books.readCount,
       commentsCount: books.commentsCount,
       branchesCount: books.branchesCount,
       completeCount: books.completeCount,
     } satisfies Record<keyof BookStats, unknown>,
 
     // User-specific flags (indexed by userId and targetId/bookId)
+    isMine: currentUserId
+      ? sql<boolean>`books.user_id = ${currentUserId}`
+      : sql<boolean>`false`,
     isLiked: currentUserId
       ? sql<boolean>`EXISTS (
           SELECT 1
@@ -642,7 +664,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Auto-generated books without covers are excluded from the originals list
       return query
         .where(eq(books.isOriginal, true))
-        .where(sql`${books.image} IS NOT NULL`)
+        .where(sql`${books.imageId} IS NOT NULL`)
         .orderBy(desc(books.createdAt));
     }
 

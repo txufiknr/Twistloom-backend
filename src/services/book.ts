@@ -1300,6 +1300,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       .select({
         text: customActions.originalText,
         plausibilityScore: sql<number>`COALESCE(${customActions.plausibilityScore}, 0)`,
+        nextPageId: customActions.nextPageId,
       })
       .from(customActions)
       .where(and(
@@ -1456,7 +1457,6 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     language: dbBook.language || 'en',
     hook: dbBook.hook || '',
     summary: dbBook.summary || '',
-    image: dbBook.image || undefined,
     imageId: dbBook.imageId || undefined,
     trendingScore: dbBook.trendingScore || 0,
     keywords: dbBook.keywords,
@@ -1469,7 +1469,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     storyStartDate: dbBook.storyStartDate || undefined,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
-  } satisfies Record<keyof Omit<Book, 'stats'>, unknown>;
+  } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'>, unknown>;
 }
 
 /**
@@ -1682,11 +1682,14 @@ export async function generateAndUpdateBookCoverImage(book: Book, state?: StoryS
   const uploadResult = await uploadBookCoverImage(book, buffers[0]); // Direct buffer upload
   
   if (uploadResult) {
-    // Update book with new image URL and ID
-    await updateBook(book.id, {
-      image: uploadResult.url,
-      imageId: uploadResult.fileId
-    });
+    // TODO: insert into uploadedImages
+    // - imageUrl: uploadResult.url,
+    // - imageId: uploadResult.fileId
+
+    // TODO: make it all atomic with db transaction
+
+    // Update book with new image ID
+    await updateBook(book.id, { imageId: uploadResult.fileId });
     
     // Delete old image from ImageKit (with fallback to deletion queue)
     if (oldImageId) {
@@ -1811,7 +1814,13 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
         language: books.language,
         hook: books.hook,
         summary: books.summary,
-        image: books.image,
+        // TODO: imageUrl subquery (is it optimal?)
+        imageUrl: sql<string | null>`(
+          SELECT ui.image_url
+          FROM uploaded_images ui
+          WHERE ui.image_id = books.image_id
+          LIMIT 1
+        )`,
         imageId: books.imageId,
         trendingScore: books.trendingScore,
         isOriginal: books.isOriginal,
@@ -1846,7 +1855,7 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
       .orderBy(desc(sql`similarityScore`))
       .limit(limit);
 
-    return similarBooks as Array<DBBook & { similarityScore: number }>;
+    return similarBooks as Array<DBBook & { imageUrl?: string | null; similarityScore: number; }>;
   } catch (error) {
     console.error(`Failed to get similar books for ${bookId}:`, getErrorMessage(error));
     throw new Error(`Unable to retrieve similar books: ${getErrorMessage(error)}`, { cause: error });

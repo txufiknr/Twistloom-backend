@@ -79,7 +79,6 @@ import { SSE_POLLING_CONFIG } from "../config/candidate-generation.js";
 import { getPsychologicalProfileResult } from "../services/psychological-profile.js";
 import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS } from "../services/custom-actions.js";
-import { CUSTOM_ACTION_CREDIT_COST } from "../config/custom-actions.js";
 import { customActions } from "../db/schema.js";
 import { getStoryStateFromPage } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
@@ -1046,7 +1045,6 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     if (hook !== undefined) updateData.hook = hook;
     if (summary !== undefined) updateData.summary = summary;
     if (keywords !== undefined) updateData.keywords = keywords;
-    if (newImageUrl) updateData.image = newImageUrl;
     if (newImageId) updateData.imageId = newImageId;
 
     // Update the book
@@ -1982,8 +1980,8 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
       .select({
         id: userComments.id,
         userId: userComments.userId,
-        userName: users.name,
-        userImage: users.image,
+        name: users.name,
+        imageUrl: users.imageUrl,
         bookId: userComments.bookId,
         parentCommentId: userComments.parentCommentId,
         content: userComments.content,
@@ -2108,8 +2106,8 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
         .select({
           id: userComments.id,
           userId: userComments.userId,
-          userName: users.name,
-          userImage: users.image,
+          name: users.name,
+          imageUrl: users.imageUrl,
           bookId: userComments.bookId,
           parentCommentId: userComments.parentCommentId,
           content: userComments.content,
@@ -2239,7 +2237,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId, req.headerLanguage);
     if (!enrichedBook) return handleNotFoundError(res, "Book not found");
 
-    // Generate ETag from updatedAt + userId (user-specific columns: isLiked, isRead, lastReadAt, lastPage)
+    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPage)
     const lastModified = enrichedBook.updatedAt;
     const etagInput = `${lastModified.getTime()}-${req.userId || 'anonymous'}`;
     const etag = `"${etagInput}"`;
@@ -3117,7 +3115,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
       outcome: result.outcome,
       preview: {
         canonicalIntent: result.interpretedIntent,
-        cost: CUSTOM_ACTION_CREDIT_COST,
+        cost: CREDIT_COSTS.CUSTOM_ACTION,
       },
     } satisfies CustomActionPreviewResponse);
 
@@ -3269,7 +3267,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     // Charge credits and persist action in a transaction
     await executeWithCredits(
       userId,
-      CUSTOM_ACTION_CREDIT_COST,
+      CREDIT_COSTS.CUSTOM_ACTION,
       async (tx) => {
         // Persist audit record
         const auditId = generateId();
@@ -3286,7 +3284,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
           rejectionCategory: result.rejectionCategory,
           plausibilityScore: result.plausibilityScore,
           progressionScore: result.progressionScore,
-          creditsCharged: CUSTOM_ACTION_CREDIT_COST,
+          creditsCharged: CREDIT_COSTS.CUSTOM_ACTION,
           language: result.language,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -3340,7 +3338,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
       return res.status(402).json({
         error: 'Insufficient credits',
-        message: `You need at least ${CUSTOM_ACTION_CREDIT_COST} credits to submit a custom action`,
+        message: `You need at least ${CREDIT_COSTS.CUSTOM_ACTION} credits to submit a custom action`,
       });
     }
 

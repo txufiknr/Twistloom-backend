@@ -862,6 +862,73 @@ async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
 }
 
 /**
+ * Creates trigger to set user's `image_url` when they upload a profile image
+ *
+ * Fires AFTER INSERT OR UPDATE on `uploaded_images`:
+ * - When a new row with `type = 'user'` is inserted, update the corresponding user's `image_url`.
+ * - When an existing uploaded image is updated to `type = 'user'` or its `image_url` changes,
+ *   update the user's `image_url` as well.
+ *
+ * Idempotency:
+ * - Uses CREATE OR REPLACE FUNCTION and DROP TRIGGER IF EXISTS so it's safe to run multiple times.
+ */
+async function ensureUploadedUserImageTrigger(): Promise<void> {
+  try {
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION set_user_image_url_from_upload()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        -- Insert or update where upload is a profile image: set users.image_url to the new URL
+        IF (TG_OP = 'INSERT' AND NEW.type = 'user') OR
+           (TG_OP = 'UPDATE' AND NEW.type = 'user' AND (
+              OLD.image_id IS DISTINCT FROM NEW.image_id OR
+              OLD.image_url IS DISTINCT FROM NEW.image_url OR
+              OLD.type IS DISTINCT FROM NEW.type
+           )) THEN
+          UPDATE users
+          SET image_url = NEW.image_url,
+              updated_at = NOW()
+          WHERE user_id = NEW.user_id;
+
+        -- Handle delete: if a user-uploaded image row is removed, clear the user's image_url
+        ELSIF TG_OP = 'DELETE' AND OLD.type = 'user' THEN
+          UPDATE users
+          SET image_url = NULL,
+              updated_at = NOW()
+          WHERE user_id = OLD.user_id
+            AND (users.image_url IS NOT DISTINCT FROM OLD.image_url);
+
+        -- Handle update-away-from-'user': if an upload was changed from type 'user' to something else,
+        -- clear the user's image_url only if it still matches the old upload's URL
+        ELSIF TG_OP = 'UPDATE' AND OLD.type = 'user' AND NEW.type IS DISTINCT FROM 'user' THEN
+          UPDATE users
+          SET image_url = NULL,
+              updated_at = NOW()
+          WHERE user_id = OLD.user_id
+            AND (users.image_url IS NOT DISTINCT FROM OLD.image_url);
+        END IF;
+        RETURN COALESCE(NEW, OLD);
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS uploaded_images_user_update_trigger ON uploaded_images;`);
+
+    await dbWrite.execute(`
+      CREATE TRIGGER uploaded_images_user_update_trigger
+        AFTER INSERT OR UPDATE ON uploaded_images
+        FOR EACH ROW
+        EXECUTE FUNCTION set_user_image_url_from_upload();
+    `);
+
+    console.log("✅ Uploaded user image -> users.image_url trigger created successfully!");
+  } catch (error) {
+    console.error("❌ Failed to create uploaded_images -> users.image_url trigger:", getErrorMessage(error));
+    throw error;
+  }
+}
+
+/**
  * Creates all necessary database triggers
  * 
  * Sets up triggers for automated data consistency and business logic enforcement.
@@ -906,6 +973,9 @@ export async function ensureTriggers(): Promise<void> {
 
     // Create user favorites cleanup trigger
     await ensureUserFavoritesCleanupTrigger();
+
+    // Update user's profile image when they upload an image with type 'user'
+    await ensureUploadedUserImageTrigger();
 
     // Clean up legacy triggers
     await dbWrite.execute(`

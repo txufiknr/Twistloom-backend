@@ -8,9 +8,6 @@ import type { StoryPhase } from "../types/story.js";
 // GATE 0 — Eligibility & Rate Limits
 // ============================================================================
 
-/** Credit cost for a custom action submission */
-export const CUSTOM_ACTION_CREDIT_COST = 3;
-
 /** Max custom-action attempts per page (free retries on rejection) */
 export const CUSTOM_ACTION_MAX_ATTEMPTS_PER_PAGE = 3;
 

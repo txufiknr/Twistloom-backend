@@ -22,8 +22,13 @@ export interface StoryMC {
   bio: string;
   /** Character's known name in narrative */
   knownName?: string;
+  /** Character's picture (uploaded by author) */
+  imageUrl?: string;
+  /** Character's uploaded image ID */
+  imageId?: string;
 }
 
+export type StoryMCGeneration = Omit<StoryMC, 'imageId' | 'imageUrl'>;
 export type StoryMCCandidate = Partial<StoryMC>;
 export type StoryMCTranslation = Pick<StoryMC, 'bio'>;
 
@@ -257,6 +262,8 @@ export type CharacterMemory = {
    * whether a character is present.
    */
   schedule?: CharacterSchedule;
+  /** The traits of the character (e.g., skills, hobbies) */
+  traits?: TraitItem[];
 };
 
 export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio'> & { characterId: string };
@@ -276,9 +283,11 @@ export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInter
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Partial<Omit<NewCharacter, 'realName' | 'pastInteractions'>> & {
+export type CharacterUpdate = Partial<Omit<NewCharacter, 'realName' | 'pastInteractions' | 'traits'>> & {
   characterId: string;
   newInteractions?: string[];
+  updateTraits?: TraitItem[];
+  removeTraits?: string[];
 };
 
 /**

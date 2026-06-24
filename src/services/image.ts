@@ -1,10 +1,11 @@
 import ImageKit, { toFile } from "@imagekit/nodejs";
 import { getTodayDate } from "../utils/time.js";
 import { dbWrite } from "../db/client.js";
-import { inArray } from "drizzle-orm";
+import { inArray, sql, and, eq } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { APP_NAME_SLUG } from "../config/constants.js";
-import { deletedImages } from "../db/schema.js";
+import { deletedImages, uploadedImages } from "../db/schema.js";
+import { dbRead } from "../db/client.js";
 import multer, { type FileFilterCallback } from "multer";
 import { MAX_IMAGE_UPLOAD_SIZE } from "../config/image.js";
 import type { ImageUploadObject, ImageUploadOptions, ImageUploadSource } from "../types/image.js";
@@ -632,7 +633,7 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
 
   try {
     console.log(`[imagekit] 🧹 Processing up to ${batchSize} queued image deletions...`);
-    
+
     // Fetch pending deletions (oldest first for FIFO processing)
     const pendingDeletions = await dbWrite
       .select()
@@ -649,8 +650,11 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
     const fileIdsToDelete = pendingDeletions.map(deletion => deletion.fileId);
 
     // Use bulk deletion for optimal performance
+    // Capture bulk response for later cleanup of uploaded_images
+    let bulkResponse: ImageKit.Files.Bulk.BulkDeleteResponse | null = null;
     try {
       const response = await imagekit.files.bulk.delete({ fileIds: fileIdsToDelete });
+      bulkResponse = response;
       stats.successful = response.successfullyDeletedFileIds?.length || 0;
       stats.failed = fileIdsToDelete.length - stats.successful;
       
@@ -688,6 +692,41 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
         .where(inArray(deletedImages.fileId, fileIdsToDelete));
     }
 
+    // After successful ImageKit deletion, delete corresponding rows in `uploaded_images`
+    // Remove uploaded_images rows for successfully deleted files
+    try {
+      // Determine which fileIds were actually deleted
+      let actuallyDeleted: string[] = [];
+
+      // If bulk API returned successful ids, use them
+      // Note: bulkResponse may be null if bulk failed; handled in fallback below
+      if (bulkResponse?.successfullyDeletedFileIds && Array.isArray(bulkResponse.successfullyDeletedFileIds)) {
+        actuallyDeleted = bulkResponse.successfullyDeletedFileIds as string[];
+      }
+
+      // If fallback individual deletions succeeded, derive from stats (we logged individually)
+      if (actuallyDeleted.length === 0 && stats.successful > 0) {
+        // When bulk failed and fallback succeeded for some, derive by checking which uploadedImages still exist
+        const existing = await dbRead
+          .select({ imageId: uploadedImages.imageId })
+          .from(uploadedImages)
+          .where(inArray(uploadedImages.imageId, fileIdsToDelete));
+
+        const existingIds = existing.map((r: { imageId: string }) => r.imageId);
+        // Files deleted successfully are those in fileIdsToDelete but not in existingIds
+        actuallyDeleted = fileIdsToDelete.filter(id => !existingIds.includes(id));
+      }
+
+      if (actuallyDeleted.length > 0) {
+        await dbWrite
+          .delete(uploadedImages)
+          .where(inArray(uploadedImages.imageId, actuallyDeleted));
+        console.log(`[imagekit] 🧹 Removed ${actuallyDeleted.length} uploaded_images rows for deleted files`);
+      }
+    } catch (err) {
+      console.warn('[imagekit] ⚠️ Failed to cleanup uploaded_images rows:', getErrorMessage(err));
+    }
+
     console.log(`[imagekit] ✅ Cleanup completed: ${stats.successful}/${stats.processed} successful, ${stats.failed} failed`);
     
     return stats;
@@ -695,6 +734,64 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
     const errorMsg = `ImageKit cleanup failed: ${getErrorMessage(error)}`;
     console.error(`[imagekit] ❌ ${errorMsg}`);
     stats.errors.push(errorMsg);
+    return stats;
+  }
+}
+
+/**
+ * Find orphaned user uploads (type='user' with no linked user) and queue them for deletion.
+ * Also remove the uploaded_images rows after queuing deletion.
+ */
+export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promise<{
+  processed: number;
+  queued: number;
+  removed: number;
+  errors: string[];
+}> {
+  const stats = { processed: 0, queued: 0, removed: 0, errors: [] as string[] };
+
+  try {
+    // Find uploaded_images rows of type 'user' with NULL userId (orphaned after user deletion)
+    const orphans = await dbRead
+      .select({ imageId: uploadedImages.imageId })
+      .from(uploadedImages)
+      .where(and(eq(uploadedImages.type, 'user'), sql`${uploadedImages.userId} IS NULL`))
+      .orderBy(uploadedImages.createdAt)
+      .limit(batchSize);
+
+    if (orphans.length === 0) return stats;
+
+    stats.processed = orphans.length;
+    const orphanIds = orphans.map((r: { imageId: string }) => r.imageId);
+
+    // Queue each for deletion (queueImageForDeletion handles duplicates/errors)
+    for (const id of orphanIds) {
+      try {
+        await queueImageForDeletion(id);
+        stats.queued++;
+      } catch (err) {
+        stats.errors.push(getErrorMessage(err));
+      }
+    }
+
+    // Remove uploaded_images rows for these orphans
+    try {
+      const del = await dbWrite
+        .delete(uploadedImages)
+        .where(inArray(uploadedImages.imageId, orphanIds))
+        .returning({ imageId: uploadedImages.imageId });
+      stats.removed = del.length;
+    } catch (err) {
+      stats.errors.push(getErrorMessage(err));
+      console.warn('[imagekit] ⚠️ Failed to remove orphan uploaded_images rows:', getErrorMessage(err));
+    }
+
+    console.log(`[imagekit] 🧾 Orphaned user uploads: processed=${stats.processed} queued=${stats.queued} removed=${stats.removed}`);
+    return stats;
+  } catch (error) {
+    const msg = getErrorMessage(error);
+    console.error('[imagekit] ❌ Failed to cleanup orphaned user uploads:', msg);
+    stats.errors.push(msg);
     return stats;
   }
 }

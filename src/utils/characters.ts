@@ -104,7 +104,9 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
  * ```
  */
 export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate, page: number, placeId?: string): CharacterMemory {
-  const updated = { ...existing };
+  const updated: CharacterMemory = structuredClone(existing);
+  const { updateTraits = [], removeTraits = [] } = update;
+  const { traits = [] } = existing;
 
   // Update basic properties if provided
   if (update.knownName) updated.knownName = update.knownName;
@@ -132,6 +134,21 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
       ...existing.narrativeFlags,
       ...update.narrativeFlags
     };
+  }
+
+  // Update traits if provided
+  if (updateTraits.length) {
+    updated.traits = [
+      ...traits.filter(t => !updateTraits.some(u => u.key === t.key)),
+      ...updateTraits
+    ];
+  }
+
+  // Remove traits
+  if (removeTraits.length) {
+    updated.traits = [
+      ...traits.filter(t => !removeTraits.includes(t.key)),
+    ];
   }
 
   // Replace entire injury array if provided
@@ -407,6 +424,9 @@ export function getMainCharacterInfo(params: {
  *     → Page 15: First meeting here, seemed nervous
  *   - Narrative mechanics: potential twist: identity
  *   - Physical state: disappeared
+ *   - Traits:
+ *     → skills: teaching, gardening
+ *     → favorite food: pizza
  */
 export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
   const mcDetails = [];
@@ -439,7 +459,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const {
         knownName, realName, recognitionLevel, role, gender, status,
         bio, visualDescription, introducedAtPage, pastInteractions, importance,
-        secrets, relationships, relationshipToMC, narrativeFlags, injuries
+        secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits
       } = character;
 
       const useDifferentReference = knownName !== realName;
@@ -533,6 +553,14 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       
       // Concluding Physical Status
       details.push(`  - Physical state: ${physicalStatusDisplay}`);
+
+      // Traits with nested bullets
+      if (traits?.length) {
+        details.push(`  - Traits:`);
+        traits.forEach((trait) => {
+          details.push(`    → ${trait.key}: ${trait.value}`);
+        });
+      }
 
       return `${mainInfo}\n${details.join('\n')}`;
     })

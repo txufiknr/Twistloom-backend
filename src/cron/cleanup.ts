@@ -15,7 +15,7 @@ import { ACTIVITY_LOG_RETENTION_MONTHS } from "../config/purge.js";
 
 export async function runDailyCleanup(): Promise<void> {
   // Lazy imports in cron for better memory usage and startup time
-  const { processQueuedImageDeletions } = await import("../services/image.js");
+  const { processQueuedImageDeletions, cleanupOrphanedUserUploads } = await import("../services/image.js");
   const { runVipExpirationCheck } = await import("./vip-expiration.js");
   const { cleanupPrompts } = await import("./cleanup-prompts.js");
   const { dbWrite } = await import("../db/client.js");
@@ -39,6 +39,20 @@ export async function runDailyCleanup(): Promise<void> {
       }
     } else {
       console.log("[cleanup] ✨ No queued ImageKit deletions to process");
+    }
+
+    // Cleanup orphaned user pictures (uploaded_images.type = 'user' with NULL userId)
+    console.log("[cleanup] 🖼️ Cleaning up orphaned user uploads...");
+    const orphanCleanupStats = await cleanupOrphanedUserUploads(100);
+
+    // Log orphan cleanup results for monitoring
+    if (orphanCleanupStats.processed > 0) {
+      console.log(`[cleanup] 🧾 Orphaned user uploads processed=${orphanCleanupStats.processed} queued=${orphanCleanupStats.queued} removed=${orphanCleanupStats.removed}`);
+      if (orphanCleanupStats.errors && orphanCleanupStats.errors.length > 0) {
+        console.log(`[cleanup] ⚠️ Orphan cleanup errors: ${orphanCleanupStats.errors.join('; ')}`);
+      }
+    } else {
+      console.log('[cleanup] ✨ No orphaned user uploads to process');
     }
 
     // Check for expired VIP subscriptions and downgrade users

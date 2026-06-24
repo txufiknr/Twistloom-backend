@@ -49,7 +49,7 @@ export interface BookStats {
   branchesCount: number;
 }
 
-export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'name' | 'image'>;
+export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'name' | 'imageUrl'>;
 
 /**
  * Complete book data as stored in database
@@ -75,7 +75,7 @@ export type Book = {
   /** Summary (50-100 words, sets up psychological tension) */
   summary: string;
   /** Cover image ImageKit URL */
-  image?: string;
+  imageUrl?: string;
   /** ImageKit file ID for deletion */
   imageId?: string;
   /** Trending score for book discovery */
@@ -114,7 +114,6 @@ export type EnrichedBookData = Pick<DBBook,
   | 'title'
   | 'hook'
   | 'summary'
-  | 'image'
   | 'keywords'
   | 'status'
   | 'trendingScore'
@@ -128,8 +127,10 @@ export type EnrichedBookData = Pick<DBBook,
   | 'updatedAt'
   | 'mc'
 > & {
+  imageUrl?: string | null;
   author: BookAuthor | null;
   stats: BookStats;
+  isMine: boolean;
   isLiked: boolean;
   isRead: boolean;
   isCompleted: boolean;
@@ -354,3 +355,8 @@ export type PublicStats = {
   /** The number of shadows that have joined the platform, each with their own tale to spin */
   shadowsWeaved: number;
 };
+
+export type UploadedImageType =
+  | 'cover' // Book cover
+  | 'mc'    // Main character's picture
+  | 'user'; // Profile picture
