@@ -1200,8 +1200,11 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
  * 
  * Get all favorite books for the authenticated user.
  * 
+ * **Deprecated:** Use GET /api/books/explore?sortBy=favorites instead for
+ * fully enriched book data with pagination.
+ * 
  * @route GET /user/favorites
- * @description Get user favorites
+ * @description Get user favorites (raw records)
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)

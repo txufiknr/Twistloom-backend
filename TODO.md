@@ -19,20 +19,16 @@
 [x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
 [x] prompt character include importance
 [x] enriched page add: aiProvider?: string; aiModel?: string;
-[ ] aiPrompt should retry model on rate limit/service unavailable
-[ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
-[ ] cek `/books/${identifier}/${pageId}/custom-actions/preview`,
-[ ] cek `/books/${identifier}/${pageId}/custom-actions/submit`,
-[x] enriched page `CommunityAction` tambah `nextPageId`
-[x] enriched book mc.imageUrl & book.isMine
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
 [x] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
+[ ] aiPrompt should retry model on rate limit/service unavailable
+[ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
 [ ] translate character traits
 [ ] translate place traits
 [ ] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [x] BookSortOption tambah 'favorites'
-[ ] GET /user/favorites apakah ada? pindahin ke /books/explore?sortBy=favorites
+[x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
 
 ---
 
@@ -47,18 +43,6 @@ buat book/page generation:
 [groq] ✅ openai/gpt-oss-120b
 [cerebras] ✅ gpt-oss-120b
 [openrouter] ✅ google/gemini-2.5-flash
-
----
-
-[classifyGenAIError] ❓ Schema invalid: BadRequestError: 400 {"error":{"message":"This model does not support response format `json_schema`. See supported models at https://console.groq.com/docs/structured-outputs#supported-models","type":"invalid_request_error","param":"response_format"}}
-
----
-
-[ ] update google app name:
-- Go to the Google Cloud Console.
-- Navigate to APIs & Services > Credentials.
-- Select OAuth consent screen.
-- Edit your App information and ensure your Application Name, Support Email, and Authorized Domains are all correctly configured and verified.
 
 ---
 

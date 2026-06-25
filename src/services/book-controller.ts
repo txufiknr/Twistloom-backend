@@ -617,7 +617,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Applies book-specific sorting to a query based on sort option
  *
  * @param query - Drizzle query builder
- * @param sortBy - Sort option (popular, newest, trending, top-picks, originals, reads, recommendations)
+ * @param sortBy - Sort option (popular, newest, trending, top-picks, originals, reads, favorites, recommendations)
  * @param currentUserId - Optional current user ID for user-specific sorting (reads, recommendations)
  * @returns Modified query builder with sorting applied
  *
@@ -628,6 +628,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * - top-picks: Sorts by latest topPick timestamp (only books marked as editor's picks)
  * - originals: Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
  * - reads: Filters to books the user has read (from userSessions), sorts by lastReadAt (most recent first)
+ * - favorites: Filters to books the user has favorited (from userFavorites), sorts by favoritedAt (most recent first)
  * - recommendations: Recommends books based on user likes (similar books to what user liked)
  *
  * @remarks
@@ -683,7 +684,23 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
         .orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
     }
 
-    // TODO: add 'favorites'
+    case 'favorites': {
+      // Filter to books the user has favorited (from userFavorites table)
+      // Sort by favorite creation date (most recent first)
+      // Requires authentication
+      if (!currentUserId) {
+        return query.where(sql`1=0`);
+      }
+      return query
+        .where(sql`EXISTS (
+          SELECT 1 FROM user_favorites uf
+          WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
+        )`)
+        .orderBy(sql`(
+          SELECT uf.created_at FROM user_favorites uf
+          WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
+        ) DESC`);
+    }
 
     case 'recommendations': {
       // Recommend books based on user likes
