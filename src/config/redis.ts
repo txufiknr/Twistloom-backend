@@ -22,8 +22,6 @@ export const REDIS_CACHE_TTL = {
   EXPLORE_PAGE_1: 30 * 60,
   /** Explore page 1 trending: 5 minutes (incremental updates) */
   EXPLORE_PAGE_1_TRENDING: 5 * 60,
-  /** Popular tags: 10 minutes (changes slowly) */
-  POPULAR_TAGS: 10 * 60,
   /** User profile: 2 minutes */
   USER_PROFILE: 2 * 60,
   /** Default: 1 minute */
@@ -46,8 +44,6 @@ export const REDIS_CACHE_KEYS = {
   EXPLORE_PAGE_1: 'books:explore:page:1',
   /** Explore page 1 trending: books:explore:page:1:trending */
   EXPLORE_PAGE_1_TRENDING: 'books:explore:page:1:trending',
-  /** Popular tags: books:tags:popular */
-  POPULAR_TAGS: 'books:tags:popular', // TODO: LRU cache aja
   /** User profile: user:profile:{userId} */
   USER_PROFILE: (userId: string) => `user:profile:${userId}`,
 } as const;

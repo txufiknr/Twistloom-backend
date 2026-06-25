@@ -57,15 +57,15 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage } from "../services/book.js";
+import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
-import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache, invalidatePopularTagsCache } from "../services/cache.js";
+import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
 import { lastUpdatedFilterOptions } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, refundCredits } from "../services/credits.js";
-import { logUserActivity } from "../services/user.js";
+import { logUserActivity, updateUserLastActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
@@ -1317,6 +1317,11 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     }
     
     res.json(result);
+
+    // Update user activity in background for authenticated users
+    if (userId) {
+      updateUserLastActivity(userId);
+    }
   } catch (error) {
     handleApiError(res, "Failed to explore books", error);
   }
@@ -1344,13 +1349,8 @@ router.get("/tags/popular", async (req: Request, res: Response) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
     
-    // Use cache for popular tags
-    // TODO: kayanya gaperlu redis
-    const tags = await withCache(
-      CACHE_KEYS.POPULAR_TAGS,
-      async () => await getPopularTags(limit),
-      CACHE_TTL.POPULAR_TAGS
-    );
+    // Uses LRU cache internally via getPopularTags
+    const tags = await getPopularTags(limit);
     
     res.json({ tags });
   } catch (error) {

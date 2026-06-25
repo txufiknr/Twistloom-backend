@@ -166,7 +166,7 @@ export async function updateUserLastActivity(userId: string, client: DBClient = 
     }
   } catch (error) {
     // Log error but don't throw to avoid breaking main flow
-    console.error(`[user] ❌ Failed to update last activity for user ${userId}:`, getErrorMessage(error));
+    console.warn(`[user] ⚠️ Failed to update last activity for user ${userId}:`, error);
   }
 }
 

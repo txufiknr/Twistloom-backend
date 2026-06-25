@@ -727,36 +727,6 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
 
-    // TODO: cron to automaticcaly delete imagekit file for uploadedImages which type='user' and userId user is deleted
-
-    // // Get user image id before deletion
-    // const [imageToDelete] = await dbRead
-    //   .select({
-    //     userId: uploadedImages.userId,
-    //     imageId: uploadedImages.imageId,
-    //   })
-    //   .from(uploadedImages)
-    //   .where(and(
-    //     eq(uploadedImages.userId, userId),
-    //     eq(uploadedImages.type, 'user')
-    //   ))
-    //   .orderBy(desc(uploadedImages.createdAt))
-    //   .limit(1);
-
-    // if (!imageToDelete) {
-    //   return handleNotFoundError(res, "User profile not found");
-    // }
-
-    // // Queue image for deletion if imageId exists
-    // if (imageToDelete.imageId) {
-    //   await dbWrite
-    //     .insert(deletedImages)
-    //     .values({
-    //       fileId: imageToDelete.imageId,
-    //       createdAt: new Date(),
-    //     });
-    // }
-
     // Delete user - cascade delete will handle all related tables automatically
     // Tables with cascade delete on userId:
     // - userAuth, userPageProgress
@@ -1192,67 +1162,6 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
     await updateUserLastActivity(userId);
   } catch (error) {
     handleApiError(res, "Failed to remove book from favorites", error);
-  }
-});
-
-/**
- * GET /user/favorites
- * 
- * Get all favorite books for the authenticated user.
- * 
- * **Deprecated:** Use GET /api/books/explore?sortBy=favorites instead for
- * fully enriched book data with pagination.
- * 
- * @route GET /user/favorites
- * @description Get user favorites (raw records)
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @query {number} [limit] - Maximum number of results (default: 50)
- * @query {number} [offset] - Pagination offset (default: 0)
- * 
- * @returns {Object} Favorites response
- * @returns {boolean} success - Operation status
- * @returns {Array} data - Array of favorite records
- * 
- * @example
- * // Request
- * GET /user/favorites?limit=10
- * 
- * // Response
- * {
- *   "success": true,
- *   "data": [
- *     {
- *       "userId": "user123",
- *       "bookId": "book456",
- *       "createdAt": "2023-01-01T00:00:00.000Z"
- *     }
- *   ]
- * }
- */
-router.get("/favorites", optionalAuth, async (req: Request, res: Response) => {
-  const userId = req.userId;
-  if (!userId) return res.json({ favorites: [] });
-
-  try {
-    const { limit = "50", offset = "0" } = req.query;
-
-    const favorites = await dbRead
-      .select()
-      .from(userFavorites)
-      .where(eq(userFavorites.userId, userId))
-      .orderBy(desc(userFavorites.createdAt))
-      .limit(parseInt(limit as string))
-      .offset(parseInt(offset as string));
-
-    res.json({ favorites, });
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
-  } catch (error) {
-    handleApiError(res, "Failed to retrieve favorites", error);
   }
 });
 

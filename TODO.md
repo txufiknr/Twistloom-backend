@@ -31,6 +31,14 @@
 [x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
 
 ---
+src\routes\books.ts
+src\db\schema.ts
+src\config\credits.ts
+
+please examine my `POST /api/books/:identifier/:pageId/custom-actions/submit` and `POST /api/books/:identifier/:pageId/custom-actions/preview` API routes
+can you ensure if user has chosen acton in the respective `pageId` (exists in the `userPageProgress.actionedPageId`), then use `CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE` for custom action generation cost?
+
+---
 
 buat theme idea:
 [github] ✅ openai/gpt-4o

@@ -88,6 +88,28 @@ const publicBookStatsCache = new LRUCache<string, PublicStats>({
 });
 
 /**
+ * LRU cache for popular tags
+ * 
+ * Cache key: "popular:tags:{limit}"
+ * - limit: number of tags requested
+ * 
+ * TTL: 10 minutes (popular tags change infrequently)
+ * Max size: 5 entries (different limits)
+ */
+const popularTagsCache = new LRUCache<string, string[]>({
+  max: 5,
+  ttl: 10 * 60 * 1000, // 10 minutes
+});
+
+/**
+ * Invalidates the popular tags LRU cache
+ * Called when tags might have changed (book created/updated)
+ */
+export function invalidatePopularTagsCache(): void {
+  popularTagsCache.clear();
+}
+
+/**
  * LRU cache for enriched page data
  * 
  * Cache key format: "page:{pageId}:{userId|null}:{translate}:{headerLanguage|en}"
@@ -1886,7 +1908,11 @@ export async function getSimilarBooks(bookId: string, limit: number = 10): Promi
  * ```
  */
 export async function getPopularTags(limit: number = 20): Promise<string[]> {
-  // TODO: implement LRU cache
+  const cacheKey = `popular:tags:${limit}`;
+
+  const cached = popularTagsCache.get(cacheKey);
+  if (cached) return cached;
+
   try {
     // Use database-level aggregation for efficient keyword counting
     const result = await dbRead.execute(sql`
@@ -1905,6 +1931,8 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
 
     // Extract tag names from result
     const tags = result.rows.map(row => row.keyword as string);
+
+    popularTagsCache.set(cacheKey, tags);
 
     return tags;
   } catch (error) {
