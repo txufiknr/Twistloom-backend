@@ -43,7 +43,7 @@ import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks } from "../db/schema.js";
+import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, arrayOverlaps } from "drizzle-orm";
@@ -2238,7 +2238,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId, req.headerLanguage);
     if (!enrichedBook) return handleNotFoundError(res, "Book not found");
 
-    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPage)
+    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPage, contextHistory)
     const lastModified = enrichedBook.updatedAt;
     const etagInput = `${lastModified.getTime()}-${req.userId || 'anonymous'}`;
     const etag = `"${etagInput}"`;
@@ -3078,6 +3078,20 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
       } satisfies CustomActionPreviewResponse);
     }
 
+    // Check if user already chose an action on this page (higher cost)
+    const [hasExistingChoice] = await dbRead
+      .select({ exists: sql`1` })
+      .from(userPageProgress)
+      .where(and(
+        eq(userPageProgress.userId, userId),
+        eq(userPageProgress.bookId, book.id),
+        eq(userPageProgress.actionedPageId, pageId),
+      ))
+      .limit(1);
+    const creditsCost = hasExistingChoice
+      ? CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE
+      : CREDIT_COSTS.CUSTOM_ACTION;
+
     // Gate 2 — AI validation (light tier)
     const userPrompt = buildCustomActionValidationPrompt(text, storyState, dbPage);
 
@@ -3116,8 +3130,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
       outcome: result.outcome,
       preview: {
         canonicalIntent: result.interpretedIntent,
-        // TODO: use CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE if user already choose other action
-        cost: CREDIT_COSTS.CUSTOM_ACTION,
+        cost: creditsCost,
       },
     } satisfies CustomActionPreviewResponse);
 
@@ -3161,9 +3174,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
  * }
  */
 router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (req: Request, res: Response) => {
-  // TODO: use CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE if user already choose other action
-  const creditsCost = CREDIT_COSTS.CUSTOM_ACTION;
-
+  let creditsCost: number = CREDIT_COSTS.CUSTOM_ACTION;
   try {
     const { identifier, pageId: pageIdParam } = req.params;
     const { text } = req.body;
@@ -3197,6 +3208,20 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     if (!storyState) {
       return handleNotFoundError(res, "Story state not found for this page");
     }
+
+    // Check if user already chose an action on this page (higher cost)
+    const [hasExistingChoice] = await dbRead
+      .select({ exists: sql`1` })
+      .from(userPageProgress)
+      .where(and(
+        eq(userPageProgress.userId, userId),
+        eq(userPageProgress.bookId, book.id),
+        eq(userPageProgress.actionedPageId, pageId),
+      ))
+      .limit(1);
+    creditsCost = hasExistingChoice
+      ? CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE
+      : CREDIT_COSTS.CUSTOM_ACTION;
 
     // Gate 0 — Eligibility with credit check
     const gate0Result = runGate0(storyState, userId, book.id, pageId);
@@ -3289,7 +3314,6 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
           rejectionCategory: result.rejectionCategory,
           plausibilityScore: result.plausibilityScore,
           progressionScore: result.progressionScore,
-          // TODO: use CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE if user already choose other action
           creditsCharged: creditsCost,
           language: result.language,
           createdAt: new Date(),

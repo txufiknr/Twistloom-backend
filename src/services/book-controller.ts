@@ -188,6 +188,19 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
         )`
       : sql<string | null>`null`,
 
+    // Story context history from the last read page — correlated subquery with user_sessions
+    // Returns empty string if no session exists, otherwise the AI-summarized context from page 1 to current
+    contextHistory: currentUserId
+      ? sql<string>`(
+          SELECT COALESCE(ss.context_history, '')
+          FROM story_states ss
+          INNER JOIN user_sessions us ON ss.page_id = us.page_id
+          WHERE us.user_id = ${currentUserId} AND us.book_id = books.id
+          ORDER BY us.updated_at DESC
+          LIMIT 1
+        )`
+      : sql<string>`''`,
+
     // First page data (page 1 of the book) — combined LATERAL join for efficiency
     firstPageId: sql<string>`(
       SELECT fp.id

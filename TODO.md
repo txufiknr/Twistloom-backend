@@ -17,18 +17,34 @@
 [x] enriched page context tambah threads: StoryThread[]; (only open/developing status)
 [x] display place.knownConnections & parentPlaceId in prompt
 [x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
-[x] prompt character include importance
 [x] enriched page add: aiProvider?: string; aiModel?: string;
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
 [x] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
 [ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
-[ ] translate character traits
-[ ] translate place traits
+[ ] translate: character.traits, place.traits
 [ ] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [x] BookSortOption tambah 'favorites'
 [x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
+[x] explore favorites ensure filter only favorited book
+[x] enriched book add `contextHistory` alongside `lastReadAt`
+
+---
+
+cek apakah bener?
+
+export interface Achievement {
+  id: string;
+  name: string;
+  description: string;
+  iconUrl?: string;
+  earnedAt: string;
+}
+
+export interface GetAchievementsResponse {
+  achievements: Achievement[];
+}
 
 ---
 src\routes\books.ts

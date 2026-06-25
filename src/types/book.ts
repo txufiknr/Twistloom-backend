@@ -139,6 +139,7 @@ export type EnrichedBookData = Pick<DBBook,
   lastPage?: string | null;
   firstPageId: string;
   firstPageText: string;
+  contextHistory: string;
   translation: BookTranslation | null
 }
 
