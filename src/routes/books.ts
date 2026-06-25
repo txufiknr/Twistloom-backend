@@ -2238,7 +2238,7 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     const enrichedBook = await getEnrichedBook(bookIdentifier, req.userId, req.headerLanguage);
     if (!enrichedBook) return handleNotFoundError(res, "Book not found");
 
-    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPage, contextHistory)
+    // Generate ETag from updatedAt + userId (user-specific columns: isMine, isLiked, isRead, lastReadAt, lastPageId, lastPageNumber, contextHistory)
     const lastModified = enrichedBook.updatedAt;
     const etagInput = `${lastModified.getTime()}-${req.userId || 'anonymous'}`;
     const etag = `"${etagInput}"`;

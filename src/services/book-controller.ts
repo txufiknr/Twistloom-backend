@@ -175,7 +175,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
           ) ls
         )`
       : sql<Date | null>`null`,
-    lastPage: currentUserId
+    lastPageId: currentUserId
       ? sql<string | null>`(
           SELECT ls.page_id::text
           FROM LATERAL (
@@ -187,6 +187,21 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
           ) ls
         )`
       : sql<string | null>`null`,
+
+    // Last page number (page ordinal) from the last read session — joins to pages table
+    lastPageNumber: currentUserId
+      ? sql<number | null>`(
+          SELECT p.page
+          FROM LATERAL (
+            SELECT updated_at, page_id
+            FROM user_sessions
+            WHERE user_id = ${currentUserId} AND book_id = books.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+          ) us
+          INNER JOIN pages p ON p.id = us.page_id
+        )`
+      : sql<number | null>`null`,
 
     // Story context history from the last read page — correlated subquery with user_sessions
     // Returns empty string if no session exists, otherwise the AI-summarized context from page 1 to current

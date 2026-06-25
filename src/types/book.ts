@@ -136,7 +136,8 @@ export type EnrichedBookData = Pick<DBBook,
   isCompleted: boolean;
   isPurchased: boolean;
   lastReadAt?: Date | null;
-  lastPage?: string | null;
+  lastPageId?: string | null;
+  lastPageNumber?: number | null;
   firstPageId: string;
   firstPageText: string;
   contextHistory: string;

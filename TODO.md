@@ -29,6 +29,8 @@
 [x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
 [x] explore favorites ensure filter only favorited book
 [x] enriched book add `contextHistory` alongside `lastReadAt`
+[x] book add lastPageNumber
+[x] book add lastPage -> lastPageId
 
 ---
 
