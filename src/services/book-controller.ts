@@ -683,6 +683,8 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
         .orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
     }
 
+    // TODO: add 'favorites'
+
     case 'recommendations': {
       // Recommend books based on user likes
       // Get books similar to what the user has liked using keyword similarity

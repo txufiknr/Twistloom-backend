@@ -11,23 +11,13 @@
 [x] incrementUserMetric for achievement
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] translate action hint
-[x] include semua yang di table userCounters ke UserStats
-[x] isn't `currentDay` state redundant?
-[x] enriched page tambah elapsedDays
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [x] placesRelationship: source, target (placeId), distance, obstacle
 [x] ensure realityStability based on momentum and sceneType, not page count
 [x] enriched page context tambah threads: StoryThread[]; (only open/developing status)
 [x] display place.knownConnections & parentPlaceId in prompt
 [x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
-[x] calculate action tendency
-[x] antigravity/opencode: custom actions (TWISTLOOM_CUSTOM_ACTIONS_ROADMAP.md)
-[x] antigravity/opencode: 80days roadmap (TWISTLOOM_VS_80DAYS_ROADMAP.md)
-[x] theme validation & schema add `StoryPlan`
-[x] theme validation field instruction rules for futureNotes & characters
 [x] prompt character include importance
-[x] initializebook: viableEnding should be based on story plan (futureNotes & characters)
-[x] prompt: display `state.plannedCharacters` in "UNINTRODUCED CHARACTERS" doc
 [x] enriched page add: aiProvider?: string; aiModel?: string;
 [ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
@@ -36,15 +26,29 @@
 [x] enriched page `CommunityAction` tambah `nextPageId`
 [x] enriched book mc.imageUrl & book.isMine
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
-[ ] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
+[x] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
 [ ] translate character traits
 [ ] translate place traits
+[ ] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
+[ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
+[x] BookSortOption tambah 'favorites'
+[ ] GET /user/favorites apakah ada? pindahin ke /books/explore?sortBy=favorites
 
 ---
 
-[github] ✅ openai/gpt-4o buat theme idea
-[nvidia] ✅ meta/llama-3.3-70b-instruct buat theme validation
-[cerebras] ✅ gpt-oss-120b buat page generation
+buat theme idea:
+[github] ✅ openai/gpt-4o
+
+buat theme validation:
+[nvidia] ✅ meta/llama-3.3-70b-instruct
+[openrouter] ✅ qwen/qwen3-30b-a3b
+
+buat book/page generation:
+[groq] ✅ openai/gpt-oss-120b
+[cerebras] ✅ gpt-oss-120b
+[openrouter] ✅ google/gemini-2.5-flash
+
+---
 
 [classifyGenAIError] ❓ Schema invalid: BadRequestError: 400 {"error":{"message":"This model does not support response format `json_schema`. See supported models at https://console.groq.com/docs/structured-outputs#supported-models","type":"invalid_request_error","param":"response_format"}}
 

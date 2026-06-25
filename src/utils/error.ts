@@ -314,6 +314,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('request body too large') ||
     msg.includes('too large for')
   ) {
+    console.log(`[classifyGenAIError] ❓ Bad request (too large):`, err, typeof err);
     return 'BAD_REQUEST';
   }
 
@@ -335,6 +336,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
 
   // Check for bad request errors (400)
   if (msg.includes('400') || msg.includes('bad request')) {
+    console.log(`[classifyGenAIError] ❓ Bad request (other):`, err, typeof err);
     return 'BAD_REQUEST';
   }
 

@@ -1180,6 +1180,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * - creations: Shows user's own created books (requires authentication)
  * - reads: Shows books the user has read, sorted by lastReadAt (requires authentication)
  * - recommendations: Recommends books based on user likes (requires authentication)
+ * - favorites: Shows user's saved/favorited books (requires authentication)
  * - All other options: Show published books (optional authentication)
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
@@ -3115,6 +3116,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
       outcome: result.outcome,
       preview: {
         canonicalIntent: result.interpretedIntent,
+        // TODO: use CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE if user already choose other action
         cost: CREDIT_COSTS.CUSTOM_ACTION,
       },
     } satisfies CustomActionPreviewResponse);
@@ -3159,6 +3161,9 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
  * }
  */
 router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (req: Request, res: Response) => {
+  // TODO: use CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE if user already choose other action
+  const creditsCost = CREDIT_COSTS.CUSTOM_ACTION;
+
   try {
     const { identifier, pageId: pageIdParam } = req.params;
     const { text } = req.body;
@@ -3267,7 +3272,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     // Charge credits and persist action in a transaction
     await executeWithCredits(
       userId,
-      CREDIT_COSTS.CUSTOM_ACTION,
+      creditsCost,
       async (tx) => {
         // Persist audit record
         const auditId = generateId();
@@ -3284,7 +3289,8 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
           rejectionCategory: result.rejectionCategory,
           plausibilityScore: result.plausibilityScore,
           progressionScore: result.progressionScore,
-          creditsCharged: CREDIT_COSTS.CUSTOM_ACTION,
+          // TODO: use CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE if user already choose other action
+          creditsCharged: creditsCost,
           language: result.language,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -3338,7 +3344,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
     if (errorMessage.includes(CREDIT_ERRORS.INSUFFICIENT_CREDITS)) {
       return res.status(402).json({
         error: 'Insufficient credits',
-        message: `You need at least ${CREDIT_COSTS.CUSTOM_ACTION} credits to submit a custom action`,
+        message: `You need at least ${creditsCost} credits to submit a custom action`,
       });
     }
 

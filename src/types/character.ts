@@ -261,7 +261,7 @@ export type CharacterMemory = {
    * If set, the AI should respect these windows when deciding
    * whether a character is present.
    */
-  schedule?: CharacterSchedule;
+  schedule?: CharacterSchedule; // TODO: where it displayed?
   /** The traits of the character (e.g., skills, hobbies) */
   traits?: TraitItem[];
 };

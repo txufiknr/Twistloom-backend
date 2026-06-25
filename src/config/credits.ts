@@ -46,8 +46,10 @@ export const CREDIT_COSTS = {
   CHOOSE_OTHER_ACTION: 2,
   /** Cost to show action hint */
   SHOW_ACTION_HINT: 1,
-  /** Cost to submit and generate custom actions */
+  /** Cost to generate custom actions */
   CUSTOM_ACTION: 5,
+  /** Cost to generate custom actions (after choice has been made) */
+  CUSTOM_ACTION_AFTER_CHOICE: 7, // TODO: use
   /** Cost to select community actions (future feature) */
   CHOOSE_CUSTOM_ACTION: 2, // TODO: use
   /** Cost to add new custom characters (future feature) */

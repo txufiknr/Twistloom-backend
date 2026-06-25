@@ -238,6 +238,7 @@ export const bookSortOptions = [
   'reads', // Continue reading
   'recommendations', // You might like
   'creations', // User's created books
+  'favorites', // User's saved books
 ] as const;
 
 export type BookSortOption = typeof bookSortOptions[number];
