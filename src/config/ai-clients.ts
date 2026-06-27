@@ -152,6 +152,8 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
  * 
  * @see https://openrouter.ai/models to see whether these IDs are still :free before relying on them.
  * @see https://console.groq.com/docs/models
+ * @see https://console.groq.com/docs/structured-outputs#supported-models and https://console.groq.com/docs/tool-use/overview to see json schema supportability.
+ * @see https://console.groq.com/docs/deprecations to see deprecated Groq models and recommended replacements.
  * @see https://developers.cloudflare.com/workers-ai/models for current model IDs/availability.
  */
 export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
@@ -173,16 +175,26 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   groq: [
-    'openai/gpt-oss-120b',                        // 120B: deepest psychological complexity, best for sustained horror dread
-    'llama-3.3-70b-versatile',                    // 70B: cinematic, fast-paced action, sharp dialogue, proven thriller prose
-    'qwen/qwen3-32b',                             // 32B: intricate atmospheric layering; 60 RPM (2x other models)
-    'meta-llama/llama-4-scout-17b-16e-instruct',  // 10M (MoE): excellent for continuity-heavy branching scenes
-    'openai/gpt-oss-20b',                         // 20B: structurally reliable fallback, same OpenAI lineage as 120B
-    'llama-3.1-8b-instant',                       // 8B: fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort
-    // These 3 models deprecated between March–Sept 2025 — see: https://console.groq.com/docs/deprecations
-    // 'deepseek-r1-distill-llama-70b', // Deeply analytical pacing, vivid logic mapping. (deprecated Sept 2, 2025)
-    // 'mixtral-8x7b-32768', // Atmospheric, moody, and highly descriptive. (deprecated March 5, 2025)
-    // 'gemma2-9b-it', // Unique vocabulary, great for erratic/poetic internal monologues. (deprecated Aug 8, 2025)
+    'openai/gpt-oss-120b', // deepest psychological complexity, best for sustained horror dread
+    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
+    'qwen/qwen3.6-27b',
+
+    // TODO: deprecated Jul 17, 2026
+    'qwen/qwen3-32b', // intricate atmospheric layering; 60 RPM (2x other models)
+    'meta-llama/llama-4-scout-17b-16e-instruct', // MoE: excellent for continuity-heavy branching scenes
+
+    // TODO: deprecated on Aug 16, 2026
+    'llama-3.1-8b-instant', // fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort
+
+    // All models
+    // openai/gpt-oss-20b ✅ // Strict Mode (strict: true)
+    // openai/gpt-oss-120b ✅ // Strict Mode (strict: true)
+    // openai/gpt-oss-safeguard-20b ✅ // Best-effort Mode (strict: false)
+    // qwen/qwen3-32b ✅
+    // qwen/qwen3.6-27b ✅
+    // meta-llama/llama-4-scout-17b-16e-instruct ✅ // Best-effort Mode (strict: false)
+    // llama-3.3-70b-versatile ✅
+    // llama-3.1-8b-instant ✅
   ],
   cerebras: [
     'gpt-oss-120b', // Production model; strong general quality
@@ -211,15 +223,14 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
  */
 export const AI_CHAT_MODELS_FAST: AIModelSelection = {
   groq: [
-    'llama-3.3-70b-versatile',
-    'openai/gpt-oss-120b',
-    'llama-3.1-8b-instant',
+    // TODO: deprecated on Aug 16, 2026
+    'llama-3.3-70b-versatile', // cinematic, fast-paced action, sharp dialogue, proven thriller prose
+    'llama-3.1-8b-instant', // fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort
   ],
   cerebras: [
     // TODO: is it really available now?
     'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
   ],
-  nvidia: ['meta/llama-3.3-70b-instruct'],
 };
 
 /**
@@ -238,6 +249,7 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'mistral-medium-latest'
   ],
   openrouter: [
+    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
     'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
     'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
@@ -245,10 +257,15 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'meta-llama/llama-3.1-8b-instruct:free', // Reliable but uninspiring; good at following story-state rules, weak at producing memorable prose.
     'nvidia/nemotron-nano-9b-v2:free' // Replaces Gemma. Punchy, unique vocabulary, great for erratic character thoughts.
   ],
+  groq: [
+    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
+    'qwen/qwen3.6-27b',
+  ],
   cloudflare: [
     '@cf/meta/llama-3.1-8b-instruct',
     '@cf/qwen/qwen1.5-7b-chat-awq'
   ],
+  nvidia: ['meta/llama-3.3-70b-instruct'],
   cohere: ['command-r-08-2024'],
 };
 
@@ -263,11 +280,13 @@ export const AI_CHAT_MODELS_THEME: AIModelSelection = {
 
 /**
  * Validating story theme ideas and meta-directives.
- * Prefers fast, highly structured, smaller models that excel at analyzing.
+ * Prefers fast, highly structured, smaller models that excel at policy enforcement, content moderation, and compliance checking.
  */
-export const AI_CHAT_MODELS_VALIDATOR: AIModelSelection = {
-  ...AI_CHAT_MODELS_FAST,
-  ...AI_CHAT_MODELS_IDEA,
+export const AI_CHAT_MODELS_VALIDATION: AIModelSelection = {
+  ...{...AI_CHAT_MODELS_IDEA, groq: [
+    'openai/gpt-oss-safeguard-20b', // fine-tuned from GPT-OSS, this model helps classify text content based on customizable policies
+    ...(AI_CHAT_MODELS_IDEA.groq ?? []),
+  ]},
 };
 
 /**
@@ -294,6 +313,11 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'nvidia/nemotron-3-super:free', // MoE architecture handles multilingual subtext very well.
     'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
+  ],
+  groq: [
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
+    'qwen/qwen3.6-27b',
   ],
   cloudflare: [
     '@cf/qwen/qwen1.5-14b-chat-awq', // Qwen is notoriously strong at multilingual tasks.
@@ -326,6 +350,11 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
     'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
     'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
+  ],
+  groq: [
+    'openai/gpt-oss-120b',
+    'openai/gpt-oss-safeguard-20b', // fine-tuned from GPT-OSS, this model helps classify text content based on customizable policies
+    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
   ],
   cloudflare: [
     '@cf/meta/llama-3.1-8b-instruct'

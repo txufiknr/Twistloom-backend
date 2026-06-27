@@ -3088,6 +3088,7 @@ router.post("/:identifier/:pageId/custom-actions/preview", requireAuth, async (r
         eq(userPageProgress.actionedPageId, pageId),
       ))
       .limit(1);
+
     const creditsCost = hasExistingChoice
       ? CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE
       : CREDIT_COSTS.CUSTOM_ACTION;
@@ -3219,6 +3220,7 @@ router.post("/:identifier/:pageId/custom-actions/submit", requireAuth, async (re
         eq(userPageProgress.actionedPageId, pageId),
       ))
       .limit(1);
+
     creditsCost = hasExistingChoice
       ? CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE
       : CREDIT_COSTS.CUSTOM_ACTION;

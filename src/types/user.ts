@@ -124,7 +124,7 @@ export type UserAchievement = {
   id: string;
   title: string;
   description: string;
-  badgeIcon: string;
+  badgeImageUrl: string;
   tier: AchievementTier;
   currentProgress: number;
   threshold: number;

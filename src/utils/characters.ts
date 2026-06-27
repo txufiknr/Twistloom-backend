@@ -622,7 +622,7 @@ export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]
 
   return characterPlans
     .map((plan) => {
-      const { characterId, knownName, realName, gender, role, bio, visualDescription, importance, plannedIntroduction } = plan;
+      const { characterId, knownName, realName, gender, role, bio, visualDescription, importance, plannedIntroduction, storyPurpose } = plan;
 
       const roleString = [role, importance].filter(Boolean).join(', ');
       const mainInfo = buildCharacterHeader(knownName, roleString, gender, characterId);
@@ -634,6 +634,7 @@ export function formatPlannedCharactersForPrompt(characterPlans: CharacterPlan[]
       }
       if (bio) details.push(`  - Bio: ${bio}`);
       if (visualDescription) details.push(`  - Visual description: ${visualDescription}`);
+      if (storyPurpose) details.push(`  - Story purpose: ${storyPurpose}`);
       if (plannedIntroduction) details.push(`  - Planned introduction: ${plannedIntroduction}`);
 
       return details.length ? `${mainInfo}\n${details.join('\n')}` : mainInfo;

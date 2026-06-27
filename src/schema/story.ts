@@ -285,6 +285,7 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   gender: { type: 'string', enum: [...genders] },
   bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
   visualDescription: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
+  storyPurpose: { type: 'string', description: 'Explain why this character exists in the story' },
   plannedIntroduction: { type: 'string', description: 'Explain how this character planned to be introduced' },
   importance: { type: 'string', enum: [...characterImportances] },
   // relationships: { type: 'array', description: 'Only between side characters (excluding MC). Empty if characters is less than two.', items: {
@@ -301,7 +302,7 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   // } },
 };
 
-const { plannedIntroduction: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
+const { storyPurpose: _sp, plannedIntroduction: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
 
 export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
   ...initialCharacterProperties,
@@ -898,7 +899,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
   plannedCharacters: { type: 'array', description: 'Any unintroduced characters inferred from theme.', items: {
     type: 'object',
     properties: CHARACTER_PLAN_PROPERTIES,
-    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],
+    required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'storyPurpose', 'plannedIntroduction', 'importance'] satisfies (keyof CharacterPlan)[],
     additionalProperties: false
   } },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },

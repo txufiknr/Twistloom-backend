@@ -165,6 +165,7 @@ export type CharacterImportance = typeof characterImportances[number];
 export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'importance'> & {
   characterId: string;
   plannedIntroduction?: string;
+  storyPurpose?: string;
 };
 
 /**

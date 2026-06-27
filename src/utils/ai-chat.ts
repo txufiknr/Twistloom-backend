@@ -1,4 +1,4 @@
-import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, PromptWithFallbackOptions } from "../types/ai-chat.js";
+import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
 import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
@@ -142,7 +142,8 @@ export function createOpenAICompatiblePrompt(
       async (model, prompt, opts) => {
         const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
         const systemPromptWithDocuments = formatSystemPromptWithDocuments(provider, opts);
-        return await getClient().chat.completions.create({
+        // const createParams: OpenAI.ChatCompletionCreateParamsNonStreaming = {
+        const createParams: OpenRouterCreateParams = {
           model,
           messages: [
             { role: 'system', content: systemPromptWithDocuments },
@@ -166,7 +167,11 @@ export function createOpenAICompatiblePrompt(
               } satisfies AIJsonProperty
             }
           } : { type: 'json_object' }) : undefined,
-        } satisfies OpenAI.ChatCompletionCreateParamsNonStreaming);
+          plugins: provider === 'openrouter' ? [
+            { id: 'response-healing' } // Prevent "qwen/qwen3-30b-a3b" token leak
+          ] : undefined,
+        };
+        return await getClient().chat.completions.create(createParams);
       },
       (response) => {
         const content = response.choices?.[0]?.message?.content;

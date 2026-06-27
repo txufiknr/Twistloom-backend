@@ -13,48 +13,37 @@
 [x] translate action hint
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [x] placesRelationship: source, target (placeId), distance, obstacle
-[x] ensure realityStability based on momentum and sceneType, not page count
-[x] enriched page context tambah threads: StoryThread[]; (only open/developing status)
-[x] display place.knownConnections & parentPlaceId in prompt
-[x] lightning-fast model (like Llama 3 on Groq) for theme & custom action validation
-[x] enriched page add: aiProvider?: string; aiModel?: string;
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
 [x] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
-[ ] aiPrompt should retry model on rate limit/service unavailable
-[ ] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
-[ ] translate: character.traits, place.traits
-[ ] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
-[ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
+[x] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
 [x] BookSortOption tambah 'favorites'
 [x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
 [x] explore favorites ensure filter only favorited book
 [x] enriched book add `contextHistory` alongside `lastReadAt`
 [x] book add lastPageNumber
 [x] book add lastPage -> lastPageId
+[x] achievement badgeImageUrl -> badgeImageUrl
+[x] book ensure `firstPageId` & `firstPageText` wajib ada
+[x] enriched book ensure query optimal (too many subqueries)
+[x] enriched page tambah `evalProvider` & `evalModel`
+[x] refine `getBookCreationPrompts` prompt "Describe theme, synopsis, characters, setting, tone, or any specific elements you want in your story."
+[x] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
+[ ] aiPrompt should retry model on rate limit/service unavailable
+[ ] translate: character.traits, place.traits
+[ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
+[ ] achievement badgeImageUrl for every tier -> create images
+[ ] BookSortOption add 'for-you'
 
 ---
 
-cek apakah bener?
-
-export interface Achievement {
-  id: string;
-  name: string;
-  description: string;
-  iconUrl?: string;
-  earnedAt: string;
-}
-
-export interface GetAchievementsResponse {
-  achievements: Achievement[];
-}
+bio → Who are they?
+storyPurpose → Why do they exist in the narrative?
+plannedIntroduction → How/when do they first enter the story?
+futureNotes → What important events or obligations happen later?
 
 ---
-src\routes\books.ts
-src\db\schema.ts
-src\config\credits.ts
 
-please examine my `POST /api/books/:identifier/:pageId/custom-actions/submit` and `POST /api/books/:identifier/:pageId/custom-actions/preview` API routes
-can you ensure if user has chosen acton in the respective `pageId` (exists in the `userPageProgress.actionedPageId`), then use `CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE` for custom action generation cost?
+
 
 ---
 
@@ -99,6 +88,20 @@ try {
 } catch (error) {
   console.error("LLM failed constraint validation. Retry or fallback needed.", error);
 }
+
+---
+mc: sql<StoryMC>`
+  books.mc ||
+  jsonb_build_object(
+    'imageUrl',
+    (
+      SELECT ui.image_url
+      FROM uploaded_images ui
+      WHERE ui.image_id = books.mc->>'imageId'
+      LIMIT 1
+    )
+  )
+`,
 
 ---
 

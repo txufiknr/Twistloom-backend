@@ -1415,7 +1415,10 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
     // Provider info
     aiProvider: dbPage.aiProvider || undefined,
-    aiModel: dbPage.aiModel || undefined
+    aiModel: dbPage.aiModel || undefined,
+    aiEvalProvider: dbPage.aiEvalProvider || undefined,
+    aiEvalModel: dbPage.aiEvalModel || undefined,
+  // } satisfies Record<keyof EnrichedStoryPage, unknown>;
   };
 
   // Cache the result only if page has complete actions (no pending generation)

@@ -30,7 +30,7 @@ export async function getUserAchievements(userId: string): Promise<UserAchieveme
       id: rule.id,
       title: rule.title,
       description: rule.description,
-      badgeIcon: rule.badgeIcon,
+      badgeImageUrl: rule.badgeImageUrl,
       tier: rule.tier,
       currentProgress: currentValue,
       threshold: rule.threshold,

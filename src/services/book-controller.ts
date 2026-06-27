@@ -29,7 +29,7 @@ import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Request, Response } from "express";
-import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
+import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, SelectedAction } from "../types/story.js";
 
 /**
@@ -72,46 +72,34 @@ import type { Action, SelectedAction } from "../types/story.js";
 export function getEnrichedBookSelect(currentUserId: string | null = null, language: string | null = null) {
   return {
     // Basic book fields
-    id:           books.id,
-    userId:       books.userId,
-    slug:         books.slug,
-    title:        books.title,
-    hook:         books.hook,
-    summary:      books.summary,
-    // Cover image URL (fetched from uploaded_images by image_id)
-    // TODO: imageUrl subquery (is it optimal?)
+    id:          books.id,
+    userId:      books.userId,
+    slug:        books.slug,
+    title:       books.title,
+    hook:        books.hook,
+    summary:     books.summary,
+    keywords:    books.keywords,
+    status:      books.status,
+    trendingScore: books.trendingScore,
+    totalPages:  books.totalPages,
+    language:    books.language,
+    topPick:     books.topPick,
+    isOriginal:  books.isOriginal,
+    creditsPrice: books.creditsPrice,
+    originalThemeInput: books.originalThemeInput,
+    createdAt:   books.createdAt,
+    updatedAt:   books.updatedAt,
+    mc:          books.mc,
+    
+    // Cover image URL subquery (Consider moving to a standard LEFT JOIN in the parent query)
     imageUrl: sql<string | null>`(
       SELECT ui.image_url
       FROM uploaded_images ui
       WHERE ui.image_id = books.image_id
       LIMIT 1
     )`,
-    keywords: books.keywords,
-    status: books.status,
-    trendingScore: books.trendingScore,
-    totalPages: books.totalPages,
-    language: books.language,
-    topPick: books.topPick,
-    isOriginal: books.isOriginal,
-    creditsPrice: books.creditsPrice,
-    originalThemeInput: books.originalThemeInput,
-    createdAt: books.createdAt,
-    updatedAt: books.updatedAt,
-    mc: books.mc,
-    // mc: sql<StoryMC>`
-    //   books.mc ||
-    //   jsonb_build_object(
-    //     'imageUrl',
-    //     (
-    //       SELECT ui.image_url
-    //       FROM uploaded_images ui
-    //       WHERE ui.image_id = books.mc->>'imageId'
-    //       LIMIT 1
-    //     )
-    //   )
-    // `,
     
-    // Author info
+    // Author info (Assumes `users` table is joined in the parent query)
     author: {
       id: users.userId,
       email: users.email,
@@ -120,7 +108,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       imageUrl: users.imageUrl,
     } satisfies Record<keyof BookAuthor, unknown>,
 
-    // Denormalized engagement metrics (O(1), maintained by DB triggers)
+    // Denormalized engagement metrics (O(1))
     stats: {
       likesCount: books.likesCount,
       readCount: books.readCount,
@@ -129,116 +117,39 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       completeCount: books.completeCount,
     } satisfies Record<keyof BookStats, unknown>,
 
-    // User-specific flags (indexed by userId and targetId/bookId)
-    isMine: currentUserId
-      ? sql<boolean>`books.user_id = ${currentUserId}`
-      : sql<boolean>`false`,
-    isLiked: currentUserId
-      ? sql<boolean>`EXISTS (
-          SELECT 1
-          FROM user_likes
-          WHERE user_id = ${currentUserId} AND target_type = 'book' AND target_id = books.id
-        )`
-      : sql<boolean>`false`,
-    isRead: currentUserId
-      ? sql<boolean>`EXISTS (
-          SELECT 1
-          FROM user_sessions
-          WHERE user_id = ${currentUserId} AND book_id = books.id
-        )`
-      : sql<boolean>`false`,
-    isCompleted: currentUserId
-      ? sql<boolean>`EXISTS (
-          SELECT 1
-          FROM user_completed_books
-          WHERE user_id = ${currentUserId} AND book_id = books.id
-        )`
-      : sql<boolean>`false`,
-    isPurchased: currentUserId
-      ? sql<boolean>`EXISTS (
-          SELECT 1
-          FROM user_purchased_books
-          WHERE user_id = ${currentUserId} AND book_id = books.id
-        )`
-      : sql<boolean>`false`,
+    // User-specific flags (Index-only scans via PK/Unique EXISTS constraints)
+    isMine: currentUserId ? sql<boolean>`books.user_id = ${currentUserId}` : sql<boolean>`false`,
+    isLiked: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_likes WHERE user_id = ${currentUserId} AND target_type = 'book' AND target_id = books.id)` : sql<boolean>`false`,
+    isRead: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_sessions WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
+    isCompleted: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_completed_books WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
+    isPurchased: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_purchased_books WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
 
-    // Last read tracking — LATERAL subquery computed once, referenced twice
-    lastReadAt: currentUserId
-      ? sql<Date | null>`(
-          SELECT ls.updated_at
-          FROM LATERAL (
-            SELECT updated_at, page_id
-            FROM user_sessions
-            WHERE user_id = ${currentUserId} AND book_id = books.id
-            ORDER BY updated_at DESC
-            LIMIT 1
-          ) ls
-        )`
-      : sql<Date | null>`null`,
-    lastPageId: currentUserId
-      ? sql<string | null>`(
-          SELECT ls.page_id::text
-          FROM LATERAL (
-            SELECT updated_at, page_id
-            FROM user_sessions
-            WHERE user_id = ${currentUserId} AND book_id = books.id
-            ORDER BY updated_at DESC
-            LIMIT 1
-          ) ls
-        )`
-      : sql<string | null>`null`,
-
-    // Last page number (page ordinal) from the last read session — joins to pages table
-    lastPageNumber: currentUserId
-      ? sql<number | null>`(
-          SELECT p.page
-          FROM LATERAL (
-            SELECT updated_at, page_id
-            FROM user_sessions
-            WHERE user_id = ${currentUserId} AND book_id = books.id
-            ORDER BY updated_at DESC
-            LIMIT 1
-          ) us
-          INNER JOIN pages p ON p.id = us.page_id
-        )`
-      : sql<number | null>`null`,
-
-    // Story context history from the last read page — correlated subquery with user_sessions
-    // Returns empty string if no session exists, otherwise the AI-summarized context from page 1 to current
-    contextHistory: currentUserId
-      ? sql<string>`(
-          SELECT COALESCE(ss.context_history, '')
-          FROM story_states ss
-          INNER JOIN user_sessions us ON ss.page_id = us.page_id
+    // Consolidated 4 session/context subqueries into ONE single lookup
+    // ORDER BY and LIMIT 1 removed due to the unique (user_id, book_id) constraint
+    session: currentUserId
+      ? sql<EnrichedBookSession | null>`(
+          SELECT jsonb_build_object(
+            'lastReadAt', us.updated_at,
+            'lastPageId', us.page_id,
+            'lastPageNumber', p.page,
+            'contextHistory', COALESCE(ss.context_history, '')
+          )
+          FROM user_sessions us
+          LEFT JOIN pages p ON p.id = us.page_id
+          LEFT JOIN story_states ss ON ss.page_id = us.page_id
           WHERE us.user_id = ${currentUserId} AND us.book_id = books.id
-          ORDER BY us.updated_at DESC
-          LIMIT 1
         )`
-      : sql<string>`''`,
+      : sql<EnrichedBookSession | null>`null`,
 
-    // First page data (page 1 of the book) — combined LATERAL join for efficiency
-    firstPageId: sql<string>`(
-      SELECT fp.id
-      FROM LATERAL (
-        SELECT id, text
-        FROM pages
-        WHERE book_id = books.id AND page = 1
-        LIMIT 1
-      ) fp
-    )`,
-    firstPageText: sql<string>`(
-      SELECT fp.text
-      FROM LATERAL (
-        SELECT id, text
-        FROM pages
-        WHERE book_id = books.id AND page = 1
-        LIMIT 1
-      ) fp
+    // Consolidated 2 independent scans into ONE single page lookup
+    firstPage: sql<EnrichedBookFirstPage | null>`(
+      SELECT jsonb_build_object('id', id, 'text', text)
+      FROM pages
+      WHERE book_id = books.id AND page = 1
+      LIMIT 1
     )`,
 
-    // Book translation — correlated subquery is the correct approach for list queries.
-    // Returns NULL when language is absent, not provided, or matches the book's own language.
-    // See JSDoc on `getEnrichedBookSelect` for the full strategy rationale.
+    // Book translation subquery
     translation: language
       ? sql<BookTranslation | null>`(
           SELECT jsonb_build_object(
@@ -667,6 +578,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null): any {
   switch (sortBy) {
+    // TODO: add 'for-you' ("You might like") based on similar books (overlap keywords) with user reading session (from `userSessions` table)
     case 'popular': {
       // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
       return query.orderBy(

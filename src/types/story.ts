@@ -1123,7 +1123,7 @@ export interface CommunityAction {
   plausibilityScore: number;
 }
 
-export type EnrichedStoryPage = Partial<UserStoryPage> & {
+export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
   originalActionsCount: number;
   translation?: PageTranslation;
   sourceAction?: SelectedAction;
@@ -1131,7 +1131,7 @@ export type EnrichedStoryPage = Partial<UserStoryPage> & {
   context?: EnrichedStoryPageContext;
   elapsedDays?: number;
   /** Previously-submitted custom actions from other readers on this page,
-   * filtered to the same headerLanguage, sorted by plausibilityScore DESC (max 5).
+   * filtered to the same headerLanguage, sorted by plausibilityScore DESC (max MAX_ACTION_CHOICES_COMMUNITY).
    * Frontend may surface these as one-click action suggestions. */
   communityActions?: CommunityAction[];
   aiProvider?: AIChatProvider | 'none';

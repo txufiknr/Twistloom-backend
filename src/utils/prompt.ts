@@ -477,6 +477,7 @@ const firstBookOutputFormat: string = `{
     {
       "characterId": "<character_id>",
       "plannedIntroduction": "...",
+      "storyPurpose": "...",
       "importance": "One of: ${formatOneOf(characterImportances)}",
       "knownName": "...",
       "realName": "...",
@@ -3082,6 +3083,16 @@ STORY SETUP:
 - Anchor vulnerability to the MC's specific bio, not generic relatability.
 - The opening disturbance must be present, unexplained, and impossible to fully dismiss.
 
+STORY PLANNING CONSISTENCY:
+- All planning outputs must support one coherent narrative.
+- The viableEnding should be achievable using the planned characters and futureNotes.
+- Planned characters should contribute to the mystery, conflict, or ending.
+- FutureNotes should naturally lead toward the viableEnding.
+- Initial characters should establish relationships that later evolve.
+- Avoid introducing characters, places, or mysteries that never become relevant.
+- Think of this initialization as creating the story bible for an entire novel.
+- Plan enough long-term structure that future AI generations can maintain consistent characters, relationships, mysteries, locations, and emotional arcs across dozens of pages.
+
 FIRST PAGE RULES:
 - Open in the middle of a moment, not an introduction.
 - Something must feel wrong, contradictory, or slightly off by the end of the first paragraph.
@@ -3105,6 +3116,8 @@ Main Character (MC):
 - name: if provided, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
 - knownName: preferred alias or nick referred by other characters.
 - bio: if provided, enhance it. If not provided, infer from theme. Must include at least one psychological trait that will be used against them.
+- The MC should have a clear personal goal, fear, wound, or unresolved need that naturally supports the viableEnding.
+- Avoid making the MC merely an observer of the mystery.
 
 Initial Place:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
@@ -3119,10 +3132,16 @@ Initial Characters:
 - bio: must include one trait that could become a source of threat or betrayal.
 - narrativeFlags: set to match behavior and twist setup.
 - traits: only story-relevant (e.g., skills, hobbies).
+- Every initial character should serve at least one purpose: deepen the MC, increase tension, introduce information, create conflict, or foreshadow future events.
+- Avoid background characters that have no narrative value.
 
 Planned Characters:
-- Infer any side characters from the theme input that haven't appeared on this first page.
-- plannedIntroduction: explain how this character planned to be introduced, what their relationship is to other characters, etc.
+- Infer any side characters from the theme input that have not yet appeared on this first page.
+- You may infer additional major characters if they naturally strengthen the premise.
+- Do not include background NPCs or disposable one-scene characters.
+- Each planned character should have a clear future narrative purpose.
+- plannedIntroduction should explain how this character planned to be introduced: when they are likely to appear, why they matter, how they connect to the MC or central mystery.
+- storyPurpose: why this character exists in the story and how they contribute to the MC's journey, central mystery, or ending (avoid describing specific future events).
 
 Initial Relationships:
 - Only between side characters (excluding MC). If initial characters is less than two, omit it.
@@ -4016,7 +4035,7 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   // instead of the full verbose JSON template. Saves ~1 000–2 000 tokens.
   const outputFormatPart = supportsStructuredOutput
     ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
-    : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}`;
+    : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}\n\nIMPORTANT: Return ONLY the raw JSON object. Must begin exactly with the character '{'.`;
 
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
   const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
@@ -4064,30 +4083,48 @@ Do NOT mention this checklist.` : '';
  * @returns Object containing systemPrompt and userPrompt for book creation
  */
 function getBookCreationPrompts(headerLanguage?: string | null): { systemPrompt: string; userPrompt: string } {
-  const systemPrompt = `You are a creative writing assistant specializing in generating engaging story prompts for interactive fiction and thriller novels.
+  const systemPrompt = `You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
 
-Your task is to generate a compelling story prompt that includes:
-1. A story theme (required) - a sentence or paragraph describing what the story is about
-2. Optional main character details (name, gender, age, short bio/personality)
-3. Optional story tone (dark, suspenseful, psychological, etc.)
-4. Optional story elements (atmospheric details, narrative devices, themes, etc.)
+TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel.
 
-Constraints:
-- Character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE} years old (if including character details)
-- Focus on thriller, mystery, horror, or psychological themes
-- Make it intriguing and hook the reader immediately
-- Be creative with the format - there are no strict formatting rules
-- Overall output length must not exceed ${MAX_THEME_LENGTH_PROMPT} characters
-- Do not use Markdown formatting (no bold with **, no italic with *, no headers with #) - output will be inserted into a plain textarea
-- Character gender can be either: ${formatOneOf(genders)}
-- MC gender must be explicit: 'male' or 'female'
+The story concept should naturally provide enough information to infer:
+- The core premise and central conflict (required)
+- Optional main character details (name, gender, age, occupation, personality, background)
+- Optional supporting characters or important relationships
+- Optional story tone and atmosphere
+- Optional setting, time period, or world details
+- Optional mysteries, secrets, antagonists, or major story goals
 
-Output example (not strict):
-Story about [theme description]
-MC: [Name], [Gender], [Age]
+GUIDELINES:
+- Create an intriguing premise that immediately sparks curiosity.
+- Feel free to include an initial cast of characters if they strengthen the concept.
+- Supporting characters should have clear narrative purpose rather than existing only as names.
+- Leave room for discoveries, branching choices, and unexpected twists throughout the story.
+- Do not over-explain every mystery; preserve intrigue.
+- Vary the format naturally. A short synopsis, narrative pitch, or concise concept with optional labeled sections are all acceptable.
 
-No filler words, preambles, meta-commentary.
-Only the theme is required. All other fields are optional - include them only if they add value to the story concept.`;
+CHARACTER CONSTRAINTS:
+- Main character age must be between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}.
+- Character gender must be one of: ${formatOneOf(genders)}.
+- If specifying the main character, explicitly state whether they are "male" or "female".
+
+Examples of useful information (all optional except the premise):
+- Character names
+- Relationships
+- Occupations
+- Motivations
+- Initial secrets
+- Rivalries
+- Supernatural rules
+- Organizations
+- Important locations
+- Initial objectives
+
+OUTPUT FORMAT:
+- Only output the story concept.
+- Do not include introductions, explanations, or meta-commentary.
+- Output plain text only. Do not use Markdown formatting.
+- The overall output must not exceed ${MAX_THEME_LENGTH_PROMPT} characters.`;
 
   const lang = formatLanguage(headerLanguage || 'en');
   const userPrompt = `Generate a creative and engaging story prompt for a thriller/horror interactive fiction novel. Be specific and intriguing. Write the prompt in the target language: ${lang}.`;

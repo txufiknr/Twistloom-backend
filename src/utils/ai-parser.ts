@@ -8,6 +8,7 @@
  *
  * | Stage | Strategy                              | Sync  | Handles                                  |
  * |-------|---------------------------------------|-------|------------------------------------------|
+ * | 1     | `parseSanitizedJson`                  | ✓     | Wrapped / prefixed JSON objects          |
  * | 2     | Native `JSON.parse`                   | ✓     | Clean output — zero overhead             |
  * | 3     | `jsonrepair` → parse                  | ✓     | Structural repair; **truncation**        |
  * | 4     | `@isdk/json-repair` + schema          | async | **Semantic coercion** (schema-guided)    |
@@ -324,6 +325,21 @@ async function runParsePipeline(
   schema: Record<string, AIJsonProperty> | undefined,
   logContext: string,
 ): Promise<Record<string, unknown> | null> {
+
+  // ── Stage 1: Sanitized-boundary extraction ───────────────────────────────
+  // Handles the common case where the model emits prose before or after the
+  // object, such as "Sure — { ... }" or a trailing explanation.
+  // parseSanitizedJson isolates the JSON object boundaries before the normal
+  // parser stages run.
+  try {
+    const sanitized = parseSanitizedJson<Record<string, unknown>>(candidate);
+    if (isPlainObject(sanitized)) {
+      console.log(`[${logContext}] 🔧 Stage 1: parseSanitizedJson`);
+      return sanitized;
+    }
+  } catch {
+    // Fall through to the existing parser stages.
+  }
 
   // ── Stage 2: Native JSON.parse ─────────────────────────────────────────────
   // Zero-cost fast path. Handles perfectly clean AI output with no overhead.
@@ -805,4 +821,32 @@ function trimStringValues<T extends Record<string, unknown>>(
     else                        out[k] = v;
   }
   return out as T;
+}
+
+/**
+ * Safely extracts and parses a JSON object from a string that may contain
+ * leading or trailing junk characters (e.g., "n. { ... }").
+ * 
+ * @param rawOutput - The raw string returned by the LLM
+ * @returns The parsed object typed as T
+ */
+function parseSanitizedJson<T>(rawOutput: string): T {
+  // Find the true boundaries of the JSON object
+  const firstBrace = rawOutput.indexOf('{');
+  const lastBrace = rawOutput.lastIndexOf('}');
+
+  // Validation check: ensure both braces exist and are positioned correctly
+  if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+    throw new SyntaxError("Failed to locate valid JSON object boundaries in the model output.");
+  }
+
+  // Extract exactly what sits between (and including) the outer curly braces
+  const cleanedJsonString = rawOutput.substring(firstBrace, lastBrace + 1);
+
+  try {
+    return JSON.parse(cleanedJsonString) as T;
+  } catch (error) {
+    // Edge case: If the JSON itself inside the braces is still broken
+    throw new Error("Sanitized string isolated, but JSON parsing failed.", { cause: error });
+  }
 }

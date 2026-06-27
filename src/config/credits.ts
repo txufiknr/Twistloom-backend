@@ -49,7 +49,7 @@ export const CREDIT_COSTS = {
   /** Cost to generate custom actions */
   CUSTOM_ACTION: 5,
   /** Cost to generate custom actions (after choice has been made) */
-  CUSTOM_ACTION_AFTER_CHOICE: 7, // TODO: use
+  CUSTOM_ACTION_AFTER_CHOICE: 7,
   /** Cost to select community actions (future feature) */
   CHOOSE_CUSTOM_ACTION: 2, // TODO: use
   /** Cost to add new custom characters (future feature) */
@@ -79,9 +79,9 @@ export const FIRST_PURCHASE_BONUS = 50; // Bonus for first purchase
 export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",
-    title: "Observer Package",
+    title: "Observer",
     tagline: "You watch… but rarely interfere.",
-    description: "Perfect for first-time readers. Explore branching paths and test how your decisions shape the story.",
+    description: "Step into the dark without committing. Enough to trace a few threads and sense what waits beneath the surface.",
     credits: 50,
     priceUSD: 2.99,
     priceId: "price_1TSq8CFmDKrMqBDfv8hHK8hi", // Stripe Price ID
@@ -91,9 +91,9 @@ export const CREDIT_PACKS: CreditPack[] = [
   },
   {
     id: "investigator",
-    title: "Investigator Package",
+    title: "Investigator",
     tagline: "You follow the clues. Carefully.",
-    description: "Dig deeper into the mystery. Enough credits to influence key decisions and unlock hidden paths.",
+    description: "Follow the evidence deeper. Shape pivotal moments, reveal what others miss, and craft your own story moves.",
     credits: 150,
     priceUSD: 7.99,
     priceId: "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
@@ -103,9 +103,9 @@ export const CREDIT_PACKS: CreditPack[] = [
   },
   {
     id: "mastermind",
-    title: "Mastermind Package",
+    title: "Mastermind",
     tagline: "You don't follow the story. You control it.",
-    description: "Take full control of the narrative. Craft custom actions, explore alternate endings, and bend the story to your will.",
+    description: "The story bends to you. Forge custom choices, pursue alternate endings, and leave your mark on every chapter.",
     credits: 500,
     priceUSD: 19.99,
     priceId: "price_1TSqEpFmDKrMqBDfhrwd9wOn",

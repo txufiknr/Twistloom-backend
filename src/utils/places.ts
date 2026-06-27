@@ -372,14 +372,6 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
       });
     }
 
-    // if (place.parentPlaceId) {
-    //   // Also include explicit parent reference (helpful for nested places)
-    //   // Note: parent already appears in header, but keep a separate line for clarity
-    //   // to match the jsdoc example style.
-    //   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    //   lines.push(`  - Parent ID: ${place.parentPlaceId}`);
-    // }
-
     if (place.knownConnections?.length) {
       lines.push('  - Known routes:');
       place.knownConnections.forEach(conn => {

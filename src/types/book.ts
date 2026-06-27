@@ -135,14 +135,19 @@ export type EnrichedBookData = Pick<DBBook,
   isRead: boolean;
   isCompleted: boolean;
   isPurchased: boolean;
-  lastReadAt?: Date | null;
-  lastPageId?: string | null;
-  lastPageNumber?: number | null;
-  firstPageId: string;
-  firstPageText: string;
-  contextHistory: string;
-  translation: BookTranslation | null
+  // lastReadAt?: Date | null;
+  // lastPageId?: string | null;
+  // lastPageNumber?: number | null;
+  // firstPageId: string;
+  // firstPageText: string;
+  firstPage: EnrichedBookFirstPage | null;
+  session: EnrichedBookSession | null;
+  // contextHistory: string;
+  translation: BookTranslation | null;
 }
+
+export type EnrichedBookFirstPage = { id: string; text: string };
+export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPageNumber: number; contextHistory: string };
 
 /**
  * AI response structure for book creation
@@ -232,6 +237,7 @@ export type CreateBookResponse = {
  * These define the primary sorting behavior for book lists
  */
 export const bookSortOptions = [
+  // TODO: add 'for-you' (You might like)
   'popular',
   'newest', 
   'trending',

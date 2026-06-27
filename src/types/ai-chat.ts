@@ -1,3 +1,5 @@
+import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions.js';
+
 /**
  * AI Provider types for rate limiting and configuration
  * 
@@ -426,3 +428,12 @@ export type AIProviderRateLimit = {
    */
   rpmo?: number;
 };
+
+// Extend the standard OpenAI type to support OpenRouter features
+export interface OpenRouterCreateParams extends ChatCompletionCreateParamsNonStreaming {
+  plugins?: Array<{
+    id: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [key: string]: any; // Allows for any plugin-specific configurations
+  }>;
+}

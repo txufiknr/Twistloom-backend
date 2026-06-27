@@ -15,6 +15,6 @@ export interface AchievementRule {
   description: string;
   metric: AchievementMetric;
   threshold: number;
-  badgeIcon: string;
+  badgeImageUrl: string;
   tier: AchievementTier;
 }
