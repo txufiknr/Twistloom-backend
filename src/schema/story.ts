@@ -865,21 +865,21 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
         additionalProperties: false
       },
       difficulty: { type: 'string', enum: [...difficulties] },
-      viableEnding: INITIAL_VIABLE_ENDING_SCHEMA,
       traumaTags: { type: 'array', items: { type: 'string' } },
-      futureNotes: {
-        type: 'array',
-        description: `Forward-looking narrative obligations for future AI turns (max ${MAX_FUTURE_NOTES}).`,
-        items: FUTURE_NOTE_SCHEMA
-      },
       plotFlags: PLOT_FLAGS_SCHEMA,
-      threads: THREADS_SCHEMA,
       inventory: { type: 'array', items: INITIAL_INVENTORY_ITEM_SCHEMA },
       injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
     } satisfies Record<keyof InitialStoryState, AIJsonProperty>,
-    required: ['flags', 'difficulty', 'viableEnding', 'traumaTags', 'plotFlags', 'threads'] satisfies (keyof InitialStoryState)[],
+    required: ['flags', 'difficulty', 'traumaTags', 'plotFlags'] satisfies (keyof InitialStoryState)[],
     additionalProperties: false
   },
+  viableEnding: INITIAL_VIABLE_ENDING_SCHEMA,
+  futureNotes: {
+    type: 'array',
+    description: `Forward-looking narrative obligations for future AI turns (max ${MAX_FUTURE_NOTES}).`,
+    items: FUTURE_NOTE_SCHEMA
+  },
+  initialThreads: THREADS_SCHEMA,
   initialFacts: {
     type: 'array',
     items: {
@@ -919,8 +919,11 @@ export const BOOK_CREATION_REQUIRED_FIELDS = [
   'initialCharacters',
   'plannedCharacters',
   'initialRelationships',
+  'initialThreads',
   'initialFacts',
-  'mainCharacter'
+  'mainCharacter',
+  'viableEnding',
+  'futureNotes',
 ] satisfies Array<keyof BookCreationResponse>;
 
 /**

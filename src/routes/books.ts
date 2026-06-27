@@ -1126,6 +1126,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
     const similarBooks = await dbRead
       .select(similarBooksSelect)
       .from(books)
+      // TODO: should add left join to userSessions & firstPageSq
       .leftJoin(users, eq(books.userId, users.userId))
       .where(
         and(
@@ -1275,6 +1276,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       const baseQuery = dbRead
         .select(getEnrichedBookSelect(userId, req.headerLanguage))
         .from(books)
+        // TODO: should add left join to userSessions & firstPageSq
         .leftJoin(users, eq(books.userId, users.userId));
 
       // Build comprehensive query using shared helper

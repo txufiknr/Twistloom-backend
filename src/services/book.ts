@@ -808,6 +808,7 @@ export async function getEnrichedBook(
   const [result] = await dbRead
     .select(getEnrichedBookSelect(currentUserId, language))
     .from(books)
+    // TODO: should add left join to userSessions & firstPageSq
     .leftJoin(users, eq(books.userId, users.userId))
     .where(or(...conditions))
     .limit(1);

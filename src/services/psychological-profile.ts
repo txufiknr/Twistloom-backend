@@ -76,7 +76,7 @@ export async function getPsychologicalProfileResult(bookId: string): Promise<Psy
   const state = rows[0];
   if (!state.psychologicalProfile) return null;
 
-  const profile: PsychologicalProfile = state.psychologicalProfile as PsychologicalProfile;
+  const profile = state.psychologicalProfile;
   const archetype = profile.archetype;
   const endingRec = determineOptimalEnding(state as unknown as StoryState);
 

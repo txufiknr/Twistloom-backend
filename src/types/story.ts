@@ -4,7 +4,7 @@ import type { Book, PageTranslation } from "./book.js";
 import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, StoryMCCandidate, CharacterPlan } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
-import type { NewThread, StoryThread, ThreadUpdates } from "./story-thread.js";
+import type { StoryThread, ThreadUpdates } from "./story-thread.js";
 
 /**
  * Available moods for story pages
@@ -353,6 +353,10 @@ export type FactHistory = {
 export type FactUpdate = { key: string; } & FactHistory
 export type InitialFact = Omit<FactUpdate, 'page'>;
 
+/**
+ * What does the future need to remember?
+ * What should future AI generations remember that hasn't happened yet?
+ */
 export type FutureNote = {
   /** Unique identifier for the note (for updates) */
   key: string;
@@ -364,6 +368,9 @@ export type FutureNote = {
   addedAtPage?: number;
   /** Optional tag for categorizing the note (e.g. 'relationship', 'clue') */
   tag?: FactType;
+  /** Optional if related to any active thread */
+  relatedThreadId?: string;
+  // TODO: refactor to targetConditions: [{ "type": "phase", "value": "MID" }]
   /** Optional target story phase for when this note should become relevant */
   targetPhase?: StoryPhase;
   /** Optional target page number for when this note should become relevant */
@@ -372,9 +379,26 @@ export type FutureNote = {
   targetDate?: string;
   /** Optional target day for when this note should become relevant */
   targetDay?: number;
-  /** Optional if related to any active thread */
-  relatedThreadId?: string;
 };
+
+export type FutureNoteTarget = {
+  type: FutureNoteTargetType;
+  phase: string;
+}
+
+export type FutureNoteTargetType =
+| 'phase' // e.g. 'MID'
+| 'pageRange' // e.g. '25-30'
+| 'date' // e.g. '<yyyy-MM-dd>'
+| 'day' // e.g. '7' or '10-14' (exact or range)
+// state.psychologicalProfile:
+| 'stability'
+// state.healthStatus:
+| 'condition' // e.g. 'critial'
+| 'healthPercent' // e.g. '< 75'
+| 'mobilityPercent'
+| 'actionPercent'
+| 'mentalPercent';
 
 export type FutureNoteGeneration = Omit<FutureNote, 'key' | 'addedAtPage'>;
 
@@ -1361,7 +1385,7 @@ export type StoryState = {
    */
   plotFlags: PlotFlag[];
 
-  /** Important notes for future AI turns */
+  /** Narrative reminders for future AI generations */
   futureNotes: FutureNote[];
 
   // /** How much time duration until this page? */
@@ -1459,12 +1483,6 @@ export type StoryStateSource = 'original' | 'reconstructed';
 
 export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' | 'traumaTags' | 'plotFlags' | 'inventory'> & {
   injuries: InitialInjury[];
-  /** What promises must the story fulfill? / What important events or obligations happen later? */
-  futureNotes: FutureNoteGeneration[];
-  /** Where is everything heading? / What satisfying ending should the story gradually build toward? */
-  viableEnding: InitialEnding;
-  /** What questions keep readers reading? / What unanswered questions should keep the reader engaged? */
-  threads: NewThread[];
 }>;
 
 /**

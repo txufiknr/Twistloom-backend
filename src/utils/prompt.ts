@@ -346,31 +346,12 @@ const firstBookOutputFormat: string = `{
       "curiosity": "One of: low | medium | high"
     },
     "difficulty": "One of: ${formatOneOf(difficulties)}",
-    "viableEnding": {
-      "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
-      "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
-      "outline": ["...", "..."]
-    },
     "traumaTags": ["..."],
     "plotFlags": [
       {
         "fact": "...",
         "type": "One of: ${formatOneOf(plotFlagTypes)}",
         "isMajorEvent": <boolean>
-      }
-    ],
-    "threads": [
-      {
-        "threadId": "<new_thread_id>",
-        "title": "...",
-        "question": "...",
-        "priority": "One of: ${formatOneOf(threadPriorities)}",
-        "truth": "One of: ${formatOneOf(threadTruths)}",
-        "importance": <number between 0.0 and 1.0>,
-        "summary": "...",
-        "clues": [
-          { "clue": "...", "isFalse": <boolean> }
-        ]
       }
     ],
     "inventory": [
@@ -392,20 +373,39 @@ const firstBookOutputFormat: string = `{
         "severity": <number between 0.0 and 1.0>,
         "decayPerPage": <number between 0.0 and 1.0>
       }
-    ],
-    "futureNotes": [
-      {
-        "note": "...",
-        "isMajor": <boolean>,
-        "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-        "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
-        "targetPageRange": "Optional. '<min>-<max>'",
-        "targetDate": "Optional. '<yyyy-MM-dd>'",
-        "targetDay": <integer or omit>,
-        "relatedThreadId": "<thread_id> or 'none'"
-      }
     ]
   },
+  "initialThreads": [
+    {
+      "threadId": "<new_thread_id>",
+      "title": "...",
+      "question": "...",
+      "priority": "One of: ${formatOneOf(threadPriorities)}",
+      "truth": "One of: ${formatOneOf(threadTruths)}",
+      "importance": <number between 0.0 and 1.0>,
+      "summary": "...",
+      "clues": [
+        { "clue": "...", "isFalse": <boolean> }
+      ]
+    }
+  ],
+  "viableEnding": {
+    "text": "Specific ending plan for this MC and theme (${VIABLE_ENDING_LENGTH})",
+    "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
+    "outline": ["...", "..."]
+  },
+  "futureNotes": [
+    {
+      "note": "...",
+      "isMajor": <boolean>,
+      "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
+      "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
+      "targetPageRange": "Optional. '<min>-<max>'",
+      "targetDate": "Optional. '<yyyy-MM-dd>'",
+      "targetDay": <integer or omit>,
+      "relatedThreadId": "<thread_id> or 'none'"
+    }
+  ],
   "initialPlace": {
     "placeId": "<new_place_id>",
     "knownName": "...",
@@ -3158,20 +3158,34 @@ firstPage:
 initialState:
 - flags: set based on opening scene — not defaults.
 - difficulty: should reflect how hostile the world is to this MC at the start.
-- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it. Should resolve the highest-priority threads.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
 - plotFlags: significant plot development that affect the overall story trajectory (max 2 per page).
 - inventory: if any, what items MC brings, can include the amount, traits, and where is it located now (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
 
-initialState.threads:
+viableEnding:
+- Choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan describing the story's intended destination.
+- Define the MC's ultimate fate and the final state of the central conflict.
+- Major threads should reach a satisfying culmination through resolution, revelation, tragedy, sacrifice, or deliberate ambiguity.
+- Preserve mystery where it strengthens the psychological or horror impact.
+- If the user specifies a desired ending in the theme input, respect it whenever possible.
+
+initialThreads:
 - Represents major unanswered questions, mysteries, goals, or narrative conflicts that keep the reader engaged across multiple pages.
 - Every major mystery or long-term conflict introduced in the premise should become a thread.
 - Every thread should have a clear question the reader wants answered.
 - Prefer a few meaningful threads over many shallow ones.
 - Threads may represent mysteries, relationships, investigations, survival goals, conspiracies, or emotional conflicts.
 - question: should be something the reader naturally wonders after reading the opening.
+
+futureNotes:
+- Represents narrative reminders for future page generation about things that have not happened yet.
+- May describe future events, delayed consequences, planned introductions, environmental changes, pacing beats, recurring motifs, or other story obligations.
+- Notes may be major or minor depending on their narrative importance.
+- Include only information that future AI is unlikely to infer reliably from the current story state.
+- Avoid immediate next-page actions, redundant summaries, or information already represented elsewhere.
+- Max ${MAX_FUTURE_NOTES} items.
 
 initialFacts:
 - Represents long-term story memory, discoveries, or important established facts that influence future turns.
@@ -3294,9 +3308,12 @@ export async function initializeBook(
       initialCharacters,
       plannedCharacters,
       initialRelationships,
+      initialThreads,
       initialFacts,
       mainCharacter: mc,
-      language
+      language,
+      viableEnding,
+      futureNotes,
     } = response.result;
 
     // 3. Validate first page text length
@@ -3412,12 +3429,12 @@ export async function initializeBook(
       ...{
         ...generatedInitialState,
         plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, calendarDate, timeOfDay })) || [],
-        threads: generatedInitialState.threads?.map<StoryThread>((thread) => createStoryThread(thread, 1)) || [],
+        threads: initialThreads?.map<StoryThread>((thread) => createStoryThread(thread, 1)) || [],
         inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId })) || [],
         injuries,
         healthStatus,
-        futureNotes: mapFutureNoteWithKey(generatedInitialState.futureNotes, 1, []),
-        viableEnding: generatedInitialState.viableEnding ? { ...generatedInitialState.viableEnding, outline: generatedInitialState.viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
+        futureNotes: mapFutureNoteWithKey(futureNotes, 1, []),
+        viableEnding: viableEnding ? { ...viableEnding, outline: viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
       },
       hiddenState: createInitialHiddenState(),
       characters,

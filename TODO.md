@@ -28,16 +28,36 @@
 [x] enriched page tambah `evalProvider` & `evalModel`
 [x] refine `getBookCreationPrompts` prompt "Describe theme, synopsis, characters, setting, tone, or any specific elements you want in your story."
 [x] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
+[x] initialState.threads -> `initialThreads`, pisahin `viableEnding` juga keluar
+[x] `BookCreationResponse` should we move out `futureNotes` too?
+[@] `BookSortOption` add 'for-you'
 [ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] achievement badgeImageUrl for every tier -> create images
-[@] BookSortOption add 'for-you'
-[ ] initialState.threads -> `initialThreads`, pisahin `viableEnding` juga keluar
 
 ---
 
-[ ] `getEnrichedBookSelect` callernya tambahin left join ke userSessions & firstPageSq
+src\types\story.ts
+src\schema\story.ts
+src\utils\prompt.ts
+src\config\story.ts
+
+can you help me refactor `FutureNote` to migrate all individual target props into single `targetConditions: FutureNoteTarget[]` array (OR logic)?
+please check all occurences, and adjust the schema and json example accordingly
+need to carefully refactor `formatFutureNotes` to handle lookahead window of each target condition values
+you can configure lookahead window in config
+
+---
+
+[ ] callers of `getEnrichedBookSelect` should left join to:
+  - userSessions
+  - firstPageSq
+  - uploadedImages
+  - sessionPages
+  - storyStates
+
+// example:
 
 const targetLanguage = "es";
 

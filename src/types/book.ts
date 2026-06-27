@@ -1,12 +1,12 @@
 import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, NewCharacter, RelationshipUpdate, StoryMC, StoryMCTranslation } from "./character.js";
 import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan, InitialEnding, FutureNoteGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
-import type { StoryThreadTranslation } from "./story-thread.js";
+import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
 export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
@@ -186,6 +186,12 @@ export type BookCreationResponse = {
   initialRelationships: RelationshipUpdate[];
   /** Initial facts discovered in first page */
   initialFacts: InitialFact[];
+  /** What questions keep readers reading? / What unanswered questions should keep the reader engaged? */
+  initialThreads: NewThread[];
+  /** Where is everything heading? / What inevitable destination is this story moving toward? */
+  viableEnding: InitialEnding;
+  /** What promises must the story fulfill? / What important events or obligations happen later? */
+  futureNotes: FutureNoteGeneration[];
 };
 
 /**
