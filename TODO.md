@@ -32,18 +32,50 @@
 [ ] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] achievement badgeImageUrl for every tier -> create images
-[ ] BookSortOption add 'for-you'
+[@] BookSortOption add 'for-you'
+[ ] initialState.threads -> `initialThreads`, pisahin `viableEnding` juga keluar
 
 ---
 
-bio → Who are they?
-storyPurpose → Why do they exist in the narrative?
-plannedIntroduction → How/when do they first enter the story?
-futureNotes → What important events or obligations happen later?
+[ ] `getEnrichedBookSelect` callernya tambahin left join ke userSessions & firstPageSq
 
----
+const targetLanguage = "es";
 
+const firstPageSq = dbRead.select({
+  bookId: pages.bookId,
+  id: pages.id,
+  text: pages.text,
+})
+.from(pages)
+.where(eq(pages.page, 1))
+.as("fp");
 
+const query = dbRead.select({
+  id: books.id,
+  title: books.title,
+  imageUrl: uploadedImages.imageUrl, // O(1) direct column join mapping
+  
+  // Flatly map first page attributes from the pre-grouped join
+  firstPageId: firstPageSq.id,
+  firstPageText: firstPageSq.text,
+  
+  // Flatly map session tracking from the direct 1:1 join
+  lastReadAt: userSessions.updatedAt,
+  lastPageId: userSessions.pageId,
+  lastPageNumber: sessionPages.page,
+  contextHistory: sql`COALESCE(${storyStates.contextHistory}, '')`,
+})
+.from(books)
+.leftJoin(users, eq(books.userId, users.userId))
+.leftJoin(uploadedImages, eq(books.imageId, uploadedImages.imageId)) // Replaces imageUrl subquery
+.leftJoin(firstPageSq, eq(books.id, firstPageSq.bookId))             // Replaces duplicate page scans
+// Direct 1:1 user sessions lookup safely utilizing index keys
+.leftJoin(
+  userSessions,
+  and(eq(userSessions.bookId, books.id), eq(userSessions.userId, currentUserId))
+)
+.leftJoin(sessionPages, eq(userSessions.pageId, sessionPages.id))
+.leftJoin(storyStates, eq(userSessions.pageId, storyStates.pageId));
 
 ---
 

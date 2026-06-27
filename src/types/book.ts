@@ -158,10 +158,11 @@ export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPa
 export type BookCreationResponse = {
   /** Book title (catchy, mysterious) */
   title: string;
+  /** Optional alternative titles (e.g., english version) */
   alternativeTitles: string[];
   /** Total number of pages in the book */
   totalPages: number;
-  /** Language code (e.g. 'en') */
+  /** Detected language code (ISO 639-1) (e.g., 'en') */
   language: string;
   /** Hook text (1-2 sentences, intriguing) */
   hook: string;
@@ -169,7 +170,7 @@ export type BookCreationResponse = {
   summary: string;
   /** Keywords (3-5 relevant tags) */
   keywords: string[];
-  /** Main character's complete info */
+  /** Main character's complete info (Who is the story about?) */
   mainCharacter: StoryMC;
   /** First story page content */
   firstPage: InitialStoryPageGeneration;
@@ -177,7 +178,7 @@ export type BookCreationResponse = {
   initialState: InitialStoryState;
   /** Initial place memory setup */
   initialPlace: NewPlace;
-  /** Initial character memories setup (excluding MC) */
+  /** Initial character memories setup (excluding MC, who matters?) */
   initialCharacters: NewCharacter[];
   /** Unintroduced characters inferred from theme */
   plannedCharacters: CharacterPlan[];
@@ -237,7 +238,7 @@ export type CreateBookResponse = {
  * These define the primary sorting behavior for book lists
  */
 export const bookSortOptions = [
-  // TODO: add 'for-you' (You might like)
+  'for-you', // You might like
   'popular',
   'newest', 
   'trending',

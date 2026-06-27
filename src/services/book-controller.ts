@@ -578,7 +578,38 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null): any {
   switch (sortBy) {
-    // TODO: add 'for-you' ("You might like") based on similar books (overlap keywords) with user reading session (from `userSessions` table)
+    case 'for-you': {
+      // Recommend books based on user's reading history (from userSessions)
+      // Finds unread books with overlapping keywords, sorted by similarity count
+      // Requires authentication, fall through to 'popular' books
+      if (currentUserId) {
+        // Aggregate all distinct keywords from books the user has read
+        const userReadKeywords = sql`(
+          SELECT COALESCE(array_agg(DISTINCT kw), '{}')
+          FROM user_sessions us_src
+          INNER JOIN books rb ON us_src.book_id = rb.id
+          CROSS JOIN LATERAL unnest(rb.keywords) AS kw
+          WHERE us_src.user_id = ${currentUserId}
+        )`;
+
+        // Keyword overlap count between the candidate book and user's read books
+        const overlapScore = sql`(
+          SELECT COUNT(*)::int
+          FROM unnest(${books.keywords}) AS kw
+          WHERE kw = ANY(${userReadKeywords})
+        )`;
+
+        return query
+          .where(sql`${books.keywords} && ${userReadKeywords}`)
+          .where(sql`NOT EXISTS (
+            SELECT 1 FROM user_sessions us_exclude
+            WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
+          )`)
+          .orderBy(desc(overlapScore))
+          .orderBy(desc(books.trendingScore));
+      }
+    }
+
     case 'popular': {
       // Sort by branchesCount/totalPages ratio (pre-calculated branchesCount maintained by trigger)
       return query.orderBy(

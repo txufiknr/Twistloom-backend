@@ -164,7 +164,9 @@ export type CharacterImportance = typeof characterImportances[number];
 
 export type CharacterPlan = Pick<CharacterMemory, 'knownName' | 'realName' | 'gender' | 'role' | 'bio' | 'visualDescription' | 'importance'> & {
   characterId: string;
+  /** When do they enter? / How/when do they first enter the story? */
   plannedIntroduction?: string;
+  /** Why do they matter? / Why do they exist in the narrative? */
   storyPurpose?: string;
 };
 
@@ -231,7 +233,7 @@ export type CharacterMemory = {
   gender: Gender;
   /** Character's role or occupation in the story */
   role: string;
-  /** Brief 1-sentence character description with hints */
+  /** Brief 1-sentence character description with hints (Who are they?) */
   bio: string;
   /** Character visual description, e.g. "tall, pale, messy black hair, hollow eyes" */
   visualDescription: string;

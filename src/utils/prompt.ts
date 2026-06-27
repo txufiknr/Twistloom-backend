@@ -3105,13 +3105,14 @@ ${getActionRulesText({ isFirstPage: true })}`;
 }
 
 const firstBookFieldInstructions: string = `Book Metadata:
-- TITLE: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.
-- HOOK: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
-- SUMMARY: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
-- KEYWORDS: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
-- TOTAL PAGES: Min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
+- title: ${BOOK_TITLE_LENGTH}. If provided in theme, use it. Otherwise, NEVER start with "The" except it's really good. Be creative, mysterious, visceral (you feel it), memorable, not generic.
+- hook: ${HOOK_LENGTH}. Immediate intrigue. Psychological tension.
+- summary: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
+- keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
+- totalPages: min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
+- language: detected language code (ISO 639-1).
 
-Main Character (MC):
+mainCharacter:
 - Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
 - name: if provided, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
 - knownName: preferred alias or nick referred by other characters.
@@ -3119,12 +3120,12 @@ Main Character (MC):
 - The MC should have a clear personal goal, fear, wound, or unresolved need that naturally supports the viableEnding.
 - Avoid making the MC merely an observer of the mystery.
 
-Initial Place:
+initialPlace:
 - familiarity: 0.0-1.0. A place the MC just arrived at = 0.1. Childhood home = 0.9.
 - context: ${PLACE_CONTEXT_LENGTH}. Evocative, not descriptive.
 - hints: any known clue about the place.
 
-Initial Characters:
+initialCharacters:
 - It's meant for characters beside MC who are physically present in the scene. Don't include MC (the POV) here.
 - If MC is alone in this first page, then it should be an empty array.
 - Include only side characters who meaningfully exist at story start.
@@ -3135,7 +3136,7 @@ Initial Characters:
 - Every initial character should serve at least one purpose: deepen the MC, increase tension, introduce information, create conflict, or foreshadow future events.
 - Avoid background characters that have no narrative value.
 
-Planned Characters:
+plannedCharacters:
 - Infer any side characters from the theme input that have not yet appeared on this first page.
 - You may infer additional major characters if they naturally strengthen the premise.
 - Do not include background NPCs or disposable one-scene characters.
@@ -3143,28 +3144,36 @@ Planned Characters:
 - plannedIntroduction should explain how this character planned to be introduced: when they are likely to appear, why they matter, how they connect to the MC or central mystery.
 - storyPurpose: why this character exists in the story and how they contribute to the MC's journey, central mystery, or ending (avoid describing specific future events).
 
-Initial Relationships:
+initialRelationships:
 - Only between side characters (excluding MC). If initial characters is less than two, omit it.
 - For relationship which targetting MC, put it in character's relationshipToMC.
 
-First Page:
+firstPage:
 - text: follow the rules in "WRITING STYLE:" and "PAGE FORMAT:" creatively (max ${MAX_WORDS_PER_PAGE} words).
 - keyEvents: ${KEY_EVENT_LENGTH}. Plot-level facts happened in this page.
 - charactersPresent: side characters in the scene besides MC. Must match characters in initialCharacters. sceneFocus: between 0.0 to 1.0 (highest = character to focus).
 - importantObjects: objects introduced or used this page that may have future narrative significance.
 - momentum: narrative pressure or urgency level in the first page. Thriller openings often start at "rising" or sometimes "critial", just saying.
 
-Initial State:
-- Set flags based on opening scene — not defaults.
-- difficulty should reflect how hostile the world is to this MC at the start.
-- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it.
+initialState:
+- flags: set based on opening scene — not defaults.
+- difficulty: should reflect how hostile the world is to this MC at the start.
+- viableEnding: choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan for how the story reaches it. Be specific to MC and theme. If user mention anything about desired ending in theme input, respect it. Should resolve the highest-priority threads.
 - traumaTags: short evocative phrases for experiences that will haunt the MC later.
 - futureNotes: any important notes for future AI turns representing narrative obligations towards the viableEnding (future incidents, characters, place, etc), max ${MAX_FUTURE_NOTES} items.
 - plotFlags: significant plot development that affect the overall story trajectory (max 2 per page).
 - inventory: if any, what items MC brings, can include the amount, traits, and where is it located now (max ${MAX_INVENTORY_ITEM} item).
 - injuries: if any, injuries sustained by the MC in the first page.
 
-Initial Facts:
+initialState.threads:
+- Represents major unanswered questions, mysteries, goals, or narrative conflicts that keep the reader engaged across multiple pages.
+- Every major mystery or long-term conflict introduced in the premise should become a thread.
+- Every thread should have a clear question the reader wants answered.
+- Prefer a few meaningful threads over many shallow ones.
+- Threads may represent mysteries, relationships, investigations, survival goals, conspiracies, or emotional conflicts.
+- question: should be something the reader naturally wonders after reading the opening.
+
+initialFacts:
 - Represents long-term story memory, discoveries, or important established facts that influence future turns.
 - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
 - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.

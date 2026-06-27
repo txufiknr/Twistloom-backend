@@ -1459,8 +1459,11 @@ export type StoryStateSource = 'original' | 'reconstructed';
 
 export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' | 'traumaTags' | 'plotFlags' | 'inventory'> & {
   injuries: InitialInjury[];
+  /** What promises must the story fulfill? / What important events or obligations happen later? */
   futureNotes: FutureNoteGeneration[];
+  /** Where is everything heading? / What satisfying ending should the story gradually build toward? */
   viableEnding: InitialEnding;
+  /** What questions keep readers reading? / What unanswered questions should keep the reader engaged? */
   threads: NewThread[];
 }>;
 

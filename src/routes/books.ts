@@ -1245,7 +1245,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       : 'newest';
 
     // Check if authentication is required for this sort option
-    const requiresAuth = ['creations', 'reads', 'recommendations', 'favorites'].includes(bookSortBy);
+    const requiresAuth = ['creations', 'reads', 'recommendations', 'favorites', 'for-you'].includes(bookSortBy);
     if (requiresAuth && !userId) {
       const emptyBooks: EnrichedBookData[] = [];
       const pagination = calculatePaginationMeta(page, limit, 0);
@@ -1259,7 +1259,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       : eq(books.status, 'active'); // Published books
 
     // Cache strategy: don't cache user-specific queries
-    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations';
+    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
       ? `books:user:${userId}:page:${page}`
       : bookSortBy === 'trending'
