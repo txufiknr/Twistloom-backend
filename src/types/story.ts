@@ -370,35 +370,31 @@ export type FutureNote = {
   tag?: FactType;
   /** Optional if related to any active thread */
   relatedThreadId?: string;
-  // TODO: refactor to targetConditions: [{ "type": "phase", "value": "MID" }]
-  /** Optional target story phase for when this note should become relevant */
-  targetPhase?: StoryPhase;
-  /** Optional target page number for when this note should become relevant */
-  targetPageRange?: string;
-  /** Optional target date for when this note should become relevant */
-  targetDate?: string;
-  /** Optional target day for when this note should become relevant */
-  targetDay?: number;
+  /** Target conditions (OR logic) — when any condition is met, the note becomes relevant */
+  targetConditions?: FutureNoteTarget[];
 };
 
 export type FutureNoteTarget = {
   type: FutureNoteTargetType;
-  phase: string;
+  value: string | number;
 }
 
-export type FutureNoteTargetType =
-| 'phase' // e.g. 'MID'
-| 'pageRange' // e.g. '25-30'
-| 'date' // e.g. '<yyyy-MM-dd>'
-| 'day' // e.g. '7' or '10-14' (exact or range)
-// state.psychologicalProfile:
-| 'stability'
-// state.healthStatus:
-| 'condition' // e.g. 'critial'
-| 'healthPercent' // e.g. '< 75'
-| 'mobilityPercent'
-| 'actionPercent'
-| 'mentalPercent';
+export const futureNoteTargetTypes = [
+  'phase', // e.g. 'MID'
+  'pageRange', // e.g. '25-30'
+  'date', // e.g. '<yyyy-MM-dd>'
+  'day', // e.g. '7' or '10-14' (exact or range)
+  // state.psychologicalProfile:
+  'stability', // e.g. 'unstable'
+  // state.healthStatus:
+  'condition', // e.g. 'critial'
+  'healthPercent', // e.g. '< 75'
+  'mobilityPercent',
+  'actionPercent',
+  'mentalPercent'
+];
+
+export type FutureNoteTargetType = typeof futureNoteTargetTypes[number];
 
 export type FutureNoteGeneration = Omit<FutureNote, 'key' | 'addedAtPage'>;
 

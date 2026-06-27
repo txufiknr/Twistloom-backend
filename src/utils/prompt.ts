@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, storyPhases, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, futureNoteTargetTypes } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -31,7 +31,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteTarget, FutureNoteTargetType, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -399,10 +399,12 @@ const firstBookOutputFormat: string = `{
       "note": "...",
       "isMajor": <boolean>,
       "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-      "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
-      "targetPageRange": "Optional. '<min>-<max>'",
-      "targetDate": "Optional. '<yyyy-MM-dd>'",
-      "targetDay": <integer or omit>,
+      "targetConditions": [
+        {
+          "type": "${formatOneOf(futureNoteTargetTypes, ' | ')}",
+          "value": "e.g., '7', '2025-06-14', '25-30', 'MID', 'unstable', 'critical', '< 75'"
+        }
+      ],
       "relatedThreadId": "<thread_id> or 'none'"
     }
   ],
@@ -603,10 +605,12 @@ const nextPageOutputFormat: string = `{
         "note": "...",
         "isMajor": <boolean>,
         "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-        "targetPhase": "Optional. One of: ${formatOneOf(Object.keys(storyPhases))}",
-        "targetPageRange": "Optional. '<min>-<max>'",
-        "targetDate": "Optional. '<yyyy-MM-dd>'",
-        "targetDay": <integer or omit>,
+        "targetConditions": [
+          {
+            "type": "${formatOneOf(futureNoteTargetTypes, ' | ')}",
+            "value": "e.g., 7, '2025-06-14', '25-30', 'MID', 'unstable', 'critical', '< 75'"
+          }
+        ],
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ],
@@ -1781,11 +1785,14 @@ function formatActionChoices(actions: Action[]): string {
  * - Notes that are scheduled for later and should remain unresolved for now.
  * - Notes without scheduling information.
  *
+ * Notes use targetConditions (OR logic) — if ANY condition's lookahead window
+ * matches, the note enters the "Becoming Relevant" section.
+ *
  * Scheduling priority (highest → lowest):
- * 1. targetDay
- * 2. targetDate
- * 3. targetPageRange
- * 4. targetPhase
+ * 1. day
+ * 2. date
+ * 3. pageRange
+ * 4. phase
  *
  * Notes enter the "Becoming Relevant" section when their trigger falls within
  * the configured lookahead window. This encourages gradual setup, foreshadowing,
@@ -1835,39 +1842,107 @@ function formatFutureNotes(params: {
     FINALE: 3,
   };
 
-  const getPageRangeStart = (range?: string): number | undefined => {
-    if (!range) return undefined;
-    const match = range.match(/^(\d+)/);
+  const getPageRangeStart = (value: string): number | undefined => {
+    const match = value.match(/^(\d+)/);
     return match ? Number(match[1]) : undefined;
   };
 
-  const getDayDistance = (targetDay?: number, currentDay?: number): number | undefined => {
-    if (targetDay === undefined || currentDay === undefined) return undefined;
+  const getDayDistance = (targetDay: number, currentDay: number | undefined): number | undefined => {
+    if (currentDay === undefined) return undefined;
     return targetDay - currentDay;
   };
 
-  const getDateDistance = (targetDate?: string, currentDate?: string): number | undefined => {
-    if (!targetDate || !currentDate) return undefined;
+  const getDateDistance = (targetDate: string, currentDate: string | undefined): number | undefined => {
+    if (!currentDate) return undefined;
     return daysBetween(currentDate, targetDate);
   };
 
+  const isConditionBecomingRelevant = (condition: FutureNoteTarget): boolean => {
+    switch (condition.type) {
+      case 'day': {
+        const target = Number(condition.value);
+        if (isNaN(target)) return false;
+        const distance = getDayDistance(target, currentDay);
+        return distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS;
+      }
+      case 'date': {
+        const distance = getDateDistance(String(condition.value), currentDate);
+        return distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS;
+      }
+      case 'pageRange': {
+        const startPage = getPageRangeStart(String(condition.value));
+        if (startPage === undefined) return false;
+        return currentPage >= startPage - FUTURE_NOTE_LOOKAHEAD_PAGES;
+      }
+      case 'phase': {
+        const targetOrder = phaseOrder[condition.value as StoryPhase];
+        if (targetOrder === undefined) return false;
+        const currentOrder = phaseOrder[currentPhase];
+        return targetOrder <= currentOrder;
+      }
+      case 'stability':
+      case 'condition':
+      case 'healthPercent':
+      case 'mobilityPercent':
+      case 'actionPercent':
+      case 'mentalPercent':
+        return false;
+      default:
+        return false;
+    }
+  };
+
+  const isConditionScheduled = (condition: FutureNoteTarget): boolean => {
+    switch (condition.type) {
+      case 'day':
+      case 'date':
+      case 'pageRange':
+      case 'phase':
+        return true;
+      case 'stability':
+      case 'condition':
+      case 'healthPercent':
+      case 'mobilityPercent':
+      case 'actionPercent':
+      case 'mentalPercent':
+        return false;
+      default:
+        return false;
+    }
+  };
+
   const getScheduleLabel = (note: FutureNote): string | undefined => {
-    if (note.targetDay) {
-      const distance = getDayDistance(note.targetDay, currentDay);
-      return distance !== undefined && distance > 0
-        ? `Day ${note.targetDay} (${distance} day${distance === 1 ? '' : 's'} away)`
-        : `Day ${note.targetDay}`;
+    const conditions = note.targetConditions;
+    if (!conditions?.length) return undefined;
+
+    const priority: FutureNoteTargetType[] = ['day', 'date', 'pageRange', 'phase'];
+
+    for (const type of priority) {
+      const cond = conditions.find(c => c.type === type);
+      if (!cond) continue;
+
+      switch (type) {
+        case 'day': {
+          const target = Number(cond.value);
+          if (isNaN(target)) continue;
+          const distance = getDayDistance(target, currentDay);
+          return distance !== undefined && distance > 0
+            ? `Day ${target} (${distance} day${distance === 1 ? '' : 's'} away)`
+            : `Day ${target}`;
+        }
+        case 'date': {
+          const distance = getDateDistance(String(cond.value), currentDate);
+          return distance !== undefined && distance > 0
+            ? `${cond.value} (${distance} day${distance === 1 ? '' : 's'} away)`
+            : String(cond.value);
+        }
+        case 'pageRange':
+          return `Pages ${cond.value}`;
+        case 'phase':
+          return `${cond.value} phase`;
+      }
     }
 
-    if (note.targetDate) {
-      const distance = currentDate ? getDateDistance(note.targetDate, currentDate) : undefined;
-      return distance !== undefined && distance > 0
-        ? `${note.targetDate} (${distance} day${distance === 1 ? '' : 's'} away)`
-        : note.targetDate;
-    }
-
-    if (note.targetPageRange) return `Pages ${note.targetPageRange}`;
-    if (note.targetPhase) return `${note.targetPhase} phase`;
     return undefined;
   };
 
@@ -1876,67 +1951,52 @@ function formatFutureNotes(params: {
   const unscheduled: FutureNote[] = [];
 
   for (const note of futureNotes) {
-    // Day scheduling (highest priority)
-    if (note.targetDay) {
-      const distance = getDayDistance(note.targetDay, currentDay);
-      if (distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS) {
-        becomingRelevant.push(note);
-      } else {
-        upcomingScheduledEvents.push(note);
-      }
+    const conditions = note.targetConditions;
 
+    if (!conditions?.length) {
+      unscheduled.push(note);
       continue;
     }
 
-    // Date scheduling
-    if (note.targetDate) {
-      const distance = getDateDistance(note.targetDate, currentDate);
-      if (distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS) {
-        becomingRelevant.push(note);
-      } else {
-        upcomingScheduledEvents.push(note);
-      }
+    // OR logic: if ANY condition is becoming relevant, the whole note enters that section
+    const anyRelevant = conditions.some(isConditionBecomingRelevant);
+    const anyScheduled = conditions.some(isConditionScheduled);
 
-      continue;
+    if (anyRelevant) {
+      becomingRelevant.push(note);
+    } else if (anyScheduled) {
+      upcomingScheduledEvents.push(note);
+    } else {
+      unscheduled.push(note);
     }
-
-    // Page scheduling
-    const startPage = getPageRangeStart(note.targetPageRange);
-    if (startPage !== undefined) {
-      if (currentPage >= startPage - FUTURE_NOTE_LOOKAHEAD_PAGES) {
-        becomingRelevant.push(note);
-      } else {
-        upcomingScheduledEvents.push(note);
-      }
-
-      continue;
-    }
-
-    // Phase scheduling
-    if (note.targetPhase) {
-      const targetOrder = phaseOrder[note.targetPhase];
-      const currentOrder = phaseOrder[currentPhase];
-
-      if (targetOrder <= currentOrder) {
-        becomingRelevant.push(note);
-      } else {
-        upcomingScheduledEvents.push(note);
-      }
-
-      continue;
-    }
-
-    // No scheduling information
-    unscheduled.push(note);
   }
 
   const getSortValue = (note: FutureNote): [number, number] => {
-    if (note.targetDay) return [0, note.targetDay];
-    if (note.targetDate) return [1, toUtcMidnight(note.targetDate)];
+    const conditions = note.targetConditions;
+    if (!conditions?.length) return [4, Number.MAX_SAFE_INTEGER];
 
-    const startPage = getPageRangeStart(note.targetPageRange);
-    if (startPage !== undefined) return [2, startPage];
-    if (note.targetPhase) return [3, phaseOrder[note.targetPhase]];
+    const priority: FutureNoteTargetType[] = ['day', 'date', 'pageRange', 'phase'];
+    for (const type of priority) {
+      const cond = conditions.find(c => c.type === type);
+      if (!cond) continue;
+
+      switch (type) {
+        case 'day': {
+          const target = Number(cond.value);
+          if (!isNaN(target)) return [0, target];
+          break;
+        }
+        case 'date':
+          return [1, toUtcMidnight(String(cond.value))];
+        case 'pageRange': {
+          const startPage = getPageRangeStart(String(cond.value));
+          if (startPage !== undefined) return [2, startPage];
+          break;
+        }
+        case 'phase':
+          return [3, phaseOrder[cond.value as StoryPhase] ?? Number.MAX_SAFE_INTEGER];
+      }
+    }
 
     return [4, Number.MAX_SAFE_INTEGER];
   };
@@ -1961,9 +2021,7 @@ function formatFutureNotes(params: {
   sortNotes(upcomingScheduledEvents);
   sortNotes(unscheduled);
 
-  const formatRelevantNote = (
-    note: FutureNote,
-  ): string => {
+  const formatRelevantNote = (note: FutureNote): string => {
     const meta: string[] = [];
 
     if (note.isMajor) meta.push('MAJOR');

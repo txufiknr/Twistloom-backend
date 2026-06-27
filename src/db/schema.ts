@@ -1196,6 +1196,8 @@ export const userCheckins = pgTable(
 /**
  * User Counters Table
  * Maintains atomic, denormalized metrics for active engagement tracking.
+ * All columns map 1-to-1 to AchievementMetric values and are kept in sync
+ * by the triggers in ensureUserCountersTriggers().
  */
 export const userCounters = pgTable(
   "user_counters",
@@ -1207,16 +1209,19 @@ export const userCounters = pgTable(
     booksCompleted: integer("books_completed").notNull().default(0),
     pagesRead: integer("pages_read").notNull().default(0),
     branchesOpened: integer("branches_opened").notNull().default(0),
-    
+
     // Engagement metrics
     topupCredits: integer("topup_credits").notNull().default(0),
     referredUsers: integer("referred_users").notNull().default(0),
     followersCount: integer("followers_count").notNull().default(0),
-    
+
+    // Custom actions authored (outcome = 'allow' in custom_actions table)
+    customActionsWritten: integer("custom_actions_written").notNull().default(0),
+
     // Check-in streak tracking
     activeCheckinStreak: integer("active_checkin_streak").notNull().default(0),
     maxCheckinStreak: integer("max_checkin_streak").notNull().default(0),
-    
+
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull().$onUpdate(() => new Date()),
   }
 );

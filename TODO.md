@@ -35,6 +35,7 @@
 [ ] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] achievement badgeImageUrl for every tier -> create images
+[ ] Claude/AI: generate more achievement badges, wording & lucide icon
 
 ---
 

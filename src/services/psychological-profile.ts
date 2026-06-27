@@ -2,7 +2,7 @@ import { eq, desc } from 'drizzle-orm';
 import { dbRead } from '../db/client.js';
 import { storyStates } from '../db/schema.js';
 import { determineOptimalEnding } from '../utils/story.js';
-import type { PsychologicalProfileResult, MissedEndingTeaser, Archetype, PsychologicalProfile, EndingType, StoryState } from '../types/story.js';
+import type { PsychologicalProfileResult, MissedEndingTeaser, Archetype, EndingType, StoryState } from '../types/story.js';
 
 /**
  * Archetype-to-archetype miss mappings.

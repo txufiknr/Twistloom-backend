@@ -63,6 +63,7 @@ export async function getUserMetrics(userId: string) {
     referredUsers: stats?.referredUsers ?? 0,
     followersCount: stats?.followersCount ?? 0,
     maxCheckinStreak: stats?.maxCheckinStreak ?? 0,
+    customActionsWritten: stats?.customActionsWritten ?? 0,
   } satisfies Record<AchievementMetric, number>;
 }
 

@@ -7,7 +7,8 @@ export type AchievementMetric =
   | 'topupCredits'
   | 'referredUsers'
   | 'followersCount'
-  | 'maxCheckinStreak';
+  | 'maxCheckinStreak'
+  | 'customActionsWritten';
 
 export interface AchievementRule {
   id: string;

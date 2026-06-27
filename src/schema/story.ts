@@ -2,9 +2,9 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, StoryMCGeneration } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
-import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, storyPhases, difficulties, endingTypes, storyMomentums } from "../types/story.js";
+import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, futureNoteTargetTypes } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FutureNoteTarget, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -185,6 +185,17 @@ export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
   additionalProperties: false
 };
 
+export const FUTURE_NOTE_TARGET_CONDITION_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: 'A single target condition — when met (OR logic with other conditions), the note becomes relevant',
+  properties: {
+    type: { type: 'string', description: 'Type of target condition', enum: [...futureNoteTargetTypes] },
+    value: { type: 'string', description: 'Value matching the type. Examples: "MID" (phase), "25-30" (pageRange), "2025-06-14" (date), "7" (day), "unstable" (stability), "critical" (condition), "< 75" (healthPercent)' },
+  } satisfies Record<keyof FutureNoteTarget, AIJsonProperty>,
+  required: ['type', 'value'] satisfies (keyof FutureNoteTarget)[],
+  additionalProperties: false
+};
+
 export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
@@ -192,10 +203,11 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
     // all fields below are optional (can omit)
     isMajor: { type: 'boolean', description: 'Whether the note contains a major event that significantly impacts story trajectory. Major events include: death, betrayal, major secrets revealed, critical evidence discovered, key relationship changes, significant story direction pivots.' },
     tag: { type: 'string', description: 'Category for organizing the note', enum: [...Object.keys(factTypes)] },
-    targetPhase: { type: 'string', description: 'When this note should become relevant (optional)', enum: [...Object.keys(storyPhases)] },
-    targetPageRange: { type: 'string', description: 'When this note should become relevant (optional): "<min>-<max>"' },
-    targetDate: { type: 'string', description: 'When this note should become relevant (optional): "<yyyy-MM-dd>"' },
-    targetDay: { type: 'integer', description: 'When this note should become relevant (optional)' },
+    targetConditions: {
+      type: 'array',
+      description: 'Target conditions (OR logic). When ANY condition triggers within its lookahead window, this note becomes relevant to the narrative.',
+      items: FUTURE_NOTE_TARGET_CONDITION_SCHEMA,
+    },
     relatedThreadId: { type: 'string', description: 'Related thread ID if any. Omit or "none" if none.' }
   } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
   required: ['note'] satisfies (keyof FutureNoteGeneration)[],

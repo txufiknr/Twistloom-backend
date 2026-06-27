@@ -505,13 +505,19 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
 }
 
 /**
- * Creates highly optimized O(1) delta triggers to keep the `user_counters` 
- * denormalized table in perfect sync.
- * 
- * - books -> books_generated
- * - user_completed_books -> books_completed
- * - user_page_progress -> pages_read
- * - pages -> branches_opened
+ * Creates highly optimized O(1) delta triggers to keep the `user_counters`
+ * denormalized table in perfect sync with all AchievementMetric sources.
+ *
+ * Trigger map:
+ *  1. user_page_progress  → pages_read            (INSERT / DELETE)
+ *  2. books               → books_generated        (INSERT / DELETE)
+ *  3. user_completed_books→ books_completed        (INSERT / DELETE)
+ *  4. user_follows        → followers_count        (INSERT / DELETE)
+ *  5. transactions        → topup_credits          (INSERT, type='purchase')
+ *  6. users               → referred_users         (INSERT, referrer_id IS NOT NULL)
+ *  7. user_checkins       → active/max_checkin_streak (INSERT, consecutive-day)
+ *  8. pages               → branches_opened        (INSERT, distinct branch_id)
+ *  9. custom_actions      → custom_actions_written (INSERT, outcome='allow')
  */
 export async function ensureUserCountersTriggers(): Promise<void> {
   try {
@@ -733,6 +739,33 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         FOR EACH ROW EXECUTE FUNCTION update_user_branches_opened();
     `);
     console.log("✅ Trigger created: Branches Opened");
+
+    // ==========================================
+    // 9. CUSTOM ACTIONS WRITTEN (custom_actions)
+    // ==========================================
+    // Only counts accepted custom actions (outcome = 'allow').
+    // 'allow_as_attempt' and 'reject' outcomes do not contribute.
+    await dbWrite.execute(`
+      CREATE OR REPLACE FUNCTION update_user_custom_actions_written() RETURNS TRIGGER AS $$
+      BEGIN
+        IF TG_OP = 'INSERT' AND NEW.outcome = 'allow' THEN
+          INSERT INTO user_counters (user_id, custom_actions_written, updated_at)
+          VALUES (NEW.user_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET
+            custom_actions_written = user_counters.custom_actions_written + 1,
+            updated_at = NOW();
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+    `);
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS custom_actions_written_trigger ON custom_actions;`);
+    await dbWrite.execute(`
+      CREATE TRIGGER custom_actions_written_trigger
+        AFTER INSERT ON custom_actions
+        FOR EACH ROW EXECUTE FUNCTION update_user_custom_actions_written();
+    `);
+    console.log("✅ Trigger created: Custom Actions Written");
 
     console.log("🎉 All user_counters DB triggers successfully deployed.");
   } catch (error) {
