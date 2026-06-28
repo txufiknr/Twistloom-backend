@@ -1,0 +1,1 @@
+ALTER TABLE "user_counters" ADD COLUMN "custom_actions_written" integer DEFAULT 0 NOT NULL;

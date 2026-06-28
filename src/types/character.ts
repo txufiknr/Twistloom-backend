@@ -476,7 +476,8 @@ export type MentalHealthInputs = {
   fearLevel: FearLevel;
 };
 
-export type HealthCondition = 'healthy' | 'injured' | 'wounded' | 'critical' | 'dying';
+export const healthConditions = ['healthy', 'injured', 'wounded', 'critical', 'dying'] as const;
+export type HealthCondition = typeof healthConditions[number];
 
 /**
  * Complete health status derived deterministically from `StoryMCState.injuries`

@@ -43,6 +43,13 @@
       "when": 1782395846202,
       "tag": "0005_friendly_meggan",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782546723679,
+      "tag": "0006_sturdy_nick_fury",
+      "breakpoints": true
     }
   ]
 }

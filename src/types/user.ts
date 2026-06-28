@@ -46,6 +46,7 @@ export interface UserStats {
   topupCredits: number;
   referredUsers: number;
   followersCount: number;
+  customActionsWritten: number;
   activeCheckinStreak: number;
   maxCheckinStreak: number;
 }

@@ -387,7 +387,7 @@ export const futureNoteTargetTypes = [
   // state.psychologicalProfile:
   'stability', // e.g. 'unstable'
   // state.healthStatus:
-  'condition', // e.g. 'critial'
+  'condition', // e.g. 'critical'
   'healthPercent', // e.g. '< 75'
   'mobilityPercent',
   'actionPercent',

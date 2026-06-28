@@ -36,6 +36,45 @@
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] achievement badgeImageUrl for every tier -> create images
 [ ] Claude/AI: generate more achievement badges, wording & lucide icon
+[ ] ensure endpoint Backend: GET /books/explore?sortBy=creations&status=active,draft
+---
+
+enriched book add:
+  generationStatus?: BookGenerationStatus;
+  generationStep?: StoryGenerationStep;
+
+/**
+ * Story generation step types
+ * 
+ * These steps map to backend SSE events:
+ * - theme_validation: Backend theme validation process
+ * - book_initialization: Backend book initialization
+ * - ai_generation: Backend AI content generation
+ * - ai_evaluation: Backend AI content evaluation
+ * - finalizing: Backend database operations and finalization
+ * - complete: Process complete
+ */
+export type StoryGenerationStep = 'theme_validation' | 'book_initialization' | 'ai_generation' | 'ai_evaluation' | 'finalizing' | 'complete';
+
+export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+
+---
+
+src\routes\books.ts
+src\services\book-creation.ts
+src\services\credits.ts
+src\utils\prompt.ts
+src\types\book.ts
+
+please thoroughly examine my book creation implementation flow in backend
+to focus:
+- POST /api/books
+- createBookCore
+- executeWithCredits (credits consume)
+- initializeBook
+
+can you ensure all of the implementations are already correct and sound?
+please review, elaborate, and provide me fully corrected code files, complete with refined jsdocs and/or inline comments
 
 ---
 
