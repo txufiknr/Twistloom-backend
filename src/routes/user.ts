@@ -50,8 +50,8 @@ import { users, userLikes, userFavorites, userComments, userFollows, userActivit
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
-import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate } from "../services/user.js";
+import { calculatePaginationMeta, PaginationMeta } from "../utils/pagination.js";
+import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser } from "../services/user-controller.js";
@@ -2287,25 +2287,33 @@ router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
 /**
  * GET /user/activity-logs
  * 
- * Get activity logs for the authenticated user with optional filtering.
+ * Get activity logs for the authenticated user with optional filtering and pagination.
+ * Each log is enriched with a human-readable `title` and `detail` based on its target.
  * 
  * @route GET /user/activity-logs
- * @description Get user activity logs
+ * @description Get user activity logs with pagination
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
  * @query {string} [activityType] - Filter by activity type (e.g., "book_created", "liked", "commented")
  * @query {string} [targetType] - Filter by target type (e.g., "book", "comment", "user")
- * @query {number} [limit] - Maximum number of results (default: 50)
- * @query {number} [offset] - Pagination offset (default: 0)
+ * @query {number} [page] - Page number (1-based, default: 1)
+ * @query {number} [limit] - Items per page (default: 50, max: 100)
  * 
  * @returns {Object} Activity logs response
- * @returns {Array} logs - Array of activity log records
+ * @returns {Array} logs - Array of enriched activity log records with title and detail
+ * @returns {Object} pagination - Pagination metadata
+ * @returns {number} pagination.page - Current page
+ * @returns {number} pagination.limit - Items per page
+ * @returns {number} pagination.totalCount - Total matching records
+ * @returns {number} pagination.totalPages - Total pages
+ * @returns {boolean} pagination.hasNext - Whether there is a next page
+ * @returns {boolean} pagination.hasPrevious - Whether there is a previous page
  * 
  * @example
  * // Request
- * GET /user/activity-logs?activityType=liked&limit=10
+ * GET /user/activity-logs?activityType=liked&page=1&limit=10
  * 
  * // Response
  * {
@@ -2321,19 +2329,42 @@ router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
  *       "userAgent": "Mozilla/5.0...",
  *       "platform": "android",
  *       "appVersion": "1.0.0",
- *       "createdAt": "2023-01-01T00:00:00.000Z"
+ *       "createdAt": "2023-01-01T00:00:00.000Z",
+ *       "title": "The Haunting",
+ *       "detail": "A mysterious ghost haunts an old mansion..."
  *     }
- *   ]
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 10,
+ *     "totalCount": 42,
+ *     "totalPages": 5,
+ *     "hasNext": true,
+ *     "hasPrevious": false
+ *   }
  * }
  */
 router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId;
     if (!userId) {
-      return res.json({ logs: [] });
+      return res.json({
+        logs: [],
+        pagination: {
+          page: 1,
+          limit: 50,
+          totalCount: 0,
+          totalPages: 0,
+          hasNext: false,
+          hasPrevious: false,
+        } satisfies PaginationMeta,
+      });
     }
 
-    const { activityType, targetType, limit = "50", offset = "0" } = req.query;
+    const { activityType, targetType } = req.query;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const offset = (page - 1) * limit;
 
     // Build base query conditions
     const baseConditions = [eq(userActivityLogs.userId, userId)];
@@ -2348,16 +2379,31 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
       baseConditions.push(eq(userActivityLogs.targetType, targetType as string));
     }
 
+    const where = and(...baseConditions);
+
+    // Get total count for pagination
+    const [countResult] = await dbRead
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userActivityLogs)
+      .where(where);
+
+    const totalCount = countResult?.count ?? 0;
+
+    // Fetch page of logs
     const logs = await dbRead
       .select()
       .from(userActivityLogs)
-      .where(and(...baseConditions))
+      .where(where)
       .orderBy(desc(userActivityLogs.createdAt))
-      .limit(parseInt(limit as string))
-      .offset(parseInt(offset as string));
+      .limit(limit)
+      .offset(offset);
+
+    const enriched = await enrichActivityLogs(logs);
+    const pagination = calculatePaginationMeta(page, limit, totalCount);
 
     res.json({
-      logs,
+      logs: enriched,
+      pagination,
     });
 
     // Update user's last activity timestamp

@@ -201,6 +201,7 @@ export function applyStateTranslation(state: StoryState, translation: PageTransl
         ...(pt.realName  && { realName:  pt.realName }),
         ...(pt.context   && { context:   pt.context }),
         ...(pt.type      && { type:      pt.type as typeof orig.type }),
+        ...(pt.traits && pt.traits.length > 0 && { traits: pt.traits }),
       };
     }
   }
@@ -216,6 +217,7 @@ export function applyStateTranslation(state: StoryState, translation: PageTransl
         ...orig,
         ...(ct.role && { role: ct.role }),
         ...(ct.bio  && { bio:  ct.bio }),
+        ...(ct.traits && ct.traits.length > 0 && { traits: ct.traits }),
       };
     }
   }
@@ -360,9 +362,8 @@ async function translatePageWithLibre({
   if (page.weather)             { weatherIndex        = batch.length; batch.push(page.weather); }
   if (page.state.contextHistory){ contextHistoryIndex = batch.length; batch.push(page.state.contextHistory); }
 
-  // — places (4 strings per place: knownName, realName, context, type) ————————
-  // FIX: `type` was previously omitted from the batch; all four fields are now translated.
-  type PlaceFieldIndices = { start: number };
+  // — places (4 + N strings per place: knownName, realName, context, type, then one slot per trait value) —
+  type PlaceFieldIndices = { start: number; traitKeys: string[]; };
   let placeIds: string[] = [];
   let placesMap: Record<string, PlaceFieldIndices> | undefined;
 
@@ -371,9 +372,11 @@ async function translatePageWithLibre({
     placesMap = {};
     for (const pid of placeIds) {
       const p = page.state.places[pid];
-      placesMap[pid] = { start: batch.length };
-      // Fixed 4-slot layout: [knownName, realName, context, type]
+      const traitKeys = (p.traits ?? []).map((t) => t.key);
+      placesMap[pid] = { start: batch.length, traitKeys };
+      // Fixed 4-slot layout: [knownName, realName, context, type] + variable trait values
       batch.push(p.knownName ?? '', p.realName ?? '', p.context ?? '', p.type ?? '');
+      for (const t of p.traits ?? []) batch.push(t.value ?? '');
     }
   }
 
@@ -390,17 +393,19 @@ async function translatePageWithLibre({
     batch.push(...page.importantObjects);
   }
 
-  // — characters (2 strings per character: role, bio) ─────────────────────────
+  // — characters (2 + N strings per character: role, bio, then one slot per trait value) ──
   let characterIds: string[] = [];
-  let charactersMap: Record<string, number> | undefined;
+  let charactersMap: Record<string, { start: number; traitKeys: string[] }> | undefined;
 
   if (page.state?.characters && Object.keys(page.state.characters).length) {
     characterIds = Object.keys(page.state.characters);
     charactersMap = {};
     for (const cid of characterIds) {
       const ch = page.state.characters[cid];
-      charactersMap[cid] = batch.length;
+      const traitKeys = (ch.traits ?? []).map((t) => t.key);
+      charactersMap[cid] = { start: batch.length, traitKeys };
       batch.push(ch.role ?? '', ch.bio ?? '');
+      for (const t of ch.traits ?? []) batch.push(t.value ?? '');
     }
   }
 
@@ -491,18 +496,23 @@ async function translatePageWithLibre({
       }))
     : [];
 
-  // ── Extract — places (4-slot layout: knownName, realName, context, type) ────
+  // ── Extract — places (4 + N slot layout: knownName, realName, context, type, traits…) ──
   const translatedPlaces: PlaceMemoryTranslation[] = [];
   if (placesMap) {
     for (const pid of placeIds) {
-      const { start } = placesMap[pid];
+      const { start, traitKeys } = placesMap[pid];
       const orig = page.state.places[pid];
+      const traits: TraitItem[] = traitKeys.map((key, t) => ({
+        key,
+        value: translated[start + 4 + t] || (orig.traits?.[t].value ?? ''),
+      }));
       translatedPlaces.push({
         placeId:   pid,
         knownName: translated[start]     || orig.knownName,
         realName:  translated[start + 1] || orig.realName,
         context:   translated[start + 2] || orig.context,
         type:      translated[start + 3] || orig.type,
+        traits,
       });
     }
   }
@@ -511,12 +521,17 @@ async function translatePageWithLibre({
   const translatedCharacters: CharacterMemoryTranslation[] = [];
   if (charactersMap) {
     for (const cid of characterIds) {
-      const start = charactersMap[cid];
+      const { start, traitKeys } = charactersMap[cid];
       const orig  = page.state.characters[cid];
+      const traits: TraitItem[] = traitKeys.map((key, t) => ({
+        key,
+        value: translated[start + 2 + t] || (orig.traits?.[t].value ?? ''),
+      }));
       translatedCharacters.push({
         characterId: cid,
         role: translated[start]     || orig.role,
         bio:  translated[start + 1] || orig.bio,
+        traits,
       });
     }
   }

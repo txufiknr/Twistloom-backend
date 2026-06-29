@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Authentication API provides endpoints for user registration, credential verification, password management, and email verification. This API works in conjunction with NextAuth v5 to provide a complete authentication solution supporting both Google OAuth and Email/Password authentication methods.
+The Authentication API provides endpoints for user registration, credential verification, Google OAuth, password management, email verification, and session management. This API works in conjunction with NextAuth v5 to provide a complete authentication solution supporting both Google OAuth and Email/Password authentication methods.
 
 **Base URL:** `/api/auth`
 
-**Authentication:** Most endpoints are public (no authentication required) for signup/login flows. Protected endpoints use NextAuth JWT cookies.
+**Authentication:** Most endpoints are public (no authentication required) for signup/login flows. Protected endpoints use NextAuth JWT cookies via the `requireAuth` middleware.
 
-**Architecture:** 
+**Architecture:**
 - NextAuth v5 handles session creation and cookie management
 - Backend validates credentials and manages user data
 - Email/Password and Google OAuth authentication methods supported
@@ -27,13 +27,15 @@ The Authentication API provides endpoints for user registration, credential veri
 4. [Email Verification](#email-verification)
    - [Verify Email](#post-apiauthverify-email)
    - [Resend Verification](#post-apiauthresend-verification)
-5. [Session Management](#session-management)
+5. [Google Authentication](#google-authentication)
+   - [Google One Tap](#post-apiauthgoogle-one-tap)
+   - [Google OAuth](#post-apiauthgoogle-oauth)
+6. [Session Management](#session-management)
    - [Get Active Sessions](#get-apiauthsessions)
-   - [Logout from All Devices](#post-apiauthlogout-all)
+   - [Logout from Other Devices](#post-apiauthlogout-all)
+   - [Logout from All Devices](#post-apiauthlogout-all-devices)
    - [Logout from Specific Session](#post-apiauthlogout-session)
    - [Logout](#post-apiauthlogout)
-6. [Google Authentication](#google-authentication)
-   - [Google One Tap](#post-apiauthgoogle-one-tap)
 
 ---
 
@@ -41,7 +43,7 @@ The Authentication API provides endpoints for user registration, credential veri
 
 ### POST /api/auth/verify-credentials
 
-Verifies email/username and password credentials for NextAuth Credentials provider. This endpoint is called by NextAuth during the authentication flow.
+Verifies email/username and password credentials for the NextAuth Credentials provider. This endpoint is called by NextAuth during the authentication flow.
 
 **Authentication:** Not required (public endpoint)
 
@@ -51,7 +53,7 @@ Verifies email/username and password credentials for NextAuth Credentials provid
 ```json
 {
   "emailOrUsername": "string", // Email or username
-  "password": "string"        // Plaintext password
+  "password": "string"         // Plaintext password
 }
 ```
 
@@ -62,7 +64,8 @@ Verifies email/username and password credentials for NextAuth Credentials provid
   "email": "user@example.com",
   "name": "John Doe",
   "username": "johndoe",
-  "image": "https://ik.imagekit.io/abc123/profile.jpg"
+  "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+  "isNewUser": false
 }
 ```
 
@@ -90,16 +93,6 @@ Verifies email/username and password credentials for NextAuth Credentials provid
 - 10 failed attempts: 15-minute lockout
 - 15 failed attempts: 1-hour lockout
 
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/verify-credentials \
-  -H "Content-Type: application/json" \
-  -d '{
-    "emailOrUsername": "user@example.com",
-    "password": "securePassword123"
-  }'
-```
-
 ---
 
 ## User Registration
@@ -120,7 +113,8 @@ Registers a new user account with email/password authentication. Creates both us
   "gender": "string",          // Gender: male/female/other (required)
   "password": "string",        // Plaintext password (required)
   "receiveEmails": boolean,    // Email subscription preference (optional)
-  "agreedToTerms": boolean     // Terms agreement (required)
+  "agreedToTerms": boolean,    // Terms agreement (required)
+  "referrer": "string"         // Referrer userId or referral code (optional)
 }
 ```
 
@@ -137,7 +131,9 @@ Registers a new user account with email/password authentication. Creates both us
 {
   "userId": "user-uuid",
   "message": "Account created. Please check your email to verify your account.",
-  "emailSent": true
+  "verificationEmailSent": true,
+  "referrer": "referrer-uuid",
+  "referralApplied": true
 }
 ```
 
@@ -150,6 +146,7 @@ Registers a new user account with email/password authentication. Creates both us
   }
   ```
 - `409 Conflict`: Email or username already exists
+- `422 Unprocessable Entity`: Weak password, invalid username, or disposable email
 - `429 Too Many Requests`: Rate limit exceeded
 - `500 Internal Server Error`: Server error
 
@@ -158,6 +155,7 @@ Registers a new user account with email/password authentication. Creates both us
 - Password strength validation
 - Bcrypt password hashing (12 salt rounds)
 - Email and username uniqueness enforced
+- Temporary/disposable email addresses blocked
 - Separate `user_auth` table for authentication data (GDPR compliance)
 
 **Database Operations:**
@@ -165,25 +163,12 @@ Registers a new user account with email/password authentication. Creates both us
 2. Creates corresponding record in `user_auth` table
 3. Generates email verification token (24 hour expiry)
 4. Sends verification email via Resend
+5. Applies referral if valid referrer provided
 
 **Environment Variables Required:**
 - `FRONTEND_URL`: Frontend URL for email links
 - `RESEND_API_KEY`: Resend API key for email sending
 - `RESEND_FROM_EMAIL`: Sender email address
-
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "username": "johndoe",
-    "gender": "male",
-    "password": "SecurePass123!",
-    "receiveEmails": true,
-    "agreedToTerms": true
-  }'
-```
 
 ---
 
@@ -239,15 +224,6 @@ The email contains a reset link in the format:
 - `RESEND_API_KEY`: Resend API key
 - `RESEND_FROM_EMAIL`: Sender email address
 
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/forgot-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com"
-  }'
-```
-
 ---
 
 ### POST /api/auth/reset-password
@@ -301,16 +277,6 @@ Resets user password using a valid reset token. Validates token, password streng
 4. Updates `users.password_hash`
 5. Clears reset token and lockout in `user_auth` table
 
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/reset-password \
-  -H "Content-Type: application/json" \
-  -d '{
-    "token": "reset-token-from-email",
-    "password": "NewSecurePass123!"
-  }'
-```
-
 ---
 
 ## Email Verification
@@ -320,6 +286,8 @@ curl -X POST http://localhost:3000/api/auth/reset-password \
 Verifies user email using a verification token sent during signup.
 
 **Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** IP-based rate limiting
 
 **Request Body:**
 ```json
@@ -337,6 +305,7 @@ Verifies user email using a verification token sent during signup.
 
 **Error Responses:**
 - `400 Bad Request`: Token is required or invalid/expired
+- `429 Too Many Requests`: Rate limit exceeded
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
@@ -349,15 +318,6 @@ Verifies user email using a verification token sent during signup.
 2. Validates token expiry
 3. Sets `email_verified` timestamp
 4. Clears `email_verification_token` and `email_verification_expires`
-
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/verify-email \
-  -H "Content-Type: application/json" \
-  -d '{
-    "token": "verification-token-from-email"
-  }'
-```
 
 ---
 
@@ -384,13 +344,13 @@ Resends email verification token for users who didn't receive or lost their veri
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Email is required or email already verified
+- `400 Bad Request`: Email is required
 - `429 Too Many Requests`: Rate limit exceeded
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
 - IP-based rate limiting
-- Email enumeration prevention (always returns success)
+- Email enumeration prevention (always returns success for unknown/verified emails)
 - Checks if email is already verified before sending
 - Generates new token (invalidates old token)
 
@@ -405,13 +365,135 @@ Resends email verification token for users who didn't receive or lost their veri
 - `RESEND_API_KEY`: Resend API key
 - `RESEND_FROM_EMAIL`: Sender email address
 
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/resend-verification \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com"
-  }'
+---
+
+## Google Authentication
+
+### POST /api/auth/google-one-tap
+
+Verifies a Google ID token from the GIS One Tap popup and creates/updates the user. This endpoint is used by the NextAuth `googleonetap` Credentials provider in `authorize()`.
+
+**Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** IP-based rate limiting to prevent abuse
+
+**Request Body:**
+```json
+{
+  "idToken": "string"  // Google ID token from GIS One Tap
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "userId": "user-uuid",
+  "email": "user@example.com",
+  "name": "John Doe",
+  "username": "johndoe",
+  "imageUrl": "https://lh3.googleusercontent.com/abc123/photo.jpg",
+  "isNewUser": false
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: ID token is required
+- `401 Unauthorized`: Token verification failed or invalid payload
+- `429 Too Many Requests`: Rate limit exceeded
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Verifies Google ID token signature and audience
+- Extracts user info from verified token payload
+- IP-based rate limiting to prevent abuse
+- Uses Google OAuth2Client for token verification
+
+**Database Operations:**
+1. Verifies Google ID token signature and audience
+2. Extracts user info (email, name, picture) from token
+3. Creates or updates user account via `createOrUpdateOAuthUser()`
+4. Fetches complete user data for NextAuth session
+
+**Environment Variables Required:**
+- `GOOGLE_CLIENT_ID`: Google OAuth client ID
+
+**NextAuth Integration:**
+```typescript
+// NextAuth Credentials provider usage
+Credentials({
+  id: 'googleonetap',
+  name: 'Google One Tap',
+  credentials: {
+    credential: { label: 'Credential', type: 'text' },
+  },
+  async authorize(credentials) {
+    const res = await fetch(`${process.env.BACKEND_URL}/api/auth/google-one-tap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: credentials.credential }),
+    });
+
+    if (!res.ok) return null;
+
+    const user = await res.json();
+    return user;
+  }
+})
+```
+
+---
+
+### POST /api/auth/google-oauth
+
+Verifies a Google ID token from the standard Google OAuth flow and creates/updates the user. Called server-side from the NextAuth `jwt()` callback on first Google OAuth sign-in (`account.id_token` is the Google ID token that Auth.js receives as part of the OAuth token exchange).
+
+This endpoint ensures Google OAuth users are created in the backend database at sign-in time (not lazily). Functionally identical to `/google-one-tap` but kept separate for logging and analytics clarity.
+
+**Authentication:** Not required (public endpoint)
+
+**Rate Limiting:** IP-based rate limiting to prevent abuse
+
+**Request Body:**
+```json
+{
+  "idToken": "string"  // account.id_token from Auth.js Google OAuth response
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "userId": "user-uuid",
+  "email": "user@example.com",
+  "name": "John Doe",
+  "username": "johndoe",
+  "imageUrl": "https://lh3.googleusercontent.com/abc123/photo.jpg",
+  "isNewUser": false
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: ID token is required
+- `401 Unauthorized`: Token verification failed or invalid payload
+- `429 Too Many Requests`: Rate limit exceeded
+- `500 Internal Server Error`: Server error
+
+**Note:** This is a server-to-server call (Next.js `jwt()` callback → backend). The Google ID token acts as the authentication credential; no additional auth header is required. Rate limiting is applied per the source IP.
+
+**NextAuth Integration:**
+```typescript
+// Backend jwt() callback usage
+if (account.provider === 'google' && account.id_token) {
+  const res = await fetch(`${API_BASE_URL}/auth/google-oauth`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken: account.id_token }),
+  });
+  const backendUser = await res.json();
+  token.userId = backendUser.userId;
+  token.username = backendUser.username;
+  token.isNewUser = backendUser.isNewUser;
+}
 ```
 
 ---
@@ -422,7 +504,7 @@ curl -X POST http://localhost:3000/api/auth/resend-verification \
 
 Gets all active sessions for the authenticated user. Returns session information including device details, last activity, and creation time.
 
-**Authentication:** Required (uses NextAuth JWT cookie via requireAuth middleware)
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
 
 **Rate Limiting:** None (authenticated endpoint)
 
@@ -453,7 +535,7 @@ Cookie: next-auth.session-token=...
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
-- Requires authentication via requireAuth middleware
+- Requires authentication via `requireAuth` middleware
 - Returns only sessions belonging to the authenticated user
 - Uses LRU cache for session verification (reduces database queries)
 
@@ -462,19 +544,13 @@ Cookie: next-auth.session-token=...
 2. Orders by `lastActiveAt` descending (most recent first)
 3. Returns session metadata (device name, IP, user agent)
 
-**Example:**
-```bash
-curl -X GET http://localhost:3000/api/auth/sessions \
-  -H "Cookie: next-auth.session-token=..."
-```
-
 ---
 
 ### POST /api/auth/logout-all
 
-Logs out from all other devices (excluding the current session). Invalidates all sessions except the one making the request.
+Logs out from all **other** devices, excluding the current session. The current device stays signed in.
 
-**Authentication:** Required (uses NextAuth JWT cookie via requireAuth middleware)
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
 
 **Rate Limiting:** None (authenticated endpoint)
 
@@ -488,8 +564,8 @@ Cookie: next-auth.session-token=...
 **Response (200 OK):**
 ```json
 {
-  "message": "Logged out from 3 other device(s)",
-  "deletedCount": 3
+  "message": "Logged out from 2 other device(s)",
+  "deletedCount": 2
 }
 ```
 
@@ -499,7 +575,7 @@ Cookie: next-auth.session-token=...
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
-- Requires authentication via requireAuth middleware
+- Requires authentication via `requireAuth` middleware
 - Excludes current session from deletion (user stays logged in)
 - Only affects sessions belonging to the authenticated user
 - Invalidates LRU cache entries for deleted sessions
@@ -509,11 +585,46 @@ Cookie: next-auth.session-token=...
 2. Deletes all sessions for user except current session
 3. Invalidates cache entries for deleted sessions
 
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/logout-all \
-  -H "Cookie: next-auth.session-token=..."
+---
+
+### POST /api/auth/logout-all-devices
+
+Logs out from **all** devices including the current one. Deletes every session for the user and increments `tokenVersion` on the user record, invalidating all existing JWTs and forcing re-login everywhere.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Headers:**
 ```
+Cookie: next-auth.session-token=...
+```
+
+**Request Body:** None
+
+**Response (200 OK):**
+```json
+{
+  "message": "Logged out from 3 device(s) — all sessions revoked",
+  "deletedCount": 3
+}
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Invalid or missing authentication token
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Requires authentication via `requireAuth` middleware
+- Deletes ALL sessions belonging to the authenticated user
+- Increments `tokenVersion` to invalidate all existing JWTs
+- Invalidates LRU cache entries for all deleted sessions
+
+**Database Operations:**
+1. Fetches all session IDs for the user (for cache invalidation)
+2. Deletes all sessions from `auth_sessions` table
+3. Increments `users.tokenVersion` to revoke all existing JWTs
+4. Invalidates cache entries for all deleted sessions
 
 ---
 
@@ -521,7 +632,7 @@ curl -X POST http://localhost:3000/api/auth/logout-all \
 
 Logs out from a specific session by session ID. Allows selective logout of individual devices.
 
-**Authentication:** Required (uses NextAuth JWT cookie via requireAuth middleware)
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
 
 **Rate Limiting:** None (authenticated endpoint)
 
@@ -553,33 +664,22 @@ Content-Type: application/json
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
-- Requires authentication via requireAuth middleware
+- Requires authentication via `requireAuth` middleware
 - Only allows deleting sessions belonging to the authenticated user
 - Prevents deletion of other users' sessions
 - Invalidates LRU cache entry for deleted session
 
 **Database Operations:**
-1. Validates session belongs to authenticated user
-2. Deletes session from `auth_sessions` table
-3. Invalidates cache entry for deleted session
-
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/logout-session \
-  -H "Cookie: next-auth.session-token=..." \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sessionId": "session-uuid"
-  }'
-```
+1. Deletes session from `auth_sessions` table where id and userId match
+2. Invalidates cache entry for deleted session
 
 ---
 
 ### POST /api/auth/logout
 
-Logs out the current user by clearing the NextAuth session. Currently a placeholder for future extensibility.
+Placeholder for backend-side cleanup on logout. Session clearing is handled entirely by NextAuth on the frontend via `signOut()`.
 
-**Authentication:** Not required (public endpoint, but typically called by authenticated users)
+**Authentication:** Not required (public endpoint, but typically called alongside frontend sign-out)
 
 **Request Body:** None
 
@@ -597,7 +697,6 @@ Logs out the current user by clearing the NextAuth session. Currently a placehol
 - Invalidating refresh tokens (if implemented)
 - Logging logout events for analytics
 - Clearing server-side session data
-- Revoking all user sessions
 
 **Frontend Usage (Primary Method):**
 ```javascript
@@ -612,91 +711,6 @@ curl -X POST http://localhost:3000/api/auth/logout
 
 ---
 
-## Google Authentication
-
-### POST /api/auth/google-one-tap
-
-Verifies Google ID token from Google One Tap Sign-In and creates/updates user account. This endpoint is used by the NextAuth Credentials provider for Google One Tap authentication.
-
-**Authentication:** Not required (public endpoint)
-
-**Rate Limiting:** IP-based rate limiting to prevent abuse
-
-**Request Body:**
-```json
-{
-  "idToken": "string"  // Google ID token from GIS One Tap
-}
-```
-
-**Response (200 OK):**
-```json
-{
-  "userId": "user-uuid",
-  "email": "user@example.com",
-  "name": "John Doe",
-  "username": "johndoe",
-  "image": "https://lh3.googleusercontent.com/abc123/photo.jpg"
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: ID token is required
-- `401 Unauthorized`: Token verification failed or invalid payload
-- `429 Too Many Requests`: Rate limit exceeded
-- `500 Internal Server Error`: Server error
-
-**Security Features:**
-- Verifies Google ID token signature and audience
-- Extracts user info from verified token payload
-- Creates `user_auth` record for new users
-- IP-based rate limiting to prevent abuse
-- Uses Google OAuth2Client for token verification
-
-**Database Operations:**
-1. Verifies Google ID token signature and audience
-2. Extracts user info (email, name, picture) from token
-3. Creates or updates user account via `createOrUpdateOAuthUser()`
-4. Fetches complete user data for NextAuth session
-
-**Environment Variables Required:**
-- `GOOGLE_CLIENT_ID`: Google OAuth client ID
-
-**NextAuth Integration:**
-```typescript
-// NextAuth Credentials provider usage
-Credentials({
-  id: 'googleonetap',
-  name: 'Google One Tap',
-  credentials: {
-    credential: { label: 'Credential', type: 'text' },
-  },
-  async authorize(credentials) {
-    const res = await fetch(`${process.env.BACKEND_URL}/api/auth/google-one-tap`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ idToken: credentials.credential }),
-    });
-    
-    if (!res.ok) return null;
-    
-    const user = await res.json();
-    return user;
-  }
-})
-```
-
-**Example:**
-```bash
-curl -X POST http://localhost:3000/api/auth/google-one-tap \
-  -H "Content-Type: application/json" \
-  -d '{
-    "idToken": "google-id-token-here"
-  }'
-```
-
----
-
 ## Security Architecture
 
 ### Database Schema
@@ -705,11 +719,11 @@ curl -X POST http://localhost:3000/api/auth/google-one-tap \
 - `userId` (UUID, primary key)
 - `email`, `username` (unique)
 - `passwordHash` (bcrypt, nullable for OAuth-only users)
-- `tokenVersion` (integer, default 0) - Session version for JWT revocation
-- Profile fields: `name`, `gender`, `bio`, `image`, etc.
+- `tokenVersion` (integer, default 0) — Session version for JWT revocation
+- Profile fields: `name`, `gender`, `bio`, `imageUrl`, etc.
 
 **user_auth table:** Stores authentication state (separated for GDPR compliance)
-- `userId` (UUID, primary key, references users.userId)
+- `userId` (UUID, primary key, references users.userId → CASCADE)
 - `failedLoginAttempts` (integer, default 0)
 - `lockUntil` (timestamp, nullable)
 - `passwordResetToken` (text, unique, nullable)
@@ -719,14 +733,14 @@ curl -X POST http://localhost:3000/api/auth/google-one-tap \
 - `emailVerificationExpires` (timestamp, nullable)
 
 **auth_sessions table:** Stores active device sessions for selective logout
-- `id` (UUID, primary key) - Unique session ID embedded in JWT
-- `userId` (UUID, references users.userId, on delete cascade)
-- `userAgent` (text, nullable) - User agent string
-- `ipAddress` (text, nullable) - IP address
-- `deviceName` (text, nullable) - Derived device name (e.g., "Chrome on Windows")
-- `lastActiveAt` (timestamp, default now) - Last activity timestamp
-- `createdAt` (timestamp, default now) - Session creation time
-- `updatedAt` (timestamp, default now) - Last update time
+- `id` (UUID, primary key) — Unique session ID embedded in JWT
+- `userId` (UUID, references users.userId → CASCADE)
+- `userAgent` (text, nullable) — User agent string
+- `ipAddress` (text, nullable) — IP address
+- `deviceName` (text, nullable) — Derived device name (e.g. "Chrome on Windows")
+- `lastActiveAt` (timestamp, default now) — Last activity timestamp
+- `createdAt` (timestamp, default now) — Session creation time
+- `updatedAt` (timestamp, default now) — Last update time
 
 **Indexes:**
 - `auth_sessions_user_idx` on `userId` for user session queries
@@ -743,7 +757,7 @@ curl -X POST http://localhost:3000/api/auth/google-one-tap \
 **Account Protection:**
 - Exponential backoff lockout (5→15→60 minutes)
 - IP-based rate limiting for public endpoints
-- Email enumeration prevention (always returns success)
+- Email enumeration prevention (always returns success for auth flows)
 
 **Token Security:**
 - Random UUID tokens
@@ -751,10 +765,18 @@ curl -X POST http://localhost:3000/api/auth/google-one-tap \
 - Email verification tokens: 24 hour expiry
 - Single-use tokens (revoked after use)
 
+**Session Security:**
+- Per-device session tracking via `auth_sessions` table
+- Session ID embedded in JWT for verification
+- LRU cache for session existence checks (reduces DB load)
+- Selective session revocation (logout single device or all devices)
+- `tokenVersion` mechanism for bulk JWT revocation
+
 **Email Security:**
 - Resend email service integration
 - HTML email templates
 - Secure token-based verification
+- Temporary/disposable email addresses blocked at signup
 
 ### Rate Limiting
 
@@ -776,6 +798,12 @@ RESEND_FROM_EMAIL=noreply@twistloom.com
 
 # Frontend URL (for email links)
 FRONTEND_URL=https://twistloom.vercel.app
+```
+
+### Required for Google Auth
+
+```bash
+GOOGLE_CLIENT_ID=xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com
 ```
 
 ### Optional Feature Flags
@@ -822,7 +850,7 @@ For account lockout errors:
 
 ### Credentials Provider Configuration
 
-The `/api/auth/verify-credentials` endpoint is designed to work with NextAuth Credentials provider:
+The `/api/auth/verify-credentials` endpoint is designed to work with the NextAuth Credentials provider:
 
 ```typescript
 // NextAuth configuration
@@ -836,12 +864,59 @@ credentials: {
         password: credentials.password,
       }),
     });
-    
+
     if (!res.ok) return null;
-    
+
     const user = await res.json();
     return user;
   }
+}
+```
+
+### Google One Tap Provider Configuration
+
+The `/api/auth/google-one-tap` endpoint is used by the `googleonetap` Credentials provider:
+
+```typescript
+// NextAuth configuration
+Credentials({
+  id: 'googleonetap',
+  name: 'Google One Tap',
+  credentials: {
+    credential: { label: 'Credential', type: 'text' },
+  },
+  async authorize(credentials) {
+    const res = await fetch(`${process.env.BACKEND_URL}/api/auth/google-one-tap`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: credentials.credential }),
+    });
+    if (!res.ok) return null;
+    const user = await res.json();
+    return user;
+  }
+})
+```
+
+### Google OAuth / jwt() Callback Flow
+
+The `/api/auth/google-oauth` endpoint is called server-to-server from the NextAuth `jwt()` callback on first sign-in:
+
+```typescript
+// NextAuth jwt() callback
+async jwt({ token, account }) {
+  if (account?.provider === 'google' && account.id_token) {
+    const res = await fetch(`${API_BASE_URL}/auth/google-oauth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: account.id_token }),
+    });
+    const backendUser = await res.json();
+    token.userId = backendUser.userId;
+    token.username = backendUser.username;
+    token.isNewUser = backendUser.isNewUser;
+  }
+  return token;
 }
 ```
 
@@ -857,6 +932,7 @@ Backend handles:
 - Credential verification
 - User data management
 - Password and email operations
+- Device session tracking and revocation
 
 ---
 
@@ -909,6 +985,30 @@ curl -X POST http://localhost:3000/api/auth/reset-password \
 # NextAuth calls /api/auth/verify-credentials
 ```
 
+### Session Management Flow
+
+```bash
+# 1. Get active sessions (authenticated)
+curl -X GET http://localhost:3000/api/auth/sessions \
+  -H "Cookie: next-auth.session-token=..."
+
+# 2. Logout from a specific device
+curl -X POST http://localhost:3000/api/auth/logout-session \
+  -H "Cookie: next-auth.session-token=..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "session-uuid-to-remove"
+  }'
+
+# 3. Logout from all OTHER devices (keep current)
+curl -X POST http://localhost:3000/api/auth/logout-all \
+  -H "Cookie: next-auth.session-token=..."
+
+# 4. Logout from ALL devices (including current, forces re-login)
+curl -X POST http://localhost:3000/api/auth/logout-all-devices \
+  -H "Cookie: next-auth.session-token=..."
+```
+
 ---
 
 ## GDPR Compliance
@@ -931,6 +1031,7 @@ This separation enables:
 - Email verification tokens: 24 hours
 - Account lockout records: Until unlocked or manually reset
 - Failed login attempts: Reset on successful login
+- Active sessions: Until explicitly logged out or user deleted
 
 ---
 

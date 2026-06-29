@@ -1131,6 +1131,13 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
       realName: { type: 'string' },
       context: { type: 'string' },
       type: { type: 'string' },
+      traits: {
+        type: 'array',
+        description: 'Any relevant details for narrative consistency (key-value pairs)',
+        items: buildTraitItemSchema({
+          keyDescription: placeTraitsExample,
+        })
+      },
     } satisfies Record<keyof PlaceMemoryTranslation, AIJsonProperty>,
     required: ['placeId', 'knownName', 'realName', 'type'] satisfies (keyof PlaceMemoryTranslation)[],
     additionalProperties: false
@@ -1141,6 +1148,11 @@ export const PAGE_TRANSLATION_SCHEMA_DEFINITION = {
       characterId: { type: 'string' },
       role: { type: 'string' },
       bio: { type: 'string' },
+      traits: {
+        type: 'array',
+        description: 'Story-relevant character details (key-value pairs)',
+        items: buildTraitItemSchema()
+      },
     } satisfies Record<keyof CharacterMemoryTranslation, AIJsonProperty>,
     required: ['characterId', 'role', 'bio'] satisfies (keyof CharacterMemoryTranslation)[],
     additionalProperties: false

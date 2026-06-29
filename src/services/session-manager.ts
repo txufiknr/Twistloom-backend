@@ -20,8 +20,8 @@
  */
 
 import { db } from '../db/client.js';
-import { authSessions } from '../db/schema.js';
-import { eq, and, desc, ne } from 'drizzle-orm';
+import { authSessions, users } from '../db/schema.js';
+import { eq, and, desc, ne, sql } from 'drizzle-orm';
 import { LRUCache } from 'lru-cache';
 import { UAParser } from 'ua-parser-js';
 
@@ -190,16 +190,43 @@ export async function logoutFromAllOtherDevices(
 }
 
 /**
- * Update session metadata (user agent, IP, device name)
- * @param sessionId - The session ID to update
- * @param userAgent - The user agent string
- * @param ipAddress - The IP address
- * 
+ * Logout from all devices (including current) by deleting every session and
+ * incrementing `tokenVersion` to invalidate all existing JWTs.
+ * @param userId - The user ID
+ * @returns Total number of sessions deleted
+ *
  * @example
  * ```typescript
- * await updateSessionMetadata('session456', 'Mozilla/5.0...', '192.168.1.1');
+ * const deletedCount = await logoutFromAllDevices('user123');
+ * console.log(`Logged out from ${deletedCount} device(s) and revoked all tokens`);
  * ```
  */
+export async function logoutFromAllDevices(userId: string): Promise<number> {
+  // Get all sessions to invalidate cache
+  const allSessions = await db
+    .select({ id: authSessions.id })
+    .from(authSessions)
+    .where(eq(authSessions.userId, userId));
+
+  // Delete all sessions for this user
+  const result = await db
+    .delete(authSessions)
+    .where(eq(authSessions.userId, userId));
+
+  // Invalidate cache for all deleted sessions
+  for (const session of allSessions) {
+    invalidateSessionCache(session.id);
+  }
+
+  // Increment tokenVersion to invalidate all existing JWTs
+  await db
+    .update(users)
+    .set({ tokenVersion: sql`${users.tokenVersion} + 1` })
+    .where(eq(users.userId, userId));
+
+  return result.rowCount || 0;
+}
+
 export async function updateSessionMetadata(
   sessionId: string,
   userAgent: string | null,

@@ -12,10 +12,10 @@
  */
 
 import type { Request, Response } from "express";
-import type { DBNewUser, DBNewUserActivityLog, DBUserForAuth } from "../types/schema.js";
+import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { users, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
+import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
@@ -938,4 +938,141 @@ export async function findUniqueUsername(
   const takenSet = new Set(taken.map(u => u.username));
 
   return candidates.find(c => !takenSet.has(c)) ?? null;
+}
+
+/**
+ * Enriches activity log records with human-readable title and detail
+ * based on the target type and target ID.
+ *
+ * Batches lookups by target type for efficiency (3 queries max for books, users, comments).
+ *
+ * @param logs - Array of activity log records from the database
+ * @returns The same logs with optional `title` and `detail` fields
+ *
+ * @example
+ * ```typescript
+ * const enriched = await enrichActivityLogs(logs);
+ * // Each log will now have:
+ * //   title?: "The Haunting"        (book title)
+ * //   detail?: "A mysterious ghost..."  (book hook/summary)
+ * ```
+ * 
+ * @todo take `title` and `detail` from metadata:
+ * - credits_consumed (how much & what for)
+ * - session_updated (what book title)
+ */
+export async function enrichActivityLogs(
+  logs: DBUserActivityLog[],
+): Promise<(DBUserActivityLog & { title?: string; detail?: string })[]> {
+  if (logs.length === 0) return logs;
+
+  // Collect distinct target references (type + id)
+  const bookIds = new Set<string>();
+  const userIds = new Set<string>();
+  const commentIds = new Set<string>();
+
+  for (const log of logs) {
+    if (!log.targetType || !log.targetId) continue;
+    if (log.targetType === 'book') bookIds.add(log.targetId);
+    else if (log.targetType === 'user') userIds.add(log.targetId);
+    else if (log.targetType === 'comment') commentIds.add(log.targetId);
+  }
+
+  // Batch fetch all referenced entities
+  const [bookRows, userRows, commentRows] = await Promise.all([
+    bookIds.size > 0
+      ? dbRead
+          .select({ id: books.id, title: books.title, hook: books.hook, summary: books.summary })
+          .from(books)
+          .where(inArray(books.id, [...bookIds]))
+      : Promise.resolve([]),
+    userIds.size > 0
+      ? dbRead
+          .select({ userId: users.userId, name: users.name, username: users.username, bio: users.bio })
+          .from(users)
+          .where(inArray(users.userId, [...userIds]))
+      : Promise.resolve([]),
+    commentIds.size > 0
+      ? dbRead
+          .select({ id: userComments.id, content: userComments.content, bookId: userComments.bookId })
+          .from(userComments)
+          .where(inArray(userComments.id, [...commentIds]))
+      : Promise.resolve([]),
+  ]);
+
+  // Build lookup maps
+  const bookMap = new Map(bookRows.map(b => [b.id, b]));
+  const userMap = new Map(userRows.map(u => [u.userId, u]));
+  const commentMap = new Map(commentRows.map(c => [c.id, c]));
+
+  // Also fetch book titles for comment parents if needed
+  const commentBookIds = new Set<string>();
+  for (const comment of commentRows) {
+    if (comment.bookId) commentBookIds.add(comment.bookId);
+  }
+  const commentBookRows = commentBookIds.size > 0
+    ? await dbRead
+        .select({ id: books.id, title: books.title })
+        .from(books)
+        .where(inArray(books.id, [...commentBookIds]))
+    : [];
+  const commentBookMap = new Map(commentBookRows.map(b => [b.id, b.title]));
+
+  // Enrich each log
+  return logs.map((log) => {
+    const enriched: DBUserActivityLog & { title?: string; detail?: string } = { ...log };
+
+    if (!log.targetType || !log.targetId) {
+      // No target — derive from activity type or metadata
+      enriched.title = humanizeActivityType(log.activityType);
+      if (log.metadata && typeof log.metadata === 'object') {
+        const meta = log.metadata as Record<string, unknown>;
+        if (typeof meta.context === 'string') enriched.detail = meta.context;
+        if (typeof meta.credits === 'number') enriched.detail = `${meta.credits} credits`;
+      }
+      return enriched;
+    }
+
+    if (log.targetType === 'book') {
+      const book = bookMap.get(log.targetId);
+      if (book) {
+        enriched.title = book.title;
+        enriched.detail = (book.hook || book.summary || '').slice(0, 150);
+      }
+    } else if (log.targetType === 'user') {
+      const user = userMap.get(log.targetId);
+      if (user) {
+        enriched.title = user.name || user.username || 'Unknown user';
+        enriched.detail = (user.bio || '').slice(0, 150);
+      }
+    } else if (log.targetType === 'comment') {
+      const comment = commentMap.get(log.targetId);
+      if (comment) {
+        const bookTitle = comment.bookId ? commentBookMap.get(comment.bookId) : undefined;
+        enriched.title = bookTitle ? `Comment on ${bookTitle}` : 'Comment';
+        enriched.detail = (comment.content || '').slice(0, 150);
+      }
+    }
+
+    return enriched;
+  });
+}
+
+/** Converts an activity type enum to a human-readable label */
+function humanizeActivityType(type: string): string {
+  const map: Record<string, string> = {
+    workflow_triggered: 'Workflow Triggered',
+    book_creation_started: 'Book Creation Started',
+    book_created: 'Book Created',
+    liked: 'Liked',
+    favorited: 'Favorited',
+    commented: 'Commented',
+    followed: 'Followed',
+    credits_consumed: 'Credits Used',
+    credits_added: 'Credits Added',
+    session_updated: 'Session Updated',
+    onboarding_complete: 'Onboarding Complete',
+    referrer_set: 'Referrer Set',
+  };
+  return map[type] || type;
 }

@@ -231,14 +231,16 @@ const pageTranslationOutputFormat: string = `{
       "knownName": "Translated known name",
       "realName": "Translated real name",
       "context": "Translated short description of place",
-      "type": "house"
+      "type": "house",
+      "traits": [{ "key": "smell (unchanged)", "value": "damp earth (translated)" }]
     }
   ],
   "characters": [
     {
       "characterId": "character_id_1 (unchanged)",
       "role": "Translated role/occupation",
-      "bio": "Translated one-sentence bio"
+      "bio": "Translated one-sentence bio",
+      "traits": [{ "key": "skill (unchanged)", "value": "lockpicking (translated)" }]
     }
   ],
   "inventory": [
@@ -292,8 +294,8 @@ const bulkPageTranslationOutputFormat: string = `{
       "keyEvents": ["Translated key event 1"],
       "importantObjects": ["translated-object-1"],
       "contextHistory": "Translated context history",
-      "places": [{ "placeId": "place_id_1 (unchanged)", "knownName": "Translated", "realName": "Translated", "context": "Translated", "type": "house" }],
-      "characters": [{ "characterId": "character_id_1 (unchanged)", "role": "Translated role", "bio": "Translated bio" }],
+      "places": [{ "placeId": "place_id_1 (unchanged)", "knownName": "Translated", "realName": "Translated", "context": "Translated", "type": "house", "traits": [{ "key": "smell (unchanged)", "value": "damp earth (translated)" }] }],
+      "characters": [{ "characterId": "character_id_1 (unchanged)", "role": "Translated role", "bio": "Translated bio", "traits": [{ "key": "skill (unchanged)", "value": "lockpicking (translated)" }] }],
       "inventory": [{ "originalName": "rusty key (unchanged)", "name": "Translated", "traits": [{ "key": "material (unchanged)", "value": "iron (translated)" }], "where": "Translated" }],
       "injuries": [{ "bodyPart": "Translated", "description": "Translated", "consequences": "Translated" }],
       "threads": [{ "threadId": "thread_id_1 (unchanged)", "title": "Translated", "question": "Translated", "summary": "Translated", "clues": [{ "originalClue": "old note (unchanged)", "clue": "Translated clue" }] }],
@@ -319,8 +321,8 @@ const buildPageTranslationFieldInstructions = (hasAsterisks: boolean, isBulk = f
 - keyEvents: Translate key events. Preserve the sequence and importance.
 - importantObjects: Translate important objects. Keep them relevant to the story.
 - contextHistory: Translate story summary until the current page — key plot developments, hard facts, major events.
-- places: For each place, keep 'placeId' unchanged and translate 'knownName', 'realName', and 'context'. Translate 'type' only if it is free-form prose; leave it unchanged if it is a simple category word (e.g. "house", "hospital").
-- characters: Keep 'characterId' unchanged. Translate 'role' and 'bio'. Do not invent new characters or alter identities.
+- places: For each place, keep 'placeId' unchanged and translate 'knownName', 'realName', and 'context'. Translate 'type' only if it is free-form prose; leave it unchanged if it is a simple category word (e.g. "house", "hospital"). Translate trait values but keep trait keys identical.
+- characters: Keep 'characterId' unchanged. Translate 'role', 'bio', and trait values (keep trait keys identical). Do not invent new characters or alter identities.
 - inventory: Translate 'name' and 'where'. Keep 'originalName' exactly as shown. Translate trait values but keep trait keys identical.
 - injuries: Translate 'bodyPart', 'description', and 'consequences'. Preserve meaning and severity implications.
 - threads: Keep 'threadId' unchanged. Translate 'title', 'question', and 'summary'. For each clue keep 'originalClue' unchanged and provide a translated 'clue'.
@@ -634,7 +636,7 @@ function formatPagePrompt(page: PageToTranslate): string {
   if (placeEntries.length) {
     stateLines.push(
       `Places:\n${placeEntries.map(([id, p]) =>
-        `  placeId: "${id}" | knownName: "${p.knownName ?? ''}" | realName: "${p.realName ?? ''}" | type: "${p.type ?? ''}" | context: "${p.context ?? ''}"`,
+        `  placeId: "${id}" | knownName: "${p.knownName ?? ''}" | realName: "${p.realName ?? ''}" | type: "${p.type ?? ''}" | context: "${p.context ?? ''}" | traits: [${(p.traits ?? []).map((t) => `key: "${t.key}", value: "${t.value}"`).join('; ')}]`,
       ).join('\n')}`,
     );
   }
@@ -644,7 +646,7 @@ function formatPagePrompt(page: PageToTranslate): string {
   if (characterEntries.length) {
     stateLines.push(
       `Characters:\n${characterEntries.map(([id, ch]) =>
-        `  characterId: "${id}" | role: "${ch.role ?? ''}" | bio: "${ch.bio ?? ''}"`,
+        `  characterId: "${id}" | role: "${ch.role ?? ''}" | bio: "${ch.bio ?? ''}" | traits: [${(ch.traits ?? []).map((t) => `key: "${t.key}", value: "${t.value}"`).join('; ')}]`,
       ).join('\n')}`,
     );
   }

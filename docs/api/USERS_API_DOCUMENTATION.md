@@ -2,17 +2,17 @@
 
 ## Overview
 
-The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), and user discovery. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
+The Users API provides endpoints for managing user profiles, social interactions (likes, favorites, comments, follows), daily check-ins, reading progress, achievements, and user discovery. All endpoints follow industry-standard public API patterns used by major platforms (Twitter/X, GitHub, Instagram, LinkedIn).
 
-**Base URL:** `/user` for authenticated user operations, `/users` for public user operations
+**Base URL:** `/api/user` for authenticated user operations, `/api/users` for public user operations
 
-**Authentication:** Most endpoints require authentication via NextAuth JWT cookies. Public endpoints allow guest access for user profile viewing.
+**Authentication:** Most endpoints require authentication via NextAuth JWT cookies (`requireAuth`). Some read-only endpoints use `optionalAuth` (returns data for authenticated users, empty/null for guests). Public profile viewing requires no auth.
 
 **Response Pattern:**
 - GET endpoints: Return resources directly wrapped in descriptive keys (e.g., `{ user: {...} }`, `{ likes: [...] }`)
-- POST endpoints: Return created resources with 201 status (e.g., `{ user: {...} }`, `{ like: {...} }`)
-- PUT endpoints: Return updated resources with 200 status (e.g., `{ user: {...} }`)
-- DELETE endpoints: Return simple messages or operation metadata (e.g., `{ message: "..." }`)
+- POST endpoints: Return created resources with 201 status (e.g., `{ like: {...} }`, `{ comment: {...} }`)
+- PUT endpoints: Return updated resources with 200 status (e.g., `{ user: {...} }`, `{ comment: {...} }`)
+- DELETE endpoints: Return simple confirmation messages (e.g., `{ message: "..." }`)
 
 ---
 
@@ -22,7 +22,7 @@ The Users API provides endpoints for managing user profiles, social interactions
 2. [User Profile Management](#user-profile-management)
    - [Get Authenticated User Profile](#get-user)
    - [Get User Profile by Identifier](#get-usersidentifier)
-   - [Create/Replace User Profile](#post-user)
+   - [Complete Onboarding](#post-user)
    - [Update User Profile](#put-user)
    - [Delete User Profile](#delete-user)
 3. [Likes](#likes)
@@ -32,7 +32,6 @@ The Users API provides endpoints for managing user profiles, social interactions
 4. [Favorites](#favorites)
    - [Add Book to Favorites](#post-userfavorites)
    - [Remove Book from Favorites](#delete-userfavorites)
-   - [Get User Favorites](#get-userfavorites)
    - [Get User Collections](#get-usercollections)
 5. [Comments](#comments)
    - [Create Comment](#post-usercomments)
@@ -49,20 +48,52 @@ The Users API provides endpoints for managing user profiles, social interactions
 7. [Daily Check-in](#daily-check-in)
    - [Get Check-in Status](#get-usercheckinstatus)
    - [Perform Daily Check-in](#post-usercheckin)
-8. [Activity Logs](#activity-logs)
+8. [Referral System](#referral-system)
+   - [Set Referrer](#post-userreferrer)
+9. [Activity Logs](#activity-logs)
    - [Get User Activity Logs](#get-useractivity-logs)
-9. [Error Handling](#error-handling)
-10. [HTTP Headers](#http-headers)
-11. [Caching Strategy](#caching-strategy)
-12. [Rate Limiting](#rate-limiting)
-13. [Authentication](#authentication)
-14. [Database Schema](#database-schema)
-15. [Testing](#testing)
-16. [Changelog](#changelog)
+10. [Reading Progress](#reading-progress)
+    - [Get Story Progress](#get-userprogress)
+11. [Achievements](#achievements)
+    - [Get Achievements](#get-userachievements)
+    - [Acknowledge Achievement](#post-userachievementsacknowledge)
+12. [Error Handling](#error-handling)
+13. [HTTP Headers](#http-headers)
+14. [Caching Strategy](#caching-strategy)
+15. [Authentication](#authentication)
+16. [Database Schema](#database-schema)
+17. [Testing](#testing)
+18. [Changelog](#changelog)
 
 ---
 
 ## Type Definitions
+
+### User
+
+User profile information returned by the API.
+
+```typescript
+interface User {
+  id: string;                          // User's unique identifier (UUID)
+  username: string;                     // User's unique username
+  email?: string | null;               // User's email address
+  name?: string | null;                // User's display name
+  bio?: string | null;                 // User's bio/description
+  gender?: string | null;              // User's gender ("male" | "female" | "other")
+  imageUrl?: string | null;            // User's profile image URL
+  credits: number;                     // Available credits
+  isNewUser: boolean;                  // Onboarding completed flag
+  lastActive: string;                  // Last activity timestamp (ISO 8601)
+  subscription: {                      // Subscription information
+    tier: string | null;               // User tier
+    vipExpiresAt: string | null;       // VIP expiration timestamp
+  };
+  stats: UserStats;                    // Engagement statistics
+  createdAt: string;                   // Account creation timestamp (ISO 8601)
+  updatedAt: string;                   // Last update timestamp (ISO 8601)
+}
+```
 
 ### UserStats
 
@@ -70,31 +101,25 @@ User statistics for profile display.
 
 ```typescript
 interface UserStats {
-  booksCount: number;        // Number of books created by user
-  readsCount: number;        // Number of reading sessions
-  likedBooksCount: number;   // Number of books user liked
-  savedBooksCount: number;   // Number of books saved to favorites
-  followersCount: number;    // Number of followers
-  likesReceived: number;     // Total likes received on user's books
-}
-```
-
-### User
-
-User profile information.
-
-```typescript
-interface User {
-  id: string;                // User's unique identifier (UUID)
-  email?: string | null;     // User's email address
-  username?: string | null;  // User's unique username
-  name?: string | null;      // User's display name
-  bio?: string | null;       // User's bio/description
-  image?: string | null;     // User's profile image URL
-  isGuest?: boolean;         // Whether user is a guest
-  stats?: UserStats;         // User statistics
-  createdAt?: string;        // Account creation timestamp (ISO 8601)
-  updatedAt?: string;        // Last update timestamp (ISO 8601)
+  booksCount: number;          // (Deprecated - use booksGenerated)
+  readsCount: number;          // Number of reading sessions
+  likedBooksCount: number;     // Number of books user liked
+  savedBooksCount: number;     // Number of books saved to favorites
+  followersCount: number;      // Number of followers
+  likesReceived: number;       // Total likes received on user's books
+  accountDaysOld: number;      // Days since account creation
+  emailVerified: string | null; // Email verification timestamp (ISO 8601)
+  havePurchased: boolean;      // Whether user has made purchases
+  booksGenerated: number;      // Number of books generated
+  booksCompleted: number;      // Number of books completed
+  pagesRead: number;           // Number of pages read
+  pagesGenerated: number;      // Number of pages generated (AI)
+  branchesOpened: number;      // Number of branches explored
+  topupCredits: number;        // Total credits topped up
+  referredUsers: number;       // Number of referred users
+  activeCheckinStreak: number; // Current consecutive check-in streak
+  maxCheckinStreak: number;    // Longest check-in streak
+  customActionsWritten: number; // Number of custom actions authored
 }
 ```
 
@@ -119,6 +144,7 @@ User favorite record.
 interface Favorite {
   userId: string;            // User who created the favorite
   bookId: string;            // ID of the favorited book
+  collection?: string | null; // Collection name (optional)
   createdAt: string;         // Favorite creation timestamp (ISO 8601)
 }
 ```
@@ -151,16 +177,31 @@ interface Follow {
 }
 ```
 
+### FollowerUser / FollowingUser
+
+User profile in follow lists.
+
+```typescript
+interface FollowUser {
+  userId: string;            // User ID
+  name: string | null;       // Display name
+  username: string | null;   // Username
+  imageUrl: string | null;   // Profile image URL
+  followedAt: string;        // When the follow was created (ISO 8601)
+}
+```
+
 ### CheckInStatus
 
 Daily check-in status and history.
 
 ```typescript
 interface CheckInStatus {
-  canCheckIn: boolean;       // Whether user can check-in today
-  lastCheckInDate: string | null;  // Last check-in date (YYYY-MM-DD) or null
-  totalCheckIns: number;     // Total number of check-ins
-  totalCreditsClaimed: number;     // Total credits claimed from check-ins
+  eligible: boolean;          // Whether user can check-in today
+  lastCheckIn: string | null; // Last check-in date (YYYY-MM-DD) or null
+  streak: number;             // Current consecutive check-in streak
+  totalCheckIns: number;      // Total number of check-ins
+  creditsClaimed: number;     // Total credits claimed from check-ins
   recentCheckIns: CheckInRecord[];  // Recent check-in history (last 30 days)
 }
 ```
@@ -184,7 +225,7 @@ Result of performing daily check-in.
 ```typescript
 interface CheckInResult {
   success: boolean;          // Whether check-in was successful
-  creditsAwarded: number;   // Number of credits awarded (30 or 0 if already checked in)
+  creditsAwarded: number;    // Number of credits awarded (30 or 0)
   checkInDate: string;       // Check-in date in YYYY-MM-DD format
   message: string;           // Status message
 }
@@ -205,40 +246,92 @@ interface PaginationMeta {
 }
 ```
 
+### ActivityLog
+
+User activity log record.
+
+```typescript
+interface ActivityLog {
+  id: string;                // Log entry ID
+  userId: string;            // User who performed the action
+  activityType: string;      // Activity type (e.g., "liked", "commented")
+  targetType?: string | null; // Target type (e.g., "book", "comment", "user")
+  targetId?: string | null;  // ID of the target entity
+  metadata?: Record<string, unknown> | null; // Additional context data
+  ipAddress?: string | null; // User's IP address
+  userAgent?: string | null; // Browser/app user agent
+  platform?: string | null;  // Platform ("android", "ios", "web")
+  appVersion?: string | null;// App version
+  createdAt: string;         // Log creation timestamp (ISO 8601)
+}
+```
+
+### StoryProgress
+
+User's current reading progress with full branch context (returned by GET /user/progress).
+
+```typescript
+interface StoryProgress {
+  book: EnrichedBookData | null;
+  page: UserStoryPage | null;
+  state: StoryState | null;
+  session: UserSession | null;
+  branchPath: BranchPath | null;
+  branchStats: BranchStats | null;
+  siblings: PersistedStoryPage[];
+}
+```
+
 ---
 
 ## User Profile Management
 
 ### GET /user
 
-Retrieves the authenticated user's profile information with engagement statistics (books count, reads count, likes, favorites, followers).
+Retrieves the authenticated user's full enriched profile with engagement statistics.
 
 **Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
 
 **Response (200 OK):**
 ```json
 {
   "user": {
-    "id": "user123",
-    "username": "john-doe",
-    "name": "John Doe",
+    "id": "user-uuid",
+    "username": "johndoe",
     "email": "john@example.com",
+    "name": "John Doe",
     "bio": "Psychological thriller enthusiast",
-    "image": "https://ik.imagekit.io/abc123/profile.jpg",
-    "createdAt": "2023-01-01T00:00:00.000Z",
-    "updatedAt": "2023-01-15T10:30:00.000Z",
+    "gender": "male",
+    "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "credits": 500,
+    "isNewUser": false,
+    "lastActive": "2024-01-15T10:30:00.000Z",
+    "subscription": {
+      "tier": null,
+      "vipExpiresAt": null
+    },
     "stats": {
-      "booksCount": 10,
       "readsCount": 150,
       "likedBooksCount": 25,
       "savedBooksCount": 8,
+      "likesReceived": 156,
+      "accountDaysOld": 380,
+      "emailVerified": "2024-01-01T00:00:00.000Z",
+      "havePurchased": true,
+      "booksGenerated": 5,
+      "booksCompleted": 12,
+      "pagesRead": 350,
+      "pagesGenerated": 80,
+      "branchesOpened": 15,
+      "topupCredits": 200,
+      "referredUsers": 3,
       "followersCount": 42,
-      "likesReceived": 156
-    }
+      "activeCheckinStreak": 5,
+      "maxCheckinStreak": 12,
+      "customActionsWritten": 2
+    },
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2024-01-15T10:30:00.000Z"
   }
 }
 ```
@@ -250,9 +343,9 @@ Retrieves the authenticated user's profile information with engagement statistic
 
 ### GET /users/:identifier
 
-Fetch user profile by identifier (UUID or username). Industry standard implementation that accepts both UUID and username in a single endpoint. Backend resolves UUID-to-username server-side.
+Fetch user profile by identifier (UUID or username). Industry standard implementation (Twitter/X, Instagram, GitHub) that accepts both UUID and username in a single endpoint.
 
-**Authentication:** Optional (via no middleware - public access)
+**Authentication:** Not required (public — no middleware)
 
 **Path Parameters:**
 - `identifier` (string, required): User UUID or username
@@ -261,24 +354,47 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
 ```json
 {
   "user": {
-    "id": "uuid",
-    "username": "john-doe",
+    "id": "user-uuid",
+    "username": "johndoe",
     "name": "John Doe",
+    "email": "john@example.com",
     "bio": "User bio",
-    "image": "https://...",
-    "createdAt": "2024-01-01T00:00:00Z",
-    "updatedAt": "2024-01-15T10:30:00Z",
+    "gender": "male",
+    "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+    "credits": 500,
+    "isNewUser": false,
+    "lastActive": "2024-01-15T10:30:00.000Z",
+    "subscription": {
+      "tier": null,
+      "vipExpiresAt": null
+    },
     "stats": {
-      "booksCount": 10,
       "readsCount": 150,
       "likedBooksCount": 25,
       "savedBooksCount": 8,
+      "likesReceived": 156,
+      "accountDaysOld": 380,
+      "emailVerified": "2024-01-01T00:00:00.000Z",
+      "havePurchased": false,
+      "booksGenerated": 5,
+      "booksCompleted": 12,
+      "pagesRead": 350,
+      "pagesGenerated": 80,
+      "branchesOpened": 15,
+      "topupCredits": 200,
+      "referredUsers": 3,
       "followersCount": 42,
-      "likesReceived": 156
-    }
+      "activeCheckinStreak": 3,
+      "maxCheckinStreak": 10,
+      "customActionsWritten": 1
+    },
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-15T10:30:00Z"
   }
 }
 ```
+
+**Cache:** HTTP `Cache-Control: public, max-age=60, stale-while-revalidate=30`
 
 **Error Responses:**
 - `404 Not Found`: User profile not found
@@ -287,7 +403,11 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
 
 ### POST /user
 
-Creates a new user profile or fully replaces an existing user's profile. Uses upsert operation to handle both creation and replacement scenarios.
+Completes the onboarding flow for a new user. Sets `isNewUser` to `false`. Should be called exactly once, after the onboarding wizard is submitted.
+
+All fields are optional. If omitted, existing auto-generated values (username derived from name/email, empty bio, etc.) are kept.
+
+This is NOT a general-purpose create/replace endpoint — it only works for users with `isNewUser = true`.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -299,39 +419,41 @@ Creates a new user profile or fully replaces an existing user's profile. Uses up
 ```json
 {
   "name": "John Doe",
-  "gender": "male"
+  "gender": "male",
+  "referrer": "referrer-username-or-id"
 }
 ```
 
 **Parameters:**
 - `name` (string, optional): User's display name
-- `gender` (string, optional): User's gender (e.g., "male", "female", "other")
+- `gender` (string, optional): User's gender ("male", "female", "other")
+- `referrer` (string, optional): Referrer username or user ID
 
-**Response (201 Created):**
+**Response (200 OK):**
 ```json
 {
-  "user": {
-    "userId": "user123",
-    "name": "John Doe",
-    "gender": "male",
-    "createdAt": "2023-01-01T00:00:00.000Z",
-    "updatedAt": "2023-01-01T00:00:00.000Z"
-  }
+  "message": "Onboarding complete",
+  "isNewUser": false,
+  "username": "johndoe"
 }
 ```
+
+**Error Responses:**
+- `400 Bad Request`: Onboarding already completed (isNewUser is false)
+- `404 Not Found`: User profile not found
 
 ---
 
 ### PUT /user
 
-Partially updates the authenticated user's profile. Only provided fields are updated, existing fields remain unchanged. Supports multiple image upload methods: URL, base64, or multipart file.
+Partially updates the authenticated user's profile. Only provided fields are updated; existing fields remain unchanged. Supports image upload via URL, base64, or multipart file.
 
 **Authentication:** Required (via `requireAuth`)
 
 **Headers:**
 - `X-App-Version`: Application version (for analytics)
 - `X-Platform`: Client platform (android/ios)
-- `Content-Type`: multipart/form-data for file uploads or application/json
+- `Content-Type`: `multipart/form-data` for file uploads or `application/json`
 
 **Request Body (JSON):**
 ```json
@@ -348,35 +470,33 @@ Partially updates the authenticated user's profile. Only provided fields are upd
 - `name` (string, optional): Updated name
 - `bio` (string, optional): Updated bio
 - `gender` (string, optional): Updated gender
-- `imageUrl` (string, optional): Profile image URL
 
 **Response (200 OK):**
 ```json
 {
+  "success": true,
   "user": {
-    "userId": "user123",
+    "userId": "user-uuid",
     "name": "John Doe",
     "bio": "Psychological thriller enthusiast",
     "gender": "male",
-    "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+    "imageUrl": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
     "createdAt": "2023-01-01T00:00:00.000Z",
     "updatedAt": "2023-01-15T12:00:00.000Z"
-  },
-  "imageUploaded": true,
-  "uploadSource": "file",
-  "oldImageQueuedForDeletion": false
+  }
 }
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Invalid image upload
-- `404 Not Found`: User profile not found
+- `400 Bad Request`: At least one valid field must be provided
 
 ---
 
 ### DELETE /user
 
 Deletes the authenticated user's profile and all associated data from the system. This operation is irreversible and removes all user data including profile information, favorites, likes, comments, reading sessions, and device registrations.
+
+Books created by the user are preserved (userId set to null) to maintain content availability.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -387,15 +507,7 @@ Deletes the authenticated user's profile and all associated data from the system
 **Response (200 OK):**
 ```json
 {
-  "message": "User account deleted successfully",
-  "deletedRecords": {
-    "userProfile": 1,
-    "userFavorites": 8,
-    "userLikes": 15,
-    "userSessions": 42,
-    "userComments": 5
-  },
-  "imageQueuedForDeletion": true
+  "message": "User account deleted successfully"
 }
 ```
 
@@ -408,7 +520,7 @@ Deletes the authenticated user's profile and all associated data from the system
 
 ### POST /user/likes
 
-Like a book, comment, or another user. Uses upsert operation to handle both creation and idempotent likes.
+Like a book, comment, or another user. Uses upsert (onConflictDoNothing) to handle idempotent likes.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -420,25 +532,27 @@ Like a book, comment, or another user. Uses upsert operation to handle both crea
 ```json
 {
   "targetType": "book",
-  "targetId": "book456"
+  "targetId": "book-uuid"
 }
 ```
 
 **Parameters:**
-- `targetType` (string, required): Type of target ("book" | "comment" | "user")
+- `targetType` (string, required): Type of target (`"book"` | `"comment"` | `"user"`)
 - `targetId` (string, required): ID of the target to like
 
 **Response (201 Created):**
 ```json
 {
   "like": {
-    "userId": "user123",
+    "userId": "user-uuid",
     "targetType": "book",
-    "targetId": "book456",
+    "targetId": "book-uuid",
     "createdAt": "2023-01-01T00:00:00.000Z"
   }
 }
 ```
+
+**Cache Invalidation:** When liking a book, invalidates explore cache, user books cache, and user profile cache.
 
 **Error Responses:**
 - `400 Bad Request`: Invalid target type, missing target ID
@@ -456,7 +570,7 @@ Unlike a book, comment, or another user.
 - `X-Platform`: Client platform (android/ios)
 
 **Query Parameters:**
-- `targetType` (string, required): Type of target ("book" | "comment" | "user")
+- `targetType` (string, required): Type of target (`"book"` | `"comment"` | `"user"`)
 - `targetId` (string, required): ID of the target to unlike
 
 **Response (200 OK):**
@@ -478,12 +592,8 @@ Get all likes for the authenticated user, optionally filtered by target type.
 
 **Authentication:** Required (via `requireAuth`)
 
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
 **Query Parameters:**
-- `targetType` (string, optional): Filter by target type ("book" | "comment" | "user")
+- `targetType` (string, optional): Filter by target type (`"book"` | `"comment"` | `"user"`)
 - `limit` (number, optional): Maximum number of results (default: 50)
 - `offset` (number, optional): Pagination offset (default: 0)
 
@@ -492,15 +602,15 @@ Get all likes for the authenticated user, optionally filtered by target type.
 {
   "likes": [
     {
-      "userId": "user123",
+      "userId": "user-uuid",
       "targetType": "book",
-      "targetId": "book456",
+      "targetId": "book-uuid",
       "createdAt": "2023-01-01T00:00:00.000Z"
     },
     {
-      "userId": "user123",
+      "userId": "user-uuid",
       "targetType": "comment",
-      "targetId": "comment789",
+      "targetId": "comment-uuid",
       "createdAt": "2023-01-02T00:00:00.000Z"
     }
   ]
@@ -513,7 +623,7 @@ Get all likes for the authenticated user, optionally filtered by target type.
 
 ### POST /user/favorites
 
-Add a book to user favorites (to read later). Uses upsert operation to handle both creation and idempotent favorites.
+Add a book to the authenticated user's favorites (read later list). Uses upsert (onConflictDoNothing) to handle idempotent favorites.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -524,7 +634,7 @@ Add a book to user favorites (to read later). Uses upsert operation to handle bo
 **Request Body:**
 ```json
 {
-  "bookId": "book456"
+  "bookId": "book-uuid"
 }
 ```
 
@@ -535,8 +645,8 @@ Add a book to user favorites (to read later). Uses upsert operation to handle bo
 ```json
 {
   "favorite": {
-    "userId": "user123",
-    "bookId": "book456",
+    "userId": "user-uuid",
+    "bookId": "book-uuid",
     "createdAt": "2023-01-01T00:00:00.000Z"
   }
 }
@@ -573,65 +683,27 @@ Remove a book from user favorites.
 
 ---
 
-### GET /user/favorites
-
-Get all favorite books for the authenticated user.
-
-**Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
-**Query Parameters:**
-- `limit` (number, optional): Maximum number of results (default: 50)
-- `offset` (number, optional): Pagination offset (default: 0)
-
-**Response (200 OK):**
-```json
-{
-  "favorites": [
-    {
-      "userId": "user123",
-      "bookId": "book456",
-      "createdAt": "2023-01-01T00:00:00.000Z"
-    },
-    {
-      "userId": "user123",
-      "bookId": "book789",
-      "createdAt": "2023-01-02T00:00:00.000Z"
-    }
-  ]
-}
-```
-
----
-
 ### GET /user/collections
 
-Get all collection names for the authenticated user's favorite books. Returns distinct collection names from user favorites.
+Get all distinct collection names for the authenticated user's favorite books, sorted alphabetically.
 
-**Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
+**Authentication:** Optional (`optionalAuth` — returns `[]` for guests)
 
 **Response (200 OK):**
 ```json
 {
   "collections": [
-    "To Read Later",
     "Favorites",
-    "Psychological Thrillers"
+    "Psychological Thrillers",
+    "To Read Later"
   ]
 }
 ```
 
 **Behavior:**
-- Returns distinct collection names from user_favorites table
+- Returns distinct collection names from `user_favorites` table
 - Filters out null collection values
-- Sorted alphabetically by collection name
+- Sorted alphabetically
 
 ---
 
@@ -639,7 +711,7 @@ Get all collection names for the authenticated user's favorite books. Returns di
 
 ### POST /user/comments
 
-Create a comment on a book or reply to another comment.
+Create a comment on a book or reply to another comment. Content is sanitized before storage.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -650,8 +722,8 @@ Create a comment on a book or reply to another comment.
 **Request Body:**
 ```json
 {
-  "bookId": "book456",
-  "parentCommentId": "comment789",
+  "bookId": "book-uuid",
+  "parentCommentId": "comment-uuid",
   "content": "This story is amazing!"
 }
 ```
@@ -659,15 +731,15 @@ Create a comment on a book or reply to another comment.
 **Parameters:**
 - `bookId` (string, required): ID of the book to comment on
 - `parentCommentId` (string, optional): ID of parent comment (for replies)
-- `content` (string, required): Comment content (max 5000 chars)
+- `content` (string, required): Comment content
 
 **Response (201 Created):**
 ```json
 {
   "comment": {
-    "id": "comment123",
-    "userId": "user123",
-    "bookId": "book456",
+    "id": "comment-uuid",
+    "userId": "user-uuid",
+    "bookId": "book-uuid",
     "parentCommentId": null,
     "content": "This story is amazing!",
     "createdAt": "2023-01-01T00:00:00.000Z",
@@ -676,14 +748,16 @@ Create a comment on a book or reply to another comment.
 }
 ```
 
+**Cache Invalidation:** Invalidates explore cache for top-level comments (commentsCount changes).
+
 **Error Responses:**
-- `400 Bad Request`: Missing book ID, missing content
+- `400 Bad Request`: Missing book ID, missing or empty content
 
 ---
 
 ### PUT /user/comments/:commentId
 
-Update an existing comment (only by the original author).
+Update an existing comment (only by the original author). Content is sanitized before storage.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -708,9 +782,9 @@ Update an existing comment (only by the original author).
 ```json
 {
   "comment": {
-    "id": "comment123",
-    "userId": "user123",
-    "bookId": "book456",
+    "id": "comment-uuid",
+    "userId": "user-uuid",
+    "bookId": "book-uuid",
     "parentCommentId": null,
     "content": "Updated comment content",
     "createdAt": "2023-01-01T00:00:00.000Z",
@@ -720,7 +794,7 @@ Update an existing comment (only by the original author).
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Missing content
+- `400 Bad Request`: Missing or empty content
 - `403 Forbidden`: Not the comment author
 - `404 Not Found`: Comment not found
 
@@ -746,6 +820,8 @@ Delete a comment (only by the original author).
 }
 ```
 
+**Cache Invalidation:** Invalidates explore cache for top-level comments.
+
 **Error Responses:**
 - `403 Forbidden`: Not the comment author
 - `404 Not Found`: Comment not found
@@ -758,10 +834,6 @@ Get all comments by the authenticated user, optionally filtered by book.
 
 **Authentication:** Required (via `requireAuth`)
 
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
 **Query Parameters:**
 - `bookId` (string, optional): Filter by book ID
 - `limit` (number, optional): Maximum number of results (default: 50)
@@ -772,9 +844,9 @@ Get all comments by the authenticated user, optionally filtered by book.
 {
   "comments": [
     {
-      "id": "comment123",
-      "userId": "user123",
-      "bookId": "book456",
+      "id": "comment-uuid",
+      "userId": "user-uuid",
+      "bookId": "book-uuid",
       "parentCommentId": null,
       "content": "This story is amazing!",
       "createdAt": "2023-01-01T00:00:00.000Z",
@@ -790,11 +862,11 @@ Get all comments by the authenticated user, optionally filtered by book.
 
 ### POST /users/:id/follow
 
-Follow a user. Uses upsert operation to handle both creation and idempotent follows.
+Follow a user. Uses upsert (onConflictDoNothing) to handle idempotent follows.
 
 **Authentication:** Required (via `requireAuth`)
 
-**Headers:**
+**Head��ers:**
 - `X-App-Version`: Application version (for analytics)
 - `X-Platform`: Client platform (android/ios)
 
@@ -805,12 +877,14 @@ Follow a user. Uses upsert operation to handle both creation and idempotent foll
 ```json
 {
   "follow": {
-    "followerId": "user123",
-    "followingId": "user456",
+    "followerId": "user-uuid",
+    "followingId": "user-uuid",
     "createdAt": "2023-01-01T00:00:00.000Z"
   }
 }
 ```
+
+**Cache Invalidation:** Invalidates profile cache for the followed user (followersCount changed).
 
 **Error Responses:**
 - `400 Bad Request`: Cannot follow yourself
@@ -824,10 +898,6 @@ Unfollow a user.
 
 **Authentication:** Required (via `requireAuth`)
 
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
 **Path Parameters:**
 - `id` (string, required): ID of the user to unfollow
 
@@ -838,6 +908,8 @@ Unfollow a user.
 }
 ```
 
+**Cache Invalidation:** Invalidates profile cache for the unfollowed user.
+
 **Error Responses:**
 - `404 Not Found`: Follow relationship not found
 
@@ -845,9 +917,9 @@ Unfollow a user.
 
 ### GET /users/:id/followers
 
-Get all followers of a specific user.
+Get all followers of a specific user, with user profile info and pagination.
 
-**Authentication:** Optional (public access)
+**Authentication:** Not required (public — no middleware)
 
 **Path Parameters:**
 - `id` (string, required): ID of the user
@@ -861,18 +933,11 @@ Get all followers of a specific user.
 {
   "followers": [
     {
-      "userId": "user123",
+      "userId": "user-uuid",
       "name": "John Doe",
-      "username": "john-doe",
-      "image": "https://example.com/avatar.jpg",
+      "username": "johndoe",
+      "imageUrl": "https://example.com/avatar.jpg",
       "followedAt": "2023-01-01T00:00:00.000Z"
-    },
-    {
-      "userId": "user789",
-      "name": "Jane Smith",
-      "username": "jane-smith",
-      "image": "https://example.com/avatar2.jpg",
-      "followedAt": "2023-01-02T00:00:00.000Z"
     }
   ],
   "pagination": {
@@ -893,9 +958,9 @@ Get all followers of a specific user.
 
 ### GET /users/:id/following
 
-Get all users that a specific user is following.
+Get all users that a specific user is following, with user profile info and pagination.
 
-**Authentication:** Optional (public access)
+**Authentication:** Not required (public — no middleware)
 
 **Path Parameters:**
 - `id` (string, required): ID of the user
@@ -909,24 +974,17 @@ Get all users that a specific user is following.
 {
   "following": [
     {
-      "userId": "user789",
+      "userId": "user-uuid",
       "name": "Jane Smith",
       "username": "jane-smith",
-      "image": "https://example.com/avatar2.jpg",
+      "imageUrl": "https://example.com/avatar2.jpg",
       "followedAt": "2023-01-01T00:00:00.000Z"
-    },
-    {
-      "userId": "user456",
-      "name": "Bob Johnson",
-      "username": "bob-johnson",
-      "image": "https://example.com/avatar3.jpg",
-      "followedAt": "2023-01-02T00:00:00.000Z"
     }
   ],
   "pagination": {
     "page": 1,
     "limit": 10,
-    "totalCount": 50,
+    "total": 50,
     "totalPages": 5,
     "hasNext": true,
     "hasPrevious": false
@@ -941,13 +999,9 @@ Get all users that a specific user is following.
 
 ### GET /user/followers
 
-Get all followers of the authenticated user.
+Get all followers of the authenticated user, with user profile info and pagination.
 
 **Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
 
 **Query Parameters:**
 - `limit` (number, optional): Maximum number of results (default: 50)
@@ -958,10 +1012,10 @@ Get all followers of the authenticated user.
 {
   "followers": [
     {
-      "userId": "user123",
+      "userId": "user-uuid",
       "name": "John Doe",
-      "username": "john-doe",
-      "image": "https://example.com/avatar.jpg",
+      "username": "johndoe",
+      "imageUrl": "https://example.com/avatar.jpg",
       "followedAt": "2023-01-01T00:00:00.000Z"
     }
   ],
@@ -980,13 +1034,9 @@ Get all followers of the authenticated user.
 
 ### GET /user/following
 
-Get all users that the authenticated user is following.
+Get all users that the authenticated user is following, with user profile info and pagination.
 
 **Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
 
 **Query Parameters:**
 - `limit` (number, optional): Maximum number of results (default: 50)
@@ -997,17 +1047,17 @@ Get all users that the authenticated user is following.
 {
   "following": [
     {
-      "userId": "user789",
+      "userId": "user-uuid",
       "name": "Jane Smith",
       "username": "jane-smith",
-      "image": "https://example.com/avatar2.jpg",
+      "imageUrl": "https://example.com/avatar2.jpg",
       "followedAt": "2023-01-01T00:00:00.000Z"
     }
   ],
   "pagination": {
     "page": 1,
     "limit": 10,
-    "totalCount": 50,
+    "total": 50,
     "totalPages": 5,
     "hasNext": true,
     "hasPrevious": false
@@ -1021,21 +1071,18 @@ Get all users that the authenticated user is following.
 
 ### GET /user/checkin/status
 
-Checks if the authenticated user can perform daily check-in today. Returns check-in status, last check-in date, and total check-in history.
+Checks if the authenticated user can perform daily check-in today. Returns check-in status, last check-in date, streak, and recent history.
 
-**Authentication:** Required (via `requireAuth`)
+**Authentication:** Optional (`optionalAuth` — returns empty state for guests)
 
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
-**Response (200 OK):**
+**Response (200 OK — can check-in):**
 ```json
 {
-  "canCheckIn": true,
-  "lastCheckInDate": "2026-05-03",
-  "totalCheckIns": 5,
-  "totalCreditsClaimed": 150,
+  "eligible": true,
+  "lastCheckIn": "2026-05-03",
+  "streak": 5,
+  "totalCheckIns": 12,
+  "creditsClaimed": 360,
   "recentCheckIns": [
     {
       "checkInDate": "2026-05-03",
@@ -1046,13 +1093,14 @@ Checks if the authenticated user can perform daily check-in today. Returns check
 }
 ```
 
-**Response (already checked in):**
+**Response (200 OK — already checked in):**
 ```json
 {
-  "canCheckIn": false,
-  "lastCheckInDate": "2026-05-04",
-  "totalCheckIns": 6,
-  "totalCreditsClaimed": 180,
+  "eligible": false,
+  "lastCheckIn": "2026-05-04",
+  "streak": 6,
+  "totalCheckIns": 13,
+  "creditsClaimed": 390,
   "recentCheckIns": [
     {
       "checkInDate": "2026-05-04",
@@ -1063,25 +1111,27 @@ Checks if the authenticated user can perform daily check-in today. Returns check
 }
 ```
 
-**Behavior:**
-- Uses UTC date for daily reset (midnight UTC)
-- Returns last 30 days of check-in history
-- Includes total statistics for user engagement
-- Checks if user can check-in today based on UTC date
+**Response (200 OK — guest/unauthenticated):**
+```json
+{
+  "eligible": false,
+  "lastCheckIn": null,
+  "streak": 0,
+  "totalCheckIns": 0,
+  "creditsClaimed": 0,
+  "recentCheckIns": []
+}
+```
 
 ---
 
 ### POST /user/checkin
 
-Performs daily check-in and awards free credits to the authenticated user. Each check-in awards 30 free credits (configurable via `DAILY_CHECKIN_CREDITS`). Users can only check-in once per UTC day.
+Performs daily check-in and awards free credits to the authenticated user. Each check-in awards 30 credits (configurable via `DAILY_CHECKIN_BONUS`). Users can only check-in once per UTC day.
 
 **Authentication:** Required (via `requireAuth`)
 
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
-
-**Response (201 Created - successful check-in):**
+**Response (201 Created — successful):**
 ```json
 {
   "success": true,
@@ -1091,7 +1141,7 @@ Performs daily check-in and awards free credits to the authenticated user. Each 
 }
 ```
 
-**Response (400 Bad Request - already checked in):**
+**Response (400 Bad Request — already checked in):**
 ```json
 {
   "success": false,
@@ -1101,52 +1151,44 @@ Performs daily check-in and awards free credits to the authenticated user. Each 
 }
 ```
 
-**Behavior:**
-- Creates check-in record with UTC date
-- Awards 30 credits to user account (configurable)
-- Uses database transaction for atomicity
-- Prevents duplicate check-ins with unique constraint
-- Records credit transaction with context "daily_checkin"
-- Invalidates user profile cache (credits changed)
+---
 
-**Backend integration (required fields & implementation guidance):**
+## Referral System
 
-To support the frontend consecutive check-in UI and eliminate client-side heuristics, the check-in endpoints should return the following additional fields.
+### POST /user/referrer
 
-GET /user/checkin/status — add to response (200):
-- `currentStreak` (number): number of consecutive days the user has checked in up to yesterday (or today if already checked in). This should be computed using UTC dates.
-- `nextClaimAmount` (number): total credits the user will receive if they check in today (base daily credits + consecutive bonus for the next day).
+Sets the referrer for the authenticated user by username. Only allowed for new users (`isNewUser = true`). After setting referrer, `isNewUser` is set to `false`.
 
-Example response:
+**Authentication:** Required (via `requireAuth`)
 
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
 ```json
 {
-  "canCheckIn": true,
-  "lastCheckInDate": "2026-05-03",
-  "totalCheckIns": 5,
-  "totalCreditsClaimed": 150,
-  "currentStreak": 3,
-  "nextClaimAmount": 45,
-  "recentCheckIns": [
-    { "checkInDate": "2026-05-03", "creditsClaimed": 30, "createdAt": "2026-05-03T00:00:00.000Z" }
-  ]
+  "username": "johndoe"
 }
 ```
 
-POST /user/checkin — add to response (201 created):
-- `currentStreak` (number): updated streak after this check-in
-- `totalCreditsClaimed` (number): updated total credits claimed after awarding
+**Parameters:**
+- `username` (string, required): Username of the referrer
 
-Example response:
-
+**Response (200 OK — success):**
 ```json
 {
   "success": true,
-  "creditsAwarded": 30,
-  "checkInDate": "2026-05-04",
-  "currentStreak": 4,
-  "totalCreditsClaimed": 195,
-  "message": "Successfully claimed 30 daily credits"
+  "referrerId": "referrer-uuid",
+  "message": "Referrer set successfully"
+}
+```
+
+**Response (200 OK — not new user):**
+```json
+{
+  "success": false,
+  "error": "Referrer can only be set for new users"
 }
 ```
 
@@ -1156,32 +1198,26 @@ Example response:
 
 ### GET /user/activity-logs
 
-Get activity logs for the authenticated user with optional filtering.
+Get activity logs for the authenticated user with optional filtering by activity type and target type.
 
-**Authentication:** Required
+**Authentication:** Optional (`optionalAuth` — returns `[]` for guests)
 
 **Query Parameters:**
-- `activityType` (string, optional): Filter by activity type (e.g., "book_created", "liked", "commented", "followed", "favorited", "session_updated")
-- `targetType` (string, optional): Filter by target type (e.g., "book", "comment", "user")
+- `activityType` (string, optional): Filter by activity type (e.g., `"liked"`, `"commented"`, `"followed"`)
+- `targetType` (string, optional): Filter by target type (e.g., `"book"`, `"comment"`, `"user"`)
 - `limit` (number, optional): Maximum number of results (default: 50)
 - `offset` (number, optional): Pagination offset (default: 0)
 
-**Request Example:**
-```bash
-curl -X GET "https://api.example.com/user/activity-logs?activityType=liked&limit=10" \
-  -H "Cookie: next-auth.session-token=..."
-```
-
-**Success Response (200 OK):**
+**Response (200 OK):**
 ```json
 {
   "logs": [
     {
-      "id": "log123",
-      "userId": "user123",
+      "id": "log-uuid",
+      "userId": "user-uuid",
       "activityType": "liked",
       "targetType": "book",
-      "targetId": "book456",
+      "targetId": "book-uuid",
       "metadata": null,
       "ipAddress": "192.168.1.1",
       "userAgent": "Mozilla/5.0...",
@@ -1194,19 +1230,134 @@ curl -X GET "https://api.example.com/user/activity-logs?activityType=liked&limit
 ```
 
 **Activity Types:**
-- `book_created`: User created a new book
+- `onboarding_complete`: User completed onboarding
 - `liked`: User liked a book, comment, or user
 - `commented`: User commented on a book
 - `followed`: User followed another user
 - `favorited`: User favorited a book
-- `session_updated`: User updated their reading session
 
-**Implementation Notes:**
-- Activity logs are automatically created when users perform actions
-- Logs capture request metadata (IP, user agent, platform, app version) for analytics
-- Supports filtering by activity type and target type
-- Ordered by creation date (newest first)
-- Paginated for efficient retrieval
+---
+
+## Reading Progress
+
+### GET /user/progress
+
+Returns the authenticated user's current reading progress with full branch context. All top-level fields are nullable — a user with no active session receives the `null` shape shown below rather than an error.
+
+**Authentication:** Optional (`optionalAuth` — returns all-null for guests)
+
+**Response (200 OK — active session):**
+```json
+{
+  "book": {
+    "id": "book-uuid",
+    "title": "The Lost Kingdom",
+    "language": "en",
+    "totalPages": 24,
+    "stats": { "readCount": 312, "likesCount": 87 }
+  },
+  "page": {
+    "id": "page-uuid",
+    "page": 7,
+    "text": "The gate creaks open…",
+    "actions": [
+      { "text": "Step inside.", "type": "brave" },
+      { "text": "Turn back.", "type": "cautious" }
+    ]
+  },
+  "state": {
+    "actionsHistory": [],
+    "plotFlags": [],
+    "contextHistory": "The MC followed a stranger…"
+  },
+  "session": {
+    "bookId": "book-uuid",
+    "pageId": "page-uuid",
+    "previousPageId": "previous-page-uuid",
+    "status": "active"
+  },
+  "branchPath": {
+    "depth": 7,
+    "pages": [
+      { "id": "page1id", "page": 1, "branchId": "main" },
+      { "id": "page7id", "page": 7, "branchId": "branch-a3f" }
+    ]
+  },
+  "branchStats": {
+    "totalBranches": 3,
+    "branchingFactor": 1.4
+  },
+  "siblings": [
+    { "id": "page7alt1", "page": 7, "branchId": "branch-b9c", "text": "She ran instead…" }
+  ]
+}
+```
+
+**Response (200 OK — no active session):**
+```json
+{
+  "book": null,
+  "page": null,
+  "state": null,
+  "session": null,
+  "branchPath": null,
+  "branchStats": null,
+  "siblings": []
+}
+```
+
+---
+
+## Achievements
+
+### GET /user/achievements
+
+Returns the authenticated user's achievements/badges with progress calculations.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "badges": [
+    {
+      "achievementId": "gen_50",
+      "unlockedAt": "2026-05-01T00:00:00.000Z",
+      "isNotified": false
+    }
+  ]
+}
+```
+
+---
+
+### POST /user/achievements/acknowledge
+
+Marks achievement notifications as viewed/acknowledged by the authenticated user after the frontend displays the notification toast.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Request Body:**
+```json
+{
+  "achievementIds": ["gen_50", "read_100"]
+}
+```
+
+**Parameters:**
+- `achievementIds` (string[], required): Array of achievement IDs to acknowledge
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Badges flagged as viewed"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid payload — achievementIds must be a non-empty array
 
 ---
 
@@ -1234,16 +1385,16 @@ All endpoints follow consistent error response formats:
 ```json
 {
   "success": false,
-  "error": "Forbidden: You do not have permission to access this resource"
+  "error": "You can only edit your own comments"
 }
 ```
 
 **HTTP Status Codes:**
-- `200 OK`: Successful GET or PUT request
+- `200 OK`: Successful GET, PUT, or DELETE request
 - `201 Created`: Successful POST request
 - `400 Bad Request`: Invalid request data
 - `401 Unauthorized`: Authentication required
-- `403 Forbidden`: Permission denied
+- `403 Forbidden`: Permission denied (not the resource owner)
 - `404 Not Found`: Resource not found
 - `500 Internal Server Error`: Server error
 
@@ -1260,41 +1411,39 @@ All endpoints follow consistent error response formats:
 
 ### Response Headers
 
-- `Cache-Control`: Cache directives (varies by endpoint)
-  - `private, max-age=60, stale-while-revalidate=30` for authenticated user data
-  - `public, max-age=60, stale-while-revalidate=30` for public user profiles
+- `Cache-Control`: Varies by endpoint
+  - `private` for authenticated user data
+  - `public, max-age=60, stale-while-revalidate=30` for public user profiles (`GET /users/:identifier`)
 
 ---
 
 ## Caching Strategy
 
 The API implements multi-level caching for performance:
-- **Redis caching**: User profiles, user stats
-- **HTTP caching**: Public user profiles support CDN caching with Cache-Control headers
-- **Cache invalidation**: Automatic invalidation on profile updates, likes, favorites, follows
+- **In-memory caching**: User profiles via `withCache()` utility using configurable TTL
+- **HTTP caching**: Public user profiles support CDN/edge caching with Cache-Control headers
+- **Cache invalidation**: Automatic invalidation on profile updates, likes, favorites, follows, and check-ins
 
 **Cache TTLs:**
-- User profile: 5 minutes
-- User stats: 5 minutes
+- User profile: 5 minutes (configurable via `CACHE_TTL.USER_PROFILE`)
 
----
-
-## Rate Limiting
-
-Rate limits are enforced on a per-user basis to prevent abuse:
-
-- GET endpoints: 100 requests per minute
-- POST/PUT/DELETE endpoints: 50 requests per minute
+**Invalidation Triggers:**
+- Profile update (PUT /user): Invalidates `user:{userId}:profile`
+- Onboarding (POST /user): Invalidates profile cache
+- Like/unlike (book target): Invalidates explore cache, user books cache, and profile cache
+- Favorite/unfavorite: Invalidates profile cache (savedBooksCount)
+- Follow/unfollow: Invalidates profile cache for the target user (followersCount)
+- Daily check-in: Invalidates profile cache (credits changed)
 
 ---
 
 ## Authentication
 
-Most endpoints require authentication via NextAuth JWT cookies. The middleware automatically verifies the JWT and extracts user information.
+Endpoints use three middleware types:
 
-**Middleware Types:**
-- `requireAuth`: Requires valid authentication (returns 401 if not authenticated)
-- No middleware: Public access (for user profile viewing)
+- `requireAuth`: Requires valid authentication — returns 401 if not authenticated
+- `optionalAuth`: Attaches user info if cookie is present, continues silently for guests
+- No middleware: Public access (user profile viewing, follower lists)
 
 ---
 
@@ -1304,28 +1453,33 @@ Most endpoints require authentication via NextAuth JWT cookies. The middleware a
 ```sql
 CREATE TABLE "users" (
   "user_id" uuid PRIMARY KEY,
-  "name" text,
-  "username" text UNIQUE,
-  "email" text UNIQUE,
+  "name" text NOT NULL,
+  "username" text NOT NULL UNIQUE,
+  "email" text NOT NULL UNIQUE,
   "password_hash" text,
   "pen_name" text,
   "bio" text,
   "gender" text,
-  "image" text,
+  "image_url" text,
   "image_id" text,
+  "stripe_customer_id" text UNIQUE,
   "credits" integer DEFAULT 50 NOT NULL, -- First-time user bonus
+  "tier" text,
+  "is_new_user" boolean DEFAULT true NOT NULL,
+  "referrer_id" uuid,
+  "subscription_id" uuid,
+  "vip_expires_at" timestamp with time zone,
+  "token_version" integer DEFAULT 0 NOT NULL,
   "last_active" timestamp with time zone DEFAULT now() NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 ```
 
-**Note:** The `credits` field has a default value of 50 for new users (first-time user bonus). This provides new users with initial credits to create stories and engage with the platform.
-
 ### User Likes Table
 ```sql
 CREATE TABLE "user_likes" (
-  "user_id" uuid NOT NULL,
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
   "target_type" text NOT NULL, -- "book" | "comment" | "user"
   "target_id" uuid NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -1336,8 +1490,9 @@ CREATE TABLE "user_likes" (
 ### User Favorites Table
 ```sql
 CREATE TABLE "user_favorites" (
-  "user_id" uuid NOT NULL,
-  "book_id" uuid REFERENCES books(id) ON DELETE cascade NOT NULL,
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "book_id" uuid NOT NULL REFERENCES books(id) ON DELETE cascade,
+  "collection" text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   PRIMARY KEY ("user_id", "book_id")
 );
@@ -1346,9 +1501,10 @@ CREATE TABLE "user_favorites" (
 ### User Comments Table
 ```sql
 CREATE TABLE "user_comments" (
-  "id" uuid PRIMARY KEY,
-  "user_id" uuid NOT NULL,
-  "book_id" uuid REFERENCES books(id) ON DELETE cascade NOT NULL,
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "book_id" uuid NOT NULL REFERENCES books(id) ON DELETE cascade,
+  "page_id" uuid REFERENCES pages(id) ON DELETE cascade,
   "parent_comment_id" uuid,
   "content" text NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -1359,8 +1515,8 @@ CREATE TABLE "user_comments" (
 ### User Follows Table
 ```sql
 CREATE TABLE "user_follows" (
-  "follower_id" uuid NOT NULL,
-  "following_id" uuid NOT NULL,
+  "follower_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "following_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   PRIMARY KEY ("follower_id", "following_id")
 );
@@ -1369,8 +1525,8 @@ CREATE TABLE "user_follows" (
 ### User Check-ins Table
 ```sql
 CREATE TABLE "user_checkins" (
-  "id" uuid PRIMARY KEY,
-  "user_id" uuid REFERENCES users(id) ON DELETE cascade NOT NULL,
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
   "check_in_date" text NOT NULL, -- YYYY-MM-DD format (UTC)
   "credits_claimed" integer NOT NULL,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -1382,33 +1538,25 @@ CREATE TABLE "user_checkins" (
 ### User Activity Logs Table
 ```sql
 CREATE TABLE "user_activity_logs" (
-  "id" uuid PRIMARY KEY,
-  "user_id" uuid REFERENCES users(id) ON DELETE cascade NOT NULL,
-  "activity_type" text NOT NULL, -- "book_created" | "liked" | "commented" | "followed" | "favorited" | "session_updated"
-  "target_type" text, -- "book" | "comment" | "user"
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "activity_type" text NOT NULL,
+  "target_type" text,
   "target_id" uuid,
   "metadata" jsonb,
   "ip_address" text,
   "user_agent" text,
-  "platform" text, -- "android" | "ios" | "web"
+  "platform" text,
   "app_version" text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 ```
 
 **Indexes:**
-- `user_activity_logs_user_idx`: (user_id, created_at DESC) - For user's activity history
-- `user_activity_logs_type_idx`: (activity_type) - For activity type filtering
-- `user_activity_logs_target_idx`: (target_type, target_id) - For target-based queries
-- `user_activity_logs_created_idx`: (created_at DESC) - For cleanup (old logs)
-
-**Activity Types:**
-- `book_created`: User created a new book
-- `liked`: User liked a book, comment, or user
-- `commented`: User commented on a book
-- `followed`: User followed another user
-- `favorited`: User favorited a book
-- `session_updated`: User updated their reading session
+- `user_activity_logs_user_idx`: (user_id, created_at DESC)
+- `user_activity_logs_type_idx`: (activity_type)
+- `user_activity_logs_target_idx`: (target_type, target_id)
+- `user_activity_logs_created_idx`: (created_at DESC)
 
 ---
 
@@ -1416,64 +1564,92 @@ CREATE TABLE "user_activity_logs" (
 
 ### Example cURL Commands
 
-**Get user profile:**
+**Get authenticated user profile:**
 ```bash
-curl https://api.twistloom.com/user \
+curl https://api.twistloom.com/api/user \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
 **Get user by identifier:**
 ```bash
-curl https://api.twistloom.com/users/john-doe
+curl https://api.twistloom.com/api/users/johndoe
 ```
 
 **Like a book:**
 ```bash
-curl -X POST https://api.twistloom.com/user/likes \
+curl -X POST https://api.twistloom.com/api/user/likes \
   -H "Content-Type: application/json" \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -d '{
     "targetType": "book",
-    "targetId": "book456"
+    "targetId": "book-uuid"
   }'
 ```
 
 **Add to favorites:**
 ```bash
-curl -X POST https://api.twistloom.com/user/favorites \
+curl -X POST https://api.twistloom.com/api/user/favorites \
   -H "Content-Type: application/json" \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -d '{
-    "bookId": "book456"
+    "bookId": "book-uuid"
   }'
 ```
 
 **Follow a user:**
 ```bash
-curl -X POST https://api.twistloom.com/users/user456/follow \
+curl -X POST https://api.twistloom.com/api/users/user-uuid/follow \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
 **Get user's followers:**
 ```bash
-curl https://api.twistloom.com/users/user456/followers?limit=10
+curl https://api.twistloom.com/api/users/user-uuid/followers?limit=10
 ```
 
-**Get user following:**
+**Get authenticated user's following:**
 ```bash
-curl https://api.twistloom.com/user/following?limit=10 \
+curl https://api.twistloom.com/api/user/following?limit=10 \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
 **Get check-in status:**
 ```bash
-curl https://api.twistloom.com/user/checkin/status \
+curl https://api.twistloom.com/api/user/checkin/status \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
 **Perform daily check-in:**
 ```bash
-curl -X POST https://api.twistloom.com/user/checkin \
+curl -X POST https://api.twistloom.com/api/user/checkin \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Set referrer:**
+```bash
+curl -X POST https://api.twistloom.com/api/user/referrer \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{
+    "username": "johndoe"
+  }'
+```
+
+**Get story progress:**
+```bash
+curl https://api.twistloom.com/api/user/progress \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Get achievements:**
+```bash
+curl https://api.twistloom.com/api/user/achievements \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
+**Get activity logs:**
+```bash
+curl "https://api.twistloom.com/api/user/activity-logs?activityType=liked&limit=10" \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
@@ -1481,37 +1657,45 @@ curl -X POST https://api.twistloom.com/user/checkin \
 
 ## Changelog
 
+### v3.0.0 (2026-06-29)
+- Added GET /user/achievements endpoint (achievements/badges listing)
+- Added POST /user/achievements/acknowledge endpoint (mark badges as viewed)
+- Added GET /user/progress endpoint (reading progress with branch context)
+- Added POST /user/referrer endpoint (set referrer by username)
+- Fixed POST /user description from "Create/Replace" to "Complete Onboarding"
+- Fixed response field names: `image` → `imageUrl` throughout
+- Fixed DELETE /user response to match actual output (no deletedRecords / imageQueuedForDeletion)
+- Fixed auth middleware annotations: GET /user/collections, GET /user/checkin/status, GET /user/activity-logs use `optionalAuth`
+- Expanded UserStats type definition with all engagement fields
+- Added subscription object to User type
+- Updated database schema to reflect actual Drizzle ORM schema
+- Removed GET /user/favorites (not implemented — favorites listing is handled elsewhere)
+
 ### v2.1.0 (2026-05-04)
 - Added daily check-in system with 30 free credits per day
 - Added GET /user/checkin/status endpoint to check check-in eligibility
 - Added POST /user/checkin endpoint to perform daily check-in and claim credits
 - Added CheckInStatus, CheckInRecord, and CheckInResult type definitions
-- Added user_checkins table schema for tracking daily check-ins
-- Added addCredits function to credits service for credit additions
 - UTC-based daily reset system (midnight UTC)
 - Configurable daily credits via DAILY_CHECKIN_CREDITS constant
 - Transaction-safe credit addition with row locking
 - Unique constraint to prevent duplicate check-ins per day
-- Full audit trail of all check-ins with timestamps
 
 ### v2.0.0 (2024-04-24)
 - Consolidated API documentation from BACKEND_USER_API_SPECIFICATION.md
 - Added comprehensive Type Definitions section with TypeScript interfaces
 - Added HTTP Headers section with request/response header documentation
-- Added Caching Strategy section with Redis and HTTP caching details
+- Added Caching Strategy section with caching details
 - Updated Rate Limiting section with specific rate limits per endpoint type
 - Added Response Pattern section explaining industry-standard API patterns
 - Fixed pagination response field name from "totalCount" to "total" to match actual implementation
 - Enhanced error handling documentation with HTTP status codes
-- Maintained all existing endpoints and functionality
-- Aligned documentation with actual canonical route implementation in src/routes/user.ts
 
 ### v1.1.0 (2023-04-23)
 - Added GET /users/:id/followers endpoint
 - Added GET /users/:id/following endpoint
 - Added GET /user/followers endpoint
 - Added GET /user/following endpoint
-- Enhanced documentation with comprehensive API reference
 
 ### v1.0.0 (2023-01-01)
 - Initial user API implementation

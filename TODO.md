@@ -6,13 +6,11 @@
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
-[x] incrementUserMetric for achievement
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] translate action hint
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [x] placesRelationship: source, target (placeId), distance, obstacle
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
-[x] charactermemory add `traits` (e.g., skills, hobbies, quirks, flaws)
 [x] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
 [x] BookSortOption tambah 'favorites'
 [x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
@@ -42,9 +40,10 @@
 - email notification settings
 
 [ ] enhance book explore:
-- fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
-- search jaccard similarity (by book keywords & title)
-- need change to cursor pagination?
+- [ ] ensure support `collection` query param
+- [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
+- [ ] search jaccard similarity (by book keywords & title)
+- [ ] need change to cursor pagination?
 
 ---
 
@@ -52,19 +51,6 @@ src\db\schema.ts
 src\db\triggers.ts
 
 claude: ask about TODO-counter-trigger.md
-
----
-
-perfect reasoning, I agree with your decision
-
-what about we try to parse them via typescript as best-effort in handling edge cases (instead of definitive success)?
-- start & end become: "<start>-<end>" e.g. "55-60" (maybe malformed to "55 - 60" or using non-standard hyphens, try: normalize hyphens & whitespaces)
-- op & threshold become: "<op> <threshold>" e.g. "<= 30" (maybe malformed to "<=30" or "less than 30%", try: remove trailing "%", string match "less than"/"more than", split by first number/last op instead of space)
-
-because as AI can include multiple trigger condition (OR-logic), in case one or some value are unparseable, at least we still have some other valid trigger condition values, so I think I have no problem with that
-the edge case chance is also very small, because I run 2 AI generations for single page (initial & evaluation)
-
-what's your take?
 
 ---
 

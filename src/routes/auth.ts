@@ -33,7 +33,7 @@ import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
-import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices } from '../services/session-manager.js';
+import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { Request, Response } from "express";
 import type { DBUserForAuth } from '../types/schema.js';
@@ -634,20 +634,33 @@ router.post('/google-oauth', async (req: Request, res: Response) => {
  *
  * Returns all active sessions for the authenticated user.
  *
- * Response (200):
- * {
- *   sessions: Array<{
- *     id: string;
- *     userAgent: string | null;
- *     ipAddress: string | null;
- *     deviceName: string;
- *     lastActiveAt: string;
- *     createdAt: string;
- *   }>;
- *   count: number;
- * }
+ * @route GET /api/auth/sessions
+ * @description Get all active login sessions for the signed-in user
+ *
+ * @returns {Object} Sessions response
+ * @returns {Array} sessions - List of active device sessions
+ * @returns {number} count - Number of active sessions
  *
  * Response (401): Unauthorized
+ *
+ * @example
+ * // Request
+ * GET /api/auth/sessions
+ *
+ * // Response
+ * {
+ *   "sessions": [
+ *     {
+ *       "id": "session123",
+ *       "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36...",
+ *       "ipAddress": "192.168.1.1",
+ *       "deviceName": "Chrome on Windows (Desktop)",
+ *       "lastActiveAt": "2024-01-15T10:30:00.000Z",
+ *       "createdAt": "2024-01-01T00:00:00.000Z"
+ *     }
+ *   ],
+ *   "count": 3
+ * }
  */
 router.get('/sessions', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -669,9 +682,25 @@ router.get('/sessions', requireAuth, async (req: Request, res: Response) => {
  *
  * Logs out from all other devices, preserving the current session.
  *
- * Response (200): { message: string; deletedCount: number }
+ * @route POST /api/auth/logout-all
+ * @description Sign out from every device except the current one
+ *
+ * @returns {Object} Logout-all response
+ * @returns {string} message - Confirmation message with count
+ * @returns {number} deletedCount - Number of other sessions deleted
+ *
  * Response (400): No session ID found
  * Response (401): Unauthorized
+ *
+ * @example
+ * // Request
+ * POST /api/auth/logout-all
+ *
+ * // Response
+ * {
+ *   "message": "Logged out from 2 other device(s)",
+ *   "deletedCount": 2
+ * }
  */
 router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -690,6 +719,51 @@ router.post('/logout-all', requireAuth, async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error('[POST /api/auth/logout-all] ❌ Error logging out from all devices:', error);
+    handleApiError(res, 'Failed to logout from all devices', error, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/logout-all-devices
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/logout-all-devices
+ *
+ * Logs out from ALL devices including the current one.
+ * Deletes every session for the user and increments tokenVersion to
+ * invalidate all existing JWTs, forcing re-login everywhere.
+ *
+ * @route POST /api/auth/logout-all-devices
+ * @description Sign out from every device including this one
+ *
+ * @returns {Object} Logout-all-devices response
+ * @returns {string} message - Confirmation message with count
+ * @returns {number} deletedCount - Total number of sessions deleted
+ *
+ * Response (401): Unauthorized
+ *
+ * @example
+ * // Request
+ * POST /api/auth/logout-all-devices
+ *
+ * // Response
+ * {
+ *   "message": "Logged out from 3 device(s) — all sessions revoked",
+ *   "deletedCount": 3
+ * }
+ */
+router.post('/logout-all-devices', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const deletedCount = await logoutFromAllDevices(userId);
+
+    res.json({
+      message: `Logged out from ${deletedCount} device(s) — all sessions revoked`,
+      deletedCount,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/logout-all-devices] ❌ Error logging out from all devices:', error);
     handleApiError(res, 'Failed to logout from all devices', error, 500);
   }
 });
