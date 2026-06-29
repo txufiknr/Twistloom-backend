@@ -218,7 +218,7 @@ export function handleConflictError(
   handleApiError(res, message, error, 409);
 }
 
-type GenAIErrorCode =
+export type GenAIErrorCode =
   | 'QUOTA_EXCEEDED'
   | 'RATE_LIMITED'
   | 'INVALID_API_KEY'
@@ -231,6 +231,46 @@ type GenAIErrorCode =
   | 'SERVICE_UNAVAILABLE'
   | 'REQUEST_TIMEOUT'
   | 'UNKNOWN';
+
+/**
+ * Error codes that are safe to retry (transient failures that may succeed on retry)
+ */
+export const RETRYABLE_GENAI_ERROR_CODES: ReadonlySet<GenAIErrorCode> = new Set([
+  'RATE_LIMITED',
+  'SERVICE_UNAVAILABLE',
+  'REQUEST_TIMEOUT',
+  'NETWORK_ERROR',
+]);
+
+/**
+ * Error codes that should NOT be retried (will likely fail again on retry)
+ */
+export const NON_RETRYABLE_GENAI_ERROR_CODES: ReadonlySet<GenAIErrorCode> = new Set([
+  'QUOTA_EXCEEDED',
+  'INVALID_API_KEY',
+  'SAFETY_BLOCKED',
+  'INVALID_SCHEMA',
+  'SCHEMA_TOO_COMPLEX',
+  'VALIDATION_ERROR',
+  'BAD_REQUEST',
+  'UNKNOWN',
+]);
+
+/**
+ * Returns true if the given error code represents a transient failure that
+ * may succeed if retried (e.g. rate limits, service unavailability, timeouts).
+ */
+export function isGenAIErrorRetryable(code: GenAIErrorCode): boolean {
+  return RETRYABLE_GENAI_ERROR_CODES.has(code);
+}
+
+/**
+ * Returns true if the given error code represents a permanent failure that
+ * will likely recur on retry (e.g. invalid API key, bad request, quota exceeded).
+ */
+export function isGenAIErrorNonRetryable(code: GenAIErrorCode): boolean {
+  return NON_RETRYABLE_GENAI_ERROR_CODES.has(code);
+}
 
 /**
  * Classify a GenAI-related error into a small set of canonical error codes.

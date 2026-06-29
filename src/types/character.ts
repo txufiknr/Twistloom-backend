@@ -269,7 +269,7 @@ export type CharacterMemory = {
   traits?: TraitItem[];
 };
 
-export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio'> & { characterId: string };
+export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio' | 'traits'> & { characterId: string };
 
 // TODO: include schedule?
 export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships' | 'schedule'> & {

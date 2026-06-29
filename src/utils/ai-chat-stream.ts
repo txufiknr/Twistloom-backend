@@ -6,7 +6,9 @@ import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-li
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess } from './ai-logger.js';
-import { getErrorMessage } from "./error.js";
+import { classifyGenAIError, getErrorMessage, isGenAIErrorRetryable } from "./error.js";
+import { retryWithBackoff } from "./retry.js";
+import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { createTextChunkEvent, createErrorEvent, createStartEvent, createEndEvent, handleBackpressure } from "./sse.js";
 import { formatDocumentsToPrompt, formatSystemPromptWithDocuments, logPromptWithSeparators } from "./ai-chat.js";
 import { type GenerateContentConfig, type GenerateContentParameters } from "@google/genai";
@@ -184,7 +186,43 @@ export async function aiStreamSSE(
             };
             
             try {
-              // Send start event
+              // Establish stream connection with retry for retryable errors.
+              // The generator creation + first .next() is retried together so that
+              // each attempt gets a fresh HTTP connection. Only on success do we
+              // send the start event and begin normal streaming.
+              const { streamGenerator, firstResult } = await retryWithBackoff(
+                async (): Promise<{
+                  streamGenerator: AIStreamGenerator;
+                  firstResult: IteratorResult<string, StreamUsage | void>;
+                }> => {
+                  let gen: AIStreamGenerator;
+
+                  switch (provider) {
+                    case 'github': gen = githubStreamGenerator(prompt, opts); break;
+                    case 'gemini': gen = geminiStreamGenerator(prompt, opts); break;
+                    case 'cohere': gen = cohereStreamGenerator(prompt, opts); break;
+                    case 'mistral': gen = mistralStreamGenerator(prompt, opts); break;
+                    case 'groq': gen = groqStreamGenerator(prompt, opts); break;
+                    case 'cerebras': gen = cerebrasStreamGenerator(prompt, opts); break;
+                    case 'nvidia': gen = nvidiaStreamGenerator(prompt, opts); break;
+                    case 'openrouter': gen = openrouterStreamGenerator(prompt, opts); break;
+                    case 'cloudflare': gen = cloudflareStreamGenerator(prompt, opts); break;
+                    default: throw new Error(`Unknown streaming provider: ${provider}`);
+                  }
+
+                  const first = await gen.next();
+                  return { streamGenerator: gen, firstResult: first };
+                },
+                {
+                  maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
+                  shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(err)),
+                  onRetry: (attempt, err) => {
+                    console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(err)}`);
+                  },
+                }
+              );
+
+              // Connection established — send start event
               controller.enqueue(encoder.encode(createStartEvent(provider, model)));
 
               const requestStartedAt = Date.now();
@@ -193,27 +231,35 @@ export async function aiStreamSSE(
               const totalDocumentsLength = options.documents?.reduce((sum, doc) => sum + (doc.title?.length ?? 0) + doc.snippet.length, 0) ?? 0;
               const promptChars = (options.systemPrompt?.length ?? 0) + prompt.length + totalDocumentsLength;
               let firstTokenAt: number | null = null;
-              
-              // Call the appropriate streaming provider
-              // let streamGenerator: AsyncGenerator<string> | null = null;
-              let streamGenerator: AIStreamGenerator | null = null;
-              
-              switch (provider) {
-                case 'github': streamGenerator = githubStreamGenerator(prompt, opts); break;
-                case 'gemini': streamGenerator = geminiStreamGenerator(prompt, opts); break;
-                case 'cohere': streamGenerator = cohereStreamGenerator(prompt, opts); break;
-                case 'mistral': streamGenerator = mistralStreamGenerator(prompt, opts); break;
-                case 'groq': streamGenerator = groqStreamGenerator(prompt, opts); break;
-                case 'cerebras': streamGenerator = cerebrasStreamGenerator(prompt, opts); break;
-                case 'nvidia': streamGenerator = nvidiaStreamGenerator(prompt, opts); break;
-                case 'openrouter': streamGenerator = openrouterStreamGenerator(prompt, opts); break;
-                case 'cloudflare': streamGenerator = cloudflareStreamGenerator(prompt, opts); break;
+              let usage: StreamUsage | undefined;
+
+              // Process the first result (if the generator finished immediately,
+              // firstResult.done is true and its value holds the usage)
+              if (firstResult.done) {
+                usage = firstResult.value || undefined;
+              } else {
+                const chunk = firstResult.value;
+
+                // Check if aborted during streaming
+                if (signal?.aborted) {
+                  controller.close();
+                  return;
+                }
+
+                // Track TTFT
+                if (!firstTokenAt && chunk.length > 0) {
+                  firstTokenAt = Date.now();
+                }
+
+                // Handle backpressure
+                await handleBackpressure(controller);
+
+                controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
               }
 
-              if (streamGenerator) {
+              // Continue streaming remaining chunks (if not already done)
+              if (!firstResult.done) {
                 try {
-                  let usage: StreamUsage | undefined;
-
                   while (true) {
                     const { value, done } = await streamGenerator.next();
 
@@ -240,50 +286,50 @@ export async function aiStreamSSE(
 
                     controller.enqueue(encoder.encode(createTextChunkEvent(chunk)));
                   }
-
-                  // Send end event
-                  controller.enqueue(encoder.encode(createEndEvent(provider, model)));
-                  providerSucceeded = true;
-
-                  // Log telemetry — cache fields are simply undefined for providers
-                  // that don't report usage; logGenerationTelemetry already handles that.
-                  logGenerationTelemetry({
-                    provider,
-                    model,
-                    context: options.context,
-                    promptChars,
-                    estimatedPromptTokens: estimateTokens(promptChars),
-                    requestStartedAt,
-                    firstTokenAt,
-                    completedAt: Date.now(),
-                    ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
-                    generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
-                    cachedTokens: usage?.cachedTokens,
-                    cacheHitRate: (usage?.promptTokens && usage?.cachedTokens != null)
-                      ? usage.cachedTokens / usage.promptTokens
-                      : undefined,
-                  });
-
-                  // Resolve aiUsed promise with selected provider/model
-                  try {
-                    if (!aiUsedResolved) {
-                      aiUsedResolved = true;
-                      aiUsedResolve({ provider, model });
-                    }
-                  } catch {
-                    // ignore
-                  }
-                  
-                  // Log success and increment usage
-                  logAISuccess({ provider, model, output: '[SSE Stream]', result: '[SSE Stream]' });
-                  await incrementDailyUsageCount(provider, context ?? 'ai-stream-sse');
-                  break; // Success - break out of model loop
                 } catch (streamError) {
-                  console.log(`[${provider}] ⚠️ Model ${model} streaming error:`, getErrorMessage(streamError));
-                  controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} failed: ${getErrorMessage(streamError)}`)));
-                  // Continue to next model in the array
+                  console.log(`[${provider}] ⚠️ Model ${model} streaming error after first chunk:`, getErrorMessage(streamError));
+                  controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} streaming failed: ${getErrorMessage(streamError)}`)));
+                  // Mid-stream errors are not retried — continue to next model
+                  continue;
                 }
               }
+
+              // Send end event
+              controller.enqueue(encoder.encode(createEndEvent(provider, model)));
+              providerSucceeded = true;
+
+              // Log telemetry
+              logGenerationTelemetry({
+                provider,
+                model,
+                context: options.context,
+                promptChars,
+                estimatedPromptTokens: estimateTokens(promptChars),
+                requestStartedAt,
+                firstTokenAt,
+                completedAt: Date.now(),
+                ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
+                generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
+                cachedTokens: usage?.cachedTokens,
+                cacheHitRate: (usage?.promptTokens && usage?.cachedTokens != null)
+                  ? usage.cachedTokens / usage.promptTokens
+                  : undefined,
+              });
+
+              // Resolve aiUsed promise with selected provider/model
+              try {
+                if (!aiUsedResolved) {
+                  aiUsedResolved = true;
+                  aiUsedResolve({ provider, model });
+                }
+              } catch {
+                // ignore
+              }
+
+              // Log success and increment usage
+              logAISuccess({ provider, model, output: '[SSE Stream]', result: '[SSE Stream]' });
+              await incrementDailyUsageCount(provider, context ?? 'ai-stream-sse');
+              break; // Success - break out of model loop
             } catch (error) {
               console.log(`[${provider}] ⚠️ Model ${model} failed:`, getErrorMessage(error));
               controller.enqueue(encoder.encode(createErrorEvent(`Model ${model} failed: ${getErrorMessage(error)}`)));

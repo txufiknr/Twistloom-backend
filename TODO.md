@@ -26,8 +26,6 @@
 [x] enriched page tambah `evalProvider` & `evalModel`
 [x] refine `getBookCreationPrompts` prompt "Describe theme, synopsis, characters, setting, tone, or any specific elements you want in your story."
 [x] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
-[x] initialState.threads -> `initialThreads`, pisahin `viableEnding` juga keluar
-[x] `BookCreationResponse` should we move out `futureNotes` too?
 [ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
@@ -50,7 +48,14 @@
 
 ---
 
-perfect reasoning, I agree
+src\db\schema.ts
+src\db\triggers.ts
+
+claude: ask about TODO-counter-trigger.md
+
+---
+
+perfect reasoning, I agree with your decision
 
 what about we try to parse them via typescript as best-effort in handling edge cases (instead of definitive success)?
 - start & end become: "<start>-<end>" e.g. "55-60" (maybe malformed to "55 - 60" or using non-standard hyphens, try: normalize hyphens & whitespaces)

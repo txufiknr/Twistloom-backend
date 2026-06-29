@@ -21,6 +21,13 @@ export const DEFAULT_TOP_K: number = 40;
 export const DEFAULT_STOP_SEQUENCES: string[] = ['\n\n\n'];
 
 /**
+ * Number of times to retry the same model on retryable errors before falling
+ * back to the next model in the provider's model list.
+ * Applied per model — each model gets up to this many retry attempts.
+ */
+export const AI_CHAT_MODEL_RETRY_COUNT = 3;
+
+/**
  * Default AI chat parameters for consistent behavior across providers
  * 
  * These values provide balanced settings for generating coherent, creative responses

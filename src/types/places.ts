@@ -171,7 +171,7 @@ export type PlaceConnection = {
 
 export type PlaceConnectionUpdate = Omit<PlaceConnection, 'updatedAtPage' | 'obstacles'> & { updateObstacles: TagUpdates<string>; sourceId: string; };
 
-export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context'> & { placeId: string; type?: string };
+export type PlaceMemoryTranslation = Pick<PlaceMemory, 'knownName' | 'realName' | 'context' | 'traits'> & { placeId: string; type?: string };
 
 /**
  * Place creation structure for AI output

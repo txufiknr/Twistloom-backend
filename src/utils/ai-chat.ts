@@ -6,7 +6,9 @@ import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-li
 import { requireEnv } from "./env.js";
 import { PROMPT_SYSTEM } from "./prompt.js";
 import { logAISuccess, logAIFailure } from './ai-logger.js';
-import { classifyGenAIError } from "./error.js";
+import { classifyGenAIError, isGenAIErrorRetryable } from "./error.js";
+import { retryWithBackoff } from "./retry.js";
+import { AI_CHAT_MODEL_RETRY_COUNT } from "../config/ai-chat.js";
 import { parseAISafely } from "./ai-parser.js";
 import { buildEvaluationSchemaDefinition, EVALUATION_REQUIRED_FIELDS } from "../schema/story.js";
 import { group } from '@actions/core';
@@ -69,8 +71,19 @@ async function promptWithFallback<T>(
       // Track total duration
       const requestStartAt = Date.now();
       
-      // Execute the actual request to the AI provider
-      const response = await apiCall(model, prompt, modelOptions);
+      // Execute the actual request to the AI provider with retry for transient errors.
+      // Non-retryable errors (invalid API key, bad request, etc.) are thrown immediately;
+      // retryable ones (rate limited, service unavailable, etc.) retry with backoff.
+      const response = await retryWithBackoff(
+        () => apiCall(model, prompt, modelOptions),
+        {
+          maxRetries: AI_CHAT_MODEL_RETRY_COUNT,
+          shouldRetry: (err) => isGenAIErrorRetryable(classifyGenAIError(err)),
+          onRetry: (attempt, err) => {
+            console.warn(`[${provider}] 🔄 Retry ${attempt}/${AI_CHAT_MODEL_RETRY_COUNT} for model ${model}: ${classifyGenAIError(err)}`);
+          },
+        }
+      );
       
       // Response extraction: Get the output content from the response
       const output = extractOutput(response);
@@ -98,11 +111,12 @@ async function promptWithFallback<T>(
       // Empty response handling: Log when no content is received
       logAIFailure(provider, model, 'No output content received');
     } catch (error) {
-      // Error handling: Classify error and decide on retry strategy
+      // Error handling: Classify error and decide on retry strategy.
+      // Retryable errors were already retried by retryWithBackoff within the try block.
       const code = classifyGenAIError(error);
       if (i < models.length - 1) {
         // Model fallback: Try next model if more are available
-        console.warn(`[${provider}] 💥 Model ${model} failed, trying next model:`, code);
+        console.warn(`[${provider}] 💥 Model ${model} failed (${isGenAIErrorRetryable(code) ? 'retries exhausted' : 'non-retryable'}), trying next model:`, code);
       } else {
         // Final failure: All models have been exhausted
         console.error(`[${provider}] ❌ All models failed:`, code);
