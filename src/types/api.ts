@@ -27,3 +27,21 @@ export type ResourceAIProvider =
   | 'aiModel'
   | 'aiEvalProvider'
   | 'aiEvalModel';
+
+/**
+ * Pagination metadata interface
+ */
+export interface PaginationMeta {
+  /** Current page number */
+  page: number;
+  /** Items per page */
+  limit: number;
+  /** Total number of items */
+  totalCount: number;
+  /** Total number of pages */
+  totalPages: number;
+  /** Whether next page exists */
+  hasNext: boolean;
+  /** Whether previous page exists */
+  hasPrevious: boolean;
+}

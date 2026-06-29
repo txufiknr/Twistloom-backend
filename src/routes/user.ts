@@ -50,7 +50,7 @@ import { users, userLikes, userFavorites, userComments, userFollows, userActivit
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql } from "drizzle-orm";
-import { calculatePaginationMeta, PaginationMeta } from "../utils/pagination.js";
+import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
@@ -59,6 +59,7 @@ import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { getUserAchievements } from '../services/achievements.js';
+import type { PaginationMeta } from '../types/api.js';
 
 const router: RouterType = Router();
 

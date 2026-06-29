@@ -1930,9 +1930,10 @@ function formatFutureNotes(params: {
       case 'phase':
         // Fires once currentPhase reaches OR passes the target phase.
         return phaseOrder[s.phase] <= phaseOrder[currentPhase];
-      case 'page':
+      case 'page': {
         const { start } = parsePageRange(s.range) ?? {};
         return start !== undefined && currentPage >= start - FUTURE_NOTE_LOOKAHEAD_PAGES;
+      }
       case 'day': {
         const dist = getDayDistance(s.day);
         return dist !== undefined && dist <= FUTURE_NOTE_LOOKAHEAD_DAYS;
@@ -2024,17 +2025,19 @@ function formatFutureNotes(params: {
    * Stat variants render with `≤` since that is the hardcoded comparison.
    */
   const getStateTriggerLabel = (note: FutureNote): string | undefined => {
-    const t = note.stateTrigger;
-    if (!t) return undefined;
-    switch (t.type) {
-      case 'stability': return `triggers when: stability level is '${t.level}'`;
-      case 'condition': return `triggers when: health condition is '${t.condition}'`;
-      case 'healthPercent':
-      case 'mobilityPercent':
-      case 'actionPercent':
-      case 'mentalPercent':
-        return `triggers when: ${t.type} \u2264 ${t.threshold}`;
-    }
+    const triggers = note.stateTrigger;
+    if (!triggers?.length) return undefined;
+    return triggers.map(t => {
+      switch (t.type) {
+        case 'stability': return `stability is '${t.level}'`;
+        case 'condition': return `condition is '${t.condition}'`;
+        case 'healthPercent':
+        case 'mobilityPercent':
+        case 'actionPercent':
+        case 'mentalPercent':
+          return `${t.type} \u2264 ${t.threshold}`;
+      }
+    }).join(' OR ');
   };
 
   // ── Bucketing ──────────────────────────────────────────────────────────────
@@ -2046,7 +2049,7 @@ function formatFutureNotes(params: {
   for (const note of futureNotes) {
     // OR across all schedule items — any single item firing promotes the note.
     const scheduleActive = note.schedule?.some(isScheduleActive) ?? false;
-    const triggerActive  = note.stateTrigger ? isStateTriggerActive(note.stateTrigger) : false;
+    const triggerActive  = note.stateTrigger?.some(isStateTriggerActive) ?? false;
     const hasSchedule    = !!note.schedule?.length;
 
     if (scheduleActive || triggerActive) {
@@ -2141,8 +2144,8 @@ function formatFutureNotes(params: {
 
     // Always surface the state trigger annotation so the AI understands what
     // threshold activates this note — critical for Unscheduled dormant notes.
-    const trigger = getStateTriggerLabel(note);
-    if (trigger) meta.push(trigger);
+    const triggers = getStateTriggerLabel(note);
+    if (triggers) meta.push(`trigger when: ${triggers}`);
 
     if (note.relatedThreadId && note.relatedThreadId !== 'none') {
       meta.push(`thread: ${note.relatedThreadId}`);

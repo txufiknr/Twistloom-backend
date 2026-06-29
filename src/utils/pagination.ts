@@ -14,7 +14,7 @@
 
 import type { Request } from "express";
 import { DEFAULT_ITEMS_PER_PAGE, MAX_ITEMS_PER_PAGE } from "../config/pagination.js";
-import type { ResourceName } from "../types/api.js";
+import type { PaginationMeta, ResourceName } from "../types/api.js";
 
 /**
  * Pagination parameters interface for type safety
@@ -42,24 +42,6 @@ export interface PaginationParams {
   ageRange?: string;
   /** Gender filter (male/female) */
   gender?: string;
-}
-
-/**
- * Pagination metadata interface
- */
-export interface PaginationMeta {
-  /** Current page number */
-  page: number;
-  /** Items per page */
-  limit: number;
-  /** Total number of items */
-  totalCount: number;
-  /** Total number of pages */
-  totalPages: number;
-  /** Whether next page exists */
-  hasNext: boolean;
-  /** Whether previous page exists */
-  hasPrevious: boolean;
 }
 
 /**
