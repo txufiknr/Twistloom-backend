@@ -29,8 +29,10 @@
  * - DELETE /api/books/:id/like - Unlike a book (requires auth)
  * - POST /api/books/:id/favorite - Add book to favorites (requires auth)
  * - DELETE /api/books/:id/favorite - Remove book from favorites (requires auth)
+ * - GET /api/books/comments - Get authenticated user's comments (requires auth)
  * - GET /api/books/:id/comments - Get book comments with pagination (optional auth)
  * - POST /api/books/:id/comments - Create comment on book (requires auth)
+ * - PUT /api/books/comments/:id - Update comment (requires auth)
  * - DELETE /api/books/comments/:id - Delete comment on book (requires auth)
  * - GET /api/books/tags/popular - Get popular tags for filtering (no auth required)
  * - GET /api/books/stats - Get public book statistics (optional auth)
@@ -2014,24 +2016,17 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
 
     // Check if book exists
-    const book = await dbRead
-      .select({ id: books.id })
-      .from(books)
-      .where(eq(books.id, id as string))
-      .limit(1);
-
-    if (!book.length) {
-      return handleNotFoundError(res, "Book not found");
-    }
+    const book = await getBookFromDB(id as string);
+    if (!book) return handleNotFoundError(res, "Book not found");
 
     // Get total count using SQL COUNT(*)
     // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
     // This transfers only a single number instead of all matching rows, reducing memory and network overhead.
-    const countResult = await dbRead
+    const [countResult] = await dbRead
       .select({ count: sql<number>`count(*)::int` })
       .from(userComments)
       .where(eq(userComments.bookId, id as string));
-    const totalCount = countResult[0].count;
+    const totalCount = countResult.count;
 
     // Get comments with user info
     const offset = (page - 1) * limit;
@@ -2211,7 +2206,7 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
 
     // Check if comment exists and user owns it
     const comment = await dbRead
-      .select({ id: userComments.id, userId: userComments.userId })
+      .select({ id: userComments.id, userId: userComments.userId, parentCommentId: userComments.parentCommentId })
       .from(userComments)
       .where(eq(userComments.id, id as string))
       .limit(1);
@@ -2229,11 +2224,156 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
       .delete(userComments)
       .where(eq(userComments.id, id as string));
 
+    // TODO: stale-while-revalidate instead when book detail opened
+    // // Invalidate explore cache if parent comment (commentsCount changes)
+    // if (!comment[0].parentCommentId) {
+    //   await invalidateExploreCache();
+    // }
+
     res.json({
       message: "Comment deleted successfully"
     });
   } catch (error) {
     handleApiError(res, "Failed to delete comment", error);
+  }
+});
+
+/**
+ * PUT /api/books/comments/:id
+ *
+ * Updates a comment. Only the original author can update their own comments.
+ *
+ * @param id - Comment ID to update
+ * @body content - Updated comment content (required)
+ * @returns Updated comment record
+ *
+ * @example
+ * PUT /api/books/comments/comment123
+ * Body: { "content": "Updated comment content" }
+ *
+ * Response (200):
+ * {
+ *   "comment": {
+ *     "id": "comment123",
+ *     "userId": "user456",
+ *     "bookId": "book123",
+ *     "parentCommentId": null,
+ *     "content": "Updated comment content",
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2023-01-01T12:00:00.000Z"
+ *   }
+ * }
+ */
+router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    const userId = req.userId!;
+
+    if (!content || typeof content !== 'string' || content.trim().length === 0) {
+      return res.status(400).json({
+        error: "Content is required and must be a non-empty string"
+      });
+    }
+
+    if (content.length > 5000) {
+      return res.status(400).json({
+        error: "Content exceeds maximum length of 5000 characters"
+      });
+    }
+
+    // Sanitize content before storing
+    const cleanContent = sanitizeTextForDB(String(content).trim());
+    if (!cleanContent || cleanContent.length === 0) {
+      return handleValidationError(res, "Comment content is empty after sanitization");
+    }
+
+    // Check if comment exists and belongs to user
+    const existingComment = await dbRead
+      .select({ id: userComments.id, userId: userComments.userId })
+      .from(userComments)
+      .where(eq(userComments.id, id as string))
+      .limit(1);
+
+    if (!existingComment.length) {
+      return handleNotFoundError(res, "Comment not found");
+    }
+
+    if (existingComment[0].userId !== userId) {
+      return handleForbiddenError(res, "You can only edit your own comments");
+    }
+
+    // Update comment
+    const [comment] = await dbWrite
+      .update(userComments)
+      .set({
+        content: cleanContent,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(userComments.id, id as string),
+        eq(userComments.userId, userId)
+      ))
+      .returning();
+
+    res.json({ comment });
+  } catch (error) {
+    handleApiError(res, "Failed to update comment", error);
+  }
+});
+
+/**
+ * GET /api/books/comments
+ *
+ * Retrieves comments by the authenticated user, optionally filtered by book.
+ *
+ * @query bookId - Filter by book ID (optional)
+ * @query limit - Maximum number of results (default: 50)
+ * @query offset - Pagination offset (default: 0)
+ * @returns Array of comment records
+ *
+ * @example
+ * GET /api/books/comments?bookId=book123&limit=10
+ *
+ * Response (200):
+ * {
+ *   "comments": [
+ *     {
+ *       "id": "comment123",
+ *       "userId": "user456",
+ *       "bookId": "book123",
+ *       "parentCommentId": null,
+ *       "content": "This story is amazing!",
+ *       "createdAt": "2023-01-01T00:00:00.000Z",
+ *       "updatedAt": "2023-01-01T00:00:00.000Z"
+ *     }
+ *   ]
+ * }
+ */
+router.get("/comments", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { bookId, limit = "50", offset = "0" } = req.query;
+
+    // Build base query conditions
+    const baseConditions = [eq(userComments.userId, userId)];
+
+    // Add book filter if provided
+    if (bookId) {
+      baseConditions.push(eq(userComments.bookId, bookId as string));
+    }
+
+    const comments = await dbRead
+      .select()
+      .from(userComments)
+      .where(and(...baseConditions))
+      .orderBy(desc(userComments.createdAt))
+      .limit(parseInt(limit as string))
+      .offset(parseInt(offset as string));
+
+    res.json({ comments });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve comments", error);
   }
 });
 

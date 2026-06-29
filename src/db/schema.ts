@@ -1165,7 +1165,7 @@ export const pageTranslations = pgTable(
  * {
  *   "id": "checkin123",
  *   "user_id": "user456",
- *   "check_in_date": "2026-05-04",
+ *   "date": "2026-05-04",
  *   "credits_claimed": 30,
  *   "created_at": "2026-05-04T00:00:00.000Z",
  *   "updated_at": "2026-05-04T00:00:00.000Z"

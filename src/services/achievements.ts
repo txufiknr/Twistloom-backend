@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { dbRead, dbWrite } from '../db/client.js';
 import { userCounters, userAchievements } from '../db/schema.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
@@ -68,24 +68,24 @@ export async function getUserMetrics(userId: string) {
   } satisfies Record<AchievementMetric, number>;
 }
 
-/**
- * Call this inside your book-generation routes or branch navigation logic
- * e.g., await incrementUserMetric(req.userId, 'pagesRead');
- * 
- * @deprecated Replaced by automatic db triggers instead of manual increment
- */
-export async function incrementUserMetric(userId: string, metric: AchievementMetric, amount = 1) {
-  await dbWrite
-    .insert(userCounters)
-    .values({ userId, [metric]: amount })
-    .onConflictDoUpdate({
-      target: userCounters.userId,
-      set: {
-        [metric]: sql`${userCounters[metric]} + ${amount}`,
-        updatedAt: new Date(),
-      },
-    });
-}
+// /**
+//  * Call this inside your book-generation routes or branch navigation logic
+//  * e.g., await incrementUserMetric(req.userId, 'pagesRead');
+//  * 
+//  * @deprecated Replaced by automatic db triggers instead of manual increment
+//  */
+// export async function incrementUserMetric(userId: string, metric: AchievementMetric, amount = 1) {
+//   await dbWrite
+//     .insert(userCounters)
+//     .values({ userId, [metric]: amount })
+//     .onConflictDoUpdate({
+//       target: userCounters.userId,
+//       set: {
+//         [metric]: sql`${userCounters[metric]} + ${amount}`,
+//         updatedAt: new Date(),
+//       },
+//     });
+// }
 
 /**
  * Evaluates real-time stats against rules. Automatically calculates retroactively

@@ -40,14 +40,13 @@
 
 import type { Router as RouterType } from 'express';
 import type { Request, Response } from 'express';
-import type { DBNewUserLike, DBNewUserFavorite, DBNewUserComment } from "../types/schema.js";
+import type { DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
 import type { LikeTargetType, User, UserActivityType, UserStats } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth } from '../middleware/nextauth.js';
-import { users, userLikes, userFavorites, userComments, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
-import { sanitizeTextForDB } from '../utils/text-processing.js';
+import { users, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
+import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
@@ -57,8 +56,9 @@ import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser } from "../
 import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
-import { getUserAchievements } from '../services/achievements.js';
+import { checkAndAwardAchievements, getUserAchievements } from '../services/achievements.js';
 import type { PaginationMeta } from '../types/api.js';
+import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 
 const router: RouterType = Router();
 
@@ -1222,334 +1222,6 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
   }
 });
 
-// ===== USER COMMENTS ROUTES =====
-
-/**
- * POST /user/comments
- * 
- * Create a comment on a book or reply to another comment.
- * 
- * @route POST /user/comments
- * @description Create comment
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @body {Object} Comment data
- * @body {string} bookId - ID of the book to comment on
- * @body {string} [parentCommentId] - ID of parent comment (for replies)
- * @body {string} content - Comment content
- * 
- * @returns {Object} Comment creation response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Created comment record
- * 
- * @example
- * // Request
- * POST /user/comments
- * Body: {
- *   "bookId": "book456",
- *   "content": "This story is amazing!"
- * }
- * 
- * // Response
- * {
- *   "comment": {
- *     "id": "comment123",
- *     "userId": "user123",
- *     "bookId": "book456",
- *     "parentCommentId": null,
- *     "content": "This story is amazing!",
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T00:00:00.000Z"
- *   }
- * }
- */
-router.post("/comments", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const { bookId, parentCommentId, content } = req.body;
-
-    if (!bookId) return handleValidationError(res, "Book ID is required");
-
-    if (!content || content.trim().length === 0) {
-      return handleValidationError(res, "Comment content is required");
-    }
-
-    // Sanitize content before storing
-    const cleanContent = sanitizeTextForDB(String(content).trim());
-    if (!cleanContent || cleanContent.length === 0) {
-      return handleValidationError(res, "Comment content is empty after sanitization");
-    }
-
-    // Prepare comment data
-    const commentData: DBNewUserComment = {
-      userId,
-      bookId,
-      parentCommentId: parentCommentId || null,
-      content: cleanContent,
-    };
-
-    // Create the comment
-    const [comment] = await dbWrite
-      .insert(userComments)
-      .values(commentData)
-      .returning();
-
-    res.status(201).json({ comment });
-
-    // Log user activity
-    await logUserActivity({
-      userId,
-      activityType: 'commented',
-      targetType: 'comment',
-      targetId: comment.id,
-      metadata: { bookId, parentCommentId },
-    }, { req });
-
-    // Invalidate explore cache if parent comment (commentsCount changes)
-    if (!parentCommentId) {
-      await invalidateExploreCache();
-    }
-  } catch (error) {
-    handleApiError(res, "Failed to create comment", error);
-  }
-});
-
-/**
- * PUT /user/comments/:commentId
- * 
- * Update an existing comment (only by the original author).
- * 
- * @route PUT /user/comments/:commentId
- * @description Update comment
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @param {string} commentId - ID of the comment to update
- * 
- * @body {Object} Comment update data
- * @body {string} content - Updated comment content
- * 
- * @returns {Object} Comment update response
- * @returns {boolean} success - Operation status
- * @returns {Object} comment - Updated comment record
- * 
- * @example
- * // Request
- * PUT /user/comments/comment123
- * Body: {
- *   "content": "Updated comment content"
- * }
- * 
- * // Response
- * {
- *   "comment": {
- *     "id": "comment123",
- *     "userId": "user123",
- *     "bookId": "book456",
- *     "parentCommentId": null,
- *     "content": "Updated comment content",
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T12:00:00.000Z"
- *   }
- * }
- */
-router.put("/comments/:commentId", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const { commentId } = req.params;
-    const { content } = req.body;
-
-    if (!content || content.trim().length === 0) {
-      return handleValidationError(res, "Comment content is required");
-    }
-
-    // Sanitize content before storing
-    const cleanContent = sanitizeTextForDB(String(content).trim());
-    if (!cleanContent || cleanContent.length === 0) {
-      return handleValidationError(res, "Comment content is empty after sanitization");
-    }
-
-    // Check if comment exists and belongs to user
-    const existingComment = await dbRead
-      .select()
-      .from(userComments)
-      .where(eq(userComments.id, commentId as string))
-      .limit(1);
-
-    if (existingComment.length === 0) {
-      return handleNotFoundError(res, "Comment not found");
-    }
-
-    if (existingComment[0].userId !== userId) {
-      return handleForbiddenError(res, "You can only edit your own comments");
-    }
-
-    // Update comment
-    const [comment] = await dbWrite
-      .update(userComments)
-      .set({
-        content: cleanContent,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(userComments.id, commentId as string),
-        eq(userComments.userId, userId)
-      ))
-      .returning();
-
-    res.json({
-      comment,
-    });
-  } catch (error) {
-    handleApiError(res, "Failed to update comment", error);
-  }
-});
-
-/**
- * DELETE /user/comments/:commentId
- * 
- * Delete a comment (only by the original author).
- * 
- * @route DELETE /user/comments/:commentId
- * @description Delete comment
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @param {string} commentId - ID of the comment to delete
- * 
- * @returns {Object} Comment deletion response
- * @returns {boolean} success - Operation status
- * @returns {string} message - Confirmation message
- * 
- * @example
- * // Request
- * DELETE /user/comments/comment123
- * 
- * // Response
- * {
- *   "success": true,
- *   "message": "Comment deleted successfully"
- * }
- */
-router.delete("/comments/:commentId", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const { commentId } = req.params;
-
-    // Check if comment exists and belongs to user
-    const existingComment = await dbRead
-      .select()
-      .from(userComments)
-      .where(eq(userComments.id, commentId as string))
-      .limit(1);
-
-    if (existingComment.length === 0) {
-      return handleNotFoundError(res, "Comment not found");
-    }
-
-    if (existingComment[0].userId !== userId) {
-      return handleForbiddenError(res, "You can only delete your own comments");
-    }
-
-    // Delete comment
-    await dbWrite
-      .delete(userComments)
-      .where(and(
-        eq(userComments.id, commentId as string),
-        eq(userComments.userId, userId)
-      ));
-
-    // Invalidate explore cache if parent comment (commentsCount changes)
-    if (!existingComment[0].parentCommentId) {
-      await invalidateExploreCache();
-    }
-
-    res.json({
-      message: "Comment deleted successfully",
-    });
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
-  } catch (error) {
-    handleApiError(res, "Failed to delete comment", error);
-  }
-});
-
-/**
- * GET /user/comments
- * 
- * Get all comments by the authenticated user, optionally filtered by book.
- * 
- * @route GET /user/comments
- * @description Get user comments
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @query {string} [bookId] - Filter by book ID
- * @query {number} [limit] - Maximum number of results (default: 50)
- * @query {number} [offset] - Pagination offset (default: 0)
- * 
- * @returns {Object} Comments response
- * @returns {boolean} success - Operation status
- * @returns {Array} data - Array of comment records
- * 
- * @example
- * // Request
- * GET /user/comments?bookId=book456&limit=10
- * 
- * // Response
- * {
- *   "success": true,
- *   "data": [
- *     {
- *       "id": "comment123",
- *       "userId": "user123",
- *       "bookId": "book456",
- *       "parentCommentId": null,
- *       "content": "This story is amazing!",
- *       "createdAt": "2023-01-01T00:00:00.000Z",
- *       "updatedAt": "2023-01-01T00:00:00.000Z"
- *     }
- *   ]
- * }
- */
-router.get("/comments", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    const { bookId, limit = "50", offset = "0" } = req.query;
-
-    // Build base query conditions
-    const baseConditions = [eq(userComments.userId, userId)];
-    
-    // Add book filter if provided
-    if (bookId) {
-      baseConditions.push(eq(userComments.bookId, bookId as string));
-    }
-
-    const comments = await dbRead
-      .select()
-      .from(userComments)
-      .where(and(...baseConditions))
-      .orderBy(desc(userComments.createdAt))
-      .limit(parseInt(limit as string))
-      .offset(parseInt(offset as string));
-
-    res.json({
-      comments,
-    });
-
-    // Update user's last activity timestamp
-    await updateUserLastActivity(userId);
-  } catch (error) {
-    handleApiError(res, "Failed to retrieve comments", error);
-  }
-});
-
 // ===== USER FOLLOWS ROUTES =====
 
 /**
@@ -2553,6 +2225,52 @@ router.get('/achievements', requireAuth, async (req: Request, res: Response) => 
     res.json({ success: true, badges });
   } catch (error) {
     handleApiError(res, 'Failed to fetch achievements layout', error);
+  }
+});
+
+/**
+ * GET /api/user/achievements/unnotified
+ * Ultra-fast endpoint to check, award, and return newly unlocked badges.
+ * Designed to be called by the frontend immediately after taking actions.
+ */
+router.get('/unnotified', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    // 1. Evaluate counters against the TS Registry. 
+    // This will INSERT into user_achievements if thresholds are met.
+    await checkAndAwardAchievements(userId);
+
+    // 2. Fetch only badges the user hasn't seen yet
+    const unnotifiedRows = await dbRead
+      .select({
+        id: userAchievements.id,
+        achievementId: userAchievements.achievementId,
+      })
+      .from(userAchievements)
+      .where(
+        and(
+          eq(userAchievements.userId, userId),
+          eq(userAchievements.isNotified, false)
+        )
+      );
+
+    if (unnotifiedRows.length === 0) {
+      return res.json({ success: true, badges: [] });
+    }
+
+    // 3. Map to your rich registry data for the frontend UI
+    const badges = unnotifiedRows.map(row => {
+      const rule = ACHIEVEMENT_REGISTRY.find(r => r.id === row.achievementId);
+      return {
+        dbId: row.id,
+        ...rule
+      };
+    }).filter(b => b.id); // Filter out any undefined matches just in case
+
+    res.json({ success: true, badges });
+  } catch (error) {
+    handleApiError(res, 'Failed to fetch unnotified achievements', error);
   }
 });
 
