@@ -11,26 +11,13 @@
 [x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [x] placesRelationship: source, target (placeId), distance, obstacle
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
-[x] cek model groq yang support json_schema: https://console.groq.com/docs/structured-outputs#supported-models
-[x] BookSortOption tambah 'favorites'
-[x] GET /user/favorites jadiin satu ke /books/explore?sortBy=favorites
-[x] explore favorites ensure filter only favorited book
-[x] enriched book add `contextHistory` alongside `lastReadAt`
-[x] book add lastPageNumber
-[x] book add lastPage -> lastPageId
-[x] achievement badgeImageUrl -> badgeImageUrl
-[x] book ensure `firstPageId` & `firstPageText` wajib ada
-[x] enriched book ensure query optimal (too many subqueries)
-[x] enriched page tambah `evalProvider` & `evalModel`
-[x] refine `getBookCreationPrompts` prompt "Describe theme, synopsis, characters, setting, tone, or any specific elements you want in your story."
-[x] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
-[ ] aiPrompt should retry model on rate limit/service unavailable
-[ ] translate: character.traits, place.traits
+[x] aiPrompt should retry model on rate limit/service unavailable
+[x] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] achievement badgeImageUrl for every tier -> create images
 [ ] Claude/AI: generate more achievement badges, wording & lucide icon
 [ ] ensure endpoint Backend: GET /books/explore?sortBy=creations&status=active,draft
-[ ] pass title idea ke initallze book & github workflow dynamic job title
+[ ] pass title idea ke initalize book & github workflow dynamic job title
 [ ] Generate originals tambah custom input book title & mc name
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
 [ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
@@ -40,7 +27,7 @@
 - email notification settings
 
 [ ] enhance book explore:
-- [ ] ensure support `collection` query param
+- [x] ensure support `collection` query param
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?

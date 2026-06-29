@@ -483,9 +483,11 @@ export function buildBookQuery<T>(
     gender?: string;
     /** Current user ID for user-specific sorting (reads, recommendations) */
     currentUserId?: string | null;
+    /** Collection name to filter favorites (only applies when sortBy=favorites) */
+    collection?: string;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, currentUserId } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, currentUserId, collection } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -523,7 +525,7 @@ export function buildBookQuery<T>(
 
   // Apply primary sorting: book-specific sorting (acts as category filter)
   if (bookSortBy) {
-    query = applyBookSorting(query, bookSortBy, currentUserId);
+    query = applyBookSorting(query, bookSortBy, currentUserId, collection);
   }
 
   // Apply orderBy for search relevance
@@ -588,7 +590,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Type safety is maintained through the actual database operations and SQL generation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null): any {
+function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, collection?: string): any {
   switch (sortBy) {
     case 'for-you': {
       // Recommend books based on user's reading history (from userSessions)
@@ -677,7 +679,9 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       return query
         .where(sql`EXISTS (
           SELECT 1 FROM user_favorites uf
-          WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
+          WHERE uf.user_id = ${currentUserId}
+            AND uf.book_id = books.id
+            ${collection ? sql`AND uf.collection = ${collection}` : sql``}
         )`)
         .orderBy(sql`(
           SELECT uf.created_at FROM user_favorites uf

@@ -23,7 +23,6 @@
  * - GET /user/likes - Get user likes
  * - POST /user/favorites - Add book to favorites
  * - DELETE /user/favorites - Remove book from favorites
- * - GET /user/favorites - Get user favorites
  * - GET /user/collections - Get user collection names
  * - POST /user/comments - Create comment
  * - PUT /user/comments/:commentId - Update comment

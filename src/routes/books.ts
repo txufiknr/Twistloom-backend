@@ -1241,7 +1241,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender } = extractPaginationParams(req);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, collection } = extractPaginationParams(req);
     const userId = req.userId || null;
     
     // Extract tags from query parameter (comma-separated)
@@ -1348,7 +1348,8 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
         minAge,
         maxAge,
         gender: sanitizedGender,
-        currentUserId: userId // Pass userId for user-specific sorting (reads, recommendations)
+        currentUserId: userId, // Pass userId for user-specific sorting (reads, recommendations)
+        collection, // Filter favorites by collection name
       });
 
       const totalCountResult = await countQuery;
