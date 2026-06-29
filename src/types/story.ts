@@ -383,16 +383,21 @@ export type StatTrigger = {
 };
 
 /**
- * Anchors a future note to a point in story time.
+ * One entry in the `FutureNote.schedule[]` array.
  *
- * The prompt formatter applies a configurable lookahead window so the AI begins
+ * Each entry represents one independent time-based trigger. The note becomes
+ * relevant when ANY entry enters its lookahead window (OR semantics).
+ * Add multiple entries to express "whichever beat arrives first":
+ *
+ * - `[{ type: 'day', day: 7 }]` — single day trigger
+ * - `[{ type: 'day', day: 7 }, { type: 'page', start: 25 }]` — day 7 OR page 25
+ * - `[{ type: 'phase', phase: 'MID' }, { type: 'page', start: 40 }]` — MID phase OR page 40
+ *
+ * The prompt formatter applies a lookahead window so the AI begins
  * foreshadowing BEFORE the target beat actually arrives:
  *
  * - `page` / `day` / `date` → uses FUTURE_NOTE_LOOKAHEAD_PAGES / FUTURE_NOTE_LOOKAHEAD_DAYS
  * - `phase` → fires immediately when currentPhase reaches or passes the target
- *
- * Only one schedule per note. If a note should fire at either of two distinct
- * beats, prefer two separate notes over a combined schedule.
  *
  * @example { type: 'phase', phase: 'MID' }
  * @example { type: 'page', start: 25, end: 30 }
@@ -430,8 +435,8 @@ export type FutureNoteStateTrigger =
  * A future narrative obligation the AI must remember and eventually fulfill.
  *
  * A note promotes to **Becoming Relevant** (AI begins foreshadowing) when:
- * - Its `schedule` window opens (lookahead reached), OR
- * - Its `stateTrigger` condition is currently satisfied.
+ * - ANY entry in `schedule[]` enters its lookahead window (OR across schedules), OR
+ * - Its `stateTrigger` condition is currently satisfied (OR with schedule).
  *
  * Notes with neither field are **Unscheduled** — open-ended obligations
  * with no known trigger (relationship arcs, mysteries still in motion).
@@ -454,11 +459,16 @@ export type FutureNote = {
   /** ID of a related active story thread (`relatedThreadId` on StoryThread), if any. */
   relatedThreadId?: string;
   /**
-   * Time-based anchor: the AI begins foreshadowing within the lookahead window
-   * before the target beat arrives.
-   * Omit when the note has no time-based trigger.
+   * Time-based anchors for this note. The AI begins foreshadowing once any
+   * schedule in the array enters its lookahead window (OR logic — first to
+   * fire wins). Common combinations:
+   *
+   * - `[{ type: 'day', day: 7 }]` — single day trigger
+   * - `[{ type: 'day', day: 7 }, { type: 'page', start: 25 }]` — whichever arrives first
+   *
+   * Omit (or leave undefined) when the note has no time-based anchor.
    */
-  schedule?: FutureNoteSchedule;
+  schedule?: FutureNoteSchedule[];
   /**
    * State-based activation: fires immediately when the MC crosses the threshold.
    * No lookahead — dormant until the condition is met.
