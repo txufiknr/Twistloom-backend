@@ -1,0 +1,1 @@
+ALTER TABLE "user_counters" ADD COLUMN "pages_generated" integer DEFAULT 0 NOT NULL;

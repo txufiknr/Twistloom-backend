@@ -51,6 +51,17 @@
 
 ---
 
+for not confusing AI with too many fields, what about we consolidate/flatten fields & values, and parse them via typescript (best-effort)?
+- start & end become: "<start>-<end>" e.g. "55-60"
+- op & threshold become: "<op> <threshold>" e.g. "<= 30"
+- flatten stats: each stat as separate type ('healthPercent', 'mobilityPercent', 'actionPercent', 'mentalPercent')
+
+actually that's more like my original implementation
+but as AI can include multiple trigger condition (OR-logic), in case one or some value are unparseable, at least we still have some other valid trigger condition values, so I think I have no problem with that
+is it better or is it actually worse? what do you think?
+
+---
+
 now please examine book creation implementation flow in frontend (Next.js) side
 in a nutshell: input theme > initialize once > progress status polling, not SSE
 

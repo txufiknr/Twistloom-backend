@@ -765,44 +765,109 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     // 7. CHECK-IN STREAK (user_checkins)
     // ==========================================
     await dbWrite.execute(`
-      CREATE OR REPLACE FUNCTION update_user_checkin_streak() RETURNS TRIGGER AS $$
+      CREATE OR REPLACE FUNCTION update_user_checkin_streak()
+      RETURNS TRIGGER AS $$
       DECLARE
+        target_user_id UUID;
+        current_day DATE;
+        active_streak INT := 0;
+        max_streak INT := 0;
+        current_streak INT := 0;
         prev_date DATE;
-        new_active_streak INT;
+        rec RECORD;
       BEGIN
-        -- Recompute the active streak from the latest consecutive daily check-ins.
+        -- Determine which user's counters need updating.
+        target_user_id := COALESCE(NEW.user_id, OLD.user_id);
 
-      BEGIN
-        -- Find the user's most recent check-in before this new one
-        SELECT check_in_date INTO prev_date
-        FROM user_checkins
-        WHERE user_id = NEW.user_id AND id != NEW.id
-        ORDER BY check_in_date DESC LIMIT 1;
+        -------------------------------------------------------------------------
+        -- Compute ACTIVE streak
+        -- (consecutive days ending at the user's latest check-in)
+        -------------------------------------------------------------------------
+        prev_date := NULL;
 
-        -- Check if it was exactly yesterday
-        IF prev_date = NEW.check_in_date - 1 THEN
-          new_active_streak := COALESCE((SELECT active_checkin_streak FROM user_counters WHERE user_id = NEW.user_id), 0) + 1;
-        ELSE
-          new_active_streak := 1;
-        END IF;
+        FOR rec IN
+          SELECT DISTINCT check_in_date
+          FROM user_checkins
+          WHERE user_id = target_user_id
+          ORDER BY check_in_date DESC
+        LOOP
+          IF prev_date IS NULL THEN
+            active_streak := 1;
+          ELSIF prev_date = rec.check_in_date + 1 THEN
+            active_streak := active_streak + 1;
+          ELSE
+            EXIT;
+          END IF;
 
-        INSERT INTO user_counters (user_id, active_checkin_streak, max_checkin_streak, updated_at)
-        VALUES (NEW.user_id, new_active_streak, new_active_streak, NOW())
-        ON CONFLICT (user_id) DO UPDATE SET
-          active_checkin_streak = new_active_streak,
-          max_checkin_streak = GREATEST(user_counters.max_checkin_streak, new_active_streak),
+          prev_date := rec.check_in_date;
+        END LOOP;
+
+        -------------------------------------------------------------------------
+        -- Compute MAX streak
+        -- (longest consecutive run in history)
+        -------------------------------------------------------------------------
+        current_streak := 0;
+        prev_date := NULL;
+
+        FOR rec IN
+          SELECT DISTINCT check_in_date
+          FROM user_checkins
+          WHERE user_id = target_user_id
+          ORDER BY check_in_date ASC
+        LOOP
+          IF prev_date IS NULL THEN
+            current_streak := 1;
+          ELSIF rec.check_in_date = prev_date + 1 THEN
+            current_streak := current_streak + 1;
+          ELSE
+            current_streak := 1;
+          END IF;
+
+          IF current_streak > max_streak THEN
+            max_streak := current_streak;
+          END IF;
+
+          prev_date := rec.check_in_date;
+        END LOOP;
+
+        -------------------------------------------------------------------------
+        -- Upsert counters
+        -------------------------------------------------------------------------
+        INSERT INTO user_counters (
+          user_id,
+          active_checkin_streak,
+          max_checkin_streak,
+          updated_at
+        )
+        VALUES (
+          target_user_id,
+          active_streak,
+          max_streak,
+          NOW()
+        )
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+          active_checkin_streak = EXCLUDED.active_checkin_streak,
+          max_checkin_streak = EXCLUDED.max_checkin_streak,
           updated_at = NOW();
 
-        RETURN NEW;
+        RETURN COALESCE(NEW, OLD);
       END;
       $$ LANGUAGE plpgsql;
     `);
-    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_checkins_streak_trigger ON user_checkins;`);
+
+    await dbWrite.execute(`
+      DROP TRIGGER IF EXISTS user_checkins_streak_trigger ON user_checkins;
+    `);
+
     await dbWrite.execute(`
       CREATE TRIGGER user_checkins_streak_trigger
-        AFTER INSERT ON user_checkins
-        FOR EACH ROW EXECUTE FUNCTION update_user_checkin_streak();
+        AFTER INSERT OR UPDATE OR DELETE
+        ON user_checkins
+        FOR EACH ROW
+        EXECUTE FUNCTION update_user_checkin_streak();
     `);
+
     console.log("✅ Trigger created: Check-in Streak");
 
     // ==========================================
