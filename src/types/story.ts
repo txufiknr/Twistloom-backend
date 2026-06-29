@@ -358,59 +358,6 @@ export type InitialFact = Omit<FactUpdate, 'page'>;
 // ── FutureNote scheduling and trigger types ────────────────────────────────
 
 /**
- * Comparison operator used in numeric stat-based state triggers.
- *
- * The operator is stored as a structured field on `StatTrigger` rather than
- * embedded in a string (e.g. "< 75"), so no parsing is required at evaluation.
- */
-export type StateTriggerOp = '<' | '<=' | '>' | '>=';
-
-/**
- * A numeric health-stat trigger: fires when the specified MC stat satisfies
- * the comparison against `threshold`. All stat values are integers 0–100.
- *
- * @example { type: 'stat', stat: 'mentalPercent', op: '<', threshold: 30 }
- * @example { type: 'stat', stat: 'healthPercent', op: '<=', threshold: 50 }
- */
-export type StatTrigger = {
-  type: 'stat';
-  /** The health axis to evaluate. */
-  stat: 'healthPercent' | 'mobilityPercent' | 'actionPercent' | 'mentalPercent';
-  /** Comparison operator applied as: current_value op threshold. */
-  op: StateTriggerOp;
-  /** Numeric threshold, integer 0–100. */
-  threshold: number;
-};
-
-/**
- * One entry in the `FutureNote.schedule[]` array.
- *
- * Each entry represents one independent time-based trigger. The note becomes
- * relevant when ANY entry enters its lookahead window (OR semantics).
- * Add multiple entries to express "whichever beat arrives first":
- *
- * - `[{ type: 'day', day: 7 }]` — single day trigger
- * - `[{ type: 'day', day: 7 }, { type: 'page', start: 25 }]` — day 7 OR page 25
- * - `[{ type: 'phase', phase: 'MID' }, { type: 'page', start: 40 }]` — MID phase OR page 40
- *
- * The prompt formatter applies a lookahead window so the AI begins
- * foreshadowing BEFORE the target beat actually arrives:
- *
- * - `page` / `day` / `date` → uses FUTURE_NOTE_LOOKAHEAD_PAGES / FUTURE_NOTE_LOOKAHEAD_DAYS
- * - `phase` → fires immediately when currentPhase reaches or passes the target
- *
- * @example { type: 'phase', phase: 'MID' }
- * @example { type: 'page', start: 25, end: 30 }
- * @example { type: 'day', day: 7 }
- * @example { type: 'date', date: '2025-06-14' }
- */
-export type FutureNoteSchedule =
-  | { type: 'phase'; phase: StoryPhase }
-  | { type: 'page';  start: number; end?: number }
-  | { type: 'day';   day: number }
-  | { type: 'date';  date: string }; // YYYY-MM-DD
-
-/**
  * Activates a future note when the MC crosses a physical or psychological
  * state threshold. Fires immediately — there is no lookahead window.
  *
@@ -420,14 +367,46 @@ export type FutureNoteSchedule =
  * Notes with only a `stateTrigger` (no `schedule`) are "Unscheduled" and
  * render a "triggers when: …" annotation so the AI knows what activates them.
  *
+ * Stat variants always use `<=` (fires when the stat falls to or below the
+ * threshold). In a doom-directed thriller, state-based future notes are
+ * exclusively about deterioration — there is no meaningful "MC is thriving"
+ * trigger — so no operator field is needed or exposed.
+ *
  * @example { type: 'stability', level: 'unstable' }
  * @example { type: 'condition', condition: 'critical' }
- * @example { type: 'stat', stat: 'mentalPercent', op: '<', threshold: 30 }
+ * @example { type: 'mentalPercent', threshold: 30 }   // fires when mentalPercent <= 30
+ * @example { type: 'healthPercent', threshold: 25 }   // fires when healthPercent <= 25
  */
 export type FutureNoteStateTrigger =
-  | { type: 'stability'; level: StabilityLevel }
-  | { type: 'condition'; condition: HealthCondition }
-  | StatTrigger;
+  | { type: 'stability';       level: StabilityLevel }
+  | { type: 'condition';       condition: HealthCondition }
+  | { type: 'healthPercent';   threshold: number }
+  | { type: 'mobilityPercent'; threshold: number }
+  | { type: 'actionPercent';   threshold: number }
+  | { type: 'mentalPercent';   threshold: number };
+
+// Schedule item — 2 fields max
+export type FutureNoteSchedule =
+  | { type: 'phase'; phase: StoryPhase }
+  | { type: 'page';  range: string } // "55-60" or bare "55"
+  | { type: 'day';   day: number }
+  | { type: 'date';  date: string }
+
+export const futureNoteTriggerTypes = [
+  'stability',
+  'condition',
+  'healthPercent',
+  'mobilityPercent',
+  'actionPercent',
+  'mentalPercent'
+] as const;
+
+export const futureNoteHealthStates = [
+  'healthPercent',
+  'mobilityPercent',
+  'actionPercent',
+  'mentalPercent'
+] as const;
 
 // ── FutureNote ─────────────────────────────────────────────────────────────
 
@@ -474,7 +453,7 @@ export type FutureNote = {
    * No lookahead — dormant until the condition is met.
    * Omit when the note has no state-based trigger.
    */
-  stateTrigger?: FutureNoteStateTrigger;
+  stateTrigger?: FutureNoteStateTrigger[];
 };
 
 /**

@@ -95,24 +95,6 @@ should we consolidate all fields like 'type', 'phase', 'date', 'day', etc into o
 
 ---
 
-src\routes\books.ts
-src\services\book-creation.ts
-src\services\credits.ts
-src\utils\prompt.ts
-src\types\book.ts
-
-please thoroughly examine my book creation implementation flow in backend
-to focus:
-- POST /api/books
-- createBookCore
-- executeWithCredits (credits consume)
-- initializeBook
-
-can you ensure all of the implementations are already correct and sound?
-please review, elaborate, and provide me fully corrected code files, complete with refined jsdocs and/or inline comments
-
----
-
 [ ] callers of `getEnrichedBookSelect` should left join to:
   - userSessions
   - firstPageSq

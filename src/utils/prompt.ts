@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys, futureNoteHealthStates } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -23,7 +23,7 @@ import { formatPageTextForPrompt } from "./books.js";
 import { threadPriorities, type ThreadPriority, threadStatuses, threadTruths, type StoryThread, type ThreadStatus } from "../types/story-thread.js";
 import { aiStreamSSE, parseSSEStreamContent } from "./ai-chat-stream.js";
 import { MAX_THEME_LENGTH_PROMPT } from "../config/theme-validation.js";
-import { filterObjectEntries, stripEmptyLines } from "./parser.js";
+import { filterObjectEntries, parsePageRange, stripEmptyLines } from "./parser.js";
 import { genders } from "../types/user.js";
 import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
@@ -31,7 +31,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, StateTriggerOp, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -409,8 +409,17 @@ const firstBookOutputFormat: string = `{
       "note": "...",
       "isMajor": <boolean>,
       "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-      "schedule": "(optional array — include multiple items for OR logic, any firing activates the note) [{ type:'phase',phase:${formatOneOf(storyPhaseKeys, '|')} } | { type:'page',start:<n>,end?:<n> } | { type:'day',day:<n> } | { type:'date',date:'YYYY-MM-DD' }]",
-      "stateTrigger": "(optional) stability→{type:'stability',level:${formatOneOf(Object.keys(stabilityLevels), '|')}} | condition→{type:'condition',condition:${formatOneOf(healthConditions, '|')}} | stat→{type:'stat',stat:'healthPercent|mobilityPercent|actionPercent|mentalPercent',op:'<|<=|>|>=',threshold:<0-100>}",
+      "schedule": [
+        { "type": "phase", "phase": "One of: ${formatOneOf(storyPhaseKeys, '|')}" },
+        { "type": "page", "range": "<min>-<max>" },
+        { "type": "day", "day": <integer> },
+        { "type": "date", "date": "YYYY-MM-DD" }
+      ],
+      "stateTrigger": [
+        { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
+        { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" }
+        { "type": "One of: ${formatOneOf(futureNoteHealthStates, '|')}", "threshold": <0-100> }
+      ],
       "relatedThreadId": "<thread_id> or 'none'"
     }
   ],
@@ -611,8 +620,17 @@ const nextPageOutputFormat: string = `{
         "note": "...",
         "isMajor": <boolean>,
         "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-        "schedule": "(optional array — include multiple items for OR logic, any firing activates the note) [{ type:'phase',phase:${formatOneOf(storyPhaseKeys, '|')} } | { type:'page',start:<n>,end?:<n> } | { type:'day',day:<n> } | { type:'date',date:'YYYY-MM-DD' }]",
-        "stateTrigger": "(optional) stability→{type:'stability',level:${formatOneOf(Object.keys(stabilityLevels), '|')}} | condition→{type:'condition',condition:${formatOneOf(healthConditions, '|')}} | stat→{type:'stat',stat:'healthPercent|mobilityPercent|actionPercent|mentalPercent',op:'<|<=|>|>=',threshold:<0-100>}",
+        "schedule": [
+          { "type": "phase", "phase": "One of: ${formatOneOf(storyPhaseKeys, '|')}" },
+          { "type": "page", "range": "<min>-<max>" },
+          { "type": "day", "day": <integer> },
+          { "type": "date", "date": "YYYY-MM-DD" }
+        ],
+        "stateTrigger": [
+          { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
+          { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" }
+          { "type": "One of: ${formatOneOf(futureNoteHealthStates, '|')}", "threshold": <0-100> }
+        ],
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ],
@@ -1896,22 +1914,6 @@ function formatFutureNotes(params: {
   const getDateDistance = (targetDate: string): number | undefined =>
     currentDate ? daysBetween(currentDate, targetDate) : undefined;
 
-  // ── Stat threshold evaluator ───────────────────────────────────────────────
-
-  /**
-   * Evaluates a numeric threshold comparison using pre-structured op + threshold
-   * fields from `StatTrigger`. No string parsing required — the discriminated
-   * union already provides typed values.
-   */
-  const evalThreshold = (current: number, op: StateTriggerOp, threshold: number): boolean => {
-    switch (op) {
-      case '<':  return current < threshold;
-      case '<=': return current <= threshold;
-      case '>':  return current > threshold;
-      case '>=': return current >= threshold;
-    }
-  };
-
   // ── Schedule activation ────────────────────────────────────────────────────
 
   /**
@@ -1929,7 +1931,8 @@ function formatFutureNotes(params: {
         // Fires once currentPhase reaches OR passes the target phase.
         return phaseOrder[s.phase] <= phaseOrder[currentPhase];
       case 'page':
-        return currentPage >= s.start - FUTURE_NOTE_LOOKAHEAD_PAGES;
+        const { start } = parsePageRange(s.range) ?? {};
+        return start !== undefined && currentPage >= start - FUTURE_NOTE_LOOKAHEAD_PAGES;
       case 'day': {
         const dist = getDayDistance(s.day);
         return dist !== undefined && dist <= FUTURE_NOTE_LOOKAHEAD_DAYS;
@@ -1948,8 +1951,11 @@ function formatFutureNotes(params: {
    *
    * State triggers have no lookahead — they fire the moment the MC's state
    * crosses the threshold. When the required health/stability data is absent,
-   * the trigger evaluates to false so the note remains Unscheduled until the
-   * caller supplies the live state data.
+   * the trigger evaluates to false so the note remains Unscheduled.
+   *
+   * All stat variants use `<=` semantics: fires when the stat falls to or below
+   * the threshold. There is intentionally no operator field — in a doom-directed
+   * thriller, state-based notes are exclusively about deterioration.
    */
   const isStateTriggerActive = (t: FutureNoteStateTrigger): boolean => {
     switch (t.type) {
@@ -1957,9 +1963,12 @@ function formatFutureNotes(params: {
         return currentStability === t.level;
       case 'condition':
         return currentHealthStatus?.condition === t.condition;
-      case 'stat': {
-        const current = currentHealthStatus?.[t.stat];
-        return current !== undefined && evalThreshold(current, t.op, t.threshold);
+      case 'healthPercent':
+      case 'mobilityPercent':
+      case 'actionPercent':
+      case 'mentalPercent': {
+        const current = currentHealthStatus?.[t.type];
+        return current !== undefined && current <= t.threshold;
       }
     }
   };
@@ -1983,10 +1992,13 @@ function formatFutureNotes(params: {
     };
 
     switch (s.type) {
-      case 'phase': return `${s.phase} phase`;
-      case 'page':  return s.end ? `Pages ${s.start}\u2013${s.end}` : `Page ${s.start}`;
       case 'day':   return fmtDays(getDayDistance(s.day), `Day ${s.day}`);
       case 'date':  return fmtDays(getDateDistance(s.date), s.date);
+      case 'phase': return `${s.phase} phase`;
+      case 'page':  {
+        const { start, end } = parsePageRange(s.range) ?? {};
+        return Number.isFinite(end) ? `Pages ${start}\u2013${end}` : `Page ${start}`;
+      }
     }
   };
 
@@ -2009,8 +2021,7 @@ function formatFutureNotes(params: {
    *
    * Surfaced on Unscheduled notes so the AI knows the exact threshold that
    * activates the note — preventing premature forcing or silent ignoring.
-   * Also shown on Becoming Relevant notes that were promoted via stateTrigger
-   * so the AI understands why they surfaced.
+   * Stat variants render with `≤` since that is the hardcoded comparison.
    */
   const getStateTriggerLabel = (note: FutureNote): string | undefined => {
     const t = note.stateTrigger;
@@ -2018,7 +2029,11 @@ function formatFutureNotes(params: {
     switch (t.type) {
       case 'stability': return `triggers when: stability level is '${t.level}'`;
       case 'condition': return `triggers when: health condition is '${t.condition}'`;
-      case 'stat':      return `triggers when: ${t.stat} ${t.op} ${t.threshold}`;
+      case 'healthPercent':
+      case 'mobilityPercent':
+      case 'actionPercent':
+      case 'mentalPercent':
+        return `triggers when: ${t.type} \u2264 ${t.threshold}`;
     }
   };
 
@@ -2056,8 +2071,11 @@ function formatFutureNotes(params: {
     switch (s.type) {
       case 'day':   return [0, s.day];
       case 'date':  return [1, toUtcMidnight(s.date)];
-      case 'page':  return [2, s.start];
       case 'phase': return [3, phaseOrder[s.phase] ?? Number.MAX_SAFE_INTEGER];
+      case 'page':  {
+        const { start = Number.MAX_SAFE_INTEGER } = parsePageRange(s.range) ?? {};
+        return [2, start];
+      }
     }
   };
 

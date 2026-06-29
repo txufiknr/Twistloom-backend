@@ -2,7 +2,7 @@ import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TA
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, StoryMCGeneration } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
-import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys } from "../types/story.js";
+import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
@@ -216,42 +216,13 @@ export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
  */
 export const FUTURE_NOTE_SCHEDULE_SCHEMA: AIJsonProperty = {
   type: 'object',
-  description: [
-    'One time-based trigger item within the schedule array.',
-    'Pick a type, then fill only that type\'s fields — omit all others.',
-    'phase → fill: phase.  page → fill: start (+ optional end).  day → fill: day.  date → fill: date.',
-  ].join(' '),
+  description: 'One time-based trigger item within the schedule array.',
   properties: {
-    type: {
-      type: 'string',
-      enum: ['phase', 'page', 'day', 'date'],
-      description: 'Discriminant. Determines which other fields to populate.',
-    },
-    // ── phase variant ────────────────────────────────────────────────────────
-    phase: {
-      type: 'string',
-      enum: storyPhaseKeys,
-      description: 'Required when type="phase". Fires once currentPhase reaches or passes this value.',
-    },
-    // ── page variant ─────────────────────────────────────────────────────────
-    start: {
-      type: 'number',
-      description: 'Required when type="page". First page of the target window (inclusive).',
-    },
-    end: {
-      type: 'number',
-      description: 'Optional when type="page". Last page of the window. Omit for a single target page.',
-    },
-    // ── day variant ──────────────────────────────────────────────────────────
-    day: {
-      type: 'number',
-      description: 'Required when type="day". Exact in-story day number (1-based integer).',
-    },
-    // ── date variant ─────────────────────────────────────────────────────────
-    date: {
-      type: 'string',
-      description: 'Required when type="date". ISO calendar date "YYYY-MM-DD".',
-    },
+    type: { type: 'string', enum: ['phase', 'page', 'day', 'date'], description: 'Discriminant. Determines which other fields to populate.' },
+    phase: { type: 'string', enum: storyPhaseKeys, description: 'For "phase" type. Fires once currentPhase reaches or passes this value.' },
+    range: { type: 'string', description: 'For "page" type. <min>-<max>.' },
+    day: { type: 'number', description: 'For "day" type. Exact in-story day number (1-based integer).' },
+    date: { type: 'string', description: 'For "date" type. "YYYY-MM-DD".' },
   },
   required: ['type'],
   additionalProperties: false,
@@ -261,47 +232,40 @@ export const FUTURE_NOTE_SCHEDULE_SCHEMA: AIJsonProperty = {
  * JSON schema for `FutureNoteStateTrigger` — the MC-state-based activation
  * condition on a future note.
  *
- * Uses the same flat single-object pattern as `FUTURE_NOTE_SCHEDULE_SCHEMA`
- * for universal provider compatibility. The `type` discriminant is required
- * and enumerated; variant-specific fields are optional with descriptions that
- * specify when each is expected.
- *
- * State triggers fire immediately — there is no lookahead window. The note
- * stays dormant until the MC's actual state crosses the threshold.
+ * Uses a flat single-object schema for universal provider compatibility.
+ * The `type` discriminant is required and enumerated; variant-specific
+ * fields are optional with descriptions specifying when each applies.
  *
  * The AI picks a `type`, then fills only that variant's fields and omits the rest:
  *
- * ┌───────────┬────────────────────────────────────────────────────────────────┐
- * │ type      │ fill these fields                                              │
- * ├───────────┼────────────────────────────────────────────────────────────────┤
- * │ stability │ level: stable | cracking | unstable                           │
- * │ condition │ condition: healthy | injured | critical | incapacitated        │
- * │ stat      │ stat (health axis) + op (< <= > >=) + threshold (0–100)       │
- * └───────────┴────────────────────────────────────────────────────────────────┘
+ * ┌────────────────┬──────────────────────────────────────────────────────────┐
+ * │ type           │ fill these fields                                        │
+ * ├────────────────┼──────────────────────────────────────────────────────────┤
+ * │ stability      │ level: stable | cracking | unstable                      │
+ * │ condition      │ condition: healthy | injured | critical | incapacitated   │
+ * │ healthPercent  │ threshold: integer 0–100 (fires when stat <= threshold)  │
+ * │ mobilityPercent│ threshold: integer 0–100 (fires when stat <= threshold)  │
+ * │ actionPercent  │ threshold: integer 0–100 (fires when stat <= threshold)  │
+ * │ mentalPercent  │ threshold: integer 0–100 (fires when stat <= threshold)  │
+ * └────────────────┴──────────────────────────────────────────────────────────┘
+ *
+ * Stat variants always use `<=` semantics — this story's future notes are
+ * exclusively about deterioration. No operator field is needed.
  *
  * Authoring guidance: use `stateTrigger` only when the note genuinely depends
- * on the MC reaching a specific deteriorated physical or psychological state.
- * Never manufacture the triggering state just to resolve the note early.
+ * on the MC reaching a specific deteriorated state. Never manufacture the
+ * triggering state just to resolve the note early.
  *
  * Omit the entire `stateTrigger` field for notes with no state-based activation.
  */
 export const FUTURE_NOTE_STATE_TRIGGER_SCHEMA: AIJsonProperty = {
   type: 'object',
-  description: [
-    'State-based activation for this note (optional). Pick a type, then fill only that type\'s fields — omit all others.',
-    'stability → fill: level. condition → fill: condition. stat → fill: stat + op + threshold.',
-    'Fires immediately when threshold is crossed — no lookahead.',
-  ].join(' '),
+  description: 'State-based activation for this note (optional).',
   properties: {
-    type: { type: 'string', enum: ['stability', 'condition', 'stat'], description: 'Discriminant. Determines which other fields to populate.' },
-    // ── stability variant ────────────────────────────────────────────────────
+    type: { type: 'string', enum: [...futureNoteTriggerTypes], description: 'Discriminant. Determines which other field to populate.' },
     level: { type: 'string', enum: [...Object.keys(stabilityLevels)], description: 'For "stability" type. Fires when MC psychological stability matches this level exactly.' },
-    // ── condition variant ────────────────────────────────────────────────────
     condition: { type: 'string', enum: [...healthConditions], description: 'For "condition" type. Fires when MC overall health condition matches this value exactly.' },
-    // ── stat variant ─────────────────────────────────────────────────────────
-    stat: { type: 'string', enum: ['healthPercent', 'mobilityPercent', 'actionPercent', 'mentalPercent'], description: 'For "stat" type. The health axis to monitor.' },
-    op: { type: 'string', enum: ['<', '<=', '>', '>='], description: 'For "stat" type. Comparison operator (evaluated as: current_value op threshold).' },
-    threshold: { type: 'number', description: 'For "stat" type. Integer 0-100 (e.g., threshold=30 with op="<" means "below 30%").' },
+    threshold: { type: 'number', description: 'For *Percent types. Integer 0-100. Fires when stat ≤ threshold.' },
   },
   required: ['type'],
   additionalProperties: false,
@@ -326,7 +290,7 @@ export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
     isMajor: { type: 'boolean', description: 'True when the note represents a major, irreversible story event: death, betrayal, critical secret revealed, decisive relationship pivot, or structural narrative turn. Major notes surface first within the same time slot.' },
     tag: { type: 'string', enum: [...Object.keys(factTypes)], description: 'Categorisation tag for grouping related notes. Helps organise notes by domain.' },
     schedule: { type: 'array', description: 'OR-logic time-based anchors (optional). The note becomes relevant once ANY entry fires its lookahead window.', items: FUTURE_NOTE_SCHEDULE_SCHEMA },
-    stateTrigger: FUTURE_NOTE_STATE_TRIGGER_SCHEMA,
+    stateTrigger: { type: 'array', description: 'OR-logic state-based anchors (optional). The note becomes relevant once ANY entry falls below threshold.', items: FUTURE_NOTE_STATE_TRIGGER_SCHEMA },
     relatedThreadId: { type: 'string', description: 'ID of a related active story thread. Omit or use "none" if unrelated to any thread.' },
   } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
   required: ['note'] satisfies (keyof FutureNoteGeneration)[],

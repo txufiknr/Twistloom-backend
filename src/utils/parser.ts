@@ -382,7 +382,11 @@ export function ensureProtocol(url: string, defaultProtocol: string = 'https://'
     : `${defaultProtocol}${trimmed}`; // Add default protocol
 }
 
-// TODO: jsdoc
+/**
+ * Removes all empty lines from a multi-line string
+ * @param prompt - Multi-line string to clean
+ * @returns Cleaned string with no empty lines, or empty string if input is blank
+ */
 export function stripEmptyLines(prompt: string): string {
   return !prompt.trim() ? '' : prompt.trim()
     .split('\n')
@@ -390,7 +394,11 @@ export function stripEmptyLines(prompt: string): string {
     .join('\n');
 }
 
-// TODO: jsdoc
+/**
+ * Deterministically serializes a value to JSON with sorted keys
+ * @param value - Value to stringify
+ * @returns Stable JSON string where object keys appear in sorted order
+ */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
@@ -400,4 +408,86 @@ export function stableStringify(value: unknown): string {
     .map(key => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
 
   return `{${entries.join(',')}}`;
+}
+
+/**
+ * Page range parsing options
+ */
+export interface ParsePageRangeOptions {
+  /** Whether to allow reversed ranges like "60-55" (default: false) */
+  allowReverse?: boolean;
+  /** Minimum page number (default: 1) */
+  min?: number;
+  /** Maximum page number (default: Infinity) */
+  max?: number;
+}
+
+/**
+ * Parsed page range result
+ */
+export interface PageRange {
+  /** Starting page (inclusive) */
+  start: number;
+  /** Ending page (inclusive, same as start for single pages) */
+  end: number;
+}
+
+/**
+ * Parses a page range string like "55-60" or bare "55" into start/end numbers
+ *
+ * Handles malformed input with extra whitespace ("55 - 60"), non-standard
+ * hyphens (en-dash, em-dash, minus sign), and reversed ranges (when allowed).
+ *
+ * @param input - Page range string to parse
+ * @param options - Optional parsing configuration
+ * @returns Parsed start/end range, or null if input cannot be parsed
+ *
+ * @example
+ * ```typescript
+ * parsePageRange('55-60')           // { start: 55, end: 60 }
+ * parsePageRange('55')              // { start: 55, end: 55 }
+ * parsePageRange('55 \u2013 60')    // { start: 55, end: 60 }  // en-dash
+ * parsePageRange('abc')              // null
+ * parsePageRange('60-55', { allowReverse: true })  // { start: 55, end: 60 }
+ * parsePageRange('60-55')            // null  // reversed not allowed by default
+ * parsePageRange('0', { min: 1 })    // null  // below minimum
+ * ```
+ */
+export function parsePageRange(
+  input: string,
+  options: ParsePageRangeOptions = {}
+): PageRange | null {
+  const { allowReverse = false, min = 1, max = Infinity } = options;
+
+  if (typeof input !== 'string' || !input.trim()) return null;
+
+  // Normalize hyphens: en-dash, em-dash, minus sign -> regular hyphen
+  const normalized = input.trim().replace(/[\u2013\u2014\u2212]/g, '-');
+
+  const rangeMatch = normalized.match(/^(\d+)\s*-\s*(\d+)$/);
+  if (rangeMatch) {
+    let start = Number(rangeMatch[1]);
+    let end = Number(rangeMatch[2]);
+
+    // Handle reversed ranges
+    if (start > end) {
+      if (!allowReverse) return null;
+      [start, end] = [end, start];
+    }
+
+    // Enforce bounds
+    start = Math.max(min, Math.min(max, start));
+    end = Math.max(min, Math.min(max, end));
+
+    return { start, end };
+  }
+
+  const singleMatch = normalized.match(/^(\d+)$/);
+  if (singleMatch) {
+    const page = Number(singleMatch[1]);
+    if (page < min || page > max) return null;
+    return { start: page, end: page };
+  }
+
+  return null;
 }
