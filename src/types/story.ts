@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, StoryMCCandidate, CharacterPlan } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, StoryMCCandidate, CharacterPlan, HealthCondition } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./story-thread.js";
@@ -113,6 +113,8 @@ export const actionTypes = {
  * 
  * This gives you a two-dimensional system: action type (psychological) +
  * relationship (directional), providing richer narrative context.
+ * 
+ * @todo use
  */
 export const actionRelationships = {
   "trust": "Place faith in, rely upon, believe",
@@ -353,49 +355,123 @@ export type FactHistory = {
 export type FactUpdate = { key: string; } & FactHistory
 export type InitialFact = Omit<FactUpdate, 'page'>;
 
+// ── FutureNote scheduling and trigger types ────────────────────────────────
+
 /**
- * What does the future need to remember?
- * What should future AI generations remember that hasn't happened yet?
+ * Comparison operator used in numeric stat-based state triggers.
+ *
+ * The operator is stored as a structured field on `StatTrigger` rather than
+ * embedded in a string (e.g. "< 75"), so no parsing is required at evaluation.
  */
-export type FutureNote = {
-  /** Unique identifier for the note (for updates) */
-  key: string;
-  /** Text of the future note */
-  note: string;
-  /** Whether the note is a major plot point or minor detail */
-  isMajor?: boolean;
-  /** Page number where the note was added */
-  addedAtPage?: number;
-  /** Optional tag for categorizing the note (e.g. 'relationship', 'clue') */
-  tag?: FactType;
-  /** Optional if related to any active thread */
-  relatedThreadId?: string;
-  /** Target conditions (OR logic) — when any condition is met, the note becomes relevant */
-  targetConditions?: FutureNoteTarget[];
+export type StateTriggerOp = '<' | '<=' | '>' | '>=';
+
+/**
+ * A numeric health-stat trigger: fires when the specified MC stat satisfies
+ * the comparison against `threshold`. All stat values are integers 0–100.
+ *
+ * @example { type: 'stat', stat: 'mentalPercent', op: '<', threshold: 30 }
+ * @example { type: 'stat', stat: 'healthPercent', op: '<=', threshold: 50 }
+ */
+export type StatTrigger = {
+  type: 'stat';
+  /** The health axis to evaluate. */
+  stat: 'healthPercent' | 'mobilityPercent' | 'actionPercent' | 'mentalPercent';
+  /** Comparison operator applied as: current_value op threshold. */
+  op: StateTriggerOp;
+  /** Numeric threshold, integer 0–100. */
+  threshold: number;
 };
 
-export type FutureNoteTarget = {
-  type: FutureNoteTargetType;
-  value: string | number;
-}
+/**
+ * Anchors a future note to a point in story time.
+ *
+ * The prompt formatter applies a configurable lookahead window so the AI begins
+ * foreshadowing BEFORE the target beat actually arrives:
+ *
+ * - `page` / `day` / `date` → uses FUTURE_NOTE_LOOKAHEAD_PAGES / FUTURE_NOTE_LOOKAHEAD_DAYS
+ * - `phase` → fires immediately when currentPhase reaches or passes the target
+ *
+ * Only one schedule per note. If a note should fire at either of two distinct
+ * beats, prefer two separate notes over a combined schedule.
+ *
+ * @example { type: 'phase', phase: 'MID' }
+ * @example { type: 'page', start: 25, end: 30 }
+ * @example { type: 'day', day: 7 }
+ * @example { type: 'date', date: '2025-06-14' }
+ */
+export type FutureNoteSchedule =
+  | { type: 'phase'; phase: StoryPhase }
+  | { type: 'page';  start: number; end?: number }
+  | { type: 'day';   day: number }
+  | { type: 'date';  date: string }; // YYYY-MM-DD
 
-export const futureNoteTargetTypes = [
-  'phase', // e.g. 'MID'
-  'pageRange', // e.g. '25-30'
-  'date', // e.g. '<yyyy-MM-dd>'
-  'day', // e.g. '7' or '10-14' (exact or range)
-  // state.psychologicalProfile:
-  'stability', // e.g. 'unstable'
-  // state.healthStatus:
-  'condition', // e.g. 'critical'
-  'healthPercent', // e.g. '< 75'
-  'mobilityPercent',
-  'actionPercent',
-  'mentalPercent'
-];
+/**
+ * Activates a future note when the MC crosses a physical or psychological
+ * state threshold. Fires immediately — there is no lookahead window.
+ *
+ * OR semantics with `schedule` (on `FutureNote`): if a note carries both
+ * fields, it becomes "Becoming Relevant" when EITHER condition fires.
+ *
+ * Notes with only a `stateTrigger` (no `schedule`) are "Unscheduled" and
+ * render a "triggers when: …" annotation so the AI knows what activates them.
+ *
+ * @example { type: 'stability', level: 'unstable' }
+ * @example { type: 'condition', condition: 'critical' }
+ * @example { type: 'stat', stat: 'mentalPercent', op: '<', threshold: 30 }
+ */
+export type FutureNoteStateTrigger =
+  | { type: 'stability'; level: StabilityLevel }
+  | { type: 'condition'; condition: HealthCondition }
+  | StatTrigger;
 
-export type FutureNoteTargetType = typeof futureNoteTargetTypes[number];
+// ── FutureNote ─────────────────────────────────────────────────────────────
 
+/**
+ * A future narrative obligation the AI must remember and eventually fulfill.
+ *
+ * A note promotes to **Becoming Relevant** (AI begins foreshadowing) when:
+ * - Its `schedule` window opens (lookahead reached), OR
+ * - Its `stateTrigger` condition is currently satisfied.
+ *
+ * Notes with neither field are **Unscheduled** — open-ended obligations
+ * with no known trigger (relationship arcs, mysteries still in motion).
+ *
+ * The AI must never resolve a note merely because it exists. Notes with a
+ * `stateTrigger` must remain dormant until the actual threshold is crossed —
+ * the AI must not manufacture the triggering state to resolve the note early.
+ */
+export type FutureNote = {
+  /** Unique key for targeted updates and removal via `futureNoteUpdates`. */
+  key: string;
+  /** Narrative description of what should happen later in the story. */
+  note: string;
+  /** True for major, irreversible story events (death, betrayal, pivots). */
+  isMajor?: boolean;
+  /** Story page on which this note was first recorded. */
+  addedAtPage?: number;
+  /** Categorisation tag for grouping related notes. */
+  tag?: FactType;
+  /** ID of a related active story thread (`relatedThreadId` on StoryThread), if any. */
+  relatedThreadId?: string;
+  /**
+   * Time-based anchor: the AI begins foreshadowing within the lookahead window
+   * before the target beat arrives.
+   * Omit when the note has no time-based trigger.
+   */
+  schedule?: FutureNoteSchedule;
+  /**
+   * State-based activation: fires immediately when the MC crosses the threshold.
+   * No lookahead — dormant until the condition is met.
+   * Omit when the note has no state-based trigger.
+   */
+  stateTrigger?: FutureNoteStateTrigger;
+};
+
+/**
+ * Shape the AI outputs when adding new future notes during page generation.
+ * `key` and `addedAtPage` are assigned server-side after the AI response
+ * is validated, so the AI must never generate those fields.
+ */
 export type FutureNoteGeneration = Omit<FutureNote, 'key' | 'addedAtPage'>;
 
 /** An ending of a story with optional text and type. */
@@ -422,6 +498,7 @@ export type InitialEnding = Omit<Ending, 'outline' | 'changeNote'> & { outline: 
 export type StoryOutline = {
   text: string;
   isDone: boolean;
+  doneAtPage?: number;
 }
 
 /**
@@ -1512,6 +1589,16 @@ export const finalePhases = {
 };
 
 export type StoryPhase = keyof typeof storyPhases;
+
+/**
+ * Story phase keys in narrative order.
+ *
+ * Exported as a runtime array (not just a type) so schema definitions can
+ * enumerate valid values. Mirrors the key order of `storyPhases` exactly —
+ * do not edit independently.
+ */
+export const storyPhaseKeys = Object.keys(storyPhases) as StoryPhase[];
+
 export type FinalePhase = keyof typeof finalePhases;
 
 export type UserSession = Pick<DBUserSession, 'bookId' | 'pageId' | 'previousPageId' | 'status'> & {

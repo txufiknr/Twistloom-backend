@@ -1,10 +1,10 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
-import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
+import { characterImportances, characterRecognitionLevels, characterStatuses, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes, healthConditions } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, StoryMCGeneration } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
-import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, futureNoteTargetTypes, storyPhases, stabilityLevels } from "../types/story.js";
+import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
-import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FutureNoteTarget, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
+import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
 import { threadPriorities, threadStatuses, threadTruths, type UpdateThread, type NewThread, type ThreadUpdates, type AddThreadClue, type InitialThreadClue } from "../types/story-thread.js";
 import type { CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { genders } from "../types/user.js";
@@ -187,52 +187,106 @@ export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
 };
 
 /**
- * Schema for a single FutureNoteTarget condition.
+ * JSON schema for `FutureNoteSchedule` — the time-based anchor on a future note.
  *
- * Each condition specifies WHEN a future note becomes narratively relevant.
- * Multiple conditions on a single note use OR logic — any one firing promotes
- * the note to the "Becoming Relevant" section.
+ * Uses `oneOf` so each discriminant variant has its own typed properties with
+ * proper required/additionalProperties enforcement. The AI picks one variant
+ * based on the `type` field; the schema then validates only that variant's fields.
  *
- * When to use each category:
- * - Time/page/phase: note is tied to a planned story beat or scheduled event.
- * - State-based: note should surface only when the MC reaches a specific
- *   physical or psychological threshold (dormant until then).
- * - Omit targetConditions entirely for notes with no identifiable trigger.
+ * Variants and their typed fields:
+ * ┌──────────┬──────────────────────────────────────────────────────────────┐
+ * │ phase    │ phase: EARLY | MID | LATE | FINALE                          │
+ * │ page     │ start: number (required), end?: number (optional upper bound)│
+ * │ day      │ day: number (in-story day integer, 1-based)                 │
+ * │ date     │ date: string (YYYY-MM-DD calendar date)                     │
+ * └──────────┴──────────────────────────────────────────────────────────────┘
  */
-export const FUTURE_NOTE_TARGET_CONDITION_SCHEMA: AIJsonProperty = {
+export const FUTURE_NOTE_SCHEDULE_SCHEMA: AIJsonProperty = {
   type: 'object',
-  description: 'A single target condition — when met (OR logic with other conditions), the note becomes relevant.',
+  description: [
+    'Time-based anchor. Choose a type, then fill only that type\'s fields — omit all others:',
+    '  phase → fill: phase (EARLY|MID|LATE|FINALE)',
+    '  page  → fill: start (required), end (optional upper bound)',
+    '  day   → fill: day (in-story integer, 1-based)',
+    '  date  → fill: date (YYYY-MM-DD)',
+  ].join('\n'),
   properties: {
-    type: { type: 'string', description: 'Category of the trigger condition.', enum: [...futureNoteTargetTypes] },
-    value: { type: 'string', description: `The trigger value, formatted according to the chosen type (e.g., phase→'MID' | pageRange→'55-60' | date→'yyyy-MM-dd' | day→'7' | stability→'unstable' | condition→'critical' | *Percent→'<= 50').` },
-  } satisfies Record<keyof FutureNoteTarget, AIJsonProperty>,
-  required: ['type', 'value'] satisfies (keyof FutureNoteTarget)[],
-  additionalProperties: false
+    type:  { type: 'string', enum: ['phase', 'page', 'day', 'date'], description: 'Discriminant — determines which other fields to fill.' },
+    phase: { type: 'string', enum: storyPhaseKeys, description: 'Required when type="phase". Target story phase.' },
+    start: { type: 'number', description: 'Required when type="page". First page of the target window.' },
+    end:   { type: 'number', description: 'Optional when type="page". Last page of the window.' },
+    day:   { type: 'number', description: 'Required when type="day". Exact in-story day number.' },
+    date:  { type: 'string', description: 'Required when type="date". ISO date "YYYY-MM-DD".' },
+  },
+  required: ['type'],
+  additionalProperties: false,
 };
 
+/**
+ * JSON schema for `FutureNoteStateTrigger` — the MC-state-based activation
+ * condition on a future note.
+ *
+ * State triggers fire immediately when the condition is met — there is no
+ * lookahead window. The note stays dormant until the MC's actual physical
+ * or psychological state crosses the threshold.
+ *
+ * Variants and their typed fields:
+ * ┌───────────┬──────────────────────────────────────────────────────────────┐
+ * │ stability │ level: stable | cracking | unstable                         │
+ * │ condition │ condition: healthy | injured | critical | incapacitated      │
+ * │ stat      │ stat: health/mobility/action/mentalPercent                  │
+ * │           │ op: < | <= | > | >=                                         │
+ * │           │ threshold: integer 0–100                                     │
+ * └───────────┴──────────────────────────────────────────────────────────────┘
+ *
+ * Authoring guidance: use `stateTrigger` only when the note genuinely depends
+ * on the MC reaching a specific deteriorated state. Never manufacture the
+ * triggering state just to resolve the note early.
+ */
+export const FUTURE_NOTE_STATE_TRIGGER_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  description: [
+    'State-based activation. Choose a type, then fill only that type\'s fields — omit all others:',
+    `  stability → fill: level (${formatOneOf(Object.keys(stabilityLevels), '|')})`,
+    `  condition → fill: condition (${formatOneOf(healthConditions, '|')})`,
+    '  stat      → fill: stat, op (<|<=|>|>=), threshold (0-100)',
+  ].join('\n'),
+  properties: {
+    type:      { type: 'string', enum: ['stability', 'condition', 'stat'], description: 'Discriminant — determines which other fields to fill.' },
+    level:     { type: 'string', enum: [...Object.keys(stabilityLevels)], description: 'Required when type="stability".' },
+    condition: { type: 'string', enum: [...healthConditions], description: 'Required when type="condition".' },
+    stat:      { type: 'string', enum: ['healthPercent', 'mobilityPercent', 'actionPercent', 'mentalPercent'], description: 'Required when type="stat". The health axis to monitor.' },
+    op:        { type: 'string', enum: ['<', '<=', '>', '>='], description: 'Required when type="stat". Comparison: current_value op threshold.' },
+    threshold: { type: 'number', description: 'Required when type="stat". Integer 0-100.' },
+  },
+  required: ['type'],
+  additionalProperties: false,
+};
+
+/**
+ * JSON schema for `FutureNoteGeneration` — the shape the AI outputs when
+ * adding or updating future notes.
+ *
+ * Key design principles:
+ * - `schedule` and `stateTrigger` are both optional. Use `schedule` for time-anchored
+ *   beats, `stateTrigger` for state-threshold beats, both when either should activate
+ *   the note (OR semantics), and neither for open-ended obligations.
+ * - `key` and `addedAtPage` are server-assigned — never generated by the AI.
+ * - `note` is the only required field; all others may be omitted.
+ */
 export const FUTURE_NOTE_SCHEMA: AIJsonProperty = {
   type: 'object',
   properties: {
-    note: { type: 'string' },
-    // All fields below are optional (may be omitted).
-    isMajor: { type: 'boolean', description: 'True when the note represents a major story event — death, betrayal, critical secret revealed, decisive relationship change, or irreversible story pivot. Major notes surface first when ordering becomes relevant.' },
-    tag: { type: 'string', description: 'Category for organising the note.', enum: [...Object.keys(factTypes)] },
-    targetConditions: {
-      type: 'array',
-      description: [
-        'OR-logic trigger conditions. When ANY condition is met (within its lookahead window for',
-        'time-based types, or immediately for state-based types), the note surfaces as "Becoming Relevant".',
-        'Use time/page/phase conditions for scheduled story beats.',
-        'Use state conditions (stability, condition, health percents) for threshold-driven notes that',
-        'are dormant until the MC reaches that physical or psychological state.',
-        'Omit entirely when no specific trigger can be identified.',
-      ].join(' '),
-      items: FUTURE_NOTE_TARGET_CONDITION_SCHEMA,
-    },
+    note: { type: 'string', description: 'Narrative description of what should happen later in the story.' },
+    // All fields below are optional — the AI may omit any of them.
+    isMajor: { type: 'boolean', description: 'True when the note represents a major, irreversible story event: death, betrayal, critical secret revealed, decisive relationship pivot, or structural narrative turn. Major notes surface first within the same time slot.' },
+    tag: { type: 'string', enum: [...Object.keys(factTypes)], description: 'Categorisation tag for grouping related notes. Helps organise notes by domain.' },
+    schedule: FUTURE_NOTE_SCHEDULE_SCHEMA,
+    stateTrigger: FUTURE_NOTE_STATE_TRIGGER_SCHEMA,
     relatedThreadId: { type: 'string', description: 'ID of a related active story thread. Omit or use "none" if unrelated to any thread.' },
   } satisfies Record<keyof FutureNoteGeneration, AIJsonProperty>,
   required: ['note'] satisfies (keyof FutureNoteGeneration)[],
-  additionalProperties: false
+  additionalProperties: false,
 };
 
 export const PLOT_FLAGS_SCHEMA: AIJsonProperty = {
@@ -496,6 +550,7 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
         properties: {
           text: { type: 'string' },
           isDone: { type: 'boolean' },
+          doneAtPage: { type: 'integer', description: 'Omit or zero if not yet done.' },
         },
         required: ['text', 'isDone'] satisfies (keyof StoryOutline)[],
         additionalProperties: false

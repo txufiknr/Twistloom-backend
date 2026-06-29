@@ -62,7 +62,7 @@ import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
-import { lastUpdatedFilterOptions } from "../types/book.js";
+import { lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, refundCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
@@ -240,10 +240,15 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
 /**
  * POST /api/books/workflow-webhook
  *
- * Internal webhook for GitHub Actions workflow to notify completion/failure.
- * Secured by `INTERNAL_SECRET` header: `x-internal-secret`.
+ * Internal webhook called by the GitHub Actions runner to push generation
+ * progress or a terminal result back to the backend.
  *
- * Body: { bookId: string, status?: BookGenerationStatus, error?: string, step: StoryGenerationStep }
+ * Secured by the `x-internal-secret` header (value must match `INTERNAL_SECRET`
+ * env var). Not protected by `requireAuth` since it is called by machine actors.
+ *
+ * Body: `{ bookId, status?, step?, error? }` — same shape as `BookGenerationPayload`.
+ *
+ * @route POST /api/books/workflow-webhook
  */
 router.post('/workflow-webhook', async (req: Request, res: Response) => {
   try {
@@ -258,7 +263,7 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[POST /api/books/workflow-webhook] ❌ Error:', error);
-    handleBookCreationError(res, error, "Failed to process workflow webhook");
+    handleBookCreationError(res, error, 'Failed to process workflow webhook');
   }
 });
 
@@ -371,71 +376,78 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
 
 /**
  * POST /api/books/async
- * 
- * Creates a new book asynchronously using GitHub Actions.
- * Returns bookId immediately, bypassing Vercel's 5-minute timeout.
- * 
+ *
+ * Creates a new book asynchronously via GitHub Actions, bypassing Vercel's
+ * 5-minute function timeout.
+ *
  * Flow:
- * 1. Validate request parameters
- * 2. Consume credits
- * 3. Generate bookId (UUID v7)
- * 4. Create book record with status 'pending'
- * 5. Trigger GitHub Actions workflow (unawaited)
- * 6. Return bookId immediately
- * 
- * Frontend should poll GET /api/books/:bookId/status for updates.
- * 
- * @param theme - Story theme (required)
- * @param mcCandidate - Main character candidate (optional)
- * @param generateCoverImage - Whether to generate cover image (optional)
- * 
- * @returns { bookId: string } - The generated book ID
- * 
+ * 1. Validate theme + MC candidate (structural + AI)
+ * 2. Atomically consume credits and insert draft `books` + `bookGenerations` rows
+ * 3. Dispatch the `on-demand-book-creation.yml` GitHub workflow (fire-and-forget)
+ * 4. Return `bookId` immediately with HTTP 202
+ *
+ * The GitHub Actions runner reads all generation params (`theme`, `mcCandidate`,
+ * `generateCoverImage`) from the `bookGenerations` row, so no sensitive data is
+ * passed as workflow inputs.
+ *
+ * If the workflow dispatch fails silently, the stale-detection logic in
+ * `GET /api/books/:bookId/status` will re-trigger it after `PENDING_TIMEOUT_MS`.
+ *
+ * Credit Atomicity:
+ * Credits are consumed inside `executeWithCredits` together with the draft row
+ * inserts. If either insert fails, the whole transaction rolls back and credits
+ * are preserved automatically — no explicit refund is needed for this step.
+ *
+ * @route   POST /api/books/async
+ * @auth    Required
+ * @body    `{ theme: string, mcCandidate?: StoryMCCandidate, generateCoverImage?: boolean }`
+ * @returns HTTP 202 `{ bookId: string, message: string }`
+ *
  * @example
+ * // Request
  * POST /api/books/async
- * Body: {
- *   "theme": "haunted mansion mystery",
- *   "mcCandidate": {
- *     "name": "Sarah",
- *     "age": 28,
- *     "gender": "female"
- *   },
- *   "generateCoverImage": true
- * }
- * 
- * Response (200):
- * {
- *   "bookId": "01912345-6789-1234-5678-123456789012",
- *   "message": "Book creation started. Poll /api/books/:bookId/status for updates."
- * }
+ * { "theme": "haunted mansion mystery", "mcCandidate": { "name": "Sarah", "age": 28 } }
+ *
+ * // Response 202
+ * { "bookId": "01912345-6789-1234-5678-123456789012", "message": "Book creation started..." }
  */
-router.post("/async", requireAuth, async (req: Request, res: Response) => {
+router.post('/async', requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme: themeInput, mcCandidate: initialMCCandidate, generateCoverImage } = req.body;
     const userId = req.userId!;
-    const theme = themeInput.trim();
 
-    // STEP 1: VALIDATE THEME
-    const { aiResult } = await createBookValidate(theme, initialMCCandidate, generateCoverImage, undefined);
-    const { comment: aiComment, language, titleIdea, mcCandidate } = aiResult || {};
+    // ── Bug fix: safe trim — themeInput may be undefined if body is malformed ──
+    // `createBookValidate` handles the empty-string case with a proper error.
+    const theme = typeof themeInput === 'string' ? themeInput.trim() : '';
 
-    // STEP 2: GENERATE BOOK ID
+    // ── STEP 1: Validate theme + MC candidate (structural + AI) ──────────────
+    const { aiResult } = await createBookValidate(
+      theme,
+      initialMCCandidate,
+      generateCoverImage,
+      undefined // no SSE progress callback for async route
+    );
+
+    // ── Bug fix: default language to 'en' — aiResult may be null/undefined ───
+    const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
+
+    // ── STEP 2: Generate deterministic book ID ────────────────────────────────
     const bookId = generateId();
-    
-    // STEP 3: DRAFTING INITIAL DATA
+
+    // ── STEP 3: Build draft records ───────────────────────────────────────────
     const mc: StoryMC = generateRandomCharacter(mcCandidate);
 
     const initialBookData: DBNewBook = {
       id: bookId,
       userId,
-      title: titleIdea || 'Generating...', // Temporary title
+      title: titleIdea || 'Generating…', // Temporary placeholder, replaced by initializeBook
       hook: null,
       summary: null,
       keywords: [],
       language,
       totalPages: 0,
       mc,
-      status: 'draft', // Will be updated to 'active' when complete
+      status: 'draft', // Promoted to 'active' when initializeBook completes
     };
 
     const initialBookGenerationData: DBNewBookGeneration = {
@@ -445,134 +457,150 @@ router.post("/async", requireAuth, async (req: Request, res: Response) => {
       language,
       titleIdea,
       aiComment,
-      mcCandidate,
-      generateCoverImage: generateCoverImage || false,
+      mcCandidate, // Runner reads this from DB — not workflow inputs
+      generateCoverImage: generateCoverImage ?? false,
       generationStatus: 'pending',
-      generationStep: 'theme_validation',
+      generationStep: 'theme_validation', // Reflects last completed frontend step
     };
 
-    // STEP 4: CONSUME CREDITS IN TRANSACTION
-    // Use unified transaction flow for atomic credit consumption
+    // ── STEP 4: Atomically consume credits + insert draft rows ────────────────
+    //
+    // `executeWithCredits` opens a single Postgres transaction:
+    //   - Deducts STORY_GENERATION credits (row-locked)
+    //   - Inserts `books` draft row
+    //   - Inserts `bookGenerations` tracking row
+    //
+    // If any insert fails the transaction rolls back and credits are preserved
+    // automatically. The runner picks up all generation params from the DB row.
     await executeWithCredits(
       userId,
-      "STORY_GENERATION",
+      'STORY_GENERATION',
       async (tx) => {
-        // STEP 5: CREATE DRAFT BOOK RECORD
-        // Credits consumed for the book creation operation
-        // The actual book update happens in the cron job via initializeBook
         await tx.insert(books).values(initialBookData);
         await tx.insert(bookGenerations).values(initialBookGenerationData);
       },
       {
-        context: "book_creation_async",
-        metadata: { theme, bookId }
+        context:  'book_creation_async',
+        metadata: { theme, bookId },
       }
     );
 
-    // STEP 6: TRIGGER GITHUB ACTIONS WORKFLOW (UNAWAITED)
-    // Use shared function for DRY and consistency
+    // ── STEP 5: Dispatch GitHub Actions workflow (fire-and-forget) ────────────
+    //
+    // We do NOT await this — the response must be sent before any long-running
+    // dispatch logic. Dispatch failures are logged and handled by stale-detection.
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/async');
 
-    // STEP 7: RETURN BOOK ID IMMEDIATELY
-    res.json({
+    // ── STEP 6: Respond immediately with 202 Accepted ─────────────────────────
+    //
+    // HTTP 202 is the correct semantic: "request accepted for background processing."
+    res.status(202).json({
       bookId,
-      message: "Book creation started. Poll /api/books/:bookId/status for updates."
+      message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
     });
 
-    // Log user activity
-    await logUserActivity({
+    // ── STEP 7: Log user activity (fire-and-forget AFTER response) ────────────
+    //
+    // logUserActivity must be fire-and-forget after res.json() to avoid
+    // a double-response error if it throws (catch block would call res.json again
+    // on an already-closed response).
+    void logUserActivity({
       userId,
       activityType: 'book_creation_started',
-      targetType: 'book',
-      targetId: bookId,
-      metadata: { theme, method: 'async' }
-    }, { req });
+      targetType:   'book',
+      targetId:     bookId,
+      metadata:     { theme, method: 'async' },
+    },
+    { req }).catch((err) => {
+      console.error('[POST /api/books/async] ❌ Failed to log user activity:', err);
+    });
   } catch (error) {
     console.error('[POST /api/books/async] ❌ Failed to start book creation:', error);
-    handleBookCreationError(res, error, "Failed to start book creation");
+    handleBookCreationError(res, error, 'Failed to start book creation');
   }
 });
 
 /**
  * GET /api/books/:bookId/status
- * 
- * Polls for book creation status.
- * Used by frontend to check progress of async book creation.
- * 
- * @param bookId - Book ID (UUID v7)
- * 
- * @returns BookCreationStatus with current status and generation step
- * 
+ *
+ * Polls for the current progress of an async book creation.
+ * Called repeatedly by the frontend until `generationStatus === 'completed'`.
+ *
+ * **Stale-detection:**
+ * If the generation appears stuck (`isGenerationStale` returns `true`) and
+ * has not already been refunded, this endpoint re-triggers the workflow.
+ * This provides automatic recovery without manual intervention.
+ *
+ * @route   GET /api/books/:bookId/status
+ * @auth    Required (users may only query their own books)
+ * @param   bookId - UUID v7 of the target book
+ * @returns `BookCreationStatus`
+ *
  * @example
- * GET /api/books/01912345-6789-1234-5678-123456789012/status
- * 
- * Response (200) - In Progress:
+ * // In-progress response
  * {
- *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "bookId": "...",
  *   "status": "draft",
  *   "generationStatus": "in_progress",
- *   "generationStep": "generating",
- *   "generationStepDescription": "AI generation in progress: generating",
- *   "createdAt": "2026-05-12T10:00:00.000Z",
- *   "updatedAt": "2026-05-12T10:02:30.000Z",
- *   "generationStartedAt": "2026-05-12T10:00:05.000Z",
- *   "generationCompletedAt": null
+ *   "generationStep": "ai_generation",
+ *   "generationStepDescription": "In progress: AI is crafting your story",
+ *   "generationStartedAt": "2026-06-01T10:00:05.000Z",
+ *   "generationCompletedAt": null,
+ *   "aiComment": null,
+ *   "createdAt": "...",
+ *   "updatedAt": "..."
  * }
- * 
- * Response (200) - Complete:
+ *
+ * // Completed response
  * {
- *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "bookId": "...",
  *   "status": "active",
  *   "generationStatus": "completed",
- *   "generationStep": "completed",
- *   "generationStepDescription": "Book generation completed",
- *   "createdAt": "2026-05-12T10:00:00.000Z",
- *   "updatedAt": "2026-05-12T10:05:00.000Z",
- *   "generationStartedAt": "2026-05-12T10:00:05.000Z",
- *   "generationCompletedAt": "2026-05-12T10:05:00.000Z"
+ *   "generationStep": "complete",
+ *   "generationStepDescription": "Book generation complete",
+ *   ...
  * }
- * 
- * Response (200) - Failed:
+ *
+ * // Failed response
  * {
- *   "bookId": "01912345-6789-1234-5678-123456789012",
+ *   "bookId": "...",
  *   "status": "draft",
  *   "generationStatus": "failed",
- *   "generationStep": null,
  *   "generationStepDescription": "Book generation failed",
  *   "error": "AI generation failed: timeout",
- *   "createdAt": "2026-05-12T10:00:00.000Z",
- *   "updatedAt": "2026-05-12T10:10:00.000Z"
+ *   ...
  * }
  */
-router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) => {
+router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) => {
   try {
     const { bookId } = req.params;
     const userId = req.userId!;
 
     // Validate bookId format
     if (!isValidUuid(bookId)) {
-      return handleValidationError(res, "Invalid book ID format");
+      return handleValidationError(res, 'Invalid book ID format');
     }
 
-    // Fetch book and generation data from both tables
+    // Join `books` (LEFT JOIN `bookGenerations`) so that books created via the
+    // sync/SSE routes (which have no bookGenerations row) still return a result.
     const [data] = await dbRead
       .select({
-        // From books table
-        bookId: books.id,
-        bookUserId: books.userId,
-        bookStatus: books.status,
+        // books table
+        bookId:        books.id,
+        bookUserId:    books.userId,
+        bookStatus:    books.status,
         bookCreatedAt: books.createdAt,
         bookUpdatedAt: books.updatedAt,
-        // From bookGenerations table
-        generationStatus: bookGenerations.generationStatus,
-        generationStep: bookGenerations.generationStep,
-        generationError: bookGenerations.generationError,
-        generationStartedAt: bookGenerations.generationStartedAt,
-        generationCompletedAt: bookGenerations.generationCompletedAt,
-        isGeneratingStartedAt: bookGenerations.isGeneratingStartedAt,
-        isRefunded: bookGenerations.isRefunded,
-        aiComment: bookGenerations.aiComment,
-        createdAt: bookGenerations.createdAt,
+        // bookGenerations table (nullable — leftJoin)
+        generationStatus:       bookGenerations.generationStatus,
+        generationStep:         bookGenerations.generationStep,
+        generationError:        bookGenerations.generationError,
+        generationStartedAt:    bookGenerations.generationStartedAt,
+        generationCompletedAt:  bookGenerations.generationCompletedAt,
+        isGeneratingStartedAt:  bookGenerations.isGeneratingStartedAt,
+        isRefunded:             bookGenerations.isRefunded,
+        aiComment:              bookGenerations.aiComment,
+        createdAt:              bookGenerations.createdAt, // used for stale-detection fallback
       })
       .from(books)
       .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
@@ -580,158 +608,187 @@ router.get("/:bookId/status", requireAuth, async (req: Request, res: Response) =
       .limit(1);
 
     if (!data) {
-      return handleNotFoundError(res, "Book not found");
+      return handleNotFoundError(res, 'Book not found');
     }
 
     // Verify user owns the book
     if (data.bookUserId !== userId) {
-      return handleForbiddenError(res, "You can only view status for your own books");
+      return handleForbiddenError(res, 'You can only view status for your own books');
     }
 
     // Check if generation is stale and trigger workflow if needed
     const isStale = isGenerationStale(data);
     if (isStale && !data.isRefunded && GITHUB_REPO_CONFIG.token) {
-      console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, triggering workflow`);
-      
-      // Trigger workflow unawaited using shared function
+      console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, re-triggering workflow`);
       triggerBookGenerationWorkflow(bookId, 'GET /api/books/:bookId/status');
     }
 
     // Map generation status to current step description
+    // ── Build user-facing step description ────────────────────────────────────
+    //
+    // Bug fix: previously exposed raw enum values (e.g. 'ai_generation') directly
+    // to the frontend. Now maps through STEP_DESCRIPTIONS for friendly labels.
+    // TODO: shouldn't we just need to handle translation in frontend? so I think exposing raw enum values is intended
     let generationStepDescription: string | undefined;
-    
+
     switch (data.generationStatus) {
       case 'pending':
-        generationStepDescription = 'Waiting for workflow to start';
+        generationStepDescription = 'Waiting for the generation worker to start';
         break;
-      case 'in_progress':
-        generationStepDescription = `AI generation in progress: ${data.generationStep || 'initializing'}`;
+
+      case 'in_progress': {
+        const stepLabel = data.generationStep
+          ? (storyGenerationSteps[data.generationStep] ?? data.generationStep)
+          : 'Initialising';
+        generationStepDescription = `In progress: ${stepLabel}`;
         break;
+      }
+
       case 'completed':
-        generationStepDescription = 'Book generation completed';
+        generationStepDescription = 'Book generation complete';
         break;
+
       case 'failed':
         generationStepDescription = 'Book generation failed';
         break;
+
+      case 'cancelled':
+        generationStepDescription = 'Book generation was cancelled';
+        break;
+
       default:
         generationStepDescription = undefined;
     }
 
     const status: BookCreationStatus = {
-      bookId: data.bookId,
-      status: data.bookStatus || 'draft',
-      generationStatus: data.generationStatus || 'pending',
-      generationStep: data.generationStep || 'theme_validation',
+      bookId:                   data.bookId,
+      status:                   data.bookStatus ?? 'draft',
+      generationStatus:         data.generationStatus ?? 'pending',
+      generationStep:           data.generationStep  ?? 'theme_validation',
       generationStepDescription,
-      generationStartedAt: data.generationStartedAt,
-      generationCompletedAt: data.generationCompletedAt,
-      aiComment: data.aiComment,
-      error: data.generationError,
-      createdAt: data.bookCreatedAt,
-      updatedAt: data.bookUpdatedAt,
+      generationStartedAt:      data.generationStartedAt,
+      generationCompletedAt:    data.generationCompletedAt,
+      aiComment:                data.aiComment,
+      error:                    data.generationError,
+      createdAt:                data.bookCreatedAt,
+      updatedAt:                data.bookUpdatedAt,
     };
 
     res.json(status);
   } catch (error) {
-    console.error('[GET /api/books/:bookId/status] Error:', error);
-    handleApiError(res, "Failed to get book status", error);
+    console.error('[GET /api/books/:bookId/status] ❌ Error:', error);
+    handleApiError(res, 'Failed to get book status', error);
   }
 });
 
 /**
  * POST /api/books/:bookId/cancel
- * 
- * Cancels a pending or failed book generation and refunds credits.
- * Users can cancel book creation via the UI and get their credits back.
- * 
- * @route POST /api/books/:bookId/cancel
- * @authentication Required
- * @param bookId - Book ID (UUID v7)
- * @returns Success response with refund confirmation
- * 
+ *
+ * Cancels a pending or failed book generation and issues a credit refund.
+ *
+ * **Guards:**
+ * - Completed books (`status === 'active'` OR `generationStatus === 'completed'`)
+ *   cannot be cancelled — the book already exists and is readable.
+ * - Books already refunded (`isRefunded` is set) are rejected to prevent
+ *   double-refunds. This can happen if the user cancels and then retries.
+ *
+ * **Atomicity note:**
+ * The status update and refund are separate DB writes (not one transaction) so
+ * the cancel itself cannot fail due to a refund error. If `refundCredits` fails
+ * after the status update, the user can retry — `isRefunded` is only stamped
+ * after a successful refund, so the `isRefunded` guard won't block retries.
+ *
+ * **Debounce bypass:**
+ * The status update uses a direct `dbWrite` call instead of the debounced
+ * `updateBookGenerationStatus` helper to avoid unnecessary 500 ms latency on a
+ * one-shot operation. The debounced helper is designed for high-frequency
+ * progress events, not for cancellation.
+ *
+ * @route   POST /api/books/:bookId/cancel
+ * @auth    Required
+ * @param   bookId - UUID v7 of the target book
+ * @returns `{ success: true, message: string }` on success
+ *
  * @example
+ * // Success
  * POST /api/books/01912345-6789-1234-5678-123456789012/cancel
- * 
- * Response (200):
- * {
- *   "success": true,
- *   "message": "Book generation cancelled and credits refunded"
- * }
- * 
- * Response (400) - Cannot cancel:
- * {
- *   "error": "Cannot cancel completed book"
- * }
- * 
- * Response (400) - Already refunded:
- * {
- *   "error": "Book generation already refunded"
- * }
+ * → 200 { "success": true, "message": "Book generation cancelled and credits refunded" }
+ *
+ * // Cannot cancel completed book
+ * → 400 { "error": "Cannot cancel completed book" }
+ *
+ * // Already refunded
+ * → 400 { "error": "Book generation already refunded" }
  */
-router.post("/:bookId/cancel", requireAuth, async (req: Request, res: Response) => {
+router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) => {
   try {
     const { bookId } = req.params;
     const userId = req.userId!;
 
     // Validate bookId format
     if (!isValidUuid(bookId)) {
-      return handleValidationError(res, "Invalid book ID format");
+      return handleValidationError(res, 'Invalid book ID format');
     }
 
     // Fetch book and generation data
-    const bookData = await dbRead
+    const [data] = await dbRead
       .select({
-        bookUserId: books.userId,
-        bookStatus: books.status,
+        bookUserId:       books.userId,
+        bookStatus:       books.status,
         generationStatus: bookGenerations.generationStatus,
-        isRefunded: bookGenerations.isRefunded,
+        isRefunded:       bookGenerations.isRefunded,
       })
       .from(books)
       .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
       .where(eq(books.id, bookId))
       .limit(1);
 
-    if (!bookData.length) {
-      return handleNotFoundError(res, "Book not found");
+    if (!data) {
+      return handleNotFoundError(res, 'Book not found');
     }
-
-    const data = bookData[0];
 
     // Verify user owns the book
     if (data.bookUserId !== userId) {
-      return handleForbiddenError(res, "You can only cancel your own books");
+      return handleForbiddenError(res, 'You can only cancel your own books');
     }
 
-    // Check if book can be cancelled
+    // Completed books are not cancellable — the content already exists
     if (data.bookStatus === 'active' || data.generationStatus === 'completed') {
-      return res.status(400).json({ error: "Cannot cancel completed book" });
+      return res.status(400).json({ error: 'Cannot cancel completed book' });
     }
 
-    // Check if already refunded
+    // Prevent double-refunds (idempotency guard)
     if (data.isRefunded) {
-      return res.status(400).json({ error: "Book generation already refunded" });
+      return res.status(400).json({ error: 'Book generation already refunded' });
     }
 
-    // Update book generation status to cancelled using shared function
-    await updateBookGenerationStatus({
-      bookId,
-      status: 'cancelled'
-    });
-
-    // Clear lock timestamp to allow retry if needed
+    // ── Set status to 'cancelled' directly (bypasses debounce for instant effect) ──
+    //
+    // Bug fix: previously used `updateBookGenerationStatus` (debounced, 500 ms delay)
+    // which added unnecessary latency and required a separate clear of isGeneratingStartedAt.
+    // A single direct write is cleaner and immediate.
     await dbWrite
       .update(bookGenerations)
-      .set({ isGeneratingStartedAt: null })
+      .set({
+        generationStatus:      'cancelled',
+        isGeneratingStartedAt: null,         // Release in-progress lock
+        generationError:       null,         // Clear any stale error message
+        generationCompletedAt: new Date(),
+      })
       .where(eq(bookGenerations.bookId, bookId));
 
-    // Refund credits
+    // ── Refund credits ────────────────────────────────────────────────────────
+    //
+    // Handled separately from the status update so that a refund failure doesn't
+    // undo the cancellation. The user can retry the cancel route if the refund
+    // fails (isRefunded guard won't block because it wasn't set).
     try {
-      await refundCredits(userId, "STORY_GENERATION", {
-        context: "book_creation_cancelled",
-        metadata: { bookId }
+      await refundCredits(userId, 'STORY_GENERATION', {
+        context:  'book_creation_cancelled',
+        metadata: { bookId },
       });
 
-      // Mark book as refunded in bookGenerations table
+      // Stamp the refund timestamp only after confirmed success
       await dbWrite
         .update(bookGenerations)
         .set({ isRefunded: new Date() })
@@ -739,17 +796,15 @@ router.post("/:bookId/cancel", requireAuth, async (req: Request, res: Response) 
 
       console.log(`[POST /api/books/:bookId/cancel] ✅ Book ${bookId} cancelled and credits refunded for user ${userId}`);
     } catch (refundError) {
-      console.error(`[POST /api/books/:bookId/cancel] ❌ Failed to refund credits for book ${bookId}:`, getErrorMessage(refundError));
-      return res.status(500).json({ error: "Failed to refund credits" });
+      console.error(`[POST /api/books/:bookId/cancel] ❌ Failed to refund credits for book ${bookId}:`, refundError);
+      // Return 500 so the client knows to retry; status is already 'cancelled'.
+      return res.status(500).json({ error: 'Failed to refund credits' });
     }
 
-    res.json({
-      success: true,
-      message: "Book generation cancelled and credits refunded"
-    });
+    res.json({ success: true, message: 'Book generation cancelled and credits refunded' });
   } catch (error) {
-    console.error('[POST /api/books/:bookId/cancel] Error:', error);
-    handleApiError(res, "Failed to cancel book generation", error);
+    console.error('[POST /api/books/:bookId/cancel] ❌ Error:', error);
+    handleApiError(res, 'Failed to cancel book generation', error);
   }
 });
 

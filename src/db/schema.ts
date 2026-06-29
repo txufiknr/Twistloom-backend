@@ -1208,6 +1208,7 @@ export const userCounters = pgTable(
     booksGenerated: integer("books_generated").notNull().default(0),
     booksCompleted: integer("books_completed").notNull().default(0),
     pagesRead: integer("pages_read").notNull().default(0),
+    pagesGenerated: integer("pages_generated").notNull().default(0),
     branchesOpened: integer("branches_opened").notNull().default(0),
 
     // Engagement metrics

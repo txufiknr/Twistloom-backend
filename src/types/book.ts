@@ -9,8 +9,38 @@ import type { AIResponse } from "./ai-chat.js";
 import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
 
 export type BookStatus = 'active' | 'archived' | 'draft';
-export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
-export type StoryGenerationStep = 'theme_validation' | 'book_initialization' | 'ai_generation' | 'ai_evaluation' | 'finalizing' | 'complete';
+
+export const bookGenerationStatuses = [
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'cancelled',
+];
+
+export type BookGenerationStatus = typeof bookGenerationStatuses[number];
+
+/**
+ * Story generation step types
+ * 
+ * These steps map to backend SSE events:
+ * - theme_validation: Backend theme validation process
+ * - book_initialization: Backend book initialization
+ * - ai_generation: Backend AI content generation
+ * - ai_evaluation: Backend AI content evaluation
+ * - finalizing: Backend database operations and finalization
+ * - complete: Process complete
+ */
+export const storyGenerationSteps = {
+  theme_validation:    'Validating your theme',
+  book_initialization: 'Setting up the story world',
+  ai_generation:       'AI is crafting your story',
+  ai_evaluation:       'Reviewing story quality',
+  finalizing:          'Finalising and saving your book',
+  complete:            'Book generation complete',
+};
+
+export type StoryGenerationStep = keyof typeof storyGenerationSteps;
 
 export type BookGenerationPayload = {
   bookId: string;
@@ -144,10 +174,15 @@ export type EnrichedBookData = Pick<DBBook,
   session: EnrichedBookSession | null;
   // contextHistory: string;
   translation: BookTranslation | null;
+  generation: EnrichedBookGeneration | null;
 }
 
 export type EnrichedBookFirstPage = { id: string; text: string };
 export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPageNumber: number; contextHistory: string };
+export type EnrichedBookGeneration = {
+  generationStatus?: BookGenerationStatus;
+  generationStep?: StoryGenerationStep;
+};
 
 /**
  * AI response structure for book creation

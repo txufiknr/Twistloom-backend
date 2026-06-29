@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, futureNoteTargetTypes, type StabilityLevel, storyPhases } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -31,7 +31,7 @@ import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
 import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
-import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteTarget, FutureNoteTargetType, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
+import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, StateTriggerOp, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
@@ -137,20 +137,11 @@ Levels:
 
 export const RULES_FUTURE_NOTES = `FUTURE NOTE RULES:
 
-Creating Future Notes:
-- Use targetConditions to declare WHEN a note becomes narratively relevant (OR logic — first condition met wins).
-- Time/page/phase conditions (day, date, pageRange, phase): use when the note ties to a specific planned story beat or calendar event.
-- State conditions (stability, condition, healthPercent, mobilityPercent, actionPercent, mentalPercent): use when the note should only surface once the MC reaches a specific physical or psychological threshold. These notes remain dormant until the threshold is crossed — do not force them early.
-- Omit targetConditions entirely when a note has no identifiable future trigger (open-ended mysteries, relationship arcs still in motion).
-
-targetConditions:
-- phase        → exact key: ${formatOneOf(Object.keys(storyPhases), ' | ')}
-- pageRange    → integer range string "start-end" (e.g., "25-30")
-- date         → ISO date "YYYY-MM-DD" (e.g., "2025-06-14")
-- day          → exact in-story day integer (e.g., "7")
-- stability    → exact key: ${formatOneOf(Object.keys(stabilityLevels), ' | ')}
-- condition    → exact key: ${formatOneOf(healthConditions, ' | ')}
-- healthPercent | mobilityPercent | actionPercent | mentalPercent → comparison expression (e.g., "< 75", "<= 50", "> 80")
+CREATING FUTURE NOTES:
+- Use \`schedule\` to anchor a note to a story time beat (phase, page window, in-story day, or calendar date). The AI begins foreshadowing within the lookahead window before the target arrives.
+- Use \`stateTrigger\` when the note should only surface once the MC reaches a specific physical or psychological threshold (health stat below a value, stability breakdown, critical condition). The note stays dormant until the threshold is actually crossed.
+- Both fields are optional and independent — use both when EITHER condition should activate the note (OR semantics), neither for open-ended notes with no identifiable trigger.
+- Never manufacture a triggering state just to resolve a stateTrigger note early. The MC must genuinely reach that state.
 
 Becoming Relevant:
 - Prioritize opportunities to advance these notes naturally.
@@ -160,10 +151,9 @@ Future Payoffs & Scheduled Events:
 - Keep these in mind for long-term story planning.
 - Do not force them into the current page unless naturally justified by the scene.
 
-Unscheduled (state-triggered notes show their trigger threshold here):
-- Notes with state conditions are dormant until their threshold is reached.
-- Begin advancing them as the MC approaches the triggering state.
-- Never invent the triggering state prematurely just to resolve a note.`;
+Unscheduled (state-triggered notes show their threshold here):
+- State-triggered notes are dormant. Their "triggers when: …" annotation tells you what activates them.
+- Begin advancing them as the MC approaches the triggering state — not before.`;
 
 export const RULES_FALSE_PREVIEW = `FALSE PREVIEW SYSTEM:
 
@@ -419,12 +409,8 @@ const firstBookOutputFormat: string = `{
       "note": "...",
       "isMajor": <boolean>,
       "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-      "targetConditions": [
-        {
-          "type": "${formatOneOf(futureNoteTargetTypes, ' | ')}",
-          "value": "..."
-        }
-      ],
+      "schedule": "(optional) phase→{type:'phase',phase:${formatOneOf(storyPhaseKeys, '|')}} | page→{type:'page',start:<n>,end?:<n>} | day→{type:'day',day:<n>} | date→{type:'date',date:'YYYY-MM-DD'}",
+      "stateTrigger": "(optional) stability→{type:'stability',level:${formatOneOf(Object.keys(stabilityLevels), '|')}} | condition→{type:'condition',condition:${formatOneOf(healthConditions, '|')}} | stat→{type:'stat',stat:'healthPercent|mobilityPercent|actionPercent|mentalPercent',op:'<|<=|>|>=',threshold:<0-100>}",
       "relatedThreadId": "<thread_id> or 'none'"
     }
   ],
@@ -625,12 +611,8 @@ const nextPageOutputFormat: string = `{
         "note": "...",
         "isMajor": <boolean>,
         "tag": "One of: ${formatOneOf(Object.keys(factTypes))}",
-        "targetConditions": [
-          {
-            "type": "${formatOneOf(futureNoteTargetTypes, ' | ')}",
-            "value": "..."
-          }
-        ],
+        "schedule": "(optional) phase→{type:'phase',phase:${formatOneOf(storyPhaseKeys, '|')}} | page→{type:'page',start:<n>,end?:<n>} | day→{type:'day',day:<n>} | date→{type:'date',date:'YYYY-MM-DD'}",
+        "stateTrigger": "(optional) stability→{type:'stability',level:${formatOneOf(Object.keys(stabilityLevels), '|')}} | condition→{type:'condition',condition:${formatOneOf(healthConditions, '|')}} | stat→{type:'stat',stat:'healthPercent|mobilityPercent|actionPercent|mentalPercent',op:'<|<=|>|>=',threshold:<0-100>}",
         "relatedThreadId": "<thread_id> or 'none'"
       }
     ],
@@ -837,7 +819,11 @@ const nextPageOutputFormat: string = `{
     "text": "...",
     "type": "One of: ${formatOneOf(Object.keys(endingTypes))}",
     "outline": [
-      { "text": "...", "isDone": <boolean> }
+      {
+        "text": "...",
+        "isDone": <boolean>,
+        "doneAtPage": <number>
+      }
     ],
     "changeNote": {
       "reason": "...",
@@ -962,9 +948,9 @@ ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved
   - Do NOT add for temporary details, completed events, or facts already captured by plot flags.
   - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : ''}
   - Future notes represent narrative obligations, not immediate requirements. Do not resolve a future note merely because it exists.
-  - When a target condition becomes relevant — scheduled timing reached OR state threshold crossed — begin incorporating it naturally into the narrative.
-  - State-triggered notes (stability, condition, *Percent) remain dormant until their threshold is met; do not force the triggering state just to resolve the note.
-  - targetConditions: use time/page/phase types for planned beats; use state types only when the note genuinely depends on the MC reaching that physical or psychological state; omit for open-ended notes with no specific trigger.
+  - When a schedule window opens or a stateTrigger threshold is crossed, begin incorporating it naturally into the narrative.
+  - schedule: use for notes tied to a planned story beat.
+  - stateTrigger: use only when the note genuinely depends on the MC reaching a physical or psychological threshold. Omit both for open-ended notes with no known trigger.
   - Remove notes which have been fulfilled or become irrelevant.
   - If fulfilling a future note materially changes the story, record the outcome as a plot flag.
   - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.
@@ -1802,61 +1788,59 @@ function formatActionChoices(actions: Action[]): string {
 /**
  * Formats FutureNotes into a structured prompt section for story generation.
  *
- * Notes are bucketed into three sections that tell the AI how urgently to act:
+ * Notes are bucketed into three sections that signal urgency to the AI:
  *
- * 1. **Becoming Relevant** — any targetCondition is within its lookahead window
- *    OR its state threshold is currently met. The AI should begin foreshadowing
- *    and naturally advancing these notes without forcing immediate resolution.
+ * 1. **Becoming Relevant** — `schedule` is within the lookahead window, OR
+ *    `stateTrigger` is currently satisfied. The AI should begin naturally
+ *    foreshadowing and advancing these without forcing immediate resolution.
  *
- * 2. **Future Payoffs & Scheduled Events** — has at least one time/page/phase
- *    condition, but none are within the lookahead window yet. Shown for long-term
- *    story awareness; the AI must not force them into the current page.
+ * 2. **Future Payoffs & Scheduled Events** — has a `schedule` that has not yet
+ *    entered its lookahead window. Shown for long-term awareness only; the AI
+ *    must not force these into the current page.
  *
- * 3. **Unscheduled** — notes with no conditions, or notes whose only conditions
- *    are state-based and whose threshold is not yet met. State-triggered notes
- *    render a "triggers when: …" annotation so the AI knows what activates them.
+ * 3. **Unscheduled** — has no `schedule`, or only a `stateTrigger` whose
+ *    threshold is not yet met. State-triggered notes render a "triggers when: …"
+ *    annotation so the AI knows exactly what activates them.
  *
- * Target condition types and their lookahead semantics:
- * - day       → fires when currentDay >= target - FUTURE_NOTE_LOOKAHEAD_DAYS
- * - date      → fires when calendar distance <= FUTURE_NOTE_LOOKAHEAD_DAYS
- * - pageRange → fires when currentPage >= rangeStart - FUTURE_NOTE_LOOKAHEAD_PAGES
- * - phase     → fires when currentPhase >= target phase (order-based)
- * - stability → fires immediately when MC stability === target value
- * - condition → fires immediately when MC health condition === target value
- * - *Percent  → fires immediately when comparison expression evaluates true
+ * Activation semantics:
+ * ┌──────────────┬─────────────────────────────────────────────────────────────┐
+ * │ schedule     │ lookahead window (pages / days / date); phase at-or-past    │
+ * │ stateTrigger │ fires immediately when threshold is crossed (no window)      │
+ * │ both         │ becomes Relevant when EITHER fires (true OR semantics)       │
+ * │ neither      │ always Unscheduled — open-ended obligation, no known trigger │
+ * └──────────────┴─────────────────────────────────────────────────────────────┘
  *
- * OR logic: for multi-condition notes, ANY single condition firing promotes
- * the note to "Becoming Relevant".
- *
- * Schedule label priority (for display, highest wins): day > date > pageRange > phase.
- * State conditions are never shown as a schedule label; they appear as a
- * "triggers when: …" annotation instead.
+ * Schedule label display priority: day > date > page > phase.
+ * The stateTrigger label ("triggers when: …") always follows the schedule label
+ * so the AI knows the secondary activation path on mixed notes.
  *
  * Example output:
  *
  * Becoming Relevant (advance naturally, do not force immediate resolution):
- * - entity_cycle: Strange electrical disturbances increase throughout town.
- *   (MAJOR, Day 52 (3 days away), thread: disappearance_cycle)
- * - spiral_down: MC begins acting recklessly and dissociating from reality.
- *   (triggers when: stability unstable OR mentalPercent < 30)
+ * - entity_cycle: Strange electrical disturbances intensify across town.
+ *   (MAJOR, Day 52 — 3 days away, thread: disappearance_cycle)
+ * - spiral_down: MC starts acting recklessly and dissociating.
+ *   (triggers when: stability is unstable)
  *
  * Future Payoffs & Scheduled Events:
  * - Day 65 (16 days away): The next disappearance in the cycle occurs. (MAJOR) [ID: entity_cycle]
- * - Pages 52-60: Reveal the contents of the hidden journal. [ID: diary_owner]
+ * - Pages 52–60: Reveal the contents of the hidden journal. [ID: diary_owner]
  * - FINALE phase: Expose the architect behind the simulation. (MAJOR) [ID: conspiracy]
  *
  * Unscheduled:
  * - relationship_1: Tension between Maya and Ethan continues to grow.
- * - dark_spiral: MC reaches breaking point. (triggers when: healthPercent < 25)
+ * - dark_spiral: MC reaches breaking point. (triggers when: mentalPercent < 25)
  *
- * @param futureNotes   Future notes accumulated throughout the story.
- * @param currentPage   Current story page number.
- * @param currentPhase  Current story phase.
- * @param currentDay    Current in-story day number since story start (1-based).
- * @param currentDate   Current in-story calendar date in YYYY-MM-DD format.
- * @param currentHealthStatus  Live MC health data; required for state-based percent/condition triggers.
- * @param currentStability     Live MC stability level; required for stability triggers.
- * @returns Prompt-ready text for injection into story generation context.
+ * @param futureNotes         Notes accumulated throughout the story.
+ * @param currentPage         Current story page number.
+ * @param currentPhase        Current story phase key.
+ * @param currentDay          In-story day number since story start (1-based).
+ * @param currentDate         In-story calendar date in YYYY-MM-DD format.
+ * @param currentHealthStatus Live MC health data for stat/condition trigger evaluation.
+ *                            When absent, all health-based triggers evaluate to false.
+ * @param currentStability    Live MC stability level for stability trigger evaluation.
+ *                            When absent, stability triggers evaluate to false.
+ * @returns Prompt-ready string for injection into story generation context.
  */
 function formatFutureNotes(params: {
   futureNotes: FutureNote[];
@@ -1865,15 +1849,15 @@ function formatFutureNotes(params: {
   currentDay?: number;
   currentDate?: string;
   /**
-   * Current MC health status, used to evaluate healthPercent, mobilityPercent,
-   * actionPercent, mentalPercent, and condition target conditions.
-   * When absent, all health-based conditions evaluate to false (note stays unscheduled).
+   * Live MC health data, required to evaluate `stateTrigger` conditions of
+   * types 'condition' and 'stat'. When absent, those triggers evaluate to false
+   * and the note stays Unscheduled until health data becomes available.
    */
   currentHealthStatus?: HealthStatus;
   /**
-   * Current MC stability level (stable | cracking | unstable), used to evaluate
-   * stability target conditions.
-   * When absent, stability conditions evaluate to false (note stays unscheduled).
+   * Live MC psychological stability level (stable | cracking | unstable).
+   * Required to evaluate `stateTrigger` conditions of type 'stability'.
+   * When absent, stability triggers evaluate to false.
    */
   currentStability?: StabilityLevel;
 }): string {
@@ -1891,211 +1875,141 @@ function formatFutureNotes(params: {
 
   // ── Phase ordering ─────────────────────────────────────────────────────────
 
-  const phaseOrder: Record<StoryPhase, number> = {
-    EARLY: 0,
-    MID: 1,
-    LATE: 2,
-    FINALE: 3,
-  };
+  /** Numeric rank for each story phase, used for ordered comparison. */
+  const phaseOrder: Record<StoryPhase, number> = { EARLY: 0, MID: 1, LATE: 2, FINALE: 3 };
 
   // ── Distance helpers ───────────────────────────────────────────────────────
 
-  /** Extracts the start page from a "start-end" or bare "start" pageRange string. */
-  const getPageRangeStart = (value: string): number | undefined => {
-    const match = value.match(/^(\d+)/);
-    return match ? Number(match[1]) : undefined;
-  };
+  /**
+   * Returns signed in-story day distance to `targetDay`:
+   * positive = target is ahead, negative = already passed.
+   * Returns undefined when `currentDay` is not available.
+   */
+  const getDayDistance = (targetDay: number): number | undefined =>
+    currentDay !== undefined ? targetDay - currentDay : undefined;
 
   /**
-   * Returns how many in-story days until `targetDay`.
-   * Negative means the target day is already past.
-   * Returns undefined when currentDay is unavailable.
+   * Returns signed calendar day distance to `targetDate`:
+   * positive = target is ahead, negative = already passed.
+   * Returns undefined when `currentDate` is not available.
    */
-  const getDayDistance = (targetDay: number, currentDay: number | undefined): number | undefined => {
-    if (currentDay === undefined) return undefined;
-    return targetDay - currentDay;
-  };
+  const getDateDistance = (targetDate: string): number | undefined =>
+    currentDate ? daysBetween(currentDate, targetDate) : undefined;
+
+  // ── Stat threshold evaluator ───────────────────────────────────────────────
 
   /**
-   * Returns how many calendar days until `targetDate`.
-   * Negative means the target date is already past.
-   * Returns undefined when currentDate is unavailable.
+   * Evaluates a numeric threshold comparison using pre-structured op + threshold
+   * fields from `StatTrigger`. No string parsing required — the discriminated
+   * union already provides typed values.
    */
-  const getDateDistance = (targetDate: string, currentDate: string | undefined): number | undefined => {
-    if (!currentDate) return undefined;
-    return daysBetween(currentDate, targetDate);
-  };
-
-  // ── Threshold evaluation for state-based conditions ────────────────────────
-
-  /**
-   * Parses a comparison expression string (e.g. "< 75", "<= 50", "> 20", ">= 80")
-   * into its operator and numeric threshold.
-   * Returns undefined for malformed expressions — caller should treat as false.
-   */
-  const parseNumericThreshold = (value: string): { op: '<' | '<=' | '>' | '>='; threshold: number } | undefined => {
-    const match = String(value).trim().match(/^([<>]=?)\s*(\d+(?:\.\d+)?)$/);
-    if (!match) return undefined;
-    return { op: match[1] as '<' | '<=' | '>' | '>=', threshold: Number(match[2]) };
-  };
-
-  /**
-   * Evaluates whether `current` satisfies the comparison expression in `value`.
-   * Returns false when the expression is malformed.
-   */
-  const evalThreshold = (current: number, value: string): boolean => {
-    const parsed = parseNumericThreshold(value);
-    if (!parsed) return false;
-    switch (parsed.op) {
-      case '<':  return current < parsed.threshold;
-      case '<=': return current <= parsed.threshold;
-      case '>':  return current > parsed.threshold;
-      case '>=': return current >= parsed.threshold;
+  const evalThreshold = (current: number, op: StateTriggerOp, threshold: number): boolean => {
+    switch (op) {
+      case '<':  return current < threshold;
+      case '<=': return current <= threshold;
+      case '>':  return current > threshold;
+      case '>=': return current >= threshold;
     }
   };
 
-  // ── Condition evaluation ───────────────────────────────────────────────────
+  // ── Schedule activation ────────────────────────────────────────────────────
 
   /**
-   * Returns true when the given target condition is within its lookahead window
-   * (time/page/phase types) or its state threshold is currently satisfied
-   * (state types) — i.e. the note should begin influencing the narrative now.
+   * Returns true when the note's schedule is within its lookahead window, or
+   * when the phase threshold has been reached or passed.
    *
-   * Important notes:
-   * - Negative day/date distance means the target has already passed;
-   *   we still treat it as relevant (note is overdue, not stale).
-   * - Phase condition fires once the current phase reaches OR passes the target.
-   * - `day` only supports exact integer values; range strings are invalid and
-   *   silently return false. Use `pageRange` for page windows.
-   * - State conditions require `currentHealthStatus` / `currentStability` to be
-   *   provided; when absent they evaluate to false (note stays unscheduled).
+   * Notes on distance sign:
+   * - Negative day/date distance → target already passed. Still treated as active
+   *   (the note is overdue, not stale — the AI should still advance it).
+   * - Undefined distance → no day/date context available → not yet active.
    */
-  const isConditionBecomingRelevant = (condition: FutureNoteTarget): boolean => {
-    switch (condition.type) {
+  const isScheduleActive = (s: FutureNoteSchedule): boolean => {
+    switch (s.type) {
+      case 'phase':
+        // Fires once currentPhase reaches OR passes the target phase.
+        return phaseOrder[s.phase] <= phaseOrder[currentPhase];
+      case 'page':
+        return currentPage >= s.start - FUTURE_NOTE_LOOKAHEAD_PAGES;
       case 'day': {
-        // Range strings ('10-14') are not supported; only exact integers.
-        const target = Number(condition.value);
-        if (isNaN(target)) return false;
-        const distance = getDayDistance(target, currentDay);
-        // Negative distance = target day already passed → still relevant.
-        return distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS;
+        const dist = getDayDistance(s.day);
+        return dist !== undefined && dist <= FUTURE_NOTE_LOOKAHEAD_DAYS;
       }
       case 'date': {
-        const distance = getDateDistance(String(condition.value), currentDate);
-        // Negative distance = target date already passed → still relevant.
-        return distance !== undefined && distance <= FUTURE_NOTE_LOOKAHEAD_DAYS;
+        const dist = getDateDistance(s.date);
+        return dist !== undefined && dist <= FUTURE_NOTE_LOOKAHEAD_DAYS;
       }
-      case 'pageRange': {
-        const startPage = getPageRangeStart(String(condition.value));
-        if (startPage === undefined) return false;
-        return currentPage >= startPage - FUTURE_NOTE_LOOKAHEAD_PAGES;
-      }
-      case 'phase': {
-        const targetOrder = phaseOrder[condition.value as StoryPhase];
-        if (targetOrder === undefined) return false;
-        const currentOrder = phaseOrder[currentPhase];
-        // Fires once we reach OR pass the target phase.
-        return targetOrder <= currentOrder;
-      }
-      case 'stability':
-        // Fires when the MC's stability level exactly matches the target (e.g. 'unstable').
-        return currentStability !== undefined && currentStability === String(condition.value);
-      case 'condition':
-        // Fires when the MC's health condition string exactly matches (e.g. 'critical').
-        return currentHealthStatus?.condition !== undefined && currentHealthStatus.condition === String(condition.value);
-      case 'healthPercent':
-        return currentHealthStatus?.healthPercent !== undefined && evalThreshold(currentHealthStatus.healthPercent, String(condition.value));
-      case 'mobilityPercent':
-        return currentHealthStatus?.mobilityPercent !== undefined && evalThreshold(currentHealthStatus.mobilityPercent, String(condition.value));
-      case 'actionPercent':
-        return currentHealthStatus?.actionPercent !== undefined && evalThreshold(currentHealthStatus.actionPercent, String(condition.value));
-      case 'mentalPercent':
-        return currentHealthStatus?.mentalPercent !== undefined && evalThreshold(currentHealthStatus.mentalPercent, String(condition.value));
-      default:
-        return false;
     }
   };
 
-  const scheduledTargetTypes: FutureNoteTargetType[] = ['day', 'date', 'pageRange', 'phase'];
+  // ── State trigger activation ───────────────────────────────────────────────
 
   /**
-   * Returns true when the condition type is time/page/phase-ordered, making the
-   * note eligible for the "Future Payoffs & Scheduled Events" section.
+   * Returns true when the note's stateTrigger condition is currently satisfied.
    *
-   * State-based conditions (stability, condition, *Percent) are never "scheduled"
-   * in the timeline sense — they belong in Unscheduled until their threshold fires.
+   * State triggers have no lookahead — they fire the moment the MC's state
+   * crosses the threshold. When the required health/stability data is absent,
+   * the trigger evaluates to false so the note remains Unscheduled until the
+   * caller supplies the live state data.
    */
-  const isConditionScheduled = (condition: FutureNoteTarget): boolean => {
-    return scheduledTargetTypes.includes(condition.type);
+  const isStateTriggerActive = (t: FutureNoteStateTrigger): boolean => {
+    switch (t.type) {
+      case 'stability':
+        return currentStability === t.level;
+      case 'condition':
+        return currentHealthStatus?.condition === t.condition;
+      case 'stat': {
+        const current = currentHealthStatus?.[t.stat];
+        return current !== undefined && evalThreshold(current, t.op, t.threshold);
+      }
+    }
   };
 
   // ── Label helpers ──────────────────────────────────────────────────────────
 
   /**
-   * Returns a human-readable schedule label for the highest-priority time-based
-   * condition on a note (priority: day > date > pageRange > phase).
-   *
-   * Includes a relative distance annotation when calculable:
-   * - Positive distance → "X days/days away"
-   * - Zero distance     → "today"
-   * - Negative distance → "X days past" (trigger overdue)
-   *
-   * Returns undefined when the note has no time-based conditions.
+   * Builds a human-readable schedule label with a relative distance annotation
+   * where calculable ("X days away", "today", "X days past").
+   * A shared `fmtDays` closure provides consistent formatting across day/date variants.
    */
   const getScheduleLabel = (note: FutureNote): string | undefined => {
-    const conditions = note.targetConditions;
-    if (!conditions?.length) return undefined;
+    const s = note.schedule;
+    if (!s) return undefined;
 
-    for (const type of scheduledTargetTypes) {
-      const cond = conditions.find(c => c.type === type);
-      if (!cond) continue;
-
-      switch (type) {
-        case 'day': {
-          const target = Number(cond.value);
-          if (isNaN(target)) continue; // malformed value — try next priority
-          const distance = getDayDistance(target, currentDay);
-          if (distance === undefined) return `Day ${target}`;
-          if (distance > 0) return `Day ${target} (${distance} day${distance === 1 ? '' : 's'} away)`;
-          if (distance === 0) return `Day ${target} (today)`;
-          const past = Math.abs(distance);
-          return `Day ${target} (${past} day${past === 1 ? '' : 's'} past)`;
-        }
-        case 'date': {
-          const distance = getDateDistance(String(cond.value), currentDate);
-          if (distance === undefined) return String(cond.value);
-          if (distance > 0) return `${cond.value} (${distance} day${distance === 1 ? '' : 's'} away)`;
-          if (distance === 0) return `${cond.value} (today)`;
-          const past = Math.abs(distance);
-          return `${cond.value} (${past} day${past === 1 ? '' : 's'} past)`;
-        }
-        case 'pageRange':
-          return `Pages ${cond.value}`;
-        case 'phase':
-          return `${cond.value} phase`;
+    const fmtDays = (distance: number | undefined, base: string): string => {
+      if (distance === undefined) return base;
+      if (distance > 0) {
+        const n = distance;
+        return `${base} (${n} day${n === 1 ? '' : 's'} away)`;
       }
-    }
+      if (distance === 0) return `${base} (today)`;
+      const n = Math.abs(distance);
+      return `${base} (${n} day${n === 1 ? '' : 's'} past)`;
+    };
 
-    return undefined;
+    switch (s.type) {
+      case 'phase': return `${s.phase} phase`;
+      case 'page':  return s.end ? `Pages ${s.start}\u2013${s.end}` : `Page ${s.start}`;
+      case 'day':   return fmtDays(getDayDistance(s.day), `Day ${s.day}`);
+      case 'date':  return fmtDays(getDateDistance(s.date), s.date);
+    }
   };
 
   /**
-   * Returns a compact "triggers when: …" annotation string listing all
-   * state-based conditions on a note (OR-joined), or undefined if none exist.
+   * Builds a "triggers when: …" annotation for the note's stateTrigger.
    *
-   * This annotation surfaces in the "Unscheduled" section so the AI knows
-   * exactly what threshold will activate the note — preventing it from either
-   * ignoring the note entirely or forcing the triggering state prematurely.
+   * Surfaced on Unscheduled notes so the AI knows the exact threshold that
+   * activates the note — preventing premature forcing or silent ignoring.
+   * Also shown on Becoming Relevant notes that were promoted via stateTrigger
+   * so the AI understands why they surfaced.
    */
-  const getStateConditionLabel = (note: FutureNote): string | undefined => {
-    const stateTypes: FutureNoteTargetType[] = [
-      'stability', 'condition',
-      'healthPercent', 'mobilityPercent', 'actionPercent', 'mentalPercent',
-    ];
-    const stateConditions = note.targetConditions?.filter(c => stateTypes.includes(c.type)) ?? [];
-    if (!stateConditions.length) return undefined;
-    const parts = stateConditions.map(c => `${c.type} ${c.value}`);
-    return `triggers when: ${parts.join(' OR ')}`;
+  const getStateTriggerLabel = (note: FutureNote): string | undefined => {
+    const t = note.stateTrigger;
+    if (!t) return undefined;
+    switch (t.type) {
+      case 'stability': return `triggers when: stability level is '${t.level}'`;
+      case 'condition': return `triggers when: health condition is '${t.condition}'`;
+      case 'stat':      return `triggers when: ${t.stat} ${t.op} ${t.threshold}`;
+    }
   };
 
   // ── Bucketing ──────────────────────────────────────────────────────────────
@@ -2105,24 +2019,18 @@ function formatFutureNotes(params: {
   const unscheduled: FutureNote[] = [];
 
   for (const note of futureNotes) {
-    const conditions = note.targetConditions;
+    const scheduleActive = note.schedule     ? isScheduleActive(note.schedule)         : false;
+    const triggerActive  = note.stateTrigger ? isStateTriggerActive(note.stateTrigger) : false;
+    const hasSchedule    = !!note.schedule;
 
-    if (!conditions?.length) {
-      unscheduled.push(note);
-      continue;
-    }
-
-    // OR logic: if ANY condition is becoming relevant, the note promotes to that section.
-    const anyRelevant = conditions.some(isConditionBecomingRelevant);
-    const anyScheduled = conditions.some(isConditionScheduled);
-
-    if (anyRelevant) {
+    if (scheduleActive || triggerActive) {
+      // Schedule window opened OR the MC's state crossed the threshold.
       becomingRelevant.push(note);
-    } else if (anyScheduled) {
+    } else if (hasSchedule) {
+      // Has a future schedule, but the lookahead window hasn't opened yet.
       upcomingScheduledEvents.push(note);
     } else {
-      // All conditions are state-based and their threshold is not yet met.
-      // The note stays dormant here until a state condition fires.
+      // No schedule — state-trigger-only (dormant) or entirely open-ended.
       unscheduled.push(note);
     }
   }
@@ -2130,56 +2038,37 @@ function formatFutureNotes(params: {
   // ── Sorting ────────────────────────────────────────────────────────────────
 
   /**
-   * Computes a [typeRank, numericValue] sort key based on the highest-priority
-   * time-based condition on a note. Lower typeRank = closer to timeline start.
+   * Computes a [typeRank, numericValue] sort key from the note's schedule.
    *
-   * Rank table:
-   *   0 = day       (absolute in-story day)
-   *   1 = date      (UTC epoch ms)
-   *   2 = pageRange (start page)
-   *   3 = phase     (phase index)
-   *   4 = state-only (no time dimension; sorts after all time-based notes)
-   *   5 = no conditions at all
+   * Rank table (lower = earlier in the narrative timeline):
+   *   0 = day     (absolute in-story day number)
+   *   1 = date    (UTC epoch ms for consistent cross-month ordering)
+   *   2 = page    (start page of the window)
+   *   3 = phase   (phase index 0–3)
+   *   4 = stateTrigger-only (no time dimension; after all scheduled notes)
+   *   5 = no trigger at all (fully open-ended; always last)
    */
   const getSortValue = (note: FutureNote): [number, number] => {
-    const conditions = note.targetConditions;
-    if (!conditions?.length) return [5, Number.MAX_SAFE_INTEGER];
-
-    const priority: FutureNoteTargetType[] = ['day', 'date', 'pageRange', 'phase'];
-    for (const type of priority) {
-      const cond = conditions.find(c => c.type === type);
-      if (!cond) continue;
-
-      switch (type) {
-        case 'day': {
-          const target = Number(cond.value);
-          if (!isNaN(target)) return [0, target];
-          break; // malformed — try next priority
-        }
-        case 'date':
-          return [1, toUtcMidnight(String(cond.value))];
-        case 'pageRange': {
-          const startPage = getPageRangeStart(String(cond.value));
-          if (startPage !== undefined) return [2, startPage];
-          break; // malformed — try next priority
-        }
-        case 'phase':
-          return [3, phaseOrder[cond.value as StoryPhase] ?? Number.MAX_SAFE_INTEGER];
-      }
+    if (!note.schedule) {
+      return note.stateTrigger ? [4, Number.MAX_SAFE_INTEGER] : [5, Number.MAX_SAFE_INTEGER];
     }
-
-    // Note has conditions but all are state-based — sort after all time-based notes.
-    return [4, Number.MAX_SAFE_INTEGER];
+    const s = note.schedule;
+    switch (s.type) {
+      case 'day':   return [0, s.day];
+      case 'date':  return [1, toUtcMidnight(s.date)];
+      case 'page':  return [2, s.start];
+      case 'phase': return [3, phaseOrder[s.phase] ?? Number.MAX_SAFE_INTEGER];
+    }
   };
 
   const sortNotes = (notes: FutureNote[]): void => {
     notes.sort((a, b) => {
-      const [aType, aValue] = getSortValue(a);
-      const [bType, bValue] = getSortValue(b);
-
+      const [aType, aVal] = getSortValue(a);
+      const [bType, bVal] = getSortValue(b);
+      // Primary: narrative timeline position.
       if (aType !== bType) return aType - bType;
-      if (aValue !== bValue) return aValue - bValue;
-      // Within same type+value: major notes surface first.
+      if (aVal  !== bVal)  return aVal  - bVal;
+      // Secondary: major notes surface first within the same time slot.
       if (a.isMajor !== b.isMajor) return a.isMajor ? -1 : 1;
       // Final tiebreak: insertion order (older notes first).
       return (a.addedAtPage ?? Infinity) - (b.addedAtPage ?? Infinity);
@@ -2194,7 +2083,7 @@ function formatFutureNotes(params: {
 
   /**
    * Formats a note for the "Becoming Relevant" and "Unscheduled" sections.
-   * Emits: MAJOR flag · schedule label · state-trigger annotation · thread ID.
+   * Meta order: MAJOR · schedule label · stateTrigger annotation · thread ID.
    */
   const formatRelevantNote = (note: FutureNote): string => {
     const meta: string[] = [];
@@ -2204,9 +2093,10 @@ function formatFutureNotes(params: {
     const schedule = getScheduleLabel(note);
     if (schedule) meta.push(schedule);
 
-    // Surface state-condition thresholds so the AI knows when to activate the note.
-    const stateLabel = getStateConditionLabel(note);
-    if (stateLabel) meta.push(stateLabel);
+    // Always surface the state trigger annotation so the AI understands what
+    // threshold activates this note — critical for Unscheduled dormant notes.
+    const trigger = getStateTriggerLabel(note);
+    if (trigger) meta.push(trigger);
 
     if (note.relatedThreadId && note.relatedThreadId !== 'none') {
       meta.push(`thread: ${note.relatedThreadId}`);
@@ -2217,13 +2107,14 @@ function formatFutureNotes(params: {
 
   /**
    * Formats a note for the "Future Payoffs & Scheduled Events" section.
-   * Leads with the schedule label so the AI can scan the timeline at a glance.
-   * State-condition annotations are omitted here (the schedule label is primary).
+   * Leads with the schedule label for at-a-glance timeline scanning.
+   * The stateTrigger label is intentionally omitted — schedule is the
+   * primary signal in this section.
    */
   const formatScheduledEvent = (note: FutureNote): string => {
     const schedule = getScheduleLabel(note);
-    const prefix = schedule ? `${schedule}: ` : '';
-    const major = note.isMajor ? ' (MAJOR)' : '';
+    const prefix   = schedule ? `${schedule}: ` : '';
+    const major    = note.isMajor ? ' (MAJOR)' : '';
     return `- ${prefix}${note.note}${major} [ID: ${note.key}]`;
   };
 
@@ -2232,30 +2123,24 @@ function formatFutureNotes(params: {
   const sections: string[] = [];
 
   if (becomingRelevant.length) {
-    sections.push(
-      [
-        'Becoming Relevant (advance naturally, do not force immediate resolution):',
-        ...becomingRelevant.map(formatRelevantNote),
-      ].join('\n'),
-    );
+    sections.push([
+      'Becoming Relevant (advance naturally, do not force immediate resolution):',
+      ...becomingRelevant.map(formatRelevantNote),
+    ].join('\n'));
   }
 
   if (upcomingScheduledEvents.length) {
-    sections.push(
-      [
-        'Future Payoffs & Scheduled Events:',
-        ...upcomingScheduledEvents.map(formatScheduledEvent),
-      ].join('\n'),
-    );
+    sections.push([
+      'Future Payoffs & Scheduled Events:',
+      ...upcomingScheduledEvents.map(formatScheduledEvent),
+    ].join('\n'));
   }
 
   if (unscheduled.length) {
-    sections.push(
-      [
-        'Unscheduled:',
-        ...unscheduled.map(formatRelevantNote),
-      ].join('\n'),
-    );
+    sections.push([
+      'Unscheduled:',
+      ...unscheduled.map(formatRelevantNote),
+    ].join('\n'));
   }
 
   return sections.join('\n\n');
@@ -2490,7 +2375,7 @@ function formatEndingPlan(ending?: Ending): string {
 
 function formatOutline(outline: StoryOutline[]): string {
   return outline
-    .map(item => `${item.isDone ? '✅' : '⬜'} ${item.text}`)
+    .map(item => `${item.isDone ? '✅' : '⬜'} ${item.text}${item.isDone && item.doneAtPage ? ` (page ${item.doneAtPage})` : ''}`)
     .join('\n');
 }
 
@@ -2554,7 +2439,7 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): st
 
   const pageLabel = remainingPages > 0
     ? `page ${page} of ${maxPage} — ${remainingPages} page${remainingPages === 1 ? '' : 's'} remaining`
-    : `the very last page (the end)`;
+    : `the final page of the book. The story ends completely right now.`;
 
   const base = `Continue the story in first-person ("I") POV. You're now writing ${pageLabel}.`;
 
@@ -2573,7 +2458,7 @@ Each continuation must follow all the same narrative rules, but diverge into a d
 Multiple possible futures example:
 Open the door
     ├── Empty, but echoes of his voice linger
-    ├── A missing friend waits in the dark
+    ├── A missing fellow waits in the dark
     ├── Something breathes inside
     └── The room shouldn't exist`;
 }
@@ -2761,7 +2646,7 @@ ${formatFutureNotes({
   currentDay: elapsedDays ? (elapsedDays + 1) : undefined,
   currentDate: calendarDate,
   currentHealthStatus: healthStatus,
-  currentStability: psychologicalProfile?.stability,
+  currentStability: psychologicalProfile.stability,
 })}
 
 ---
@@ -2779,23 +2664,37 @@ ${formatEndingPrompt(state)}`;
  * This enables personalized narrative generation based on character psychology
  * and story progression.
  * 
- * @param mc - Main character profile containing name, gender, and psychological data
  * @param state - Current story state with progression, flags, and hidden values
- * @param action - Action taken by the user
  * @returns Complete prompt string ready for AI generation
- * 
- * @example
- * ```typescript
- * const prompt = buildCompletePrompt(character, currentState);
- * // Returns: "Continue this branching psychological thriller..." with all placeholders filled
- * ```
  */
 function buildEndingRules(state: StoryState): string {
   const { psychologicalProfile, hiddenState, viableEnding } = state;
-  const { isFinale, finalePhase = "EARLY" } = getStoryStateInfo(state);
+  const { isLastPage, isFinale, finalePhase = "EARLY" } = getStoryStateInfo(state);
   const { profileShift, endingPlan } = hiddenState;
-  const { type = "fake_escape" } = viableEnding ?? {};
+  const { type = "fake_escape", outline = [] } = viableEnding ?? {};
 
+  // ==========================================
+  // 1. THE LAST PAGE (Absolute Finality)
+  // ==========================================
+  if (isLastPage) {
+    return `- CRITICAL DIRECTIVE: This is the final page of the book. The story ends completely right now.
+- DO NOT introduce new threats, new questions, or cliffhangers that imply a continuation.
+- DO NOT offer the protagonist a way out. 
+- DO NOT write a moralizing, hopeful, or neatly wrapped conclusion.
+
+ENDING EXECUTION:
+You must execute the following narrative ending with brutal, chilling finality:
+${endingTypes[type]}
+
+TONE & PACING:
+- The protagonist must realize the horrifying truth of their situation.
+- The final sentence should be a punch to the gut—a bleak, ironic, or terrifying realization that leaves the reader staring at the screen.
+- Drop the curtain immediately after the realization.`;
+  } 
+  
+  // ==========================================
+  // 2. THE FINALE PHASE (The Climax)
+  // ==========================================
   if (isFinale) {
     return `- The story is approaching convergence
 - Viable ending is now inevitable regardless of action
@@ -2808,14 +2707,17 @@ ENDING PRESSURE:
 - Increase chaos and urgency
 - Collapse multiple mysteries
 - Introduce irreversible consequences
-- Don't fully explain everything`.trim();
+- Don't fully explain everything`;
   }
 
-  // Non-finale: build toward the ending, possibly with an active trap
+  // ==========================================
+  // 3. THE BUILD-UP (Non-Finale)
+  // ==========================================
   const trapDirective = buildEndingTrapDirective(endingPlan);
   const optimalEnding = determineOptimalEnding(state);
+  const nextDestination = outline.find(o => !o.isDone);
 
-  return `- Gradually steer story toward viable ending plan
+  return `- Gradually steer story toward viable ending plan${nextDestination ? ` (next in outline: "${nextDestination.text}")` : ''}
 - IMPORTANT: NEVER SPOIL this ending plan
 - Plant small hints across pages; don't fully explain or reveal early
 - Increase hint intensity as story progresses: early pages → very subtle, later pages → more obvious but still indirect
@@ -3411,11 +3313,12 @@ initialState:
 - injuries: if any, injuries sustained by the MC in the first page.
 
 viableEnding:
-- Choose an ending type and write a ${VIABLE_ENDING_LENGTH} plan describing the story's intended destination.
-- Define the MC's ultimate fate and the final state of the central conflict.
-- Major threads should reach a satisfying culmination through resolution, revelation, tragedy, sacrifice, or deliberate ambiguity.
-- Preserve mystery where it strengthens the psychological or horror impact.
-- If the user specifies a desired ending in the theme input, respect it whenever possible.
+- Choose a thriller ending type and write a ${VIABLE_ENDING_LENGTH} plan describing the story's chilling destination.
+- Define the MC's ultimate fate and the final, inescapable state of the central conflict.
+- Major threads MUST reach a psychologically disturbing culmination. Do NOT write neat, moralizing, or hopeful resolutions.
+- Execute this climax through shocking revelation, tragic sacrifice, inescapable loops, or chilling ambiguity.
+- Preserve mystery specifically where it maximizes dread, tension, and horror impact.
+- If the user specifies a desired ending in the theme input, adapt it to fit the thriller genre and respect it whenever possible.
 
 initialThreads:
 - Represents major unanswered questions, mysteries, goals, or narrative conflicts that keep the reader engaged across multiple pages.
@@ -3475,6 +3378,45 @@ initialFacts:
  * console.log(`First page: ${bookSetup.firstPage.text}`);
  * console.log(`Initial difficulty: ${bookSetup.initialState.difficulty}`);
  * ```
+ * 
+ * Initialises a complete book with AI-generated content and persists all
+ * components to the database in the correct dependency order.
+ *
+ * **Two modes of operation:**
+ *
+ * *Insert mode* (`bookId` param absent):
+ * - Used by `POST /api/books` (sync) and `POST /api/books/stream` (SSE)
+ * - Creates a brand-new `books` row with the AI-generated content
+ * - Runs inside the transaction provided by `executeWithCredits` when called
+ *   from `createBookCore`
+ *
+ * *Update mode* (`bookId` param present):
+ * - Used by the GitHub Actions cron runner (`on-demand-book-creation.ts`)
+ * - Updates the pre-existing draft row that `POST /api/books/async` created
+ * - Does NOT run inside a transaction with credit consumption (the credits were
+ *   consumed atomically when the draft was created; this step only fills content)
+ *
+ * **`tx` / `client` forwarding:**
+ * All DB operations (insertBook, insertStoryPage, insertStoryState, updateBook)
+ * receive the same `client` reference. When a transaction is provided the whole
+ * book creation is atomic with the credit deduction.
+ *
+ * **Progress reporting:**
+ * Two parallel progress streams are maintained:
+ * - `onProgress` — SSE events for the frontend (sync/SSE flow only)
+ * - `onGenerationProgress` — fire-and-forget DB writes for the polling endpoint
+ *   (async/cron flow; no-op when `bookId` / `draftBookId` is absent)
+ *
+ * @param params     - Full initialisation parameters (see `InitializeBookParams`)
+ * @param onProgress - Optional SSE progress callback
+ * @returns `{ book, firstPage, initialState, aiComment }`
+ *
+ * @example
+ * // Sync flow (no pre-existing book)
+ * const result = await initializeBook({ userId, theme, mcCandidate });
+ *
+ * // Async/cron flow (updating a draft)
+ * const result = await initializeBook({ userId, theme, mcCandidate, bookId });
  */
 export async function initializeBook(
   params: InitializeBookParams,
@@ -3493,54 +3435,62 @@ export async function initializeBook(
     bookId: draftBookId,
   } = params;
 
+  // ── Internal progress helper ─────────────────────────────────────────────
+  //
+  // Persists generation progress to `bookGenerations` for the polling endpoint.
+  // Fire-and-forget: never blocks the main generation pipeline.
+  async function onGenerationProgress(progress: StoryGenerationStep | BookGenerationProgress): Promise<void> {
+    if (!draftBookId) return; // No-op for sync/SSE flows without a pre-existing draft
 
-  // Helper to persist book generation progress to DB (fire-and-forget)
-  async function onGenerationProgress(progress: StoryGenerationStep | BookGenerationProgress) {
-    if (!draftBookId) return;
-    try {
-      const progressValues: BookGenerationProgress = typeof progress === 'string' ? { step: progress } : progress;
-      void updateBookGenerationStatus({ bookId: draftBookId, ...progressValues });
-    } catch (e) {
+    const progressValues: BookGenerationProgress = typeof progress === 'string' ? { step: progress } : progress;
+
+    // Fire-and-forget with proper rejection handling
+    updateBookGenerationStatus({ bookId: draftBookId, ...progressValues }).catch((e) => {
+      // Non-fatal: a missed DB write just means the polling endpoint shows a
+      // slightly stale step. The generation itself is not affected.
       console.warn('[initializeBook] ⚠️ Failed to persist generation status:', getErrorMessage(e));
-    }
+    });
   }
 
   try {
-    // Emit book initialization start event and persist initial progress
+    // ── 1. Signal initialisation start ───────────────────────────────────────
     await onProgress?.({ type: 'book_initialization_start' });
     await onGenerationProgress('book_initialization');
 
-    // 1. Create AI prompt for book creation
+    // ── 2. Build and execute AI prompt for full book creation ─────────────────
     const prompt = buildBookCreationPrompt(params);
 
-    // 2. Generate complete book setup using AI
-    const response = await executePromptForJSON<BookCreationResponse>({
-      prompt,
-      configs: {
-        schema: BOOK_CREATION_SCHEMA_DEFINITION,
-        requiredFields: BOOK_CREATION_REQUIRED_FIELDS,
-        fallbackField: 'summary',
-        baseOptions: {
-          config: AI_CHAT_CONFIG_DEFAULT,
-          modelSelection: AI_CHAT_MODELS_WRITING,
-          context: 'book-creation',
-          logPrompts: true,
-          systemPrompt: PROMPT_SYSTEM_FIRST_PAGE_GENERATION
-        },
-      } satisfies AIPromptForJson<BookCreationResponse>,
-      jsonStructure: firstBookOutputFormat,
-      fieldInstructions: firstBookFieldInstructions,
-      thinkThenOutput: firstBookReviewChecklist,
-      // STEP 3: EVALUATING (inside `executePromptForJSON`)
-      evaluatorPrompt: buildFirstBookEvaluatorPrompt(params),
-    }, onProgress, onGenerationProgress);
+    const response = await executePromptForJSON<BookCreationResponse>(
+      {
+        prompt,
+        configs: {
+          schema: BOOK_CREATION_SCHEMA_DEFINITION,
+          requiredFields: BOOK_CREATION_REQUIRED_FIELDS,
+          fallbackField: 'summary',
+          baseOptions: {
+            config: AI_CHAT_CONFIG_DEFAULT,
+            modelSelection: AI_CHAT_MODELS_WRITING,
+            context: 'book-creation',
+            logPrompts: true,
+            systemPrompt: PROMPT_SYSTEM_FIRST_PAGE_GENERATION,
+          },
+        } satisfies AIPromptForJson<BookCreationResponse>,
+        jsonStructure: firstBookOutputFormat,
+        fieldInstructions: firstBookFieldInstructions,
+        thinkThenOutput: firstBookReviewChecklist,
+        // Step 3 (ai_evaluation) happens inside executePromptForJSON
+        evaluatorPrompt: buildFirstBookEvaluatorPrompt(params),
+      },
+      onProgress,
+      onGenerationProgress
+    );
 
-    // 3. Validate AI response
+    // ── 3. Validate AI response ───────────────────────────────────────────────
     if (!response.result) {
-      throw new Error('Failed to generate book: no result');
+      throw new Error('Failed to generate book: no result from AI');
     }
-  
-    // STEP 4: FINALIZING
+
+    // ── 4. Destructure AI result ──────────────────────────────────────────────
     const {
       title,
       alternativeTitles,
@@ -3562,22 +3512,21 @@ export async function initializeBook(
       futureNotes,
     } = response.result;
 
-    // 3. Validate first page text length
+    // Validate first page text length
     if (generatedFirstPage.text.length < MIN_CHARS_PER_PAGE) {
-      throw new Error('Failed to generate book: First page text is too short');
+      throw new Error('Failed to generate book: first page text is too short');
     }
 
-    // 4. Persist book to database with character profile
+    // ── 5. Persist book record ────────────────────────────────────────────────
     await onProgress?.({ type: 'finalizing_start' });
     await onGenerationProgress('finalizing');
-    
+
     let book: Book;
     let bookId: string;
 
     if (draftBookId) {
-      // Update existing book record (async book creation flow)
-      // Update with generated content
-      await updateBook(draftBookId, {
+      // Update mode: fill the draft row that the async route pre-created
+      await updateBook( draftBookId, {
         title,
         hook,
         summary,
@@ -3591,14 +3540,12 @@ export async function initializeBook(
       
       // Fetch the updated book
       const dbBook = await getBookFromDB(draftBookId, { client });
-      if (!dbBook) {
-        throw new Error(`Book not found: ${draftBookId}`);
-      }
+      if (!dbBook) throw new Error(`Book not found after update: ${draftBookId}`);
 
       book = mapBookFromDb(dbBook);
       bookId = draftBookId;
     } else {
-      // Insert new book record (sync/SSE flows)
+      // Insert mode: create a fresh book row (sync / SSE flow)
       const newBookData: DBNewBook = {
         userId,
         title,
@@ -3616,41 +3563,50 @@ export async function initializeBook(
       bookId = book.id;
     }
 
-    const characters: Record<string, CharacterMemory> = Object.fromEntries<CharacterMemory>(initialCharacters.map<[string, CharacterMemory]>(char => [
-      char.characterId,
-      {
-        ...char,
-        pastInteractions: char.pastInteractions?.map<PastInteraction>(i => ({ page: 1, interaction: i, placeId })) ?? [],
-        narrativeFlags: {
-          ...{ potentialTwist: 'none' },
-          ...char.narrativeFlags
-        },
-        introducedAtPage: 1,
-        relationships: initialRelationships.filter(r => r.sourceId === char.characterId).map<CharacterRelationship>(r => {
-          return {
-            ...r,
-            type: r.type || "knows",
-            status: r.status || "neutral",
-            context: r.context,
-            recognitionLevel: r.recognitionLevel,
-          } satisfies Record<keyof CharacterRelationship, string>;
-        }),
-        injuries: char.injuries ?? []
-      } satisfies CharacterMemory
-    ]));
-
+    // ── 6. Build character and place memory maps ──────────────────────────────
     const placeId = initialPlace.placeId;
+
+    const characters: Record<string, CharacterMemory> = Object.fromEntries<CharacterMemory>(
+      initialCharacters.map<[string, CharacterMemory]>((char) => [
+        char.characterId,
+        {
+          ...char,
+          pastInteractions:
+            char.pastInteractions?.map<PastInteraction>((i) => ({
+              page: 1,
+              interaction: i,
+              placeId,
+            })) ?? [],
+          narrativeFlags: {
+            ...{ potentialTwist: 'none' },
+            ...char.narrativeFlags,
+          },
+          introducedAtPage: 1,
+          relationships: initialRelationships
+            .filter((r) => r.sourceId === char.characterId)
+            .map<CharacterRelationship>((r) => ({
+              ...r,
+              type:             r.type   || 'knows',
+              status:           r.status || 'neutral',
+              context:          r.context,
+              recognitionLevel: r.recognitionLevel,
+            }) satisfies Record<keyof CharacterRelationship, string>),
+          injuries: char.injuries ?? [],
+        } satisfies CharacterMemory,
+      ])
+    );
+
     const places: Record<string, PlaceMemory> = {
       [placeId]: {
         ...initialPlace,
         visitCount: 1,
         lastVisitedAtPage: 1,
-        keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
+        keyEvents: initialPlace.keyEvents?.map<PastEvent>((e) => ({ page: 1, event: e })) ?? [],
         knownConnections: []
       } satisfies PlaceMemory
     };
 
-    // 5. Persist first page as root page of the book
+    // ── 7. Persist first page ─────────────────────────────────────────────────
     const pageToInsert: StoryPage = {
       ...generatedFirstPage,
       stateDelta: {},
@@ -3665,50 +3621,54 @@ export async function initializeBook(
 
     const { id: pageId, calendarDate, timeOfDay, actions } = firstPage;
     console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
-    console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
+    console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map((a) => a.text));
+
+    // ── 8. Build initial story state ──────────────────────────────────────────
     const injuries = generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [];
     const healthStatus = calculateHealthStatus(injuries);
 
-    // 6. Create initial story state with generated psychological profile
     const initialState: StoryState = {
       ...createEmptyStoryState(pageId, 1, totalPages),
       ...{
         ...generatedInitialState,
-        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, calendarDate, timeOfDay })) || [],
+        plotFlags: generatedInitialState.plotFlags?.map<PlotFlag>((flag) => ({ ...flag, page: 1, placeId, calendarDate, timeOfDay, })) || [],
         threads: initialThreads?.map<StoryThread>((thread) => createStoryThread(thread, 1)) || [],
-        inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId })) || [],
+        inventory: generatedInitialState.inventory?.map<InventoryItem>((item) => ({ ...item, pageAcquired: 1, placeId, })) || [],
         injuries,
         healthStatus,
         futureNotes: mapFutureNoteWithKey(futureNotes, 1, []),
-        viableEnding: viableEnding ? { ...viableEnding, outline: viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
+        viableEnding: viableEnding ? { ...viableEnding, outline: viableEnding.outline.map((text) => ({ text, isDone: false })) } : undefined,
       },
       hiddenState: createInitialHiddenState(),
       characters,
       plannedCharacters,
       places,
-      factsHistory: initialFacts?.length ?
-        Object.fromEntries<FactHistory[]>(
-          initialFacts.map<[string, FactHistory[]]>(fact => [
-            fact.key,
-            [{ ...fact, page: 1 } satisfies FactHistory]
-          ])
-        ) : {}
+      factsHistory: initialFacts?.length ? Object.fromEntries<FactHistory[]>(
+        initialFacts.map<[string, FactHistory[]]>((fact) => [
+          fact.key,
+          [{ ...fact, page: 1 } satisfies FactHistory],
+        ])
+      ) : {}
     };
 
-    // 7. Generate book cover image in background (fire-and-forget)
+    // ── 9. Generate cover image (fire-and-forget for user flows) ─────────────
     if (generateCoverImage) {
       if (isOriginal) {
+        // Cron jobs await image generation so the image is ready before the
+        // book is marked complete
         await generateAndUpdateBookCoverImage(book, initialState);
       } else {
+        // User flows don't block on image generation
         void generateAndUpdateBookCoverImage(book, initialState);
       }
     }
 
-    // 8. Persist story state to database
-    await insertStoryState(bookId, pageId, initialState, "original", { client });
+    // ── 10. Persist initial story state ──────────────────────────────────────
+    await insertStoryState(bookId, pageId, initialState, 'original', { client });
 
-    // 9. Pre-generate candidate pages for each action in the first page
-    if (isOriginal) { // GitHub cron job, use github-action strategy
+    // ── 11. Pre-generate candidate pages for first-page actions ──────────────
+    if (isOriginal) {
+      // Cron job: use github-action strategy (serial, no timeout risk)
       const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
       await ensureCandidatesForPageWithStrategy({
         strategy: 'github-action',
@@ -3717,30 +3677,30 @@ export async function initializeBook(
         currentState: initialState,
         currentBook: book,
       });
-    } else { // Fire-and-forget for fast user generated book result (immediate background processing)
+    } else {
+      // User flow: fire-and-forget workflow dispatch for fast response
       triggerCandidateGenerationWorkflow({
         userId,
-        pageId: pageId,
-        bookId: book.id,
-        bookTitle: book.title,
-        maxDepth: MAX_BRANCHING_PREGENERATION_DEPTH, // Also pre-generate next-level depths
-        context: 'initializeBook'
-      }).catch(error => {
-        console.error('[initializeBook] ❌ Failed to trigger GitHub workflow:', error);
+        pageId:     pageId,
+        bookId:     book.id,
+        bookTitle:  book.title,
+        maxDepth:   MAX_BRANCHING_PREGENERATION_DEPTH,
+        context:    'initializeBook',
+      }).catch((error) => {
+        console.error('[initializeBook] ❌ Failed to trigger candidate generation workflow:', error);
       });
     }
 
-    // 10. Invalidate user caches
+    // ── 12. Invalidate caches ─────────────────────────────────────────────────
     await invalidateUserBooksCache(userId);
     await invalidateUserProfileCache(userId);
-    
-    // 11. Invalidate public caches if book published immediately
+
     if (book.status === 'active') {
       await invalidateExploreCache();
-      await invalidatePopularTagsCache();
+      invalidatePopularTagsCache();
     }
 
-    // 12. Log user activity (book creation)
+    // ── 13. Log user activity ─────────────────────────────────────────────────
     await logUserActivity({
       userId,
       activityType: 'book_created',
@@ -3749,18 +3709,19 @@ export async function initializeBook(
       metadata: { theme: theme.trim() },
     }, { req });
 
-    // 13. Return complete book setup
+    // ── 14. Signal completion ─────────────────────────────────────────────────
     await onGenerationProgress('complete');
+
     return {
       book,
       firstPage,
       initialState,
       aiComment
     } satisfies CreateBookResponse;
-
   } catch (error) {
     const errorMessage = getErrorMessage(error);
-    console.error(`[initializeBook] ❌ Failed to initialize book:`, errorMessage);
+    console.error('[initializeBook] ❌ Failed to initialize book:', errorMessage);
+    // Signal failure to the polling endpoint (fire-and-forget, same as progress updates)
     await onGenerationProgress({ status: 'failed', error: errorMessage });
     throw error;
   }

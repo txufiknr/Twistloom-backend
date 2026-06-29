@@ -58,6 +58,7 @@ export async function getUserMetrics(userId: string) {
     booksGenerated: stats?.booksGenerated ?? 0,
     booksCompleted: stats?.booksCompleted ?? 0,
     pagesRead: stats?.pagesRead ?? 0,
+    pagesGenerated: stats?.pagesGenerated ?? 0,
     branchesOpened: stats?.branchesOpened ?? 0,
     topupCredits: stats?.topupCredits ?? 0,
     referredUsers: stats?.referredUsers ?? 0,

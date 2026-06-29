@@ -324,7 +324,7 @@ export function getMainCharacterInfo(params: {
   // When healthStatus is absent (e.g. no injuries yet), defaults communicate
   // a fully healthy MC to the AI rather than omitting the section entirely.
   const {
-    condition    = 'healthy',
+    condition       = 'healthy',
     healthPercent   = 100,
     mobilityPercent = 100,
     actionPercent   = 100,
@@ -882,8 +882,8 @@ function clampPercent(value: number): number {
 function deriveCondition(healthPercent: number): HealthCondition {
   if (healthPercent >= 85) return 'healthy';
   if (healthPercent >= 65) return 'injured';
-  if (healthPercent >= 40) return 'wounded';
-  if (healthPercent >= 15) return 'critical';
+  if (healthPercent >= 40) return 'critical';
+  if (healthPercent >= 15) return 'incapacitated';
   return 'dying';
 }
 
@@ -901,7 +901,7 @@ function deriveCondition(healthPercent: number): HealthCondition {
  * | `mentalPercent`  | Psychological injuries + memory integrity + trauma tags + fear|
  *
  * `condition` is derived from `healthPercent` thresholds:
- * `≥85 healthy | ≥65 injured | ≥40 wounded | ≥15 critical | <15 dying`
+ * `≥85 healthy | ≥65 injured | ≥40 critical | ≥15 incapacitated | <15 dying`
  *
  * ── mentalInputs ────────────────────────────────────────────────────────────
  * When omitted, `mentalPercent` reflects only injury-based psychological trauma

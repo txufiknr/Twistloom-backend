@@ -6,8 +6,6 @@
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
-[ ] write CLAUDE.md based on README.md & AGENTS.md
-[ ] README.md add LLM providers: OpenRouter, Cloudflare Workers AI
 [x] incrementUserMetric for achievement
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] translate action hint
@@ -37,26 +35,61 @@
 [ ] achievement badgeImageUrl for every tier -> create images
 [ ] Claude/AI: generate more achievement badges, wording & lucide icon
 [ ] ensure endpoint Backend: GET /books/explore?sortBy=creations&status=active,draft
+[ ] pass title idea ke initallze book & github workflow dynamic job title
+[ ] Generate originals tambah custom input book title & mc name
+[ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
+[ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
+[ ] README: add AI models used
+[ ] userSettings schema
+- interests: string[]
+- email notification settings
+
+[ ] enhance book explore:
+- fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
+- search jaccard similarity (by book keywords & title)
+- need change to cursor pagination?
+
 ---
 
-enriched book add:
-  generationStatus?: BookGenerationStatus;
-  generationStep?: StoryGenerationStep;
+now please examine book creation implementation flow in frontend (Next.js) side
+in a nutshell: input theme > initialize once > progress status polling, not SSE
 
-/**
- * Story generation step types
- * 
- * These steps map to backend SSE events:
- * - theme_validation: Backend theme validation process
- * - book_initialization: Backend book initialization
- * - ai_generation: Backend AI content generation
- * - ai_evaluation: Backend AI content evaluation
- * - finalizing: Backend database operations and finalization
- * - complete: Process complete
- */
-export type StoryGenerationStep = 'theme_validation' | 'book_initialization' | 'ai_generation' | 'ai_evaluation' | 'finalizing' | 'complete';
+have they perfectly aligned with our corrected backend implementation earlier?
 
-export type BookGenerationStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+src\components\home\StoryGeneratorInput.tsx
+src\components\modals\StoryGenerationModal.tsx
+src\components\dashboard\DashboardPageClient.tsx
+src\components\dashboard\DashboardBookGrid.tsx
+
+src\stores\generation-store.ts
+src\lib\types\books.ts
+src\lib\services\users-api.ts
+src\lib\hooks\query\useDashboardQueries.ts
+src\components\dashboard\GenerationStepIndicator.tsx
+src\components\modals\GlobalModals.tsx
+
+for UX, I need it to:
+- support multiple book generation in parallel (don't disable input & button when book generation on progress)
+- both created and in-generation books are listed in library section in the dashbard (sorted by newest)
+- customize book list display in library (via `DashboardBookGrid` with 'library' variant): much like 'sessions' variant - books which still generating displayed with multi-step indicator bar (like in the modal, but horizontal), indicating current generation step, else display it normally
+
+user flow:
+1. user write theme input
+2. StoryGenerationModal opened
+3. user can close the modal and repeat to number 1 to create 2nd book
+4. user can go to dashboard > library to see their book list (still generating or created)
+5. on click LibraryCard:
+  - book which still generating -> open StoryGenerationModal
+  - book which created -> open book detail modal
+
+please review, elaborate, and correct
+
+---
+
+but now I have problem with the new json schema
+I can't use `oneOf` and `const`, because as you know I'm using 9 different AI providers which not all supports `oneOf` property
+what's your best solution?
+should we consolidate all fields like 'type', 'phase', 'date', 'day', etc into one object?
 
 ---
 
@@ -75,18 +108,6 @@ to focus:
 
 can you ensure all of the implementations are already correct and sound?
 please review, elaborate, and provide me fully corrected code files, complete with refined jsdocs and/or inline comments
-
----
-
-src\types\story.ts
-src\schema\story.ts
-src\utils\prompt.ts
-src\config\story.ts
-
-can you help me refactor `FutureNote` to migrate all individual target props into single `targetConditions: FutureNoteTarget[]` array (OR logic)?
-please check all occurences, and adjust the schema and json example accordingly
-need to carefully refactor `formatFutureNotes` to handle lookahead window of each target condition values
-you can configure lookahead window in config
 
 ---
 
@@ -218,22 +239,12 @@ The protagonist is psychologically unstable.
 Interpret ambiguous situations in a threatening way.
 Increase paranoia and uncertainty.
 
-[ ] pass title idea ke initallze book & github workflow dynamic job title
-[ ] Generate originals tambah custom input book title & mc name
-[ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
-[ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
-
-[ ] userSettings schema
-- interests: string[]
-- email notification settings
-
-[ ] enhance book explore:
-- fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
-- search jaccard similarity (by book keywords & title)
-- need change to cursor pagination?
+---
 
 [ensureCandidatesForPageWithStrategy] ⚠️ All actions are invalid, replaced with 1 continue action.
 https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155911594
+
+---
 
 future:
 [ ] initialize book: auto-generate MC picture (AI-generated image)

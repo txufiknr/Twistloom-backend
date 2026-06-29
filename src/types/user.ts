@@ -1,17 +1,13 @@
 import type { AchievementTier } from "./achievements.js";
 
-export const genders = [
-  'male', 'female', 'unknown'
-] as const;
-
 /**
  * Union type of all possible gender values
  * 
  * Generated from the genders array to ensure type safety
  * and autocomplete support for gender selection.
  */
+export const genders = [ 'male', 'female', 'unknown' ] as const;
 export type Gender = typeof genders[number];
-
 export type KnownGender = Omit<Gender, 'unknown'>
 
 /**
@@ -19,10 +15,7 @@ export type KnownGender = Omit<Gender, 'unknown'>
  * 
  * Used for user likes system to type-safe target identification.
  */
-export const likeTargetTypes = [
-  'book', 'page', 'comment', 'user'
-] as const;
-
+export const likeTargetTypes = [ 'book', 'page', 'comment', 'user' ] as const;
 export type LikeTargetType = typeof likeTargetTypes[number];
 
 /**
@@ -42,6 +35,7 @@ export interface UserStats {
   booksGenerated: number;
   booksCompleted: number;
   pagesRead: number;
+  pagesGenerated: number;
   branchesOpened: number;
   topupCredits: number;
   referredUsers: number;
@@ -53,6 +47,11 @@ export interface UserStats {
 
 export type UserTier = 'standard' | 'vip';
 
+export interface UserSubscription {
+  tier: UserTier | null;
+  vipExpiresAt: Date | null;
+}
+
 export interface User {
   id: string;
   email: string | null;
@@ -60,8 +59,11 @@ export interface User {
   name: string | null;
   bio: string | null;
   imageUrl: string | null;
+  gender: Gender | null;
+  lastActive: Date;
+  isNewUser: boolean;
   stats: UserStats;
-  tier: UserTier | null;
+  subscription: UserSubscription;
   credits: number;
   createdAt: Date;
   updatedAt: Date;
@@ -134,3 +136,5 @@ export type UserAchievement = {
   unlockedAt: Date | null;
   isNotified: boolean;
 };
+
+export type EnrichedUserSelect = Omit<User, 'stats' | 'subscription'> & UserStats & UserSubscription;

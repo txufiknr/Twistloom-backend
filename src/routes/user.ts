@@ -54,7 +54,7 @@ import { calculatePaginationMeta } from "../utils/pagination.js";
 import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
-import { getEnrichedUserSelect, setReferrerForNewUser } from "../services/user-controller.js";
+import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser } from "../services/user-controller.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { optionalAuth } from "../middleware/nextauth.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
@@ -106,15 +106,7 @@ const router: RouterType = Router();
 router.get('/', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-
-    const [user] = await dbRead
-      .select({
-        ...getEnrichedUserSelect(),
-        isNewUser: users.isNewUser,
-      })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1);
+    const [user] = await getEnrichedUserById(userId);
 
     if (!user) return handleNotFoundError(res, 'User not found');
 
@@ -381,28 +373,30 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
     
     // Fetch function for cache
     const fetchUserProfile = async () => {
-      const [userData] = await dbRead
-        .select(getEnrichedUserSelect())
-        .from(users)
-        .where(whereCondition)
-        .limit(1);
+      const [userData] = await getEnrichedUser(whereCondition);
 
-      if (!userData) {
-        throw new Error("User profile not found");
-      }
+      if (!userData) throw new Error("User profile not found");
 
       // Format response to match frontend expectations
       const formattedUser: User = {
-        id: userData.userId,
+        id: userData.id,
         username: userData.username,
         email: userData.email,
         name: userData.name,
         bio: userData.bio,
+        gender: userData.gender,
+        lastActive: userData.lastActive,
+        isNewUser: userData.isNewUser,
         imageUrl: userData.imageUrl,
-        tier: userData.tier,
         credits: userData.credits,
         createdAt: userData.createdAt,
         updatedAt: userData.updatedAt,
+        
+        subscription: {
+          tier: userData.tier,
+          vipExpiresAt: userData.vipExpiresAt,
+        },
+
         stats: {
           readsCount: userData.readsCount,
           likedBooksCount: userData.likedBooksCount,
@@ -414,12 +408,14 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
           booksGenerated: userData.booksGenerated,
           booksCompleted: userData.booksCompleted,
           pagesRead: userData.pagesRead,
+          pagesGenerated: userData.pagesGenerated,
           branchesOpened: userData.branchesOpened,
           topupCredits: userData.topupCredits,
           referredUsers: userData.referredUsers,
           followersCount: userData.followersCount,
           activeCheckinStreak: userData.activeCheckinStreak,
           maxCheckinStreak: userData.maxCheckinStreak,
+          customActionsWritten: userData.customActionsWritten,
         } satisfies UserStats,
       };
 

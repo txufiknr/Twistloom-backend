@@ -12,8 +12,8 @@
  * - OAuth user creation
  */
 
-import { users, userAuth } from '../db/schema.js';
-import { sql, eq } from 'drizzle-orm';
+import { users, userAuth, userCounters } from '../db/schema.js';
+import { sql, eq, type SQL } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
 import { sanitizeTextForDB } from '../utils/text-processing.js';
@@ -26,6 +26,8 @@ import { REFERRAL_BONUS } from '../config/credits.js';
 import { awardCredits } from './credits.js';
 import type { Request, Response } from "express";
 import type { DBNewUser } from '../types/schema.js';
+import type { EnrichedUserSelect } from '../types/user.js';
+import type { PgColumn } from 'drizzle-orm/pg-core';
 
 /**
  * Returns enriched user select object with engagement metrics.
@@ -54,19 +56,35 @@ import type { DBNewUser } from '../types/schema.js';
  */
 export function getEnrichedUserSelect() {
   return {
-    // Basic user fields
-    userId:       users.userId,
-    name:         users.name,
-    username:     users.username,
-    email:        users.email,
-    bio:          users.bio,
-    gender:       users.gender,
-    imageUrl:     users.imageUrl,
-    tier:         users.tier,
-    credits:      users.credits,
-    lastActive:   users.lastActive,
-    createdAt:    users.createdAt,
-    updatedAt:    users.updatedAt,
+    id: users.userId,
+    name: users.name,
+    username: users.username,
+    email: users.email,
+    bio: users.bio,
+    gender: users.gender,
+    imageUrl: users.imageUrl,
+    tier: users.tier,
+    credits: users.credits,
+    lastActive: users.lastActive,
+    createdAt: users.createdAt,
+    updatedAt: users.updatedAt,
+    emailVerified: userAuth.emailVerified,
+    isNewUser: users.isNewUser,
+    vipExpiresAt: users.vipExpiresAt,
+
+    // Expose the rest of the `user_counters` columns as SSOT-backed fields.
+    booksGenerated: sql<number>`COALESCE(${userCounters.booksGenerated},0)`,
+    booksCompleted: sql<number>`COALESCE(${userCounters.booksCompleted},0)`,
+    pagesRead: sql<number>`COALESCE(${userCounters.pagesRead},0)`,
+    pagesGenerated: sql<number>`COALESCE(${userCounters.pagesGenerated},0)`,
+    branchesOpened: sql<number>`COALESCE(${userCounters.branchesOpened},0)`,
+    topupCredits: sql<number>`COALESCE(${userCounters.topupCredits},0)`,
+    referredUsers: sql<number>`COALESCE(${userCounters.referredUsers},0)`,
+    followersCount: sql<number>`COALESCE(${userCounters.followersCount},0)`,
+    activeCheckinStreak: sql<number>`COALESCE(${userCounters.activeCheckinStreak},0)`,
+    maxCheckinStreak: sql<number>`COALESCE(${userCounters.maxCheckinStreak},0)`,
+    customActionsWritten: sql<number>`COALESCE(${userCounters.customActionsWritten},0)`,
+
     // Consolidated counters: prefer values from `user_counters` (SSOT).
     // Keep fallbacks for metrics not yet tracked in the counters table.
     readsCount: sql<number>`COALESCE((
@@ -83,46 +101,54 @@ export function getEnrichedUserSelect() {
       INNER JOIN user_likes ON books.id = user_likes.target_id
       WHERE books.user_id = users.user_id AND user_likes.target_type = 'book'
     ), 0)`,
-    accountDaysOld: sql<number>`COALESCE((NOW()::date - ${users.createdAt}::date), 0)`,
-    // Email verification comes from the user_auth table
-    emailVerified: sql<Date | null>`(
-      SELECT ua.email_verified FROM user_auth ua
-      WHERE ua.user_id = users.user_id LIMIT 1
+    accountDaysOld: sql<number>`CURRENT_DATE - ${users.createdAt}::date`,
+    havePurchased: sql<boolean>`EXISTS (
+      SELECT 1
+      FROM transactions t
+      WHERE t.user_id = ${users.userId} AND t.type = 'purchase'
     )`,
-    // Whether the user has ever purchased credits (exists in `transactions`)
-    havePurchased: sql<boolean>`EXISTS(
-      SELECT 1 FROM transactions t
-      WHERE t.user_id = users.user_id AND t.type = 'purchase'
-    )`,
-    // Expose the rest of the `user_counters` columns as SSOT-backed fields.
-    booksGenerated: sql<number>`COALESCE((
-      SELECT uc.books_generated FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    booksCompleted: sql<number>`COALESCE((
-      SELECT uc.books_completed FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    pagesRead: sql<number>`COALESCE((
-      SELECT uc.pages_read FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    branchesOpened: sql<number>`COALESCE((
-      SELECT uc.branches_opened FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    topupCredits: sql<number>`COALESCE((
-      SELECT uc.topup_credits FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    referredUsers: sql<number>`COALESCE((
-      SELECT uc.referred_users FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    followersCount: sql<number>`COALESCE((
-      SELECT uc.followers_count FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    activeCheckinStreak: sql<number>`COALESCE((
-      SELECT uc.active_checkin_streak FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-    maxCheckinStreak: sql<number>`COALESCE((
-      SELECT uc.max_checkin_streak FROM user_counters uc WHERE uc.user_id = users.user_id
-    ), 0)`,
-  };
+  } satisfies Record<keyof EnrichedUserSelect, SQL | PgColumn>;
+}
+
+/**
+ * 
+ * @returns 
+ * 
+ * @example
+ * const [userData] = await getEnrichedUserBaseQuery()
+ * .where(whereCondition)
+ * .limit(1);
+ */
+export function getEnrichedUserBaseQuery() {
+  return dbRead
+    .select(getEnrichedUserSelect())
+    .from(users)
+    .leftJoin(userCounters, eq(userCounters.userId, users.userId))
+    .leftJoin(userAuth, eq(userAuth.userId, users.userId));
+}
+
+/**
+ * 
+ * @param where 
+ * @returns 
+ * 
+ * @example
+ * const [userData] = await getEnrichedUser(whereCondition);
+ */
+export function getEnrichedUser(where: SQL) {
+  return getEnrichedUserBaseQuery().where(where).limit(1);
+}
+
+/**
+ * 
+ * @param userId 
+ * @returns 
+ * 
+ * @example
+ * const [user] = await getEnrichedUserById(userId);
+ */
+export function getEnrichedUserById(userId: string) {
+  return getEnrichedUser(eq(users.userId, userId));
 }
 
 // ---------------------------------------------------------------------------

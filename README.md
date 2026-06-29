@@ -63,17 +63,19 @@ Twistloom is not merely a branching story platform. It is a multiverse storytell
 | 🚀 **Vercel** | Serverless | Perfect for serverless TypeScript apps with zero-config deployment |
 | 📦 **pnpm** | 10+ | Fast, efficient, and monorepo support |
 
-### **AI Integration**
+### **AI Providers**
 
-| Choice | Strengths | Models |
-|--------|-----------|--------|
-| 1️⃣ **GitHub** | OpenAI-compatible, reliable | `openai/gpt-4o`, `openai/gpt-4o-mini` |
-| 2️⃣ **Google Gemini** | Large context, fast | `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-2.5-flash-lite` |
-| 3️⃣ **Mistral AI** | Creative writing | `mistral-large-latest` |
-| 4️⃣ **Cohere** | Efficient generation | `command-r-08-2024`, `command-r7b-12-2024` |
-| 5️⃣ **Groq** | Low latency | `llama-3.3-70b-versatile` |
-| 6️⃣ **Cerebras** | High performance | `llama-3.3-70b`, `llama-3.1-70b`, `llama3.1-8b` |
-| 7️⃣ **NVIDIA** | Cost-effective | `meta/llama-3.3-70b`, `mistralai/mistral-large`, `mistralai/mistral-7b-instruct` |
+| Choice | Purpose |
+|--------|---------|
+| 🌐 **OpenRouter** | Unified API gateway for LLMs (Gemini, Mistral, Groq, etc.) with fallback routing |
+| ☁️ **Cloudflare Workers AI** | Serverless AI inference at the edge for low-latency story generation |
+| 1️⃣ **GitHub** | OpenAI-compatible, reliable |
+| 2️⃣ **Google Gemini** | Large context, fast |
+| 3️⃣ **Mistral AI** | Creative writing |
+| 4️⃣ **Cohere** | Efficient generation |
+| 5️⃣ **Groq** | Low latency |
+| 6️⃣ **Cerebras** | High performance |
+| 7️⃣ **NVIDIA** | Cost-effective |
 
 ## 🚀 Features
 
@@ -483,6 +485,14 @@ COHERE_API_KEY=...
 GROQ_API_KEY=...
 OPENAI_API_KEY=...
 NVIDIA_API_KEY=...
+
+# OpenRouter — Unified API gateway for various LLMs
+# OPENROUTER_API_KEY=<your-openrouter-api-key>
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+
+# Cloudflare Workers AI — Serverless AI inference at the edge
+# CLOUDFLARE_ACCOUNT_ID=<your-cloudflare-account-id>
+# CLOUDFLARE_API_TOKEN=<your-cloudflare-api-token>
 
 # Rate Limiting
 UPSTASH_REDIS_REST_URL=...

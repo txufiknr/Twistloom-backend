@@ -1,8 +1,9 @@
 export type AchievementTier = 'bronze' | 'silver' | 'gold' | 'platinum';
 export type AchievementMetric = 
-  | 'booksGenerated' 
-  | 'booksCompleted' 
-  | 'pagesRead' 
+  | 'booksGenerated'
+  | 'booksCompleted'
+  | 'pagesRead'
+  | 'pagesGenerated'
   | 'branchesOpened'
   | 'topupCredits'
   | 'referredUsers'

@@ -1,3 +1,6 @@
+import type { DBTransaction } from "../db/client.js";
+import type { Request } from 'express';
+
 export interface CreditPack {
   /** Unique identifier for the credit pack */
   id: string;
@@ -29,3 +32,35 @@ export interface CreditPack {
  * - reward: Free credits awarded (daily check-in, promotions)
  */
 export type TransactionType = "purchase" | "usage" | "refund" | "reward";
+
+/**
+ * Options shared by credit consumption, addition, and refund helpers.
+ */
+export interface ConsumeCreditsOptions {
+  /** Human-readable context label recorded in the transaction row */
+  context?: string;
+  /** Arbitrary metadata persisted alongside the transaction record */
+  metadata?: Record<string, unknown>;
+  /** Existing DB transaction to join (ensures atomicity with the caller's work) */
+  tx?: DBTransaction;
+  /** Correlation ID linking a consumption record to its potential refund */
+  correlationId?: string;
+  /** Express request — forwarded to `logUserActivity` for analytics */
+  req?: Request;
+}
+
+/**
+ * Return value from `executeWithCredits`.
+ *
+ * The `correlationId` should be stored by the caller so it can be passed to
+ * `refundCreditsIdempotent` / `refundCredits` if the work done after the
+ * transaction needs to be rolled back manually.
+ */
+export interface ConsumeCreditsResult<T> {
+  /** Return value of the user-supplied `operation` */
+  result: T;
+  /** Idempotency key for a subsequent `refundCredits` call */
+  correlationId: string;
+  /** Primary key of the consumption `transactions` row */
+  transactionId: string;
+}

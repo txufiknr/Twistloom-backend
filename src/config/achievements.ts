@@ -109,6 +109,36 @@ export const ACHIEVEMENT_REGISTRY: AchievementRule[] = [
     badgeImageUrl: 'badge_read_platinum', tier: 'platinum',
   },
 
+  // ── PAGES GENERATED ───────────────────────────────────────────────────────
+  {
+    id: 'page_50',
+    title: 'Ink Starter',
+    description: 'Drafted 50 pages of your own haunting narrative',
+    metric: 'pagesGenerated', threshold: 50,
+    badgeImageUrl: 'badge_page_bronze', tier: 'bronze',
+  },
+  {
+    id: 'page_100',
+    title: 'Page Turner',
+    description: 'Spun 100 pages into existence. The Loom keeps asking for more.',
+    metric: 'pagesGenerated', threshold: 100,
+    badgeImageUrl: 'badge_page_silver', tier: 'silver',
+  },
+  {
+    id: 'page_250',
+    title: 'Wordsmith of the Void',
+    description: 'Crafted 250 pages from shadow and silence. Even the dark is impressed.',
+    metric: 'pagesGenerated', threshold: 250,
+    badgeImageUrl: 'badge_page_gold', tier: 'gold',
+  },
+  {
+    id: 'page_500',
+    title: 'Master of the Manuscript',
+    description: 'Generated 500 pages. The story is no longer yours alone.',
+    metric: 'pagesGenerated', threshold: 500,
+    badgeImageUrl: 'badge_page_platinum', tier: 'platinum',
+  },
+
   // ── BRANCHES OPENED ────────────────────────────────────────────────────────
   {
     id: 'branch_50',

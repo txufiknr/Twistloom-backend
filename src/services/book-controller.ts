@@ -29,7 +29,7 @@ import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Request, Response } from "express";
-import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
+import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, SelectedAction } from "../types/story.js";
 
 /**
@@ -166,6 +166,18 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
           LIMIT 1
         )`
       : sql<BookTranslation | null>`null`,
+
+    // Book generation tracking subquery
+    generation: sql<EnrichedBookGeneration | null>`(
+      SELECT jsonb_build_object(
+        'generationStatus', bg.generation_status,
+        'generationStep', bg.generation_step
+      )
+      FROM book_generations bg
+      WHERE bg.book_id = books.id
+      LIMIT 1
+    )`
+
   } satisfies Record<keyof EnrichedBookData, unknown>;
 }
 

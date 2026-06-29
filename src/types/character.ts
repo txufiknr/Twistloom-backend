@@ -476,7 +476,7 @@ export type MentalHealthInputs = {
   fearLevel: FearLevel;
 };
 
-export const healthConditions = ['healthy', 'injured', 'wounded', 'critical', 'dying'] as const;
+export const healthConditions = ['healthy', 'injured', 'critical', 'incapacitated', 'dying'] as const;
 export type HealthCondition = typeof healthConditions[number];
 
 /**
