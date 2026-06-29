@@ -28,7 +28,6 @@
 [x] action submission if has chosen action pake CUSTOM_ACTION_AFTER_CHOICE
 [x] initialState.threads -> `initialThreads`, pisahin `viableEnding` juga keluar
 [x] `BookCreationResponse` should we move out `futureNotes` too?
-[@] `BookSortOption` add 'for-you'
 [ ] aiPrompt should retry model on rate limit/service unavailable
 [ ] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
@@ -51,33 +50,34 @@
 
 ---
 
-for not confusing AI with too many fields, what about we consolidate/flatten fields & values, and parse them via typescript (best-effort)?
-- start & end become: "<start>-<end>" e.g. "55-60"
-- op & threshold become: "<op> <threshold>" e.g. "<= 30"
-- flatten stats: each stat as separate type ('healthPercent', 'mobilityPercent', 'actionPercent', 'mentalPercent')
+perfect reasoning, I agree
 
-actually that's more like my original implementation
-but as AI can include multiple trigger condition (OR-logic), in case one or some value are unparseable, at least we still have some other valid trigger condition values, so I think I have no problem with that
-is it better or is it actually worse? what do you think?
+what about we try to parse them via typescript as best-effort in handling edge cases (instead of definitive success)?
+- start & end become: "<start>-<end>" e.g. "55-60" (maybe malformed to "55 - 60" or using non-standard hyphens, try: normalize hyphens & whitespaces)
+- op & threshold become: "<op> <threshold>" e.g. "<= 30" (maybe malformed to "<=30" or "less than 30%", try: remove trailing "%", string match "less than"/"more than", split by first number/last op instead of space)
+
+because as AI can include multiple trigger condition (OR-logic), in case one or some value are unparseable, at least we still have some other valid trigger condition values, so I think I have no problem with that
+the edge case chance is also very small, because I run 2 AI generations for single page (initial & evaluation)
+
+what's your take?
 
 ---
 
-now please examine book creation implementation flow in frontend (Next.js) side
-in a nutshell: input theme > initialize once > progress status polling, not SSE
-
-have they perfectly aligned with our corrected backend implementation earlier?
-
 src\components\home\StoryGeneratorInput.tsx
 src\components\modals\StoryGenerationModal.tsx
+src\components\modals\GlobalModals.tsx
 src\components\dashboard\DashboardPageClient.tsx
 src\components\dashboard\DashboardBookGrid.tsx
-
+src\components\dashboard\GenerationStepIndicator.tsx
 src\stores\generation-store.ts
 src\lib\types\books.ts
 src\lib\services\users-api.ts
 src\lib\hooks\query\useDashboardQueries.ts
-src\components\dashboard\GenerationStepIndicator.tsx
-src\components\modals\GlobalModals.tsx
+
+now for the next step, please examine book creation implementation flow in frontend (Next.js) side
+in a nutshell: input theme > initialize once > progress status polling, not SSE
+
+have they perfectly aligned with our corrected backend implementation earlier?
 
 for UX, I need it to:
 - support multiple book generation in parallel (don't disable input & button when book generation on progress)
@@ -258,6 +258,7 @@ https://github.com/txufiknr/Twistloom-backend/actions/runs/26221075235/job/77155
 ---
 
 future:
+[ ] next-intl multi language tambah bahasa lain
 [ ] initialize book: auto-generate MC picture (AI-generated image)
 [ ] text to speech audio book/storyteller (noiz)
 

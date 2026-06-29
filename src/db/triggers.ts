@@ -530,47 +530,37 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
  *     Counts the number of distinct branch IDs created by the user.
  * 10. custom_actions → custom_actions_written
  *     Counts accepted custom actions where `outcome = 'allow'`.
+ *
+ * Achievement Philosophy:
+ * - Type A (Lifetime): Never decrease (books, pages gen, completed, topups, branches, custom actions).
+ * - Type B (Current): Fluctuate based on state (followers, pages read, active streak).
+ * - Type C (Maxima): Never decrease, tracks peaks (max checkin streak).
+ * 
+ * Performance:
+ * Uses O(1) increment/decrement deltas or indexed EXISTS checks instead of full table COUNT() scans.
  */
 export async function ensureUserCountersTriggers(): Promise<void> {
   try {
     console.log("⚙️ Ensuring user_counters DB triggers...");
 
     // ==========================================
-    // 1. PAGES READ (user_page_progress)
+    // 1. PAGES READ (Type B: Current State)
     // ==========================================
+    // O(1) tracking. The unique constraint on user_page_progress guarantees
+    // each insert is a uniquely read page for that book/user combo.
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_pages_read() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count distinct pages this user has progressed through from user_page_progress.
         IF TG_OP = 'INSERT' THEN
           INSERT INTO user_counters (user_id, pages_read, updated_at)
-          VALUES (NEW.user_id, (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = NEW.user_id), NOW())
+          VALUES (NEW.user_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET
-            pages_read = (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = NEW.user_id),
+            pages_read = user_counters.pages_read + 1,
             updated_at = NOW();
           RETURN NEW;
         ELSIF TG_OP = 'DELETE' THEN
-          INSERT INTO user_counters (user_id, pages_read, updated_at)
-          VALUES (OLD.user_id, (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = OLD.user_id), NOW())
-          ON CONFLICT (user_id) DO UPDATE SET
-            pages_read = (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = OLD.user_id),
-            updated_at = NOW();
+          UPDATE user_counters SET pages_read = GREATEST(0, pages_read - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
           RETURN OLD;
-        ELSIF TG_OP = 'UPDATE' THEN
-          IF OLD.user_id IS DISTINCT FROM NEW.user_id THEN
-            INSERT INTO user_counters (user_id, pages_read, updated_at)
-            VALUES (OLD.user_id, (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = OLD.user_id), NOW())
-            ON CONFLICT (user_id) DO UPDATE SET
-              pages_read = (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = OLD.user_id),
-              updated_at = NOW();
-          END IF;
-
-          INSERT INTO user_counters (user_id, pages_read, updated_at)
-          VALUES (NEW.user_id, (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = NEW.user_id), NOW())
-          ON CONFLICT (user_id) DO UPDATE SET
-            pages_read = (SELECT COUNT(DISTINCT actioned_page_id)::int FROM user_page_progress WHERE user_id = NEW.user_id),
-            updated_at = NOW();
-          RETURN NEW;
         END IF;
         RETURN NULL;
       END;
@@ -579,122 +569,85 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     await dbWrite.execute(`DROP TRIGGER IF EXISTS user_page_progress_pages_read_trigger ON user_page_progress;`);
     await dbWrite.execute(`
       CREATE TRIGGER user_page_progress_pages_read_trigger
-        AFTER INSERT OR UPDATE OR DELETE ON user_page_progress
+        AFTER INSERT OR DELETE ON user_page_progress
         FOR EACH ROW EXECUTE FUNCTION update_user_pages_read();
     `);
-    console.log("✅ Trigger created: Pages Read");
+    console.log("✅ Trigger created: Pages Read (Current State)");
 
     // ==========================================
-    // 2. BOOKS GENERATED (books)
+    // 2. BOOKS GENERATED (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_books_generated() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count each inserted book as one generated book for its owner.
         IF TG_OP = 'INSERT' THEN
           INSERT INTO user_counters (user_id, books_generated, updated_at) VALUES (NEW.user_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET books_generated = user_counters.books_generated + 1, updated_at = NOW();
-          RETURN NEW;
-        ELSIF TG_OP = 'DELETE' THEN
-          UPDATE user_counters SET books_generated = GREATEST(0, books_generated - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
-          RETURN OLD;
         END IF;
-        RETURN NULL;
+        RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
     `);
     await dbWrite.execute(`DROP TRIGGER IF EXISTS books_user_generated_trigger ON books;`);
     await dbWrite.execute(`
       CREATE TRIGGER books_user_generated_trigger
-        AFTER INSERT OR DELETE ON books
+        AFTER INSERT ON books
         FOR EACH ROW EXECUTE FUNCTION update_user_books_generated();
     `);
-    console.log("✅ Trigger created: Books Generated");
+    console.log("✅ Trigger created: Books Generated (Lifetime)");
 
     // ==========================================
-    // 3. PAGES GENERATED (pages)
+    // 3. PAGES GENERATED (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_pages_generated() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count all page rows owned by the user from the pages table.
         IF TG_OP = 'INSERT' THEN
           INSERT INTO user_counters (user_id, pages_generated, updated_at)
-          VALUES (NEW.user_id, (SELECT COUNT(*)::int FROM pages WHERE user_id = NEW.user_id), NOW())
-          ON CONFLICT (user_id) DO UPDATE SET
-            pages_generated = (SELECT COUNT(*)::int FROM pages WHERE user_id = NEW.user_id),
-            updated_at = NOW();
-          RETURN NEW;
-        ELSIF TG_OP = 'DELETE' THEN
-          INSERT INTO user_counters (user_id, pages_generated, updated_at)
-          VALUES (OLD.user_id, (SELECT COUNT(*)::int FROM pages WHERE user_id = OLD.user_id), NOW())
-          ON CONFLICT (user_id) DO UPDATE SET
-            pages_generated = (SELECT COUNT(*)::int FROM pages WHERE user_id = OLD.user_id),
-            updated_at = NOW();
-          RETURN OLD;
-        ELSIF TG_OP = 'UPDATE' THEN
-          IF OLD.user_id IS DISTINCT FROM NEW.user_id THEN
-            INSERT INTO user_counters (user_id, pages_generated, updated_at)
-            VALUES (OLD.user_id, (SELECT COUNT(*)::int FROM pages WHERE user_id = OLD.user_id), NOW())
-            ON CONFLICT (user_id) DO UPDATE SET
-              pages_generated = (SELECT COUNT(*)::int FROM pages WHERE user_id = OLD.user_id),
-              updated_at = NOW();
-          END IF;
-
-          INSERT INTO user_counters (user_id, pages_generated, updated_at)
-          VALUES (NEW.user_id, (SELECT COUNT(*)::int FROM pages WHERE user_id = NEW.user_id), NOW())
-          ON CONFLICT (user_id) DO UPDATE SET
-            pages_generated = (SELECT COUNT(*)::int FROM pages WHERE user_id = NEW.user_id),
-            updated_at = NOW();
-          RETURN NEW;
+          VALUES (NEW.user_id, 1, NOW())
+          ON CONFLICT (user_id) DO UPDATE SET pages_generated = user_counters.pages_generated + 1, updated_at = NOW();
         END IF;
-        RETURN NULL;
+        RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
     `);
     await dbWrite.execute(`DROP TRIGGER IF EXISTS pages_user_pages_generated_trigger ON pages;`);
     await dbWrite.execute(`
       CREATE TRIGGER pages_user_pages_generated_trigger
-        AFTER INSERT OR UPDATE OR DELETE ON pages
+        AFTER INSERT ON pages
         FOR EACH ROW EXECUTE FUNCTION update_user_pages_generated();
     `);
-    console.log("✅ Trigger created: Pages Generated");
+    console.log("✅ Trigger created: Pages Generated (Lifetime)");
 
     // ==========================================
-    // 4. BOOKS COMPLETED (user_completed_books)
+    // 4. BOOKS COMPLETED (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_books_completed() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count each completed-book row as one completed book for the user.
         IF TG_OP = 'INSERT' THEN
           INSERT INTO user_counters (user_id, books_completed, updated_at) VALUES (NEW.user_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET books_completed = user_counters.books_completed + 1, updated_at = NOW();
-          RETURN NEW;
-        ELSIF TG_OP = 'DELETE' THEN
-          UPDATE user_counters SET books_completed = GREATEST(0, books_completed - 1), updated_at = NOW() WHERE user_id = OLD.user_id;
-          RETURN OLD;
         END IF;
-        RETURN NULL;
+        RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
     `);
     await dbWrite.execute(`DROP TRIGGER IF EXISTS user_completed_books_trigger ON user_completed_books;`);
     await dbWrite.execute(`
       CREATE TRIGGER user_completed_books_trigger
-        AFTER INSERT OR DELETE ON user_completed_books
+        AFTER INSERT ON user_completed_books
         FOR EACH ROW EXECUTE FUNCTION update_user_books_completed();
     `);
-    console.log("✅ Trigger created: Books Completed");
+    console.log("✅ Trigger created: Books Completed (Lifetime)");
 
     // ==========================================
-    // 4. FOLLOWERS COUNT (user_follows)
+    // 5. FOLLOWERS COUNT (Type B: Current State)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_followers_count() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count follow relationships that point to this user as the followed account.
-        -- Note: We track followers_count for the person BEING followed (following_id)
+        -- Targets following_id (the person being followed)
         IF TG_OP = 'INSERT' THEN
           INSERT INTO user_counters (user_id, followers_count, updated_at) VALUES (NEW.following_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET followers_count = user_counters.followers_count + 1, updated_at = NOW();
@@ -713,15 +666,14 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         AFTER INSERT OR DELETE ON user_follows
         FOR EACH ROW EXECUTE FUNCTION update_user_followers_count();
     `);
-    console.log("✅ Trigger created: Followers Count");
+    console.log("✅ Trigger created: Followers Count (Current State)");
 
     // ==========================================
-    // 5. TOPUP CREDITS (transactions)
+    // 6. TOPUP CREDITS (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_topup_credits() RETURNS TRIGGER AS $$
       BEGIN
-        -- Sum purchase credits added to the user's balance.
         IF TG_OP = 'INSERT' AND NEW.type = 'purchase' THEN
           INSERT INTO user_counters (user_id, topup_credits, updated_at) VALUES (NEW.user_id, NEW.credits, NOW())
           ON CONFLICT (user_id) DO UPDATE SET topup_credits = user_counters.topup_credits + NEW.credits, updated_at = NOW();
@@ -736,15 +688,14 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         AFTER INSERT ON transactions
         FOR EACH ROW EXECUTE FUNCTION update_user_topup_credits();
     `);
-    console.log("✅ Trigger created: Topup Credits");
+    console.log("✅ Trigger created: Topup Credits (Lifetime)");
 
     // ==========================================
-    // 6. REFERRED USERS (users)
+    // 7. REFERRED USERS (Type A: Lifetime)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_referred_users() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count each newly referred user for the referrer.
         IF TG_OP = 'INSERT' AND NEW.referrer_id IS NOT NULL THEN
           INSERT INTO user_counters (user_id, referred_users, updated_at) VALUES (NEW.referrer_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET referred_users = user_counters.referred_users + 1, updated_at = NOW();
@@ -759,37 +710,26 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         AFTER INSERT ON users
         FOR EACH ROW EXECUTE FUNCTION update_referred_users();
     `);
-    console.log("✅ Trigger created: Referred Users");
+    console.log("✅ Trigger created: Referred Users (Lifetime)");
 
     // ==========================================
-    // 7. CHECK-IN STREAK (user_checkins)
+    // 8. CHECK-IN STREAK (Type B/C: Recomputed State)
     // ==========================================
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_checkin_streak()
       RETURNS TRIGGER AS $$
       DECLARE
         target_user_id UUID;
-        current_day DATE;
         active_streak INT := 0;
         max_streak INT := 0;
         current_streak INT := 0;
-        prev_date DATE;
+        prev_date DATE := NULL;
         rec RECORD;
       BEGIN
-        -- Determine which user's counters need updating.
         target_user_id := COALESCE(NEW.user_id, OLD.user_id);
 
-        -------------------------------------------------------------------------
         -- Compute ACTIVE streak
-        -- (consecutive days ending at the user's latest check-in)
-        -------------------------------------------------------------------------
-        prev_date := NULL;
-
-        FOR rec IN
-          SELECT DISTINCT check_in_date
-          FROM user_checkins
-          WHERE user_id = target_user_id
-          ORDER BY check_in_date DESC
+        FOR rec IN SELECT DISTINCT check_in_date FROM user_checkins WHERE user_id = target_user_id ORDER BY check_in_date DESC
         LOOP
           IF prev_date IS NULL THEN
             active_streak := 1;
@@ -798,22 +738,12 @@ export async function ensureUserCountersTriggers(): Promise<void> {
           ELSE
             EXIT;
           END IF;
-
           prev_date := rec.check_in_date;
         END LOOP;
 
-        -------------------------------------------------------------------------
         -- Compute MAX streak
-        -- (longest consecutive run in history)
-        -------------------------------------------------------------------------
-        current_streak := 0;
         prev_date := NULL;
-
-        FOR rec IN
-          SELECT DISTINCT check_in_date
-          FROM user_checkins
-          WHERE user_id = target_user_id
-          ORDER BY check_in_date ASC
+        FOR rec IN SELECT DISTINCT check_in_date FROM user_checkins WHERE user_id = target_user_id ORDER BY check_in_date ASC
         LOOP
           IF prev_date IS NULL THEN
             current_streak := 1;
@@ -826,27 +756,13 @@ export async function ensureUserCountersTriggers(): Promise<void> {
           IF current_streak > max_streak THEN
             max_streak := current_streak;
           END IF;
-
           prev_date := rec.check_in_date;
         END LOOP;
 
-        -------------------------------------------------------------------------
         -- Upsert counters
-        -------------------------------------------------------------------------
-        INSERT INTO user_counters (
-          user_id,
-          active_checkin_streak,
-          max_checkin_streak,
-          updated_at
-        )
-        VALUES (
-          target_user_id,
-          active_streak,
-          max_streak,
-          NOW()
-        )
-        ON CONFLICT (user_id)
-        DO UPDATE SET
+        INSERT INTO user_counters (user_id, active_checkin_streak, max_checkin_streak, updated_at)
+        VALUES (target_user_id, active_streak, max_streak, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
           active_checkin_streak = EXCLUDED.active_checkin_streak,
           max_checkin_streak = EXCLUDED.max_checkin_streak,
           updated_at = NOW();
@@ -855,36 +771,29 @@ export async function ensureUserCountersTriggers(): Promise<void> {
       END;
       $$ LANGUAGE plpgsql;
     `);
-
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS user_checkins_streak_trigger ON user_checkins;
-    `);
-
+    await dbWrite.execute(`DROP TRIGGER IF EXISTS user_checkins_streak_trigger ON user_checkins;`);
     await dbWrite.execute(`
       CREATE TRIGGER user_checkins_streak_trigger
-        AFTER INSERT OR UPDATE OR DELETE
-        ON user_checkins
-        FOR EACH ROW
-        EXECUTE FUNCTION update_user_checkin_streak();
+        AFTER INSERT OR UPDATE OR DELETE ON user_checkins
+        FOR EACH ROW EXECUTE FUNCTION update_user_checkin_streak();
     `);
-
-    console.log("✅ Trigger created: Check-in Streak");
+    console.log("✅ Trigger created: Check-in Streak (Current/Max State)");
 
     // ==========================================
-    // 8. BRANCHES OPENED (pages)
+    // 9. BRANCHES OPENED (Type A: Lifetime)
     // ==========================================
-    // Note: Due to distinct branches, we use a scoped subquery just for accuracy, 
-    // but ONLY trigger it on insert to avoid bogging down page updates.
+    // O(1) lookup to ensure we only increment if the user has NEVER opened this specific branch ID before.
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_branches_opened() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count distinct branch IDs created by this user across pages.
         IF TG_OP = 'INSERT' AND NEW.branch_id IS NOT NULL THEN
-          INSERT INTO user_counters (user_id, branches_opened, updated_at)
-          VALUES (NEW.user_id, (SELECT COUNT(DISTINCT branch_id) FROM pages WHERE user_id = NEW.user_id AND branch_id IS NOT NULL), NOW())
-          ON CONFLICT (user_id) DO UPDATE SET
-            branches_opened = (SELECT COUNT(DISTINCT branch_id) FROM pages WHERE user_id = NEW.user_id AND branch_id IS NOT NULL),
-            updated_at = NOW();
+          IF NOT EXISTS (SELECT 1 FROM pages WHERE user_id = NEW.user_id AND branch_id = NEW.branch_id AND id != NEW.id LIMIT 1) THEN
+            INSERT INTO user_counters (user_id, branches_opened, updated_at)
+            VALUES (NEW.user_id, 1, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET
+              branches_opened = user_counters.branches_opened + 1,
+              updated_at = NOW();
+          END IF;
         END IF;
         RETURN NEW;
       END;
@@ -896,18 +805,17 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         AFTER INSERT ON pages
         FOR EACH ROW EXECUTE FUNCTION update_user_branches_opened();
     `);
-    console.log("✅ Trigger created: Branches Opened");
+    console.log("✅ Trigger created: Branches Opened (Lifetime)");
 
     // ==========================================
-    // 9. CUSTOM ACTIONS WRITTEN (custom_actions)
+    // 10. CUSTOM ACTIONS WRITTEN (Type A: Lifetime)
     // ==========================================
-    // Only counts accepted custom actions (outcome = 'allow').
-    // 'allow_as_attempt' and 'reject' outcomes do not contribute.
+    // Captures both instant 'allow' and asynchronous updates turning a 'reject/pending' into 'allow'.
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_custom_actions_written() RETURNS TRIGGER AS $$
       BEGIN
-        -- Count accepted custom actions written by the user.
-        IF TG_OP = 'INSERT' AND NEW.outcome = 'allow' THEN
+        IF (TG_OP = 'INSERT' AND NEW.outcome = 'allow') OR 
+           (TG_OP = 'UPDATE' AND OLD.outcome != 'allow' AND NEW.outcome = 'allow') THEN
           INSERT INTO user_counters (user_id, custom_actions_written, updated_at)
           VALUES (NEW.user_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET
@@ -921,10 +829,10 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     await dbWrite.execute(`DROP TRIGGER IF EXISTS custom_actions_written_trigger ON custom_actions;`);
     await dbWrite.execute(`
       CREATE TRIGGER custom_actions_written_trigger
-        AFTER INSERT ON custom_actions
+        AFTER INSERT OR UPDATE ON custom_actions
         FOR EACH ROW EXECUTE FUNCTION update_user_custom_actions_written();
     `);
-    console.log("✅ Trigger created: Custom Actions Written");
+    console.log("✅ Trigger created: Custom Actions Written (Lifetime)");
 
     console.log("🎉 All user_counters DB triggers successfully deployed.");
   } catch (error) {
