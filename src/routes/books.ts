@@ -1260,14 +1260,47 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
  * @query gender - Filter by main character gender (male/female)
+ * @query status - Filter by comma-separated statuses (only applies with sortBy=creations). Values: active, draft, archived. E.g., "active,draft"
  * @returns Paginated list of books
  * 
  * @remarks
- * - creations: Shows user's own created books (requires authentication)
+ * - creations: Shows user's own created books (requires authentication). Optionally filtered by `status` query param.
  * - reads: Shows books the user has read, sorted by lastReadAt (requires authentication)
  * - recommendations: Recommends books based on user likes (requires authentication)
  * - favorites: Shows user's saved/favorited books (requires authentication)
- * - All other options: Show published books (optional authentication)
+ * - All other options: Show published books only (optional authentication, status filter ignored)
+ * 
+ * @example
+ * // Get user's own active and draft books
+ * GET /api/books/explore?sortBy=creations&status=active,draft&page=1&limit=20
+ * 
+ * // Response
+ * {
+ *   "books": [
+ *     {
+ *       "id": "book1",
+ *       "title": "The Whispering Halls",
+ *       "status": "active",
+ *       "author": { "name": "John Doe", "username": "johndoe" },
+ *       "stats": { "readsCount": 150, "likesCount": 32 },
+ *       ...
+ *     },
+ *     {
+ *       "id": "book2",
+ *       "title": "Shadows of the Past",
+ *       "status": "draft",
+ *       ...
+ *     }
+ *   ],
+ *   "pagination": {
+ *     "page": 1,
+ *     "limit": 20,
+ *     "totalCount": 2,
+ *     "totalPages": 1,
+ *     "hasNext": false,
+ *     "hasPrevious": false
+ *   }
+ * }
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {

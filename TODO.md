@@ -4,7 +4,6 @@
 [ ] Implement corruption curve
 [ ] Kalau real take action request & source action belum ada, page ga boleh dilihat
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
-[ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
 [x] aiPrompt should retry model on rate limit/service unavailable
@@ -65,13 +64,6 @@ user flow:
   - book which created -> open book detail modal
 
 please review, elaborate, and correct
-
----
-
-but now I have problem with the new json schema
-I can't use `oneOf` and `const`, because as you know I'm using 9 different AI providers which not all supports `oneOf` property
-what's your best solution?
-should we consolidate all fields like 'type', 'phase', 'date', 'day', etc into one object?
 
 ---
 
