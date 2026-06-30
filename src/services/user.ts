@@ -533,7 +533,10 @@ export async function checkCanCheckIn(userId: string): Promise<{
  */
 export async function performDailyCheckIn(userId: string, claimType: 'regular' | 'vip_2x' = 'regular'): Promise<CheckinPostResponse> {
   const todayUTC = getCurrentUTCDay();
-  
+
+  // Import credits service outside the transaction (prevent circular deps & avoid I/O inside tx)
+  const { addCredits } = await import("./credits.js");
+
   try {
     return await dbWrite.transaction(async (tx) => {
       // Check if user has already checked in today with this claim type
@@ -625,11 +628,9 @@ export async function performDailyCheckIn(userId: string, claimType: 'regular' |
         });
       }
 
-      // Import credits service to add credits (prevent circular deps)
-      const { addCredits } = await import("./credits.js");
-
-      // Add credits to user
+      // Add credits to user in the SAME transaction (pass tx to prevent nested tx deadlock)
       await addCredits(userId, creditsToAward, {
+        tx,
         context: claimType === 'vip_2x' ? "daily_checkin_vip_2x" : "daily_checkin",
         metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward, claimType },
       });
@@ -678,13 +679,13 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const canCheckInStatus = await checkCanCheckIn(userId);
 
     // Get user tier for VIP status
-    const userResult = await dbRead
+    const [userResult] = await dbRead
       .select({ tier: users.tier })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
 
-    const isVip = userResult.length > 0 && userResult[0].tier === 'vip';
+    const isVip = userResult && userResult.tier === 'vip';
 
     // Get check-in history (last 30 days)
     const thirtyDaysAgo = new Date(Date.now() - (30 * 24 * 60 * 60 * 1000));
