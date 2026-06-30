@@ -49,10 +49,10 @@ import { users, userLikes, userFavorites, userFollows, userActivityLogs, userAch
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
-import { updateUserLastActivity, performDailyCheckIn, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
+import { updateUserLastActivity, getCheckInStatus, logUserActivity, sanitizeProfileUpdate, enrichActivityLogs } from "../services/user.js";
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
-import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser } from "../services/user-controller.js";
+import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements } from '../services/achievements.js';
@@ -1879,29 +1879,7 @@ router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) 
  *   "message": "Already checked in today"
  * }
  */
-router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-    
-    const result = await performDailyCheckIn(userId);
-    
-    if (result.success) {
-      console.log(`[checkin] ✅ User ${userId} checked in and received ${result.creditsAwarded} credits`);
-      res.status(201).json(result);
-    } else {
-      console.log(`[checkin] ❌ User ${userId} failed to check in`);
-      res.status(400).json(result);
-    }
-
-    // Invalidate user cache and update last activity
-    await Promise.all([
-      invalidateUserProfileCache(userId),
-      updateUserLastActivity(userId)
-    ]);
-  } catch (error) {
-    handleApiError(res, "Failed to perform daily check-in", error);
-  }
-});
+router.post("/checkin", requireAuth, (req, res) => handleCheckIn(req, res));
 
 /**
  * POST /user/checkin/double
@@ -1944,29 +1922,7 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
  *   "message": "VIP 2x claim is only available to VIP subscribers"
  * }
  */
-router.post("/checkin/double", requireAuth, async (req: Request, res: Response) => {
-  try {
-    const userId = req.userId!;
-
-    const result = await performDailyCheckIn(userId, 'vip_2x');
-
-    if (result.success) {
-      console.log(`[checkin] 🎖️ User ${userId} claimed VIP 2x and received ${result.creditsAwarded} credits`);
-      res.status(201).json(result);
-    } else {
-      console.log(`[checkin] ❌ User ${userId} failed VIP 2x claim`);
-      res.status(400).json(result);
-    }
-
-    // Invalidate user cache and update last activity
-    await Promise.all([
-      invalidateUserProfileCache(userId),
-      updateUserLastActivity(userId)
-    ]);
-  } catch (error) {
-    handleApiError(res, "Failed to perform VIP double claim", error);
-  }
-});
+router.post("/checkin/double", requireAuth, (req, res) => handleCheckIn(req, res, 'vip_2x'));
 
 /**
  * POST /user/referrer

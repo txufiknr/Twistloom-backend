@@ -17,7 +17,7 @@ import { sql, eq, type SQL } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
 import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { sanitizeUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity, invalidateByEmail } from './user.js';
+import { sanitizeUserData, getUserIdByEmail, logUserActivity, updateUserLastActivity, invalidateByEmail, performDailyCheckIn } from './user.js';
 import { uploadUserImage } from './image.js';
 import { handleApiError, handleNotFoundError, handleValidationError } from '../utils/error.js';
 import { sanitizeUsername } from '../utils/username.js';
@@ -26,7 +26,7 @@ import { REFERRAL_BONUS } from '../config/credits.js';
 import { awardCredits } from './credits.js';
 import type { Request, Response } from "express";
 import type { DBNewUser } from '../types/schema.js';
-import type { EnrichedUserSelect } from '../types/user.js';
+import type { CheckinClaimType, EnrichedUserSelect } from '../types/user.js';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 
 /**
@@ -390,5 +390,39 @@ export async function setReferrerForNewUser(
     console.error('[user-controller] ❌ Failed to apply referrer:', error);
     if (handleResponse) handleApiError(res, 'Failed to apply referrer', error);
     return false;
+  }
+}
+
+/**
+ * Shared request handler for daily check-in and VIP double claim.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ * @param claimType - 'regular' (default) or 'vip_2x'
+ */
+export async function handleCheckIn(
+  req: Request,
+  res: Response,
+  claimType: CheckinClaimType = 'regular'
+): Promise<void> {
+  const label = claimType === 'vip_2x' ? 'VIP double claim' : 'daily check-in';
+  try {
+    const userId = req.userId!;
+    const result = await performDailyCheckIn(userId, claimType);
+
+    if (result.success) {
+      res.status(201).json(result);
+    } else {
+      console.log(`[checkin] ❌ User ${userId} failed ${label}`);
+      res.status(400).json(result);
+    }
+
+    // Invalidate user cache and update last activity
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      updateUserLastActivity(userId),
+    ]);
+  } catch (error) {
+    handleApiError(res, `Failed to perform ${label}`, error);
   }
 }

@@ -646,21 +646,6 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward, claimType },
       });
 
-      // Update max streak if this is a new record
-      const newStreak = prevStreak + 1;
-      const [counter] = await tx
-        .select({ maxCheckinStreak: userCounters.maxCheckinStreak })
-        .from(userCounters)
-        .where(eq(userCounters.userId, userId))
-        .limit(1);
-
-      if (counter && newStreak > counter.maxCheckinStreak) {
-        await tx
-          .update(userCounters)
-          .set({ maxCheckinStreak: newStreak, updatedAt: new Date() })
-          .where(eq(userCounters.userId, userId));
-      }
-
       // Compute new totals for response
       const totals = await tx
         .select({ totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})` })
@@ -674,7 +659,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
       return {
         success: true,
         creditsAwarded: creditsToAward,
-        currentStreak: newStreak,
+        currentStreak: prevStreak + 1,
         totalCreditsClaimed,
         checkInDate: todayUTC,
         message: `Successfully claimed ${creditsToAward} ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits`,

@@ -478,7 +478,6 @@ export const PLACE_CONNECTION_UPDATE_SCHEMA: AIJsonProperty = {
     travelTime: { type: 'string', description: 'Narrative travel duration (e.g., "5 minutes walk", "20 minutes drive").' },
     routeType: { type: 'string', description: 'Main route used between places (e.g., "alley")' },
     accessibility: { type: 'string', enum: [...placeAccessibilities] },
-    // obstacles: { type: 'string', description: 'Relevant barriers, hazards, or restrictions (e.g., "police checkpoint", "flooded alley")' },
     updateObstacles: getTagUpdatesSchema<string>({ description: 'Relevant barriers, hazards, or restrictions (e.g., "police checkpoint", "flooded alley")' }),
     bidirectional: { type: 'boolean', description: `false if we can't go back to source place` },
     notes: { type: 'string', description: 'Optional route-specific details.' },
@@ -624,7 +623,7 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
   },
 
   relationshipUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to relationships between side characters if any.' },
-  placeConnectionUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
+  placeConnectionUpdates: { type: 'array', items: PLACE_CONNECTION_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
 
   threadUpdates: {
     type: 'object',

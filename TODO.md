@@ -7,8 +7,6 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
-[x] translate action hint
-[x] TODO: can we make it DRY (calculate once)? buat ambil dari page aja
 [x] placesRelationship: source, target (placeId), distance, obstacle
 [x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
 [x] aiPrompt should retry model on rate limit/service unavailable

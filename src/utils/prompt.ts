@@ -582,10 +582,7 @@ const nextPageOutputFormat: string = `{
   ],
   "keyEvents": [],
   "importantObjects": [],
-  "traumaTagUpdates": {
-    "add": [],
-    "remove": []
-  },
+  "traumaTagUpdates": { "add": [], "remove": [] },
   "addPlotFlags": [{
     "fact": "...",
     "type": "One of: ${formatOneOf(plotFlagTypes)}",
@@ -792,7 +789,7 @@ const nextPageOutputFormat: string = `{
       "travelTime": "...",
       "routeType": "...",
       "accessibility": "One of: ${formatOneOf(placeAccessibilities)}",
-      "obstacles": ["..."],
+      "updateObstacles": { "add": [], "remove": [] },
       "bidirectional": <boolean>,
       "notes": "..."
     }
@@ -1097,7 +1094,7 @@ placeConnectionUpdates
   - travelTime: Estimated travel duration (e.g., "5 minutes walk", "20 minutes drive").
   - routeType: Primary route description (e.g., "main street", "alley", "tunnel").
   - accessibility: One of: ${formatOneOf(placeAccessibilities)}.
-  - obstacles: Current story-relevant barriers, hazards, or access requirements.
+  - updateObstacles: Current story-relevant barriers, hazards, or access requirements.
   - notes: Short route details not covered elsewhere.
 
 threadUpdates.newThreads
