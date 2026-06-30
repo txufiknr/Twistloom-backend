@@ -44,7 +44,7 @@ import type { DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
 import type { LikeTargetType, User, UserActivityType, UserStats } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
-import { requireAuth } from '../middleware/nextauth.js';
+import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { users, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
@@ -54,7 +54,6 @@ import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser } from "../services/user-controller.js";
 import { isValidUuid } from "../utils/uuid.js";
-import { optionalAuth } from "../middleware/nextauth.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements } from '../services/achievements.js';
 import type { PaginationMeta } from '../types/api.js';
@@ -2233,7 +2232,7 @@ router.get('/achievements', requireAuth, async (req: Request, res: Response) => 
  * Ultra-fast endpoint to check, award, and return newly unlocked badges.
  * Designed to be called by the frontend immediately after taking actions.
  */
-router.get('/unnotified', requireAuth, async (req: Request, res: Response) => {
+router.get('/achievements/unnotified', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
 
