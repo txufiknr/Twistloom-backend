@@ -7,13 +7,8 @@
 [ ] POST /user/comments - deprecated
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [x] translate story state (inventory {name, where, traits}, actionsHistory {text})
-[x] placesRelationship: source, target (placeId), distance, obstacle
-[x] can you add new trigger (idempotent) if user upload image with type 'user' then set user's own `imageUrl`?
 [x] aiPrompt should retry model on rate limit/service unavailable
-[x] translate: character.traits, place.traits
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
-[ ] achievement badgeImageUrl for every tier -> create images
-[ ] Claude/AI: generate more achievement badges, wording & lucide icon
 [ ] ensure endpoint Backend: GET /books/explore?sortBy=creations&status=active,draft
 [ ] pass title idea ke initalize book & github workflow dynamic job title
 [ ] Generate originals tambah custom input book title & mc name

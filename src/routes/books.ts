@@ -48,7 +48,7 @@ import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
-import { eq, and, desc, sql, ne, arrayOverlaps } from "drizzle-orm";
+import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
@@ -63,8 +63,8 @@ import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBoo
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { BookCreationStatus, BookGenerationPayload, BookSortOption, EnrichedBookData } from "../types/book.js";
-import { lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
+import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, EnrichedBookData } from "../types/book.js";
+import { bookStatuses, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, refundCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
@@ -1338,14 +1338,31 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       return res.json(createPaginatedResponse(emptyBooks, pagination, 'books'));
     }
 
-    // Determine base condition based on sort option
+    // Determine whether these are user's created books (can apply status filtering)
     const isCreations = bookSortBy === 'creations';
-    const baseCondition = isCreations
-      ? eq(books.userId, userId!) // User's own books (userId is guaranteed to be non-null when isCreations is true)
-      : eq(books.status, 'active'); // Published books
 
-    // Cache strategy: don't cache user-specific queries
-    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    // Extract and validate status filter (comma-separated, e.g. "active,draft")
+    let statusFilter: BookStatus[] | undefined;
+    if (isCreations) {
+      const statusParam = req.query.status as string | undefined;
+      if (statusParam) {
+        const rawStatuses = statusParam.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        statusFilter = rawStatuses.filter((s): s is BookStatus => bookStatuses.includes(s as BookStatus));
+        if (statusFilter.length === 0) {
+          return handleValidationError(res, `Invalid status value. Must be one or more of: ${bookStatuses.join(', ')}`);
+        }
+      }
+    }
+
+    // Determine base condition based on sort option
+    const baseCondition: ReturnType<typeof sql> = isCreations
+      ? statusFilter
+        ? and(eq(books.userId, userId!), inArray(books.status, statusFilter))!
+        : eq(books.userId, userId!) // User's own books regardless of status
+      : eq(books.status, 'active'); // Published books only (status filter ignored)
+
+    // Cache strategy: don't cache user-specific or filtered queries
+    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
       ? `books:user:${userId}:page:${page}`
       : bookSortBy === 'trending'

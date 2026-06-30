@@ -8,7 +8,8 @@ import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
 import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
 
-export type BookStatus = 'active' | 'archived' | 'draft';
+export const bookStatuses = ['active', 'archived', 'draft'] as const;
+export type BookStatus = typeof bookStatuses[number];
 
 export const bookGenerationStatuses = [
   'pending',
