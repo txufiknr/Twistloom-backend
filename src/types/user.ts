@@ -111,6 +111,7 @@ export interface CheckinStatusResponse {
   isVip: boolean;
   regularClaimAmount: number;
   vipClaimAmount: number;
+  claimedRewards: CheckinClaimType[];
 }
 
 export type UserComment = {

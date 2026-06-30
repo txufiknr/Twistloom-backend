@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
-import type { Gender, UserActivityType, UserTier } from "../types/user.js";
+import type { CheckinClaimType, Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats, UploadedImageType } from "../types/book.js";
@@ -1177,13 +1177,14 @@ export const userCheckins = pgTable(
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     checkInDate: date, // UTC date in YYYY-MM-DD format
-    creditsClaimed: integer("credits_claimed").notNull(), // Number of credits claimed for this check-in
+    claimType: text("claim_type").$type<CheckinClaimType>().notNull(),
+    creditsClaimed: integer("credits_claimed").notNull(), // Credits for this specific claim type
     createdAt,
     updatedAt,
   },
   (t) => [
-    // Unique constraint on (userId, checkInDate) to prevent multiple check-ins per day
-    unique("user_checkins_user_date_unique").on(t.userId, t.checkInDate),
+    // One row per claim type per day — prevents double-claiming the same type
+    unique("user_checkins_user_date_type_unique").on(t.userId, t.checkInDate, t.claimType),
     // Index for user's check-in history
     index("user_checkins_user_idx").on(t.userId, t.checkInDate.desc()),
     // Index for daily statistics

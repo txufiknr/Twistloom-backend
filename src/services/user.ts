@@ -425,22 +425,29 @@ export function invalidateByEmail(email: string) {
 async function getTodayCheckIn(userId: string): Promise<{
   checkInDate: string;
   creditsClaimed: number;
+  claimTypes: CheckinClaimType[];
 } | null> {
   const todayUTC = getCurrentUTCDay();
   
-  const existingCheckIn = await dbRead
+  const todayCheckIns = await dbRead
     .select({
       checkInDate: userCheckins.checkInDate,
       creditsClaimed: userCheckins.creditsClaimed,
+      claimType: userCheckins.claimType,
     })
     .from(userCheckins)
     .where(and(
       eq(userCheckins.userId, userId),
       eq(userCheckins.checkInDate, todayUTC)
-    ))
-    .limit(1);
+    ));
   
-  return existingCheckIn.length > 0 ? existingCheckIn[0] : null;
+  if (todayCheckIns.length === 0) return null;
+  
+  return {
+    checkInDate: todayUTC,
+    creditsClaimed: todayCheckIns.reduce((s, r) => s + r.creditsClaimed, 0),
+    claimTypes: todayCheckIns.map(r => r.claimType),
+  };
 }
 
 /**
@@ -479,7 +486,7 @@ async function getLastCheckInDate(userId: string): Promise<string | null> {
 export async function checkCanCheckIn(userId: string): Promise<{
   canCheckIn: boolean;
   lastCheckInDate: string | null;
-  creditsClaimed: number | null;
+  claimTypes: CheckinClaimType[];
 }> {
   try {
     const todayCheckIn = await getTodayCheckIn(userId);
@@ -488,7 +495,7 @@ export async function checkCanCheckIn(userId: string): Promise<{
       return {
         canCheckIn: false,
         lastCheckInDate: todayCheckIn.checkInDate,
-        creditsClaimed: todayCheckIn.creditsClaimed,
+        claimTypes: todayCheckIn.claimTypes,
       };
     }
     
@@ -497,7 +504,7 @@ export async function checkCanCheckIn(userId: string): Promise<{
     return {
       canCheckIn: true,
       lastCheckInDate,
-      creditsClaimed: null,
+      claimTypes: [],
     };
   } catch (error) {
     console.error("[user] ❌ Failed to check check-in status:", getErrorMessage(error));
@@ -539,16 +546,6 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
 
   try {
     return await dbWrite.transaction(async (tx) => {
-      // Check if user has already checked in today with this claim type
-      const existingCheckIn = await tx
-        .select({ id: userCheckins.id, creditsClaimed: userCheckins.creditsClaimed })
-        .from(userCheckins)
-        .where(and(
-          eq(userCheckins.userId, userId),
-          eq(userCheckins.checkInDate, todayUTC)
-        ))
-        .limit(1);
-      
       // For VIP 2x claim, check if user has VIP status
       if (claimType === 'vip_2x') {
         const user = await tx
@@ -583,11 +580,36 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         }
       }
 
-      // Compute consecutive streak up to yesterday (for awarding)
+      // Check if this claim type was already claimed today
+      const existingClaim = await tx
+        .select({ id: userCheckins.id })
+        .from(userCheckins)
+        .where(and(
+          eq(userCheckins.userId, userId),
+          eq(userCheckins.checkInDate, todayUTC),
+          eq(userCheckins.claimType, claimType)
+        ))
+        .limit(1);
+
+      if (existingClaim.length > 0) {
+        return {
+          success: false,
+          creditsAwarded: 0,
+          currentStreak: 0,
+          totalCreditsClaimed: 0,
+          checkInDate: todayUTC,
+          message: `Already claimed ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits today`,
+        } satisfies CheckinPostResponse;
+      }
+
+      // Compute consecutive streak up to yesterday (today's rows excluded)
       const recent = await tx
         .select({ checkInDate: userCheckins.checkInDate })
         .from(userCheckins)
-        .where(eq(userCheckins.userId, userId))
+        .where(and(
+          eq(userCheckins.userId, userId),
+          ne(userCheckins.checkInDate, todayUTC)
+        ))
         .orderBy(desc(userCheckins.checkInDate))
         .limit(DAILY_CHECKIN_DAYS);
 
@@ -609,26 +631,15 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
       const multiplier = claimType === 'vip_2x' ? VIP_BENEFITS.checkInMultiplier : 1;
       const creditsToAward = baseCredits * multiplier;
 
-      // Create or update check-in record
-      if (existingCheckIn.length > 0) {
-        // Add to existing check-in (dual claim system)
-        await tx
-          .update(userCheckins)
-          .set({ 
-            creditsClaimed: existingCheckIn[0].creditsClaimed + creditsToAward,
-            updatedAt: new Date(),
-          })
-          .where(eq(userCheckins.id, existingCheckIn[0].id));
-      } else {
-        // Create new check-in record
-        await tx.insert(userCheckins).values({
-          userId,
-          checkInDate: todayUTC,
-          creditsClaimed: creditsToAward,
-        });
-      }
+      // Insert per-type check-in record (unique constraint prevents duplicate claim types per day)
+      await tx.insert(userCheckins).values({
+        userId,
+        checkInDate: todayUTC,
+        claimType,
+        creditsClaimed: creditsToAward,
+      });
 
-      // Add credits to user in the SAME transaction (pass tx to prevent nested tx deadlock)
+      // Add credits to user in the SAME transaction
       await addCredits(userId, creditsToAward, {
         tx,
         context: claimType === 'vip_2x' ? "daily_checkin_vip_2x" : "daily_checkin",
@@ -694,21 +705,22 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const checkInHistory = await dbRead
       .select({
         checkInDate: userCheckins.checkInDate,
-        creditsClaimed: userCheckins.creditsClaimed,
-        createdAt: userCheckins.createdAt,
+        creditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})`,
+        createdAt: sql<Date>`MIN(${userCheckins.createdAt})`,
       })
       .from(userCheckins)
       .where(and(
         eq(userCheckins.userId, userId),
         sql`${userCheckins.checkInDate} >= ${cutoffDate}`
       ))
+      .groupBy(userCheckins.checkInDate)
       .orderBy(desc(userCheckins.checkInDate))
       .limit(30);
 
     // Get total check-ins and credits claimed
     const totals = await dbRead
       .select({
-        totalCheckIns: sql<number>`COUNT(*)`,
+        totalCheckIns: sql<number>`COUNT(DISTINCT ${userCheckins.checkInDate})`,
         totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})`,
       })
       .from(userCheckins)
@@ -735,15 +747,26 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       if (dateSet.has(iso)) streakExcludingToday++; else break;
     }
 
+    // Compute base amount for today's streak position
+    const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
+    const baseAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+
     let nextClaimAmount = 0;
     let regularClaimAmount = 0;
     let vipClaimAmount = 0;
     if (canCheckInStatus.canCheckIn) {
-      const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
-      const baseAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
       nextClaimAmount = baseAmount;
       regularClaimAmount = baseAmount;
       vipClaimAmount = baseAmount * VIP_BENEFITS.checkInMultiplier;
+    }
+
+    // Determine claimed rewards directly from today's check-in rows
+    const claimedRewards: CheckinClaimType[] = canCheckInStatus.claimTypes;
+
+    // Re-evaluate canCheckIn: true if any claim type remains unclaimed
+    if (!canCheckInStatus.canCheckIn) {
+      const maxClaimTypes = isVip ? 2 : 1;
+      canCheckInStatus.canCheckIn = claimedRewards.length < maxClaimTypes;
     }
 
     return {
@@ -757,6 +780,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       isVip,
       regularClaimAmount,
       vipClaimAmount: isVip ? vipClaimAmount : 0,
+      claimedRewards,
     } satisfies CheckinStatusResponse;
   } catch (error) {
     console.error("[user] ❌ Failed to get check-in status:", getErrorMessage(error));
