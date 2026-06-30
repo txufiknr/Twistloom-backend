@@ -120,9 +120,16 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     // User-specific flags (Index-only scans via PK/Unique EXISTS constraints)
     isMine: currentUserId ? sql<boolean>`books.user_id = ${currentUserId}` : sql<boolean>`false`,
     isLiked: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_likes WHERE user_id = ${currentUserId} AND target_type = 'book' AND target_id = books.id)` : sql<boolean>`false`,
+    isSaved: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_favorites WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
     isRead: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_sessions WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
     isCompleted: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_completed_books WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
     isPurchased: currentUserId ? sql<boolean>`EXISTS (SELECT 1 FROM user_purchased_books WHERE user_id = ${currentUserId} AND book_id = books.id)` : sql<boolean>`false`,
+
+    collection: currentUserId ? sql<string | null>`(
+      SELECT uf.collection FROM user_favorites uf
+      WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
+      LIMIT 1
+    )` : sql<string | null>`null`,
 
     // Consolidated 4 session/context subqueries into ONE single lookup
     // ORDER BY and LIMIT 1 removed due to the unique (user_id, book_id) constraint

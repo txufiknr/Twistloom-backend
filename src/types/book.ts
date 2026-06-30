@@ -157,11 +157,12 @@ export type EnrichedBookData = Pick<DBBook,
   | 'updatedAt'
   | 'mc'
 > & {
-  imageUrl?: string | null;
+  imageUrl: string | null;
   author: BookAuthor | null;
   stats: BookStats;
   isMine: boolean;
   isLiked: boolean;
+  isSaved: boolean;
   isRead: boolean;
   isCompleted: boolean;
   isPurchased: boolean;
@@ -175,6 +176,7 @@ export type EnrichedBookData = Pick<DBBook,
   // contextHistory: string;
   translation: BookTranslation | null;
   generation: EnrichedBookGeneration | null;
+  collection: string | null;
 }
 
 export type EnrichedBookFirstPage = { id: string; text: string };

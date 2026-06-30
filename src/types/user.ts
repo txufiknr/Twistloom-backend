@@ -83,6 +83,8 @@ export type UserActivityType =
   'onboarding_complete' |
   'referrer_set';
 
+export type CheckinClaimType = 'regular' | 'vip_2x';
+
 export interface CheckinRecord {
   checkInDate: string; // YYYY-MM-DD
   creditsClaimed: number;

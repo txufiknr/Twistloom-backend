@@ -1,8 +1,8 @@
 /**
- * GitHub workflow dispatch utility functions
+ * GitHub workflow dispatch and cancellation utility functions
  * 
- * Provides reusable functions for triggering GitHub Actions workflows via REST API.
- * Handles retry logic, error detection, and proper logging.
+ * Provides reusable functions for triggering and cancelling GitHub Actions
+ * workflows via REST API. Handles retry logic, error detection, and proper logging.
  */
 
 import { GITHUB_DEFAULT_BRANCH, GITHUB_REPO_NAME, GITHUB_REPO_OWNER } from '../config/env.js';
@@ -184,5 +184,119 @@ export async function dispatchGitHubWorkflow(
 
     console.error(`[${context}] ❌ Failed to dispatch workflow: ${workflowFile}`, errorMessage);
     return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Cancels active GitHub Actions workflow runs for a given workflow file.
+ *
+ * Lists all in_progress and queued runs and cancels them via the GitHub REST
+ * API. This is a best-effort operation — it does not throw on failure so the
+ * caller can continue with other teardown work (DB status update, refund).
+ *
+ * **Race note:**
+ * After cancellation the running process receives SIGTERM from GitHub with a
+ * 7.5 s grace period before SIGKILL. The catch block in the runner may fire
+ * `updateBookGenerationStatus({ status: 'failed' })`. Setting the DB status
+ * to `'cancelled'` **after** calling this function ensures cancellation
+ * wins in any race with the dying runner.
+ *
+ * @param config  - GitHub repository configuration
+ * @param params  - Workflow file name to cancel runs for
+ * @param options - Cancel options (context for logging)
+ * @returns Object with `cancelledCount` and any `errors` encountered
+ *
+ * @example
+ * ```typescript
+ * const { cancelledCount } = await cancelGitHubWorkflowRuns(
+ *   GITHUB_REPO_CONFIG,
+ *   { workflowFile: 'on-demand-book-creation.yml' },
+ *   { context: 'POST /api/books/:bookId/cancel' }
+ * );
+ * ```
+ */
+export async function cancelGitHubWorkflowRuns(
+  config: GitHubRepoConfig,
+  params: { workflowFile: string },
+  options: WorkflowDispatchOptions = {}
+): Promise<{ cancelledCount: number; errors: string[] }> {
+  const { owner, repo, token } = config;
+  const context = options.context || 'cancelGitHubWorkflowRuns';
+  const result: { cancelledCount: number; errors: string[] } = {
+    cancelledCount: 0,
+    errors: [],
+  };
+
+  if (!token) {
+    console.warn(`[${context}] ⚠️ GitHub token not configured, skipping workflow cancellation`);
+    result.errors.push('GitHub token not configured');
+    return result;
+  }
+
+  const { workflowFile } = params;
+
+  try {
+    // Gather runs in both queued and in_progress states
+    const statuses = ['in_progress', 'queued'];
+    const allRuns: Array<{ id: number; status: string }> = [];
+
+    for (const status of statuses) {
+      const listUrl = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflowFile}/runs?status=${status}&per_page=100`;
+
+      const listResponse = await fetch(listUrl, {
+        headers: {
+          'Authorization': `token ${token}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'Twistloom-Backend',
+        },
+      });
+
+      if (listResponse.ok) {
+        const listData = (await listResponse.json()) as { workflow_runs: Array<{ id: number; status: string }> };
+        allRuns.push(...(listData.workflow_runs || []));
+      } else {
+        const errorText = await listResponse.text();
+        console.warn(`[${context}] ⚠️ Failed to list ${status} runs: ${listResponse.status} ${errorText}`);
+      }
+    }
+
+    if (allRuns.length === 0) {
+      console.log(`[${context}] ℹ️ No active runs found for ${workflowFile}`);
+      return result;
+    }
+
+    console.log(`[${context}] 🔴 Cancelling ${allRuns.length} active run(s) for ${workflowFile}`);
+
+    for (const run of allRuns) {
+      try {
+        const cancelUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs/${run.id}/cancel`;
+        const cancelResponse = await fetch(cancelUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `token ${token}`,
+            'Accept': 'application/vnd.github.v3+json',
+            'User-Agent': 'Twistloom-Backend',
+          },
+        });
+
+        if (cancelResponse.ok || cancelResponse.status === 202) {
+          console.log(`[${context}] ✅ Cancelled workflow run ${run.id}`);
+          result.cancelledCount++;
+        } else {
+          const errorText = await cancelResponse.text();
+          console.error(`[${context}] ❌ Failed to cancel workflow run ${run.id}: ${cancelResponse.status} ${errorText}`);
+          result.errors.push(`Failed to cancel run ${run.id}: ${cancelResponse.status}`);
+        }
+      } catch (cancelError) {
+        console.error(`[${context}] ❌ Error cancelling workflow run ${run.id}:`, cancelError);
+        result.errors.push(`Error cancelling run ${run.id}: ${String(cancelError)}`);
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error(`[${context}] ❌ Failed to cancel workflow runs:`, error);
+    result.errors.push(`Failed to cancel workflow runs: ${String(error)}`);
+    return result;
   }
 }

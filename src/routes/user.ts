@@ -1163,18 +1163,19 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
 /**
  * GET /user/collections
  * 
- * Get all collection names for the authenticated user's favorite books.
- * Returns a list of distinct collection names used to organize favorites.
+ * Get all collections for the authenticated user's favorite books.
+ * Returns an array of objects with the collection name and total book count.
  * 
  * @route GET /user/collections
- * @description Get user collection names
+ * @description Get user collections with book counts
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
  * @returns {Object} Collections response
- * @returns {boolean} success - Operation status
- * @returns {Array} data - Array of collection names
+ * @returns {Array} collections - Array of collection objects
+ * @returns {string} collections[].name - Collection name
+ * @returns {number} collections[].totalBooks - Number of books in the collection
  * 
  * @example
  * // Request
@@ -1182,12 +1183,11 @@ router.delete("/favorites", requireAuth, async (req: Request, res: Response) => 
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": [
- *     "Thriller",
- *     "Mystery",
- *     "To Read Later",
- *     "Favorites"
+ *   "collections": [
+ *     { "name": "Thriller", "totalBooks": 5 },
+ *     { "name": "Mystery", "totalBooks": 3 },
+ *     { "name": "To Read Later", "totalBooks": 12 },
+ *     { "name": "Favorites", "totalBooks": 8 }
  *   ]
  * }
  */
@@ -1198,21 +1198,21 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
     // Return empty response for unauthenticated users (handles auth timing race conditions)
     if (!userId) return res.json({ collections: [] });
 
-    // Get distinct collection names for the user
+    // Get collections with book counts grouped by collection name
     const collections = await dbRead
-      .selectDistinct({ collection: userFavorites.collection })
+      .select({
+        name: userFavorites.collection,
+        totalBooks: sql<number>`COUNT(*)::int`,
+      })
       .from(userFavorites)
       .where(and(
         eq(userFavorites.userId, userId),
         sql`${userFavorites.collection} IS NOT NULL`
       ))
+      .groupBy(userFavorites.collection)
       .orderBy(userFavorites.collection);
 
-    const collectionNames = collections.map((c: { collection: string | null }) => c.collection).filter((c: string | null): c is string => c !== null);
-
-    res.json({
-      collections: collectionNames,
-    });
+    res.json({ collections });
 
     // Update user's last activity timestamp
     await updateUserLastActivity(userId);
@@ -1900,6 +1900,71 @@ router.post("/checkin", requireAuth, async (req: Request, res: Response) => {
     ]);
   } catch (error) {
     handleApiError(res, "Failed to perform daily check-in", error);
+  }
+});
+
+/**
+ * POST /user/checkin/double
+ * 
+ * VIP-only double claim that awards 2x the daily check-in credits.
+ * Can be claimed in addition to the regular check-in on the same day.
+ * Requires VIP subscription tier; returns 403 if the user is not VIP.
+ * 
+ * @route POST /user/checkin/double
+ * @description VIP double claim — 2x daily check-in credits
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @returns {Object} Check-in response
+ * @returns {boolean} success - Whether the double claim was successful
+ * @returns {number} creditsAwarded - Number of bonus credits awarded
+ * @returns {string} checkInDate - Check-in date in YYYY-MM-DD format
+ * @returns {string} message - Status message
+ * 
+ * @example
+ * // Request
+ * POST /user/checkin/double
+ * 
+ * // Response (successful VIP double claim)
+ * {
+ *   "success": true,
+ *   "creditsAwarded": 30,
+ *   "checkInDate": "2026-05-04",
+ *   "message": "Successfully claimed 30 VIP 2x daily credits"
+ * }
+ * 
+ * // Response (not a VIP user)
+ * {
+ *   "success": false,
+ *   "creditsAwarded": 0,
+ *   "currentStreak": 0,
+ *   "totalCreditsClaimed": 0,
+ *   "checkInDate": "2026-05-04",
+ *   "message": "VIP 2x claim is only available to VIP subscribers"
+ * }
+ */
+router.post("/checkin/double", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    const result = await performDailyCheckIn(userId, 'vip_2x');
+
+    if (result.success) {
+      console.log(`[checkin] 🎖️ User ${userId} claimed VIP 2x and received ${result.creditsAwarded} credits`);
+      res.status(201).json(result);
+    } else {
+      console.log(`[checkin] ❌ User ${userId} failed VIP 2x claim`);
+      res.status(400).json(result);
+    }
+
+    // Invalidate user cache and update last activity
+    await Promise.all([
+      invalidateUserProfileCache(userId),
+      updateUserLastActivity(userId)
+    ]);
+  } catch (error) {
+    handleApiError(res, "Failed to perform VIP double claim", error);
   }
 });
 

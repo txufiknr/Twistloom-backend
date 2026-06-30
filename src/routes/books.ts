@@ -92,6 +92,7 @@ import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
+import { cancelGitHubWorkflowRuns } from "../utils/github-workflow.js";
 import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
@@ -764,12 +765,27 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Book generation already refunded' });
     }
 
+    // ── Cancel any running GitHub Actions workflow (best-effort) ─────────────
+    //
+    // Must run BEFORE the DB status update so that cancellation wins in a race
+    // with the dying runner's catch block (which sends `{ status: 'failed' }`).
+    // The runner receives SIGTERM with a 7.5 s grace period before SIGKILL.
+    void cancelGitHubWorkflowRuns(
+      GITHUB_REPO_CONFIG,
+      { workflowFile: 'on-demand-book-creation.yml' },
+      { context: 'POST /api/books/:bookId/cancel' },
+    );
+
     // ── Set status to 'cancelled' directly (bypasses debounce for instant effect) ──
     //
     // Bug fix: previously used `updateBookGenerationStatus` (debounced, 500 ms delay)
     // which added unnecessary latency and required a separate clear of isGeneratingStartedAt.
     // A single direct write is cleaner and immediate.
-    await dbWrite
+    //
+    // TOCTOU guard: the WHERE clause ensures the update only succeeds if the
+    // generation hasn't already completed since the initial read. This prevents
+    // a race where the GitHub webhook fires `completed` between our read and write.
+    const [cancelledRow] = await dbWrite
       .update(bookGenerations)
       .set({
         generationStatus:      'cancelled',
@@ -777,7 +793,19 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
         generationError:       null,         // Clear any stale error message
         generationCompletedAt: new Date(),
       })
-      .where(eq(bookGenerations.bookId, bookId));
+      .where(
+        and(
+          eq(bookGenerations.bookId, bookId),
+          ne(bookGenerations.generationStatus, 'completed'),
+        ),
+      )
+      .returning({ id: bookGenerations.bookId });
+
+    // If no row was updated, the generation completed between our read and write
+    if (!cancelledRow) {
+      console.log(`[POST /api/books/:bookId/cancel] ℹ️ Book ${bookId} was already completed, skipping cancellation`);
+      return res.status(400).json({ error: 'Cannot cancel completed book' });
+    }
 
     // ── Refund credits ────────────────────────────────────────────────────────
     //

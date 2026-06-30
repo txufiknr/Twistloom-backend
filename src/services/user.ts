@@ -13,7 +13,7 @@
 
 import type { Request, Response } from "express";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
-import type { CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
+import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
@@ -531,7 +531,7 @@ export async function checkCanCheckIn(userId: string): Promise<{
  * console.log(`Awarded ${vipResult.creditsAwarded} credits`);
  * ```
  */
-export async function performDailyCheckIn(userId: string, claimType: 'regular' | 'vip_2x' = 'regular'): Promise<CheckinPostResponse> {
+export async function performDailyCheckIn(userId: string, claimType: CheckinClaimType = 'regular'): Promise<CheckinPostResponse> {
   const todayUTC = getCurrentUTCDay();
 
   // Import credits service outside the transaction (prevent circular deps & avoid I/O inside tx)
