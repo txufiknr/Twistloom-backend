@@ -15,7 +15,7 @@ import type { Request, Response } from "express";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
 import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { users, books, userComments, userAuth, userCheckins, userActivityLogs } from "../db/schema.js";
+import { users, books, userComments, userAuth, userCheckins, userCounters, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
 import { debounceAsync } from "../utils/debounce.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
@@ -646,6 +646,21 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         metadata: { checkInDate: todayUTC, creditsAwarded: creditsToAward, claimType },
       });
 
+      // Update max streak if this is a new record
+      const newStreak = prevStreak + 1;
+      const [counter] = await tx
+        .select({ maxCheckinStreak: userCounters.maxCheckinStreak })
+        .from(userCounters)
+        .where(eq(userCounters.userId, userId))
+        .limit(1);
+
+      if (counter && newStreak > counter.maxCheckinStreak) {
+        await tx
+          .update(userCounters)
+          .set({ maxCheckinStreak: newStreak, updatedAt: new Date() })
+          .where(eq(userCounters.userId, userId));
+      }
+
       // Compute new totals for response
       const totals = await tx
         .select({ totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})` })
@@ -659,7 +674,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
       return {
         success: true,
         creditsAwarded: creditsToAward,
-        currentStreak: prevStreak + 1,
+        currentStreak: newStreak,
         totalCreditsClaimed,
         checkInDate: todayUTC,
         message: `Successfully claimed ${creditsToAward} ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits`,
@@ -727,6 +742,13 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       .where(eq(userCheckins.userId, userId))
       .limit(1);
 
+    // Get longest streak from user counters
+    const [counter] = await dbRead
+      .select({ maxCheckinStreak: userCounters.maxCheckinStreak })
+      .from(userCounters)
+      .where(eq(userCounters.userId, userId))
+      .limit(1);
+
     // Compute current consecutive streak (include today if present)
     const dateSet = new Set(checkInHistory.map(c => c.checkInDate));
     const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
@@ -775,6 +797,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       totalCheckIns: totals[0]?.totalCheckIns || 0,
       totalCreditsClaimed: totals[0]?.totalCreditsClaimed || 0,
       currentStreak: streak,
+      longestStreak: counter?.maxCheckinStreak || 0,
       nextClaimAmount,
       recentCheckIns: checkInHistory,
       isVip,
