@@ -203,7 +203,7 @@ export const INITIAL_PLACE_SCHEMA: AIJsonProperty = {
  * │ type  │ fill these fields                                                │
  * ├───────┼──────────────────────────────────────────────────────────────────┤
  * │ phase │ phase: EARLY | MID | LATE | FINALE                              │
- * │ page  │ start (required), end (optional upper bound)                    │
+ * │ page  │ range: <min>-<max>                                              │
  * │ day   │ day: exact in-story day integer (1-based)                       │
  * │ date  │ date: ISO calendar date "YYYY-MM-DD"                            │
  * └───────┴──────────────────────────────────────────────────────────────────┘

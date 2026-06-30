@@ -417,8 +417,11 @@ const firstBookOutputFormat: string = `{
       ],
       "stateTrigger": [
         { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
-        { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" }
-        { "type": "One of: ${formatOneOf(futureNoteHealthStates, '|')}", "threshold": <0-100> }
+        { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" },
+        { "type": "healthPercent", "threshold": <0-100> },
+        { "type": "mobilityPercent", "threshold": <0-100> },
+        { "type": "actionPercent", "threshold": <0-100> },
+        { "type": "mentalPercent", "threshold": <0-100> }
       ],
       "relatedThreadId": "<thread_id> or 'none'"
     }
@@ -625,8 +628,11 @@ const nextPageOutputFormat: string = `{
         ],
         "stateTrigger": [
           { "type": "stability", "level": "One of: ${formatOneOf(Object.keys(stabilityLevels), '|')}" },
-          { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" }
-          { "type": "One of: ${formatOneOf(futureNoteHealthStates, '|')}", "threshold": <0-100> }
+          { "type": "condition", "condition": "One of: ${formatOneOf(healthConditions, '|')}" },
+          { "type": "healthPercent", "threshold": <0-100> },
+          { "type": "mobilityPercent", "threshold": <0-100> },
+          { "type": "actionPercent", "threshold": <0-100> },
+          { "type": "mentalPercent", "threshold": <0-100> }
         ],
         "relatedThreadId": "<thread_id> or 'none'"
       }
