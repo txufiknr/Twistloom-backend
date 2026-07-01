@@ -583,15 +583,10 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
     additionalProperties: false
   },
-  plannedCharacterUpdates: {
-    type: 'object',
+  addPlannedCharacters: {
+    type: 'array',
     description: 'New planned character candidates for future introduction (only when slots available and phase is EARLY/MID).',
-    properties: {
-      add: { type: 'array', description: 'New planned character candidates to add.', items: CHARACTER_PLAN_SCHEMA },
-      remove: { type: 'array', description: 'characterId strings of plans to remove.', items: { type: 'string' } },
-    },
-    required: ['add', 'remove'],
-    additionalProperties: false,
+    items: CHARACTER_PLAN_SCHEMA,
   },
   relationshipUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to relationships between side characters if any.' },
 

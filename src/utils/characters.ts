@@ -5,6 +5,7 @@ import type { CharacterMemory, CharacterUpdate, CharacterUpdates, RelationshipUp
 import type { StoryMCState, StoryState } from "../types/story.js";
 import type { KnownGender } from "../types/user.js";
 import { ucfirst } from "./formatter.js";
+import { getStoryStateInfo } from "./story.js";
 import { slugify } from "./text-processing.js";
 
 // ============================================================================
@@ -271,6 +272,16 @@ export function processCharacterUpdates(
       if (sourceCharacter) {
         state.characters[relUpdate.sourceId] = updateRelationship(sourceCharacter, relUpdate);
       }
+    }
+  }
+
+  // Clear stale planned characters — no point keeping seeds for characters
+  // that can no longer be introduced (late phase or no remaining slots).
+  if (state.plannedCharacters?.length) {
+    const { isLatePhase } = getStoryStateInfo(state);
+    const charactersSlot = MAX_CHARACTERS - Object.keys(state.characters).length;
+    if (isLatePhase || charactersSlot <= 0) {
+      state.plannedCharacters = [];
     }
   }
 }

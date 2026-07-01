@@ -308,7 +308,7 @@ export function extractStateDelta(params: {
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
     minutesPassed: generation.minutesPassed,
-    plannedCharacterUpdates: generation.plannedCharacterUpdates,
+    addPlannedCharacters: generation.addPlannedCharacters,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
@@ -453,7 +453,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     flagUpdates,
     traumaTagUpdates,
     futureNoteUpdates,
-    plannedCharacterUpdates,
+    addPlannedCharacters,
     addPlotFlags,
     factUpdates,
     characterUpdates,
@@ -506,7 +506,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
-  processPlannedCharacterUpdates(newState, plannedCharacterUpdates);
+  processPlannedCharacterUpdates(newState, addPlannedCharacters);
   processPlotFlagUpdates(newState, addPlotFlags, scene);
   processFactUpdates(newState, factUpdates);
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.placeId);
@@ -1023,51 +1023,26 @@ export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates
 }
 
 /**
- * Processes planned character updates from AI-generated content
+ * Processes planned character addition from AI-generated content
  * 
  * Adds new future character candidates or removes obsolete ones.
  * Only adds when character slots are available and phase is EARLY or MID.
  * Duplicate characterIds are silently skipped.
  * 
  * @param state - Current story state to update
- * @param updates - Object with add (CharacterPlan[]) and remove (string[]) arrays
+ * @param add - Array of CharacterPlan objects to add
  */
 export function processPlannedCharacterUpdates(
   state: StoryState,
-  updates?: { add?: CharacterPlan[]; remove?: string[] }
+  add?: CharacterPlan[],
 ): void {
-  if (!updates) return;
+  if (!add?.length) return;
 
-  // Remove obsolete plans by characterId
-  if (updates.remove?.length) {
-    state.plannedCharacters = state.plannedCharacters.filter(
-      p => !updates.remove!.includes(p.characterId)
-    );
-  }
-
-  // Add new planned characters with guard conditions
-  if (updates.add?.length) {
-    const { isEarlyPhase, isMidPhase, charactersSlot } = getStoryStateInfo(state);
-    const canAdd = (isEarlyPhase || isMidPhase) && charactersSlot > 0;
-    if (!canAdd) return;
-
-    for (const plan of updates.add) {
-      const isDuplicate = state.plannedCharacters.some(
-        p => p.characterId === plan.characterId
-      );
-      if (!isDuplicate) {
-        state.plannedCharacters.push({
-          characterId: plan.characterId,
-          knownName: plan.knownName,
-          realName: plan.realName,
-          gender: plan.gender,
-          role: plan.role,
-          bio: plan.bio,
-          visualDescription: plan.visualDescription,
-          importance: plan.importance,
-          storyPurpose: plan.storyPurpose,
-          plannedIntroduction: plan.plannedIntroduction,
-        });
+  const { isLatePhase, charactersSlot } = getStoryStateInfo(state);
+  if (!isLatePhase && charactersSlot > 0) {
+    for (const plan of add) {
+      if (!state.plannedCharacters.some(p => p.characterId === plan.characterId)) {
+        state.plannedCharacters.push(plan);
       }
     }
   }

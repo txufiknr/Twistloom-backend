@@ -225,10 +225,9 @@ PAGE ENDING RULES:
 
 export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
 - These characters exist in the story canon but have not yet appeared on-page.
-- Use plannedCharacterUpdates.add to create new planned characters when the story needs future faces. Only valid in EARLY and MID phases.
-- Use plannedCharacterUpdates.remove to remove planned characters who have been introduced or whose role has become irrelevant.
-- Introduce them naturally when appropriate for the current scene, pacing, and story momentum.
-- Add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
+- Use addPlannedCharacters to create new planned characters when the story needs future faces. Only valid in EARLY and MID phases.
+- Introduce them naturally (add to characterUpdates.newCharacters) when appropriate for the current scene, pacing, and story momentum.
+- Only add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
 - Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.`;
 
 /**
@@ -641,23 +640,20 @@ const nextPageOutputFormat: string = `{
     ],
     "remove": [<key>]
   },
-  "plannedCharacterUpdates": {
-    "add": [
-      {
-        "characterId": "<character_id>",
-        "knownName": "...",
-        "realName": "...",
-        "gender": "One of: ${formatOneOf(genders)}",
-        "role": "...",
-        "bio": "...",
-        "visualDescription": "...",
-        "importance": "One of: ${formatOneOf(characterImportances)}",
-        "storyPurpose": "...",
-        "plannedIntroduction": "..."
-      }
-    ],
-    "remove": ["<character_id>"]
-  },
+  "addPlannedCharacters": [
+    {
+      "characterId": "<unique_id>",
+      "knownName": "...",
+      "realName": "...",
+      "gender": "One of: ${formatOneOf(genders)}",
+      "role": "...",
+      "bio": "...",
+      "visualDescription": "...",
+      "importance": "One of: ${formatOneOf(characterImportances)}",
+      "storyPurpose": "...",
+      "plannedIntroduction": "..."
+    }
+  ],
   "factUpdates": [
     {
       "key": <new or existing key>,
@@ -995,15 +991,13 @@ ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved
   - If fulfilling a future note materially changes the story, record the outcome as a plot flag.
   - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.
 
-plannedCharacterUpdates
+addPlannedCharacters
 ${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates for future introduction when the story needs fresh faces for upcoming beats.
+  - This is for characters not yet on-page — they're seeds for future pages. Use characterUpdates.newCharacters instead if the new character is physically present on this page.
   - Each must have a distinct characterId. Avoid generic or throwaway plans.
   - storyPurpose: why this character exists and what role they'll play.
-  - plannedIntroduction: brief hook describing how/when they might first appear.
-  - Remove planned characters that have been introduced or whose planned role is no longer relevant.`
+  - plannedIntroduction: brief hook describing how/when they might first appear.`
 : `  - Do not add new planned characters. ${isLatePhase ? 'Phase is too late for meaningful future introductions.' : `${MAX_CHARACTERS} characters limit reached.`}`}
-  - Planned characters are not yet on-page — they're seeds for future pages. Don't introduce them here.
-  - Remove obsolete plans by characterId.
 
 factUpdates
   - Represents long-term story memory, discoveries, or important established facts that influence future turns.
