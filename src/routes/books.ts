@@ -66,7 +66,7 @@ import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateE
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
-import { executeWithCredits, refundCredits } from "../services/credits.js";
+import { executeWithCredits, addCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
@@ -91,6 +91,7 @@ import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
 import { CREDIT_COSTS } from "../config/credits.js";
 import { CREDIT_ERRORS } from "../config/errors.js";
+import { getRefundForStep, isAtPointOfNoReturn, BOOK_GENERATION_COST } from "../config/generation-refund.js";
 import { triggerBookGenerationWorkflow, isGenerationStale } from "../services/book-creation.js";
 import { cancelGitHubWorkflowRuns } from "../utils/github-workflow.js";
 import { requireEnv } from "../utils/env.js";
@@ -739,6 +740,7 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
         bookUserId:       books.userId,
         bookStatus:       books.status,
         generationStatus: bookGenerations.generationStatus,
+        generationStep:   bookGenerations.generationStep,
         isRefunded:       bookGenerations.isRefunded,
       })
       .from(books)
@@ -763,6 +765,30 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
     // Prevent double-refunds (idempotency guard)
     if (data.isRefunded) {
       return res.status(400).json({ error: 'Book generation already refunded' });
+    }
+
+    // ── Point of no return ─────────────────────────────────────────────────────
+    //
+    // If generation has reached the finalizing stage, we cannot stop the workflow
+    // (the AI cost is already sunk). Instead, we mark `cancellationRequestedAt`
+    // on the generation row so that `initializeBook` sets `status: 'archived'`
+    // instead of `status: 'active'` when the workflow completes.
+    //
+    // The workflow continues in the background. The book will exist but will be
+    // hidden from the user's main library and explore feeds.
+    if (isAtPointOfNoReturn(data.generationStep ?? null)) {
+      await dbWrite
+        .update(bookGenerations)
+        .set({ cancellationRequestedAt: new Date() })
+        .where(eq(bookGenerations.bookId, bookId));
+
+      console.log(`[POST /api/books/:bookId/cancel] 📌 Book ${bookId} at point of no return — archiving on completion per user request`);
+      return res.status(202).json({
+        success: true,
+        message:
+          'Generation is almost complete and will finish in the background. ' +
+          'The book will be archived instead of published.',
+      });
     }
 
     // ── Cancel any running GitHub Actions workflow (best-effort) ─────────────
@@ -807,16 +833,24 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Cannot cancel completed book' });
     }
 
+    // ── Calculate stage-based refund ──────────────────────────────────────────
+    //
+    // Refund depends on the generation step the workflow had reached.
+    // Early stages get a full refund; later stages get a partial refund.
+    const refundAmount = getRefundForStep(data.generationStep ?? null);
+
     // ── Refund credits ────────────────────────────────────────────────────────
     //
     // Handled separately from the status update so that a refund failure doesn't
     // undo the cancellation. The user can retry the cancel route if the refund
     // fails (isRefunded guard won't block because it wasn't set).
     try {
-      await refundCredits(userId, 'STORY_GENERATION', {
-        context:  'book_creation_cancelled',
-        metadata: { bookId },
-      });
+      if (refundAmount && refundAmount > 0) {
+        await addCredits(userId, refundAmount, {
+          context:  'book_creation_cancelled',
+          metadata: { bookId, generationStep: data.generationStep, originalCost: BOOK_GENERATION_COST, refundAmount },
+        });
+      }
 
       // Stamp the refund timestamp only after confirmed success
       await dbWrite
@@ -824,14 +858,20 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
         .set({ isRefunded: new Date() })
         .where(eq(bookGenerations.bookId, bookId));
 
-      console.log(`[POST /api/books/:bookId/cancel] ✅ Book ${bookId} cancelled and credits refunded for user ${userId}`);
+      const refundMsg = refundAmount
+        ? `${refundAmount}/${BOOK_GENERATION_COST} credits refunded`
+        : 'no refund (generation had not started)';
+      console.log(`[POST /api/books/:bookId/cancel] ✅ Book ${bookId} cancelled, ${refundMsg} for user ${userId}`);
     } catch (refundError) {
       console.error(`[POST /api/books/:bookId/cancel] ❌ Failed to refund credits for book ${bookId}:`, refundError);
       // Return 500 so the client knows to retry; status is already 'cancelled'.
       return res.status(500).json({ error: 'Failed to refund credits' });
     }
 
-    res.json({ success: true, message: 'Book generation cancelled and credits refunded' });
+    const message = refundAmount
+      ? `Book generation cancelled. ${refundAmount} credit${refundAmount === 1 ? '' : 's'} refunded.`
+      : 'Book generation cancelled.';
+    res.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/cancel] ❌ Error:', error);
     handleApiError(res, 'Failed to cancel book generation', error);

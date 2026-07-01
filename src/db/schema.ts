@@ -439,6 +439,7 @@ export const bookGenerations = pgTable(
     generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
     isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }),
     isRefunded: timestamp("is_refunded"),
+    cancellationRequestedAt: timestamp("cancellation_requested_at", { withTimezone: true }),
     createdAt,
     updatedAt,
   },

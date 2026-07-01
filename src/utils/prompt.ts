@@ -13,7 +13,9 @@ import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
 import { buildBookMetaDocuments, generateAndUpdateBookCoverImage, insertBook, insertStoryPage, mapBookFromDb, getPageFromDB, getBookFromDB, persistPageWithState, mapToPersistedStoryPage, updateBook, invalidatePopularTagsCache } from "../services/book.js";
-import { dbWrite } from "../db/client.js";
+import { dbWrite, dbRead } from "../db/client.js";
+import { bookGenerations } from "../db/schema.js";
+import { eq } from "drizzle-orm";
 import { insertStoryState } from "../services/story.js";
 import { invalidateUserBooksCache, invalidateUserProfileCache, invalidateExploreCache } from "../services/cache.js";
 import { logUserActivity } from "../services/user.js";
@@ -34,7 +36,7 @@ import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
-import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
@@ -3600,6 +3602,16 @@ export async function initializeBook(
     let bookId: string;
 
     if (draftBookId) {
+      // Check if the user requested cancellation at the point of no return.
+      // If so, archive the book instead of publishing it.
+      const [genRow] = await dbRead
+        .select({ cancellationRequestedAt: bookGenerations.cancellationRequestedAt })
+        .from(bookGenerations)
+        .where(eq(bookGenerations.bookId, draftBookId))
+        .limit(1);
+
+      const finalStatus: BookStatus = genRow?.cancellationRequestedAt ? 'archived' : 'active';
+
       // Update existing book record with generated content (async book creation flow)
       await updateBook(draftBookId, {
         title,
@@ -3609,7 +3621,7 @@ export async function initializeBook(
         mc,
         totalPages,
         language, // Match with theme input
-        status: 'active', // Book is now complete (published)
+        status: finalStatus, // 'archived' if user cancelled at PoNR, 'active' otherwise
         originalThemeInput: theme
       }, { client });
       
