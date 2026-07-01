@@ -745,49 +745,55 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       if (dateSet.has(iso)) streak++; else break;
     }
 
-    // For nextClaimAmount, compute using streak excluding today (start from yesterday)
-    let streakExcludingToday = 0;
-    for (let i = 1; i <= DAILY_CHECKIN_DAYS; i++) {
-      const d = new Date(utcToday);
-      d.setUTCDate(d.getUTCDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      if (dateSet.has(iso)) streakExcludingToday++; else break;
-    }
-
-    // Compute base amount for today's streak position
-    const nextIndex = Math.min(streakExcludingToday + 1, DAILY_CHECKIN_DAYS);
-    const baseAmount = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
-
-    let nextClaimAmount = 0;
-    let regularClaimAmount = 0;
-    let vipClaimAmount = 0;
-    if (canCheckInStatus.canCheckIn) {
-      nextClaimAmount = baseAmount;
-      regularClaimAmount = baseAmount;
-      vipClaimAmount = baseAmount * VIP_BENEFITS.checkInMultiplier;
-    }
-
     // Determine claimed rewards directly from today's check-in rows
     const claimedRewards: CheckinClaimType[] = canCheckInStatus.claimTypes;
 
-    // Re-evaluate canCheckIn: true if any claim type remains unclaimed
-    if (!canCheckInStatus.canCheckIn) {
+    // Compute which claim types are still available after today's activity
+    let effectiveCanCheckIn = canCheckInStatus.canCheckIn;
+    if (!effectiveCanCheckIn) {
       const maxClaimTypes = isVip ? 2 : 1;
-      canCheckInStatus.canCheckIn = claimedRewards.length < maxClaimTypes;
+      effectiveCanCheckIn = claimedRewards.length < maxClaimTypes;
+    }
+
+    // Compute per-claim amounts — now after eligibility re-evaluation so VIP
+    // users who already claimed regular still see the correct vipClaimAmount.
+    let regularClaimAmount = 0;
+    let vipClaimAmount = 0;
+    if (effectiveCanCheckIn) {
+      // Determine streak position for today's slot.
+      // When the regular claim is already done (VIP-only window), currentStreak
+      // already includes today. Otherwise compute position excluding today + 1.
+      let streakPosition: number;
+      if (!claimedRewards.includes('regular')) {
+        let streakBackwards = 0;
+        for (let i = 1; i <= DAILY_CHECKIN_DAYS; i++) {
+          const d = new Date(utcToday);
+          d.setUTCDate(d.getUTCDate() - i);
+          const iso = d.toISOString().slice(0, 10);
+          if (dateSet.has(iso)) streakBackwards++; else break;
+        }
+        streakPosition = streakBackwards + 1;
+      } else {
+        streakPosition = Math.min(streak, DAILY_CHECKIN_DAYS);
+      }
+
+      const baseAmount = streakPosition >= DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
+
+      regularClaimAmount = !claimedRewards.includes('regular') ? baseAmount : 0;
+      vipClaimAmount = isVip && !claimedRewards.includes('vip_2x') ? baseAmount * VIP_BENEFITS.checkInMultiplier : 0;
     }
 
     return {
-      canCheckIn: canCheckInStatus.canCheckIn,
+      canCheckIn: effectiveCanCheckIn,
       lastCheckInDate: canCheckInStatus.lastCheckInDate,
       totalCheckIns: totals[0]?.totalCheckIns || 0,
       totalCreditsClaimed: totals[0]?.totalCreditsClaimed || 0,
       currentStreak: streak,
       longestStreak: counter?.maxCheckinStreak || 0,
-      nextClaimAmount,
       recentCheckIns: checkInHistory,
       isVip,
       regularClaimAmount,
-      vipClaimAmount: isVip ? vipClaimAmount : 0,
+      vipClaimAmount,
       claimedRewards,
     } satisfies CheckinStatusResponse;
   } catch (error) {

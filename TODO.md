@@ -24,6 +24,35 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
+[ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
+
+currently `CheckinStatusResponse` has `canCheckIn: boolean;`
+but this raise ambiguity with the new `claimedRewards` which indicate ehich type of reward has claimed today, so I decide to remove `canCheckIn`
+for "genuinely ineligible" (banned), I plan to directly check on the claim API route with error response rather than expose via status
+can you find all `canCheckIn` occurrences/usages, then remove and cleanup in favor of `claimedRewards`, and also implement banned check on the claim API route (via `handleCheckIn`)?
+
+---
+
+ensure stripe webhook events:
+ * Events:
+ * - checkout.session.completed
+ * - charge.refunded
+ * - customer.subscription.created
+ * - customer.subscription.updated
+ * - customer.subscription.deleted
+ * - invoice.payment_succeeded
+ * - invoice.payment_failed
+---
+
+how to correctly implement "user ban" system in Twistloom platform?
+- why user should be banned? / what makes user to be banned?
+- what banned user cannot do?
+- how long is it? (should we make violation enums/type and map each with days/duration?)
+- do we need separate db table?
+- how to detect? (can we reliably use AI to help detect user's violations?)
+- what the goal of this ban system? (should be to keep platform healthy, safer, and all user happy instead of feeling burdened)
+could you elaborate comprehensively on this user ban system tailored for Twistloom platform?
+
 ---
 
 src\db\schema.ts

@@ -272,12 +272,13 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
  *   cancelPath?: string; // Optional custom cancel path (fallback if returnUrl not provided, default: "/pricing")
  * }
  * 
- * Response:
+ * Response (201 Created):
  * {
- *   url: string; // Stripe checkout URL to redirect user to
+ *   url: string;       // Stripe checkout URL to redirect user to
+ *   sessionId: string; // Stripe session ID (store for reconciliation/analytics)
  * }
  * 
- * Error Response:
+ * Error Response (4xx/5xx):
  * {
  *   error: string; // Error message
  * }
@@ -301,7 +302,7 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
  *   headers: { 'Content-Type': 'application/json' },
  *   body: JSON.stringify({ packId: 'investigator' }),
  * });
- * const { url } = await res.json();
+ * const { url, sessionId } = await res.json();
  * window.location.href = url;
  * 
  * // Refresh-less UX (recommended - returns to same page)
@@ -422,7 +423,7 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
       cancel_url: cancelUrl,
     });
 
-    res.json({ url: session.url });
+    res.json({ url: session.url, sessionId: session.id });
   } catch (error) {
     handleApiError(res, "Failed to create checkout session", error);
   }
@@ -440,12 +441,13 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
  *   cancelPath?: string; // Optional custom cancel path (default: "/pricing")
  * }
  * 
- * Response:
+ * Response (201 Created):
  * {
- *   url: string; // Stripe checkout URL to redirect user to
+ *   url: string;       // Stripe checkout URL to redirect user to
+ *   sessionId: string; // Stripe session ID (store for reconciliation/analytics)
  * }
  * 
- * Error Response:
+ * Error Response (4xx/5xx):
  * {
  *   error: string; // Error message
  * }
@@ -465,7 +467,7 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
  *   headers: { 'Content-Type': 'application/json' },
  *   body: JSON.stringify({}),
  * });
- * const { url } = await res.json();
+ * const { url, sessionId } = await res.json();
  * window.location.href = url;
  * 
  * // With custom return URL
@@ -580,7 +582,7 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
       },
     });
 
-    res.json({ url: session.url });
+    res.json({ url: session.url, sessionId: session.id });
   } catch (error) {
     handleApiError(res, "Failed to create subscription checkout session", error);
   }
@@ -596,10 +598,12 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
  *   hasActiveSubscription: boolean;
  *   subscription?: {
  *     id: string;
+ *     stripeSubscriptionId: string;
  *     status: string;
  *     currentPeriodStart: string;
  *     currentPeriodEnd: string;
  *     cancelAtPeriodEnd: boolean;
+ *     monthlyCredits: number;
  *   };
  *   vipExpiresAt?: string;
  * }
@@ -676,9 +680,12 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
  * Endpoint: https://twistloom-backend.vercel.app/api/payments/stripe/webhook
  * Events:
  * - checkout.session.completed
- * - payment_intent.succeeded
- * - payment_intent.payment_failed
  * - charge.refunded
+ * - customer.subscription.created
+ * - customer.subscription.updated
+ * - customer.subscription.deleted
+ * - invoice.payment_succeeded
+ * - invoice.payment_failed
  * 
  * Headers:
  * - stripe-signature: Stripe signature for webhook verification

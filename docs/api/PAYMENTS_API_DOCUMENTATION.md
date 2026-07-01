@@ -22,7 +22,7 @@ The Payments API provides endpoints for Stripe checkout sessions, credit purchas
    - [Get Available Credit Packs](#get-paymentcredit-packs)
 3. [Subscription Plans](#subscription-plans)
    - [Get Subscription Plans](#get-paymentssubscription-plans)
-   - [Create Subscription Session](#post-paymentscreate-subscription-session)
+   - [Create Subscription Checkout](#post-paymentscreate-subscription-checkout)
    - [Get Subscription Status](#get-paymentssubscription)
    - [Cancel Subscription](#post-paymentssubscriptioncancel)
    - [Open Customer Portal](#get-paymentssubscriptionportal)
@@ -83,18 +83,24 @@ interface Transaction {
 }
 ```
 
-### CheckoutSession
+### CheckoutUrlResponse
 
-Stripe checkout session information.
+Stripe checkout session response returned after creating a checkout session.
+Per Stripe best practices, the `sessionId` should be stored client-side for reconciliation,
+analytics, and potential retry flows.
 
 ```typescript
-interface CheckoutSession {
-  id: string;                // Session ID
-  url: string;               // Checkout URL for user
-  priceId: string;           // Stripe Price ID
-  credits: number;           // Credits to be awarded
-  amountUsd: number;          // Price in USD
+interface CheckoutUrlResponse {
+  url: string;               // Stripe Checkout URL to redirect the user to
+  sessionId: string;         // Stripe session ID for reconciliation/analytics
 }
+```
+
+**Usage:**
+```typescript
+const { url, sessionId } = await response.json();
+console.debug('[checkout] session created', sessionId);
+window.location.href = url;
 ```
 
 ### TransactionSummary
@@ -233,7 +239,8 @@ Creates a Stripe checkout session for VIP subscription. The user is redirected t
 **Response (200 OK):**
 ```json
 {
-  "url": "https://checkout.stripe.com/pay/cs_1234567890"
+  "url": "https://checkout.stripe.com/pay/cs_1234567890",
+  "sessionId": "cs_1234567890"
 }
 ```
 
@@ -360,39 +367,40 @@ Creates a Stripe checkout session for purchasing credits. The user is redirected
 **Request Body:**
 ```json
 {
-  "priceId": "price_1234567890",
-  "successUrl": "https://app.twistloom.com/success",
-  "cancelUrl": "https://app.twistloom.com/cancel"
+  "packId": "investigator",
+  "returnUrl": "https://app.twistloom.com/books/hush-frequency/pageId"
 }
 ```
 
-**Response (201 Created):**
+Parameters:
+- `packId` (required): Credit pack ID (e.g., `"observer"`, `"investigator"`, `"mastermind"`)
+- `returnUrl` (optional): Current page URL for refresh-less UX. Backend appends `?payment=success` or `?payment=cancel` automatically.
+- `successPath` (optional, legacy): Custom success path (relative, e.g., `/dashboard?success=true`)
+- `cancelPath` (optional, legacy): Custom cancel path (relative, e.g., `/pricing`)
+
+**Response (200 OK):**
 ```json
 {
-  "session": {
-    "id": "cs_1234567890",
-    "url": "https://checkout.stripe.com/pay/cs_1234567890",
-    "priceId": "price_1234567890",
-    "credits": 150,
-    "amountUsd": 7.99
-  }
+  "url": "https://checkout.stripe.com/pay/cs_1234567890",
+  "sessionId": "cs_1234567890"
 }
 ```
 
 **Error Responses:**
-- **400 Bad Request**: Invalid price ID or user not found
+- **400 Bad Request**: Invalid pack ID or user not found
 - **401 Unauthorized**: Authentication required
+- **404 Not Found**: Credit pack not found
+- **429 Too Many Requests**: Rate limit exceeded
 - **500 Internal Server Error**: Stripe API error
 
 **Behavior:**
-- Validates costKey against CREDIT_COSTS configuration
-- Uses database transaction with row lock for atomic operations
-- Validates credit balance before consumption
-- Creates usage transaction record
-- Logs user activity for analytics and security monitoring
-- Idempotency key support to prevent double charging
-- Rate limiting: 60 requests per minute per user
-- Skips credit consumption for internal system user (cron jobs)
+- Validates packId against CREDIT_PACKS configuration
+- Validates URLs to prevent open redirects
+- Creates Stripe checkout session with pre-created price ID
+- Supports refresh-less UX with returnUrl parameter (preferred — backend auto-appends payment status params)
+- Rate limited to prevent duplicate session creation (1 session per 10 seconds per user)
+- Uses rate limiting for abuse prevention
+- Webhook handles credit allocation on successful payment
 
 ---
 
@@ -418,8 +426,7 @@ Handles Stripe webhook events for payment confirmation and other Stripe events. 
 
 **Handled Events:**
 - **checkout.session.completed**: Successful payment - credits are awarded
-- **payment_intent.succeeded**: Payment confirmation
-- **payment_intent.payment_failed**: Payment failure
+- **charge.refunded**: Charge refunded - credits deducted
 - **customer.subscription.created**: New subscription created
 - **customer.subscription.updated**: Subscription updated
 - **customer.subscription.deleted**: Subscription canceled
@@ -450,7 +457,8 @@ Consumes credits from the authenticated user's account for usage (story generati
 **Request Body:**
 ```json
 {
-  "amount": 5,
+  "costKey": "STORY_GENERATION",
+  "idempotencyKey": "story-gen-book123-abc",
   "context": "book_creation",
   "metadata": {
     "bookId": "book_123",
@@ -458,6 +466,12 @@ Consumes credits from the authenticated user's account for usage (story generati
   }
 }
 ```
+
+Parameters:
+- `costKey` (required): Credit cost key from CREDIT_COSTS config (e.g., `"STORY_GENERATION"`, `"CHOOSE_OTHER_ACTION"`)
+- `idempotencyKey` (optional): Unique key to prevent double charging on retries
+- `context` (optional): Human-readable context for the transaction record
+- `metadata` (optional): Arbitrary metadata persisted alongside the transaction
 
 **Response (200 OK):**
 ```json
@@ -469,7 +483,7 @@ Consumes credits from the authenticated user's account for usage (story generati
 ```
 
 **Error Responses:**
-- **400 Bad Request**: Invalid amount or user not found
+- **400 Bad Request**: Invalid costKey or user not found
 - **401 Unauthorized**: Authentication required
 - **402 Payment Required**: Insufficient credits
 ```json
@@ -479,13 +493,18 @@ Consumes credits from the authenticated user's account for usage (story generati
   "available": 3
 }
 ```
+- **409 Conflict**: Duplicate request (idempotency key already used)
+- **429 Too Many Requests**: Rate limit exceeded (60 req/min per user)
 
 **Behavior:**
-- Validates user has sufficient credits
-- Atomically decrements credit balance
+- Validates costKey against CREDIT_COSTS configuration
+- Uses database transaction with row lock for atomic operations
+- Validates credit balance before consumption
 - Creates usage transaction record
-- Returns updated credit balance
-- Handles transaction record failures gracefully
+- Logs user activity for analytics and security monitoring
+- Idempotency key support to prevent double charging
+- Rate limiting: 60 requests per minute per user
+- Skips credit consumption for internal system user (cron jobs)
 
 ---
 
@@ -658,8 +677,8 @@ Different endpoints have different rate limits to prevent abuse:
 - `GET /payments/credit-packs`: 100 requests per minute per IP
 
 **Authenticated endpoints:**
-- `POST /payments/create-checkout-session`: 10 requests per minute per user
-- `POST /payments/create-subscription-session`: 10 requests per minute per user
+- `POST /payments/create-checkout-session`: 1 request per 10 seconds per user
+- `POST /payments/create-subscription-checkout`: 1 request per 10 seconds per user
 - `POST /payments/consume-credits`: 60 requests per minute per user
 - `GET /payments/transactions`: 30 requests per minute per user
 - `GET /payments/subscription`: 30 requests per minute per user
@@ -685,7 +704,7 @@ Most endpoints require authentication via NextAuth JWT cookies:
 
 **Authentication Required:**
 - `POST /payments/create-checkout-session`
-- `POST /payments/create-subscription-session`
+- `POST /payments/create-subscription-checkout`
 - `POST /payments/consume-credits`
 - `GET /payments/transactions`
 - `GET /payments/subscription`
@@ -746,9 +765,8 @@ curl -X POST https://api.twistloom.com/payments/create-checkout-session \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "priceId": "price_1234567890",
-    "successUrl": "https://app.twistloom.com/success",
-    "cancelUrl": "https://app.twistloom.com/cancel"
+    "packId": "investigator",
+    "returnUrl": "https://app.twistloom.com/books/my-story/page-1"
   }'
 ```
 
@@ -758,7 +776,8 @@ curl -X POST https://api.twistloom.com/payments/consume-credits \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "amount": 5,
+    "costKey": "STORY_GENERATION",
+    "idempotencyKey": "story-gen-book123",
     "context": "book_creation",
     "metadata": {"bookId": "book_123"}
   }'
@@ -789,7 +808,7 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 ### v1.2.0 (2026-05-23)
 - Added subscription management endpoints for VIP membership
 - Implemented GET /payments/subscription-plans for fetching subscription plans
-- Implemented POST /payments/create-subscription-session for subscription checkout
+- Implemented POST /payments/create-subscription-checkout for subscription checkout
 - Implemented GET /payments/subscription for fetching user subscription status
 - Implemented POST /payments/subscription/cancel for canceling subscriptions
 - Implemented GET /payments/subscription/portal for Stripe Customer Portal access
@@ -1205,7 +1224,7 @@ function CreditPackCard({ pack, currentUrl }: { pack: CreditPack; currentUrl?: s
           returnUrl: currentUrl || window.location.href, // Return to current page after payment
         }),
       });
-      const { url } = await res.json();
+      const { url, sessionId } = await res.json();
       window.location.href = url;
     } catch (error) {
       console.error('Failed to create checkout session:', error);

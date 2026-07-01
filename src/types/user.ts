@@ -107,7 +107,6 @@ export interface CheckinStatusResponse {
   totalCreditsClaimed: number;
   currentStreak: number;
   longestStreak: number;
-  nextClaimAmount: number;
   recentCheckIns: CheckinRecord[];
   isVip: boolean;
   regularClaimAmount: number;

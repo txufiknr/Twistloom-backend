@@ -249,7 +249,7 @@ User spends credits via API
                                     ▼
                     ┌───────────────────────────┐
                     │  Return checkout URL      │
-                    │  Response: { url: string }│
+                    │  Response: { url, sessionId }│
                     │  Frontend redirects user  │
                     └───────────────────────────┘
                                     │
@@ -1358,8 +1358,9 @@ Creates Stripe checkout session for purchasing credit packs with customizable su
 ```typescript
 {
   packId: string; // Credit pack ID ("observer", "investigator", "mastermind")
-  successPath?: string; // Optional custom success path (relative, starts with /)
-  cancelPath?: string; // Optional custom cancel path (relative, starts with /)
+  returnUrl?: string; // Optional current page URL for refresh-less UX (e.g., "https://app.com/books/slug/pageId")
+  successPath?: string; // Optional custom success path (fallback if returnUrl not provided)
+  cancelPath?: string; // Optional custom cancel path (fallback if returnUrl not provided)
 }
 ```
 
@@ -1367,15 +1368,15 @@ Creates Stripe checkout session for purchasing credit packs with customizable su
 ```json
 {
   "packId": "investigator",
-  "successPath": "/payment/success?from=pricing",
-  "cancelPath": "/payment/cancel?from=pricing"
+  "returnUrl": "https://app.com/books/hush-frequency/page-42"
 }
 ```
 
 **Response (Success - 200)**:
 ```typescript
 {
-  url: string; // Stripe checkout URL
+  url: string;       // Stripe checkout URL
+  sessionId: string; // Stripe session ID
 }
 ```
 
@@ -1409,7 +1410,7 @@ Creates Stripe checkout session for purchasing credit packs with customizable su
 **Implementation**:
 ```typescript
 router.post("/create-checkout-session", requireAuth, async (req: Request, res: Response) => {
-  const { packId, successPath, cancelPath } = req.body;
+  const { packId, successPath, cancelPath, returnUrl } = req.body;
   
   // Validate input
   if (!packId) {
@@ -1481,7 +1482,7 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
     idempotencyKey,
   });
 
-  res.json({ url: session.url });
+  res.json({ url: session.url, sessionId: session.id });
 });
 ```
 
@@ -1494,19 +1495,21 @@ const res = await fetch('/api/payments/create-checkout-session', {
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ packId: 'investigator' }),
 });
-const { url } = await res.json();
+const { url, sessionId } = await res.json();
 window.location.href = url;
 
-// With custom URLs
+// With returnUrl (refresh-less UX - recommended)
+const currentUrl = window.location.href;
 const res = await fetch('/api/payments/create-checkout-session', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ 
     packId: 'investigator',
-    successPath: '/payment/success?from=pricing',
-    cancelPath: '/payment/cancel?from=pricing'
+    returnUrl: currentUrl,
   }),
 });
+const { url, sessionId } = await res.json();
+window.location.href = url;
 ```
 
 ### POST /api/payments/stripe/webhook
@@ -1796,7 +1799,10 @@ Consumes credits from user account for usage (AI generation, etc.).
 **Request Body**:
 ```typescript
 {
-  amount: number; // Amount of credits to consume (positive number)
+  costKey: string; // Credit cost key from CREDIT_COSTS (e.g., "STORY_GENERATION")
+  idempotencyKey?: string; // Optional idempotency key to prevent double charging
+  context?: string; // Additional context for the transaction (e.g., "book_creation")
+  metadata?: object; // Optional metadata for the transaction
 }
 ```
 
@@ -1812,74 +1818,64 @@ Consumes credits from user account for usage (AI generation, etc.).
 **Response (Error - 402)**:
 ```typescript
 {
-  error: "Not enough credits";
+  error: string; // Error message with required credits
   required: number; // Credits needed
-  available: number; // Credits available
 }
 ```
 
 **Implementation**:
 ```typescript
 router.post("/consume-credits", requireAuth, async (req: Request, res: Response) => {
-  const { amount } = req.body;
-  
-  // Validate input
-  if (!amount || typeof amount !== 'number' || amount <= 0) {
-    return res.status(400).json({ error: "Valid amount is required (positive number)" });
-  }
-
-  const userId = req.user!.id;
-
-  // Get current user credits
-  const userResult = await dbWrite
-    .select({ credits: users.credits })
-    .from(users)
-    .where(eq(users.userId, userId))
-    .limit(1);
-
-  if (!userResult || userResult.length === 0) {
-    return res.status(400).json({ error: "User not found" });
-  }
-
-  const currentCredits = userResult[0].credits;
-
-  // Check if user has enough credits
-  if (currentCredits < amount) {
-    return res.status(402).json({
-      error: "Not enough credits",
-      required: amount,
-      available: currentCredits,
-    });
-  }
-
-  // Update user credits (decrement)
-  const updateResult = await dbWrite
-    .update(users)
-    .set({ 
-      credits: sql`${users.credits} - ${amount}` 
-    })
-    .where(eq(users.userId, userId))
-    .returning({ credits: users.credits });
-
-  // Create usage transaction record
   try {
-    await dbWrite.insert(transactions).values({
-      userId,
-      type: "usage",
-      credits: -amount, // Negative for usage
-    });
-  } catch (transactionError) {
-    console.error("[stripe] ❌ Failed to create usage transaction record:", getErrorMessage(transactionError));
-    console.warn(`[stripe] ⚠️ Credits consumed from user ${userId} but transaction record failed`);
+    const { costKey, idempotencyKey, context, metadata } = req.body;
+    if (!costKey || typeof costKey !== 'string') return handleValidationError(res, "Valid costKey is required");
+    if (metadata && typeof metadata !== 'object' && !Array.isArray(metadata)) return handleValidationError(res, "Metadata must be an object");
+
+    const validCostKeys = Object.keys(CREDIT_COSTS);
+    if (!validCostKeys.includes(costKey)) return handleValidationError(res, `Invalid costKey: ${costKey}`);
+
+    const userId = req.userId!;
+
+    // Rate limiting: 60 requests per minute per user
+    const rateLimitResult = await checkRateLimit(`credit-consume-${userId}`, { maxRequests: 60, windowSeconds: 60 });
+    if (!rateLimitResult.allowed) return handleRateLimitError(res, "Too many credit consumption attempts.");
+
+    let processingCleanup: (() => Promise<void>) | null = null;
+
+    // Idempotency check
+    if (idempotencyKey) {
+      const processing = await setIdempotencyProcessing({ key: idempotencyKey, prefix: 'credit-consume', ttl: 300 });
+      if (!processing.set) return handleConflictError(res, "Request already in progress");
+      processingCleanup = processing.cleanup;
+
+      const idempotencyResult = await checkIdempotency({ key: idempotencyKey, prefix: 'credit-consume', ttl: 300 });
+      if (idempotencyResult.isDuplicate && idempotencyResult.cachedResult) {
+        await processingCleanup();
+        return res.status(409).json({ error: "Duplicate request", message: "This request has already been processed", ...idempotencyResult.cachedResult });
+      }
+    }
+
+    try {
+      const creditResult = await consumeCredits(userId, costKey, { context, metadata, req });
+
+      if (idempotencyKey) {
+        await storeIdempotencyResult(
+          { key: idempotencyKey, prefix: 'credit-consume', ttl: 300 },
+          { success: true, creditsConsumed: CREDIT_COSTS[costKey], remainingCredits: creditResult.remainingCredits }
+        );
+      }
+
+      if (processingCleanup) await processingCleanup();
+      res.json({ success: true, creditsConsumed: CREDIT_COSTS[costKey], remainingCredits: creditResult.remainingCredits });
+    } catch (error) {
+      if (processingCleanup) await processingCleanup();
+      if (isInsufficientCreditsError(error)) return handleInsufficientCreditsError(res, costKey);
+      handleApiError(res, "Failed to consume credits", error);
+    }
+  } catch (error) {
+    if (isInsufficientCreditsError(error)) return handleInsufficientCreditsError(res, req.body.costKey);
+    handleApiError(res, "Failed to consume credits", error);
   }
-
-  const result = {
-    success: true,
-    creditsConsumed: amount,
-    remainingCredits: updateResult[0].credits,
-  };
-
-  res.json(result);
 });
 ```
 
@@ -1901,7 +1897,7 @@ async function buyCredits(packId: string) {
     throw new Error("Failed to create checkout session");
   }
 
-  const { url } = await res.json();
+  const { url, sessionId } = await res.json();
   
   // Redirect to Stripe checkout
   window.location.href = url;
@@ -1915,7 +1911,7 @@ async function buyCredits(packId: string) {
 const response = await fetch("/api/payments/consume-credits", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ amount: 5 }),
+  body: JSON.stringify({ costKey: "STORY_GENERATION" }),
 });
 
 const { success, remainingCredits } = await response.json();

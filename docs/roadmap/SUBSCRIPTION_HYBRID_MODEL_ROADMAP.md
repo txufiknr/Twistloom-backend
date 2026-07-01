@@ -569,53 +569,74 @@ router.get("/subscription-plans", async (req: Request, res: Response) => {
 });
 ```
 
-#### 2. POST /payments/create-subscription-session
+#### 2. POST /payments/create-subscription-checkout
 
 Create Stripe checkout session for subscription.
 
-**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 1180-1254)
+**Status**: ✅ **IMPLEMENTED** in `src/routes/payments.ts` (lines 489-589)
 
 ```typescript
 /**
- * POST /payments/create-subscription-session
+ * POST /payments/create-subscription-checkout
  *
  * Creates a Stripe checkout session for VIP subscription.
  *
  * Request Body:
  * {
- *   planId: string; // "vip_monthly"
- *   successUrl?: string;
- *   cancelUrl?: string;
+ *   returnUrl?: string; // Optional current page URL for refresh-less UX
+ *   successPath?: string; // Optional custom success path (default: "/dashboard?subscription=success")
+ *   cancelPath?: string; // Optional custom cancel path (default: "/pricing")
  * }
  *
  * Response (201 Created):
  * {
- *   url: string; // Stripe checkout URL
+ *   url: string;       // Stripe checkout URL to redirect user to
+ *   sessionId: string; // Stripe session ID (store for reconciliation/analytics)
  * }
  */
-router.post("/create-subscription-session", requireAuth, async (req: Request, res: Response) => {
-  const { planId, successUrl, cancelUrl } = req.body;
+router.post("/create-subscription-checkout", requireAuth, async (req: Request, res: Response) => {
+  const { successPath, cancelPath, returnUrl } = req.body;
   const userId = req.user!.id;
 
-  // Validate plan
-  if (planId !== VIP_SUBSCRIPTION.id) {
-    return res.status(404).json({ error: "Subscription plan not found" });
+  // Check if user already has active subscription
+  const hasActiveSub = await hasActiveVipSubscription(userId);
+  if (hasActiveSub) {
+    return res.status(400).json({
+      error: "You already have an active VIP subscription"
+    });
   }
 
-  // Check if user already has active subscription
-  const existingSubscription = await dbRead
-    .select()
-    .from(subscriptions)
-    .where(and(
-      eq(subscriptions.userId, userId),
-      eq(subscriptions.status, 'active')
-    ))
-    .limit(1);
+  // Validate and construct URLs (security: prevent open redirects)
+  const baseUrl = process.env.FRONTEND_URL;
+  if (!baseUrl) {
+    return res.status(500).json({ error: "Frontend URL not configured" });
+  }
 
-  if (existingSubscription.length > 0) {
-    return res.status(400).json({
-      error: "User already has an active subscription"
-    });
+  // For refresh-less UX: use returnUrl to return user to same page
+  let successUrl: string;
+  let cancelUrl: string;
+
+  if (returnUrl) {
+    try {
+      const returnUrlObj = new URL(returnUrl, baseUrl);
+      const baseUrlObj = new URL(baseUrl);
+
+      if (returnUrlObj.origin !== baseUrlObj.origin) {
+        throw new Error("Cross-origin returnUrl not allowed");
+      }
+
+      returnUrlObj.searchParams.set('subscription', 'success');
+      successUrl = returnUrlObj.toString();
+
+      returnUrlObj.searchParams.set('subscription', 'cancel');
+      cancelUrl = returnUrlObj.toString();
+    } catch {
+      successUrl = `${baseUrl}/dashboard?subscription=success`;
+      cancelUrl = `${baseUrl}/pricing`;
+    }
+  } else {
+    successUrl = `${baseUrl}/dashboard?subscription=success`;
+    cancelUrl = `${baseUrl}/pricing`;
   }
 
   // Create or retrieve Stripe customer
@@ -645,16 +666,16 @@ router.post("/create-subscription-session", requireAuth, async (req: Request, re
       price: VIP_SUBSCRIPTION.priceId,
       quantity: 1,
     }],
-    metadata: {
-      userId,
-      planId,
-    },
+    metadata: { userId, subscriptionType: 'vip' },
     client_reference_id: userId,
-    success_url: successUrl || `${process.env.FRONTEND_URL}/dashboard?subscription=success`,
-    cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/pricing?subscription=canceled`,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    subscription_data: {
+      metadata: { userId },
+    },
   });
 
-  res.json({ url: session.url });
+  res.json({ url: session.url, sessionId: session.id });
 });
 ```
 
@@ -1380,14 +1401,12 @@ const { plans } = await response.json();
 #### 2. Create Subscription Session
 
 ```typescript
-// POST /api/payments/create-subscription-session
-const response = await fetch('/api/payments/create-subscription-session', {
+// POST /api/payments/create-subscription-checkout
+const response = await fetch('/api/payments/create-subscription-checkout', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    planId: 'vip_monthly',
-    successUrl: window.location.href + '?subscription=success',
-    cancelUrl: window.location.href + '?subscription=canceled'
+    returnUrl: window.location.href,
   }),
 });
 const { url } = await response.json();
@@ -1645,17 +1664,14 @@ export async function fetchSubscriptionPlans() {
   return response.json();
 }
 
-export async function createSubscriptionSession(planId: string, options?: {
-  successUrl?: string;
-  cancelUrl?: string;
+export async function createSubscriptionSession(options?: {
+  returnUrl?: string;
 }) {
-  const response = await fetch('/api/payments/create-subscription-session', {
+  const response = await fetch('/api/payments/create-subscription-checkout', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      planId,
-      successUrl: options?.successUrl,
-      cancelUrl: options?.cancelUrl,
+      returnUrl: options?.returnUrl,
     }),
   });
   if (!response.ok) throw new Error('Failed to create subscription session');
@@ -1716,9 +1732,8 @@ export function SubscriptionCard({ plan, currentSubscription }: SubscriptionCard
   const handleSubscribe = async () => {
     setIsLoading(true);
     try {
-      const { url } = await createSubscriptionSession(plan.id, {
-        successUrl: window.location.href + '?subscription=success',
-        cancelUrl: window.location.href + '?subscription=canceled',
+      const { url } = await createSubscriptionSession({
+        returnUrl: window.location.href,
       });
       window.location.href = url;
     } catch (error) {
@@ -2079,7 +2094,7 @@ describe('Subscription Webhooks', () => {
 describe('Subscription E2E Flow', () => {
   it('should complete full subscription lifecycle', async () => {
     // 1. User subscribes
-    const session = await createSubscriptionSession('vip_monthly');
+    const session = await createSubscriptionSession();
     expect(session.url).toBeDefined();
 
     // 2. Simulate Stripe webhook
