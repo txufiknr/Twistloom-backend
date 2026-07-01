@@ -526,7 +526,8 @@ const firstBookOutputFormat: string = `{
       "type": "One of: ${formatOneOf(Object.keys(factTypes))}",
       "reason": "Reason for the fact"
     }
-  ]
+  ],
+  "aiFinalComment": "Creative thriller-themed congratulations message (in the same language as the book)"
 }`;
 
 const firstBookReviewChecklist: string = `
@@ -3418,7 +3419,13 @@ initialFacts:
 - Only include durable story facts that important to remember 20+ pages later. If unsure, omit it.
 - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
 - value: current state. Prefer concise value over long sentence (explanation can be added in reason).
-- reason: 1-sentence, why or how it hapenned.`;
+- reason: 1-sentence, why or how it hapenned.
+
+aiFinalComment
+- Creative thriller-themed congratulations message (in the same language as the book).
+- Express excitement for the published book.
+- Tell what happened in the first page.
+- Max max 500 chars.`;
 
 /**
  * Initializes a complete book with AI-generated content and database persistence
@@ -3587,6 +3594,7 @@ export async function initializeBook(
       language,
       viableEnding,
       futureNotes,
+      aiFinalComment,
     } = response.result;
 
     // Validate first page text length
@@ -3797,7 +3805,8 @@ export async function initializeBook(
       book,
       firstPage,
       initialState,
-      aiComment
+      aiComment,
+      aiFinalComment
     } satisfies CreateBookResponse;
   } catch (error) {
     const errorMessage = getErrorMessage(error);

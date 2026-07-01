@@ -48,6 +48,7 @@ export type BookGenerationPayload = {
   step?: StoryGenerationStep;
   status?: BookGenerationStatus;
   error?: string;
+  aiFinalComment?: string;
 };
 export type BookGenerationProgress = Omit<BookGenerationPayload, 'bookId'>;
 
@@ -63,6 +64,7 @@ export interface BookCreationStatus {
   generationStartedAt?: Date | null;
   generationCompletedAt?: Date | null;
   aiComment: string | null;
+  aiFinalComment: string | null;
   error?: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -230,6 +232,8 @@ export type BookCreationResponse = {
   viableEnding: InitialEnding;
   /** What promises must the story fulfill? / What important events or obligations happen later? */
   futureNotes: FutureNoteGeneration[];
+  /** Creative thriller-themed congratulatory message about the generation */
+  aiFinalComment?: string;
 };
 
 /**
@@ -274,6 +278,8 @@ export type CreateBookResponse = {
   initialState: StoryState;
   /** Complimentary comment from AI */
   aiComment?: string | null;
+  /** Creative thriller-themed congratulatory message about the generation */
+  aiFinalComment?: string;
 };
 
 /**

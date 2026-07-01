@@ -440,6 +440,7 @@ export const bookGenerations = pgTable(
     isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }),
     isRefunded: timestamp("is_refunded"),
     cancellationRequestedAt: timestamp("cancellation_requested_at", { withTimezone: true }),
+    aiFinalComment: text("ai_final_comment"),
     createdAt,
     updatedAt,
   },

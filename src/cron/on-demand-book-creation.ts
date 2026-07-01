@@ -139,7 +139,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
     console.log('[book-creation] 📔 Book initialized successfully:', result);
 
     // Update book generation status (content already updated by initializeBook)
-    void updateBookGenerationStatus({ bookId, step: 'complete' });
+    void updateBookGenerationStatus({ bookId, step: 'complete', aiFinalComment: result.aiFinalComment });
 
     // Clear lock timestamp
     await setLockTimestamp(null);

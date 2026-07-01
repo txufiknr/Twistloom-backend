@@ -363,7 +363,8 @@ async function updateBookGenerationStatusCore(
   bookId: string,
   status?: BookGenerationStatus,
   step?: StoryGenerationStep,
-  error?: string
+  error?: string,
+  aiFinalComment?: string
 ): Promise<void> {
   // ── 1. Input validation ───────────────────────────────────────────────────
   if (!bookId) {
@@ -407,6 +408,7 @@ async function updateBookGenerationStatusCore(
   const update: Partial<DBNewBookGeneration> = {
     ...(finalStatus !== undefined && { generationStatus: finalStatus }),
     ...(step !== undefined && { generationStep: step }),
+    ...(aiFinalComment !== undefined && { aiFinalComment }),
     // Explicitly clear previous errors on progress updates; pass `error` to set one.
     generationError: error ?? null,
   };
@@ -454,6 +456,7 @@ const debouncedUpdateStatus = debounceAsync(
  * @param payload.status  - Optional explicit generation status
  * @param payload.step    - Optional generation step (auto-derives status)
  * @param payload.error   - Optional error message for failed states
+ * @param payload.aiFinalComment - Optional AI final comment to persist on completion
  *
  * @example
  * // Progress update (debounced)
@@ -463,11 +466,11 @@ const debouncedUpdateStatus = debounceAsync(
  * await updateBookGenerationStatus({ bookId, status: 'failed', error: 'AI timeout' });
  */
 export async function updateBookGenerationStatus(payload: BookGenerationPayload): Promise<void> {
-  const { bookId, status, step, error } = payload;
+  const { bookId, status, step, error, aiFinalComment } = payload;
   console.log('[updateBookGenerationStatus] 🧩 Updating generation progress:', cleanupObject(payload));
 
   try {
-    await debouncedUpdateStatus(bookId, status, step, error);
+    await debouncedUpdateStatus(bookId, status, step, error, aiFinalComment);
   } catch (err) {
     console.error('[updateBookGenerationStatus] ❌ Failed to update generation status:', err);
     throw err;

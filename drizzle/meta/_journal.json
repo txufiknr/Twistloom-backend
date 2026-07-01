@@ -64,6 +64,13 @@
       "when": 1782824307636,
       "tag": "0008_rapid_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1782876968285,
+      "tag": "0009_fixed_lizard",
+      "breakpoints": true
     }
   ]
 }

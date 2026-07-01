@@ -604,6 +604,7 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
         isGeneratingStartedAt:  bookGenerations.isGeneratingStartedAt,
         isRefunded:             bookGenerations.isRefunded,
         aiComment:              bookGenerations.aiComment,
+        aiFinalComment:         bookGenerations.aiFinalComment,
         createdAt:              bookGenerations.createdAt, // used for stale-detection fallback
       })
       .from(books)
@@ -673,6 +674,7 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
       generationStartedAt:      data.generationStartedAt,
       generationCompletedAt:    data.generationCompletedAt,
       aiComment:                data.aiComment,
+      aiFinalComment:           data.aiFinalComment,
       error:                    data.generationError,
       createdAt:                data.bookCreatedAt,
       updatedAt:                data.bookUpdatedAt,

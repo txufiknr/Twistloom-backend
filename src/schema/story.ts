@@ -1000,7 +1000,8 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
     additionalProperties: false
   } },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
-  mainCharacter: MAIN_CHARACTER_SCHEMA
+  mainCharacter: MAIN_CHARACTER_SCHEMA,
+  aiFinalComment: { type: 'string', description: 'Creative thriller-themed congratulatory message. Be creative and use the same language as the book.' }
 };
 
 export const BOOK_CREATION_REQUIRED_FIELDS = [
