@@ -1160,6 +1160,11 @@ export type StateDelta = {
   relationshipUpdates?: RelationshipUpdate[];
   /** Updates to connection between places */
   placeConnectionUpdates?: PlaceConnectionUpdate[];
+  /** Updates to planned character candidates (add/remove) for future introduction */
+  plannedCharacterUpdates?: {
+    add?: CharacterPlan[];
+    remove?: string[];
+  };
   /** Updates to places (new and existing) with modifications */
   placeUpdates?: PlaceUpdates;
   /** Updates to story threads (new, modify, add clues, close) */

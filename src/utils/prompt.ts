@@ -1,7 +1,7 @@
 import { AI_CHAT_CONFIG_DEFAULT, AI_CHAT_CONFIG_CREATIVE, DEFAULT_MAX_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clients.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys, futureNoteHealthStates } from "../types/story.js";
+import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
 import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
@@ -225,6 +225,8 @@ PAGE ENDING RULES:
 
 export const RULES_PLANNED_CHARACTERS = `PLANNED CHARACTERS RULES:
 - These characters exist in the story canon but have not yet appeared on-page.
+- Use plannedCharacterUpdates.add to create new planned characters when the story needs future faces. Only valid in EARLY and MID phases.
+- Use plannedCharacterUpdates.remove to remove planned characters who have been introduced or whose role has become irrelevant.
 - Introduce them naturally when appropriate for the current scene, pacing, and story momentum.
 - Add to characterUpdates.newCharacters when a planned character is genuinely introduced (physically present) in this page.
 - Refine details like bio, visualDescription, etc when introducing planned characters. Preserve name, gender and role.`;
@@ -639,6 +641,23 @@ const nextPageOutputFormat: string = `{
     ],
     "remove": [<key>]
   },
+  "plannedCharacterUpdates": {
+    "add": [
+      {
+        "characterId": "<character_id>",
+        "knownName": "...",
+        "realName": "...",
+        "gender": "One of: ${formatOneOf(genders)}",
+        "role": "...",
+        "bio": "...",
+        "visualDescription": "...",
+        "importance": "One of: ${formatOneOf(characterImportances)}",
+        "storyPurpose": "...",
+        "plannedIntroduction": "..."
+      }
+    ],
+    "remove": ["<character_id>"]
+  },
   "factUpdates": [
     {
       "key": <new or existing key>,
@@ -976,6 +995,16 @@ ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved
   - If fulfilling a future note materially changes the story, record the outcome as a plot flag.
   - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.
 
+plannedCharacterUpdates
+${!isLatePhase && charactersSlot > 0 ? `  - Add new planned character candidates for future introduction when the story needs fresh faces for upcoming beats.
+  - Each must have a distinct characterId. Avoid generic or throwaway plans.
+  - storyPurpose: why this character exists and what role they'll play.
+  - plannedIntroduction: brief hook describing how/when they might first appear.
+  - Remove planned characters that have been introduced or whose planned role is no longer relevant.`
+: `  - Do not add new planned characters. ${isLatePhase ? 'Phase is too late for meaningful future introductions.' : `${MAX_CHARACTERS} characters limit reached.`}`}
+  - Planned characters are not yet on-page — they're seeds for future pages. Don't introduce them here.
+  - Remove obsolete plans by characterId.
+
 factUpdates
   - Represents long-term story memory, discoveries, or important established facts that influence future turns.
   - key: consistent ${FACT_KEY_FORMAT}. Type can be either: ${formatOneOf(Object.keys(factTypes))}.
@@ -1030,7 +1059,7 @@ ${isLatePhase ? `  - Every choice should carry visible weight. No option should 
 ${isFinale ? `  - Both choices should feel like loss. The difference is only in what kind.` : ''}`}
 
 characterUpdates.newCharacters
-${charactersSlot === 0 ? `  - Don't introduce new characters. Limit of ${MAX_CHARACTERS} reached.`
+${charactersSlot === 0 ? `  - Don't introduce new characters. ${MAX_CHARACTERS} characters limit reached.`
 : isEarlyPhase ? `  - New characters are welcome up to ${charactersSlot} more — establish the cast now.`
 : isMidPhase ? `  - You can optionally introduce up to ${charactersSlot} new characters only if genuinely necessary to support the story. Prefer deepening existing ones.`
 : `  - No new characters. The cast is fixed. Late arrivals dilute stakes.`}

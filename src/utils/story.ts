@@ -7,7 +7,7 @@ import { deepEqualSimple } from "../utils/parser.js";
 import { calculatePlayerProfile } from './player-profile.js';
 import { ensureUniqueId } from "./text-processing.js";
 import type { StoryState, StoryMomentum, SceneType, PsychologicalProfileMetrics, PsychologicalProfile, Archetype, StabilityLevel, ManipulationAffinity, EndingType, HiddenState, EndingPlanType, EndingPlan, ProfileShiftType, ProfileShift, StoryStateInfo, StoryPhase, FinalePhase, StateDelta, StoryGeneration, FlagLevel, PlotFlag, TagUpdates, TagItem, FutureNote, FactUpdate, FutureNoteGeneration, Action, PsychologicalStateDelta, InitialPlotFlag, StoryScene, CalculateStoryMomentumParams, StoryMomentumResult, SceneCharacter, EndingRecommendation, NarrativeContext, PersistedStoryPage, SelectedAction, StateDeltaGeneration } from "../types/story.js";
-import type { Injury, InventoryItem } from "../types/character.js";
+import type { CharacterPlan, Injury, InventoryItem } from "../types/character.js";
 import type { ThreadUpdates, StoryThread, ThreadClue } from "../types/story-thread.js";
 import type { CandidateGenerationPage } from "../types/candidate-generation.js";
 import type { NewThread } from "../types/story-thread.js";
@@ -308,6 +308,7 @@ export function extractStateDelta(params: {
     contextHistory: generation.contextHistory,
     addPlotFlags: generation.addPlotFlags,
     minutesPassed: generation.minutesPassed,
+    plannedCharacterUpdates: generation.plannedCharacterUpdates,
     // Tag with current place for context
     inventory: generation.inventory?.map(inventory => inventory.pageAcquired === expectedPageNumber ? ({ ...inventory, placeId }) : inventory),
     injuries: generation.injuries?.map(injury => injury.pageAcquired === expectedPageNumber ? ({ ...injury, placeId }) : injury),
@@ -452,7 +453,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     flagUpdates,
     traumaTagUpdates,
     futureNoteUpdates,
-    // To consider: addPlannedCharacters,
+    plannedCharacterUpdates,
     addPlotFlags,
     factUpdates,
     characterUpdates,
@@ -485,6 +486,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
     actionsHistory: [...baseState.actionsHistory],
     injuries:       [...baseState.injuries],
     inventory:      [...baseState.inventory],
+    plannedCharacters: [...baseState.plannedCharacters],
     // ── mutable record objects ───────────────────────────────────────────────
     characters:     { ...baseState.characters },
     places:         { ...baseState.places },
@@ -504,6 +506,7 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   // Mutating helpers are now safe: they operate on freshly-copied arrays/objects
   processTraumaTagUpdates(newState, traumaTagUpdates);
   processFutureNoteUpdates(newState, futureNoteUpdates);
+  processPlannedCharacterUpdates(newState, plannedCharacterUpdates);
   processPlotFlagUpdates(newState, addPlotFlags, scene);
   processFactUpdates(newState, factUpdates);
   processCharacterUpdates(newState, characterUpdates, relationshipUpdates, scene?.placeId);
@@ -1017,6 +1020,57 @@ export function processTraumaTagUpdates(state: StoryState, updates?: TagUpdates<
 
 export function processFutureNoteUpdates(state: StoryState, updates?: TagUpdates<FutureNote>): void {
   processTagUpdates(state.futureNotes, updates, MAX_FUTURE_NOTES);
+}
+
+/**
+ * Processes planned character updates from AI-generated content
+ * 
+ * Adds new future character candidates or removes obsolete ones.
+ * Only adds when character slots are available and phase is EARLY or MID.
+ * Duplicate characterIds are silently skipped.
+ * 
+ * @param state - Current story state to update
+ * @param updates - Object with add (CharacterPlan[]) and remove (string[]) arrays
+ */
+export function processPlannedCharacterUpdates(
+  state: StoryState,
+  updates?: { add?: CharacterPlan[]; remove?: string[] }
+): void {
+  if (!updates) return;
+
+  // Remove obsolete plans by characterId
+  if (updates.remove?.length) {
+    state.plannedCharacters = state.plannedCharacters.filter(
+      p => !updates.remove!.includes(p.characterId)
+    );
+  }
+
+  // Add new planned characters with guard conditions
+  if (updates.add?.length) {
+    const { isEarlyPhase, isMidPhase, charactersSlot } = getStoryStateInfo(state);
+    const canAdd = (isEarlyPhase || isMidPhase) && charactersSlot > 0;
+    if (!canAdd) return;
+
+    for (const plan of updates.add) {
+      const isDuplicate = state.plannedCharacters.some(
+        p => p.characterId === plan.characterId
+      );
+      if (!isDuplicate) {
+        state.plannedCharacters.push({
+          characterId: plan.characterId,
+          knownName: plan.knownName,
+          realName: plan.realName,
+          gender: plan.gender,
+          role: plan.role,
+          bio: plan.bio,
+          visualDescription: plan.visualDescription,
+          importance: plan.importance,
+          storyPurpose: plan.storyPurpose,
+          plannedIntroduction: plan.plannedIntroduction,
+        });
+      }
+    }
+  }
 }
 
 /**

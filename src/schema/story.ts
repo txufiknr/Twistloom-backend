@@ -383,18 +383,13 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   storyPurpose: { type: 'string', description: 'Explain why this character exists in the story' },
   plannedIntroduction: { type: 'string', description: 'Explain how this character planned to be introduced' },
   importance: { type: 'string', enum: [...characterImportances] },
-  // relationships: { type: 'array', description: 'Only between side characters (excluding MC). Empty if characters is less than two.', items: {
-  //   type: 'object',
-  //   properties: {
-  //     targetId: { type: 'string' },
-  //     type: { type: 'string', enum: [...relationshipTypes] },
-  //     status: { type: 'string', enum: [...relationshipStatuses] },
-  //     context: { type: 'string' },
-  //     recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels] },
-  //   } satisfies Record<keyof CharacterRelationship, AIJsonProperty>,
-  //   required: ['targetId', 'type', 'status', 'context', 'recognitionLevel'] satisfies (keyof CharacterRelationship)[],
-  //   additionalProperties: false
-  // } },
+};
+
+export const CHARACTER_PLAN_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: CHARACTER_PLAN_PROPERTIES,
+  required: ['characterId', 'knownName', 'realName', 'gender', 'role', 'bio', 'visualDescription', 'importance'],
+  additionalProperties: false,
 };
 
 const { storyPurpose: _sp, plannedIntroduction: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
@@ -578,40 +573,7 @@ export const VIABLE_ENDING_SCHEMA: AIJsonProperty = {
 }
 
 export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, AIJsonProperty> = {
-  traumaTagUpdates: getTagUpdatesSchema<string>({
-    description: `Max ${MAX_TRAUMA_TAGS}. Haunting experiences referenced by story (and affect MC's psychological profile).`
-  }),
-  futureNoteUpdates: getTagUpdatesSchema<FutureNote>({
-    description: `Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
-    items: FUTURE_NOTE_SCHEMA
-  }),
-  // To consider: addPlannedCharacters
-  factUpdates: {
-    type: 'array',
-    items: {
-      type: 'object',
-      properties: {
-        key: { type: 'string', description: `${FACT_KEY_FORMAT} (new or existing)` },
-        value: { type: 'string' },
-        page: { type: 'integer' },
-        type: { type: 'string', enum: [...Object.keys(factTypes)] },
-        reason: { type: 'string', description: 'Explain why or how it happened in 1 sentence' },
-      } satisfies Record<keyof FactUpdate, AIJsonProperty>,
-      required: ['key', 'value', 'page'] satisfies (keyof FactUpdate)[],
-      additionalProperties: false
-    }
-  },
-
-  placeUpdates: {
-    type: 'object',
-    properties: {
-      newPlaces: { type: 'array', items: INITIAL_PLACE_SCHEMA, description: 'New places visited if any.' },
-      updatedPlaces: { type: 'array', items: UPDATE_PLACE_SCHEMA, description: 'Places which details have been updated if any.' },
-    } satisfies Record<keyof PlaceUpdates, AIJsonProperty>,
-    required: ['newPlaces', 'updatedPlaces'] satisfies (keyof PlaceUpdates)[],
-    additionalProperties: false
-  },
-
+  // CHARACTERS
   characterUpdates: {
     type: 'object',
     properties: {
@@ -621,10 +583,32 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     required: ['newCharacters', 'updatedCharacters'] satisfies (keyof CharacterUpdates)[],
     additionalProperties: false
   },
-
+  plannedCharacterUpdates: {
+    type: 'object',
+    description: 'New planned character candidates for future introduction (only when slots available and phase is EARLY/MID).',
+    properties: {
+      add: { type: 'array', description: 'New planned character candidates to add.', items: CHARACTER_PLAN_SCHEMA },
+      remove: { type: 'array', description: 'characterId strings of plans to remove.', items: { type: 'string' } },
+    },
+    required: ['add', 'remove'],
+    additionalProperties: false,
+  },
   relationshipUpdates: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA, description: 'Updates to relationships between side characters if any.' },
+
+  // PLACES
+  placeUpdates: {
+    type: 'object',
+    properties: {
+      newPlaces: { type: 'array', items: INITIAL_PLACE_SCHEMA, description: 'New places visited if any.' },
+      updatedPlaces: { type: 'array', items: UPDATE_PLACE_SCHEMA, description: 'Places which details have been updated if any.' },
+    } satisfies Record<keyof PlaceUpdates, AIJsonProperty>,
+    required: ['newPlaces', 'updatedPlaces'] satisfies (keyof PlaceUpdates)[],
+    additionalProperties: false
+  },
   placeConnectionUpdates: { type: 'array', items: PLACE_CONNECTION_UPDATE_SCHEMA, description: 'Updates to connections between places if any.' },
 
+  // STORY
+  contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
   threadUpdates: {
     type: 'object',
     description: 'Updates to narrative threads. Omit if no update.',
@@ -661,7 +645,30 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     required: ['newThreads'] satisfies (keyof ThreadUpdates)[],
     additionalProperties: false
   },
+  futureNoteUpdates: getTagUpdatesSchema<FutureNote>({
+    description: `Max ${MAX_FUTURE_NOTES}. Narrative obligations towards viableEnding (plans, foreshadowing, future reveals, scenes, twists, etc).`,
+    items: FUTURE_NOTE_SCHEMA
+  }),
+  factUpdates: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: `${FACT_KEY_FORMAT} (new or existing)` },
+        value: { type: 'string' },
+        page: { type: 'integer' },
+        type: { type: 'string', enum: [...Object.keys(factTypes)] },
+        reason: { type: 'string', description: 'Explain why or how it happened in 1 sentence' },
+      } satisfies Record<keyof FactUpdate, AIJsonProperty>,
+      required: ['key', 'value', 'page'] satisfies (keyof FactUpdate)[],
+      additionalProperties: false
+    }
+  },
 
+  // PSYCHOLOGY
+  traumaTagUpdates: getTagUpdatesSchema<string>({
+    description: `Max ${MAX_TRAUMA_TAGS}. Haunting experiences referenced by story (and affect MC's psychological profile).`
+  }),
   flagUpdates: {
     type: 'array',
     description: 'Updates to psychological flags (trust, fear, guilt, curiosity) if any.',
@@ -676,12 +683,12 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
     },
   },
 
+  // PLOT
   addPlotFlags: PLOT_FLAGS_SCHEMA,
-
-  // Provide full to overwrite current. Can omit or empty if no changes.
   viableEnding: VIABLE_ENDING_SCHEMA,
-  contextHistory: { type: 'string', description: `Story summary from page 1 up to this point. Focus on key facts and developments for continuity. Max ${MAX_WORDS_SUMMARIZED_CONTEXT} words.` },
   minutesPassed: { type: 'number', description: 'Realistic minutes elapsed during this page. Omit if uncertain — system will estimate from scene type.' },
+
+  // POV STATE
   inventory: { type: 'array', items: INVENTORY_ITEM_SCHEMA, description: `Items in MC's possession. Omit or empty if no changes.` },
   injuries: {
     type: 'array',

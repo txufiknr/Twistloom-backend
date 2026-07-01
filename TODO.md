@@ -17,7 +17,7 @@
 [ ] userSettings schema
 - interests: string[]
 - email notification settings
-
+[ ] vip: addPlannedCharacters
 [ ] enhance book explore:
 - [x] ensure support `collection` query param
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
@@ -220,10 +220,10 @@ paid infra:
 [ ] unlock 1,000 RPD OpenRouter: requires a one-time $10 credit top-up
 
 by book creator:
-[ ] soundtrack based on mood
-[ ] add character image
-[ ] add page image
-[ ] add voice or use noiz tts api
+[ ] soundtrack based on place/mood
+[ ] upload/generate character image
+[ ] upload/generate page image
+[ ] upload/generate narrator voice
 
 paid:
 [ ] custom action prompt (max 50 chars, prevent sql inject, etc)

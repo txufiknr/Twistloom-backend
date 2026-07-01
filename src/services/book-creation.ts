@@ -462,9 +462,7 @@ const debouncedUpdateStatus = debounceAsync(
  * // Failure update
  * await updateBookGenerationStatus({ bookId, status: 'failed', error: 'AI timeout' });
  */
-export async function updateBookGenerationStatus(
-  payload: BookGenerationPayload
-): Promise<void> {
+export async function updateBookGenerationStatus(payload: BookGenerationPayload): Promise<void> {
   const { bookId, status, step, error } = payload;
   console.log('[updateBookGenerationStatus] 🧩 Updating generation progress:', cleanupObject(payload));
 
