@@ -729,7 +729,7 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         target_user_id := COALESCE(NEW.user_id, OLD.user_id);
 
         -- Compute ACTIVE streak
-        FOR rec IN SELECT DISTINCT date FROM user_checkins WHERE user_id = target_user_id ORDER BY date DESC
+        FOR rec IN SELECT DISTINCT date::date AS date FROM user_checkins WHERE user_id = target_user_id ORDER BY date DESC
         LOOP
           IF prev_date IS NULL THEN
             active_streak := 1;
@@ -743,7 +743,7 @@ export async function ensureUserCountersTriggers(): Promise<void> {
 
         -- Compute MAX streak
         prev_date := NULL;
-        FOR rec IN SELECT DISTINCT date FROM user_checkins WHERE user_id = target_user_id ORDER BY date ASC
+        FOR rec IN SELECT DISTINCT date::date AS date FROM user_checkins WHERE user_id = target_user_id ORDER BY date ASC
         LOOP
           IF prev_date IS NULL THEN
             current_streak := 1;

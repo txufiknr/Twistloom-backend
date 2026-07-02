@@ -648,7 +648,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
 
       // Compute new totals for response
       const totals = await tx
-        .select({ totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})` })
+        .select({ totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})::int` })
         .from(userCheckins)
         .where(eq(userCheckins.userId, userId))
         .limit(1);
@@ -705,7 +705,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const checkInHistory = await dbRead
       .select({
         checkInDate: userCheckins.checkInDate,
-        creditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})`,
+        creditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})::int`,
         createdAt: sql<Date>`MIN(${userCheckins.createdAt})`,
       })
       .from(userCheckins)
@@ -720,8 +720,8 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     // Get total check-ins and credits claimed
     const totals = await dbRead
       .select({
-        totalCheckIns: sql<number>`COUNT(DISTINCT ${userCheckins.checkInDate})`,
-        totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})`,
+        totalCheckIns: sql<number>`COUNT(DISTINCT ${userCheckins.checkInDate})::int`,
+        totalCreditsClaimed: sql<number>`SUM(${userCheckins.creditsClaimed})::int`,
       })
       .from(userCheckins)
       .where(eq(userCheckins.userId, userId))
