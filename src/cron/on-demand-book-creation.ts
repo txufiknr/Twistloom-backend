@@ -115,6 +115,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
         language: bookGenerations.language,
         titleIdea: bookGenerations.titleIdea,
         aiComment: bookGenerations.aiComment,
+        advancedOptions: bookGenerations.advancedOptions,
       })
       .from(bookGenerations)
       .where(eq(bookGenerations.bookId, bookId))
@@ -134,6 +135,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
       language: generationData.language || 'en',
       titleIdea: generationData.titleIdea || undefined,
       mcCandidate: generationData.mcCandidate || undefined,
+      advancedOptions: generationData.advancedOptions ?? undefined,
       bookId, // IMPORTANT: Pass bookId to update existing draft
       theme
     };

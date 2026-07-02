@@ -35,14 +35,15 @@ import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } fro
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
+import type { StoryMC, CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
-import { MAX_FINAL_COMMENT_LENGTH } from "../config/book-creation.js";
+import { MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
+import type { AdvancedOptionsConfig, WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 
 // ============================================================================
@@ -296,8 +297,64 @@ export const RULES_NEXT_PAGE_GENERATION = [
   RULES_FIRST_PAGE_GENERATION
 ].join('\n\n---\n');
 
-const PROMPT_SYSTEM_FIRST_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n---\n${RULES_FIRST_PAGE_GENERATION}`;
-const PROMPT_SYSTEM_NEXT_PAGE_GENERATION = `${PROMPT_SYSTEM}\n\n---\n${RULES_NEXT_PAGE_GENERATION}`;
+// ============================================================================
+// WRITING PRESET PROMPT BUILDERS
+// ============================================================================
+
+/**
+ * Builds the first-page rule set (without the writing-style header) for a given
+ * writing preset, injecting the preset-specific page-text rules.
+ */
+function buildFirstPageRuleSet(preset: WritingPreset = 'default'): string {
+  const pageTextRules = RULES_PAGE_TEXT_BY_PRESET[preset] ?? RULES_PAGE_TEXT_BY_PRESET.default;
+  return [
+    RULES_DIFFICULTY_SCALING,
+    RULES_ENDING_ARCHETYPES,
+    RULES_STORY_MOMENTUMS,
+    RULES_SCENE_TYPES,
+    RULES_PLACE,
+    RULES_CHARACTER,
+    RULES_CHARACTER_RECOGNITION,
+    pageTextRules,
+    RULES_ACTIONS,
+  ].join('\n\n---\n');
+}
+
+/**
+ * Builds the complete system prompt (writing style + rules) for a given writing
+ * preset and generation phase (first page or subsequent page).
+ */
+function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset = 'default'): string {
+  const writingStyle = PROMPT_SYSTEM_WRITING_STYLE[preset] ?? PROMPT_SYSTEM_WRITING_STYLE.default;
+  const firstPageRules = buildFirstPageRuleSet(preset);
+
+  const rules = type === 'first'
+    ? firstPageRules
+    : [
+        RULES_ROUTE_MEMORY,
+        RULES_STORY_CONSISTENCY,
+        RULES_FUTURE_NOTES,
+        RULES_FALSE_PREVIEW,
+        firstPageRules,
+      ].join('\n\n---\n');
+
+  return `${writingStyle}\n\n---\n${rules}`;
+}
+
+/**
+ * Merges developer-level AI config overrides (temperature, topP, seed) into the
+ * base AI chat config. Returns a new object without mutating the original.
+ */
+function applyDeveloperOverrides(
+  config: AIChatConfig,
+  developer?: AdvancedOptionsConfig['developer'],
+): AIChatConfig {
+  if (!developer) return config;
+  const result = { ...config };
+  if (developer.temperature !== undefined) result.temperature = developer.temperature;
+  if (developer.topP !== undefined) result.topP = developer.topP;
+  return result;
+}
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -3509,6 +3566,7 @@ export async function initializeBook(
     // language: detectedLanguage,
     req,
     bookId: draftBookId,
+    advancedOptions,
   } = params;
 
   // ── Internal progress helper ─────────────────────────────────────────────
@@ -3528,13 +3586,24 @@ export async function initializeBook(
     });
   }
 
+  // Resolve writing preset (default to 'default' if not provided)
+  const { writingPreset = 'default', developer: developerConfig } = advancedOptions ?? {};
+
   try {
     // ── 1. Signal initialisation start ───────────────────────────────────────
     await onProgress?.({ type: 'book_initialization_start' });
     await onGenerationProgress('book_initialization');
 
     // ── 2. Build and execute AI prompt for full book creation ─────────────────
-    const prompt = buildBookCreationPrompt(params);
+    let prompt = buildBookCreationPrompt(params);
+
+    // Append developer promptAppend if present
+    // TODO: ensure sanitization & max security
+    if (developerConfig?.promptAppend) {
+      prompt = `${prompt}\n\n---\n${developerConfig.promptAppend}`;
+    }
+
+    const baseConfig = applyDeveloperOverrides(AI_CHAT_CONFIG_DEFAULT, developerConfig);
 
     const response = await executePromptForJSON<BookCreationResponse>(
       {
@@ -3544,11 +3613,11 @@ export async function initializeBook(
           requiredFields: BOOK_CREATION_REQUIRED_FIELDS,
           fallbackField: 'summary',
           baseOptions: {
-            config: AI_CHAT_CONFIG_DEFAULT,
+            config: baseConfig,
             modelSelection: AI_CHAT_MODELS_WRITING,
             context: 'book-creation',
             logPrompts: true,
-            systemPrompt: PROMPT_SYSTEM_FIRST_PAGE_GENERATION,
+            systemPrompt: buildPresetSystemPrompt('first', writingPreset),
           },
         } satisfies AIPromptForJson<BookCreationResponse>,
         jsonStructure: firstBookOutputFormat,
@@ -3979,6 +4048,10 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // 2. Determine optimal AI configuration based on story progress and psychological state
   const config = determineAIConfig(advancedState);
 
+  // 3. Resolve writing preset from the book's MC record (set during initializeBook)
+  const mcWithPreset = book.mc as StoryMC & { writingPreset?: string };
+  const nextPreset: WritingPreset = (mcWithPreset.writingPreset as WritingPreset) || 'default';
+
   return {
     currentState,
     advancedState,
@@ -3989,7 +4062,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     prompt,
     config,
     ...bookMeta,
-    systemPrompt: PROMPT_SYSTEM_NEXT_PAGE_GENERATION,
+    systemPrompt: buildPresetSystemPrompt('next', nextPreset),
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
     thinkThenOutput: buildNextPageReviewChecklist(advancedState),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),

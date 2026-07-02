@@ -222,7 +222,7 @@ const router: RouterType = Router();
  */
 router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate, generateCoverImage } = req.body;
+    const { theme, mcCandidate, generateCoverImage, advancedOptions } = req.body;
     const userId = req.userId!;
     
     // Use shared core logic (without progress callback for synchronous response)
@@ -233,6 +233,7 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
         theme,
         mcCandidate,
         generateCoverImage,
+        advancedOptions,
         context: "book_creation",
       },
       // No progress callback for POST endpoint (synchronous response)
@@ -339,7 +340,7 @@ router.post('/workflow-webhook', async (req: Request, res: Response) => {
  */
 router.post("/stream", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme, mcCandidate, generateCoverImage } = req.body;
+    const { theme, mcCandidate, generateCoverImage, advancedOptions } = req.body;
     const userId = req.userId!;
 
     // Initialize SSE headers
@@ -358,6 +359,7 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
         theme,
         mcCandidate,
         generateCoverImage,
+        advancedOptions,
         context: "book_creation_stream",
       },
       onProgress

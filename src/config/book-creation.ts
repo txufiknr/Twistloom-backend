@@ -13,6 +13,9 @@ export const MAX_PENDING_BOOK_COVER_PER_RUN = 0;
 /** Maximum length of final congratulatory comment from AI */
 export const MAX_FINAL_COMMENT_LENGTH = 500;
 
+/** Maximum length of developer promptAppend text after sanitization */
+export const MAX_PROMPT_APPEND_LENGTH = 1000;
+
 /** Maximum number of pending/failed book generations to retry per hourly routine */
 export const HOURLY_RETRY_BATCH_SIZE = 5;
 

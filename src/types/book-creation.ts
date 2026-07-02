@@ -15,7 +15,7 @@ export type WritingPreset = typeof writingPresets[number];
  * developer-level knobs. Mirrors the frontend `AdvancedOptionsConfig` shape.
  */
 export interface AdvancedOptionsConfig {
-  writingPreset: string;
+  writingPreset: WritingPreset;
   creativity: number;
   repetitionControl: number;
   developer: {

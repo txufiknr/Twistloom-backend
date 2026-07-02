@@ -7,6 +7,7 @@ import type { Request } from "express";
 import type { DBTransaction } from "../db/client.js";
 import type { AIResponse } from "./ai-chat.js";
 import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
+import type { AdvancedOptionsConfig } from "./book-creation.js";
 
 export const bookStatuses = ['active', 'archived', 'draft'] as const;
 export type BookStatus = typeof bookStatuses[number];
@@ -267,6 +268,8 @@ export type InitializeBookParams = StoryPlan & {
   bookId?: string;
   /** Optional: Database client / transaction to run all DB operations within (for atomicity) */
   tx?: DBTransaction;
+  /** Optional: Advanced options for writing preset, creativity, AI config overrides */
+  advancedOptions?: AdvancedOptionsConfig;
 };
 
 export type CreateBookParams = Omit<InitializeBookParams, 'aiComment' | 'language' | 'bookId' | 'tx'> & { context?: string }
