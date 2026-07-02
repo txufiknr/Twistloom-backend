@@ -26,10 +26,13 @@
 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
-currently `CheckinStatusResponse` has `canCheckIn: boolean;`
-but this raise ambiguity with the new `claimedRewards` which indicate ehich type of reward has claimed today, so I decide to remove `canCheckIn`
-for "genuinely ineligible" (banned), I plan to directly check on the claim API route with error response rather than expose via status
-can you find all `canCheckIn` occurrences/usages, then remove and cleanup in favor of `claimedRewards`, and also implement banned check on the claim API route (via `handleCheckIn`)?
+--
+
+can you add BookScope (alongside BookStatus):
+- 'private' // can only seen by owner and shared link
+- 'public' // explorable publicly
+default: 'private'
+user should manually click "Publish book" to make it public
 
 ---
 

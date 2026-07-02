@@ -32,7 +32,7 @@ import { getErrorMessage, handleApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
 import { executeWithCredits, refundCredits } from './credits.js';
 import { MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
-import { MAX_THEME_LENGTH } from '../config/theme-validation.js';
+import { MAX_THEME_LENGTH, MAX_THEME_LENGTH_BUFFER } from '../config/theme-validation.js';
 import type { KnownGender } from '../types/user.js';
 import { handleInsufficientCreditsError } from '../routes/payments.js';
 import type { DBBookGeneration, DBNewBookGeneration } from '../types/schema.js';
@@ -64,18 +64,24 @@ import { isValidUuid } from '../utils/uuid.js';
  * @returns Validated `ThemeValidationResult` (always `isValid === true` on success)
  * @throws `BookCreationError` on any validation failure
  */
-export async function createBookValidate(
+export async function createBookValidate(params: {
   theme: string,
   mcCandidate?: StoryMCCandidate | null,
   generateCoverImage?: boolean,
+  isOriginal?: boolean,
   onProgress?: ProgressCallback
-): Promise<ThemeValidationResult> {
+}): Promise<ThemeValidationResult> {
+  const { theme, mcCandidate, generateCoverImage, isOriginal = false, onProgress } = params;
+
   // ── 1. Theme structural validation ───────────────────────────────────────
   if (typeof theme !== 'string' || !theme.trim()) {
     throw new BookCreationError('Theme is required and must be a non-empty string');
   }
-  if (theme.trim().length > MAX_THEME_LENGTH) {
-    throw new BookCreationError(`Theme exceeds maximum length of ${MAX_THEME_LENGTH} characters`);
+
+  const maxThemeLength = isOriginal ? MAX_THEME_LENGTH + MAX_THEME_LENGTH_BUFFER : MAX_THEME_LENGTH;
+  if (theme.trim().length > maxThemeLength) {
+    throw new BookCreationError(`Theme exceeds maximum length of ${maxThemeLength} characters`);
+    // TODO: if `isOriginal`, currently it stops overall github workflow progress, should retry re-generate theme
   }
 
   // ── 2. MC candidate structural validation ────────────────────────────────
@@ -211,12 +217,13 @@ export async function createBookCore(
 
   try {
     // ── Step 1: Validate inputs (before any credit consumption) ───────────
-    const { aiResult } = await createBookValidate(
+    const { aiResult } = await createBookValidate({
       theme,
-      initialMCCandidate,
+      mcCandidate: initialMCCandidate,
       generateCoverImage,
+      isOriginal,
       onProgress
-    );
+    });
     const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
     const initializeParams: InitializeBookParams = {
       ...params,

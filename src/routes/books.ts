@@ -426,12 +426,13 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     const theme = typeof themeInput === 'string' ? themeInput.trim() : '';
 
     // ── STEP 1: Validate theme + MC candidate (structural + AI) ──────────────
-    const { aiResult } = await createBookValidate(
+    const { aiResult } = await createBookValidate({
       theme,
-      initialMCCandidate,
+      mcCandidate: initialMCCandidate,
       generateCoverImage,
-      undefined // no SSE progress callback for async route
-    );
+      isOriginal: false,
+      onProgress: undefined // no SSE progress callback for async route
+    });
 
     // ── Bug fix: default language to 'en' — aiResult may be null/undefined ───
     const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};

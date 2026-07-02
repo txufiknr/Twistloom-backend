@@ -321,5 +321,8 @@ export const MIN_THEME_LENGTH = 10;
  */
 export const MAX_THEME_LENGTH = 3000;
 
+/** Sometimes AI can exceed the limit, so this gives a safe buffer */
+export const MAX_THEME_LENGTH_BUFFER = 1000;
+
 /** Maximum theme length in theme generator (sometimes AI can exceeds the limit instruction, so this give some safe buffer) */
-export const MAX_THEME_LENGTH_PROMPT = 2500;
+export const MAX_THEME_LENGTH_PROMPT = 2000;
