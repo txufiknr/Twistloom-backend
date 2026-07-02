@@ -3631,6 +3631,7 @@ export async function initializeBook(
         totalPages,
         language, // Match with theme input
         status: finalStatus, // 'archived' if user cancelled at PoNR, 'active' otherwise
+        visibility: isOriginal ? 'public' : undefined,
         originalThemeInput: theme
       }, { client });
       
@@ -3654,6 +3655,7 @@ export async function initializeBook(
         keywords,
         mc,
         isOriginal,
+        visibility: isOriginal ? 'public' : undefined,
         originalThemeInput: theme
       };
       const dbBook = await insertBook(newBookData, { client, alternativeTitles });
