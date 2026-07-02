@@ -35,7 +35,7 @@ import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } fro
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import type { StoryMC, CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
+import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
@@ -328,15 +328,13 @@ function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset =
   const writingStyle = PROMPT_SYSTEM_WRITING_STYLE[preset] ?? PROMPT_SYSTEM_WRITING_STYLE.default;
   const firstPageRules = buildFirstPageRuleSet(preset);
 
-  const rules = type === 'first'
-    ? firstPageRules
-    : [
-        RULES_ROUTE_MEMORY,
-        RULES_STORY_CONSISTENCY,
-        RULES_FUTURE_NOTES,
-        RULES_FALSE_PREVIEW,
-        firstPageRules,
-      ].join('\n\n---\n');
+  const rules = type === 'first' ? firstPageRules : [
+    RULES_ROUTE_MEMORY,
+    RULES_STORY_CONSISTENCY,
+    RULES_FUTURE_NOTES,
+    RULES_FALSE_PREVIEW,
+    firstPageRules,
+  ].join('\n\n---\n');
 
   return `${writingStyle}\n\n---\n${rules}`;
 }
@@ -3692,7 +3690,8 @@ export async function initializeBook(
         language, // Match with theme input
         status: finalStatus, // 'archived' if user cancelled at PoNR, 'active' otherwise
         visibility: isOriginal ? 'public' : undefined,
-        originalThemeInput: theme
+        originalThemeInput: theme,
+        advancedOptions // Persist for ongoing page generation
       }, { client });
       
       // Fetch the updated book
@@ -3716,7 +3715,8 @@ export async function initializeBook(
         mc,
         isOriginal,
         visibility: isOriginal ? 'public' : undefined,
-        originalThemeInput: theme
+        originalThemeInput: theme,
+        advancedOptions // Persist for ongoing page generation
       };
       const dbBook = await insertBook(newBookData, { client, alternativeTitles });
       book = mapBookFromDb(dbBook);
@@ -4048,9 +4048,8 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // 2. Determine optimal AI configuration based on story progress and psychological state
   const config = determineAIConfig(advancedState);
 
-  // 3. Resolve writing preset from the book's MC record (set during initializeBook)
-  const mcWithPreset = book.mc as StoryMC & { writingPreset?: string };
-  const nextPreset: WritingPreset = (mcWithPreset.writingPreset as WritingPreset) || 'default';
+  // 3. Resolve writing preset from the book's advancedOptions (persisted during initializeBook)
+  const nextPreset: WritingPreset = book.advancedOptions?.writingPreset || 'default';
 
   return {
     currentState,

@@ -1519,6 +1519,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     creditsPrice: dbBook.creditsPrice || 0,
     originalThemeInput: dbBook.originalThemeInput || undefined,
     storyStartDate: dbBook.storyStartDate || undefined,
+    advancedOptions: dbBook.advancedOptions || undefined,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'>, unknown>;

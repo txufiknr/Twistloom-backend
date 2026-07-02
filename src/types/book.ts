@@ -145,6 +145,8 @@ export type Book = {
   originalThemeInput?: string;
   /** Calendar date of the first page (auto-filled via insertStoryPage) */
   storyStartDate?: string;
+  /** Advanced options config (writing preset, developer overrides) persisted for ongoing page generation */
+  advancedOptions?: AdvancedOptionsConfig;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */

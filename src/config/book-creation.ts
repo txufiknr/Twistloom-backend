@@ -1,8 +1,7 @@
 import { MAX_WORDS_PER_PAGE } from "./story.js";
 import { blacklistedNames } from "./characters.js";
-
-import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "../utils/text-processing.js";
+import type { WritingPreset } from "../types/book-creation.js";
 
 /** Maximum generation duration before considering it stuck */
 export const MAX_GENERATION_DURATION_MS = 30 * 60 * 1000; // 30 minutes
