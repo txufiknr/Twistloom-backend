@@ -4,6 +4,9 @@ export const MAX_GENERATION_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 /** Maximum number of pending book covers to process per run */
 export const MAX_PENDING_BOOK_COVER_PER_RUN = 0;
 
+/** Maximum length of final congratulatory comment from AI */
+export const MAX_FINAL_COMMENT_LENGTH = 500;
+
 /** Maximum number of pending/failed book generations to retry per hourly routine */
 export const HOURLY_RETRY_BATCH_SIZE = 5;
 

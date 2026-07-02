@@ -42,6 +42,7 @@ import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
+import { MAX_FINAL_COMMENT_LENGTH } from "../config/book-creation.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -3421,11 +3422,11 @@ initialFacts:
 - value: current state. Prefer concise value over long sentence (explanation can be added in reason).
 - reason: 1-sentence, why or how it hapenned.
 
-aiFinalComment
-- Creative thriller-themed congratulations message (in the same language as the book).
+aiFinalComment:
+- Use creative thriller-themed wording in the same language as the book.
 - Express excitement for the published book.
 - Tell what happened in the first page.
-- Max max 500 chars.`;
+- Max ${MAX_FINAL_COMMENT_LENGTH} chars.`;
 
 /**
  * Initializes a complete book with AI-generated content and database persistence

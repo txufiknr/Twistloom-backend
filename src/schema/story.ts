@@ -15,6 +15,7 @@ import type { AIDetectedItem, AIDetectedItemType, AIValidationResult, ThemeValid
 import type { KnownGender } from "../types/user.js";
 import type { PlaceMemoryTranslation } from "../types/places.js";
 import type { StoryThreadTranslation, ThreadClueTranslation } from "../types/story-thread.js";
+import { MAX_FINAL_COMMENT_LENGTH } from "../config/book-creation.js";
 
 export const STORY_ACTION_SCHEMA: AIJsonProperty = { type: 'array', items: {
   type: 'object',
@@ -1001,7 +1002,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
   } },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
   mainCharacter: MAIN_CHARACTER_SCHEMA,
-  aiFinalComment: { type: 'string', description: 'Creative thriller-themed congratulatory message. Be creative and use the same language as the book.' }
+  aiFinalComment: { type: 'string', description: `Creative thriller-themed congratulatory message (max ${MAX_FINAL_COMMENT_LENGTH} chars). Use the same language as the book.` }
 };
 
 export const BOOK_CREATION_REQUIRED_FIELDS = [
