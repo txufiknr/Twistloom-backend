@@ -416,6 +416,64 @@ export function ensureUniqueId(id: string, existingIds: Set<string>, options?: {
   return `${id}${separator}${suffix}`;
 }
 
+/**
+ * Truncates text to fit within `maxLength` while preserving complete sentences.
+ *
+ * If the hard cut at `maxLength` falls mid-sentence, the function backs up to
+ * the last sentence-ending punctuation (`.`, `!`, `?`) within the limit. If no
+ * sentence boundary exists within the limit, it falls back to the last word
+ * boundary. The truncation is then trimmed of trailing whitespace/punctuation.
+ *
+ * @param text      - Text to truncate.
+ * @param maxLength - Maximum character length (must be > 0).
+ * @returns Truncated text ending on a complete sentence when possible.
+ *
+ * @example
+ * truncateToLastCompleteSentence("Hello world. This is a test.", 20)
+ * // → "Hello world."
+ *
+ * truncateToLastCompleteSentence("No punctuation here at all", 15)
+ * // → "No punctuation"
+ *
+ * truncateToLastCompleteSentence("Short.", 100)
+ * // → "Short."
+ */
+export function truncateToLastCompleteSentence(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+
+  const trimmed = text.trim();
+
+  // Sentence-ending punctuation
+  const SENTENCE_BOUNDARY = /[.!?]/;
+
+  // 1. Try to find the last sentence boundary within the limit
+  const candidate = trimmed.substring(0, maxLength);
+  const lastBoundary = candidate.search(SENTENCE_BOUNDARY);
+
+  if (lastBoundary !== -1) {
+    // Find the last occurrence of sentence-ending punctuation within the candidate
+    let cutAt = -1;
+    for (let i = maxLength - 1; i >= 0; i--) {
+      if (SENTENCE_BOUNDARY.test(candidate[i])) {
+        cutAt = i + 1; // Include the punctuation
+        break;
+      }
+    }
+    if (cutAt !== -1) {
+      return trimmed.substring(0, cutAt).trimEnd();
+    }
+  }
+
+  // 2. Fall back to last word boundary within the limit
+  const lastSpace = candidate.lastIndexOf(' ');
+  if (lastSpace !== -1) {
+    return trimmed.substring(0, lastSpace).trimEnd();
+  }
+
+  // 3. Hard fallback — single word exceeding limit
+  return candidate;
+}
+
 export function sanitizeText(text: string): string {
   return correctDoubleQuotes(sanitizeTextForDB(text.trim()));
 }

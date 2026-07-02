@@ -40,6 +40,7 @@ import { bookGenerations } from '../db/schema.js';
 import { dbWrite } from '../db/client.js';
 import { eq, and, ne } from 'drizzle-orm';
 import { cleanupObject } from '../utils/parser.js';
+import { truncateToLastCompleteSentence } from '../utils/text-processing.js';
 import { debounceAsync } from '../utils/debounce.js';
 import { dispatchGitHubWorkflow } from '../utils/github-workflow.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
@@ -84,8 +85,8 @@ export async function createBookValidate(params: {
     if (isOriginal) {
       // AI-generated theme occasionally exceeds the length limit.
       // Truncating avoids wasting AI credits on theme regeneration.
-      theme = theme.trim().substring(0, maxThemeLength);
-      console.log(`[createBookValidate] ✂️ Truncated original theme to ${maxThemeLength} characters`);
+      theme = truncateToLastCompleteSentence(theme, maxThemeLength);
+      console.log(`[createBookValidate] ✂️ Truncated original theme to ${theme.length} characters (limit: ${maxThemeLength})`);
     } else {
       throw new BookCreationError(`Theme exceeds maximum length of ${maxThemeLength} characters`);
     }
