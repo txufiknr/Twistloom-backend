@@ -4,6 +4,7 @@ export const writingPresets = [
   'king',
   'slow-burn',
   'action',
+  'cinematic',
   'dialogue',
   'experimental',
 ] as const;
