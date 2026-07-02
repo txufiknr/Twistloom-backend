@@ -11,6 +11,17 @@ import type { NewThread, StoryThreadTranslation } from "./story-thread.js";
 export const bookStatuses = ['active', 'archived', 'draft'] as const;
 export type BookStatus = typeof bookStatuses[number];
 
+/**
+ * Book visibility levels controlling discoverability and access
+ * 
+ * - `private`: Only the book owner can view it via their library
+ * - `unlisted`: Only those with the direct shareable link can view it
+ * - `followers`: Owner and their followers can view it in their feeds
+ * - `public`: Anyone can discover and read it (explorable)
+ */
+export const bookVisibilities = ['private', 'unlisted', 'followers', 'public'] as const;
+export type BookVisibility = typeof bookVisibilities[number];
+
 export const bookGenerationStatuses = [
   'pending',
   'in_progress',
@@ -117,6 +128,8 @@ export type Book = {
   keywords: string[];
   /** Book status ('active' | 'archived' | 'draft') */
   status: BookStatus;
+  /** Book visibility ('private' | 'followers' | 'public') */
+  visibility: BookVisibility;
   /** Main character profile with name, age, gender */
   mc: StoryMC;
   /** Book statistics */
@@ -149,6 +162,7 @@ export type EnrichedBookData = Pick<DBBook,
   | 'summary'
   | 'keywords'
   | 'status'
+  | 'visibility'
   | 'trendingScore'
   | 'totalPages'
   | 'language'

@@ -59,12 +59,12 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, EnrichedBookData } from "../types/book.js";
-import { bookStatuses, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
+import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
+import { bookStatuses, bookVisibilities, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, addCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
@@ -1200,6 +1200,77 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     });
   } catch (error) {
     handleApiError(res, "Failed to update book", error);
+  }
+});
+
+/**
+ * PATCH /api/books/:id/visibility
+ * 
+ * Updates the visibility setting of a book.
+ * Controls who can see the book in listings and explore feeds.
+ * 
+ * Visibility levels:
+ * - `private`: Only the owner can see it in their library
+ * - `unlisted`: Only accessible via a direct shareable link
+ * - `followers`: Owner and their followers can see it in feeds
+ * - `public`: Anyone can discover and read it (explorable)
+ * 
+ * **Authentication:** Required (via `requireAuth`)
+ * 
+ * @param id - Book ID to update
+ * @param visibility - New visibility value ('private' | 'unlisted' | 'followers' | 'public')
+ * @returns Updated book with new visibility setting
+ * 
+ * @example
+ * PATCH /api/books/book123/visibility
+ * Body: { "visibility": "public" }
+ * 
+ * Response (200):
+ * {
+ *   "book": { ... },
+ *   "visibility": "public"
+ * }
+ */
+router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { visibility } = req.body;
+    const userId = req.userId!;
+
+    // Validate visibility value
+    if (!visibility || typeof visibility !== 'string') {
+      return handleValidationError(res, "visibility is required");
+    }
+
+    if (!bookVisibilities.includes(visibility as BookVisibility)) {
+      return handleValidationError(res, `Invalid visibility. Must be one of: ${bookVisibilities.join(', ')}`);
+    }
+
+    // Verify book ownership
+    const [book] = await dbRead
+      .select({ id: books.id, userId: books.userId, visibility: books.visibility })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book) return handleNotFoundError(res, "Book not found");
+    if (book.userId !== userId) return handleForbiddenError(res, "You can only update visibility for your own books");
+
+    // Update visibility
+    const updatedBook = await updateBookVisibility(id as string, visibility as BookVisibility);
+
+    // Invalidate caches
+    await invalidateUserBooksCache(userId);
+    if (visibility === 'public') {
+      await invalidateExploreCache();
+    }
+
+    res.json({
+      book: updatedBook,
+      visibility: updatedBook.visibility,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to update book visibility", error);
   }
 });
 

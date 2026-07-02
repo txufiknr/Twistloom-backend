@@ -18,7 +18,8 @@ import { and, eq, asc, or, desc, ne, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
-import type { Book, BookSlugGenerationResult, BookStatus, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
+import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
+import { bookVisibilities } from "../types/book.js";
 import type { StoryPage, PersistedStoryPage, UserStoryPage, StoryState, StoryPageMeta, EnrichedStoryPage, StateDelta, StoryGeneration, SelectedAction, Action, EnrichedStoryPageContext, TranslatedStoryPage, EnrichedStoryPagePlace, EnrichedStoryPageCharacter } from "../types/story.js";
 import { getStoryStateFromPage, insertStoryState } from "./story.js";
 import { formatPlacesForPrompt } from "../utils/places.js";
@@ -852,6 +853,29 @@ export async function updateBook(
 }
 
 /**
+ * Updates a book's visibility setting
+ *
+ * Validates the visibility value against allowed values before updating.
+ * Only the book owner or an admin can change visibility.
+ *
+ * @param bookId - Book identifier to update
+ * @param visibility - New visibility value ('private' | 'followers' | 'public')
+ * @returns Promise resolving to the updated book record
+ *
+ * @throws Error if visibility value is invalid
+ */
+export async function updateBookVisibility(
+  bookId: string,
+  visibility: BookVisibility,
+): Promise<DBBook> {
+  if (!bookVisibilities.includes(visibility)) {
+    throw new Error(`Invalid visibility value. Must be one of: ${bookVisibilities.join(', ')}`);
+  }
+
+  return updateBook(bookId, { visibility });
+}
+
+/**
  * Retrieves all books for a user ordered by creation date
  * 
  * @param userId - User identifier to retrieve books for
@@ -1487,6 +1511,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     trendingScore: dbBook.trendingScore || 0,
     keywords: dbBook.keywords,
     status: dbBook.status || 'active',
+    visibility: dbBook.visibility || 'private',
     mc: dbBook.mc,
     topPick: dbBook.topPick || undefined,
     isOriginal: dbBook.isOriginal ?? false,

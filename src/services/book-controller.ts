@@ -80,6 +80,7 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     summary:     books.summary,
     keywords:    books.keywords,
     status:      books.status,
+    visibility:  books.visibility,
     trendingScore: books.trendingScore,
     totalPages:  books.totalPages,
     language:    books.language,

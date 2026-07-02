@@ -3,7 +3,7 @@ import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer
 import type { CheckinClaimType, Gender, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
-import type { BookGenerationStatus, StoryGenerationStep, BookStatus, Book, BookStats, UploadedImageType } from "../types/book.js";
+import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType } from "../types/book.js";
 import type { SessionStatus } from "../types/session.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
 import type { PsychologicalProfile, PsychologicalFlags, HiddenState, MemoryIntegrity, Difficulty, Action, StateDelta, Ending, PlotFlag, ActionTranslation, StoryStateSource, FutureNote, FactHistory, SelectedAction, StoryState, StoryPage, SceneType, Mood, StoryMomentum, SceneCharacter, SanityState } from "../types/story.js";
@@ -352,6 +352,7 @@ export const books = pgTable(
     isOriginal: boolean("is_original").notNull().default(false),
     keywords: text("keywords").array().notNull().default(sql`ARRAY[]::text[]`), // e.g. ['reality-bending', 'psychological-horror', 'unreliable-narrator', 'time-loop-feel', 'paranormal', 'forgotten-trauma']
     status: text("status").$type<BookStatus>().notNull().default('draft'),
+    visibility: text("visibility").$type<BookVisibility>().notNull().default('private'),
     mc: jsonb("mc").$type<StoryMC>().notNull(), // Main character profile with name, age, gender
     likesCount: integer("likes_count").notNull().default(0), // Total likes for this book
     readCount: integer("read_count").notNull().default(0), // Total reads/sessions for this book

@@ -26,14 +26,6 @@
 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
---
-
-can you add BookScope (alongside BookStatus):
-- 'private' // can only seen by owner and shared link
-- 'public' // explorable publicly
-default: 'private'
-user should manually click "Publish book" to make it public
-
 ---
 
 ensure stripe webhook events:
