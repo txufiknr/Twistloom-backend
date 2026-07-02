@@ -5,21 +5,17 @@
 [ ] Kalau real take action request & source action belum ada, page ga boleh dilihat
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
-[x] translate story state (inventory {name, where, traits}, actionsHistory {text})
-[x] aiPrompt should retry model on rate limit/service unavailable
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] ensure endpoint Backend: GET /books/explore?sortBy=creations&status=active,draft
 [ ] pass title idea ke initalize book & github workflow dynamic job title
 [ ] Generate originals tambah custom input book title & mc name
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
 [ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
-[ ] README: add AI models used
 [ ] userSettings schema
 - interests: string[]
 - email notification settings
 [ ] vip: addPlannedCharacters (via add custom character button)
 [ ] enhance book explore:
-- [x] ensure support `collection` query param
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?

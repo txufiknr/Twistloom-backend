@@ -351,6 +351,8 @@ function applyDeveloperOverrides(
   const result = { ...config };
   if (developer.temperature !== undefined) result.temperature = developer.temperature;
   if (developer.topP !== undefined) result.topP = developer.topP;
+  // TODO: what to do with seed?
+  // if (developer.seed !== undefined) result.seed = developer.seed;
   return result;
 }
 

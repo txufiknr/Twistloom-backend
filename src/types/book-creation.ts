@@ -17,12 +17,12 @@ export type WritingPreset = typeof writingPresets[number];
  */
 export interface AdvancedOptionsConfig {
   writingPreset: WritingPreset;
-  creativity: number;
-  repetitionControl: number;
+  creativity: number; // TODO: where and how to use this?
+  repetitionControl: number; // TODO: where and how to use this?
   developer: {
     temperature?: number;
     topP?: number;
-    seed?: number | null;
+    seed?: number | null; // TODO: where and how to use this?
     promptAppend?: string;
   };
 }

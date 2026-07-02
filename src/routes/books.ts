@@ -65,9 +65,7 @@ import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookP
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
-import { writingPresets } from "../types/book-creation.js";
-import type { AdvancedOptionsConfig } from "../types/book-creation.js";
-import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
+import { createBookCore, createBookValidate, handleBookCreationError, normalizeAdvancedOptions, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, addCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
@@ -425,32 +423,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     const { theme: themeInput, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions: rawAdvancedOptions } = req.body;
     const userId = req.userId!;
 
-    // ── Validate advancedOptions if provided ──────────────────────────────────
-    let advancedOptions: AdvancedOptionsConfig | undefined;
-    if (rawAdvancedOptions != null) {
-      if (typeof rawAdvancedOptions !== 'object' || rawAdvancedOptions === null) {
-        return res.status(400).json({ error: 'advancedOptions must be an object' });
-      }
-
-      const preset = rawAdvancedOptions.writingPreset;
-      if (!preset || !writingPresets.includes(preset)) {
-        return res.status(400).json({
-          error: `Invalid writingPreset "${preset}". Valid values: ${writingPresets.join(', ')}`,
-        });
-      }
-
-      advancedOptions = {
-        writingPreset: preset,
-        creativity: typeof rawAdvancedOptions.creativity === 'number' ? rawAdvancedOptions.creativity : 0.5,
-        repetitionControl: typeof rawAdvancedOptions.repetitionControl === 'number' ? rawAdvancedOptions.repetitionControl : 0.5,
-        developer: {
-          temperature: rawAdvancedOptions.developer?.temperature,
-          topP: rawAdvancedOptions.developer?.topP,
-          seed: rawAdvancedOptions.developer?.seed ?? null,
-          promptAppend: rawAdvancedOptions.developer?.promptAppend ?? '',
-        },
-      };
-    }
+    const advancedOptions = normalizeAdvancedOptions(rawAdvancedOptions);
 
     // ── Bug fix: safe trim — themeInput may be undefined if body is malformed ──
     // `createBookValidate` handles the empty-string case with a proper error.

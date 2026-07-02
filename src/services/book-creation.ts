@@ -46,10 +46,67 @@ import { dispatchGitHubWorkflow } from '../utils/github-workflow.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import { MAX_GENERATION_DURATION_MS, PENDING_TIMEOUT_MS } from '../config/book-creation.js';
 import { isValidUuid } from '../utils/uuid.js';
+import { writingPresets, type AdvancedOptionsConfig } from '../types/book-creation.js';
 
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
+
+/**
+ * Normalizes and validates advanced book creation options from a request body.
+ *
+ * Shared by the sync, SSE, and async creation routes so they all enforce the
+ * same structure, preset list, and default values before generation starts.
+ */
+export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedOptionsConfig | undefined {
+  if (rawAdvancedOptions == null) {
+    return undefined;
+  }
+
+  if (typeof rawAdvancedOptions !== 'object' || rawAdvancedOptions === null || Array.isArray(rawAdvancedOptions)) {
+    throw new BookCreationError('advancedOptions must be an object', undefined, 400);
+  }
+
+  const advancedOptions = rawAdvancedOptions as Record<string, unknown>;
+  const preset = advancedOptions.writingPreset;
+  if (typeof preset !== 'string' || !writingPresets.includes(preset as AdvancedOptionsConfig['writingPreset'])) {
+    throw new BookCreationError(
+      `Invalid writingPreset "${String(preset ?? '')}". Valid values: ${writingPresets.join(', ')}`,
+      undefined,
+      400
+    );
+  }
+
+  const developer = advancedOptions.developer;
+  const normalizedDeveloper = developer != null && typeof developer === 'object' && !Array.isArray(developer)
+    ? {
+        temperature: typeof (developer as { temperature?: unknown }).temperature === 'number'
+          ? (developer as { temperature: number }).temperature
+          : undefined,
+        topP: typeof (developer as { topP?: unknown }).topP === 'number'
+          ? (developer as { topP: number }).topP
+          : undefined,
+        seed: typeof (developer as { seed?: unknown }).seed === 'number' || (developer as { seed?: unknown }).seed === null
+          ? (developer as { seed: number | null }).seed
+          : null,
+        promptAppend: typeof (developer as { promptAppend?: unknown }).promptAppend === 'string'
+          ? (developer as { promptAppend: string }).promptAppend
+          : '',
+      }
+    : {
+        temperature: undefined,
+        topP: undefined,
+        seed: null,
+        promptAppend: '',
+      };
+
+  return {
+    writingPreset: preset as AdvancedOptionsConfig['writingPreset'],
+    creativity: typeof advancedOptions.creativity === 'number' ? advancedOptions.creativity : 0.5,
+    repetitionControl: typeof advancedOptions.repetitionControl === 'number' ? advancedOptions.repetitionControl : 0.5,
+    developer: normalizedDeveloper,
+  };
+}
 
 /**
  * Validates all book creation parameters before any credit consumption or DB writes.
@@ -220,6 +277,7 @@ export async function createBookCore(
     context = 'book_creation',
   } = params;
 
+  const normalizedAdvancedOptions = normalizeAdvancedOptions(params.advancedOptions);
   const isInternal = isOriginal || userId === process.env.SYSTEM_USER_ID;
   let correlationId: string | undefined;
 
@@ -235,6 +293,7 @@ export async function createBookCore(
     const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
     const initializeParams: InitializeBookParams = {
       ...params,
+      advancedOptions: normalizedAdvancedOptions,
       theme: validatedTheme ?? theme,
       aiComment,
       language,
