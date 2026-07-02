@@ -46,7 +46,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -1096,6 +1096,8 @@ router.post("/insert", requireAuth, async (req: Request, res: Response) => {
  * @param hook - Updated book hook/description (optional)
  * @param summary - Updated book summary (optional)
  * @param keywords - Updated book keywords array (optional)
+ * @param visibility - New visibility value (optional)
+ * @param status - New status value (optional)
  * @param imageUrl - New cover image URL to upload (optional)
  * @param imageFile - New cover image file from multipart upload (optional)
  * @returns Updated book information
@@ -1104,7 +1106,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
   try {
     const { id } = req.params;
     const userId = req.userId!;
-    const { title, hook, summary, keywords, imageUrl } = req.body;
+    const { title, hook, summary, keywords, visibility, status: newStatus, imageUrl } = req.body;
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1112,7 +1114,9 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
       userId: books.userId,
       title: books.title,
       keywords: books.keywords,
-      imageId: books.imageId
+      imageId: books.imageId,
+      status: books.status,
+      visibility: books.visibility,
     })
     .from(books)
     .where(and(
@@ -1174,6 +1178,8 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     if (hook !== undefined) updateData.hook = hook;
     if (summary !== undefined) updateData.summary = summary;
     if (keywords !== undefined) updateData.keywords = keywords;
+    if (visibility !== undefined && bookVisibilities.includes(visibility as BookVisibility)) updateData.visibility = visibility;
+    if (newStatus !== undefined && bookStatuses.includes(newStatus as BookStatus)) updateData.status = newStatus;
     if (newImageId) updateData.imageId = newImageId;
 
     // Update the book
@@ -1184,13 +1190,12 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
     
     // Invalidate popular tags cache if keywords were updated
     if (keywords !== undefined) {
-      await invalidatePopularTagsCache();
+      invalidatePopularTagsCache();
     }
     
-    // Invalidate explore cache if book status changed to/from active
-    if (updateData.status || updatedBook.status === 'active') {
-      await invalidateExploreCache();
-    }
+    // Invalidate explore cache only if this public+active book's metadata changed,
+    // or if visibility/status changed in a way that affects explore visibility
+    await invalidateExploreCache({ before: book, after: updatedBook });
 
     res.json({
       book: updatedBook,
@@ -1248,7 +1253,7 @@ router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response)
 
     // Verify book ownership
     const [book] = await dbRead
-      .select({ id: books.id, userId: books.userId, visibility: books.visibility })
+      .select({ id: books.id, userId: books.userId, visibility: books.visibility, status: books.status })
       .from(books)
       .where(eq(books.id, id as string))
       .limit(1);
@@ -1259,11 +1264,11 @@ router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response)
     // Update visibility
     const updatedBook = await updateBookVisibility(id as string, visibility as BookVisibility);
 
-    // Invalidate caches
     await invalidateUserBooksCache(userId);
-    if (visibility === 'public') {
-      await invalidateExploreCache();
-    }
+
+    // Invalidate explore cache only if visibility changed to/from 'public'
+    // (any change to/from 'public' affects whether the book appears in explore)
+    await invalidateExploreCache({ before: book, after: { ...book, visibility: visibility as string } });
 
     res.json({
       book: updatedBook,
@@ -1271,6 +1276,76 @@ router.patch("/:id/visibility", requireAuth, async (req: Request, res: Response)
     });
   } catch (error) {
     handleApiError(res, "Failed to update book visibility", error);
+  }
+});
+
+/**
+ * PATCH /api/books/:id/archive
+ * 
+ * Archives or unarchives a book (toggles status between 'active' and 'archived').
+ * Archiving removes the book from public listings and explore feeds
+ * without deleting it. Unarchiving restores it.
+ * 
+ * **Authentication:** Required (via `requireAuth`)
+ * 
+ * @param id - Book ID to update
+ * @param status - New status value ('active' | 'archived')
+ * @returns Updated book with new status
+ * 
+ * @example
+ * PATCH /api/books/book123/archive
+ * Body: { "status": "archived" }
+ * 
+ * Response (200):
+ * {
+ *   "book": { ... },
+ *   "status": "archived"
+ * }
+ */
+router.patch("/:id/archive", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status: newStatus } = req.body;
+    const userId = req.userId!;
+
+    // Validate status value
+    if (!newStatus || typeof newStatus !== 'string') {
+      return handleValidationError(res, "status is required");
+    }
+
+    if (!bookStatuses.includes(newStatus as BookStatus)) {
+      return handleValidationError(res, `Invalid status. Must be one of: ${bookStatuses.join(', ')}`);
+    }
+
+    // Only allow toggling between 'active' and 'archived'
+    if (newStatus !== 'active' && newStatus !== 'archived') {
+      return handleValidationError(res, "Status must be 'active' or 'archived'");
+    }
+
+    // Verify book ownership
+    const [book] = await dbRead
+      .select({ id: books.id, userId: books.userId, status: books.status, visibility: books.visibility })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+
+    if (!book) return handleNotFoundError(res, "Book not found");
+    if (book.userId !== userId) return handleForbiddenError(res, "You can only archive/unarchive your own books");
+
+    // Update status
+    const updatedBook = await updateBook(id as string, { status: newStatus as BookStatus });
+
+    await invalidateUserBooksCache(userId);
+
+    // Invalidate explore cache if the book is public and its status changed to/from 'active'
+    await invalidateExploreCache({ before: book, after: { ...book, status: newStatus as string } });
+
+    res.json({
+      book: updatedBook,
+      status: updatedBook.status,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to update book status", error);
   }
 });
 
@@ -1625,12 +1700,14 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.userId!;
 
-    // Get book information including imageId before deletion
+    // Get book information before deletion
     const book = await dbRead
       .select({ 
         id: books.id,
         imageId: books.imageId,
-        userId: books.userId
+        userId: books.userId,
+        status: books.status,
+        visibility: books.visibility,
       })
       .from(books)
       .where(and(
@@ -1669,8 +1746,8 @@ router.delete("/:id", requireAuth, async (req: Request, res: Response) => {
     // Invalidate user profile cache (booksCount changed)
     await invalidateUserProfileCache(userId);
     
-    // Invalidate explore cache
-    await invalidateExploreCache();
+    // Invalidate explore cache only if the deleted book was publicly visible
+    await invalidateExploreCache({ book: bookToDelete });
 
     res.json({
       message: "Book deleted successfully",
@@ -1845,8 +1922,15 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
       };
     });
 
-    // Invalidate explore cache after successful transaction
-    await invalidateExploreCache();
+    // Invalidate explore cache if the liked book is publicly visible
+    const [likedBook] = await dbRead
+      .select({ status: books.status, visibility: books.visibility })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+    if (likedBook) {
+      await invalidateExploreCache({ book: likedBook });
+    }
 
     // Invalidate user profile cache if book was added to favorites (savedBooksCount changed)
     if (result.favorited) {
@@ -1967,8 +2051,15 @@ router.delete("/:id/like", requireAuth, async (req: Request, res: Response) => {
       };
     });
 
-    // Invalidate explore cache after successful transaction
-    await invalidateExploreCache();
+    // Invalidate explore cache if the unliked book is publicly visible
+    const [unlikedBook] = await dbRead
+      .select({ status: books.status, visibility: books.visibility })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+    if (unlikedBook) {
+      await invalidateExploreCache({ book: unlikedBook });
+    }
 
     if (result.notLiked) {
       return res.status(404).json({
@@ -2071,6 +2162,16 @@ router.post("/:id/favorite", requireAuth, async (req: Request, res: Response) =>
     // Note: Cache invalidation after DB update is acceptable - window of stale data is minimal (milliseconds)
     await invalidateUserBooksCache(userId);
 
+    // Invalidate explore cache if book is publicly visible (trendingScore affects sort order)
+    const [favBook] = await dbRead
+      .select({ status: books.status, visibility: books.visibility })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+    if (favBook) {
+      await invalidateExploreCache({ book: favBook });
+    }
+
     res.status(201).json({
       message: "Book added to favorites",
       favorited: true
@@ -2156,6 +2257,16 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
 
     // Invalidate user's book cache
     await invalidateUserBooksCache(userId);
+
+    // Invalidate explore cache if book is publicly visible (trendingScore affects sort order)
+    const [unfavBook] = await dbRead
+      .select({ status: books.status, visibility: books.visibility })
+      .from(books)
+      .where(eq(books.id, id as string))
+      .limit(1);
+    if (unfavBook) {
+      await invalidateExploreCache({ book: unfavBook });
+    }
 
     res.json({
       message: "Book removed from favorites",
@@ -2686,6 +2797,12 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
 
     // Response already sent by `visitBookPage` internally
     if (!dbPage || !book) return;
+
+    // Access control: reject if book is archived or private and user is not the owner
+    if ((book.status === 'archived' || book.visibility === 'private') && (!req.userId || req.userId !== book.userId)) {
+      if (!req.userId) return handleUnauthorizedError(res, "Authentication required to view this book");
+      return handleForbiddenError(res, "You do not have access to this book");
+    }
 
     // Return enriched page with only frontend-relevant fields
     // Handle translation if Accept-Language header is provided and differs from book language

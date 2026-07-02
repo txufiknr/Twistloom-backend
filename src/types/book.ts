@@ -183,14 +183,8 @@ export type EnrichedBookData = Pick<DBBook,
   isRead: boolean;
   isCompleted: boolean;
   isPurchased: boolean;
-  // lastReadAt?: Date | null;
-  // lastPageId?: string | null;
-  // lastPageNumber?: number | null;
-  // firstPageId: string;
-  // firstPageText: string;
   firstPage: EnrichedBookFirstPage | null;
   session: EnrichedBookSession | null;
-  // contextHistory: string;
   translation: BookTranslation | null;
   generation: EnrichedBookGeneration | null;
   collection: string | null;

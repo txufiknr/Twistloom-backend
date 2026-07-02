@@ -175,11 +175,49 @@ export async function invalidateUserBooksCache(userId: string): Promise<number> 
 }
 
 /**
- * Invalidates explore page 1 cache (both default and trending)
+ * Options for conditional explore cache invalidation.
+ */
+export interface InvalidateExploreOptions {
+  /**
+   * Current book to check — invalidates only if visibility='public' AND status='active'.
+   */
+  book?: { status: string; visibility: string };
+  /**
+   * Previous book state (for before/after comparison).
+   * When paired with `after`, invalidates if either was or is public+active.
+   */
+  before?: { status: string; visibility: string };
+  /**
+   * New book state (for before/after comparison).
+   * When paired with `before`, invalidates if either was or is public+active.
+   */
+  after?: { status: string; visibility: string };
+}
+
+/**
+ * Invalidates explore page 1 cache (both default and trending).
  *
+ * When a `book` is provided, only invalidates if the book is publicly visible
+ * (visibility='public' AND status='active'). When `before` and `after` are
+ * provided, invalidates if either state is public+active. When no options are
+ * given, always invalidates.
+ *
+ * @param options - Optional book state to conditionally invalidate
  * @returns true if successful, false otherwise
  */
-export async function invalidateExploreCache(): Promise<boolean> {
+export async function invalidateExploreCache(options?: InvalidateExploreOptions): Promise<boolean> {
+  if (options) {
+    const { book, before, after } = options;
+    const isPublicActive = (b: { status: string; visibility: string }) => b.visibility === 'public' && b.status === 'active';
+
+    if (book) {
+      if (!isPublicActive(book)) return true; // skip — book not in explore
+    } else if (before && after) {
+      if (!isPublicActive(before) && !isPublicActive(after)) return true; // skip — neither was in explore
+    }
+    // else: invalidate (preserves always-invalidate behavior for unknown option shapes)
+  }
+
   // Invalidate both explore caches since trending scores affect ranking
   await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1);
   await deleteCache(CACHE_KEYS.EXPLORE_PAGE_1_TRENDING);

@@ -45,7 +45,7 @@ import type { LikeTargetType, User, UserActivityType, UserStats } from "../types
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
+import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -843,9 +843,16 @@ router.post("/likes", requireAuth, async (req: Request, res: Response) => {
       targetId,
     }, { req });
 
-    // Invalidate caches when liking a book
+    // Invalidate caches when liking a book (only if publicly visible)
     if (targetType === 'book') {
-      await invalidateExploreCache(); // likesCount changed
+      const [likedBook] = await dbRead
+        .select({ status: books.status, visibility: books.visibility })
+        .from(books)
+        .where(eq(books.id, targetId))
+        .limit(1);
+      if (likedBook) {
+        await invalidateExploreCache({ book: likedBook });
+      }
       await invalidateUserBooksCache(userId); // isLiked flag changed
       await invalidateUserProfileCache(userId); // likedBooksCount changed
     }
@@ -920,9 +927,16 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
       message: "Like removed successfully",
     });
 
-    // Invalidate caches when unliking a book
+    // Invalidate caches when unliking a book (only if publicly visible)
     if (targetType === 'book') {
-      await invalidateExploreCache(); // likesCount changed
+      const [unlikedBook] = await dbRead
+        .select({ status: books.status, visibility: books.visibility })
+        .from(books)
+        .where(eq(books.id, targetId as string))
+        .limit(1);
+      if (unlikedBook) {
+        await invalidateExploreCache({ book: unlikedBook });
+      }
       await invalidateUserBooksCache(userId); // isLiked flag changed
       await invalidateUserProfileCache(userId); // likedBooksCount changed
     }
