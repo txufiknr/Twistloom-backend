@@ -1,13 +1,13 @@
 /**
- * @summary Daily cron job to generate Twistloom Originals (auto-generated books)
- * @description Generates one original psychological thriller book per day using AI
+ * @summary Weekly cron job to generate Twistloom Originals (auto-generated books)
+ * @description Generates one original psychological thriller book per week using AI
  * 
  * Idempotency:
  * - Safe to run multiple times: creates new books with unique IDs
  * - Uses system user ID for ownership (configured via env var)
  * - AI generates unique themes each time
  * 
- * Should be run once per day via cron job
+ * Should be run once per week via cron job
  */
 import { getErrorMessage } from "../utils/error.js";
 import { generateBookCreationPrompt } from "../utils/prompt.js";

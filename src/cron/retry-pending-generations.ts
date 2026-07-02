@@ -18,7 +18,7 @@
  * - User attribution: Manual triggers include user tracking for audit purposes
  * 
  * Execution Context:
- * - Should be run periodically via cron job (e.g., every hour) for scheduled processing
+ * - Should be run periodically via cron job for scheduled processing
  * - Manual triggers via GitHub workflow API with environment variables:
  *   - `TRIGGERED_BOOK_ID`: Target book identifier
  *   - `TRIGGERED_PAGE_ID`: Target page identifier  
