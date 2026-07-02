@@ -3312,8 +3312,8 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
  * @param action Optional player action that may influence generation behavior.
  * @returns AI configuration optimized for story writing and output reliability.
  */
-function determineAIConfig(state: StoryState): AIChatConfig {
-  let config = AI_CHAT_CONFIG_CREATIVE;
+function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT_CONFIG_CREATIVE): AIChatConfig {
+  let config = baseConfig;
 
   // Apply temporary twist or revelation boost
   if (state.hiddenState.profileShift?.detected) {
@@ -4133,7 +4133,7 @@ function resolvePageDelta(params: {
  * 12. Create snapshot if conditions are met
  * 13. Return the persisted story page with all database metadata
  *
- * The function uses the sophisticated configuration system from determineAIConfig()
+ * The function uses the sophisticated configuration system from {@link determineAIConfig}
  * to balance creativity, consistency, and reliability throughout the story progression.
  * For main story pages, it also pre-generates candidate pages for branching narrative.
  *

@@ -1247,6 +1247,8 @@ export type EnrichedStoryPageContext = {
   plotFlags: PlotFlag[];
   /** Collection of ongoing narrative threads in the story */
   threads: StoryThread[];
+  /** Outline towards planned ending */
+  outline?: StoryOutline[];
 };
 
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { placeId: string; name: string; };
