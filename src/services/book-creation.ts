@@ -71,7 +71,8 @@ export async function createBookValidate(params: {
   isOriginal?: boolean,
   onProgress?: ProgressCallback
 }): Promise<ThemeValidationResult> {
-  const { theme, mcCandidate, generateCoverImage, isOriginal = false, onProgress } = params;
+  const { mcCandidate, generateCoverImage, isOriginal = false, onProgress } = params;
+  let { theme } = params;
 
   // ── 1. Theme structural validation ───────────────────────────────────────
   if (typeof theme !== 'string' || !theme.trim()) {
@@ -80,8 +81,14 @@ export async function createBookValidate(params: {
 
   const maxThemeLength = isOriginal ? MAX_THEME_LENGTH + MAX_THEME_LENGTH_BUFFER : MAX_THEME_LENGTH;
   if (theme.trim().length > maxThemeLength) {
-    throw new BookCreationError(`Theme exceeds maximum length of ${maxThemeLength} characters`);
-    // TODO: if `isOriginal`, currently it stops overall github workflow progress, should retry re-generate theme
+    if (isOriginal) {
+      // AI-generated theme occasionally exceeds the length limit.
+      // Truncating avoids wasting AI credits on theme regeneration.
+      theme = theme.trim().substring(0, maxThemeLength);
+      console.log(`[createBookValidate] ✂️ Truncated original theme to ${maxThemeLength} characters`);
+    } else {
+      throw new BookCreationError(`Theme exceeds maximum length of ${maxThemeLength} characters`);
+    }
   }
 
   // ── 2. MC candidate structural validation ────────────────────────────────
@@ -137,7 +144,7 @@ export async function createBookValidate(params: {
     throw new BookCreationError('Theme validation failed', validationResult);
   }
 
-  return validationResult;
+  return { ...validationResult, theme };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +224,7 @@ export async function createBookCore(
 
   try {
     // ── Step 1: Validate inputs (before any credit consumption) ───────────
-    const { aiResult } = await createBookValidate({
+    const { aiResult, theme: validatedTheme } = await createBookValidate({
       theme,
       mcCandidate: initialMCCandidate,
       generateCoverImage,
@@ -227,6 +234,7 @@ export async function createBookCore(
     const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
     const initializeParams: InitializeBookParams = {
       ...params,
+      theme: validatedTheme ?? theme,
       aiComment,
       language,
       titleIdea,

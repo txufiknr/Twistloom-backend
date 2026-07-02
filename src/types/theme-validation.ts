@@ -221,6 +221,8 @@ export type AIValidationResult = {
 export interface ThemeValidationResult {
   /** Whether the theme passed all validation checks */
   isValid: boolean;
+  /** The (potentially truncated) theme after validation */
+  theme?: string;
   /** Result from heuristic validation layer */
   heuristicResult?: HeuristicValidationResult;
   /** Result from AI validation layer */
