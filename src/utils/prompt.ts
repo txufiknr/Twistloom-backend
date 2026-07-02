@@ -43,6 +43,7 @@ import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
 import { MAX_FINAL_COMMENT_LENGTH } from "../config/book-creation.js";
+import { formatOneOf } from "./text-processing.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -1787,16 +1788,6 @@ function getHintGuidanceForAI(hintType: ActionHintType): string {
     case "custom": return "Reader provided unique direction. Honor their creative intent while maintaining narrative consistency. Weave their suggestion naturally into the story's existing themes and character development, avoiding abrupt tonal shifts or plot contradictions.";
     default: return "Develop naturally with appropriate tone for the action type and context.";
   }
-}
-
-/**
- * Formats an array of strings for inclusion in prompts
- * @param items - Array of strings to format
- * @param separator - Separator to use between items (default: ', ')
- * @returns Formatted string with items quoted and joined by the separator
- */
-export function formatOneOf(items: string[] | readonly string[], separator: string = ', '): string {
-  return `'${items.join(`'${separator}'`)}'`;
 }
 
 /**

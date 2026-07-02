@@ -38,6 +38,16 @@ export function hasKeywords(text: string | undefined | null, keywords: readonly 
 }
 
 /**
+ * Formats an array of strings as a quoted-or-separated string for inclusion in prompts
+ * @param items - Array of strings to format
+ * @param separator - Separator to use between items (default: ', ')
+ * @returns Formatted string with items quoted and joined by the separator
+ */
+export function formatOneOf(items: string[] | readonly string[], separator: string = ', '): string {
+  return `'${items.join(`'${separator}'`)}'`;
+}
+
+/**
  * Enhanced HTML entity decoding with fallback
  * Handles numeric entities, named entities, and common edge cases
  */

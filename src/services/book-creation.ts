@@ -26,7 +26,7 @@ import {
 import type { ProgressCallback } from '../types/sse.js';
 import type { ThemeValidationResult } from '../types/theme-validation.js';
 import { handleThemeValidationError, validateTheme } from '../utils/theme-validation.js';
-import { formatOneOf, initializeBook } from '../utils/prompt.js';
+import { initializeBook } from '../utils/prompt.js';
 import type { Response } from 'express';
 import { getErrorMessage, handleApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
@@ -40,7 +40,7 @@ import { bookGenerations } from '../db/schema.js';
 import { dbWrite } from '../db/client.js';
 import { eq, and, ne } from 'drizzle-orm';
 import { cleanupObject } from '../utils/parser.js';
-import { truncateToLastCompleteSentence } from '../utils/text-processing.js';
+import { formatOneOf, truncateToLastCompleteSentence } from '../utils/text-processing.js';
 import { debounceAsync } from '../utils/debounce.js';
 import { dispatchGitHubWorkflow } from '../utils/github-workflow.js';
 import { GITHUB_REPO_CONFIG } from '../config/env.js';

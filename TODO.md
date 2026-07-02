@@ -37,16 +37,6 @@ ensure stripe webhook events:
  * - customer.subscription.deleted
  * - invoice.payment_succeeded
  * - invoice.payment_failed
----
-
-how to correctly implement "user ban" system in Twistloom platform?
-- why user should be banned? / what makes user to be banned?
-- what banned user cannot do?
-- how long is it? (should we make violation enums/type and map each with days/duration?)
-- do we need separate db table?
-- how to detect? (can we reliably use AI to help detect user's violations?)
-- what the goal of this ban system? (should be to keep platform healthy, safer, and all user happy instead of feeling burdened)
-could you elaborate comprehensively on this user ban system tailored for Twistloom platform?
 
 ---
 
