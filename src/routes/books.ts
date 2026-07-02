@@ -86,6 +86,7 @@ import { getStoryStateFromPage } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
+import { BOOK_MIN_PAGES } from "../config/story.js";
 import type { CustomActionValidationResult, CustomActionPreviewResponse, CustomActionSubmitResponse } from "../types/custom-action.js";
 import type { AIPromptForJson } from "../types/ai-chat.js";
 import { MAX_BRANCHING_PREGENERATION_DEPTH } from "../config/story.js";
@@ -449,7 +450,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       summary: null,
       keywords: [],
       language,
-      totalPages: 0,
+      totalPages: BOOK_MIN_PAGES, // Sensible default until initializeBook populates the real value
       mc,
       status: 'draft', // Promoted to 'active' when initializeBook completes
     };

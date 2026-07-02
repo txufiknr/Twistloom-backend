@@ -56,43 +56,54 @@ import type { InitializeBookParams } from '../types/book.js';
 async function processBookGeneration(bookId: string): Promise<void> {
   console.log('[book-creation] 💭 Prepare to write the book:', bookId);
 
-  const setLockTimestamp = async (isGeneratingStartedAt: Date | null) => {
+  const clearLock = async () => {
     await dbWrite
       .update(bookGenerations)
-      .set({ isGeneratingStartedAt })
+      .set({ isGeneratingStartedAt: null })
       .where(eq(bookGenerations.bookId, bookId));
   };
 
   try {
-    // Check existing lock state BEFORE setting to prevent race condition
-    const [existingLock] = await dbRead
-      .select({ isGeneratingStartedAt: bookGenerations.isGeneratingStartedAt })
+    // ── Atomic lock acquisition ──────────────────────────────────────────────
+    // Single UPDATE with condition: only acquires the lock if the row exists AND
+    // the lock is either free (NULL) or stale (>1 minute old). This is atomic —
+    // no TOCTOU race between checking and setting.
+    //
+    // Note: the initial quick read for existence is deliberately separate because
+    // the existence of a row does not change during normal operation (no concurrent
+    // creation/deletion of bookGenerations rows). The lock state is the only
+    // race-sensitive value, and the conditional UPDATE handles that correctly.
+    const [existenceCheck] = await dbRead
+      .select({ id: bookGenerations.bookId })
       .from(bookGenerations)
       .where(eq(bookGenerations.bookId, bookId))
       .limit(1);
 
-    if (!existingLock) {
+    if (!existenceCheck) {
       throw new Error(`Book generation record not found for bookId: ${bookId}`);
     }
 
-    // Check if lock was already set by another process (race condition)
-    if (existingLock.isGeneratingStartedAt) {
-      const existingLockTime = new Date(existingLock.isGeneratingStartedAt).getTime();
-      const now = Date.now();
-      const lockAge = now - existingLockTime;
-      
-      // If lock is recent (< 1 minute), another process is handling it
-      if (lockAge < 60000) {
-        console.log(`[book-creation] ⏸️ Book ${bookId} is already being processed (lock age: ${lockAge}ms), skipping`);
-        return;
-      }
-      
-      // Lock is stale, proceed with processing
-      console.log(`[book-creation] 🔄 Book ${bookId} has stale lock (age: ${lockAge}ms), proceeding with processing`);
-    }
+    const ONE_MINUTE_AGO = new Date(Date.now() - 60000);
+    const [locked] = await dbWrite
+      .update(bookGenerations)
+      .set({ isGeneratingStartedAt: new Date() })
+      .where(
+        and(
+          eq(bookGenerations.bookId, bookId),
+          or(
+            isNull(bookGenerations.isGeneratingStartedAt),
+            lt(bookGenerations.isGeneratingStartedAt, ONE_MINUTE_AGO)
+          )
+        )
+      )
+      .returning({ id: bookGenerations.bookId });
 
-    // Set lock timestamp to prevent duplicate processing
-    await setLockTimestamp(new Date());
+    if (!locked) {
+      // Either another process holds a fresh lock, or the generation just
+      // completed (racing with the webhook). Skip silently.
+      console.log(`[book-creation] ⏸️ Book ${bookId} is already being processed (lock held by another process), skipping`);
+      return;
+    }
 
     // Fetch book generation data from database
     const [generationData] = await dbRead
@@ -129,7 +140,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
 
     console.log('[book-creation] ✒️ Writing the book...', params);
 
-    // Update book generation step to 'initializing'
+    // Fire-and-forget intermediate progress update (debounced, non-critical)
     void updateBookGenerationStatus({ bookId, step: 'book_initialization' });
 
     // Initialize book (this is the long-running AI generation)
@@ -138,20 +149,24 @@ async function processBookGeneration(bookId: string): Promise<void> {
 
     console.log('[book-creation] 📔 Book initialized successfully:', result);
 
-    // Update book generation status (content already updated by initializeBook)
-    void updateBookGenerationStatus({ bookId, step: 'complete', aiFinalComment: result.aiFinalComment });
+    // Await terminal status updates so they are persisted before process.exit().
+    // initializeBook already calls onGenerationProgress('complete') internally,
+    // but that call is also fire-and-forget. We re-issue here to ensure the
+    // debounced write actually completes.
+    await updateBookGenerationStatus({ bookId, step: 'complete', aiFinalComment: result.aiFinalComment });
 
     // Clear lock timestamp
-    await setLockTimestamp(null);
+    await clearLock();
 
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error('[book-creation] ❌ Book generation error:', errorMessage);
     
-    // Clear lock timestamp on error
-    await setLockTimestamp(null);
+    // Clear lock timestamp on error FIRST, then await the failure status write.
+    await clearLock();
     
-    void updateBookGenerationStatus({ bookId, status: 'failed', error: errorMessage });
+    // Await so the 'failed' status is persisted before process.exit(1) in main()
+    await updateBookGenerationStatus({ bookId, status: 'failed', error: errorMessage });
     throw error;
   }
 }

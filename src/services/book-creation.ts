@@ -38,7 +38,7 @@ import { handleInsufficientCreditsError } from '../routes/payments.js';
 import type { DBBookGeneration, DBNewBookGeneration } from '../types/schema.js';
 import { bookGenerations } from '../db/schema.js';
 import { dbWrite } from '../db/client.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, ne } from 'drizzle-orm';
 import { cleanupObject } from '../utils/parser.js';
 import { debounceAsync } from '../utils/debounce.js';
 import { dispatchGitHubWorkflow } from '../utils/github-workflow.js';
@@ -418,11 +418,28 @@ async function updateBookGenerationStatusCore(
     update.generationCompletedAt = new Date();
   }
 
-  // ── 5. Persist to database ────────────────────────────────────────────────
+  // ── 5. Terminal-status guard ─────────────────────────────────────────────
+  //
+  // Never overwrite a row that has already reached a terminal status:
+  //   - `'cancelled'` — user cancelled the generation. A delayed webhook from
+  //     the dying GitHub runner must not resurrect the status.
+  //   - `'completed'` — generation already finished. Prevents races where a
+  //     late webhook (already cancelled) could flip it back to 'in_progress'.
+  //
+  // Non-terminal statuses ('pending', 'in_progress', 'failed') are always
+  // overwritable — e.g. retrying a failed generation advances it to in_progress.
+  //
+  // ── 6. Persist to database ────────────────────────────────────────────────
   await dbWrite
     .update(bookGenerations)
     .set(update)
-    .where(eq(bookGenerations.bookId, bookId));
+    .where(
+      and(
+        eq(bookGenerations.bookId, bookId),
+        ne(bookGenerations.generationStatus, 'cancelled'),
+        ne(bookGenerations.generationStatus, 'completed'),
+      )
+    );
 }
 
 /**

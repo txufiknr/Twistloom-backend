@@ -3757,7 +3757,8 @@ export async function initializeBook(
 
     // ── 11. Pre-generate candidate pages for first-page actions ──────────────
     if (isOriginal) {
-      // Cron job: use github-action strategy (serial, no timeout risk)
+      // Cron job originals: use github-action strategy inline (sequential,
+      // await for clean debug logging — not time-sensitive within GitHub Actions).
       const firstUserPage: UserStoryPage = { ...firstPage, selectedActions: [] };
       await ensureCandidatesForPageWithStrategy({
         strategy: 'github-action',
@@ -3767,7 +3768,10 @@ export async function initializeBook(
         currentBook: book,
       });
     } else {
-      // User flow: fire-and-forget workflow dispatch for fast response
+      // Every other flow (on-demand async, sync/SSE): dispatch a separate
+      // GitHub workflow for separation of concerns & isolated run logs.
+      // Fire-and-forget — the book response is returned immediately;
+      // candidate pages populate in the background.
       triggerCandidateGenerationWorkflow({
         userId,
         pageId: pageId,
@@ -4412,11 +4416,12 @@ TASK: Generate a compelling story concept that another AI will use as the founda
 
 The story concept should naturally provide enough information to infer:
 - The core premise and central conflict (required)
-- Optional main character details (name, gender, age, occupation, personality, background)
-- Optional supporting characters or important relationships
-- Optional story tone and atmosphere
-- Optional setting, time period, or world details
-- Optional mysteries, secrets, antagonists, or major story goals
+And optionally:
+- Main character details (name, gender, age, occupation, personality, background)
+- Supporting characters or important relationships
+- Story tone and atmosphere
+- Setting, time period, or world details
+- Mysteries, secrets, antagonists, or major story goals
 
 GUIDELINES:
 - Create an intriguing premise that immediately sparks curiosity.

@@ -17,7 +17,7 @@
 [ ] userSettings schema
 - interests: string[]
 - email notification settings
-[ ] vip: addPlannedCharacters
+[ ] vip: addPlannedCharacters (via add custom character button)
 [ ] enhance book explore:
 - [x] ensure support `collection` query param
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
