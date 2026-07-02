@@ -783,7 +783,7 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       vipClaimAmount = isVip && !claimedRewards.includes('vip_2x') ? baseAmount * VIP_BENEFITS.checkInMultiplier : 0;
     }
 
-    return {
+    const statusResult: CheckinStatusResponse = {
       canCheckIn: effectiveCanCheckIn,
       lastCheckInDate: canCheckInStatus.lastCheckInDate,
       totalCheckIns: totals[0]?.totalCheckIns || 0,
@@ -795,9 +795,12 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       regularClaimAmount,
       vipClaimAmount,
       claimedRewards,
-    } satisfies CheckinStatusResponse;
+    };
+
+    console.log(`[getCheckInStatus] ${effectiveCanCheckIn ? '🌟' : 'ℹ️'} User ${userId} check-in status retrieved:`, statusResult);
+    return statusResult;
   } catch (error) {
-    console.error("[user] ❌ Failed to get check-in status:", getErrorMessage(error));
+    console.error("[getCheckInStatus] ❌ Failed to get check-in status:", getErrorMessage(error));
     throw error;
   }
 }

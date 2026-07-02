@@ -1820,6 +1820,7 @@ router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) 
     
     // Return null response for unauthenticated users (handles auth timing race conditions)
     if (!userId) {
+      console.log(`[GET /user/checkin/status] 👀 No userId, returning null check-in status`);
       return res.json({
         eligible: false,
         lastCheckIn: null,
