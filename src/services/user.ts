@@ -738,7 +738,9 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     const dateSet = new Set(checkInHistory.map(c => c.checkInDate));
     const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
     let streak = 0;
-    for (let i = 0; i < DAILY_CHECKIN_DAYS; i++) {
+    // If user already checked in today, count from today (i=0); otherwise count from yesterday (i=1)
+    const startOffset = canCheckInStatus.canCheckIn ? 1 : 0;
+    for (let i = startOffset; i < DAILY_CHECKIN_DAYS + startOffset; i++) {
       const d = new Date(utcToday);
       d.setUTCDate(d.getUTCDate() - i);
       const iso = d.toISOString().slice(0, 10);

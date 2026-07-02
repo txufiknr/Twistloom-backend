@@ -27,7 +27,10 @@ export const CHARACTER_NAMES = {
     'Onyx', 'Jet', 'Coal', 'Slate', 'Flint', 'Obsidian', 'Graphite', 'Charcoal',
     'Zenith', 'Nadir', 'Apex', 'Summit', 'Pinnacle', 'Crest', 'Peak', 'Vertex',
     'Rogue', 'Rebel', 'Maverick', 'Renegade', 'Outlaw', 'Vandal', 'Bandit', 'Ranger',
-    'Myth', 'Fable', 'Saga', 'Jesse', 'Dwight'
+    'Saga', 'Jesse', 'Dwight', 'Jin', 'Tommy', 'Ricky', 'Bobby', 'Freddy', 'Mickey',
+    'Johnny', 'Eddie', 'Tony', 'Vince', 'Frankie', 'Levy', 'Dante', 'Rico', 'Enzo',
+    'Lorenzo', 'Giovanni', 'Matteo', 'Alessandro', 'Luca', 'Marco', 'Diego', 'Santino',
+    'Rafael', 'Emilio', 'Salvatore', 'Antonio',
   ],
 
   // Male-preferring last names (stronger masculine associations)
@@ -77,15 +80,16 @@ export const CHARACTER_NAMES = {
     'Phoenix', 'Raven', 'Wren', 'Dove', 'Jules', 'Verne', 'Velma', 'Jennifer',
     'Onyx', 'Jade', 'Ruby', 'Pearl', 'Amber', 'Garnet', 'Opal', 'Topaz', 'Emerald',
     'Zion', 'Eden', 'Arcadia', 'Shangri-La', 'Utopia', 'Elysium', 'Valhalla', 'Olympus',
-    'Electra', 'Cassiopeia', 'Callisto', 'Europa', 'Io', 'Ganymede',
+    'Electra', 'Cassiopeia', 'Callisto', 'Europa', 'Io', 'Ganymede', 'Gina',
     'Xena', 'Artemis', 'Athena', 'Hera', 'Persephone', 'Demeter', 'Hestia', 'Nike',
     'Valkyrie', 'Amazon', 'Siren', 'Nymph', 'Muse', 'Fury', 'Grave', 'Destiny', 'Donna',
     'Echo', 'Nyx', 'Selene', 'Aurora', 'Eos', 'Hemera', 'Thalia', 'Idalia', 'Judy', 'Judith',
-    'Calypso', 'Circe', 'Medea', 'Hecate', 'Rhea', 'Dione', 'Solenne', 'Zora', 'Liora', 'Vesper', 'Zenith', 'Nadir', 'Summit', 'Pinnacle',
-    'Crest', 'Peak', 'Vertex', 'Rogue', 'Rebel', 'Maverick', 'Renegade', 'Outlaw', 'Vandal',
-    'Myth', 'Fable', 'Kaia', 'Nyla', 'Zara', 'Veda', 'Sia', 'Kora', 'Mila', 'Nia',
-    'Aaliyah', 'Anaya', 'Aziza', 'Bria', 'Cia', 'Dara', 'Elina', 'Fara',
-    'Zuri', 'Nia', 'Zola', 'Kendi', 'Makena', 'Nala', 'Zara', 'Yara', 'Zephyrine', 'Zinnia', 'Zelda', 'Zahara', 'Zaylee', 'Zadie', 'Zella', 'Zuri', 'Zayla', 'Zayda',
+    'Calypso', 'Circe', 'Medea', 'Hecate', 'Rhea', 'Dione', 'Solenne', 'Zora', 'Liora', 'Vesper',
+    'Zenith', 'Nadir', 'Summit', 'Pinnacle', 'Crest', 'Peak', 'Vertex', 'Rogue', 'Rebel', 'Maverick',
+    'Renegade', 'Outlaw', 'Vandal', 'Myth', 'Fable', 'Kaia', 'Nyla', 'Zara', 'Veda', 'Sia', 'Kora',
+    'Mila', 'Nia', 'Aaliyah', 'Anaya', 'Aziza', 'Bria', 'Cia', 'Dara', 'Elina', 'Fara',
+    'Zuri', 'Nia', 'Zola', 'Kendi', 'Makena', 'Nala', 'Zara', 'Yara', 'Zephyrine', 'Zinnia',
+    'Zelda', 'Zahara', 'Zaylee', 'Zadie', 'Zella', 'Zuri', 'Zayla', 'Zayda',
   ],
 
   femaleLastNames: [
