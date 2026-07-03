@@ -24,11 +24,12 @@ Book engagement statistics.
 
 ```typescript
 interface BookStats {
-  likesCount: number;         // Total likes
-  readCount: number;          // Unique users who have started reading the book (from userPageProgress)
-  completeCount: number;      // Unique users who have completed the book (reached the last page)
-  commentsCount: number;      // Total comments
-  branchesCount: number;      // Total branches in this book (denormalized column)
+  likesCount: number;          // Total likes
+  readCount: number;           // Unique users who have started reading the book (from userPageProgress)
+  completeCount: number;       // Unique users who have completed the book (reached the last page)
+  commentsCount: number;       // Total comments
+  branchesCount: number;       // Total branches in this book (denormalized column)
+  completionRate: number | null; // Completion rate (calculated, currently unused)
 }
 ```
 
@@ -38,32 +39,35 @@ Complete book data as stored in database.
 
 ```typescript
 interface Book {
-  id: string;                  // Book's unique identifier (UUID v7)
-  userId: string;              // Author's user ID
-  slug?: string;               // SEO-friendly URL identifier (auto-generated from title)
-  title: string;               // Book title
-  totalPages: number;         // Total number of pages in the book
-  language: string;           // Book language
-  hook: string;               // Hook text (1-2 sentences, intriguing)
-  summary: string;            // Summary (50-100 words, sets up psychological tension)
-  image?: string;              // Cover image ImageKit URL
-  imageId?: string;           // ImageKit file ID for deletion
-  trendingScore: number;      // Trending score for book discovery (hybrid: cron-based + incremental updates)
-  keywords: string[];         // Keywords for book discovery
+  id: string;                    // Book's unique identifier (UUID v7)
+  userId: string;                // Author's user ID
+  slug?: string;                 // SEO-friendly URL identifier (auto-generated from title)
+  title: string;                 // Book title
+  totalPages: number;           // Total number of pages in the book
+  language: string;             // Book language
+  hook: string;                 // Hook text (1-2 sentences, intriguing)
+  summary: string;              // Summary (50-100 words, sets up psychological tension)
+  imageUrl?: string;            // Cover image ImageKit URL
+  imageId?: string;             // ImageKit file ID for deletion
+  trendingScore: number;        // Trending score for book discovery (hybrid: cron-based + incremental updates)
+  keywords: string[];           // Keywords for book discovery
   status: 'active' | 'archived' | 'draft';
-  mc: StoryMC;                // Main character profile with name, age, gender
-  stats?: BookStats;           // Book statistics
-  topPick?: Date;             // When the book was marked as top pick
-  isOriginal: boolean;         // Whether this book is an auto-generated original (via cron job)
-  branchesCount: number;       // Total unique branches (maintained by database triggers)
-  createdAt: Date;             // When the book was created
-  updatedAt: Date;             // When the book was last updated
+  visibility: 'private' | 'unlisted' | 'followers' | 'public';
+  mc: StoryMC;                  // Main character profile with name, age, gender
+  creditsPrice: number;         // Credit cost to read this book
+  isOriginal: boolean;          // Whether this book is an auto-generated original (via cron job)
+  originalThemeInput?: string;  // Original theme input for the book
+  storyStartDate?: string;      // In-story start date
+  advancedOptions?: AdvancedOptionsConfig; // Advanced options for book generation
+  topPick?: Date;               // When the book was marked as top pick
+  createdAt: Date;              // When the book was created
+  updatedAt: Date;              // When the book was last updated
 }
 ```
 
 ### EnrichedBookData
 
-Enriched book data with author info and engagement metrics.
+Enriched book data with author info and engagement metrics. Returned by enriched book endpoints.
 
 ```typescript
 interface EnrichedBookData {
@@ -73,25 +77,33 @@ interface EnrichedBookData {
   title: string;
   hook: string | null;
   summary: string | null;
-  image: string | null;
+  imageUrl: string | null;
   keywords: string[] | null;
   status: string | null;
+  visibility: string | null;
   trendingScore: number | null;
   totalPages: number | null;
   language: string | null;
+  creditsPrice: number | null;
+  originalThemeInput: string | null;
   topPick: Date | null;
   isOriginal: boolean;
-  branchesCount?: number;
-  firstPageId: string;
   createdAt: Date;
   updatedAt: Date;
   mc: Record<string, unknown>;
   author: User | null;
   stats: BookStats;
+  isMine: boolean;
   isLiked: boolean;
   isRead: boolean;
-  lastReadAt?: Date | null;
-  lastPage?: string | null;
+  isSaved: boolean;
+  isCompleted: boolean;
+  isPurchased: boolean;
+  firstPage: EnrichedBookFirstPage | null;
+  session: EnrichedBookSession | null;
+  translation: BookTranslation | null;
+  generation: EnrichedBookGeneration | null;
+  collection: string | null;
 }
 ```
 
@@ -229,14 +241,16 @@ Book sorting options for explore endpoint.
 
 ```typescript
 type BookSortingOptions = 
-  | 'popular'       // Sorts by branchesCount (pre-calculated branchesCount maintained by database triggers)
+  | 'popular'        // Sorts by branchesCount (pre-calculated branchesCount maintained by database triggers)
   | 'newest'         // Sorts by createdAt timestamp (latest books)
   | 'trending'       // Sorts by pre-calculated trendingScore (hybrid: cron-based with time decay + incremental updates on likes/favorites)
   | 'top-picks'      // Sorts by latest topPick timestamp (only books marked as editor's picks)
-  | 'originals'     // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
-  | 'reads'         // Shows books the user has read, sorted by lastReadAt (requires authentication)
+  | 'originals'      // Filters by isOriginal: true (auto-generated books via cron job), sorts by createdAt (newest first)
+  | 'reads'          // Shows books the user has read, sorted by lastReadAt (requires authentication)
   | 'recommendations' // Recommends books based on user likes (requires authentication)
-  | 'creations';    // Shows user's own created books (requires authentication)
+  | 'creations'      // Shows user's own created books (requires authentication)
+  | 'favorites'      // Shows user's saved/favorited books (requires authentication)
+  | 'for-you';       // Personalized recommendations based on user preferences (requires authentication)
 ```
 
 ---
@@ -333,7 +347,7 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
     "hook": "Sarah never believed in ghosts until she found the diary",
     "summary": "A psychological thriller about a librarian who discovers dark secrets",
     "keywords": ["mystery", "thriller", "haunted"],
-    "image": "https://example.com/cover.jpg",
+    "imageUrl": "https://example.com/cover.jpg",
     "status": "active",
     "mc": {
       "name": "Sarah",
@@ -345,7 +359,7 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
       "id": "user456",
       "name": "John Doe",
       "username": "johndoe",
-      "image": "https://example.com/avatar.jpg"
+      "imageUrl": "https://example.com/avatar.jpg"
     },
     "stats": {
       "likesCount": 0,
@@ -394,14 +408,6 @@ Creates a new psychological thriller book with AI-generated content. Accepts a s
     "hiddenState": {},
     "memoryIntegrity": "stable",
     "difficulty": "medium"
-  },
-  "session": {
-    "id": "session789",
-    "userId": "user456",
-    "bookId": "book123",
-    "pageId": "page456",
-    "status": "active",
-    "createdAt": "2023-01-01T00:00:00.000Z"
   }
 }
 ```
@@ -507,7 +513,7 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
     "title": "The Whispering Halls",
     "hook": "Sarah never believed in ghosts until she found the diary",
     "summary": "A psychological thriller about a librarian who discovers dark secrets",
-    "image": "https://example.com/cover.jpg",
+    "imageUrl": "https://example.com/cover.jpg",
     "keywords": ["mystery", "thriller", "haunted"],
     "status": "active",
     "trendingScore": 0.85,
@@ -515,8 +521,6 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
     "language": "en",
     "topPick": null,
     "isOriginal": false,
-    "branchesCount": 12,
-    "firstPageId": "page456",
     "createdAt": "2023-01-01T00:00:00.000Z",
     "updatedAt": "2023-01-15T10:30:00.000Z",
     "mc": {
@@ -530,7 +534,7 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
       "email": "user@example.com",
       "username": "johndoe",
       "name": "John Doe",
-      "image": "https://example.com/avatar.jpg"
+      "imageUrl": "https://example.com/avatar.jpg"
     },
     "stats": {
       "likesCount": 42,
@@ -540,7 +544,13 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
       "branchesCount": 12
     },
     "isLiked": false,
-    "isRead": true
+    "isRead": true,
+    "isMine": false,
+    "isSaved": false,
+    "isCompleted": false,
+    "isPurchased": false,
+    "session": null,
+    "collection": null
   }
 }
 ```
@@ -595,7 +605,7 @@ Updates book information and cover image. Supports partial updates and multiple 
     "hook": "Updated hook text",
     "summary": "Updated summary",
     "keywords": ["thriller", "mystery"],
-    "image": "https://ik.imagekit.io/abc123/cover.jpg",
+    "imageUrl": "https://ik.imagekit.io/abc123/cover.jpg",
     "updatedAt": "2023-01-15T12:00:00.000Z"
   },
   "imageUploaded": true,
@@ -747,7 +757,7 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
       "title": "Another Thriller",
       "hook": "A dark secret lies beneath...",
       "summary": "A psychological thriller about...",
-      "image": "https://example.com/cover2.jpg",
+      "imageUrl": "https://example.com/cover2.jpg",
       "keywords": ["thriller", "mystery"],
       "status": "active",
       "trendingScore": 0.75,
@@ -755,7 +765,6 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
       "language": "en",
       "topPick": null,
       "isOriginal": false,
-      "branchesCount": 8,
       "createdAt": "2023-01-02T00:00:00.000Z",
       "updatedAt": "2023-01-02T00:00:00.000Z",
       "mc": {
@@ -768,7 +777,7 @@ Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's n
         "id": "user789",
         "name": "Jane Doe",
         "username": "janedoe",
-        "image": "https://example.com/avatar2.jpg"
+        "imageUrl": "https://example.com/avatar2.jpg"
       },
       "stats": {
         "likesCount": 25,
@@ -1113,8 +1122,8 @@ Retrieves all comments for a specific book. Supports pagination for large commen
     {
       "id": "comment123",
       "userId": "user456",
-      "userName": "John Doe",
-      "userImage": "https://example.com/avatar.jpg",
+      "name": "John Doe",
+      "imageUrl": "https://example.com/avatar.jpg",
       "bookId": "book123",
       "parentCommentId": null,
       "content": "This story is amazing!",
@@ -1125,7 +1134,7 @@ Retrieves all comments for a specific book. Supports pagination for large commen
   "pagination": {
     "page": 1,
     "limit": 20,
-    "total": 42,
+    "totalCount": 42,
     "totalPages": 3,
     "hasNext": true,
     "hasPrevious": false
@@ -1162,15 +1171,17 @@ Creates a new comment on a book. Supports threaded comments via parentCommentId 
 **Response (201 Created):**
 ```json
 {
-  "id": "comment123",
-  "userId": "user456",
-  "userName": "John Doe",
-  "userImage": "https://example.com/avatar.jpg",
-  "bookId": "book123",
-  "parentCommentId": null,
-  "content": "This story is amazing!",
-  "createdAt": "2023-01-01T00:00:00.000Z",
-  "updatedAt": "2023-01-01T00:00:00.000Z"
+  "comment": {
+    "id": "comment123",
+    "userId": "user456",
+    "name": "John Doe",
+    "imageUrl": "https://example.com/avatar.jpg",
+    "bookId": "book123",
+    "parentCommentId": null,
+    "content": "This story is amazing!",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-01T00:00:00.000Z"
+  }
 }
 ```
 
@@ -1235,7 +1246,7 @@ Retrieves books for exploration or user's own creations. Supports both authentic
       "title": "The Whispering Halls",
       "hook": "Sarah never believed in ghosts until she found the diary",
       "summary": "A psychological thriller about a librarian...",
-      "image": "https://example.com/cover.jpg",
+      "imageUrl": "https://example.com/cover.jpg",
       "status": "active",
       "totalPages": 120,
       "language": "en",
@@ -1248,7 +1259,7 @@ Retrieves books for exploration or user's own creations. Supports both authentic
         "id": "user456",
         "name": "John Doe",
         "username": "johndoe",
-        "image": "https://example.com/avatar.jpg"
+        "imageUrl": "https://example.com/avatar.jpg"
       },
       "stats": {
         "likesCount": 42,
@@ -1431,12 +1442,11 @@ Test route for directly inserting a book with provided data. Bypasses AI generat
 
 ## Error Handling
 
-All endpoints follow consistent error response formats:
+All endpoints follow consistent error response formats. Most errors use the `handleApiError` utility which includes `success: false`:
 
 **Standard Error Response:**
 ```json
 {
-  "success": false,
   "error": "Error message description"
 }
 ```
@@ -1444,7 +1454,6 @@ All endpoints follow consistent error response formats:
 **Validation Error Response:**
 ```json
 {
-  "success": false,
   "error": "Validation error message"
 }
 ```
@@ -1452,7 +1461,6 @@ All endpoints follow consistent error response formats:
 **Not Found Error Response:**
 ```json
 {
-  "success": false,
   "error": "Resource not found"
 }
 ```
@@ -1460,7 +1468,6 @@ All endpoints follow consistent error response formats:
 **Forbidden Error Response:**
 ```json
 {
-  "success": false,
   "error": "Forbidden: You do not have permission to access this resource"
 }
 ```

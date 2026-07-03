@@ -1,21 +1,23 @@
 /**
  * User Routes
  * 
- * Provides endpoints for managing user profile information, likes, favorites, and comments.
+ * Provides endpoints for managing user profile information, likes, favorites, and follows.
  * Implements CRUD operations for user profile storage and retrieval, plus social features.
  * 
  * Architecture Features:
  * - User profile management
- * - Full replacement and partial update operations
+ * - Partial update operations
  * - Conflict resolution with upsert patterns
  * - Consistent error handling and validation
  * - Analytics-friendly user tracking
- * - Social interactions (likes, favorites, comments, follows)
+ * - Social interactions (likes, favorites, follows)
+ * - Daily check-in and referral system
+ * - Activity logging, reading progress, and achievements
  * 
  * Endpoints:
  * - GET /user - Get authenticated user profile
  * - GET /users/:identifier - Get user profile by UUID or username (public)
- * - POST /user - Create or fully replace user profile
+ * - POST /user - Complete onboarding
  * - PUT /user - Partially update user profile
  * - DELETE /user - Delete user profile and all associated data
  * - POST /user/likes - Like a target item
@@ -24,10 +26,6 @@
  * - POST /user/favorites - Add book to favorites
  * - DELETE /user/favorites - Remove book from favorites
  * - GET /user/collections - Get user collection names
- * - POST /user/comments - Create comment
- * - PUT /user/comments/:commentId - Update comment
- * - DELETE /user/comments/:commentId - Delete comment
- * - GET /user/comments - Get user comments
  * - POST /users/:id/follow - Follow a user
  * - DELETE /users/:id/follow - Unfollow a user
  * - GET /users/:id/followers - Get user followers
@@ -36,6 +34,15 @@
  * - GET /user/following - Get authenticated user's following
  * - GET /user/checkin/status - Get daily check-in status
  * - POST /user/checkin - Perform daily check-in and claim free credits
+ * - POST /user/checkin/double - VIP double claim
+ * - POST /user/referrer - Set referrer by username
+ * - GET /user/activity-logs - Get user activity logs
+ * - GET /user/progress - Get story reading progress
+ * - GET /user/achievements - Get user achievements
+ * - GET /user/achievements/unnotified - Get newly unlocked badges
+ * - POST /user/achievements/acknowledge - Mark achievements as viewed
+ * 
+ * Note: Comment CRUD endpoints are in books.ts, not this file.
  */
 
 import type { Router as RouterType } from 'express';
@@ -65,10 +72,46 @@ const router: RouterType = Router();
  * GET /api/user
  *
  * Returns the authenticated user's full enriched profile, including engagement
- * metrics (books count, reads count, likes received, etc.).
+ * metrics (books generated, reads count, likes received, etc.) and subscription info.
  *
  * @route GET /api/user
- * @description Get user profile with engagement counts
+ * @description Get authenticated user profile with engagement counts
+ * 
+ * @returns {Object} User profile
+ * @returns {string} user.id - User's unique identifier
+ * @returns {string} user.username - User's username
+ * @returns {string|null} user.name - User's display name
+ * @returns {string|null} user.email - User's email
+ * @returns {string|null} user.bio - User's bio
+ * @returns {string|null} user.gender - User's gender
+ * @returns {string|null} user.imageUrl - User's profile image URL
+ * @returns {string|null} user.tier - User's subscription tier
+ * @returns {number} user.credits - Available credits
+ * @returns {boolean} user.isNewUser - Onboarding completed flag
+ * @returns {boolean} user.emailVerified - Whether email is verified
+ * @returns {boolean} user.havePurchased - Whether user has made purchases
+ * @returns {number} user.booksGenerated - Books generated count
+ * @returns {number} user.booksCompleted - Books completed count
+ * @returns {number} user.readsCount - Reading sessions count
+ * @returns {number} user.pagesRead - Total pages read
+ * @returns {number} user.pagesGenerated - AI-generated pages
+ * @returns {number} user.branchesOpened - Story branches explored
+ * @returns {number} user.likedBooksCount - Books user liked
+ * @returns {number} user.savedBooksCount - Books saved to favorites
+ * @returns {number} user.followersCount - Number of followers
+ * @returns {number} user.likesReceived - Total likes received on user's books
+ * @returns {number} user.accountDaysOld - Days since account creation
+ * @returns {number} user.topupCredits - Total credits topped up
+ * @returns {number} user.referredUsers - Referred users count
+ * @returns {number} user.activeCheckinStreak - Current check-in streak
+ * @returns {number} user.maxCheckinStreak - Longest check-in streak
+ * @returns {number} user.customActionsWritten - Custom actions authored
+ * @returns {Object} user.subscription - Subscription info
+ * @returns {string|null} user.subscription.tier - User's tier
+ * @returns {string|null} user.subscription.vipExpiresAt - VIP expiration
+ * @returns {Date} user.lastActive - Last activity timestamp
+ * @returns {Date} user.createdAt - Account creation timestamp
+ * @returns {Date} user.updatedAt - Last update timestamp
  * 
  * @example
  * // Request
@@ -76,29 +119,42 @@ const router: RouterType = Router();
  * 
  * // Response
  * {
- *   user: {
- *     userId: string;
- *     name: string | null;
- *     username: string;
- *     email: string;
- *     bio: string | null;
- *     gender: string | null;
- *     image: string | null;
- *     tier: string;
- *     credits: number;
- *     isNewUser: boolean;
- *     booksCount: number;
- *     readsCount: number;
- *     likedBooksCount: number;
- *     savedBooksCount: number;
- *     followersCount: number;
- *     likesReceived: number;
- *     accountDaysOld: number;
- *     emailVerified: Date | null;
- *     havePurchased: boolean;
- *     lastActive: Date;
- *     createdAt: Date;
- *     updatedAt: Date;
+ *   "user": {
+ *     "id": "user-uuid",
+ *     "name": "John Doe",
+ *     "username": "johndoe",
+ *     "email": "john@example.com",
+ *     "bio": "Thriller enthusiast",
+ *     "gender": "male",
+ *     "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+ *     "tier": null,
+ *     "credits": 500,
+ *     "isNewUser": false,
+ *     "emailVerified": "2024-01-01T00:00:00.000Z",
+ *     "havePurchased": true,
+ *     "booksGenerated": 5,
+ *     "booksCompleted": 3,
+ *     "readsCount": 150,
+ *     "pagesRead": 350,
+ *     "pagesGenerated": 80,
+ *     "branchesOpened": 15,
+ *     "likedBooksCount": 25,
+ *     "savedBooksCount": 8,
+ *     "followersCount": 42,
+ *     "likesReceived": 156,
+ *     "accountDaysOld": 380,
+ *     "topupCredits": 200,
+ *     "referredUsers": 3,
+ *     "activeCheckinStreak": 5,
+ *     "maxCheckinStreak": 12,
+ *     "customActionsWritten": 2,
+ *     "subscription": {
+ *       "tier": null,
+ *       "vipExpiresAt": null
+ *     },
+ *     "lastActive": "2024-01-15T10:30:00.000Z",
+ *     "createdAt": "2023-01-01T00:00:00.000Z",
+ *     "updatedAt": "2024-01-15T10:30:00.000Z"
  *   }
  * }
  */
@@ -126,38 +182,34 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
  * (username derived from name/email, empty bio, etc.) are kept.
  * 
  * @route POST /api/user
- * @description Create or replace user profile
+ * @description Complete onboarding for new user
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
  * 
- * @body {Object} User profile data
+ * @body {Object} Onboarding data
  * @body {string} [name] - User's display name
  * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
- * @body {string} [image] - User's profile image URL
+ * @body {string} [referrer] - Referrer username or user ID
  * 
- * @returns {Object} Creation/replacement response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Created/updated user profile
+ * @returns {Object} Onboarding completion response
+ * @returns {string} message - Confirmation message
+ * @returns {boolean} isNewUser - Always false after onboarding
+ * @returns {string} username - User's username
  * 
  * @example
  * // Request
  * POST /user
  * Body: {
  *   "name": "John Doe",
- *   "gender": "male",
+ *   "gender": "male"
  * }
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": {
- *     "userId": "user123",
- *     "name": "John Doe",
- *     "gender": "male",
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T00:00:00.000Z"
- *   }
+ *   "message": "Onboarding complete",
+ *   "isNewUser": false,
+ *   "username": "johndoe"
  * }
  */
 router.post('/', requireAuth, async (req: Request, res: Response) => {
@@ -215,56 +267,45 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
  * 
  * Partially updates the authenticated user's profile.
  * Only provided fields are updated, existing fields remain unchanged.
- * Supports multiple image upload methods: URL, base64, or multipart file.
+ * Image upload is handled via the sanitizeProfileUpdate service.
  * 
  * @route PUT /api/user
  * @description Partially update user profile
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
- * @header Content-Type - multipart/form-data for file uploads or application/json
  * 
- * @body {Object} Partial user profile data (for JSON requests)
- * @body {string} [name] - User's display name (optional)
- * @body {string} [bio] - User's bio/description (optional)
- * @body {string} [gender] - User's gender (optional)
- * @body {string} [imageUrl] - User's profile image URL to upload (optional)
- * @body {File} [imageFile] - User's profile image file (multipart) (optional)
+ * @body {Object} Partial user profile data
+ * @body {string} [name] - User's display name
+ * @body {string} [bio] - User's bio/description
+ * @body {string} [gender] - User's gender
+ * @body {string} [imageUrl] - User's profile image URL or base64 data
  * 
  * @returns {Object} Update response
  * @returns {boolean} success - Operation status
- * @returns {Object} data - Updated user profile
- * @returns {string} uploadSource - Image upload method used
- * @returns {boolean} imageUploaded - Whether image was uploaded
- * @returns {boolean} oldImageQueuedForDeletion - Whether old image was queued for deletion
+ * @returns {Object} user - Updated user profile
  * 
  * @example
- * // Request with file upload
- * PUT /user
- * Headers: Content-Type: multipart/form-data
- * Body: imageFile=<file>, name=John Doe
- * 
- * // Request with base64
+ * // Request
  * PUT /user
  * Body: {
- *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
- *   "name": "John Doe"
+ *   "name": "John Doe",
+ *   "bio": "Thriller enthusiast",
+ *   "gender": "male"
  * }
  * 
  * // Response
  * {
  *   "success": true,
  *   "user": {
- *     "userId": "user123",
+ *     "userId": "user-uuid",
  *     "name": "John Doe",
+ *     "bio": "Thriller enthusiast",
  *     "gender": "male",
- *     "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+ *     "imageUrl": null,
  *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T12:00:00.000Z"
- *   },
- *   "imageUploaded": true,
- *   "uploadSource": "file",
- *   "oldImageQueuedForDeletion": false
+ *     "updatedAt": "2023-01-15T12:00:00.000Z"
+ *   }
  * }
  */
 router.put('/', requireAuth, async (req: Request, res: Response) => {
@@ -317,17 +358,9 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
  * @param identifier - UUID or username
  * 
  * @returns {Object} User profile response
- * @returns {Object} user - User profile object
- * @returns {string} user.id - User's unique identifier
- * @returns {string} user.username - User's username
- * @returns {string} user.name - User's display name
- * @returns {string|null} user.bio - User's bio
- * @returns {string|null} user.image - User's profile image URL
- * @returns {string} user.createdAt - Account creation timestamp
- * @returns {Object} user.stats - User statistics
- * @returns {number} user.stats.booksCount - Number of books created
- * @returns {number} user.stats.likesReceived - Total likes received on user's books
- * @returns {number} user.stats.followersCount - Number of followers
+ * @returns {Object} user - User profile object (see GET /user for full field listing)
+ * @returns {Object} user.subscription - Subscription info
+ * @returns {Object} user.stats - User statistics (all UserStats fields)
  * 
  * @example
  * // Request with UUID
@@ -342,14 +375,39 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
  *     "id": "uuid",
  *     "username": "john-doe",
  *     "name": "John Doe",
+ *     "email": "john@example.com",
  *     "bio": "User bio",
- *     "image": "https://...",
- *     "createdAt": "2024-01-01T00:00:00Z",
+ *     "gender": "male",
+ *     "imageUrl": "https://...",
+ *     "credits": 500,
+ *     "isNewUser": false,
+ *     "lastActive": "2024-01-15T10:30:00.000Z",
+ *     "subscription": {
+ *       "tier": null,
+ *       "vipExpiresAt": null
+ *     },
  *     "stats": {
- *       "booksCount": 10,
+ *       "readsCount": 150,
+ *       "likedBooksCount": 25,
+ *       "savedBooksCount": 8,
  *       "likesReceived": 500,
- *       "followersCount": 100
- *     }
+ *       "accountDaysOld": 380,
+ *       "emailVerified": null,
+ *       "havePurchased": false,
+ *       "booksGenerated": 10,
+ *       "booksCompleted": 5,
+ *       "pagesRead": 350,
+ *       "pagesGenerated": 80,
+ *       "branchesOpened": 15,
+ *       "topupCredits": 200,
+ *       "referredUsers": 3,
+ *       "followersCount": 100,
+ *       "activeCheckinStreak": 3,
+ *       "maxCheckinStreak": 10,
+ *       "customActionsWritten": 1
+ *     },
+ *     "createdAt": "2024-01-01T00:00:00Z",
+ *     "updatedAt": "2024-01-15T10:30:00Z"
  *   }
  * }
  */
@@ -692,9 +750,9 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
  * - Device registrations
  * 
  * The deletion uses database cascade deletes to automatically remove all related data:
- * - userAuth, temporarySessions, sessionDataAssociations, userPageProgress
+ * - userAuth, userPageProgress
  * - userFollows, userCompletedBooks, userActivityLogs, transactions
- * - userNotifications, user_checkins, userLikes, userFavorites, userComments, userSessions
+ * - userNotifications, userCheckins, userLikes, userFavorites, userComments, userSessions
  * 
  * Books created by the user are preserved (userId set to null) to maintain content availability.
  * 
@@ -706,7 +764,6 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
  * 
  * @returns {Object} Deletion response
  * @returns {string} message - Confirmation message
- * @returns {boolean} imageQueuedForDeletion - Whether profile image was queued for deletion
  * 
  * @example
  * // Request
@@ -714,8 +771,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
  * 
  * // Response
  * {
- *   "message": "User account deleted successfully",
- *   "imageQueuedForDeletion": true
+ *   "message": "User account deleted successfully"
  * }
  */
 router.delete("/", requireAuth, async (req: Request, res: Response) => {
@@ -751,7 +807,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
  * POST /user/likes
  * 
  * Like a book, comment, or another user.
- * Uses upsert operation to handle both creation and idempotent likes.
+ * Uses upsert (onConflictDoNothing) to handle idempotent likes.
  * 
  * @route POST /user/likes
  * @description Like a target item
@@ -764,8 +820,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
  * @body {string} targetId - ID of the target to like
  * 
  * @returns {Object} Like creation response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Created like record
+ * @returns {Object} like - Created or existing like record
  * 
  * @example
  * // Request
@@ -777,8 +832,7 @@ router.delete("/", requireAuth, async (req: Request, res: Response) => {
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": {
+ *   "like": {
  *     "userId": "user123",
  *     "targetType": "book",
  *     "targetId": "book456",
@@ -964,8 +1018,7 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
  * @query {number} [offset] - Pagination offset (default: 0)
  * 
  * @returns {Object} Likes response
- * @returns {boolean} success - Operation status
- * @returns {Array} data - Array of like records
+ * @returns {Array} likes - Array of like records
  * 
  * @example
  * // Request
@@ -973,8 +1026,7 @@ router.delete("/likes", requireAuth, async (req: Request, res: Response) => {
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": [
+ *   "likes": [
  *     {
  *       "userId": "user123",
  *       "targetType": "book",
@@ -1022,7 +1074,7 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
  * POST /user/favorites
  * 
  * Add a book to user favorites (to read later).
- * Uses upsert operation to handle both creation and idempotent favorites.
+ * Uses upsert (onConflictDoNothing) to handle idempotent favorites.
  * 
  * @route POST /user/favorites
  * @description Add book to favorites
@@ -1034,8 +1086,7 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
  * @body {string} bookId - ID of the book to favorite
  * 
  * @returns {Object} Favorite creation response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Created favorite record
+ * @returns {Object} favorite - Created or existing favorite record
  * 
  * @example
  * // Request
@@ -1046,8 +1097,7 @@ router.get("/likes", requireAuth, async (req: Request, res: Response) => {
  * 
  * // Response
  * {
- *   "success": true,
- *   "data": {
+ *   "favorite": {
  *     "userId": "user123",
  *     "bookId": "book456",
  *     "createdAt": "2023-01-01T00:00:00.000Z"
@@ -1240,7 +1290,7 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
 /**
  * POST /users/:id/follow
  * 
- * Follow a user. Uses upsert operation to handle both creation and idempotent follows.
+ * Follow a user. Uses upsert (onConflictDoNothing) to handle idempotent follows.
  * 
  * @route POST /users/:id/follow
  * @description Follow a user
@@ -1251,8 +1301,7 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
  * @param {string} id - ID of the user to follow
  * 
  * @returns {Object} Follow creation response
- * @returns {boolean} success - Operation status
- * @returns {Object} data - Created follow record
+ * @returns {Object} follow - Created or existing follow record
  * 
  * @example
  * // Request
@@ -1260,9 +1309,7 @@ router.get("/collections", optionalAuth, async (req: Request, res: Response) => 
  * 
  * // Response
  * {
- *   "success": true,
- *   "message": "User followed successfully",
- *   "data": {
+ *   "follow": {
  *     "followerId": "user123",
  *     "followingId": "user456",
  *     "createdAt": "2023-01-01T00:00:00.000Z"
@@ -1423,15 +1470,17 @@ router.delete("/users/:id/follow", requireAuth, async (req: Request, res: Respon
  *       "userId": "user123",
  *       "name": "John Doe",
  *       "username": "john-doe",
- *       "image": "https://example.com/avatar.jpg",
+ *       "imageUrl": "https://example.com/avatar.jpg",
  *       "followedAt": "2023-01-01T00:00:00.000Z"
  *     }
  *   ],
  *   "pagination": {
  *     "page": 1,
  *     "limit": 10,
- *     "total": 100,
- *     "totalPages": 10
+ *     "totalCount": 100,
+ *     "totalPages": 10,
+ *     "hasNext": true,
+ *     "hasPrevious": false
  *   }
  * }
  */
@@ -1524,15 +1573,17 @@ router.get("/users/:id/followers", async (req: Request, res: Response) => {
  *       "userId": "user789",
  *       "name": "Jane Smith",
  *       "username": "jane-smith",
- *       "image": "https://example.com/avatar2.jpg",
+ *       "imageUrl": "https://example.com/avatar2.jpg",
  *       "followedAt": "2023-01-01T00:00:00.000Z"
  *     }
  *   ],
  *   "pagination": {
  *     "page": 1,
  *     "limit": 10,
- *     "total": 50,
- *     "totalPages": 5
+ *     "totalCount": 50,
+ *     "totalPages": 5,
+ *     "hasNext": true,
+ *     "hasPrevious": false
  *   }
  * }
  */
@@ -1624,15 +1675,17 @@ router.get("/users/:id/following", async (req: Request, res: Response) => {
  *       "userId": "user123",
  *       "name": "John Doe",
  *       "username": "john-doe",
- *       "image": "https://example.com/avatar.jpg",
+ *       "imageUrl": "https://example.com/avatar.jpg",
  *       "followedAt": "2023-01-01T00:00:00.000Z"
  *     }
  *   ],
  *   "pagination": {
  *     "page": 1,
  *     "limit": 10,
- *     "total": 100,
- *     "totalPages": 10
+ *     "totalCount": 100,
+ *     "totalPages": 10,
+ *     "hasNext": true,
+ *     "hasPrevious": false
  *   }
  * }
  */
@@ -1713,15 +1766,17 @@ router.get("/followers", requireAuth, async (req: Request, res: Response) => {
  *       "userId": "user789",
  *       "name": "Jane Smith",
  *       "username": "jane-smith",
- *       "image": "https://example.com/avatar2.jpg",
+ *       "imageUrl": "https://example.com/avatar2.jpg",
  *       "followedAt": "2023-01-01T00:00:00.000Z"
  *     }
  *   ],
  *   "pagination": {
  *     "page": 1,
  *     "limit": 10,
- *     "total": 50,
- *     "totalPages": 5
+ *     "totalCount": 50,
+ *     "totalPages": 5,
+ *     "hasNext": true,
+ *     "hasPrevious": false
  *   }
  * }
  */
@@ -1779,10 +1834,10 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
  * GET /user/checkin/status
  * 
  * Checks if the authenticated user can perform daily check-in today.
- * Returns check-in status, last check-in date, and total check-in history.
+ * Returns check-in status, current streak, totals, and recent history.
  * 
  * @route GET /user/checkin/status
- * @description Get daily check-in status
+ * @description Get daily check-in status with streak info
  * 
  * @header X-App-Version - Application version (for analytics)
  * @header X-Platform - Client platform (android/ios)
@@ -1792,40 +1847,47 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
  * @returns {string|null} lastCheckInDate - Last check-in date (YYYY-MM-DD) or null
  * @returns {number} totalCheckIns - Total number of check-ins
  * @returns {number} totalCreditsClaimed - Total credits claimed from check-ins
+ * @returns {number} currentStreak - Current consecutive check-in streak
+ * @returns {number} longestStreak - Longest check-in streak
  * @returns {Array} recentCheckIns - Recent check-in history (last 30 days)
+ * @returns {boolean} isVip - Whether user has VIP tier
+ * @returns {number} regularClaimAmount - Regular daily claim amount
+ * @returns {number} vipClaimAmount - VIP daily claim amount
+ * @returns {string[]} claimedRewards - Array of claimed reward types today
  * 
  * @example
  * // Request
  * GET /user/checkin/status
  * 
- * // Response (can check-in)
+ * // Response (authenticated — can check-in)
  * {
  *   "canCheckIn": true,
  *   "lastCheckInDate": "2026-05-03",
- *   "totalCheckIns": 5,
- *   "totalCreditsClaimed": 150,
+ *   "totalCheckIns": 12,
+ *   "totalCreditsClaimed": 360,
+ *   "currentStreak": 5,
+ *   "longestStreak": 12,
  *   "recentCheckIns": [
  *     {
  *       "checkInDate": "2026-05-03",
  *       "creditsClaimed": 30,
  *       "createdAt": "2026-05-03T00:00:00.000Z"
  *     }
- *   ]
+ *   ],
+ *   "isVip": false,
+ *   "regularClaimAmount": 30,
+ *   "vipClaimAmount": 60,
+ *   "claimedRewards": []
  * }
  * 
- * // Response (already checked in)
+ * // Response (unauthenticated)
  * {
- *   "canCheckIn": false,
- *   "lastCheckInDate": "2026-05-04",
- *   "totalCheckIns": 6,
- *   "totalCreditsClaimed": 180,
- *   "recentCheckIns": [
- *     {
- *       "checkInDate": "2026-05-04",
- *       "creditsClaimed": 30,
- *       "createdAt": "2026-05-04T00:00:00.000Z"
- *     }
- *   ]
+ *   "eligible": false,
+ *   "lastCheckIn": null,
+ *   "streak": 0,
+ *   "totalCheckIns": 0,
+ *   "creditsClaimed": 0,
+ *   "recentCheckIns": []
  * }
  */
 router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) => {
@@ -1859,7 +1921,7 @@ router.get("/checkin/status", optionalAuth, async (req: Request, res: Response) 
  * POST /user/checkin
  * 
  * Performs daily check-in and awards free credits to the authenticated user.
- * Each check-in awards 5 free credits (configurable via DAILY_CHECKIN_BONUS).
+ * Each check-in awards free credits (configurable via DAILY_CHECKIN_CREDITS, default 30).
  * Users can only check-in once per UTC day.
  * 
  * @route POST /user/checkin
@@ -2074,7 +2136,10 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
     const offset = (page - 1) * limit;
 
     // Build base query conditions
-    const baseConditions = [eq(userActivityLogs.userId, userId)];
+    const baseConditions = [
+      eq(userActivityLogs.userId, userId),
+      sql`${userActivityLogs.activityType} NOT IN ('credits_consumed', 'credits_added')`,
+    ];
     
     // Add activity type filter if provided
     if (activityType) {
@@ -2136,7 +2201,7 @@ router.get("/activity-logs", optionalAuth, async (req: Request, res: Response) =
  * context. All top-level fields are nullable — a user with no active session
  * receives the "empty" shape shown below rather than an error.
  *
- * @authentication Required (401 when unauthenticated)
+ * @authentication Optional — returns all-null shape for unauthenticated users
  *
  * ---
  * **Response shape** (`StoryProgressWithBranch`):

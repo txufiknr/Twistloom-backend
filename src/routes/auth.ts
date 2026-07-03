@@ -1,14 +1,25 @@
 /**
  * Authentication Routes
  *
- * Provides credential verification and Google token endpoints for the NextAuth
- * providers. The backend verifies credentials / tokens and returns user data;
- * NextAuth creates and manages the session cookie.
+ * Provides credential verification, user registration, Google OAuth, password
+ * management, email verification, and session management endpoints for the
+ * NextAuth providers. The backend verifies credentials / tokens and returns
+ * user data; NextAuth creates and manages the session cookie.
  *
  * Flow overview:
- *   Email login  → POST /verify-credentials → returns user + isNewUser
- *   Google OAuth → POST /google-oauth       → verifies id_token, upserts user, returns user + isNewUser
- *   One Tap      → POST /google-one-tap     → same as /google-oauth (different entry point)
+ *   Email login     → POST /verify-credentials  → returns user + isNewUser
+ *   Google OAuth    → POST /google-oauth        → verifies id_token, upserts user, returns user + isNewUser
+ *   One Tap         → POST /google-one-tap      → same as /google-oauth (different entry point)
+ *   Signup          → POST /signup              → creates account, sends verification email
+ *   Forgot password → POST /forgot-password     → sends password reset email
+ *   Reset password  → POST /reset-password      → resets password with token
+ *   Verify email    → POST /verify-email        → verifies email with token
+ *   Resend verify   → POST /resend-verification → resends verification email
+ *   Sessions        → GET /sessions             → list active sessions
+ *   Logout (device) → POST /logout-session      → logout specific session
+ *   Logout (other)  → POST /logout-all          → logout all other sessions
+ *   Logout (all)    → POST /logout-all-devices  → logout from every device
+ *   Logout (simple) → POST /logout              → placeholder cleanup
  *
  * isNewUser is included in every sign-in response so the frontend can embed it
  * in the JWT token at sign-in time, making the session() callback a pure
@@ -97,31 +108,26 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
  * POST /api/auth/verify-credentials
  *
  * Verifies email/username and password for the NextAuth Credentials provider.
+ * Checks account lockout status, verifies bcrypt password hash, and returns
+ * user data for JWT token embedding.
  *
- * Request Body:
- * {
- *   emailOrUsername: string;
- *   password: string;
- * }
+ * @route POST /api/auth/verify-credentials
+ * @description Verify email/username and password credentials
  *
- * Response (200):
- * {
- *   userId: string;
- *   email: string;
- *   name: string;
- *   username: string;
- *   image?: string;
- *   isNewUser: boolean;  // Embedded in JWT token by NextAuth jwt() callback
- * }
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
  *
- * Response (401): Invalid credentials
- * Response (429): Rate limited or account locked
+ * @body {Object} Credentials
+ * @body {string} emailOrUsername - User email or username
+ * @body {string} password - Plaintext password
  *
- * Security:
- * - Rate limited to prevent brute force
- * - bcrypt password verification
- * - Account lockout after repeated failures
- * - Returns minimal user data (no passwordHash)
+ * @returns {Object} User data for JWT
+ * @returns {string} userId - User's unique identifier
+ * @returns {string} email - User email
+ * @returns {string|null} name - User display name
+ * @returns {string} username - User username
+ * @returns {string|null} imageUrl - User profile image URL
+ * @returns {boolean} isNewUser - Whether onboarding is pending
  *
  * @example
  * // NextAuth Credentials provider usage
@@ -137,6 +143,16 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
  *   if (!res.ok) return null;
  *   const user = await res.json();
  *   return { id: user.userId, ...user };
+ * }
+ *
+ * // Response
+ * {
+ *   "userId": "user-uuid",
+ *   "email": "user@example.com",
+ *   "name": "John Doe",
+ *   "username": "johndoe",
+ *   "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+ *   "isNewUser": false
  * }
  */
 router.post('/verify-credentials', async (req, res) => {
@@ -203,38 +219,49 @@ router.post('/verify-credentials', async (req, res) => {
  * POST /api/auth/signup
  *
  * Registers a new user account with email/password authentication.
+ * Validates input (password strength, email format, username rules),
+ * checks for disposable emails, creates user + auth records in a
+ * transaction, sends verification email, and applies referral if provided.
  *
- * Request Body:
+ * @route POST /api/auth/signup
+ * @description Register a new email/password account
+ *
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ *
+ * @body {Object} Signup data
+ * @body {string} email - User email
+ * @body {string} username - Desired username
+ * @body {string} password - Plaintext password (8+ chars, mixed case, number, special)
+ * @body {boolean} agreedToTerms - Must be true
+ * @body {boolean} [receiveEmails] - Email subscription preference
+ * @body {string} [gender] - User gender
+ * @body {string} [referrer] - Referrer username or user ID
+ *
+ * @returns {Object} Account creation response
+ * @returns {string} userId - New user's unique identifier
+ * @returns {string} message - Status message (success or email failure)
+ * @returns {boolean} verificationEmailSent - Whether verification email was sent
+ * @returns {string|undefined} referrer - Referrer identifier if provided
+ * @returns {boolean} referralApplied - Whether referral was successfully applied
+ *
+ * @example
+ * // Request
  * {
- *   email: string;
- *   username: string;
- *   gender: string;
- *   password: string;
- *   receiveEmails: boolean;
- *   agreedToTerms: boolean;
- *   referrer?: string;
+ *   "email": "user@example.com",
+ *   "username": "johndoe",
+ *   "gender": "male",
+ *   "password": "SecurePass123!",
+ *   "agreedToTerms": true
  * }
  *
- * Response (201):
+ * // Response (201)
  * {
- *   userId: string;
- *   message: string;
- *   verificationEmailSent: boolean;
- *   referrer?: string;
- *   referralApplied: boolean;
+ *   "userId": "user-uuid",
+ *   "message": "Account created. Please check your email to verify your account.",
+ *   "verificationEmailSent": true,
+ *   "referralApplied": false
  * }
- *
- * Response (400): Invalid input
- * Response (409): Email or username already exists
- * Response (422): Weak password or invalid username
- * Response (429): Rate limited
- * Response (500): Server error
- *
- * Security:
- * - Rate limited to prevent abuse
- * - bcrypt password hashing
- * - Username and email uniqueness enforced
- * - Temporary/disposable emails blocked
  */
 router.post('/signup', async (req, res) => {
   try {
@@ -305,11 +332,28 @@ router.post('/signup', async (req, res) => {
 /**
  * POST /api/auth/forgot-password
  *
- * Sends a password reset email. Always returns 200 to prevent email enumeration.
+ * Sends a password reset email to the user's registered email address.
+ * Always returns success to prevent email enumeration attacks.
  *
- * Request Body: { email: string }
- * Response (200): { message: string }
- * Response (429): Rate limited
+ * @route POST /api/auth/forgot-password
+ * @description Request password reset email
+ *
+ * @body {Object} Forgot password data
+ * @body {string} email - User's registered email
+ *
+ * @returns {Object} Response
+ * @returns {string} message - Always returns success regardless of email existence
+ * @returns {boolean} emailSent - Whether email was actually sent
+ *
+ * @example
+ * // Request
+ * { "email": "user@example.com" }
+ *
+ * // Response (200)
+ * {
+ *   "message": "If an account exists, you will receive a password reset email.",
+ *   "emailSent": true
+ * }
  */
 router.post('/forgot-password', async (req, res) => {
   try {
@@ -346,14 +390,24 @@ router.post('/forgot-password', async (req, res) => {
 /**
  * POST /api/auth/reset-password
  *
- * Resets user password using a valid reset token.
+ * Resets user password using a valid reset token. Validates password strength
+ * and invalidates the token after single use.
  *
- * Request Body: { token: string; password: string }
- * Response (200): { message: string }
- * Response (400): Invalid token or weak password
- * Response (429): Rate limited
+ * @route POST /api/auth/reset-password
+ * @description Reset password with recovery token
  *
- * Security: token expires after 1 hour, single-use.
+ * @body {string} token - Password reset verification token (expires after 1 hour)
+ * @body {string} password - New password (8+ chars, mixed case, number, special)
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Status of the password reset operation
+ *
+ * @example
+ * // Request
+ * { "token": "reset-token-uuid", "password": "NewSecurePass456!" }
+ *
+ * // Response (200)
+ * { "message": "Password has been reset successfully." }
  */
 router.post('/reset-password', async (req, res) => {
   try {
@@ -400,13 +454,23 @@ router.post('/reset-password', async (req, res) => {
 /**
  * POST /api/auth/verify-email
  *
- * Verifies user email using a verification token.
+ * Verifies user email using a verification token. Token expires after
+ * 24 hours and is invalidated after single use.
  *
- * Request Body: { token: string }
- * Response (200): { message: string }
- * Response (400): Invalid or expired token
+ * @route POST /api/auth/verify-email
+ * @description Verify email address with token
  *
- * Security: token expires after 24 hours, single-use.
+ * @body {string} token - Email verification token
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Status of the verification
+ *
+ * @example
+ * // Request
+ * { "token": "verification-token-uuid" }
+ *
+ * // Response (200)
+ * { "message": "Email verified successfully" }
  */
 router.post('/verify-email', async (req, res) => {
   try {
@@ -441,11 +505,23 @@ router.post('/verify-email', async (req, res) => {
 /**
  * POST /api/auth/resend-verification
  *
- * Resends email verification. Always returns 200 to prevent email enumeration.
+ * Resends email verification. Always returns success to prevent email enumeration.
+ * Rate-limited per IP to prevent abuse.
  *
- * Request Body: { email: string }
- * Response (200): { message: string }
- * Response (429): Rate limited
+ * @route POST /api/auth/resend-verification
+ * @description Resend email verification link
+ *
+ * @body {string} email - User's registered email
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Always returns success
+ *
+ * @example
+ * // Request
+ * { "email": "user@example.com" }
+ *
+ * // Response (200)
+ * { "message": "If an account exists, a verification email has been sent." }
  */
 router.post('/resend-verification', async (req, res) => {
   try {
@@ -491,8 +567,18 @@ router.post('/resend-verification', async (req, res) => {
 /**
  * POST /api/auth/logout
  *
- * Placeholder for any backend cleanup on logout.
- * Session clearing is handled entirely by NextAuth on the frontend via signOut().
+ * Placeholder for any backend cleanup on logout. Session clearing is handled
+ * entirely by NextAuth on the frontend via signOut().
+ *
+ * @route POST /api/auth/logout
+ * @description Backend logout placeholder (cleanup handled by NextAuth)
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Success message
+ *
+ * @example
+ * // Response (200)
+ * { "message": "Logged out successfully" }
  */
 router.post('/logout', async (req, res) => {
   try {
@@ -513,40 +599,32 @@ router.post('/logout', async (req, res) => {
  * Verifies a Google ID token from the GIS One Tap popup and upserts the user.
  * Used by the NextAuth 'googleonetap' Credentials provider in authorize().
  *
- * Request Body:
- * {
- *   idToken: string;  // Google ID token from the GIS One Tap callback
- * }
+ * @route POST /api/auth/google-one-tap
+ * @description Authenticate with Google One Tap (GIS popup)
  *
- * Response (200):
- * {
- *   userId: string;
- *   email: string;
- *   name: string | null;
- *   username: string;
- *   image: string | null;
- *   isNewUser: boolean;  // Embedded in JWT token by jwt() callback
- * }
+ * @body {string} idToken - Google ID token from the GIS One Tap callback
  *
- * Response (400): Missing idToken
- * Response (401): Token verification failed
- * Response (429): Rate limited
+ * @returns {Object} User data for JWT
+ * @returns {string} userId - User's unique identifier
+ * @returns {string} email - User email
+ * @returns {string|null} name - User display name
+ * @returns {string} username - User username
+ * @returns {string|null} imageUrl - User profile image URL
+ * @returns {boolean} isNewUser - Whether onboarding is pending
  *
  * @example
- * // NextAuth Credentials provider usage
- * Credentials({
- *   id: 'googleonetap',
- *   async authorize(credentials) {
- *     const res = await fetch(`${API_BASE_URL}/auth/google-one-tap`, {
- *       method: 'POST',
- *       headers: { 'Content-Type': 'application/json' },
- *       body: JSON.stringify({ idToken: credentials.credential }),
- *     });
- *     if (!res.ok) return null;
- *     const user = await res.json();
- *     return { id: user.userId, ...user };
- *   }
- * })
+ * // Request
+ * { "idToken": "google-id-token" }
+ *
+ * // Response (200)
+ * {
+ *   "userId": "user-uuid",
+ *   "email": "user@example.com",
+ *   "name": "John Doe",
+ *   "username": "johndoe",
+ *   "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+ *   "isNewUser": false
+ * }
  */
 router.post('/google-one-tap', async (req: Request, res: Response) => {
   try {
@@ -576,22 +654,42 @@ router.post('/google-one-tap', async (req: Request, res: Response) => {
  * database at sign-in time (not lazily). It is functionally identical to
  * /google-one-tap but kept separate for logging and analytics clarity.
  *
- * Request Body:
+ * @route POST /api/auth/google-oauth
+ * @description Authenticate with Google OAuth (standard flow)
+ *
+ * @body {string} idToken - account.id_token from Auth.js Google OAuth response
+ *
+ * @returns {Object} User data for JWT
+ * @returns {string} userId - User's unique identifier
+ * @returns {string} email - User email
+ * @returns {string|null} name - User display name
+ * @returns {string} username - User username
+ * @returns {string|null} imageUrl - User profile image URL
+ * @returns {boolean} isNewUser - Whether onboarding is pending
+ *
+ * @example
+ * // Request
+ * { "idToken": "google-id-token" }
+ *
+ * // Response (200)
  * {
- *   idToken: string;  // account.id_token from Auth.js Google OAuth response
+ *   "userId": "user-uuid",
+ *   "email": "user@example.com",
+ *   "name": "John Doe",
+ *   "username": "johndoe",
+ *   "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
+ *   "isNewUser": false
  * }
  *
- * Response (200):
- * {
- *   userId: string;
- *   email: string;
- *   name: string | null;
- *   username: string;
- *   image: string | null;
- *   isNewUser: boolean;  // Embedded in JWT token by jwt() callback
+ * // NextAuth jwt() callback usage
+ * async jwt({ token, account }) {
+ *   if (account?.id_token) {
+ *     const res = await fetch(...);
+ *     const user = await res.json();
+ *     token.isNewUser = user.isNewUser;
+ *   }
+ *   return token;
  * }
- *
- * Response (400): Missing idToken
  * Response (401): Token verification failed
  * Response (429): Rate limited
  *
@@ -775,13 +873,24 @@ router.post('/logout-all-devices', requireAuth, async (req: Request, res: Respon
 /**
  * POST /api/auth/logout-session
  *
- * Logs out from a specific session by ID.
+ * Logs out from a specific session by ID. Requires authentication.
  *
- * Request Body: { sessionId: string }
- * Response (200): { message: string; deletedCount: number }
- * Response (400): sessionId is required
- * Response (401): Unauthorized
- * Response (404): Session not found
+ * @route POST /api/auth/logout-session
+ * @description Logout from a specific device/session
+ *
+ * @body {string} sessionId - ID of the session to revoke
+ *
+ * @returns {Object} Logout response
+ * @returns {string} message - Confirmation message
+ * @returns {number} deletedCount - Number of sessions deleted (0 or 1)
+ *
+ * @example
+ * // Request
+ * POST /api/auth/logout-session
+ * { "sessionId": "session-uuid" }
+ *
+ * // Response (200)
+ * { "message": "Logged out from device", "deletedCount": 1 }
  */
 router.post('/logout-session', requireAuth, async (req: Request, res: Response) => {
   try {

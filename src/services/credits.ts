@@ -520,6 +520,10 @@ interface AwardCreditsOptions {
   notificationData?: Record<string, unknown>;
   /** Metadata for the transaction record */
   metadata?: Record<string, unknown>;
+  /** USD amount for purchase transactions (null for usage/reward) */
+  amountUsd?: number | null;
+  /** Human-readable context label for the transaction */
+  context?: string;
   /** Existing DB transaction to join */
   tx?: DBTransaction;
 }
@@ -547,6 +551,8 @@ export async function awardCredits(
     notificationMessage,
     notificationData = {},
     metadata = {},
+    amountUsd = null,
+    context,
     tx: trx
   } = options;
 
@@ -568,8 +574,8 @@ export async function awardCredits(
       userId,
       type,
       credits: creditsAmount,
-      amountUsd: null,
-      context: notificationType,
+      amountUsd,
+      context: context ?? notificationType,
       metadata: Object.keys(metadata).length > 0 ? metadata : null,
       createdAt: new Date()
     });

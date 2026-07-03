@@ -15,9 +15,14 @@
  * Endpoints:
  * - GET /payments/credit-packs - Get available credit packs
  * - POST /payments/create-checkout-session - Create Stripe checkout session
+ * - POST /payments/create-subscription-checkout - Create Stripe subscription checkout
+ * - GET /payments/subscription - Get current subscription status
  * - POST /payments/stripe/webhook - Handle Stripe webhook events
  * - POST /payments/consume-credits - Consume credits for usage
  * - GET /payments/transactions - Get user transaction history
+ * - GET /payments/subscription-plans - Get available subscription plans
+ * - POST /payments/subscription/cancel - Cancel subscription at period end
+ * - GET /payments/subscription/portal - Get Stripe Customer Portal URL
  */
 
 import type { Request, Response, Router as RouterType } from "express";
@@ -214,10 +219,8 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
  *     priceUSD: number;
  *     priceId: string;
  *     productId: string;
- *     highlight: boolean;
  *     badge: string | null;
- *     valueTag: string;
- *     color: "gray" | "blue" | "purple" | "green" | "yellow" | "red";
+ *     color: string;
  *   }
  * ]
  * 
@@ -272,7 +275,7 @@ router.get("/credit-packs", async (req: Request, res: Response) => {
  *   cancelPath?: string; // Optional custom cancel path (fallback if returnUrl not provided, default: "/pricing")
  * }
  * 
- * Response (201 Created):
+ * Response (200 OK):
  * {
  *   url: string;       // Stripe checkout URL to redirect user to
  *   sessionId: string; // Stripe session ID (store for reconciliation/analytics)
@@ -441,7 +444,7 @@ router.post("/create-checkout-session", requireAuth, async (req: Request, res: R
  *   cancelPath?: string; // Optional custom cancel path (default: "/pricing")
  * }
  * 
- * Response (201 Created):
+ * Response (200 OK):
  * {
  *   url: string;       // Stripe checkout URL to redirect user to
  *   sessionId: string; // Stripe session ID (store for reconciliation/analytics)
@@ -593,37 +596,45 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
  * 
  * Returns the user's VIP subscription status and details.
  * 
- * Response (Success - 200):
- * {
- *   hasActiveSubscription: boolean;
- *   subscription?: {
- *     id: string;
- *     stripeSubscriptionId: string;
- *     status: string;
- *     currentPeriodStart: string;
- *     currentPeriodEnd: string;
- *     cancelAtPeriodEnd: boolean;
- *     monthlyCredits: number;
- *   };
- *   vipExpiresAt?: string;
- * }
+ * @route GET /payments/subscription
+ * @description Get current subscription status
  * 
- * Security:
- * - Requires authentication
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @returns {Object} Subscription status response
+ * @returns {boolean} hasActiveSubscription - Whether user has active VIP subscription
+ * @returns {Object|null} subscription - Subscription details or null when not active
+ * @returns {string} subscription.id - Subscription record ID
+ * @returns {string} subscription.stripeSubscriptionId - Stripe subscription ID
+ * @returns {string} subscription.status - Subscription status
+ * @returns {string} subscription.currentPeriodStart - Period start (ISO 8601)
+ * @returns {string} subscription.currentPeriodEnd - Period end (ISO 8601)
+ * @returns {boolean} subscription.cancelAtPeriodEnd - Whether subscription cancels at period end
+ * @returns {number} subscription.monthlyCredits - Monthly credit allowance
+ * @returns {string|null} vipExpiresAt - VIP expiration timestamp (ISO 8601) or null
  * 
  * @example
- * ```typescript
- * const res = await fetch('/api/payments/subscription');
- * const data = await res.json();
- * if (data.hasActiveSubscription) {
- *   console.log('VIP expires:', data.vipExpiresAt);
+ * // Response (active)
+ * {
+ *   "hasActiveSubscription": true,
+ *   "subscription": {
+ *     "id": "sub-uuid",
+ *     "stripeSubscriptionId": "sub_xxx",
+ *     "status": "active",
+ *     "currentPeriodStart": "2026-01-01T00:00:00.000Z",
+ *     "currentPeriodEnd": "2026-02-01T00:00:00.000Z",
+ *     "cancelAtPeriodEnd": false,
+ *     "monthlyCredits": 50
+ *   },
+ *   "vipExpiresAt": "2026-02-01T00:00:00.000Z"
  * }
- * ```
  * 
- * @future-enhancements
- * - Add subscription history endpoint to show past subscriptions
- * - Add proration preview for plan changes
- * - Add usage analytics for subscription benefits
+ * // Response (inactive/guest)
+ * {
+ *   "hasActiveSubscription": false,
+ *   "subscription": null
+ * }
  */
 router.get("/subscription", optionalAuth, async (req: Request, res: Response) => {
   try {
@@ -810,6 +821,8 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
           notificationData: { amount: amountUsd, paymentIntentId, packId },
           metadata: { paymentIntentId, stripeEventId, amountUsd, packId },
+          amountUsd: amountUsd ?? null,
+          context: 'credit_pack_purchase',
           tx
         });
 
@@ -959,9 +972,8 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
  * 
  * Response (Error - 402):
  * {
- *   error: "Not enough credits";
+ *   error: string; // Error message with required credit count
  *   required: number; // Credits needed
- *   available: number; // Credits available
  * }
  * 
  * Response (Error - 409):
@@ -1128,7 +1140,7 @@ router.post("/consume-credits", requireAuth, async (req: Request, res: Response)
  *   "pagination": {
  *     "page": 1,
  *     "limit": 20,
- *     "total": 45,
+ *     "totalCount": 45,
  *     "totalPages": 3,
  *     "hasNext": true,
  *     "hasPrevious": false
@@ -1238,6 +1250,39 @@ router.get("/subscription-plans", async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /payments/subscription/cancel
+ * 
+ * Cancels the authenticated user's active VIP subscription at the end of the current billing period.
+ * Calls Stripe API to set cancel_at_period_end = true and updates the local database record.
+ * The subscription remains active until the period end date.
+ * 
+ * @route POST /payments/subscription/cancel
+ * @description Cancel subscription at period end
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @returns {Object} Cancellation response
+ * @returns {boolean} success - Operation status
+ * @returns {string} message - Confirmation message
+ * 
+ * @example
+ * // Request
+ * POST /payments/subscription/cancel
+ * 
+ * // Response
+ * {
+ *   "success": true,
+ *   "message": "Subscription will be canceled at period end"
+ * }
+ * 
+ * // Error response (no active subscription)
+ * {
+ *   "success": false,
+ *   "error": "No active subscription found"
+ * }
+ */
 router.post("/subscription/cancel", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -1271,22 +1316,36 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
  * GET /payments/subscription/portal
  * 
  * Creates a Stripe Customer Portal session for subscription management.
+ * Users can manage payment methods, view invoices, and update billing info.
+ * Requires an existing Stripe customer ID (created on first subscription purchase).
  * 
- * Response (200 OK):
+ * @route GET /payments/subscription/portal
+ * @description Get Stripe Customer Portal URL
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @query {string} [returnUrl] - URL to redirect after portal session ends (default: /dashboard)
+ * 
+ * @returns {Object} Portal session response
+ * @returns {string} url - Stripe Customer Portal URL
+ * 
+ * @example
+ * // Request
+ * GET /payments/subscription/portal?returnUrl=https://app.com/settings
+ * 
+ * // Response
  * {
- *   url: string; // Stripe Customer Portal URL
+ *   "url": "https://billing.stripe.com/session/..."
  * }
- * 
- * @future-enhancements
- * - Configure portal features to limit user actions
- * - Add subscription update endpoint for programmatic changes
- * - Add webhook retry logic for failed deliveries
- * - Use Stripe's expand parameter to reduce API calls
  */
 router.get("/subscription/portal", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const returnUrl = req.query.returnUrl as string || `${process.env.FRONTEND_URL}/dashboard`;
+
+    // Try to get customer ID from subscription first, then fall back to user record
+    let customerId: string | null = null;
 
     const subscription = await dbRead
       .select({ stripeCustomerId: subscriptions.stripeCustomerId })
@@ -1294,12 +1353,24 @@ router.get("/subscription/portal", requireAuth, async (req: Request, res: Respon
       .where(eq(subscriptions.userId, userId))
       .limit(1);
 
-    if (subscription.length === 0 || !subscription[0].stripeCustomerId) {
+    if (subscription.length > 0 && subscription[0].stripeCustomerId) {
+      customerId = subscription[0].stripeCustomerId;
+    } else {
+      // Fallback to users.stripeCustomerId for users with customer ID but no subscription yet
+      const [user] = await dbRead
+        .select({ stripeCustomerId: users.stripeCustomerId })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+      customerId = user?.stripeCustomerId ?? null;
+    }
+
+    if (!customerId) {
       return handleNotFoundError(res, "No subscription found");
     }
 
     const session = await getStripe().billingPortal.sessions.create({
-      customer: subscription[0].stripeCustomerId,
+      customer: customerId,
       return_url: returnUrl,
     });
 

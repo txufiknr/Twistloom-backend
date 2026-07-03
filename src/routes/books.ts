@@ -109,113 +109,36 @@ const router: RouterType = Router();
  * Accepts theme and main character candidate, initializes story with AI.
  * Returns complete book information with first page and initial state.
  *
- * **Authentication:** Required (via `requireAuth`)
+ * @route POST /api/books
+ * @description Create a new book with AI-generated content
+ * @auth Required (requireAuth)
  *
- * @param theme - Story theme (e.g., "abandoned asylum", "haunted mansion") - Required
- * @param mcCandidate.name - Character's display name - Optional
- * @param mcCandidate.age - Character's age in years - Optional
- * @param mcCandidate.gender - Character's gender (male/female/other) - Optional
- * @param mcCandidate.bio - Character's bio - Optional
- * 
+ * @body {Object} Book creation payload
+ * @body {string} theme - Story theme (max 1000 chars)
+ * @body {Object} [mcCandidate] - Main character candidate
+ * @body {string} [mcCandidate.name] - Character's display name
+ * @body {number} [mcCandidate.age] - Character's age in years (13-25)
+ * @body {string} [mcCandidate.gender] - Character's gender (male/female)
+ * @body {string} [mcCandidate.bio] - Character's bio
+ * @body {boolean} [generateCoverImage] - Whether to generate AI cover image
+ *
+ * @returns {Object} Book creation response
+ * @returns {Object} book - Created book metadata
+ * @returns {Object} firstPage - First story page with actions
+ * @returns {Object} initialState - Initial story state including flags, threads, profile
+ * @returns {string} [aiComment] - AI evaluation comment on the book
+ * @returns {string} [aiFinalComment] - AI final evaluation comment
+ *
  * @example
  * // Request (valid theme)
  * POST /api/books
- * Body: {
- *   "theme": "haunted mansion mystery",
- *   "mcCandidate": {
- *     "name": "Sarah",
- *     "age": 28,
- *     "gender": "female",
- *     "bio": "Shy librarian with hidden past"
- *   }
- * }
- * 
- * // Response (success)
+ * Body: { "theme": "haunted mansion mystery", "mcCandidate": { "name": "Sarah", "age": 28, "gender": "female", "bio": "Shy librarian with hidden past" } }
+ *
+ * // Response (201)
  * {
- *   "book": {
- *     "id": "book123",
- *     "title": "The Whispering Halls",
- *     "hook": "Sarah never believed in ghosts until she found the diary",
- *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
- *     "keywords": ["mystery", "thriller", "haunted"],
- *     "image": "https://example.com/cover.jpg",
- *     "status": "active",
- *     "totalPages": 50,
- *     "language": "en",
- *     "mc": {
- *       "name": "Sarah",
- *       "age": 28,
- *       "gender": "female",
- *       "bio": "Shy librarian with hidden past"
- *     },
- *     "createdAt": "2023-01-01T00:00:00.000Z",
- *     "updatedAt": "2023-01-01T00:00:00.000Z"
- *   },
- *   "firstPage": {
- *     "id": "page456",
- *     "page": 1,
- *     "text": "The library was silent except for the rain...",
- *     "actions": [...]
- *   },
- *   "initialState": {
- *     "page": 1,
- *     "maxPage": 50,
- *     "flags": {...},
- *     "threads": [],
- *     "traumaTags": [],
- *     "psychologicalProfile": {...}
- *   },
- *   "session": {
- *     "userId": "user123",
- *     "bookId": "book123",
- *     "pageId": "page456"
- *   }
- * }
- * 
- * @example
- * // Request (invalid theme - contains inappropriate content)
- * POST /api/books
- * Body: {
- *   "theme": "A story about prophet muhammad"
- * }
- * 
- * // Response (validation error - 400)
- * {
- *   "error": {
- *     "type": "VALIDATION_ERROR",
- *     "code": "THEME_INVALID",
- *     "message": "Your story theme contains inappropriate content.",
- *     "details": {
- *       "category": "INAPPROPRIATE_CONTENT",
- *       "detectedWords": ["prophet muhammad"],
- *       "detectedPatterns": [],
- *       "aiExplanation": "depicting religious figures in fictional stories",
- *       "suggestion": "Please avoid using real religious figures in your story theme."
- *     }
- *   }
- * }
- * 
- * @example
- * // Request (invalid theme - POV instruction)
- * POST /api/books
- * Body: {
- *   "theme": "Tell a story in third person perspective"
- * }
- * 
- * // Response (validation error - 400)
- * {
- *   "error": {
- *     "type": "VALIDATION_ERROR",
- *     "code": "THEME_INVALID",
- *     "message": "Your story theme contains invalid POV instructions.",
- *     "details": {
- *       "category": "INVALID_THEME",
- *       "detectedWords": [],
- *       "detectedPatterns": ["Invalid POV instruction: third\\sperson"],
- *       "aiExplanation": "explicit non-1st person POV instruction",
- *       "suggestion": "Twistloom generates 1st person POV stories only. Remove POV instructions from your theme."
- *     }
- *   }
+ *   "book": { "id": "book123", "title": "The Whispering Halls", "slug": "whispering-halls", "hook": "Sarah never believed in ghosts until she found the diary", "summary": "A psychological thriller...", "keywords": ["mystery", "thriller", "haunted"], "imageUrl": "https://example.com/cover.jpg", "status": "active", "totalPages": 120, "language": "en", "mc": { "name": "Sarah", "age": 28, "gender": "female", "bio": "Shy librarian with hidden past" }, "createdAt": "2023-01-01T00:00:00.000Z", "updatedAt": "2023-01-01T00:00:00.000Z" },
+ *   "firstPage": { "id": "page456", "page": 1, "text": "The library was silent except for the rain...", "actions": [...] },
+ *   "initialState": { "page": 1, "maxPage": 120, "flags": { "trust": "medium", "fear": "low" }, "threads": [], "traumaTags": [], "psychologicalProfile": { "archetype": "investigator" } }
  * }
  */
 router.post("/", requireAuth, async (req: Request, res: Response) => {
@@ -2281,6 +2204,10 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
  * 
  * Retrieves all comments for a specific book.
  * Supports pagination for large comment threads.
+ *
+ * @route GET /api/books/:id/comments
+ * @description Get paginated comments for a book
+ * @auth Optional (optionalAuth)
  * 
  * @param id - Book ID
  * @query page - Page number for pagination (default: 1)
@@ -2296,8 +2223,8 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
  *     {
  *       "id": "comment123",
  *       "userId": "user456",
- *       "userName": "John Doe",
- *       "userImage": "https://example.com/avatar.jpg",
+ *       "name": "John Doe",
+ *       "imageUrl": "https://example.com/avatar.jpg",
  *       "bookId": "book123",
  *       "parentCommentId": null,
  *       "content": "This story is amazing!",
@@ -2308,8 +2235,10 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
  *   "pagination": {
  *     "page": 1,
  *     "limit": 20,
- *     "total": 42,
- *     "totalPages": 3
+ *     "totalCount": 42,
+ *     "totalPages": 3,
+ *     "hasNext": true,
+ *     "hasPrevious": false
  *   }
  * }
  */
@@ -2368,26 +2297,27 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
  * 
  * Creates a new comment on a book.
  * Supports threaded comments via parentCommentId.
+ *
+ * @route POST /api/books/:id/comments
+ * @description Create a comment on a book
+ * @auth Required (requireAuth)
  * 
  * @param id - Book ID
- * @param content - Comment content (required, max 5000 chars)
- * @param parentCommentId - Parent comment ID for replies (optional)
+ * @body {string} content - Comment content (max 5000 chars)
+ * @body {string} [parentCommentId] - Parent comment ID for replies
  * @returns Created comment with user info
  * 
  * @example
  * POST /api/books/book123/comments
- * Body: {
- *   "content": "This story is amazing!",
- *   "parentCommentId": "comment789" // optional, for replies
- * }
+ * Body: { "content": "This story is amazing!", "parentCommentId": "comment789" }
  * 
  * Response (201):
  * {
  *   "comment": {
  *     "id": "comment123",
  *     "userId": "user456",
- *     "userName": "John Doe",
- *     "userImage": "https://example.com/avatar.jpg",
+ *     "name": "John Doe",
+ *     "imageUrl": "https://example.com/avatar.jpg",
  *     "bookId": "book123",
  *     "parentCommentId": null,
  *     "content": "This story is amazing!",
@@ -2684,15 +2614,20 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
  * GET /api/books/:identifier
  * 
  * Retrieves a book by slug or UUID v7 identifier.
- * Returns complete book information including metadata and author details.
+ * Returns complete book information including metadata, author details,
+ * engagement statistics, and user-specific engagement flags.
+ *
+ * @route GET /api/books/:identifier
+ * @description Retrieve a book by slug or UUID
+ * @auth Optional (optionalAuth)
  * 
  * @param identifier - Book slug or UUID v7
- * @returns Complete book with enriched metadata
+ * @returns Object with enriched book metadata including author, stats, and user flags
  * 
  * @example
  * GET /api/books/whispering-halls
  * 
- * Response:
+ * Response (200):
  * {
  *   "book": {
  *     "id": "book123",
@@ -2703,9 +2638,14 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
  *     "language": "en",
  *     "hook": "Sarah never believed in ghosts until she found the diary",
  *     "summary": "A psychological thriller about a librarian who discovers dark secrets",
- *     "image": "https://example.com/cover.jpg",
+ *     "imageUrl": "https://example.com/cover.jpg",
  *     "keywords": ["mystery", "thriller", "haunted"],
  *     "status": "active",
+ *     "trendingScore": 0.85,
+ *     "topPick": null,
+ *     "isOriginal": false,
+ *     "branchesCount": 12,
+ *     "firstPageId": "page456",
  *     "mc": {
  *       "name": "Sarah",
  *       "age": 28,
@@ -2716,16 +2656,23 @@ router.get("/comments", requireAuth, async (req: Request, res: Response) => {
  *       "id": "user456",
  *       "name": "John Doe",
  *       "username": "johndoe",
- *       "image": "https://example.com/avatar.jpg"
+ *       "imageUrl": "https://example.com/avatar.jpg"
  *     },
  *     "stats": {
  *       "likesCount": 42,
  *       "readCount": 156,
+ *       "completeCount": 23,
  *       "commentsCount": 25,
  *       "branchesCount": 12
  *     },
  *     "isLiked": false,
- *     "isRead": false,
+ *     "isRead": true,
+ *     "isMine": false,
+ *     "isSaved": false,
+ *     "isCompleted": false,
+ *     "isPurchased": false,
+ *     "session": null,
+ *     "collection": null,
  *     "createdAt": "2023-01-01T00:00:00.000Z",
  *     "updatedAt": "2023-01-15T10:30:00.000Z"
  *   }
@@ -2839,6 +2786,30 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
   }
 });
 
+/**
+ * POST /api/books/:identifier/:pageId/confirm-visit
+ *
+ * Confirms a user's visit to a specific page and records it in the user's
+ * reading progress. Called when a user actively navigates to a page (via
+ * selecting an action), as opposed to prefetching.
+ *
+ * @route POST /api/books/:identifier/:pageId/confirm-visit
+ * @description Record user page visit and optionally consume credits
+ * @auth Required (requireAuth)
+ *
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier
+ * @body {boolean} [consumeCredits] - Whether to consume credits for this page
+ *
+ * @returns Object with visit details including progress info
+ *
+ * @example
+ * POST /api/books/whispering-halls/page456/confirm-visit
+ * Body: { "consumeCredits": false }
+ *
+ * Response (200):
+ * { "visitDetails": { "userId": "user456", "bookId": "book123", "pageId": "page456", "lastPageNumber": 5, "isCompleted": false } }
+ */
 router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (req: Request, res: Response) => {
   const { identifier: bookIdentifier, pageId } = req.params;
   const { consumeCredits } = req.body as { actionedPageId?: string; consumeCredits?: boolean };

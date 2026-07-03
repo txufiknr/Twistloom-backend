@@ -60,9 +60,7 @@ interface CreditPack {
   priceUSD: number;          // Price in USD
   priceId: string;           // Stripe Price ID for checkout
   productId: string;         // Stripe Product ID for reference
-  highlight: boolean;        // Whether to highlight this pack as recommended
-  badge: string | null;      // Optional badge text (e.g., "Most Popular")
-  valueTag: string;          // Approximate number of choices/uses
+  badge: string | null;      // Optional badge text (e.g., "🔥 Most Popular")
   color: "gray" | "blue" | "purple" | "green" | "yellow" | "red"; // Color theme for UI display
 }
 ```
@@ -156,11 +154,13 @@ User's current subscription status.
 
 ```typescript
 interface SubscriptionStatus {
-  id: string;                // Subscription ID
+  id: string;                         // Subscription ID
+  stripeSubscriptionId: string;       // Stripe subscription ID
   status: "active" | "canceled" | "past_due" | "unpaid" | "trialing" | null;
-  currentPeriodEnd: string;   // End of current billing period (ISO 8601)
-  cancelAtPeriodEnd: boolean; // Whether subscription cancels at period end
-  monthlyCredits: number;    // Monthly credits allocated
+  currentPeriodStart: string;          // Start of current billing period (ISO 8601)
+  currentPeriodEnd: string;            // End of current billing period (ISO 8601)
+  cancelAtPeriodEnd: boolean;          // Whether subscription cancels at period end
+  monthlyCredits: number;             // Monthly credits allocated
 }
 ```
 
@@ -178,32 +178,40 @@ Returns the list of available credit packs for purchase. This endpoint allows th
 ```json
 [
   {
-    "id": "starter",
-    "title": "Starter Pack",
-    "tagline": "Perfect for getting started",
-    "description": "Get 100 credits to explore and create your first stories",
-    "credits": 100,
-    "priceUSD": 4.99,
-    "priceId": "price_1234567890",
-    "productId": "prod_1234567890",
-    "highlight": false,
+    "id": "observer",
+    "title": "Observer",
+    "tagline": "You watch… but rarely interfere.",
+    "description": "Step into the dark without committing. Enough to trace a few threads and sense what waits beneath the surface.",
+    "credits": 50,
+    "priceUSD": 2.99,
+    "priceId": "price_1TSq8CFmDKrMqBDfv8hHK8hi",
+    "productId": "prod_URjbG0HYUqTKjj",
     "badge": null,
-    "valueTag": "~20 stories",
     "color": "gray"
   },
   {
     "id": "investigator",
-    "title": "Investigator Pack",
-    "tagline": "Most popular choice",
-    "description": "150 credits for extended story exploration and multiple book creation",
+    "title": "Investigator",
+    "tagline": "You follow the clues. Carefully.",
+    "description": "Follow the evidence deeper. Shape pivotal moments, reveal what others miss, and craft your own story moves.",
     "credits": 150,
     "priceUSD": 7.99,
-    "priceId": "price_2345678901",
-    "productId": "prod_2345678901",
-    "highlight": true,
-    "badge": "Most Popular",
-    "valueTag": "~30 stories",
+    "priceId": "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
+    "productId": "prod_URjhcMuRg9MAl7",
+    "badge": "🔥 Most Popular",
     "color": "blue"
+  },
+  {
+    "id": "mastermind",
+    "title": "Mastermind",
+    "tagline": "You don't follow the story. You control it.",
+    "description": "The story bends to you. Forge custom choices, pursue alternate endings, and leave your mark on every chapter.",
+    "credits": 500,
+    "priceUSD": 19.99,
+    "priceId": "price_1TSqEpFmDKrMqBDfhrwd9wOn",
+    "productId": "prod_URjiSAzuitp1le",
+    "badge": "💎 Best Value",
+    "color": "purple"
   }
 ]
 ```
@@ -216,6 +224,41 @@ Returns the list of available credit packs for purchase. This endpoint allows th
 ---
 
 ## Subscription Plans
+
+### GET /payments/subscription-plans
+
+Returns the available subscription plans for purchase.
+
+**Authentication:** None (public pricing information)
+
+**Response (200 OK):**
+```json
+{
+  "plans": [
+    {
+      "id": "vip_monthly",
+      "name": "Twistloom VIP",
+      "description": "Monthly VIP membership with exclusive benefits",
+      "priceUSD": 9.99,
+      "priceId": "price_...",
+      "productId": "prod_...",
+      "monthlyCredits": 50,
+      "checkInMultiplier": 2,
+      "benefits": [
+        "VIP badge",
+        "2x check-in bonus",
+        "+50 monthly credits"
+      ]
+    }
+  ]
+}
+```
+
+**Behavior:**
+- Returns safe data only (prices, descriptions, benefits)
+- No authentication required
+
+---
 
 ### POST /payments/create-subscription-checkout
 
@@ -270,11 +313,7 @@ Creates a Stripe checkout session for VIP subscription. The user is redirected t
 
 Returns the authenticated user's current subscription status.
 
-**Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
+**Authentication:** Optional (via `optionalAuth`) — returns `{ hasActiveSubscription: false }` for guests
 
 **Response (200 OK) - Active Subscription:**
 ```json
@@ -349,6 +388,33 @@ Creates a Stripe Customer Portal session for subscription management. This allow
 **Optional Enhancements:**
 - Configure portal features to limit user actions
 - Add subscription update endpoint for programmatic changes
+
+---
+
+### POST /payments/subscription/cancel
+
+Cancels the authenticated user's active subscription at the period end (not immediately).
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Subscription will be canceled at period end"
+}
+```
+
+**Error Responses:**
+- **401 Unauthorized**: Authentication required
+- **404 Not Found**: No active subscription found
+- **500 Internal Server Error**: Stripe API error
+
+**Behavior:**
+- Sets `cancel_at_period_end = true` on Stripe subscription
+- Updates local database record
+- User retains access until the end of the current billing period
+- For immediate cancellation, use the Stripe Customer Portal
 
 ---
 
@@ -488,9 +554,8 @@ Parameters:
 - **402 Payment Required**: Insufficient credits
 ```json
 {
-  "error": "Not enough credits",
-  "required": 5,
-  "available": 3
+  "error": "Insufficient credits. Requires 5 credits.",
+  "required": 5
 }
 ```
 - **409 Conflict**: Duplicate request (idempotency key already used)
@@ -625,10 +690,8 @@ All endpoints follow consistent error response formats:
 **Insufficient Credits Error (402):**
 ```json
 {
-  "success": false,
-  "error": "Not enough credits",
-  "required": 5,
-  "available": 3
+  "error": "Insufficient credits. Requires 5 credits.",
+  "required": 5
 }
 ```
 
@@ -675,6 +738,7 @@ Different endpoints have different rate limits to prevent abuse:
 
 **Public endpoints:**
 - `GET /payments/credit-packs`: 100 requests per minute per IP
+- `GET /payments/subscription-plans`: 100 requests per minute per IP
 
 **Authenticated endpoints:**
 - `POST /payments/create-checkout-session`: 1 request per 10 seconds per user
@@ -707,9 +771,11 @@ Most endpoints require authentication via NextAuth JWT cookies:
 - `POST /payments/create-subscription-checkout`
 - `POST /payments/consume-credits`
 - `GET /payments/transactions`
-- `GET /payments/subscription`
 - `POST /payments/subscription/cancel`
 - `GET /payments/subscription/portal`
+
+**Optional Authentication (different response for guests):**
+- `GET /payments/subscription` — returns `{ hasActiveSubscription: false }` for unauthenticated users
 
 **Public Endpoints:**
 - `GET /payments/credit-packs` (pricing information)

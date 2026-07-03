@@ -90,7 +90,8 @@ export interface BookStats {
   readCount: number;
   completeCount: number;
   commentsCount: number;
-  // completionRate: number;
+  /** Completion rate: completed/started percentage (maintained by database triggers) */
+  completionRate: number | null;
   /** Total unique branches (maintained by database triggers) */
   branchesCount: number;
 }

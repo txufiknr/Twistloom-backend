@@ -45,18 +45,20 @@ The Users API provides endpoints for managing user profiles, social interactions
    - [Get User Following](#get-usersidfollowing)
    - [Get Authenticated User's Followers](#get-userfollowers)
    - [Get Authenticated User's Following](#get-userfollowing)
-7. [Daily Check-in](#daily-check-in)
-   - [Get Check-in Status](#get-usercheckinstatus)
-   - [Perform Daily Check-in](#post-usercheckin)
-8. [Referral System](#referral-system)
-   - [Set Referrer](#post-userreferrer)
-9. [Activity Logs](#activity-logs)
-   - [Get User Activity Logs](#get-useractivity-logs)
-10. [Reading Progress](#reading-progress)
-    - [Get Story Progress](#get-userprogress)
-11. [Achievements](#achievements)
-    - [Get Achievements](#get-userachievements)
-    - [Acknowledge Achievement](#post-userachievementsacknowledge)
+ 7. [Daily Check-in](#daily-check-in)
+    - [Get Check-in Status](#get-usercheckinstatus)
+    - [Perform Daily Check-in](#post-usercheckin)
+    - [VIP Double Claim](#post-usercheckindouble)
+ 8. [Referral System](#referral-system)
+    - [Set Referrer](#post-userreferrer)
+ 9. [Activity Logs](#activity-logs)
+    - [Get User Activity Logs](#get-useractivity-logs)
+ 10. [Reading Progress](#reading-progress)
+     - [Get Story Progress](#get-userprogress)
+ 11. [Achievements](#achievements)
+     - [Get Achievements](#get-userachievements)
+     - [Get Unnotified Achievements](#get-userachievementsunnotified)
+     - [Acknowledge Achievement](#post-userachievementsacknowledge)
 12. [Error Handling](#error-handling)
 13. [HTTP Headers](#http-headers)
 14. [Caching Strategy](#caching-strategy)
@@ -239,7 +241,7 @@ Pagination metadata for list endpoints.
 interface PaginationMeta {
   page: number;              // Current page number (1-based)
   limit: number;             // Number of items per page
-  total: number;             // Total number of items
+  totalCount: number;        // Total number of items
   totalPages: number;        // Total number of pages
   hasNext: boolean;          // Whether there is a next page
   hasPrevious: boolean;      // Whether there is a previous page
@@ -693,17 +695,17 @@ Get all distinct collection names for the authenticated user's favorite books, s
 ```json
 {
   "collections": [
-    "Favorites",
-    "Psychological Thrillers",
-    "To Read Later"
+    { "name": "Favorites", "totalBooks": 8 },
+    { "name": "Psychological Thrillers", "totalBooks": 3 },
+    { "name": "To Read Later", "totalBooks": 12 }
   ]
 }
 ```
 
 **Behavior:**
-- Returns distinct collection names from `user_favorites` table
+- Returns distinct collection names with book counts from `user_favorites` table
 - Filters out null collection values
-- Sorted alphabetically
+- Sorted alphabetically by collection name
 
 ---
 
@@ -943,7 +945,7 @@ Get all followers of a specific user, with user profile info and pagination.
   "pagination": {
     "page": 1,
     "limit": 10,
-    "total": 100,
+    "totalCount": 100,
     "totalPages": 10,
     "hasNext": true,
     "hasPrevious": false
@@ -984,7 +986,7 @@ Get all users that a specific user is following, with user profile info and pagi
   "pagination": {
     "page": 1,
     "limit": 10,
-    "total": 50,
+    "totalCount": 50,
     "totalPages": 5,
     "hasNext": true,
     "hasPrevious": false
@@ -1022,7 +1024,7 @@ Get all followers of the authenticated user, with user profile info and paginati
   "pagination": {
     "page": 1,
     "limit": 10,
-    "total": 100,
+    "totalCount": 100,
     "totalPages": 10,
     "hasNext": true,
     "hasPrevious": false
@@ -1057,7 +1059,7 @@ Get all users that the authenticated user is following, with user profile info a
   "pagination": {
     "page": 1,
     "limit": 10,
-    "total": 50,
+    "totalCount": 50,
     "totalPages": 5,
     "hasNext": true,
     "hasPrevious": false
@@ -1148,6 +1150,40 @@ Performs daily check-in and awards free credits to the authenticated user. Each 
   "creditsAwarded": 0,
   "checkInDate": "2026-05-04",
   "message": "Already checked in today"
+}
+```
+
+---
+
+### POST /user/checkin/double
+
+VIP-only double claim that awards 2x the daily check-in credits. Can be claimed in addition to the regular check-in on the same day. Requires VIP subscription tier; returns 403 if the user is not VIP.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Response (201 Created — successful):**
+```json
+{
+  "success": true,
+  "creditsAwarded": 30,
+  "checkInDate": "2026-05-04",
+  "message": "Successfully claimed 30 VIP 2x daily credits"
+}
+```
+
+**Response (403 Forbidden — not VIP):**
+```json
+{
+  "success": false,
+  "creditsAwarded": 0,
+  "currentStreak": 0,
+  "totalCreditsClaimed": 0,
+  "checkInDate": "2026-05-04",
+  "message": "VIP 2x claim is only available to VIP subscribers"
 }
 ```
 
@@ -1327,6 +1363,40 @@ Returns the authenticated user's achievements/badges with progress calculations.
       "isNotified": false
     }
   ]
+}
+```
+
+---
+
+### GET /user/achievements/unnotified
+
+Ultra-fast endpoint to check, award, and return newly unlocked badges. Designed to be called by the frontend immediately after taking actions. Evaluates counters against the registry and inserts new achievements if thresholds are met, then returns only badges the user hasn't seen yet.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK — new badges found):**
+```json
+{
+  "success": true,
+  "badges": [
+    {
+      "dbId": "achievement-uuid",
+      "id": "gen_50",
+      "category": "generation",
+      "icon": "sparkles",
+      "label": "Storyteller",
+      "description": "Generate 50 books",
+      "threshold": 50
+    }
+  ]
+}
+```
+
+**Response (200 OK — no new badges):**
+```json
+{
+  "success": true,
+  "badges": []
 }
 ```
 
@@ -1625,6 +1695,12 @@ curl -X POST https://api.twistloom.com/api/user/checkin \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
+**VIP double claim:**
+```bash
+curl -X POST https://api.twistloom.com/api/user/checkin/double \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
 **Set referrer:**
 ```bash
 curl -X POST https://api.twistloom.com/api/user/referrer \
@@ -1647,6 +1723,12 @@ curl https://api.twistloom.com/api/user/achievements \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
+**Get unnotified achievements:**
+```bash
+curl https://api.twistloom.com/api/user/achievements/unnotified \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN"
+```
+
 **Get activity logs:**
 ```bash
 curl "https://api.twistloom.com/api/user/activity-logs?activityType=liked&limit=10" \
@@ -1656,6 +1738,12 @@ curl "https://api.twistloom.com/api/user/activity-logs?activityType=liked&limit=
 ---
 
 ## Changelog
+
+### v3.1.0 (2026-07-04)
+- Added POST /user/checkin/double endpoint (VIP 2x daily check-in claim)
+- Added GET /user/achievements/unnotified endpoint (check, award, and return new badges)
+- Fixed GET /user/collections response shape to show `{name, totalBooks}` objects (not flat strings)
+- Fixed PaginationMeta type: `total` → `totalCount` across all response examples
 
 ### v3.0.0 (2026-06-29)
 - Added GET /user/achievements endpoint (achievements/badges listing)
@@ -1688,7 +1776,7 @@ curl "https://api.twistloom.com/api/user/activity-logs?activityType=liked&limit=
 - Added Caching Strategy section with caching details
 - Updated Rate Limiting section with specific rate limits per endpoint type
 - Added Response Pattern section explaining industry-standard API patterns
-- Fixed pagination response field name from "totalCount" to "total" to match actual implementation
+- Fixed pagination response field name from "total" to "totalCount" to match actual implementation
 - Enhanced error handling documentation with HTTP status codes
 
 ### v1.1.0 (2023-04-23)

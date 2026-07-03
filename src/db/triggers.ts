@@ -153,6 +153,17 @@ async function ensureBookReadCountTrigger(): Promise<void> {
           FROM user_sessions
           WHERE book_id = NEW.book_id
         ),
+            completion_rate = CASE WHEN (
+              SELECT COUNT(DISTINCT user_id)
+              FROM user_sessions
+              WHERE book_id = NEW.book_id
+            ) > 0 THEN
+              ROUND(complete_count::numeric / (
+                SELECT COUNT(DISTINCT user_id)
+                FROM user_sessions
+                WHERE book_id = NEW.book_id
+              ) * 100)
+            ELSE NULL END,
             trending_score = trending_score + 0.5, -- Incremental update for hybrid approach
             updated_at = NOW()
         WHERE id = NEW.book_id;
@@ -511,9 +522,16 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
           FROM user_completed_books
           WHERE book_id = NEW.book_id
         ),
+            completion_rate = CASE WHEN read_count > 0 THEN
+              ROUND((
+                SELECT COUNT(DISTINCT user_id)
+                FROM user_completed_books
+                WHERE book_id = NEW.book_id
+              )::numeric / read_count * 100)
+            ELSE NULL END,
             updated_at = NOW()
         WHERE id = NEW.book_id;
-        
+
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;

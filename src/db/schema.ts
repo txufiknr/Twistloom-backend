@@ -360,7 +360,7 @@ export const books = pgTable(
     branchesCount: integer("branches_count").notNull().default(0), // Total unique branches (maintained by trigger)
     commentsCount: integer("comments_count").notNull().default(0), // Total parent comments (maintained by trigger)
     completeCount: integer("complete_count").notNull().default(0), // Total unique users who completed the book (maintained by trigger)
-    // completionRate: integer("completion_rate").notNull().default(0), // Total unique users who completed the book / total unique users who started the book (maintained by trigger)
+    completionRate: real("completion_rate"), // Completed/started percentage (maintained by trigger)
     topPick: timestamp("top_pick", { withTimezone: true }), // Editor's pick
     creditsPrice: integer("credits_price"),
     originalThemeInput: text("original_theme_input"),

@@ -23,6 +23,25 @@
 [ ] userCompletedBooks -> user_discovered_endings 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
+[ ] page.context?.healthStatus
+[ ] computeEndingStats
+
+---
+
+EndingStats.readingTimeMinutes
+
+const [{ minTs, maxTs }] = await client
+  .select({
+    minTs: sql<Date>`min(${userPageProgress.createdAt})`,
+    maxTs: sql<Date>`max(${userPageProgress.createdAt})`,
+  })
+  .from(userPageProgress)
+  .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, bookId)));
+
+const readingTimeMinutes = minTs && maxTs
+  ? Math.max(1, Math.round((maxTs.getTime() - minTs.getTime()) / 60000))
+  : undefined;
+
 ---
 
 ensure stripe webhook events:
