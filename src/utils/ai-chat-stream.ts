@@ -400,6 +400,8 @@ function createOpenAICompatibleStreamGenerator(
       stream: true,
       stream_options: { include_usage: true },
       stop: config.stopSequences,
+      frequency_penalty: config.frequencyPenalty,
+      seed: config.seed,
       response_format: outputAsJson ? (outputJsonStructure ? {
         type: "json_schema",
         json_schema: {
@@ -522,7 +524,7 @@ async function* groqStreamGenerator(
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const { maxOutputToken, temperature, topP, stopSequences } = config;
+  const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', options);
 
   const stream = await getGroqClient().chat.completions.create({
@@ -535,6 +537,8 @@ async function* groqStreamGenerator(
     temperature,
     top_p: topP,
     stop: stopSequences,
+    frequency_penalty: frequencyPenalty,
+    seed: seed,
     stream: true,
     response_format: outputAsJson ? (outputJsonStructure ? {
       type: "json_schema",
@@ -580,6 +584,8 @@ async function* cohereStreamGenerator(
     p: config.topP,
     k: config.topK,
     stopSequences: config.stopSequences,
+    frequencyPenalty: config.frequencyPenalty,
+    seed: config.seed,
     responseFormat: outputAsJson ? (outputJsonStructure ? {
       type: "json_object",
       jsonSchema: {
@@ -612,7 +618,7 @@ async function* cerebrasStreamGenerator(
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
   const { signal, context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const { maxOutputToken, temperature, topP, stopSequences } = config;
+  const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', options);
 
   const stream = await getCerebrasClient().chat.completions.create({
@@ -626,6 +632,8 @@ async function* cerebrasStreamGenerator(
     top_p: topP,
     stream: true,
     stop: stopSequences,
+    frequency_penalty: frequencyPenalty,
+    seed: seed,
     response_format: outputAsJson ? (outputJsonStructure ? {
       type: "json_schema",
       json_schema: {
@@ -669,7 +677,7 @@ async function* mistralStreamGenerator(
   options: Partial<PromptWithFallbackOptions>
 ): AsyncGenerator<string> {
   const { signal, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = options;
-  const { maxOutputToken, temperature, topP, stopSequences } = config;
+  const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
   const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', options);
 
   const stream = await getMistralClient().chat.stream({
@@ -682,6 +690,9 @@ async function* mistralStreamGenerator(
     temperature,
     topP,
     stop: stopSequences,
+    frequencyPenalty,
+    randomSeed: seed,
+    stream: true,
     responseFormat: outputAsJson ? (outputJsonStructure ? {
       type: "json_schema",
       jsonSchema: {
@@ -714,6 +725,7 @@ async function* mistralStreamGenerator(
 
 /**
  * NVIDIA streaming generator that yields chunks
+ * @see https://docs.api.nvidia.com/nim/reference/mistralai-mixtral-8x22b-instruct-infer
  */
 async function* nvidiaStreamGenerator(
   prompt: string,
@@ -743,6 +755,8 @@ async function* nvidiaStreamGenerator(
       temperature: config.temperature,
       top_p: config.topP,
       stop: config.stopSequences,
+      frequency_penalty: config.frequencyPenalty,
+      seed: config.seed,
       stream: true,
     }),
     signal: combinedSignal,

@@ -289,6 +289,10 @@ export type AIChatConfig = {
   maxOutputToken: number;
   /** Stop sequences to control output generation */
   stopSequences?: string[];
+  /** Frequency penalty to reduce repetition of tokens (0.0 = no penalty) */
+  frequencyPenalty?: number;
+  /** Optional seed for reproducibility */
+  seed?: number;
 };
 
 export type AIChatConfigCaps = {

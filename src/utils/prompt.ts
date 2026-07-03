@@ -348,11 +348,12 @@ function applyDeveloperOverrides(
   developer?: AdvancedOptionsConfig['developer'],
 ): AIChatConfig {
   if (!developer) return config;
+
+  // TODO: use mapAdvancedOptionsConfig
   const result = { ...config };
   if (developer.temperature !== undefined) result.temperature = developer.temperature;
   if (developer.topP !== undefined) result.topP = developer.topP;
-  // TODO: what to do with seed?
-  // if (developer.seed !== undefined) result.seed = developer.seed;
+  if (developer.seed !== undefined) result.seed = developer.seed;
   return result;
 }
 
@@ -4048,7 +4049,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   const bookMeta = buildBookMetaDocuments(book, advancedState);
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
-  const config = determineAIConfig(advancedState);
+  const config = determineAIConfig(advancedState); // TODO: this is a "booster"; ensure to apply this after applying advanced options config first
 
   // 3. Resolve writing preset from the book's advancedOptions (persisted during initializeBook)
   const nextPreset: WritingPreset = book.advancedOptions?.writingPreset || 'default';

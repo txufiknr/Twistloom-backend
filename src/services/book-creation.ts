@@ -47,6 +47,7 @@ import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import { MAX_GENERATION_DURATION_MS, PENDING_TIMEOUT_MS } from '../config/book-creation.js';
 import { isValidUuid } from '../utils/uuid.js';
 import { writingPresets, type AdvancedOptionsConfig } from '../types/book-creation.js';
+import { AIChatConfig } from '../types/ai-chat.js';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -86,9 +87,9 @@ export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedO
         topP: typeof (developer as { topP?: unknown }).topP === 'number'
           ? (developer as { topP: number }).topP
           : undefined,
-        seed: typeof (developer as { seed?: unknown }).seed === 'number' || (developer as { seed?: unknown }).seed === null
-          ? (developer as { seed: number | null }).seed
-          : null,
+        seed: typeof (developer as { seed?: unknown }).seed === 'number'
+          ? (developer as { seed: number }).seed
+          : undefined,
         promptAppend: typeof (developer as { promptAppend?: unknown }).promptAppend === 'string'
           ? (developer as { promptAppend: string }).promptAppend
           : '',
@@ -96,7 +97,7 @@ export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedO
     : {
         temperature: undefined,
         topP: undefined,
-        seed: null,
+        seed: undefined,
         promptAppend: '',
       };
 
@@ -106,6 +107,38 @@ export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedO
     repetitionControl: typeof advancedOptions.repetitionControl === 'number' ? advancedOptions.repetitionControl : 0.5,
     developer: normalizedDeveloper,
   };
+}
+
+/**
+ * Resolves user-facing advanced generation options into the normalized sampling
+ * configuration consumed by the AI generation pipeline.
+ *
+ * Resolution order:
+ * 1. User-friendly controls (`creativity`, `repetitionControl`) are mapped to
+ *    provider-agnostic sampling values.
+ * 2. Explicit developer overrides (`temperature`, `topP`, `seed`) replace the
+ *    derived values when provided.
+ *
+ * This keeps the user experience simple while still allowing power users to
+ * precisely control model sampling. The returned configuration is intentionally
+ * provider-neutral; provider adapters are responsible for translating these
+ * normalized values into the parameters supported by each LLM API (e.g.
+ * `frequencyPenalty` vs `repetitionPenalty`).
+ */
+function mapAdvancedOptionsConfig( // TODO: use this
+  config: AdvancedOptionsConfig,
+): Omit<AIChatConfig, 'topK' | 'maxOutputToken'> {
+  return {
+    frequencyPenalty: lerp(0, 1.3, config.repetitionControl),
+    // repetitionPenalty: lerp(1.0, 1.4, config.repetitionControl),
+    temperature: config.developer.temperature ?? lerp(0.75, 1.15, config.creativity),
+    topP: config.developer.topP ?? lerp(0.88, 0.98, config.creativity),
+    seed: config.developer.seed ?? undefined,
+  };
+}
+
+function lerp(min: number, max: number, t: number) {
+  return min + (max - min) * t;
 }
 
 /**

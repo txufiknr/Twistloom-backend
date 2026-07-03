@@ -168,6 +168,8 @@ export function createOpenAICompatiblePrompt(
           top_p: config.topP,
           stream: false,
           stop: config.stopSequences,
+          frequency_penalty: config.frequencyPenalty,
+          seed: config.seed,
           response_format: outputAsJson ? (outputJsonStructure ? {
             type: "json_schema",
             json_schema: {
@@ -378,7 +380,7 @@ export async function groqPrompt(
     options,
     async (model, prompt, opts) => {
       const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('groq', opts);
 
       const { data, response } = await getGroqClient().chat.completions.create({
@@ -391,6 +393,8 @@ export async function groqPrompt(
         temperature,
         top_p: topP,
         stop: stopSequences,
+        frequency_penalty: frequencyPenalty,
+        seed: seed,
         stream: false,
         response_format: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
@@ -495,6 +499,8 @@ export async function coherePrompt(
         p: config.topP,
         k: config.topK,
         stopSequences: config.stopSequences,
+        frequencyPenalty: config.frequencyPenalty,
+        seed: config.seed,
         responseFormat: outputAsJson ? {
           type: "json_object",
           jsonSchema: outputJsonStructure ? {
@@ -566,7 +572,7 @@ export async function cerebrasPrompt(
     options,
     async (model, prompt, opts) => {
       const { context, config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('cerebras', opts);
 
       return await getCerebrasClient().chat.completions.create({
@@ -580,6 +586,8 @@ export async function cerebrasPrompt(
         top_p: topP,
         stream: false,
         stop: stopSequences,
+        frequency_penalty: frequencyPenalty,
+        seed: seed,
         response_format: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
           json_schema: {
@@ -645,7 +653,7 @@ export async function mistralPrompt(
     options,
     async (model, prompt, opts) => {
       const { config = AI_CHAT_CONFIG_DEFAULT, context, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('mistral', opts);
 
       return await getMistralClient().chat.complete({
@@ -658,6 +666,8 @@ export async function mistralPrompt(
         temperature,
         topP,
         stop: stopSequences,
+        frequencyPenalty,
+        randomSeed: seed,
         stream: false,
         responseFormat: outputAsJson ? (outputJsonStructure ? {
           type: "json_schema",
@@ -728,7 +738,7 @@ export async function nvidiaPrompt(
     options,
     async (model, prompt, opts) => {
       const { config = AI_CHAT_CONFIG_DEFAULT, outputAsJson, outputJsonStructure, outputJsonRequired } = opts;
-      const { maxOutputToken, temperature, topP, stopSequences } = config;
+      const { maxOutputToken, temperature, topP, stopSequences, frequencyPenalty, seed } = config;
 
       const systemPromptWithDocuments = formatSystemPromptWithDocuments('nvidia', opts);
       const apiKey = requireEnv('NVIDIA_API_KEY');
@@ -748,6 +758,8 @@ export async function nvidiaPrompt(
           temperature,
           top_p: topP,
           stop: stopSequences,
+          frequency_penalty: frequencyPenalty,
+          seed,
           stream: false,
 
           // NVIDIA NIM Structured JSON Implementation
