@@ -2839,6 +2839,20 @@ router.get("/:identifier/:pageId", optionalAuth, async (req: Request, res: Respo
   }
 });
 
+router.post('/:identifier/:pageId/confirm-visit', requireAuth, async (req: Request, res: Response) => {
+  const { identifier: bookIdentifier, pageId } = req.params;
+  const { consumeCredits } = req.body as { actionedPageId?: string; consumeCredits?: boolean };
+  const userId = req.userId!;
+
+  const { visitDetails, dbPage, book } = await visitBookPage(
+    { userId, pageId: pageId as string, bookIdentifier: bookIdentifier as string, skipVisit: false, takeAction: true, consumeCredits: !!consumeCredits, language: req.headers['accept-language'] },
+    { req, res }
+  );
+  if (!dbPage || !book) return; // visitBookPage already sent the error response
+
+  res.json({ visitDetails });
+});
+
 /**
  * GET /api/books/:identifier/:pageId/candidates
  * 

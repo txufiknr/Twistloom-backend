@@ -464,6 +464,41 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
  * - Safe to run multiple times without errors
  */
 async function ensureBookCompleteCountTrigger(): Promise<void> {
+  // TODO: add completion_rate calculation
+  // -- In update_book_complete_count() (triggers.ts, ~line 470) — add after the complete_count UPDATE:
+  // CREATE OR REPLACE FUNCTION update_book_complete_count()
+  // RETURNS TRIGGER AS $$
+  // BEGIN
+  //   UPDATE books
+  //   SET complete_count = (
+  //         SELECT COUNT(DISTINCT user_id) FROM user_completed_books WHERE book_id = NEW.book_id
+  //       ),
+  //       completion_rate = CASE WHEN read_count > 0 THEN
+  //         ROUND((SELECT COUNT(DISTINCT user_id) FROM user_completed_books WHERE book_id = NEW.book_id)::numeric / read_count * 100)
+  //         ELSE NULL END,
+  //       updated_at = NOW()
+  //   WHERE id = NEW.book_id;
+  //   RETURN NEW;
+  // END;
+  // $$ LANGUAGE plpgsql;
+
+  // -- In update_book_read_count() (triggers.ts, ~line 144) — add after the read_count UPDATE:
+  // CREATE OR REPLACE FUNCTION update_book_read_count()
+  // RETURNS TRIGGER AS $$
+  // DECLARE
+  //   v_page_1_id UUID;
+  // BEGIN
+  //   UPDATE books
+  //   SET read_count = (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE book_id = NEW.book_id),
+  //       completion_rate = CASE WHEN (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE book_id = NEW.book_id) > 0 THEN
+  //         ROUND(complete_count::numeric / (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE book_id = NEW.book_id) * 100)
+  //         ELSE NULL END,
+  //       trending_score = trending_score + 0.5,
+  //       updated_at = NOW()
+  //   WHERE id = NEW.book_id;
+  //   -- ...(page 1 visit_count block unchanged)
+  // END;
+  // $$ LANGUAGE plpgsql;
   try {
     // Create the trigger function for user_completed_books
     await dbWrite.execute(`
