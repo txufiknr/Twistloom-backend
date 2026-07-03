@@ -65,7 +65,7 @@ import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookP
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
 import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
-import { createBookCore, createBookValidate, handleBookCreationError, normalizeAdvancedOptions, updateBookGenerationStatus } from "../services/book-creation.js";
+import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, addCredits } from "../services/credits.js";
 import { logUserActivity, updateUserLastActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
@@ -420,25 +420,19 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
  */
 router.post('/async', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { theme: themeInput, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions: rawAdvancedOptions } = req.body;
+    const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions } = req.body;
     const userId = req.userId!;
 
-    const advancedOptions = normalizeAdvancedOptions(rawAdvancedOptions);
-
-    // ── Bug fix: safe trim — themeInput may be undefined if body is malformed ──
-    // `createBookValidate` handles the empty-string case with a proper error.
-    const theme = typeof themeInput === 'string' ? themeInput.trim() : '';
-
     // ── STEP 1: Validate theme + MC candidate (structural + AI) ──────────────
-    const { aiResult } = await createBookValidate({
+    const { aiResult, normalizedAdvancedOptions } = await createBookValidate({
       theme,
       mcCandidate: initialMCCandidate,
       generateCoverImage,
+      advancedOptions,
       isOriginal: false,
-      onProgress: undefined // no SSE progress callback for async route
+      onProgress: undefined // No SSE progress callback for async route
     });
 
-    // ── Bug fix: default language to 'en' — aiResult may be null/undefined ───
     const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
 
     // ── STEP 2: Generate deterministic book ID ────────────────────────────────
@@ -469,7 +463,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       aiComment,
       mcCandidate, // Runner reads this from DB — not workflow inputs
       generateCoverImage: generateCoverImage ?? false,
-      advancedOptions, // Optional — runner picks this up from the DB row
+      advancedOptions: normalizedAdvancedOptions, // Optional — runner picks this up from the DB row
       generationStatus: 'pending',
       generationStep: 'theme_validation', // Reflects last completed frontend step
     };

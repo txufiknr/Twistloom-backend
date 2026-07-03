@@ -1,6 +1,6 @@
 import { CUSTOM_ACTION_SECURITY_PATTERNS } from "../config/custom-actions.js";
 import { MAX_PROMPT_APPEND_LENGTH } from "../config/book-creation.js";
-import { removeControlCharacters } from "./text-processing.js";
+import { cleanText, removeControlCharacters } from "./text-processing.js";
 
 // ============================================================================
 // PROMPT APPEND SECURITY & SANITIZATION
@@ -68,10 +68,7 @@ export const PROMPT_APPEND_VALID_TEXT_PATTERN = /^[\p{L}\p{N}\s.,!?;:'"()\-[\]{}
 export function sanitizePromptAppend(raw: string | null | undefined): string {
   if (!raw || typeof raw !== 'string') return '';
 
-  let cleaned = raw
-    .normalize('NFKC')
-    .replace(/<[^>]*>/g, '')     // Remove HTML tags
-    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, ' '); // Remove CDATA sections
+  let cleaned = cleanText(raw);
 
   cleaned = removeControlCharacters(cleaned);
   cleaned = cleaned.trim();
@@ -114,7 +111,6 @@ export function validatePromptAppend(raw: string | null | undefined): PromptAppe
 
   // 3. Normalise for pattern matching
   const normalized = sanitized.normalize('NFKC');
-  // const lower = normalized.toLowerCase();
 
   // 4. Check for prompt injection patterns
   for (const pattern of PROMPT_APPEND_SECURITY_PATTERNS) {

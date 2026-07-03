@@ -3,6 +3,7 @@ import type { InventoryItem } from "../types/character.js";
 import type { DBPage } from "../types/schema.js";
 import type { CustomActionSecurityResult, CustomActionValidationResult, CustomActionRejectionCategory } from "../types/custom-action.js";
 import { getStoryStateInfo } from "../utils/story.js";
+import { normalizeText } from "../utils/text-processing.js";
 import {
   CUSTOM_ACTION_DISABLED_PHASES,
   CUSTOM_ACTION_SECURITY_PATTERNS,
@@ -53,15 +54,6 @@ export function runGate0(
 // ============================================================================
 // GATE 1 — Deterministic security filter
 // ============================================================================
-
-/**
- * Normalize text before matching — NFKC + strip zero-width chars.
- */
-function normalizeText(text: string): string {
-  return text
-    .normalize('NFKC')
-    .replace(/[\u200B-\u200D\uFEFF]/g, '');
-}
 
 /**
  * Gate 1 — Deterministic security filter. No AI.

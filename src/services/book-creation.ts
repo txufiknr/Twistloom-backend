@@ -47,7 +47,7 @@ import { GITHUB_REPO_CONFIG } from '../config/env.js';
 import { MAX_GENERATION_DURATION_MS, PENDING_TIMEOUT_MS } from '../config/book-creation.js';
 import { isValidUuid } from '../utils/uuid.js';
 import { writingPresets, type AdvancedOptionsConfig } from '../types/book-creation.js';
-import { AIChatConfig } from '../types/ai-chat.js';
+import { validatePromptAppend } from '../utils/prompt-security.js';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -59,16 +59,21 @@ import { AIChatConfig } from '../types/ai-chat.js';
  * Shared by the sync, SSE, and async creation routes so they all enforce the
  * same structure, preset list, and default values before generation starts.
  */
-export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedOptionsConfig | undefined {
-  if (rawAdvancedOptions == null) {
-    return undefined;
-  }
+export function normalizeAdvancedOptions(advancedOptions?: AdvancedOptionsConfig): AdvancedOptionsConfig | undefined {
+  if (advancedOptions == null) return undefined;
 
-  if (typeof rawAdvancedOptions !== 'object' || rawAdvancedOptions === null || Array.isArray(rawAdvancedOptions)) {
+  if (typeof advancedOptions !== 'object' || advancedOptions === null || Array.isArray(advancedOptions)) {
     throw new BookCreationError('advancedOptions must be an object', undefined, 400);
   }
 
-  const advancedOptions = rawAdvancedOptions as Record<string, unknown>;
+  if (advancedOptions?.developer?.promptAppend) {
+    const { valid, reason, sanitized } = validatePromptAppend(advancedOptions.developer.promptAppend);
+    if (!valid) {
+      throw new BookCreationError(`Invalid promptAppend in advancedOptions: ${reason}`, undefined, 400);
+    }
+    advancedOptions.developer.promptAppend = sanitized;
+  }
+
   const preset = advancedOptions.writingPreset;
   if (typeof preset !== 'string' || !writingPresets.includes(preset as AdvancedOptionsConfig['writingPreset'])) {
     throw new BookCreationError(
@@ -91,7 +96,7 @@ export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedO
           ? (developer as { seed: number }).seed
           : undefined,
         promptAppend: typeof (developer as { promptAppend?: unknown }).promptAppend === 'string'
-          ? (developer as { promptAppend: string }).promptAppend
+          ? (developer as { promptAppend: string }).promptAppend // Already sanitized on API route
           : '',
       }
     : {
@@ -107,38 +112,6 @@ export function normalizeAdvancedOptions(rawAdvancedOptions: unknown): AdvancedO
     repetitionControl: typeof advancedOptions.repetitionControl === 'number' ? advancedOptions.repetitionControl : 0.5,
     developer: normalizedDeveloper,
   };
-}
-
-/**
- * Resolves user-facing advanced generation options into the normalized sampling
- * configuration consumed by the AI generation pipeline.
- *
- * Resolution order:
- * 1. User-friendly controls (`creativity`, `repetitionControl`) are mapped to
- *    provider-agnostic sampling values.
- * 2. Explicit developer overrides (`temperature`, `topP`, `seed`) replace the
- *    derived values when provided.
- *
- * This keeps the user experience simple while still allowing power users to
- * precisely control model sampling. The returned configuration is intentionally
- * provider-neutral; provider adapters are responsible for translating these
- * normalized values into the parameters supported by each LLM API (e.g.
- * `frequencyPenalty` vs `repetitionPenalty`).
- */
-function mapAdvancedOptionsConfig( // TODO: use this
-  config: AdvancedOptionsConfig,
-): Omit<AIChatConfig, 'topK' | 'maxOutputToken'> {
-  return {
-    frequencyPenalty: lerp(0, 1.3, config.repetitionControl),
-    // repetitionPenalty: lerp(1.0, 1.4, config.repetitionControl),
-    temperature: config.developer.temperature ?? lerp(0.75, 1.15, config.creativity),
-    topP: config.developer.topP ?? lerp(0.88, 0.98, config.creativity),
-    seed: config.developer.seed ?? undefined,
-  };
-}
-
-function lerp(min: number, max: number, t: number) {
-  return min + (max - min) * t;
 }
 
 /**
@@ -159,10 +132,11 @@ export async function createBookValidate(params: {
   theme: string,
   mcCandidate?: StoryMCCandidate | null,
   generateCoverImage?: boolean,
+  advancedOptions?: AdvancedOptionsConfig;
   isOriginal?: boolean,
   onProgress?: ProgressCallback
 }): Promise<ThemeValidationResult> {
-  const { mcCandidate, generateCoverImage, isOriginal = false, onProgress } = params;
+  const { mcCandidate, generateCoverImage, advancedOptions, isOriginal = false, onProgress } = params;
   let { theme } = params;
 
   // ── 1. Theme structural validation ───────────────────────────────────────
@@ -235,7 +209,10 @@ export async function createBookValidate(params: {
     throw new BookCreationError('Theme validation failed', validationResult);
   }
 
-  return { ...validationResult, theme };
+  // ── 5. Advanced options validation ─────────────────────────────────────
+  const normalizedAdvancedOptions = normalizeAdvancedOptions(advancedOptions);
+
+  return { ...validationResult, theme, normalizedAdvancedOptions };
 }
 
 // ---------------------------------------------------------------------------
@@ -306,20 +283,21 @@ export async function createBookCore(
     theme,
     mcCandidate: initialMCCandidate,
     generateCoverImage,
+    advancedOptions,
     isOriginal,
     context = 'book_creation',
   } = params;
 
-  const normalizedAdvancedOptions = normalizeAdvancedOptions(params.advancedOptions);
   const isInternal = isOriginal || userId === process.env.SYSTEM_USER_ID;
   let correlationId: string | undefined;
 
   try {
     // ── Step 1: Validate inputs (before any credit consumption) ───────────
-    const { aiResult, theme: validatedTheme } = await createBookValidate({
+    const { aiResult, theme: validatedTheme, normalizedAdvancedOptions } = await createBookValidate({
       theme,
       mcCandidate: initialMCCandidate,
       generateCoverImage,
+      advancedOptions,
       isOriginal,
       onProgress
     });

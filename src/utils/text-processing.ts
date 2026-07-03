@@ -259,6 +259,32 @@ export function removeControlCharacters(text: string): string {
 }
 
 /**
+ * Normalize text before matching — NFKC + strip zero-width chars.
+ */
+export function normalizeText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '');
+}
+
+export function cleanText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/<[^>]*>/g, '') // Remove HTML tags
+    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, ' '); // Remove CDATA sections
+}
+
+/**
+ * Unicode normalize (NFKC) and strip diacritics (NFD + remove marks)
+ */
+export function normalizeTextForCompare(text: string): string {
+  return text
+    .normalize("NFKC")
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+}
+
+/**
  * Sanitizes text to remove binary/null bytes and invalid characters
  * Ensures text is safe for database insertion and XML parsing, includes html entity decoding and tag removal
  * @param text - The text to sanitize

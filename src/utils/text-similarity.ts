@@ -1,3 +1,5 @@
+import { normalizeTextForCompare } from "./text-processing";
+
 /**
  * A minimal set of common English stopwords for text processing.
  * Kept minimal to avoid over-filtering and maintain meaningful content.
@@ -40,10 +42,7 @@ export function tokenizeForComparison(
   const textToProcess = Array.isArray(inputText) ? inputText.join(" ") : inputText;
 
   // 1) Unicode normalize (NFKC) and strip diacritics (NFD + remove marks)
-  const normalizedText = textToProcess
-    .normalize("NFKC")
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "");
+  const normalizedText = normalizeTextForCompare(textToProcess);
 
   // 2) Convert to lowercase (Unicode-aware)
   const lowercasedText = normalizedText.toLowerCase();

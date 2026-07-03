@@ -8,6 +8,7 @@
  * across the application.
  */
 
+import type { AdvancedOptionsConfig } from "./book-creation.js";
 import type { StoryPlan } from "./story.js";
 
 /**
@@ -227,6 +228,8 @@ export interface ThemeValidationResult {
   heuristicResult?: HeuristicValidationResult;
   /** Result from AI validation layer */
   aiResult?: AIValidationResult;
+  /** Normalized AI advanced options */
+  normalizedAdvancedOptions?: AdvancedOptionsConfig;
 }
 
 /**

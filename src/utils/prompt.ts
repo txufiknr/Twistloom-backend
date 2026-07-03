@@ -45,6 +45,7 @@ import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
 import { MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
 import type { AdvancedOptionsConfig, WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
+import { sanitizePromptAppend } from "./prompt-security.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -340,21 +341,64 @@ function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset =
 }
 
 /**
- * Merges developer-level AI config overrides (temperature, topP, seed) into the
- * base AI chat config. Returns a new object without mutating the original.
+ * Linearly interpolates between min and max by t.
  */
-function applyDeveloperOverrides(
-  config: AIChatConfig,
-  developer?: AdvancedOptionsConfig['developer'],
-): AIChatConfig {
-  if (!developer) return config;
+function lerp(min: number, max: number, t: number): number {
+  return min + (max - min) * t;
+}
 
-  // TODO: use mapAdvancedOptionsConfig
-  const result = { ...config };
-  if (developer.temperature !== undefined) result.temperature = developer.temperature;
-  if (developer.topP !== undefined) result.topP = developer.topP;
-  if (developer.seed !== undefined) result.seed = developer.seed;
-  return result;
+/**
+ * Resolves user-facing advanced generation options into the normalized sampling
+ * configuration consumed by the AI generation pipeline.
+ *
+ * Resolution order:
+ * 1. User-friendly controls (`creativity`, `repetitionControl`) are mapped to
+ *    provider-agnostic sampling values.
+ * 2. Explicit developer overrides (`temperature`, `topP`, `seed`) replace the
+ *    derived values when provided.
+ *
+ * This keeps the user experience simple while still allowing power users to
+ * precisely control model sampling. The returned configuration is intentionally
+ * provider-neutral; provider adapters are responsible for translating these
+ * normalized values into the parameters supported by each LLM API (e.g.
+ * `frequencyPenalty` vs `repetitionPenalty`).
+ *
+ * @param config - The advanced options configuration from the user
+ * @returns An object containing mapped configuration parameters (temperature, topP, seed, frequencyPenalty)
+ */
+export function mapAdvancedOptionsConfig(
+  config: AdvancedOptionsConfig,
+): Omit<AIChatConfig, 'topK' | 'maxOutputToken'> {
+  const creativity = typeof config.creativity === 'number' ? config.creativity : 0.5;
+  const repetitionControl = typeof config.repetitionControl === 'number' ? config.repetitionControl : 0.5;
+  const developer = config.developer || {};
+
+  return {
+    frequencyPenalty: lerp(0, 1.3, repetitionControl),
+    temperature: developer.temperature ?? lerp(0.75, 1.15, creativity),
+    topP: developer.topP ?? lerp(0.88, 0.98, creativity),
+    seed: developer.seed ?? undefined,
+  };
+}
+
+/**
+ * Merges advanced options (creativity, repetitionControl, temperature, topP, seed)
+ * into the base AI chat config. Returns a new object without mutating the original.
+ *
+ * @param config - The base AI chat configuration
+ * @param advancedOptions - Optional advanced options configuration
+ * @returns A new AI chat configuration with applied settings
+ */
+export function applyAdvancedOptions(
+  config: AIChatConfig,
+  advancedOptions?: AdvancedOptionsConfig,
+): AIChatConfig {
+  if (!advancedOptions) return { ...config };
+
+  const mapped = mapAdvancedOptionsConfig(advancedOptions);
+  const result = { ...config, ...mapped };
+
+  return validateAIConfig(result);
 }
 
 // ============================================================================
@@ -3314,7 +3358,7 @@ function applyConfigCaps(config: AIChatConfig, capConfig: AIChatConfigCaps): AIC
  * @returns AI configuration optimized for story writing and output reliability.
  */
 function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT_CONFIG_CREATIVE): AIChatConfig {
-  let config = baseConfig;
+  let config = { ...baseConfig };
 
   // Apply temporary twist or revelation boost
   if (state.hiddenState.profileShift?.detected) {
@@ -3599,12 +3643,14 @@ export async function initializeBook(
     let prompt = buildBookCreationPrompt(params);
 
     // Append developer promptAppend if present
-    // TODO: ensure sanitization & max security
     if (developerConfig?.promptAppend) {
-      prompt = `${prompt}\n\n---\n${developerConfig.promptAppend}`;
+      const sanitizedAppend = sanitizePromptAppend(developerConfig.promptAppend);
+      if (sanitizedAppend) {
+        prompt = `${prompt}\n\n---\n${sanitizedAppend}`;
+      }
     }
 
-    const baseConfig = applyDeveloperOverrides(AI_CHAT_CONFIG_DEFAULT, developerConfig);
+    const baseConfig = applyAdvancedOptions(AI_CHAT_CONFIG_DEFAULT, advancedOptions);
 
     const response = await executePromptForJSON<BookCreationResponse>(
       {
@@ -4045,11 +4091,20 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     candidateCount,
   };
 
-  const prompt = buildNextPagePrompt(promptParams);
+  let prompt = buildNextPagePrompt(promptParams);
   const bookMeta = buildBookMetaDocuments(book, advancedState);
+
+  // Append developer promptAppend if present
+  if (book.advancedOptions?.developer?.promptAppend) {
+    const sanitizedAppend = sanitizePromptAppend(book.advancedOptions.developer.promptAppend);
+    if (sanitizedAppend) {
+      prompt = `${prompt}\n\n---\n${sanitizedAppend}`;
+    }
+  }
   
   // 2. Determine optimal AI configuration based on story progress and psychological state
-  const config = determineAIConfig(advancedState); // TODO: this is a "booster"; ensure to apply this after applying advanced options config first
+  const baseConfig = applyAdvancedOptions(AI_CHAT_CONFIG_CREATIVE, book.advancedOptions);
+  const config = determineAIConfig(advancedState, baseConfig);
 
   // 3. Resolve writing preset from the book's advancedOptions (persisted during initializeBook)
   const nextPreset: WritingPreset = book.advancedOptions?.writingPreset || 'default';
