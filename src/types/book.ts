@@ -433,3 +433,15 @@ export type UploadedImageType =
   | 'cover' // Book cover
   | 'mc'    // Main character's picture
   | 'user'; // Profile picture
+
+export type PageVisitStats = {
+  nthVisit: number;
+  visitorPercentage: number;
+  totalBookReaders: number;
+};
+
+export type BookEndingStats = {
+  completedReaders: number;
+  endingReaders: number;
+  endingPercentage: number;
+};

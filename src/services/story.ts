@@ -1,6 +1,6 @@
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
-import { eq, and, sql } from "drizzle-orm";
-import { storyStates, userSessions, userPageProgress, pages } from "../db/schema.js";
+import { eq, and, sql, countDistinct } from "drizzle-orm";
+import { storyStates, userSessions, userPageProgress, pages, userCompletedBooks } from "../db/schema.js";
 import type { StoryProgress, Action, SetActiveSessionParams, UserStoryPage, UserSession, StoryState, StoryStateSource, SelectedAction, PersistedStoryPage } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
@@ -9,7 +9,7 @@ import { getStoryStateWithBranch } from "./story-branch.js";
 import { logUserActivity } from "./user.js";
 import { cleanupStoryStatesWithStrategy } from "./story-branch.js";
 import { MAX_PAGE_HISTORY, MAX_TRAVERSAL_DEPTH_SHALLOW } from "../config/story.js";
-import type { BookPageVisit, BookStats, EnrichedBookData } from "../types/book.js";
+import type { BookEndingStats, BookPageVisit, BookStats, EnrichedBookData, PageVisitStats } from "../types/book.js";
 import { getErrorMessage } from "../utils/error.js";
 import { applyDeltaChain, appendActionsHistory } from "../utils/story.js";
 import { executeWithCredits, refundCredits } from "./credits.js";
@@ -894,11 +894,47 @@ export async function getUserPage(pageId: string, userId: string, options: {
   return await mapToUserStoryPage(dbPage, userId, selectedActions);
 }
 
+/**
+ * Computes presentation-friendly page visit statistics for the reader UI.
+ *
+ * This helper converts raw database counters into values suitable for display,
+ * such as:
+ *
+ * - "You are visitor #124"
+ * - "You're among the first 18% of readers."
+ *
+ * The returned values are intended for user-facing messaging only and should
+ * not be treated as analytical metrics.
+ *
+ * If `addOne` is enabled, the visit count is incremented before calculation.
+ * This is useful when generating statistics for the current reader before the
+ * visit has been permanently recorded in the database.
+ *
+ * Minimum values of `1` are enforced to:
+ * - avoid division-by-zero,
+ * - ensure visitor numbering starts at #1,
+ * - provide sensible values for newly published books.
+ *
+ * The calculated percentage is capped at `100%` to prevent values greater than
+ * 100 when the recorded visit count temporarily exceeds the current reader
+ * count (for example due to asynchronous updates or delayed analytics).
+ *
+ * Formula:
+ * ```
+ * nthVisit = visitCount (+1 if addOne)
+ * visitorPercentage = nthVisit / totalBookReaders
+ * ```
+ *
+ * @param params.rawVisitCount - Current recorded visit count for the page.
+ * @param params.readerCount - Total unique readers who have started the book.
+ * @param params.addOne - Whether to include the current visit before it has been persisted.
+ * @returns Computed visitor statistics for presentation in the UI.
+ */
 export function computeVisitStats(params: {
   rawVisitCount: number;
   readerCount: number;
   addOne?: boolean;
-}) {
+}): PageVisitStats {
   const { rawVisitCount, readerCount, addOne = false } = params;
 
   // Ensure minimum values of 1 to avoid division-by-zero and zero visitor numbering
@@ -907,6 +943,85 @@ export function computeVisitStats(params: {
   const visitorPercentage = Math.min(100, Math.round((nthVisit / totalBookReaders) * 100));
 
   return { nthVisit, visitorPercentage, totalBookReaders };
+}
+
+/**
+ * Computes completion statistics for a specific book ending.
+ *
+ * This function measures **ending rarity**, not overall book completion.
+ * The returned percentage answers:
+ *
+ * > "Among all readers who have completed this book at least once,
+ * > what percentage discovered this specific ending?"
+ *
+ * Formula:
+ * ```
+ * endingPercentage =
+ *   uniqueReadersReachedEnding /
+ *   uniqueReadersCompletedBook
+ * ```
+ *
+ * Both values count **unique users**, ensuring that replaying the same ending
+ * multiple times does not inflate the statistics.
+ *
+ * This intentionally excludes readers who abandoned the book before reaching
+ * any ending, so the percentage reflects narrative rarity rather than overall
+ * completion rate.
+ *
+ * Example:
+ * ```
+ * Readers started book:          1,000
+ * Readers completed book:          300
+ * Readers reached Ending A:        150
+ *
+ * Completion rate: 300 / 1000 = 30%
+ * Ending rarity:   150 / 300  = 50%
+ * ```
+ *
+ * The UI may display this as:
+ * > "Only 50% of readers who completed this story uncovered this ending."
+ *
+ * @param bookId - Book whose ending statistics should be computed.
+ * @param pageId - Final page representing the ending to analyze.
+ * @param client - Optional database client (defaults to dbRead).
+ * @returns Ending completion statistics for the requested ending.
+ */
+export async function computeEndingStats(
+  bookId: string,
+  pageId: string,
+  client: DBClient = dbRead
+): Promise<BookEndingStats> {
+  // Unique readers who have completed this book
+  const [{ completedReaders }] = await client
+    .select({
+      completedReaders: countDistinct(userCompletedBooks.userId),
+    })
+    .from(userCompletedBooks)
+    .where(eq(userCompletedBooks.bookId, bookId));
+
+  // Unique readers who discovered THIS ending
+  const [{ endingReaders }] = await client
+    .select({
+      endingReaders: countDistinct(userCompletedBooks.userId),
+    })
+    .from(userCompletedBooks)
+    .where(
+      and(
+        eq(userCompletedBooks.bookId, bookId),
+        eq(userCompletedBooks.pageId, pageId)
+      )
+    );
+
+  const endingPercentage =
+    completedReaders === 0
+      ? 0
+      : Math.round((endingReaders / completedReaders) * 100);
+
+  return {
+    completedReaders,
+    endingReaders,
+    endingPercentage,
+  };
 }
 
 export function mapActionToSelectedAction(action: Action, actionedPageId: string, actionedPageNumber: number, nextPageId: string): SelectedAction {

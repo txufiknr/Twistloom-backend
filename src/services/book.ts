@@ -1973,7 +1973,18 @@ export async function getPopularTags(limit: number = 20): Promise<string[]> {
 }
 
 /**
- * Inserts a record into userCompletedBooks table when a user completes a book
+ * Inserts a record into userCompletedBooks table when a user completes a book.
+ * Records that a user has discovered a book ending.
+ *
+ * This table is append-only:
+ * - One row represents one unique ending discovered by one user.
+ * - Reaching the same ending again is ignored.
+ * - Discovering a different ending inserts a new row.
+ *
+ * This historical data powers:
+ * - "You've discovered X endings"
+ * - Ending rarity statistics
+ * - Replay achievements
  * 
  * @param userId - User ID who completed the book
  * @param bookId - Book ID that was completed
@@ -2013,7 +2024,7 @@ export async function insertUserCompletedBook(
         completedAt: userCompletedBooks.completedAt,
       });
 
-    return result;
+    return result ?? null;
   } catch (error) {
     console.error('[insertUserCompletedBook] ❌ Failed to insert completion record:', getErrorMessage(error));
     return null;

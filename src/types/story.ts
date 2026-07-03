@@ -1849,4 +1849,4 @@ export type StoryPlan = {
   titleIdea?: string;
   /** Inferred main character who perfectly fit with the story theme */
   mcCandidate?: StoryMCCandidate;
-}
+};

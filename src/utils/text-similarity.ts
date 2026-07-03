@@ -1,4 +1,4 @@
-import { normalizeTextForCompare } from "./text-processing";
+import { normalizeTextForCompare } from "./text-processing.js";
 
 /**
  * A minimal set of common English stopwords for text processing.

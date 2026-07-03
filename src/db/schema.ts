@@ -760,13 +760,13 @@ export const userCompletedBooks = pgTable(
     id: id(),
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     bookId: bookId("cascade"), // Delete if book is deleted
-    pageId: pageId("cascade"), // Track which page the user completed (last page)
-    branchId: uuid("branch_id").notNull(), // Track which branch the user completed
+    pageId: pageId("cascade"), // Track which last page (canonical ending identifier)
+    branchId: uuid("branch_id").notNull(), // Track which branch the user completed (metadata only)
     completedAt: timestamp("completed_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // Unique constraint on (userId, bookId) to ensure one completion record per user+book
-    unique("user_completed_books_user_book_unique").on(t.userId, t.bookId),
+    // One row = one unique ending discovered by one user. Reaching the same ending again is ignored.
+    unique("user_completed_books_user_book_page_unique").on(t.userId, t.bookId, t.pageId),
     // Index for user's completed books
     index("user_completed_books_user_idx").on(t.userId, t.completedAt.desc()),
     // Index for book's completions

@@ -43,6 +43,20 @@ claude: ask about TODO-counter-trigger.md
 
 ---
 
+src\db\schema.ts
+src\services\book.ts
+src\services\story.ts
+src\types\book.ts
+
+TODO-ending-formula.md
+
+to focus:
+`computeEndingStats` function and jsdoc explanation
+`BookEndingStats` type
+`userCompletedBooks` table schema
+
+---
+
 src\components\home\StoryGeneratorInput.tsx
 src\components\modals\StoryGenerationModal.tsx
 src\components\modals\GlobalModals.tsx
