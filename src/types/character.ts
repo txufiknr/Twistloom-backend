@@ -210,7 +210,7 @@ export type NarrativeFlags = {
  * @interface CharacterMemory
  */
 /**
- * Schedule window for an NPC — when they are available / present.
+ * Schedule window for an NPC — when they are available / present (e.g., based on their `role`).
  *
  * The world doesn't wait for the reader; characters have routines
  * that create natural friction and consequence.

@@ -6,7 +6,6 @@
 [ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
-[ ] ensure endpoint Backend: GET /books/explore?sortBy=creations&status=active,draft
 [ ] pass title idea ke initalize book & github workflow dynamic job title
 [ ] Generate originals tambah custom input book title & mc name
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required

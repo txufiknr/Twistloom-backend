@@ -163,7 +163,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
     description: 'Characters associated with this place if any',
     items: buildTraitItemSchema({
       keyDescription: 'character_id',
-      valueDescription: 'Context to this place'
+      valueDescription: 'Context or role in the place'
     })
   },
   traits: {
