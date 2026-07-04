@@ -22,23 +22,6 @@
 
 [ ] userCompletedBooks -> user_discovered_endings 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-[ ] re-evaluate `PUT /user` (edit profile)
-
----
-
-EndingStats.readingTimeMinutes
-
-const [{ minTs, maxTs }] = await client
-  .select({
-    minTs: sql<Date>`min(${userPageProgress.createdAt})`,
-    maxTs: sql<Date>`max(${userPageProgress.createdAt})`,
-  })
-  .from(userPageProgress)
-  .where(and(eq(userPageProgress.userId, userId), eq(userPageProgress.bookId, bookId)));
-
-const readingTimeMinutes = minTs && maxTs
-  ? Math.max(1, Math.round((maxTs.getTime() - minTs.getTime()) / 60000))
-  : undefined;
 
 ---
 
@@ -58,33 +41,6 @@ src\db\schema.ts
 src\db\triggers.ts
 
 claude: ask about TODO-counter-trigger.md
-
----
-
-src\db\schema.ts
-src\services\book.ts
-src\services\story.ts
-src\types\book.ts
-TODO-ending-formula.md
-
-to focus:
-`computeEndingStats` function and jsdoc explanation
-`BookEndingStats` type
-`userCompletedBooks` table schema
-
-after re-thinking about userCompletedBooks​ table design, I realized that we need to allow multiple records for the same user and book combination, but with different pageId​ values to track different endings, so later I can display "You've discovered 5 different endings in this book" to user
-
-so my table design was correct all along (append-only, no update):
-- One row = one unique ending discovered by one user.
-- Ignore if already logged (exists)
-- Just misses one unique constraint: (userId, bookId, pageId).
-
-but I also need to formulate: "you're among N% readers who found this ending" correctly
-
-here's the elaboration from ChatGPT you can learn from:
-TODO-ending-formula.md​
-
-after learning it, what's your take? can you elaborate and establish the formulation first before further changes?
 
 ---
 

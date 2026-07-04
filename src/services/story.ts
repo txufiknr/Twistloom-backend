@@ -1017,10 +1017,24 @@ export async function computeEndingStats(
       ? 0
       : Math.round((endingReaders / completedReaders) * 100);
 
+  // Calculate reading time from first to last page progress for this user+book
+  const [{ minTs, maxTs }] = await client
+    .select({
+      minTs: sql<Date>`min(${userPageProgress.createdAt})`,
+      maxTs: sql<Date>`max(${userPageProgress.createdAt})`,
+    })
+    .from(userPageProgress)
+    .where(and(eq(userPageProgress.bookId, bookId)));
+
+  const readingTimeMinutes = minTs && maxTs
+    ? Math.max(1, Math.round((maxTs.getTime() - minTs.getTime()) / 60000))
+    : undefined;
+
   return {
     completedReaders,
     endingReaders,
     endingPercentage,
+    readingTimeMinutes,
   };
 }
 

@@ -446,4 +446,5 @@ export type BookEndingStats = {
   completedReaders: number;
   endingReaders: number;
   endingPercentage: number;
+  readingTimeMinutes?: number;
 };
