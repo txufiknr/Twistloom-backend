@@ -23,6 +23,15 @@
 [ ] userCompletedBooks -> user_discovered_endings 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
+please make:
+- `PUT /user` accept `referrer` (only care if `isNewUser` true and current `referrerId` is empty), then award user via `setReferrerForNewUser`
+- `POST /user/referrer` should be deprecated/removed in favor of `POST /user`
+
+---
+
+currently computeEndingStats live-querying the completed readers count rather than relying on a potentially stale complete_count field
+should be directly get from complete_count field
+
 ---
 
 ensure stripe webhook events:

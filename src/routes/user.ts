@@ -35,7 +35,6 @@
  * - GET /user/checkin/status - Get daily check-in status
  * - POST /user/checkin - Perform daily check-in and claim free credits
  * - POST /user/checkin/double - VIP double claim
- * - POST /user/referrer - Set referrer by username
  * - GET /user/activity-logs - Get user activity logs
  * - GET /user/progress - Get story reading progress
  * - GET /user/achievements - Get user achievements
@@ -281,6 +280,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
  * @body {string} [bio] - User's bio/description
  * @body {string} [gender] - User's gender
  * @body {string} [imageUrl] - User's profile image URL or base64 data
+ * @body {string} [referrer] - Referrer username (only applies if isNewUser and no referrer set)
  * 
  * @returns {Object} Update response
  * @returns {boolean} success - Operation status
@@ -355,6 +355,11 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
 
     await invalidateUserProfileCache(userId);
     await updateUserLastActivity(userId);
+
+    // 5. Handle Referrer (only if isNewUser and referrerId is empty — enforced by setReferrerForNewUser)
+    if (req.body.referrer && typeof req.body.referrer === 'string') {
+      await setReferrerForNewUser(req, res, userId, req.body.referrer, { handleResponse: false });
+    }
 
     // Rename userId → id for frontend consistency
     const { userId: id, ...rest } = user;
@@ -519,248 +524,6 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
     handleApiError(res, "Failed to retrieve user profile", error);
   }
 });
-
-// /**
-//  * POST /user
-//  * 
-//  * Creates a new user profile or fully replaces an existing user's profile.
-//  * Uses upsert operation to handle both creation and replacement scenarios.
-//  * 
-//  * @route POST /user
-//  * @description Create or replace user profile
-//  * 
-//  * @header X-App-Version - Application version (for analytics)
-//  * @header X-Platform - Client platform (android/ios)
-//  * 
-//  * @body {Object} User profile data
-//  * @body {string} [name] - User's display name
-//  * @body {string} [gender] - User's gender (e.g., "male", "female", "unknown")
-//  * @body {string} [image] - User's profile image URL
-//  * 
-//  * @returns {Object} Creation/replacement response
-//  * @returns {boolean} success - Operation status
-//  * @returns {Object} data - Created/updated user profile
-//  * 
-//  * @example
-//  * // Request
-//  * POST /user
-//  * Body: {
-//  *   "name": "John Doe",
-//  *   "gender": "male",
-//  * }
-//  * 
-//  * // Response
-//  * {
-//  *   "success": true,
-//  *   "data": {
-//  *     "userId": "user123",
-//  *     "name": "John Doe",
-//  *     "gender": "male",
-//  *     "createdAt": "2023-01-01T00:00:00.000Z",
-//  *     "updatedAt": "2023-01-01T00:00:00.000Z"
-//  *   }
-//  * }
-//  */
-// router.post("/", requireAuth, async (req: Request, res: Response) => {
-//   try {
-//     const userId = req.userId!;
-//     const userData = await cleanedUserData(req.body, { res, createNew: false });
-//     if (!userData) return;
-
-//     // Perform upsert operation (create or replace)
-//     const [user] = await dbWrite
-//       .insert(users)
-//       .values({ userId, ...userData })
-//       .onConflictDoUpdate({
-//         target: users.userId,
-//         set: userData,
-//       })
-//       .returning();
-
-//     res.status(201).json({ user });
-
-//     // Invalidate user profile cache
-//     await invalidateUserProfileCache(userId);
-
-//     // Update user's last activity timestamp
-//     await updateUserLastActivity(userId);
-//   } catch (error) {
-//     handleApiError(res, "Failed to create/update user profile", error);
-//   }
-// });
-
-// /**
-//  * PUT /user
-//  * 
-//  * Partially updates the authenticated user's profile.
-//  * Only provided fields are updated, existing fields remain unchanged.
-//  * Supports multiple image upload methods: URL, base64, or multipart file.
-//  * 
-//  * @route PUT /user
-//  * @description Partially update user profile
-//  * 
-//  * @header X-App-Version - Application version (for analytics)
-//  * @header X-Platform - Client platform (android/ios)
-//  * @header Content-Type - multipart/form-data for file uploads or application/json
-//  * 
-//  * @body {Object} Partial user profile data (for JSON requests)
-//  * @body {string} [name] - User's display name (optional)
-//  * @body {string} [bio] - User's bio/description (optional)
-//  * @body {string} [gender] - User's gender (optional)
-//  * @body {string} [imageUrl] - User's profile image URL to upload (optional)
-//  * @body {File} [imageFile] - User's profile image file (multipart) (optional)
-//  * 
-//  * @returns {Object} Update response
-//  * @returns {boolean} success - Operation status
-//  * @returns {Object} data - Updated user profile
-//  * @returns {string} uploadSource - Image upload method used
-//  * @returns {boolean} imageUploaded - Whether image was uploaded
-//  * @returns {boolean} oldImageQueuedForDeletion - Whether old image was queued for deletion
-//  * 
-//  * @example
-//  * // Request with file upload
-//  * PUT /user
-//  * Headers: Content-Type: multipart/form-data
-//  * Body: imageFile=<file>, name=John Doe
-//  * 
-//  * // Request with base64
-//  * PUT /user
-//  * Body: {
-//  *   "imageUrl": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ...",
-//  *   "name": "John Doe"
-//  * }
-//  * 
-//  * // Response
-//  * {
-//  *   "success": true,
-//  *   "data": {
-//  *     "userId": "user123",
-//  *     "name": "John Doe",
-//  *     "gender": "male",
-//  *     "image": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
-//  *     "createdAt": "2023-01-01T00:00:00.000Z",
-//  *     "updatedAt": "2023-01-01T12:00:00.000Z"
-//  *   },
-//  *   "imageUploaded": true,
-//  *   "uploadSource": "file",
-//  *   "oldImageQueuedForDeletion": false
-//  * }
-//  */
-// router.put("/", requireAuth, imageUpload.single('imageFile'), async (req: Request, res: Response) => {
-//   try {
-//     const userId = req.userId!;
-//     const { name, bio, gender, imageUrl, isNewUser } = req.body;
-
-//     // Check if user exists
-//     const existingUser = await dbRead
-//       .select({ 
-//         userId: users.userId,
-//         name: users.name,
-//         bio: users.bio,
-//         gender: users.gender,
-//         image: users.image,
-//         imageId: users.imageId,
-//         isNewUser: users.isNewUser,
-//         createdAt: users.createdAt,
-//         updatedAt: users.updatedAt
-//       })
-//       .from(users)
-//       .where(eq(users.userId, userId))
-//       .limit(1);
-
-//     if (existingUser.length === 0) {
-//       return handleNotFoundError(res, "User profile not found");
-//     }
-
-//     const user = existingUser[0];
-//     let newImageUrl: string | undefined;
-//     let newImageId: string | undefined;
-//     let oldImageIdQueued = false;
-
-//     // Handle image upload from different sources
-//     let imageSource: string | Buffer | { buffer: ArrayBuffer; originalname: string; mimetype: string } | undefined;
-
-//     if (req.file) {
-//       // Multipart file upload
-//       imageSource = {
-//         buffer: req.file.buffer as unknown as ArrayBuffer,
-//         originalname: req.file.originalname,
-//         mimetype: req.file.mimetype
-//       };
-//     } else if (imageUrl) {
-//       // URL or base64 string upload
-//       imageSource = imageUrl;
-//     }
-
-//     // Process image upload if source is provided
-//     if (imageSource) {
-//       const uploadResult = await uploadUserImage(imageSource, userId);
-
-//       if (uploadResult) {
-//         newImageUrl = uploadResult.url;
-//         newImageId = uploadResult.fileId;
-
-//         // Queue old image for deletion if it exists
-//         if (user.imageId) {
-//           await dbWrite
-//             .insert(deletedImages)
-//             .values({
-//               fileId: user.imageId,
-//               createdAt: new Date(),
-//             });
-//           oldImageIdQueued = true;
-//         }
-//       } else {
-//         return res.status(400).json({
-//           success: false,
-//           error: "Failed to upload profile image"
-//         });
-//       }
-//     }
-
-//     // Only include non-null and non-empty values for update
-//     const updateData = filterObjectEntries({
-//       name: name?.trim() || null,
-//       bio: bio?.trim() || null,
-//       gender: normalizeGender(gender),
-//       image: newImageUrl || null,
-//       imageId: newImageId || null,
-//       isNewUser: isNewUser || false,
-//     });
-
-//     // Only proceed if there are actual updates
-//     if (Object.keys(updateData).length === 0) {
-//       return res.json({
-//         user,
-//         imageUploaded: !!newImageUrl,
-//         uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
-//         oldImageQueuedForDeletion: oldImageIdQueued,
-//       });
-//     }
-
-//     // Perform partial update
-//     const [updatedUser] = await dbWrite
-//       .update(users)
-//       .set({
-//         ...updateData,
-//         updatedAt: new Date(),
-//       })
-//       .where(eq(users.userId, userId))
-//       .returning();
-
-//     res.json({
-//       user: updatedUser,
-//       imageUploaded: !!newImageUrl,
-//       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
-//       oldImageQueuedForDeletion: oldImageIdQueued,
-//     });
-
-//     // Invalidate user profile cache
-//     await invalidateUserProfileCache(userId);
-//   } catch (error) {
-//     handleApiError(res, "Failed to update user profile", error);
-//   }
-// });
 
 /**
  * DELETE /user
@@ -2024,58 +1787,6 @@ router.post("/checkin", requireAuth, (req, res) => handleCheckIn(req, res));
  * }
  */
 router.post("/checkin/double", requireAuth, (req, res) => handleCheckIn(req, res, 'vip_2x'));
-
-/**
- * POST /user/referrer
- * 
- * Sets the referrer for the authenticated user by username.
- * Only allowed for new users (isNewUser = true).
- * After setting referrer, isNewUser is set to false to prevent multiple updates.
- * 
- * @route POST /user/referrer
- * @description Set referrer by username
- * 
- * @header X-App-Version - Application version (for analytics)
- * @header X-Platform - Client platform (android/ios)
- * 
- * @body {Object} Referrer data
- * @body {string} username - Username of the referrer
- * 
- * @returns {Object} Referrer set response
- * @returns {boolean} success - Operation status
- * @returns {string} referrerId - ID of the referrer user
- * @returns {string} message - Status message
- * 
- * @example
- * // Request
- * POST /user/referrer
- * Body: {
- *   "username": "john-doe"
- * }
- * 
- * // Response (success)
- * {
- *   "success": true,
- *   "referrerId": "user456",
- *   "message": "Referrer set successfully"
- * }
- * 
- * // Response (not new user)
- * {
- *   "success": false,
- *   "error": "Referrer can only be set for new users"
- * }
- */
-router.post("/referrer", requireAuth, async (req: Request, res: Response) => {
-  const userId = req.userId!;
-  const { username } = req.body;
-
-  if (!username || typeof username !== 'string') {
-    return handleValidationError(res, "Username is required");
-  }
-
-  await setReferrerForNewUser(req, res, userId, username);
-});
 
 /**
  * GET /user/activity-logs

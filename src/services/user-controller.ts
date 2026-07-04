@@ -273,10 +273,6 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
   return newUser.userId;
 }
 
-// ---------------------------------------------------------------------------
-// setReferrerForNewUser  (unchanged from original)
-// ---------------------------------------------------------------------------
-
 /**
  * Sets a referrer for a newly created user.
  * Validates, updates the user record, awards referral credits to both parties,
@@ -298,18 +294,16 @@ export async function setReferrerForNewUser(
 
   try {
     // Ensure user exists and is new
-    const currentUser = await dbRead
+    const [user] = await dbRead
       .select({ userId: users.userId, isNewUser: users.isNewUser, referrerId: users.referrerId })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1);
 
-    if (currentUser.length === 0) {
+    if (!user) {
       if (handleResponse) handleNotFoundError(res, 'User not found');
       return false;
     }
-
-    const user = currentUser[0];
 
     if (!user.isNewUser) {
       if (handleResponse) handleValidationError(res, 'Referrer can only be set for new users');
