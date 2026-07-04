@@ -37,10 +37,7 @@ export interface CacheResult<T> {
  */
 export async function getFromCache<T>(key: string): Promise<CacheResult<T>> {
   const redis = getRedisClient();
-  
-  if (!redis) {
-    return { data: null, hit: false };
-  }
+  if (!redis) return { data: null, hit: false };
 
   try {
     const cached = await redis.get<T>(key);
@@ -64,10 +61,7 @@ export async function getFromCache<T>(key: string): Promise<CacheResult<T>> {
  */
 export async function setCache<T>(key: string, value: T, ttlSeconds: number = CACHE_TTL.DEFAULT): Promise<boolean> {
   const redis = getRedisClient();
-  
-  if (!redis) {
-    return false;
-  }
+  if (!redis) return false;
 
   try {
     await redis.set(key, JSON.stringify(value), { ex: ttlSeconds });
@@ -86,10 +80,7 @@ export async function setCache<T>(key: string, value: T, ttlSeconds: number = CA
  */
 export async function deleteCache(key: string): Promise<boolean> {
   const redis = getRedisClient();
-  
-  if (!redis) {
-    return false;
-  }
+  if (!redis) return false;
 
   try {
     await redis.del(key);

@@ -422,6 +422,7 @@ export function getMainCharacterInfo(params: {
  *     → lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
  *   - Narrative mechanics: potential twist: none
  *   - Physical state: healthy, active
+ *   - Schedule: Available: night | Location: basement | If missed: Can't buy tickets
  * 
  * · Lisa (teacher, supporting) - female [suspicious, has secret, missing] - [ID: lisa_park]
  *   - Real name: "Lisa Park" (Recognition: first_name_known)
@@ -470,7 +471,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const {
         knownName, realName, recognitionLevel, role, gender, status,
         bio, visualDescription, introducedAtPage, pastInteractions, importance,
-        secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits
+        secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits, schedule
       } = character;
 
       const useDifferentReference = knownName !== realName;
@@ -564,6 +565,13 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       
       // Concluding Physical Status
       details.push(`  - Physical state: ${physicalStatusDisplay}`);
+
+      // Schedule with descriptive formatting
+      if (schedule) {
+        const scheduleParts = [`Available: ${schedule.availabilityWindow}`, `Location: ${schedule.placeId}`];
+        if (schedule.missedConsequence) scheduleParts.push(`If missed: ${schedule.missedConsequence}`);
+        details.push(`  - Schedule: ${scheduleParts.join(' | ')}`);
+      }
 
       // Traits with nested bullets
       if (traits?.length) {

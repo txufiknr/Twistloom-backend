@@ -260,7 +260,7 @@ export type CharacterMemory = {
   // /** Specific person they trust in an urgent situation (character ids) */
   // emergencyContacts: string[];
   /** NPC schedule: when/where this character can be found. */
-  schedule?: CharacterSchedule; // TODO: display in formatCharactersForPrompt
+  schedule?: CharacterSchedule;
   /** The traits of the character (e.g., skills, hobbies) */
   traits?: TraitItem[];
 };
