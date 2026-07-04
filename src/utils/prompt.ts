@@ -141,12 +141,13 @@ Levels:
 - 'high': Frequent twists, emotional damage, unreliable characters
 - 'nightmare': Constant pressure, no safe choices, broken reality`;
 
-export const RULES_FUTURE_NOTES = `FUTURE NOTE RULES:
-
-CREATING FUTURE NOTES:
-- Use \`schedule\` (array) to anchor a note to one or more story time beats. The note surfaces when ANY entry enters its lookahead window (OR logic). Add multiple entries when the note should fire at whichever beat arrives first — e.g. \`[{ type: 'day', day: 7 }, { type: 'page', start: 25 }]\` fires on day 7 OR page 25, whichever comes first.
-- Use \`stateTrigger\` when the note should only surface once the MC reaches a specific physical or psychological threshold (health stat below a value, stability breakdown, critical condition). The note stays dormant until the threshold is actually crossed.
+export const RULES_FUTURE_NOTES = `FUTURE NOTE SCHEDULING:
+- schedule (array): anchors a note to one or more story time beats. Use multiple entries for OR logic; the note surfaces as soon as ANY entry enters its lookahead window (i.e., whichever beat arrives first).
+- stateTrigger (array): use only when the note genuinely depends on the MC reaching a specific physical or psychological threshold. The note stays dormant until ANY specified threshold is actually crossed (OR logic).
 - Both fields are optional and independent — use both when EITHER condition should activate the note (OR semantics), neither for open-ended notes with no identifiable trigger.
+
+FUTURE NOTE ADVANCEMENT:
+- When a schedule window opens or a stateTrigger threshold is crossed, begin incorporating it naturally into the narrative.
 - Never manufacture a triggering state just to resolve a stateTrigger note early. The MC must genuinely reach that state.
 
 Becoming Relevant:
@@ -1091,9 +1092,6 @@ ${futureNotes.length < MAX_FUTURE_NOTES ? `  - ONLY add for important unresolved
   - Do NOT add for temporary details, completed events, or facts already captured by plot flags.
   - Prefer advancing existing future notes before creating new ones. Avoid duplicate or overlapping future notes.` : ''}
   - Future notes represent narrative obligations, not immediate requirements. Do not resolve a future note merely because it exists.
-  - When a schedule window opens or a stateTrigger threshold is crossed, begin incorporating it naturally into the narrative.
-  - schedule: array of time beats — use multiple items for OR logic (any firing activates).
-  - stateTrigger: use only when the note genuinely depends on the MC reaching a physical or psychological threshold. Omit both for open-ended notes with no known trigger.
   - Remove notes which have been fulfilled or become irrelevant.
   - If fulfilling a future note materially changes the story, record the outcome as a plot flag.
   - Keep max ${MAX_FUTURE_NOTES} items. Only the most important unresolved future notes.

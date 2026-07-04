@@ -219,8 +219,8 @@ export type CharacterSchedule = {
   /** When in the day this character is typically present */
   availabilityWindow: string; // e.g., "night", "day", "evening", "dawn", "all", "unknown"
   /** Location/placeId they are usually found at during their window */
-  locationId: string;
-  /** Optional description of what happens if the reader misses them */
+  placeId: string;
+  /** Optional description of what happens if MC misses them (e.g., "Can't buy tickets") */
   missedConsequence?: string;
 };
 
@@ -257,14 +257,14 @@ export type CharacterMemory = {
   introducedAtPage: number;
   /** How well does MC know this character */
   recognitionLevel: CharacterRecognitionLevel;
-  // /** Specific person they trust in an urgent situation */
+  // /** Specific person they trust in an urgent situation (character ids) */
   // emergencyContacts: string[];
   /**
    * NPC schedule: when/where this character can be found.
    * If set, the AI should respect these windows when deciding
    * whether a character is present.
    */
-  schedule?: CharacterSchedule; // TODO: where it displayed?
+  schedule?: CharacterSchedule; // TODO: display in formatCharactersForPrompt
   /** The traits of the character (e.g., skills, hobbies) */
   traits?: TraitItem[];
 };

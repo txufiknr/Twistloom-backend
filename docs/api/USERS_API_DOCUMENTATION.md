@@ -49,8 +49,9 @@ The Users API provides endpoints for managing user profiles, social interactions
     - [Get Check-in Status](#get-usercheckinstatus)
     - [Perform Daily Check-in](#post-usercheckin)
     - [VIP Double Claim](#post-usercheckindouble)
- 8. [Referral System](#referral-system)
-    - [Set Referrer](#post-userreferrer)
+  8. [Referral System](#referral-system)
+     - [Set Referrer (via PUT /user)](#setting-referrer-via-put-user)
+     - [POST /user/referrer (DEPRECATED)](#post-userreferrer-deprecated)
  9. [Activity Logs](#activity-logs)
     - [Get User Activity Logs](#get-useractivity-logs)
  10. [Reading Progress](#reading-progress)
@@ -483,9 +484,17 @@ Partially updates the authenticated user's profile. Only provided fields are upd
   "name": "John Doe",
   "bio": "Psychological thriller enthusiast",
   "gender": "male",
-  "imageUrl": "https://example.com/new-avatar.jpg"
+  "imageUrl": "https://example.com/new-avatar.jpg",
+  "referrer": "referrer-username"
 }
 ```
+
+**Parameters:**
+- `name` (string, optional): Updated name
+- `bio` (string, optional): Updated bio
+- `gender` (string, optional): Updated gender
+- `imageUrl` (string, optional): Profile image URL or base64 data
+- `referrer` (string, optional): Referrer username — only takes effect if user is new (`isNewUser === true`) and has no referrer set
 
 **Or multipart/form-data:**
 - `imageFile` (file, optional): Profile image file
@@ -1240,40 +1249,39 @@ VIP-only double claim that awards 2x the daily check-in credits. Can be claimed 
 
 ## Referral System
 
-### POST /user/referrer
+The referral system allows new users to attribute their signup to an existing user (referrer). Both the referrer and the new user receive a referral bonus.
 
-Sets the referrer for the authenticated user by username. Only allowed for new users (`isNewUser = true`). After setting referrer, `isNewUser` is set to `false`.
+### Setting Referrer (via PUT /user)
+
+A referrer can be set during profile update via `PUT /user` by including a `referrer` field. This only takes effect for users who are still new (`isNewUser === true`) and don't already have a referrer set.
 
 **Authentication:** Required (via `requireAuth`)
-
-**Headers:**
-- `X-App-Version`: Application version (for analytics)
-- `X-Platform`: Client platform (android/ios)
 
 **Request Body:**
 ```json
 {
-  "username": "johndoe"
+  "referrer": "johndoe"
 }
 ```
 
 **Parameters:**
-- `username` (string, required): Username of the referrer
+- `referrer` (string, optional): Referrer username — silently ignored if user is not new or already has a referrer
 
-**Response (200 OK — success):**
+**Behavior:**
+- Checks the user is a new user (`isNewUser === true`) and has no existing `referrerId`
+- Looks up the referrer by username
+- Sets `referrerId` on the user and awards referral bonus credits to both parties
+- Silently no-ops (no error) if the conditions are not met
+
+### POST /user/referrer (DEPRECATED)
+
+**This endpoint is deprecated.** Use `PUT /user` with the `referrer` field instead.
+
+Calling this endpoint returns HTTP `410 Gone`:
+
 ```json
 {
-  "success": true,
-  "referrerId": "referrer-uuid",
-  "message": "Referrer set successfully"
-}
-```
-
-**Response (200 OK — not new user):**
-```json
-{
-  "success": false,
-  "error": "Referrer can only be set for new users"
+  "error": "This endpoint is deprecated. Use PUT /user with a \"referrer\" field instead."
 }
 ```
 
@@ -1770,13 +1778,13 @@ curl -X POST https://api.twistloom.com/api/user/checkin/double \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
-**Set referrer:**
+**Set referrer (via profile update):**
 ```bash
-curl -X POST https://api.twistloom.com/api/user/referrer \
+curl -X PUT https://api.twistloom.com/api/user \
   -H "Content-Type: application/json" \
   -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
   -d '{
-    "username": "johndoe"
+    "referrer": "johndoe"
   }'
 ```
 
@@ -1807,6 +1815,11 @@ curl "https://api.twistloom.com/api/user/activity-logs?activityType=liked&limit=
 ---
 
 ## Changelog
+
+### v3.2.0 (2026-07-04)
+- Added `referrer` field support to PUT /user — sets referrer for new users without a referrer
+- Deprecated POST /user/referrer — returns 410 Gone
+- Updated documentation to reflect PUT /user as the canonical way to set a referrer
 
 ### v3.1.0 (2026-07-04)
 - Added POST /user/checkin/double endpoint (VIP 2x daily check-in claim)

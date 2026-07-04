@@ -133,6 +133,17 @@ export type PlaceMemory = {
   knownConnections: PlaceConnection[];
 };
 
+export type KnownCharacter = {
+  /** When in the day this character is typically present */
+  availabilityWindow: string; // e.g., "night", "day", "evening", "dawn", "all", "unknown"
+  /** They are usually found at during their window */
+  characterId: string;
+  /** Optional description of the character's context or role in the place */
+  context?: string;
+  /** Optional description of what happens if MC misses them (e.g., "Can't buy tickets") */
+  missedConsequence?: string;
+};
+
 export const placeAccessibilities = ['open', 'blocked', 'dangerous', 'restricted', 'unknown', 'destroyed'];
 
 /**
