@@ -337,6 +337,7 @@ export type BookPageVisit = {
   nthVisit: number;
   visitorPercentage: number;
   readerUserId?: string;
+  endingStats?: BookEndingStats;
 }
 
 export type VisitBookPageParams = {
@@ -446,5 +447,8 @@ export type BookEndingStats = {
   completedReaders: number;
   endingReaders: number;
   endingPercentage: number;
+  /** How many distinct endings readers have found for this book so far. */
+  distinctEndingsFound?: number;
+  /** Minutes, approximate — wall-clock time between the reader's first and last recorded action on this book. */
   readingTimeMinutes?: number;
 };

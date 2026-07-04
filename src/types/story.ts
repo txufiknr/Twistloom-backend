@@ -1215,6 +1215,7 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
   originalActionsCount: number;
   translation?: PageTranslation;
   sourceAction?: SelectedAction;
+  // sourceNav?: StoryPageNav;
   shownActionHint: string[];
   context?: EnrichedStoryPageContext;
   elapsedDays?: number;
@@ -1225,6 +1226,9 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
   aiProvider?: AIChatProvider | 'none';
   aiModel?: string;
 };
+
+// export type StoryPageNav = Record<number, StoryPageNavItem>;
+// export type StoryPageNavItem = { pageId: string; selectedAction: SelectedAction; plotFlag?: InitialPlotFlag; };
 
 export type TranslatedStoryPage = Omit<PersistedStoryPage, 'weather' | 'mood'> & { weather?: string; mood?: string; };
 

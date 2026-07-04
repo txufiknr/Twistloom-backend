@@ -1,6 +1,6 @@
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { eq, and, sql, countDistinct } from "drizzle-orm";
-import { storyStates, userSessions, userPageProgress, pages, userCompletedBooks } from "../db/schema.js";
+import { books, storyStates, userSessions, userPageProgress, pages, userCompletedBooks } from "../db/schema.js";
 import type { StoryProgress, Action, SetActiveSessionParams, UserStoryPage, UserSession, StoryState, StoryStateSource, SelectedAction, PersistedStoryPage } from "../types/story.js";
 import type { DBNewUserPageProgress, DBPage, DBStoryState, DBUserPageProgress, DBUserSession } from "../types/schema.js";
 import { getDeletedState, getStoryStateCache, setStoryStateCache } from "./story-state-cache.js";
@@ -345,14 +345,19 @@ async function markPageVisitedWithClient(params: {
   console.log(`[markPageVisited] 👀 User ${userId} visited page ${pageId} in book ${bookId} (nthVisit=${nthVisit}, visitorPercentage=${visitorPercentage}%)`);
 
   // Insert completion record if user reached the last page
+  let endingStats: BookEndingStats | undefined;
   if (pageNumber === totalPages) {
     const completion = await insertUserCompletedBook(userId, bookId, pageId, branchId, client);
     if (completion) {
       console.log(`[markPageVisited] 🎉 User ${userId} completed book ${bookId} (page ${pageNumber}/${totalPages})`);
     }
+    // Compute ending stats whenever this is the terminal page, whether or not
+    // completion was a fresh insert (onConflictDoNothing means a replay of the
+    // same ending returns null but the stats query itself is idempotent).
+    endingStats = await computeEndingStats(bookId, pageId, userId, client);
   }
 
-  return { session, nthVisit, visitorPercentage, readerUserId: userId };
+  return { session, nthVisit, visitorPercentage, readerUserId: userId, endingStats };
 }
 
 /**
@@ -989,15 +994,17 @@ export function computeVisitStats(params: {
 export async function computeEndingStats(
   bookId: string,
   pageId: string,
+  userId: string,
   client: DBClient = dbRead
 ): Promise<BookEndingStats> {
-  // Unique readers who have completed this book
+  // Unique readers who have completed this book (from denormalized completeCount)
   const [{ completedReaders }] = await client
     .select({
-      completedReaders: countDistinct(userCompletedBooks.userId),
+      completedReaders: books.completeCount,
     })
-    .from(userCompletedBooks)
-    .where(eq(userCompletedBooks.bookId, bookId));
+    .from(books)
+    .where(eq(books.id, bookId))
+    .limit(1);
 
   // Unique readers who discovered THIS ending
   const [{ endingReaders }] = await client
@@ -1017,6 +1024,14 @@ export async function computeEndingStats(
       ? 0
       : Math.round((endingReaders / completedReaders) * 100);
 
+  // How many distinct endings readers have found for this book
+  const [{ distinctEndingsFound }] = await client
+    .select({
+      distinctEndingsFound: countDistinct(userCompletedBooks.pageId),
+    })
+    .from(userCompletedBooks)
+    .where(eq(userCompletedBooks.bookId, bookId));
+
   // Calculate reading time from first to last page progress for this user+book
   const [{ minTs, maxTs }] = await client
     .select({
@@ -1024,7 +1039,10 @@ export async function computeEndingStats(
       maxTs: sql<Date>`max(${userPageProgress.createdAt})`,
     })
     .from(userPageProgress)
-    .where(and(eq(userPageProgress.bookId, bookId)));
+    .where(and(
+      eq(userPageProgress.bookId, bookId),
+      eq(userPageProgress.userId, userId),
+    ));
 
   const readingTimeMinutes = minTs && maxTs
     ? Math.max(1, Math.round((maxTs.getTime() - minTs.getTime()) / 60000))
@@ -1034,6 +1052,7 @@ export async function computeEndingStats(
     completedReaders,
     endingReaders,
     endingPercentage,
+    distinctEndingsFound,
     readingTimeMinutes,
   };
 }
