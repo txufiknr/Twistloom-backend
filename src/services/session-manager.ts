@@ -91,15 +91,16 @@ export function invalidateSessionCache(sessionId: string): void {
 /**
  * Get all active sessions for a user
  * @param userId - The user ID to fetch sessions for
- * @returns Array of active sessions with device information
+ * @param currentSessionId - The current session ID to mark as isCurrent
+ * @returns Array of active sessions with device information and isCurrent flag
  * 
  * @example
  * ```typescript
- * const sessions = await getUserSessions('user123');
+ * const sessions = await getUserSessions('user123', 'currentSessionId');
  * console.log(`User has ${sessions.length} active sessions`);
  * ```
  */
-export async function getUserSessions(userId: string) {
+export async function getUserSessions(userId: string, currentSessionId?: string) {
   const sessions = await db
     .select({
       id: authSessions.id,
@@ -113,7 +114,10 @@ export async function getUserSessions(userId: string) {
     .where(eq(authSessions.userId, userId))
     .orderBy(desc(authSessions.lastActiveAt));
 
-  return sessions;
+  return sessions.map(session => ({
+    ...session,
+    isCurrent: currentSessionId ? session.id === currentSessionId : false,
+  }));
 }
 
 /**
@@ -225,6 +229,49 @@ export async function logoutFromAllDevices(userId: string): Promise<number> {
     .where(eq(users.userId, userId));
 
   return result.rowCount || 0;
+}
+
+/**
+ * Delete a specific session by ID for a user.
+ * Prevents deleting the current session.
+ * @param userId - The user ID
+ * @param sessionId - The session ID to delete
+ * @param currentSessionId - The current session ID (cannot delete this one)
+ * @returns True if deleted, false if not found
+ * @throws Error if trying to delete the current session
+ * 
+ * @example
+ * ```typescript
+ * const deleted = await deleteSessionById('user123', 'session456', 'currentSession789');
+ * if (!deleted) {
+ *   // Session not found
+ * }
+ * ```
+ */
+export async function deleteSessionById(
+  userId: string,
+  sessionId: string,
+  currentSessionId: string,
+): Promise<boolean> {
+  if (sessionId === currentSessionId) {
+    throw new Error('Cannot delete current session');
+  }
+
+  const result = await db
+    .delete(authSessions)
+    .where(
+      and(
+        eq(authSessions.userId, userId),
+        eq(authSessions.id, sessionId),
+      )
+    );
+
+  if (result.rowCount && result.rowCount > 0) {
+    invalidateSessionCache(sessionId);
+    return true;
+  }
+
+  return false;
 }
 
 export async function updateSessionMetadata(

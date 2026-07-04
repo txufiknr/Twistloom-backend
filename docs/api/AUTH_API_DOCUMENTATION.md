@@ -32,6 +32,7 @@ The Authentication API provides endpoints for user registration, credential veri
    - [Google OAuth](#post-apiauthgoogle-oauth)
 6. [Session Management](#session-management)
    - [Get Active Sessions](#get-apiauthsessions)
+   - [Delete Session](#delete-apiauthsessionsid)
    - [Logout from Other Devices](#post-apiauthlogout-all)
    - [Logout from All Devices](#post-apiauthlogout-all-devices)
    - [Logout from Specific Session](#post-apiauthlogout-session)
@@ -522,6 +523,7 @@ Cookie: next-auth.session-token=...
       "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
       "ipAddress": "192.168.1.1",
       "deviceName": "Chrome on Windows (Desktop)",
+      "isCurrent": true,
       "lastActiveAt": "2023-01-01T12:00:00.000Z",
       "createdAt": "2023-01-01T10:00:00.000Z"
     }
@@ -529,6 +531,8 @@ Cookie: next-auth.session-token=...
   "count": 1
 }
 ```
+
+The `isCurrent` field indicates whether the session is the one associated with the current request's JWT. Exactly one session in the response has `isCurrent: true`.
 
 **Error Responses:**
 - `401 Unauthorized`: Invalid or missing authentication token
@@ -543,6 +547,53 @@ Cookie: next-auth.session-token=...
 1. Queries `auth_sessions` table for user's sessions
 2. Orders by `lastActiveAt` descending (most recent first)
 3. Returns session metadata (device name, IP, user agent)
+
+---
+
+### DELETE /api/auth/sessions/:id
+
+Revokes a specific session by ID, logging out that device. Prevents deleting the current session.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Headers:**
+```
+Cookie: next-auth.session-token=...
+```
+
+**Path Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | UUID | Session ID to revoke |
+
+**Response (204 No Content):** No body returned on success.
+
+**Error Responses:**
+- `400 Bad Request`: Session ID is required (should not occur with proper routing)
+- `401 Unauthorized`: Invalid or missing authentication token
+- `403 Forbidden`: Cannot delete the current session
+  ```json
+  { "error": "Cannot delete current session" }
+  ```
+- `404 Not Found`: Session not found or doesn't belong to user
+  ```json
+  { "error": "Session not found" }
+  ```
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Requires authentication via `requireAuth` middleware
+- Only allows deleting sessions belonging to the authenticated user
+- Prevents deletion of the caller's own current session (403 Forbidden)
+- Invalidates LRU cache entry for deleted session
+
+**Database Operations:**
+1. Verifies the session exists and belongs to the authenticated user
+2. Checks that the session is not the current one
+3. Deletes session from `auth_sessions` table
+4. Invalidates cache entry for deleted session
 
 ---
 
@@ -992,7 +1043,11 @@ curl -X POST http://localhost:3000/api/auth/reset-password \
 curl -X GET http://localhost:3000/api/auth/sessions \
   -H "Cookie: next-auth.session-token=..."
 
-# 2. Logout from a specific device
+# 2. Delete a specific session by ID (non-current only)
+curl -X DELETE http://localhost:3000/api/auth/sessions/session-uuid-to-remove \
+  -H "Cookie: next-auth.session-token=..."
+
+# 3. Logout from a specific device
 curl -X POST http://localhost:3000/api/auth/logout-session \
   -H "Cookie: next-auth.session-token=..." \
   -H "Content-Type: application/json" \
@@ -1000,11 +1055,11 @@ curl -X POST http://localhost:3000/api/auth/logout-session \
     "sessionId": "session-uuid-to-remove"
   }'
 
-# 3. Logout from all OTHER devices (keep current)
+# 4. Logout from all OTHER devices (keep current)
 curl -X POST http://localhost:3000/api/auth/logout-all \
   -H "Cookie: next-auth.session-token=..."
 
-# 4. Logout from ALL devices (including current, forces re-login)
+# 5. Logout from ALL devices (including current, forces re-login)
 curl -X POST http://localhost:3000/api/auth/logout-all-devices \
   -H "Cookie: next-auth.session-token=..."
 ```

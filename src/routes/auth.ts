@@ -44,7 +44,7 @@ import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
-import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices } from '../services/session-manager.js';
+import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
 import { sanitizeUserData, getUserForAuth, getUserIdByEmail } from '../services/user.js';
 import type { Request, Response } from "express";
 import type { DBUserForAuth } from '../types/schema.js';
@@ -763,7 +763,8 @@ router.post('/google-oauth', async (req: Request, res: Response) => {
 router.get('/sessions', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
-    const sessions = await getUserSessions(userId);
+    const currentSessionId = req.user?.sessionId;
+    const sessions = await getUserSessions(userId, currentSessionId);
     res.json({ sessions, count: sessions.length });
   } catch (error) {
     console.error('[GET /api/auth/sessions] ❌ Error fetching sessions:', error);
@@ -911,6 +912,59 @@ router.post('/logout-session', requireAuth, async (req: Request, res: Response) 
   } catch (error) {
     console.error('[POST /api/auth/logout-session] ❌ Error logging out from session:', error);
     handleApiError(res, 'Failed to logout from session', error, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/auth/sessions/:id
+// ---------------------------------------------------------------------------
+
+/**
+ * DELETE /api/auth/sessions/:id
+ *
+ * Revokes a specific session by ID. Prevents deleting the current session.
+ *
+ * @route DELETE /api/auth/sessions/:id
+ * @description Logout from a specific device/session by session ID
+ *
+ * @param {string} id - Session ID to revoke (path parameter)
+ *
+ * @returns 204 No Content on success
+ *
+ * Response (403): Cannot delete current session
+ * Response (404): Session not found
+ * Response (401): Unauthorized
+ *
+ * @example
+ * // Request
+ * DELETE /api/auth/sessions/session-uuid
+ *
+ * // Response (204) - No Content
+ */
+router.delete('/sessions/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const currentSessionId = req.user?.sessionId;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    if (sessionId === currentSessionId) {
+      return res.status(403).json({ error: 'Cannot delete current session' });
+    }
+
+    const deleted = await deleteSessionById(userId, sessionId, currentSessionId!);
+
+    if (!deleted) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    res.status(204).send();
+  } catch (error) {
+    console.error('[DELETE /api/auth/sessions/:id] ❌ Error deleting session:', error);
+    handleApiError(res, 'Failed to delete session', error, 500);
   }
 });
 

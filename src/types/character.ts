@@ -43,14 +43,14 @@ export type StoryMCTranslation = Pick<StoryMC, 'bio'>;
  * while enabling meaningful character dynamics.
  */
 export const relationshipTypes = [
-  "friend",      // Close personal bond
-  "family",      // Blood or chosen family
-  "knows",       // Acquaintance/familiarity
-  "stranger",    // Unknown character
-  "enemy",       // Hostile relationship
-  "mentor",      // Teacher/student, guidance relationship
-  "rival"        // Competitive relationship
-  // TODO: add "partner"?
+  "stranger", // No prior relationship
+  "knows",    // Acquaintance
+  "friend",   // Close platonic relationship
+  "partner",  // Romantic partner/spouse
+  "family",   // Family member
+  "mentor",   // Teacher/student guidance
+  "rival",    // Competitive relationship
+  "enemy",    // Hostile relationship
 ] as const;
 
 /**
