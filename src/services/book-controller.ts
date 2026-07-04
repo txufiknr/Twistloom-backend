@@ -105,7 +105,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
       id: users.userId,
       email: users.email,
       username: users.username,
-      name: users.penName || users.name,
+      name: sql<string>`COALESCE(users.pen_name, users.name)`,
+      // name: users.penName || users.name || "Anonymous",
       imageUrl: users.imageUrl,
     } satisfies Record<keyof BookAuthor, unknown>,
 

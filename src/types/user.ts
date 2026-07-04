@@ -54,9 +54,9 @@ export interface UserSubscription {
 
 export interface User {
   id: string;
-  email: string | null;
-  username: string | null;
-  name: string | null;
+  email: string;
+  username: string;
+  name: string;
   bio: string | null;
   imageUrl: string | null;
   gender: Gender | null;

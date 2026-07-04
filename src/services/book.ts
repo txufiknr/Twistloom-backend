@@ -1372,11 +1372,12 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   // plotFlags:      all narrative flags accumulated from page 1 through current page.
   let context: EnrichedStoryPageContext | undefined;
   if (storyState) {
-    const { places, characters, injuries, inventory, contextHistory, actionsHistory, plotFlags, threads, viableEnding } = storyState;
+    const { places, characters, injuries, inventory, healthStatus, contextHistory, actionsHistory, plotFlags, threads, viableEnding } = storyState;
     const { phase } = getStoryStateInfo(storyState);
     const activeThreads = threads.filter(t => ['open', 'developing'].includes(t.status));
     context = {
       phase,
+      healthStatus,
       injuries,
       inventory,
       contextHistory,

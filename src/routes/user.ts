@@ -48,7 +48,7 @@
 import type { Router as RouterType } from 'express';
 import type { Request, Response } from 'express';
 import type { DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
-import type { LikeTargetType, User, UserActivityType, UserStats } from "../types/user.js";
+import type { LikeTargetType, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
@@ -62,7 +62,7 @@ import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfile
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
-import { checkAndAwardAchievements, getUserAchievements } from '../services/achievements.js';
+import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
 import type { PaginationMeta } from '../types/api.js';
 import { ACHIEVEMENT_REGISTRY } from '../config/achievements.js';
 
@@ -189,7 +189,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
  * 
  * @body {Object} Onboarding data
  * @body {string} [name] - User's display name
- * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
+ * @body {string} [gender] - User's gender (e.g., "male", "female", "unknown")
  * @body {string} [referrer] - Referrer username or user ID
  * 
  * @returns {Object} Onboarding completion response
@@ -298,7 +298,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
  * {
  *   "success": true,
  *   "user": {
- *     "userId": "user-uuid",
+ *     "id": "user-uuid",
  *     "name": "John Doe",
  *     "bio": "Thriller enthusiast",
  *     "gender": "male",
@@ -324,7 +324,7 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
     // 2. Append route-specific data
     updateData.updatedAt = new Date();
 
-    // 3. Apply update
+    // 3. Apply update and return updated row
     const [user] = await dbWrite
       .update(users)
       .set(updateData)
@@ -334,7 +334,9 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
     await invalidateUserProfileCache(userId);
     await updateUserLastActivity(userId);
 
-    res.json({ success: true, user });
+    // Rename userId → id for frontend consistency
+    const { userId: id, ...rest } = user;
+    res.json({ success: true, user: { id, ...rest } });
   } catch (error) {
     console.error('[PUT /api/user] ❌', error);
     handleApiError(res, 'Failed to update profile', error);
@@ -510,7 +512,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
 //  * 
 //  * @body {Object} User profile data
 //  * @body {string} [name] - User's display name
-//  * @body {string} [gender] - User's gender (e.g., "male", "female", "other")
+//  * @body {string} [gender] - User's gender (e.g., "male", "female", "unknown")
 //  * @body {string} [image] - User's profile image URL
 //  * 
 //  * @returns {Object} Creation/replacement response
@@ -2316,13 +2318,23 @@ router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
 /**
  * GET /api/user/achievements
  * Returns detailed view of unlocked and locked achievements with progress calculations.
+ *
+ * @query {number} page - Page number for pagination (default: 1)
+ * @query {number} limit - Items per page (default: 50)
  */
 router.get('/achievements', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const badges = await getUserAchievements(userId);
 
-    res.json({ success: true, badges });
+    // Apply pagination if params provided
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || badges.length;
+    const offset = (page - 1) * limit;
+    const pagedBadges = badges.slice(offset, offset + limit);
+    const pagination = calculatePaginationMeta(page, limit, badges.length);
+
+    res.json({ success: true, badges: pagedBadges, pagination });
   } catch (error) {
     handleApiError(res, 'Failed to fetch achievements layout', error);
   }
@@ -2359,14 +2371,29 @@ router.get('/achievements/unnotified', requireAuth, async (req: Request, res: Re
       return res.json({ success: true, badges: [] });
     }
 
-    // 3. Map to your rich registry data for the frontend UI
+    // 3. Fetch current counter values for progress data
+    const metrics = await getUserMetrics(userId);
+
+    // 4. Map to full UserAchievement shape (same format as getUserAchievements)
     const badges = unnotifiedRows.map(row => {
       const rule = ACHIEVEMENT_REGISTRY.find(r => r.id === row.achievementId);
+      if (!rule) return null;
+      const currentValue = metrics[rule.metric];
+      const progressPercent = Math.round((Math.min(currentValue, rule.threshold) / rule.threshold) * 100);
       return {
-        dbId: row.id,
-        ...rule
-      };
-    }).filter(b => b.id); // Filter out any undefined matches just in case
+        id: rule.id,
+        title: rule.title,
+        description: rule.description,
+        badgeImageUrl: rule.badgeImageUrl,
+        tier: rule.tier,
+        currentProgress: currentValue,
+        threshold: rule.threshold,
+        progressPercent,
+        isUnlocked: true,
+        unlockedAt: null,
+        isNotified: false,
+      } satisfies UserAchievement;
+    }).filter((b): b is NonNullable<typeof b> => b != null);
 
     res.json({ success: true, badges });
   } catch (error) {

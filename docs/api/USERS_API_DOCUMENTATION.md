@@ -79,10 +79,10 @@ User profile information returned by the API.
 interface User {
   id: string;                          // User's unique identifier (UUID)
   username: string;                     // User's unique username
-  email?: string | null;               // User's email address
-  name?: string | null;                // User's display name
+  email: string;                       // User's email address
+  name: string;                        // User's display name
   bio?: string | null;                 // User's bio/description
-  gender?: string | null;              // User's gender ("male" | "female" | "other")
+  gender?: string | null;              // User's gender ("male" | "female" | "unknown")
   imageUrl?: string | null;            // User's profile image URL
   credits: number;                     // Available credits
   isNewUser: boolean;                  // Onboarding completed flag
@@ -190,6 +190,26 @@ interface FollowUser {
   username: string | null;   // Username
   imageUrl: string | null;   // Profile image URL
   followedAt: string;        // When the follow was created (ISO 8601)
+}
+```
+
+### UserAchievement
+
+Achievement badge with progress toward unlocking.
+
+```typescript
+interface UserAchievement {
+  id: string;                // Achievement identifier (e.g., "gen_50")
+  title: string;             // Display title
+  description: string;       // Achievement description
+  badgeImageUrl: string;     // Badge icon URL
+  tier: 'bronze' | 'silver' | 'gold' | 'platinum';  // Badge tier
+  currentProgress: number;   // Current user metric value
+  threshold: number;         // Value needed to unlock
+  progressPercent: number;   // Progress as percentage (0-100)
+  isUnlocked: boolean;       // Whether the badge has been earned
+  unlockedAt: string | null; // When the badge was unlocked (ISO 8601)
+  isNotified: boolean;       // Whether user has seen the notification
 }
 ```
 
@@ -428,7 +448,7 @@ This is NOT a general-purpose create/replace endpoint — it only works for user
 
 **Parameters:**
 - `name` (string, optional): User's display name
-- `gender` (string, optional): User's gender ("male", "female", "other")
+- `gender` (string, optional): User's gender ("male", "female", "unknown")
 - `referrer` (string, optional): Referrer username or user ID
 
 **Response (200 OK):**
@@ -478,11 +498,40 @@ Partially updates the authenticated user's profile. Only provided fields are upd
 {
   "success": true,
   "user": {
-    "userId": "user-uuid",
+    "id": "user-uuid",
+    "username": "johndoe",
+    "email": "john@example.com",
     "name": "John Doe",
     "bio": "Psychological thriller enthusiast",
     "gender": "male",
     "imageUrl": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+    "credits": 500,
+    "isNewUser": false,
+    "lastActive": "2024-01-15T10:30:00.000Z",
+    "subscription": {
+      "tier": null,
+      "vipExpiresAt": null
+    },
+    "stats": {
+      "readsCount": 150,
+      "likedBooksCount": 25,
+      "savedBooksCount": 8,
+      "likesReceived": 156,
+      "accountDaysOld": 380,
+      "emailVerified": "2024-01-01T00:00:00.000Z",
+      "havePurchased": true,
+      "booksGenerated": 5,
+      "booksCompleted": 12,
+      "pagesRead": 350,
+      "pagesGenerated": 80,
+      "branchesOpened": 15,
+      "topupCredits": 200,
+      "referredUsers": 3,
+      "followersCount": 42,
+      "activeCheckinStreak": 5,
+      "maxCheckinStreak": 12,
+      "customActionsWritten": 2
+    },
     "createdAt": "2023-01-01T00:00:00.000Z",
     "updatedAt": "2023-01-15T12:00:00.000Z"
   }
@@ -1358,11 +1407,27 @@ Returns the authenticated user's achievements/badges with progress calculations.
   "success": true,
   "badges": [
     {
-      "achievementId": "gen_50",
+      "id": "gen_50",
+      "title": "Storyteller",
+      "description": "Generate 50 books",
+      "badgeImageUrl": "https://example.com/badges/gen_50.png",
+      "tier": "gold",
+      "currentProgress": 50,
+      "threshold": 50,
+      "progressPercent": 100,
+      "isUnlocked": true,
       "unlockedAt": "2026-05-01T00:00:00.000Z",
       "isNotified": false
     }
-  ]
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 50,
+    "totalCount": 36,
+    "totalPages": 1,
+    "hasNext": false,
+    "hasPrevious": false
+  }
 }
 ```
 
@@ -1380,13 +1445,17 @@ Ultra-fast endpoint to check, award, and return newly unlocked badges. Designed 
   "success": true,
   "badges": [
     {
-      "dbId": "achievement-uuid",
       "id": "gen_50",
-      "category": "generation",
-      "icon": "sparkles",
-      "label": "Storyteller",
+      "title": "Storyteller",
       "description": "Generate 50 books",
-      "threshold": 50
+      "badgeImageUrl": "https://example.com/badges/gen_50.png",
+      "tier": "gold",
+      "currentProgress": 50,
+      "threshold": 50,
+      "progressPercent": 100,
+      "isUnlocked": true,
+      "unlockedAt": null,
+      "isNotified": false
     }
   ]
 }

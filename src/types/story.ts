@@ -1,7 +1,7 @@
 import type { AIChatProvider, AIResponseProvider } from "./ai-chat.js";
 import type { ResourceAIProvider, ResourceTimestamp } from "./api.js";
 import type { Book, PageTranslation } from "./book.js";
-import type { CharacterMemory, CharacterUpdates, Injury, InitialInjury, InventoryItem, RelationshipUpdate, HealthStatus, StoryMCCandidate, CharacterPlan, HealthCondition } from "./character.js";
+import type { CharacterMemory, CharacterUpdates, HealthStatus, Injury, InitialInjury, InventoryItem, RelationshipUpdate, StoryMCCandidate, CharacterPlan, HealthCondition } from "./character.js";
 import type { PlaceConnectionUpdate, PlaceMemory, PlaceUpdates, PlaceWeather } from "./places.js";
 import type { DBNewPage, DBPage, DBUserSession } from "./schema.js";
 import type { StoryThread, ThreadUpdates } from "./story-thread.js";
@@ -1235,6 +1235,8 @@ export type EnrichedStoryPageContext = {
   inventory: InventoryItem[];
   /** Represents injuries sustained by the MC */
   injuries: Injury[];
+  /** Deterministically derived health status of the MC */
+  healthStatus?: HealthStatus;
   /** AI-summarized context of the story until this page */
   contextHistory: string;
   /** History of actions made until this page */
