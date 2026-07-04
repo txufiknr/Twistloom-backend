@@ -22,9 +22,7 @@
 
 [ ] userCompletedBooks -> user_discovered_endings 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-
-[ ] page.context?.healthStatus
-[ ] computeEndingStats
+[ ] re-evaluate `PUT /user` (edit profile)
 
 ---
 

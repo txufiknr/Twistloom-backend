@@ -15,7 +15,7 @@ import { ACTIVITY_LOG_RETENTION_MONTHS } from "../config/purge.js";
 
 export async function runDailyCleanup(): Promise<void> {
   // Lazy imports in cron for better memory usage and startup time
-  const { processQueuedImageDeletions, cleanupOrphanedUserUploads } = await import("../services/image.js");
+  const { processQueuedImageDeletions, cleanupOrphanedUserUploads, cleanupStaleUserUploads } = await import("../services/image.js");
   const { runVipExpirationCheck } = await import("./vip-expiration.js");
   const { cleanupPrompts } = await import("./cleanup-prompts.js");
   const { dbWrite } = await import("../db/client.js");
@@ -53,6 +53,19 @@ export async function runDailyCleanup(): Promise<void> {
       }
     } else {
       console.log('[cleanup] ✨ No orphaned user uploads to process');
+    }
+
+    // Cleanup stale user profile images (users with multiple type='user' uploads)
+    console.log("[cleanup] 🖼️ Cleaning up stale user profile images...");
+    const staleCleanupStats = await cleanupStaleUserUploads(50);
+
+    if (staleCleanupStats.processed > 0) {
+      console.log(`[cleanup] 🧾 Stale user uploads: processed=${staleCleanupStats.processed} deleted=${staleCleanupStats.deleted}`);
+      if (staleCleanupStats.errors.length > 0) {
+        console.log(`[cleanup] ⚠️ Stale upload cleanup errors: ${staleCleanupStats.errors.join('; ')}`);
+      }
+    } else {
+      console.log('[cleanup] ✨ No stale user uploads to process');
     }
 
     // Check for expired VIP subscriptions and downgrade users

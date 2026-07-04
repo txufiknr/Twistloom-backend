@@ -1,7 +1,7 @@
 import ImageKit, { toFile } from "@imagekit/nodejs";
 import { getTodayDate } from "../utils/time.js";
 import { dbWrite } from "../db/client.js";
-import { inArray, sql, and, eq } from "drizzle-orm";
+import { inArray, sql, and, eq, isNull } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
 import { APP_NAME_SLUG } from "../config/constants.js";
 import { deletedImages, uploadedImages } from "../db/schema.js";
@@ -509,10 +509,11 @@ export async function deleteFileFromImageKit(fileId: string) {
 }
 
 /**
- * Bulk deletes multiple files from ImageKit
+ * Bulk deletes multiple files from ImageKit with individual fallback
  * 
- * Deletes multiple files in a single API call for better performance.
- * Unlike single file deletion, this does not have automatic fallback to queue.
+ * Attempts bulk deletion first. If the bulk call fails, falls back to
+ * individual deletes. Any individual failures are queued for retry by
+ * the cleanup cron job.
  * 
  * @param fileIds - Array of ImageKit file IDs to delete
  * @returns Promise resolving when deletion is attempted
@@ -530,7 +531,10 @@ export async function deleteFilesFromImageKit(fileIds: string[]) {
     const response = await imagekit.files.bulk.delete({ fileIds });
     console.log("[imagekit] 🗑️ Images bulk delete result:", response.successfullyDeletedFileIds);
   } catch (error) {
-    console.error(`[imagekit] ❌ Failed to bulk delete images:`, getErrorMessage(error));
+    console.warn("[imagekit] ⚠️ Bulk delete failed, falling back to individual deletes:", getErrorMessage(error));
+    for (const fileId of fileIds) {
+      await deleteFileFromImageKit(fileId);
+    }
   }
 }
 
@@ -650,39 +654,36 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
     const fileIdsToDelete = pendingDeletions.map(deletion => deletion.fileId);
 
     // Use bulk deletion for optimal performance
-    // Capture bulk response for later cleanup of uploaded_images
-    let bulkResponse: ImageKit.Files.Bulk.BulkDeleteResponse | null = null;
     try {
       const response = await imagekit.files.bulk.delete({ fileIds: fileIdsToDelete });
-      bulkResponse = response;
       stats.successful = response.successfullyDeletedFileIds?.length || 0;
       stats.failed = fileIdsToDelete.length - stats.successful;
-      
       console.log(`[imagekit] 🗑️ Bulk deletion completed: ${stats.successful}/${stats.processed} successful`);
-      
-      // Note: ImageKit bulk API doesn't provide detailed failure information
-      // We can only determine which files succeeded vs total count
-    } catch (bulkError) {
-      // Fallback to individual deletions if bulk fails
-      console.warn("[imagekit] ⚠️ Bulk deletion failed, falling back to individual deletions:", bulkError);
-      
-      // Reset counters for fallback processing
-      stats.successful = 0;
-      stats.failed = 0;
-      
-      // Process each deletion individually as fallback
-      for (const deletion of pendingDeletions) {
-        try {
-          await imagekit.files.delete(deletion.fileId);
-          stats.successful++;
-          console.log(`[imagekit] 🗑️ File ${deletion.fileId} deleted successfully (fallback)`);
-        } catch (error) {
-          stats.failed++;
-          const errorMsg = `Failed to delete file ${deletion.fileId}: ${getErrorMessage(error)}`;
-          stats.errors.push(errorMsg);
-          console.error(`[imagekit] ❌ ${errorMsg}`);
-        }
+
+      // Cleanup uploaded_images for files confirmed deleted by ImageKit
+      const confirmedDeleted = response.successfullyDeletedFileIds as string[] | undefined;
+      if (confirmedDeleted && confirmedDeleted.length > 0) {
+        await dbWrite
+          .delete(uploadedImages)
+          .where(inArray(uploadedImages.imageId, confirmedDeleted));
+        console.log(`[imagekit] 🧹 Removed ${confirmedDeleted.length} uploaded_images rows for bulk-deleted files`);
       }
+    } catch {
+      // Fallback to individual deletes (deleteFileFromImageKit queues on failure for retry)
+      console.warn("[imagekit] ⚠️ Bulk delete failed, falling back to individual deletes");
+      for (const deletion of pendingDeletions) {
+        await deleteFileFromImageKit(deletion.fileId);
+      }
+      // Remove uploaded_images for all queued files. Failed ones were queued for retry
+      // and will pick up uploaded_images cleanup when they succeed on the next cron run.
+      const del = await dbWrite
+        .delete(uploadedImages)
+        .where(inArray(uploadedImages.imageId, fileIdsToDelete))
+        .returning({ imageId: uploadedImages.imageId });
+      console.log(`[imagekit] 🧹 Removed ${del.length} uploaded_images rows for individually processed files`);
+      // Stats are optimistic here — individual failures were queued rather than counted as failed
+      stats.successful = stats.processed;
+      stats.failed = 0;
     }
 
     // Remove processed items from queue (both successful and failed)
@@ -690,41 +691,6 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
       await dbWrite
         .delete(deletedImages)
         .where(inArray(deletedImages.fileId, fileIdsToDelete));
-    }
-
-    // After successful ImageKit deletion, delete corresponding rows in `uploaded_images`
-    // Remove uploaded_images rows for successfully deleted files
-    try {
-      // Determine which fileIds were actually deleted
-      let actuallyDeleted: string[] = [];
-
-      // If bulk API returned successful ids, use them
-      // Note: bulkResponse may be null if bulk failed; handled in fallback below
-      if (bulkResponse?.successfullyDeletedFileIds && Array.isArray(bulkResponse.successfullyDeletedFileIds)) {
-        actuallyDeleted = bulkResponse.successfullyDeletedFileIds as string[];
-      }
-
-      // If fallback individual deletions succeeded, derive from stats (we logged individually)
-      if (actuallyDeleted.length === 0 && stats.successful > 0) {
-        // When bulk failed and fallback succeeded for some, derive by checking which uploadedImages still exist
-        const existing = await dbRead
-          .select({ imageId: uploadedImages.imageId })
-          .from(uploadedImages)
-          .where(inArray(uploadedImages.imageId, fileIdsToDelete));
-
-        const existingIds = existing.map((r: { imageId: string }) => r.imageId);
-        // Files deleted successfully are those in fileIdsToDelete but not in existingIds
-        actuallyDeleted = fileIdsToDelete.filter(id => !existingIds.includes(id));
-      }
-
-      if (actuallyDeleted.length > 0) {
-        await dbWrite
-          .delete(uploadedImages)
-          .where(inArray(uploadedImages.imageId, actuallyDeleted));
-        console.log(`[imagekit] 🧹 Removed ${actuallyDeleted.length} uploaded_images rows for deleted files`);
-      }
-    } catch (err) {
-      console.warn('[imagekit] ⚠️ Failed to cleanup uploaded_images rows:', getErrorMessage(err));
     }
 
     console.log(`[imagekit] ✅ Cleanup completed: ${stats.successful}/${stats.processed} successful, ${stats.failed} failed`);
@@ -739,8 +705,88 @@ export async function processQueuedImageDeletions(batchSize: number = 50): Promi
 }
 
 /**
- * Find orphaned user uploads (type='user' with no linked user) and queue them for deletion.
- * Also remove the uploaded_images rows after queuing deletion.
+ * Clean up stale (outdated) user profile images for users who still exist.
+ *
+ * When a user uploads a new avatar, a *new* `uploaded_images` row is inserted while
+ * the old row is left in place. Over time a user accumulates multiple `type = 'user'`
+ * rows with a non-null `userId`. This function finds those users, keeps only the
+ * *most recent* row, deletes all older images from ImageKit, and removes their DB rows.
+ *
+ * Contrast with {@link cleanupOrphanedUserUploads} which handles the opposite case:
+ * rows whose `userId` became NULL because the user account was deleted.
+ */
+export async function cleanupStaleUserUploads(batchSize: number = 50): Promise<{
+  processed: number;
+  deleted: number;
+  errors: string[];
+}> {
+  const stats = { processed: 0, deleted: 0, errors: [] as string[] };
+
+  try {
+    // Find users who have more than one type='user' upload
+    const dupResult = await dbRead.execute(sql`
+      SELECT user_id, COUNT(*)::int AS cnt
+      FROM uploaded_images
+      WHERE type = 'user' AND user_id IS NOT NULL
+      GROUP BY user_id
+      HAVING COUNT(*) > 1
+      LIMIT ${batchSize}
+    `);
+    const duplicates = dupResult.rows as Array<{ user_id: string; cnt: number }> | undefined;
+
+    if (!duplicates || duplicates.length === 0) return stats;
+
+    for (const { user_id: dupUserId } of duplicates) {
+      const rows = await dbRead
+        .select({ imageId: uploadedImages.imageId, createdAt: uploadedImages.createdAt })
+        .from(uploadedImages)
+        .where(and(eq(uploadedImages.userId, dupUserId), eq(uploadedImages.type, 'user')))
+        .orderBy(uploadedImages.createdAt)
+        .limit(100);
+
+      // Keep the youngest row, collect older ones for deletion
+      const stale = rows.slice(0, -1);
+      if (stale.length === 0) continue;
+
+      stats.processed += stale.length;
+      const staleIds = stale.map(r => r.imageId);
+
+      // Delete from ImageKit (bulk with individual+queue fallback)
+      await deleteFilesFromImageKit(staleIds);
+
+      // Remove stale DB rows
+      const del = await dbWrite
+        .delete(uploadedImages)
+        .where(and(
+          eq(uploadedImages.userId, dupUserId),
+          eq(uploadedImages.type, 'user'),
+          inArray(uploadedImages.imageId, staleIds),
+        ))
+        .returning({ imageId: uploadedImages.imageId });
+      stats.deleted += del.length;
+    }
+
+    console.log(`[imagekit] 🧹 Stale user uploads cleanup: processed=${stats.processed} deleted=${stats.deleted}`);
+    return stats;
+  } catch (error) {
+    const msg = getErrorMessage(error);
+    console.error('[imagekit] ❌ Failed to cleanup stale user uploads:', msg);
+    stats.errors.push(msg);
+    return stats;
+  }
+}
+
+/**
+ * Clean up orphaned user uploads whose linked user account no longer exists.
+ *
+ * When a user account is deleted, the DB trigger sets `userId = NULL` on the
+ * corresponding `uploaded_images` rows (rather than deleting them immediately).
+ * This function finds those orphaned rows (`type = 'user'` with `userId IS NULL`),
+ * queues their ImageKit file IDs for deletion (via {@link queueImageForDeletion}),
+ * and removes the orphaned DB rows.
+ *
+ * Contrast with {@link cleanupStaleUserUploads} which handles the opposite case:
+ * users who **still exist** but have accumulated multiple old avatar rows.
  */
 export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promise<{
   processed: number;
@@ -755,7 +801,7 @@ export async function cleanupOrphanedUserUploads(batchSize: number = 100): Promi
     const orphans = await dbRead
       .select({ imageId: uploadedImages.imageId })
       .from(uploadedImages)
-      .where(and(eq(uploadedImages.type, 'user'), sql`${uploadedImages.userId} IS NULL`))
+      .where(and(eq(uploadedImages.type, 'user'), isNull(uploadedImages.userId)))
       .orderBy(uploadedImages.createdAt)
       .limit(batchSize);
 

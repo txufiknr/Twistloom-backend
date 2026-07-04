@@ -52,7 +52,7 @@ import type { LikeTargetType, User, UserAchievement, UserActivityType, UserStats
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements } from "../db/schema.js";
+import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -60,6 +60,7 @@ import { updateUserLastActivity, getCheckInStatus, logUserActivity, sanitizeProf
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
+import { uploadUserImage } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
@@ -321,10 +322,31 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
       return handleValidationError(res, 'At least one valid field must be provided');
     }
 
-    // 2. Append route-specific data
+    // 2. Upload profile image to ImageKit if it's base64 data
+    if (updateData.imageUrl?.startsWith('data:')) {
+      const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
+      if (!uploadResult?.url) {
+        handleApiError(res, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
+        return;
+      }
+
+      // Insert into uploaded_images — DB trigger auto-sets users.image_url.
+      // Old user images are cleaned up by daily cron (cleanupStaleUserUploads).
+      await dbWrite.insert(uploadedImages).values({
+        imageId: uploadResult.fileId!,
+        imageUrl: uploadResult.url!,
+        type: 'user',
+        userId,
+      });
+
+      // Remove from updateData — trigger handles users.image_url
+      delete updateData.imageUrl;
+    }
+
+    // 3. Append route-specific data
     updateData.updatedAt = new Date();
 
-    // 3. Apply update and return updated row
+    // 4. Apply update and return updated row
     const [user] = await dbWrite
       .update(users)
       .set(updateData)
