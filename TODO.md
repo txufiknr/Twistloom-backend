@@ -24,6 +24,12 @@
 
 ---
 
+get user:
+src\routes\user.ts
+src\services\user-controller.ts
+src\services\cache.ts
+---
+
 currently computeEndingStats live-querying the completed readers count rather than relying on a potentially stale complete_count field
 should be directly get from complete_count field
 

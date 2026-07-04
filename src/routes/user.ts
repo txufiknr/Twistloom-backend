@@ -446,6 +446,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
     
     // Ensure identifier is a string (Express params can be string[])
     const identifierStr = Array.isArray(identifier) ? identifier[0] : identifier;
+    console.log(`[GET /users/${identifierStr}] 👤 Fetching user profile (identifier: ${identifierStr})`);
     
     // Determine if identifier is UUID or username
     const isUuid = isValidUuid(identifierStr);
@@ -461,6 +462,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
     const fetchUserProfile = async () => {
       const [userData] = await getEnrichedUser(whereCondition);
 
+      // TODO: is there any better approach rather than using string matching in catch?
       if (!userData) throw new Error("User profile not found");
 
       // Format response to match frontend expectations
@@ -505,6 +507,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         } satisfies UserStats,
       };
 
+      console.log(`[GET /users/${identifierStr}] ✅ Fetched user profile from DB:`, formattedUser);
       return {
         user: formattedUser,
       };

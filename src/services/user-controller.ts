@@ -111,15 +111,15 @@ export function getEnrichedUserSelect() {
 }
 
 /**
- * 
- * @returns 
- * 
+ * Gets the base query for fetching enriched user data.
+ * @returns The base query instance
  * @example
  * const [userData] = await getEnrichedUserBaseQuery()
  * .where(whereCondition)
  * .limit(1);
  */
 export function getEnrichedUserBaseQuery() {
+  console.log('[user-controller] 👤 getEnrichedUserBaseQuery called');
   return dbRead
     .select(getEnrichedUserSelect())
     .from(users)
@@ -128,24 +128,25 @@ export function getEnrichedUserBaseQuery() {
 }
 
 /**
- * 
- * @param where 
- * @returns 
+ * Gets enriched user data based on a WHERE condition.
+ * @param where The WHERE condition for the query
+ * @returns The enriched user data
  * 
  * @example
  * const [userData] = await getEnrichedUser(whereCondition);
  */
 export function getEnrichedUser(where: SQL) {
+  console.log('[user-controller] 👤 getEnrichedUser called');
   return getEnrichedUserBaseQuery().where(where).limit(1);
 }
 
 /**
- * 
- * @param userId 
- * @returns 
+ * Gets enriched user data by user ID.
+ * @param userId The user ID
+ * @returns The enriched user data
  * 
  * @example
- * const [user] = await getEnrichedUserById(userId);
+ * const [userData] = await getEnrichedUserById(userId);
  */
 export function getEnrichedUserById(userId: string) {
   return getEnrichedUser(eq(users.userId, userId));

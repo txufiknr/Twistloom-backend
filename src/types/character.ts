@@ -235,7 +235,7 @@ export type CharacterMemory = {
   role: string;
   /** Brief 1-sentence character description with hints (Who are they?) */
   bio: string;
-  /** Character visual description, e.g. "tall, pale, messy black hair, hollow eyes" */
+  /** Character visual description (e.g., "tall, pale, messy black hair, hollow eyes") */
   visualDescription: string;
   /** Character significance */
   importance: CharacterImportance;
@@ -259,11 +259,7 @@ export type CharacterMemory = {
   recognitionLevel: CharacterRecognitionLevel;
   // /** Specific person they trust in an urgent situation (character ids) */
   // emergencyContacts: string[];
-  /**
-   * NPC schedule: when/where this character can be found.
-   * If set, the AI should respect these windows when deciding
-   * whether a character is present.
-   */
+  /** NPC schedule: when/where this character can be found. */
   schedule?: CharacterSchedule; // TODO: display in formatCharactersForPrompt
   /** The traits of the character (e.g., skills, hobbies) */
   traits?: TraitItem[];
