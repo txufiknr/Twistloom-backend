@@ -106,8 +106,8 @@ export function getInjurySeverityLabel(injury: Injury): InjurySeverity {
  */
 export function updateCharacter(existing: CharacterMemory, update: CharacterUpdate, page: number, placeId?: string): CharacterMemory {
   const updated: CharacterMemory = structuredClone(existing);
-  const { updateTraits = [], removeTraits = [] } = update;
-  const { traits = [] } = existing;
+  const { updateTraits = [], removeTraits = [], updateSchedules = [], removeSchedules = [] } = update;
+  const { traits = [], schedules = [] } = existing;
 
   // Update basic properties if provided
   if (update.knownName) updated.knownName = update.knownName;
@@ -149,6 +149,21 @@ export function updateCharacter(existing: CharacterMemory, update: CharacterUpda
   if (removeTraits.length) {
     updated.traits = [
       ...traits.filter(t => !removeTraits.includes(t.key)),
+    ];
+  }
+
+  // Update schedules if provided
+  if (updateSchedules.length) {
+    updated.schedules = [
+      ...schedules.filter(s => !updateSchedules.some(u => u.placeId === s.placeId)),
+      ...updateSchedules
+    ];
+  }
+
+  // Remove schedules
+  if (removeSchedules.length) {
+    updated.schedules = [
+      ...schedules.filter(s => !removeSchedules.includes(s.placeId)),
     ];
   }
 
@@ -422,7 +437,8 @@ export function getMainCharacterInfo(params: {
  *     → lisa_park: (rival - hostile - full_name_known) Doesn't trust her motives
  *   - Narrative mechanics: potential twist: none
  *   - Physical state: healthy, active
- *   - Schedule: Available: night | Location: basement | If missed: Can't buy tickets
+ *   - Schedules:
+ *     → Available: night | Place: basement | If missed: Can't buy tickets
  * 
  * · Lisa (teacher, supporting) - female [suspicious, has secret, missing] - [ID: lisa_park]
  *   - Real name: "Lisa Park" (Recognition: first_name_known)
@@ -471,7 +487,7 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       const {
         knownName, realName, recognitionLevel, role, gender, status,
         bio, visualDescription, introducedAtPage, pastInteractions, importance,
-        secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits, schedule
+        secrets, relationships, relationshipToMC, narrativeFlags, injuries, traits, schedules
       } = character;
 
       const useDifferentReference = knownName !== realName;
@@ -566,11 +582,14 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
       // Concluding Physical Status
       details.push(`  - Physical state: ${physicalStatusDisplay}`);
 
-      // Schedule with descriptive formatting
-      if (schedule) {
-        const scheduleParts = [`Available: ${schedule.availabilityWindow}`, `Location: ${schedule.placeId}`];
-        if (schedule.missedConsequence) scheduleParts.push(`If missed: ${schedule.missedConsequence}`);
-        details.push(`  - Schedule: ${scheduleParts.join(' | ')}`);
+      // Schedules with descriptive formatting
+      if (schedules?.length) {
+        details.push(`  - Schedules:`);
+        schedules.forEach(s => {
+          const parts = [`Available: ${s.availabilityWindow}`, `Place: ${s.placeId}`];
+          if (s.missedConsequence) parts.push(`If missed: ${s.missedConsequence}`);
+          details.push(`    → ${parts.join(' | ')}`);
+        });
       }
 
       // Traits with nested bullets

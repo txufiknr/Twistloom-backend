@@ -216,10 +216,10 @@ export type NarrativeFlags = {
  * that create natural friction and consequence.
  */
 export type CharacterSchedule = {
-  /** When in the day this character is typically present */
-  availabilityWindow: string; // e.g., "night", "day", "evening", "dawn", "all", "unknown"
   /** Location/placeId they are usually found at during their window */
   placeId: string;
+  /** When in the day this character is typically present */
+  availabilityWindow: string; // e.g., "night", "day", "evening", "dawn", "all", "unknown"
   /** Optional description of what happens if MC misses them (e.g., "Can't buy tickets") */
   missedConsequence?: string;
 };
@@ -259,16 +259,15 @@ export type CharacterMemory = {
   recognitionLevel: CharacterRecognitionLevel;
   // /** Specific person they trust in an urgent situation (character ids) */
   // emergencyContacts: string[];
-  /** NPC schedule: when/where this character can be found. */
-  schedule?: CharacterSchedule;
+  /** NPC schedules: when/where this character can be found. Multiple entries for different availability windows per place. */
+  schedules?: CharacterSchedule[];
   /** The traits of the character (e.g., skills, hobbies) */
   traits?: TraitItem[];
 };
 
 export type CharacterMemoryTranslation = Pick<CharacterMemory, 'role' | 'bio' | 'traits'> & { characterId: string };
 
-// TODO: include schedule?
-export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships' | 'schedule'> & {
+export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInteractions' | 'injuries' | 'relationships'> & {
   characterId: string;
   pastInteractions?: string[];
   injuries?: InitialInjury[];
@@ -282,11 +281,13 @@ export type NewCharacter = Omit<CharacterMemory, 'introducedAtPage' | 'pastInter
  * 
  * @interface CharacterUpdate
  */
-export type CharacterUpdate = Partial<Omit<NewCharacter, 'realName' | 'pastInteractions' | 'traits'>> & {
+export type CharacterUpdate = Partial<Omit<NewCharacter, 'realName' | 'pastInteractions' | 'traits' | 'schedules'>> & {
   characterId: string;
   newInteractions?: string[];
   updateTraits?: TraitItem[];
   removeTraits?: string[];
+  updateSchedules?: CharacterSchedule[];
+  removeSchedules?: string[];
 };
 
 /**

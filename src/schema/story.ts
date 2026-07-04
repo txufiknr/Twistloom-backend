@@ -1,6 +1,6 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
-import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, StoryMCGeneration } from "../types/character.js";
+import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
 import { type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
@@ -395,6 +395,17 @@ export const CHARACTER_PLAN_SCHEMA: AIJsonProperty = {
 
 const { storyPurpose: _sp, plannedIntroduction: _pli, ...initialCharacterProperties} = CHARACTER_PLAN_PROPERTIES;
 
+export const CHARACTER_SCHEDULE_SCHEMA: AIJsonProperty = {
+  type: 'object',
+  properties: {
+    placeId: { type: 'string', description: 'Place ID they are usually found at during their window.' },
+    availabilityWindow: { type: 'string', description: 'When in the day this character is typically present (e.g., time range, "night", "day", "24h", "random").' },
+    missedConsequence: { type: 'string', description: 'What happens if MC misses them (e.g., "Can\'t buy tickets").' },
+  },
+  required: ['placeId', 'availabilityWindow'] satisfies (keyof CharacterSchedule)[],
+  additionalProperties: false
+};
+
 export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProperty> = {
   ...initialCharacterProperties,
   recognitionLevel: { type: 'string', enum: [...characterRecognitionLevels], description: `How well does MC know this character.` },
@@ -413,6 +424,7 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
   secrets: { type: 'array', items: { type: 'string' }, description: `Any secrets the character has unknown to MC (max ${MAX_CHARACTER_SECRETS}).` },
   narrativeFlags: CHARACTER_NARRATIVE_FLAGS_SCHEMA,
   injuries: { type: 'array', items: INITIAL_INJURY_SCHEMA },
+  schedules: { type: 'array', description: 'When/where this character can be found. Multiple entries for different availability windows per place.', items: CHARACTER_SCHEDULE_SCHEMA },
   pastInteractions: { type: 'array', items: { type: 'string' }, description: 'Interactions happened in this page' },
   traits: {
     type: 'array',
@@ -423,7 +435,7 @@ export const INITIAL_CHARACTER_PROPERTIES: Record<keyof NewCharacter, AIJsonProp
   },
 };
 
-export const { realName: _cn, pastInteractions: _pin, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
+export const { realName: _cn, pastInteractions: _pin, schedules: _schedules, ...updateCharacterProperties } = INITIAL_CHARACTER_PROPERTIES;
 
 export const INITIAL_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
@@ -445,8 +457,10 @@ export const UPDATE_CHARACTER_SCHEMA: AIJsonProperty = {
       })
     },
     removeTraits: { type: 'array', items: { type: 'string' } },
+    updateSchedules: { type: 'array', items: CHARACTER_SCHEDULE_SCHEMA },
+    removeSchedules: { type: 'array', items: { type: 'string', description: 'Place ID of the schedule to remove' } },
   } satisfies Record<keyof CharacterUpdate, AIJsonProperty>,
-  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions', 'updateTraits', 'removeTraits'] satisfies (keyof CharacterUpdate)[],
+  required: ['characterId', 'knownName', 'recognitionLevel', 'role', 'gender', 'status', 'importance', 'relationshipToMC', 'bio', 'visualDescription', 'injuries', 'secrets', 'narrativeFlags', 'newInteractions', 'updateTraits', 'removeTraits', 'updateSchedules', 'removeSchedules'] satisfies (keyof CharacterUpdate)[],
   additionalProperties: false
 };
 

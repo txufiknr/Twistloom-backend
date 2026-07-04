@@ -589,6 +589,13 @@ const firstBookOutputFormat: string = `{
       "traits": [
         { "key": "...", "value": "..." }
       ],
+      "schedules": [
+        {
+          "placeId": "<place_id>",
+          "availabilityWindow": "...",
+          "missedConsequence": "..."
+        }
+      ],
       "injuries": [
         {
           "bodyPart": "...",
@@ -810,6 +817,13 @@ const nextPageOutputFormat: string = `{
         "narrativeFlags": {
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
+        "schedules": [
+          {
+            "placeId": "<place_id>",
+            "availabilityWindow": "...",
+            "missedConsequence": "..."
+          }
+        ],
         "traits": [
           { "key": "...", "value": "..." }
         ],
@@ -837,6 +851,14 @@ const nextPageOutputFormat: string = `{
         "narrativeFlags": {
           "potentialTwist": "One of: ${formatOneOf(potentialTwistTypes)}"
         },
+        "updateSchedules": [
+          {
+            "placeId": "<place_id>",
+            "availabilityWindow": "...",
+            "missedConsequence": "..."
+          }
+        ],
+        "removeSchedules": ["<place_id>"],
         "updateTraits": [
           { "key": "...", "value": "..." }
         ],
