@@ -25,6 +25,32 @@ export const placeTypes = [
  */
 export type PlaceType = typeof placeTypes[number];
 
+/**
+ * Canonical place types aligned with frontend BGM system
+ * 
+ * Maps narrative place descriptions to audio-appropriate categories
+ * used by the background music engine for place-based ambience selection.
+ */
+export const canonicalPlaceTypes = [
+  "underground",
+  "sacred_space",
+  "institutional_indoor",
+  "domestic_indoor",
+  "commercial_indoor",
+  "abandoned_building",
+  "transit_vehicle",
+  "urban_outdoor",
+  "rural_outdoor",
+  "coastal_water",
+  "forest_wilderness",
+  "unknown"
+] as const;
+
+/**
+ * Union type of all possible canonical place type values
+ */
+export type CanonicalPlaceType = typeof canonicalPlaceTypes[number];
+
 // /**
 //  * Available emotional atmospheres for places
 //  * 
@@ -103,6 +129,8 @@ export type PlaceMemory = {
   realName: string;
   /** Type of place for categorization and behavior patterns */
   type: PlaceType;
+  /** Canonical place type for frontend BGM mapping */
+  canonicalType?: CanonicalPlaceType;
   /** Short human-readable description for immediate recall */
   context: string;
   /** Known clues, obstacles, spatial relationship to other places */

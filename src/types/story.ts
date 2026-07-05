@@ -1257,7 +1257,7 @@ export type EnrichedStoryPageContext = {
   ending?: Omit<Ending, 'changeNote'>;
 };
 
-export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'context'> & { placeId: string; name: string; };
+export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'canonicalType' | 'context'> & { placeId: string; name: string; };
 export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; };
 
 export type NarrativeContext = {

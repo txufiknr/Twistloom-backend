@@ -3,7 +3,7 @@ import { AI_CHAT_MODELS_THEME, AI_CHAT_MODELS_WRITING } from "../config/ai-clien
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import { actionTypes, moods, archetypes, stabilityLevels, manipulationAffinities, type StoryState, type Action, actionHintTypes, type PsychologicalFlags, type PsychologicalProfile, truthLevels, threatProximities, realityStabilities, type HiddenState, type PersistedStoryPage, type ActionHintType, type AIActionConfig, endingTypes, finalePhases, plotFlagTypes, factTypes, flagLevels, psychologicalFlagsTypes, difficulties, sceneTypes, storyMomentums, characterSceneRoles, type StabilityLevel, storyPhaseKeys } from "../types/story.js";
 import { createNonRetryableError } from "./retry.js";
-import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_TEMPERATURE, MIN_TEMPERATURE, MAX_TOP_P, MIN_TOP_P, MAX_TOP_K, MIN_TOP_K, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
+import { TWIST_INJECTION_CONFIG, JSON_RELIABILITY_CAPS, MAX_ACTION_CHOICES, MAX_ACTION_CHOICES_FIRST_PAGE, MAX_CHARACTERS, MAX_PLACES, MIN_CHARACTER_AGE, MAX_CHARACTER_AGE, BOOK_MIN_PAGES, VIABLE_ENDING_LENGTH, MIN_ACTION_CHOICES, PLACE_CONTEXT_LENGTH, BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, KEYWORDS_COUNT, MAX_ACTIVE_THREADS, MAX_TRAUMA_TAGS, KEY_EVENT_LENGTH, ACTION_TEXT_LENGTH, MIN_CHARS_PER_PAGE, MAX_BRANCHING_PREGENERATION_DEPTH, MAX_FUTURE_NOTES, RELATIONSHIP_TO_MC_LENGTH, MAX_INVENTORY_ITEM, MAX_CHARACTER_SECRETS, FACT_KEY_FORMAT, FUTURE_NOTE_LOOKAHEAD_PAGES, MAX_RECENT_MAJOR_EVENTS, MAX_PAGE_HISTORY, MAX_OLDER_PLOT_FLAGS, MAX_THREADS_CLUES, MAX_ACTION_CHOICES_FINALE, FUTURE_NOTE_LOOKAHEAD_DAYS } from "../config/story.js";
 import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
@@ -43,9 +43,10 @@ import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types
 import { ucfirst } from "./formatter.js";
 import { daysBetween, formatMinutes, toUtcMidnight } from "./time.js";
 import { MAX_FINAL_COMMENT_LENGTH, PROMPT_SYSTEM_WRITING_STYLE, RULES_PAGE_TEXT_BY_PRESET } from "../config/book-creation.js";
-import type { AdvancedOptionsConfig, WritingPreset } from "../types/book-creation.js";
+import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
+import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -339,67 +340,6 @@ function buildPresetSystemPrompt(type: 'first' | 'next', preset: WritingPreset =
   ].join('\n\n---\n');
 
   return `${writingStyle}\n\n---\n${rules}`;
-}
-
-/**
- * Linearly interpolates between min and max by t.
- */
-function lerp(min: number, max: number, t: number): number {
-  return min + (max - min) * t;
-}
-
-/**
- * Resolves user-facing advanced generation options into the normalized sampling
- * configuration consumed by the AI generation pipeline.
- *
- * Resolution order:
- * 1. User-friendly controls (`creativity`, `repetitionControl`) are mapped to
- *    provider-agnostic sampling values.
- * 2. Explicit developer overrides (`temperature`, `topP`, `seed`) replace the
- *    derived values when provided.
- *
- * This keeps the user experience simple while still allowing power users to
- * precisely control model sampling. The returned configuration is intentionally
- * provider-neutral; provider adapters are responsible for translating these
- * normalized values into the parameters supported by each LLM API (e.g.
- * `frequencyPenalty` vs `repetitionPenalty`).
- *
- * @param config - The advanced options configuration from the user
- * @returns An object containing mapped configuration parameters (temperature, topP, seed, frequencyPenalty)
- */
-export function mapAdvancedOptionsConfig(
-  config: AdvancedOptionsConfig,
-): Omit<AIChatConfig, 'topK' | 'maxOutputToken'> {
-  const creativity = typeof config.creativity === 'number' ? config.creativity : 0.5;
-  const repetitionControl = typeof config.repetitionControl === 'number' ? config.repetitionControl : 0.5;
-  const developer = config.developer || {};
-
-  return {
-    frequencyPenalty: lerp(0, 1.3, repetitionControl),
-    temperature: developer.temperature ?? lerp(0.75, 1.15, creativity),
-    topP: developer.topP ?? lerp(0.88, 0.98, creativity),
-    seed: developer.seed ?? undefined,
-  };
-}
-
-/**
- * Merges advanced options (creativity, repetitionControl, temperature, topP, seed)
- * into the base AI chat config. Returns a new object without mutating the original.
- *
- * @param config - The base AI chat configuration
- * @param advancedOptions - Optional advanced options configuration
- * @returns A new AI chat configuration with applied settings
- */
-export function applyAdvancedOptions(
-  config: AIChatConfig,
-  advancedOptions?: AdvancedOptionsConfig,
-): AIChatConfig {
-  if (!advancedOptions) return { ...config };
-
-  const mapped = mapAdvancedOptionsConfig(advancedOptions);
-  const result = { ...config, ...mapped };
-
-  return validateAIConfig(result);
 }
 
 // ============================================================================
@@ -3225,52 +3165,6 @@ function formatHiddenState(hiddenState: HiddenState, currentPage: number): strin
   }
 
   return lines.join("\n");
-}
-
-/**
- * Validates AI configuration parameters against acceptable bounds
- * 
- * @param config - AI configuration to validate
- * @returns Validated and corrected AI configuration
- */
-function validateAIConfig(config: AIChatConfig): AIChatConfig {
-  // Temperature bounds
-  if (config.temperature < MIN_TEMPERATURE) {
-    console.warn('[validateAIConfig] ⚠️ Temperature too low, clamping to', MIN_TEMPERATURE);
-    config.temperature = MIN_TEMPERATURE;
-  } else if (config.temperature > MAX_TEMPERATURE) {
-    console.warn('[validateAIConfig] ⚠️ Temperature too high, clamping to', MAX_TEMPERATURE);
-    config.temperature = MAX_TEMPERATURE;
-  }
-
-  // topP bounds
-  if (config.topP < MIN_TOP_P) {
-    console.warn('[validateAIConfig] ⚠️ topP too low, clamping to', MIN_TOP_P);
-    config.topP = MIN_TOP_P;
-  } else if (config.topP > MAX_TOP_P) {
-    console.warn('[validateAIConfig] ⚠️ topP too high, clamping to', MAX_TOP_P);
-    config.topP = MAX_TOP_P;
-  }
-
-  // topK bounds
-  if (config.topK < MIN_TOP_K) {
-    console.warn('[validateAIConfig] ⚠️ topK too low, clamping to', MIN_TOP_K);
-    config.topK = MIN_TOP_K;
-  } else if (config.topK > MAX_TOP_K) {
-    console.warn('[validateAIConfig] ⚠️ topK too high, clamping to', MAX_TOP_K);
-    config.topK = MAX_TOP_K;
-  }
-
-  // maxOutputToken bounds
-  if (config.maxOutputToken < MIN_OUTPUT_TOKENS) {
-    console.warn('[validateAIConfig] ⚠️ maxOutputToken too low, clamping to', MIN_OUTPUT_TOKENS);
-    config.maxOutputToken = MIN_OUTPUT_TOKENS;
-  } else if (config.maxOutputToken > MAX_OUTPUT_TOKENS) {
-    console.warn('[validateAIConfig] ⚠️ maxOutputToken too high, clamping to', MAX_OUTPUT_TOKENS);
-    config.maxOutputToken = MAX_OUTPUT_TOKENS;
-  }
-
-  return config;
 }
 
 /**

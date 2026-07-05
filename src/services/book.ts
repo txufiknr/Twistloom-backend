@@ -1390,6 +1390,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         placeId,
         name: place.isRealNameKnown ? place.realName : place.knownName,
         type: place.type,
+        canonicalType: place.canonicalType,
         context: place.context
       }) satisfies Record<keyof EnrichedStoryPagePlace, unknown>),
       characters: Object.entries(characters).map(([characterId, character]) => ({
