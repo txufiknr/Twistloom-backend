@@ -1772,10 +1772,30 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
         ))
         .limit(1);
 
+      // Add to favorites if collection is provided (always upsert)
+      let favorited = false;
+      if (collection) {
+        await tx
+          .insert(userFavorites)
+          .values({
+            userId,
+            bookId: id as string,
+            collection,
+            createdAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: [userFavorites.userId, userFavorites.bookId],
+            set: { collection },
+          });
+        favorited = true;
+      }
+
       if (existingLike.length > 0) {
         return {
           alreadyLiked: true,
-          likesCount: book[0].likesCount
+          likesCount: book[0].likesCount,
+          favorited,
+          collection,
         };
       }
 
@@ -1800,42 +1820,6 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
         .where(eq(books.id, id as string))
         .returning({ likesCount: books.likesCount });
 
-      // Add to favorites if collection is provided
-      let favorited = false;
-      if (collection) {
-        // Check if already in favorites (upsert logic)
-        const existingFavorite = await tx
-          .select()
-          .from(userFavorites)
-          .where(and(
-            eq(userFavorites.userId, userId),
-            eq(userFavorites.bookId, id as string)
-          ))
-          .limit(1);
-
-        if (existingFavorite.length === 0) {
-          await tx
-            .insert(userFavorites)
-            .values({
-              userId,
-              bookId: id as string,
-              collection,
-              createdAt: new Date(),
-            });
-          favorited = true;
-        } else {
-          // Update collection if already favorited
-          await tx
-            .update(userFavorites)
-            .set({ collection })
-            .where(and(
-              eq(userFavorites.userId, userId),
-              eq(userFavorites.bookId, id as string)
-            ));
-          favorited = true;
-        }
-      }
-
       return {
         alreadyLiked: false,
         likesCount: updatedBook[0]?.likesCount,
@@ -1859,16 +1843,8 @@ router.post("/:id/like", requireAuth, async (req: Request, res: Response) => {
       await invalidateUserProfileCache(userId);
     }
 
-    if (result.alreadyLiked) {
-      return res.status(409).json({
-        message: "Book already liked",
-        liked: true,
-        likesCount: result.likesCount
-      });
-    }
-
-    res.json({
-      message: "Book liked successfully",
+    res.status(result.alreadyLiked ? 200 : 200).json({
+      message: result.alreadyLiked ? "Book already liked" : "Book liked successfully",
       liked: true,
       likesCount: result.likesCount!,
       ...(result.favorited && {
