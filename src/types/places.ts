@@ -1,29 +1,29 @@
 import type { ObjectItem } from "./character.js";
 import type { Mood, PastEvent, TagUpdates, TraitItem } from "./story.js";
 
-/**
- * Available place types for categorizing locations
- * 
- * These types help the AI understand the nature and function
- * of each place within the narrative world.
- */
-export const placeTypes = [
-  "house",        // Residential buildings, homes
-  "school",       // Educational institutions
-  "forest",       // Natural wooded areas
-  "river",        // Water bodies, streams
-  "road",         // Transportation routes
-  "building",     // General structures
-  "room",         // Indoor spaces
-  "outdoor",      // Open areas
-  "unknown",      // Mysterious/unidentified places
-  "other"         // Catch-all for unique locations
-] as const;
+// /**
+//  * Available place types for categorizing locations
+//  * 
+//  * These types help the AI understand the nature and function
+//  * of each place within the narrative world.
+//  */
+// export const placeTypes = [
+//   "house",        // Residential buildings, homes
+//   "school",       // Educational institutions
+//   "forest",       // Natural wooded areas
+//   "river",        // Water bodies, streams
+//   "road",         // Transportation routes
+//   "building",     // General structures
+//   "room",         // Indoor spaces
+//   "outdoor",      // Open areas
+//   "unknown",      // Mysterious/unidentified places
+//   "other"         // Catch-all for unique locations
+// ] as const;
 
-/**
- * Union type of all possible place type values
- */
-export type PlaceType = typeof placeTypes[number];
+// /**
+//  * Union type of all possible place type values
+//  */
+// export type PlaceType = typeof placeTypes[number];
 
 /**
  * Canonical place types aligned with frontend BGM system
@@ -128,7 +128,7 @@ export type PlaceMemory = {
   /** Original name unrevealed (e.g., institution name) - never changed throughout story */
   realName: string;
   /** Type of place for categorization and behavior patterns */
-  type: PlaceType;
+  type: string;
   /** Canonical place type for frontend BGM mapping */
   canonicalType?: CanonicalPlaceType;
   /** Short human-readable description for immediate recall */

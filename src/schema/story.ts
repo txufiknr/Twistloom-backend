@@ -1,7 +1,7 @@
 import { FACT_KEY_FORMAT, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
-import { canonicalPlaceTypes, type NewPlace, placeTypes, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
+import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
 import { actionHintTypes, characterSceneRoles, factTypes, flagLevels, moods, plotFlagTypes, psychologicalFlagsTypes, sceneTypes, difficulties, endingTypes, storyMomentums, stabilityLevels, storyPhaseKeys, futureNoteTriggerTypes } from "../types/story.js";
 import type { AIJsonActionFlag, AIJsonEvaluation, AIJsonEvaluationFix, AIJsonEvaluationIssue, AIJsonIntegrityFlag, AIJsonProperty, AIJsonScoreAfter, AIJsonScoreBefore, AIJsonScoreBreakdown, AIPromptOptions } from "../types/ai-chat.js";
 import type { ActionHint, Archetype, HiddenState, ManipulationAffinity, PsychologicalProfile, RealityStability, StabilityLevel, StoryGeneration, StoryState, TagUpdates, ThreatProximity, TruthLevel, MemoryIntegrity, Difficulty, TrustLevel, FearLevel, GuiltLevel, CuriosityLevel, StoryPageGeneration, TagItem, FutureNote, FactUpdate, StateDeltaGeneration, ActionGeneration, FutureNoteGeneration, FlagUpdate, PlotFlagType, InitialPlotFlag, TraitItem, SceneCharacter, SanityState } from "../types/story.js";
@@ -147,7 +147,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
   parentPlaceId: { type: 'string', description: `If it's a sub-place (e.g., 'canteen' in a 'school')` },
   knownName: { type: 'string', description: `Place name as it appears in the narrative (preferred name)` },
   realName: { type: 'string', description: 'Original name unrevealed (e.g., institution name)' },
-  type: { type: 'string', enum: [...placeTypes], description: 'Type of place for categorization and behavior patterns' },
+  type: { type: 'string', description: 'Type of place for categorization and behavior patterns (e.g., "building", "forest")' },
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
   familiarity: { type: 'number', description: 'A measure of how familiar the character is with the place (0-1)' }, // 0-1, important for reuse priority
   isRealNameKnown: { type: 'boolean', description: `Whether the place's real name known to MC`},

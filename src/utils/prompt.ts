@@ -31,7 +31,7 @@ import { updateBookGenerationStatus } from "../services/book-creation.js";
 import { blacklistedNames } from "../config/characters.js";
 import { formatLanguage } from "./translation.js";
 import { DEFAULT_CANDIDATE_PAGE_PER_ACTION, MAX_CANDIDATE_PAGE_PER_ACTION } from "../config/candidate-generation.js";
-import { placeAccessibilities, type PlaceMemory, placeTypes, placeWeathers } from "../types/places.js";
+import { canonicalPlaceTypes, placeAccessibilities, type PlaceMemory, placeWeathers } from "../types/places.js";
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
@@ -478,7 +478,8 @@ const firstBookOutputFormat: string = `{
     "placeId": "<new_place_id>",
     "knownName": "...",
     "realName": "...",
-    "type": "One of: ${formatOneOf(placeTypes)}",
+    "type": "...",
+    "canonicalType": "One of: ${formatOneOf(canonicalPlaceTypes)}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
     "isRealNameKnown": <boolean>,
@@ -822,7 +823,8 @@ const nextPageOutputFormat: string = `{
         "parentPlaceId": "Optional. <parent_place_id>",
         "knownName": "...",
         "realName": "...",
-        "type": "One of: ${formatOneOf(placeTypes)}",
+        "type": "...",
+        "canonicalType": "One of: ${formatOneOf(canonicalPlaceTypes)}",
         "context": "...",
         "familiarity": <number between 0.0 and 1.0>,
         "isRealNameKnown": <boolean>,
@@ -853,7 +855,8 @@ const nextPageOutputFormat: string = `{
       {
         "placeId": "<place_id>",
         "knownName": "...",
-        "type": "One of: ${formatOneOf(placeTypes)}",
+        "type": "...",
+        "canonicalType": "One of: ${formatOneOf(canonicalPlaceTypes)}",
         "context": "...",
         "familiarityCorrection": <number between -0.5 to 0.5>,
         "isRealNameKnown": <boolean>,
@@ -1166,6 +1169,7 @@ ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} rea
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
   - hints: known clues, obstacles, spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
+  - canonicalType: category for audio atmosphere. Choose the closest match: ${formatOneOf(canonicalPlaceTypes)}.
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
   - traits: include relevant information about this place (e.g., smell, sound, visual, feeling).
   - knownCharacters: include relevant characters (beside MC) with meaningful context.
