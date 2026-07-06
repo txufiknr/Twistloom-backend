@@ -343,7 +343,13 @@ export async function uploadImageKit(
       useUniqueFileName: options.useUniqueFileName ?? false,
       folder: `/${APP_NAME_SLUG}/${options.folder}/${getTodayDate().replace(/-/g, '/')}`,
       tags: options.tags,
-      customMetadata: options.customMetadata,
+      // TODO: 400 Invalid custom metadata.
+      // customMetadata: {
+      //   entityId,
+      //   uploadType: options.filenamePrefix || 'image',
+      //   uploadedAt: new Date().toISOString(),
+      //   ...options.customMetadata,
+      // },
     };
 
     const result = await imagekit.files.upload(uploadParams);
@@ -422,10 +428,11 @@ export async function uploadBookCover(
   return uploadImageKit(imageSource, id, {
     folder: 'books',
     tags: [...keywords, 'book-cover', `book-id:${id}`],
-    customMetadata: {
-      bookId: id,
-      bookTitle: title,
-    },
+    // TODO: 400 Invalid custom metadata.
+    // customMetadata: {
+    //   bookId: id,
+    //   bookTitle: title,
+    // },
     filenamePrefix: 'cover',
   });
 }
@@ -465,7 +472,8 @@ export async function uploadUserImage(
   return uploadImageKit(imageSource, userId, {
     folder: 'users',
     tags: ['user-profile', `user-id:${userId}`],
-    customMetadata: { userId },
+    // TODO: 400 Invalid custom metadata.
+    // customMetadata: { userId },
     filenamePrefix: 'profile',
   });
 }
