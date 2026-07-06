@@ -113,7 +113,7 @@ function validateMimeType(mimeType: string): string {
   }
 
   const parts = mimeType.split('/');
-  if (parts.length !== 2 || !parts[0].startsWith('image/')) {
+  if (parts.length !== 2 || !mimeType.startsWith('image/')) {
     console.warn('[validateMimeType] ⚠️ Not an image MIME type:', mimeType);
     return 'jpg';
   }
@@ -343,12 +343,7 @@ export async function uploadImageKit(
       useUniqueFileName: options.useUniqueFileName ?? false,
       folder: `/${APP_NAME_SLUG}/${options.folder}/${getTodayDate().replace(/-/g, '/')}`,
       tags: options.tags,
-      customMetadata: {
-        entityId,
-        uploadType: options.filenamePrefix || 'image',
-        uploadedAt: new Date().toISOString(),
-        ...options.customMetadata,
-      },
+      customMetadata: options.customMetadata,
     };
 
     const result = await imagekit.files.upload(uploadParams);
