@@ -325,6 +325,7 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
 
     // Require at least one valid field to update
     if (Object.keys(updateData).length === 0) {
+      console.warn('[PUT /api/user] ⚠️ At least one valid field must be provided');
       return handleValidationError(res, 'At least one valid field must be provided');
     }
 
@@ -332,6 +333,7 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
     if (updateData.imageUrl?.startsWith('data:')) {
       const uploadResult = await uploadUserImage(updateData.imageUrl, userId);
       if (!uploadResult?.url) {
+        console.warn('[PUT /api/user] ⚠️ Failed to upload profile image - ImageKit upload returned no URL');
         handleApiError(res, 'Failed to upload profile image', new Error('ImageKit upload returned no URL'));
         return;
       }

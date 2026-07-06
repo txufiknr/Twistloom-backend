@@ -303,16 +303,19 @@ export async function setReferrerForNewUser(
       .limit(1);
 
     if (!user) {
+      console.warn('[setReferrerForNewUser] ⚠️ User not found:', userId);
       if (handleResponse) handleNotFoundError(res, 'User not found');
       return false;
     }
 
     if (!user.isNewUser) {
+      console.warn('[setReferrerForNewUser] ⚠️ Referrer can only be set for new users, userId:', userId);
       if (handleResponse) handleValidationError(res, 'Referrer can only be set for new users');
       return false;
     }
 
     if (user.referrerId) {
+      console.warn('[setReferrerForNewUser] ⚠️ Referrer already set, userId:', userId, 'referrerId:', user.referrerId);
       if (handleResponse) handleValidationError(res, 'Referrer already set');
       return false;
     }
@@ -326,11 +329,13 @@ export async function setReferrerForNewUser(
       .limit(1);
 
     if (!referrer) {
+      console.warn('[setReferrerForNewUser] ⚠️ Referrer user not found:', referrerUsername);
       if (handleResponse) handleNotFoundError(res, 'Referrer user not found');
       return false;
     }
 
     if (referrer.userId === userId) {
+      console.warn('[setReferrerForNewUser] ⚠️ Cannot refer yourself, userId:', userId);
       if (handleResponse) handleValidationError(res, 'Cannot refer yourself');
       return false;
     }
