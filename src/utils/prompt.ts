@@ -1485,7 +1485,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
  * It is worth fixing more aggressively here.
  */
 function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
-  const { theme, mcCandidate, titleIdea } = params;
+  const { theme, language, mcCandidate, titleIdea } = params;
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
@@ -1505,6 +1505,8 @@ ${firstBookOutputFormat}
 
 FIELD INSTRUCTIONS:
 ${firstBookFieldInstructions}
+
+All field values MUST USE THE DETECTED LANGUAGE consistently: ${formatLanguage(language || 'en')}.
 
 ---
 INSTRUCTIONS — FOLLOW IN ORDER:

@@ -264,6 +264,8 @@ type BookSortingOptions =
    - [Create Book with SSE](#post-apibooksstream)
    - [Create Book Async](#post-apibooksasync)
    - [Get Book Creation Status](#get-apibooksbookidstatus)
+   - [Cancel Book Generation](#post-apibooksbookidcancel)
+   - [Retry Book Generation](#post-apibooksbookidretry)
    - [Update Book](#put-apibooksid)
    - [Delete Book](#delete-apibooksid)
    - [Get Book by Identifier](#get-apibooksidentifier)
@@ -730,6 +732,71 @@ Polls for book creation status when using async book creation. Used by frontend 
 **Error Responses:**
 - `400 Bad Request`: Invalid book ID format
 - `403 Forbidden`: You can only view status for your own books
+- `404 Not Found`: Book not found
+
+---
+
+### POST /api/books/:bookId/cancel
+
+Cancels a pending or failed book generation. Sets the generation status to `cancelled`, cancels any running GitHub Actions workflow (best-effort), refunds credits on a pro-rata basis based on the current generation step, and deletes the draft book row.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `bookId` (string, required): Book ID (UUID v7)
+
+**Guards:**
+- Completed books (`status === 'active'` or `generationStatus === 'completed'`) cannot be cancelled
+- Already refunded books are rejected to prevent double-refunds
+- Generations past the point of no return (finalizing step) are instead marked with `cancellationRequestedAt` so the book is archived on completion rather than published
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Book generation cancelled. 5 credits refunded."
+}
+```
+
+**Response (202 Accepted) — past point of no return:**
+```json
+{
+  "success": true,
+  "message": "Generation is almost complete and will finish in the background. The book will be archived instead of published."
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid book ID format, cannot cancel completed book, already refunded
+- `403 Forbidden`: Not the book owner
+- `404 Not Found`: Book not found
+
+---
+
+### POST /api/books/:bookId/retry
+
+Retries a failed async book generation. Resets the generation state back to `pending`, clears any error messages and timestamps, and re-dispatches the GitHub Actions workflow. Credits are **not** consumed again — the original deduction still stands.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `bookId` (string, required): Book ID (UUID v7)
+
+**Guards:**
+- Only `failed` generations can be retried. Completed, in-progress, or cancelled generations are rejected
+- Refunded books cannot be retried (the credit deduction was returned to the user)
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Book generation retry initiated"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid book ID format, generation not in retryable state, already refunded
+- `403 Forbidden`: Not the book owner
 - `404 Not Found`: Book not found
 
 ---
@@ -1677,6 +1744,11 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.7.0 (2026-07-06)
+- Added `POST /api/books/:bookId/cancel` — cancels a pending/failed async book generation, refunds credits on a pro-rata basis, and deletes the draft book row
+- Added `POST /api/books/:bookId/retry` — retries a failed async book generation by resetting `generationStatus` to `pending`, clearing error state, and re-dispatching the GitHub Actions workflow
+- No additional credit consumption on retry (original deduction is preserved)
 
 ### v2.6.0 (2026-05-05)
 - Implemented robust two-level sorting hierarchy for book endpoints

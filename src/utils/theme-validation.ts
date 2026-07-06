@@ -239,7 +239,9 @@ Comment structure (only if theme is valid):
 - Express excitement and anticipation before generation
 
 Comment example (use your own wording):
-"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story—will be ready for you very soon!"`,
+"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story—will be ready for you very soon!"
+
+WRITE ALL VALUES IN THE SAME LANGUAGE AS THE THEME INPUT.`,
       jsonStructure: `{
   "isViolating": <boolean>,
   "category": "One of: ${formatOneOf(THEME_VALIDATION_CATEGORIES)}",

@@ -59,7 +59,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -375,6 +375,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       totalPages: BOOK_MIN_PAGES, // Sensible default until initializeBook populates the real value
       mc,
       status: 'draft', // Promoted to 'active' when initializeBook completes
+      originalThemeInput: theme, // Preserve original user input for frontend display
     };
 
     const initialBookGenerationData: DBNewBookGeneration = {
@@ -794,6 +795,14 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
       return res.status(500).json({ error: 'Failed to refund credits' });
     }
 
+    // ── Delete the draft book ──────────────────────────────────────────────────
+    //
+    // Since the generation is cancelled, the draft book has no content and should
+    // be removed entirely. The bookGenerations row is cascade-deleted along with it.
+    await dbWrite.delete(books).where(eq(books.id, bookId));
+    invalidateBookCache(bookId);
+    invalidateEnrichedBookCache(bookId);
+
     const message = refundAmount
       ? `Book generation cancelled. ${refundAmount} credit${refundAmount === 1 ? '' : 's'} refunded.`
       : 'Book generation cancelled.';
@@ -801,6 +810,102 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
   } catch (error) {
     console.error('[POST /api/books/:bookId/cancel] ❌ Error:', error);
     handleApiError(res, 'Failed to cancel book generation', error);
+  }
+});
+
+/**
+ * POST /api/books/:bookId/retry
+ *
+ * Retries a failed async book generation by resetting the generation state
+ * and re-dispatching the GitHub Actions workflow.
+ *
+ * **Guards:**
+ * - Only `failed` generations can be retried. Completed or cancelled generations
+ *   are rejected (they cannot meaningfully be retried).
+ * - The user must own the book.
+ *
+ * **What it does:**
+ * 1. Validates book ownership and that `generationStatus === 'failed'`
+ * 2. Resets `generationStatus` → `'pending'`, clears `generationError`,
+ *    `isGeneratingStartedAt`, and `generationCompletedAt`
+ * 3. Dispatches the `on-demand-book-creation.yml` workflow (fire-and-forget)
+ *
+ * **Credit note:**
+ * Credits were already consumed when the book was first created. A retry does
+ * NOT deduct credits again — the original deduction still stands. If the book
+ * was previously refunded (cancelled), the retry route rejects it.
+ *
+ * @route   POST /api/books/:bookId/retry
+ * @auth    Required
+ * @param   bookId - UUID v7 of the target book
+ * @returns `{ success: true, message: string }` on success
+ *
+ * @example
+ * // Success
+ * POST /api/books/01912345-6789-1234-5678-123456789012/retry
+ * → 200 { "success": true, "message": "Book generation retry initiated" }
+ *
+ * // Not failed
+ * → 400 { "error": "Book generation is not in a retryable state" }
+ *
+ * // Already refunded
+ * → 400 { "error": "Cannot retry a refunded book generation" }
+ */
+router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { bookId } = req.params;
+    const userId = req.userId!;
+
+    if (!isValidUuid(bookId)) {
+      return handleValidationError(res, 'Invalid book ID format');
+    }
+
+    const [data] = await dbRead
+      .select({
+        bookUserId:       books.userId,
+        generationStatus: bookGenerations.generationStatus,
+        isRefunded:       bookGenerations.isRefunded,
+      })
+      .from(books)
+      .leftJoin(bookGenerations, eq(books.id, bookGenerations.bookId))
+      .where(eq(books.id, bookId))
+      .limit(1);
+
+    if (!data) {
+      return handleNotFoundError(res, 'Book not found');
+    }
+
+    if (data.bookUserId !== userId) {
+      return handleForbiddenError(res, 'You can only retry your own books');
+    }
+
+    if (data.generationStatus !== 'failed') {
+      return res.status(400).json({
+        error: `Book generation is not in a retryable state (current: ${data.generationStatus ?? 'none'})`,
+      });
+    }
+
+    if (data.isRefunded) {
+      return res.status(400).json({ error: 'Cannot retry a refunded book generation' });
+    }
+
+    // Reset generation state and re-dispatch workflow
+    await dbWrite
+      .update(bookGenerations)
+      .set({
+        generationStatus:      'pending',
+        generationError:       null,
+        isGeneratingStartedAt: null,
+        generationCompletedAt: null,
+      })
+      .where(eq(bookGenerations.bookId, bookId));
+
+    triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
+
+    res.json({ success: true, message: 'Book generation retry initiated' });
+  } catch (error) {
+    console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);
+    handleApiError(res, 'Failed to retry book generation', error);
   }
 });
 
