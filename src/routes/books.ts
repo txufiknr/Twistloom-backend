@@ -356,7 +356,7 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       onProgress: undefined // No SSE progress callback for async route
     });
 
-    const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
+    const { comment: aiComment, language = 'en', titleIdea, hook, summary, mcCandidate } = aiResult || {};
 
     // ── STEP 2: Generate deterministic book ID ────────────────────────────────
     const bookId = generateId();
@@ -368,8 +368,8 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
       id: bookId,
       userId,
       title: titleIdea || 'Generating…', // Temporary placeholder, replaced by initializeBook
-      hook: null,
-      summary: null,
+      hook: hook || null,
+      summary: summary || null,
       keywords: [],
       language,
       totalPages: BOOK_MIN_PAGES, // Sensible default until initializeBook populates the real value

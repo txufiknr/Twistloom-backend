@@ -11,7 +11,7 @@
 
 import { THEME_BLACKLIST, THEME_SUSPICIOUS_PATTERNS, INVALID_POV_PATTERNS, INVALID_THEME_PATTERNS, MIN_THEME_LENGTH, MAX_THEME_LENGTH } from '../config/theme-validation.js';
 import { THEME_VALIDATION_CATEGORIES, THEME_VALIDATION_DETECTED_ITEM_TYPES, THEME_VALIDATION_SCHEMA } from '../schema/story.js';
-import { BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
+import { BOOK_TITLE_LENGTH, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
 import { AI_CHAT_CONFIG_DEFAULT } from '../config/ai-chat.js';
 import { AI_CHAT_MODELS_VALIDATION } from '../config/ai-clients.js';
 import { executePromptForJSON } from './prompt.js';
@@ -186,6 +186,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
     comment: '',
     language: 'en',
     titleIdea: '',
+    hook: '',
+    summary: '',
     mcCandidate: {}
   };
 
@@ -202,6 +204,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           'language',
           'comment',
           'suggestion',
+          'hook',
+          'summary',
           'mcCandidate',
           'titleIdea'
         ] satisfies (keyof AIValidationResult)[],
@@ -225,6 +229,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 - comment: max 250 chars (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
 - language: detected language code of theme input (ISO 639-1)
 - titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
+- hook: immediate intrigue — ${HOOK_LENGTH}. Derived from the theme and MC. Omit if theme is invalid.
+- summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH}. Derived from the theme and MC. Omit if theme is invalid.
 - mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
   - knownName: Preferred alias or nick referred by other characters.
@@ -258,6 +264,8 @@ WRITE ALL VALUES IN THE SAME LANGUAGE AS THE THEME INPUT.`,
   "comment": "...",
   "language": "<ISO 639-1 language code>",
   "titleIdea": "...",
+  "hook": "...",
+  "summary": "...",
   "mcCandidate": {
     "name": "Full Name",
     "knownName": "Preferred alias or nick",

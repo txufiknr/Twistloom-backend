@@ -1853,6 +1853,10 @@ export type StoryPlan = {
   language: string;
   /** Book title idea for the story based on the theme */
   titleIdea?: string;
+  /** Hook text generated from the theme */
+  hook?: string;
+  /** Summary text generated from the theme */
+  summary?: string;
   /** Inferred main character who perfectly fit with the story theme */
   mcCandidate?: StoryMCCandidate;
 };
