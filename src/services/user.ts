@@ -913,7 +913,13 @@ export async function sanitizeProfileUpdate(
 
   if (typeof payload.name === 'string' && payload.name) updateData.name = sanitizeTextForDB(payload.name.trim());
   if (typeof payload.bio === 'string' && payload.bio) updateData.bio = sanitizeUserBio(payload.bio);
-  if (typeof payload.imageUrl === 'string' && payload.imageUrl) updateData.imageUrl = payload.imageUrl ? sanitizeTextForDB(payload.imageUrl.trim()) : null;
+  if (typeof payload.imageUrl === 'string' && payload.imageUrl) {
+    // Don't sanitize base64 data URLs — sanitizeTextForDB's repetition check
+    // (/(.)\1{10,}/g) falsely flags base64-encoded binary data as "corruption".
+    updateData.imageUrl = payload.imageUrl.startsWith('data:')
+      ? payload.imageUrl.trim()
+      : sanitizeTextForDB(payload.imageUrl.trim());
+  }
   if (typeof payload.gender === 'string' && payload.gender) updateData.gender = normalizeGender(payload.gender) ?? null;
   if (typeof payload.username === 'string' && payload.username) {
     const cleanUsername = sanitizeUsername(String(payload.username));
