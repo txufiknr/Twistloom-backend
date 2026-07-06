@@ -47,7 +47,8 @@
 import type { Router as RouterType } from 'express';
 import type { Request, Response } from 'express';
 import type { DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
-import type { LikeTargetType, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
+import type { LikeTargetType, Source, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
+import { sources } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
@@ -233,6 +234,11 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     updateData.isNewUser = false;
     updateData.updatedAt = new Date();
 
+    // 2.5 Handle source (always valid during onboarding since isNewUser is true)
+    if (req.body.source && typeof req.body.source === 'string' && sources.includes(req.body.source as Source)) {
+      updateData.source = req.body.source;
+    }
+
     // 3. Apply update
     await dbWrite
       .update(users)
@@ -345,6 +351,19 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
 
     // 3. Append route-specific data
     updateData.updatedAt = new Date();
+
+    // 3.5 Handle source (only applicable when isNewUser is true)
+    if (req.body.source && typeof req.body.source === 'string' && sources.includes(req.body.source as Source)) {
+      const [currentUser] = await dbRead
+        .select({ isNewUser: users.isNewUser })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1);
+
+      if (currentUser?.isNewUser) {
+        updateData.source = req.body.source;
+      }
+    }
 
     // 4. Apply update and return updated row
     const [user] = await dbWrite
@@ -473,6 +492,7 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         name: userData.name,
         bio: userData.bio,
         gender: userData.gender,
+        source: userData.source,
         lastActive: userData.lastActive,
         isNewUser: userData.isNewUser,
         imageUrl: userData.imageUrl,

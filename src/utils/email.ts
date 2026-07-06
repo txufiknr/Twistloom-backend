@@ -39,17 +39,25 @@ const DEFAULT_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'noreply@twistloom.c
  * await sendPasswordResetEmail('user@example.com', 'https://app.com/reset-password?token=abc123');
  * ```
  */
-export async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<void> {
+export async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<boolean> {
   try {
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
       to: email,
       subject: `Reset Your ${APP_NAME} Password`,
       html: getPasswordResetTemplate(APP_NAME, resetUrl),
     });
+
+    if (error) {
+      console.error('[sendPasswordResetEmail] ❌ Resend API error:', error);
+      return false;
+    }
+
+    console.log('[sendPasswordResetEmail] ✅ Password reset email sent to:', email);
+    return true;
   } catch (error) {
-    console.error('Failed to send password reset email:', error);
-    throw new Error('Failed to send password reset email', { cause: error });
+    console.error('[sendPasswordResetEmail] ❌ Failed to send password reset email:', error);
+    return false;
   }
 }
 
@@ -66,12 +74,18 @@ export async function sendPasswordResetEmail(email: string, resetUrl: string): P
  */
 export async function sendVerificationEmail(email: string, verificationUrl: string): Promise<boolean> {
   try {
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
       to: email,
       subject: `Verify Your ${APP_NAME} Email`,
       html: getVerificationTemplate(APP_NAME, verificationUrl),
     });
+
+    if (error) {
+      console.error('[sendVerificationEmail] ❌ Resend API error:', error);
+      return false;
+    }
+
     console.log('[sendVerificationEmail] ✅ Verification email sent successfully to:', email);
     return true;
   } catch (error) {
@@ -85,22 +99,30 @@ export async function sendVerificationEmail(email: string, verificationUrl: stri
  * 
  * @param email - Recipient email address
  * @param username - User's username
+ * @returns Whether the email was successfully sent
  * 
  * @example
  * ```typescript
- * await sendWelcomeEmail('user@example.com', 'johndoe');
+ * const sent = await sendWelcomeEmail('user@example.com', 'johndoe');
  * ```
  */
-export async function sendWelcomeEmail(email: string, username: string): Promise<void> {
+export async function sendWelcomeEmail(email: string, username: string): Promise<boolean> {
   try {
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: DEFAULT_FROM_EMAIL,
       to: email,
       subject: `Welcome to ${APP_NAME}!`,
       html: getWelcomeTemplate(APP_NAME, username),
     });
+
+    if (error) {
+      console.error('[sendWelcomeEmail] ❌ Resend API error:', error);
+      return false;
+    }
+
+    return true;
   } catch (error) {
-    console.error('Failed to send welcome email:', error);
-    // Don't throw error for welcome email - it's not critical
+    console.error('[sendWelcomeEmail] ❌ Failed to send welcome email:', error);
+    return false;
   }
 }

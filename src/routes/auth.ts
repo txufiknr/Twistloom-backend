@@ -321,7 +321,10 @@ router.post('/signup', async (req, res) => {
     });
   } catch (error) {
     console.error('[signup] ❌ Sign up error:', error);
-    handleApiError(res, 'Failed to create account', error);
+    res.status(200).json({
+      message: 'If account was created, please check your email to verify.',
+      verificationEmailSent: false,
+    });
   }
 });
 
@@ -368,18 +371,26 @@ router.post('/forgot-password', async (req, res) => {
       return handleValidationError(res, 'Email is required');
     }
 
+    let emailSent = false;
     const token = await createPasswordResetToken(email);
 
     if (token) {
       const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
-      await sendPasswordResetEmail(email, resetUrl);
+      emailSent = await sendPasswordResetEmail(email, resetUrl);
     }
 
     // Always return success — prevents email enumeration
-    res.json({ message: 'Password reset email sent if account exists' });
+    res.json({
+      message: 'Password reset email sent if account exists',
+      emailSent,
+    });
   } catch (error) {
     console.error('[forgot] ❌ Forgot password error:', error);
-    handleApiError(res, 'Failed to process request', error, 500);
+    // Still return success to prevent email enumeration
+    res.json({
+      message: 'Password reset email sent if account exists',
+      emailSent: false,
+    });
   }
 });
 
@@ -536,27 +547,28 @@ router.post('/resend-verification', async (req, res) => {
       return handleValidationError(res, 'Email is required');
     }
 
+    let emailSent = false;
     const userId = await getUserIdByEmail(email);
 
-    if (!userId) {
-      res.json({ message: 'Verification email sent if account exists' });
-      return;
+    if (userId) {
+      const verified = await isEmailVerified(userId);
+      if (!verified) {
+        const verificationToken = await createEmailVerificationToken(userId);
+        const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
+        emailSent = await sendVerificationEmail(email, verificationUrl);
+      }
     }
 
-    const verified = await isEmailVerified(userId);
-    if (verified) {
-      res.json({ message: 'Verification email sent if account exists' });
-      return;
-    }
-
-    const verificationToken = await createEmailVerificationToken(userId);
-    const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-    await sendVerificationEmail(email, verificationUrl);
-
-    res.json({ message: 'Verification email sent' });
+    res.json({
+      message: 'Verification email sent if account exists',
+      emailSent,
+    });
   } catch (error) {
     console.error('[resendVerification] ❌ Resend verification error:', error);
-    handleApiError(res, 'Failed to resend verification email', error, 500);
+    res.json({
+      message: 'Verification email sent if account exists',
+      emailSent: false,
+    });
   }
 });
 

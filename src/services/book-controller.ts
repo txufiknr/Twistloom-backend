@@ -518,16 +518,8 @@ export function buildBookQuery<T>(
     genderCondition
   );
 
-  // Apply secondary sorting: contextual sorting (before where to allow addSelect)
+  // Apply secondary sorting: contextual sorting
   let query = baseQuery;
-  if (search) {
-    // Search relevance scoring takes precedence over generic sorting
-    const relevanceExpression = createRelevanceExpression(search, books);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    query = (query as any).addSelect({
-      relevanceScore: relevanceExpression
-    });
-  }
 
   // Apply where condition to main query
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

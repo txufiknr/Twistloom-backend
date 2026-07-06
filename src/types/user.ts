@@ -11,6 +11,14 @@ export type Gender = typeof genders[number];
 export type KnownGender = Omit<Gender, 'unknown'>
 
 /**
+ * Union type of all possible user source values
+ * 
+ * Used during user onboarding to track where the user discovered the platform.
+ */
+export const sources = ['social_media', 'friend', 'google', 'advertisement', 'other'] as const;
+export type Source = typeof sources[number];
+
+/**
  * Union type of all possible like target types
  * 
  * Used for user likes system to type-safe target identification.
@@ -60,6 +68,7 @@ export interface User {
   bio: string | null;
   imageUrl: string | null;
   gender: Gender | null;
+  source: Source | null;
   lastActive: Date;
   isNewUser: boolean;
   stats: UserStats;

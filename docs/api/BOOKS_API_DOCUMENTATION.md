@@ -980,12 +980,26 @@ Polls the status of candidate page generation for a specific page. Used by front
 
 Likes a book for the authenticated user. Increments the book's likes count and records the like in user_likes table.
 
+**Idempotent:** If the book is already liked, the endpoint returns 200 instead of 409 — no error, no duplicate count increment.
+
+**Favorites upsert:** If a `collection` body is provided, the endpoint upserts the book into `user_favorites` (inserts if new, updates the collection name if already saved). This happens regardless of whether the book was already liked.
+
 **Authentication:** Required (via `requireAuth`)
 
 **Path Parameters:**
 - `id` (string, required): Book ID
 
-**Response (200 OK):**
+**Request Body:**
+```json
+{
+  "collection": "Thriller"
+}
+```
+
+**Parameters:**
+- `collection` (string, optional): Collection name to save the book under in favorites
+
+**Response (200 OK) - New like:**
 ```json
 {
   "message": "Book liked successfully",
@@ -994,12 +1008,23 @@ Likes a book for the authenticated user. Increments the book's likes count and r
 }
 ```
 
-**Response (409 Conflict - already liked):**
+**Response (200 OK) - Already liked (idempotent):**
 ```json
 {
   "message": "Book already liked",
   "liked": true,
   "likesCount": 42
+}
+```
+
+**Response (200 OK) - Like with favorites upsert:**
+```json
+{
+  "message": "Book liked successfully",
+  "liked": true,
+  "likesCount": 42,
+  "favorited": true,
+  "collection": "Thriller"
 }
 ```
 

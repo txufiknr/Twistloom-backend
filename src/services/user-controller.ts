@@ -68,6 +68,7 @@ export function getEnrichedUserSelect() {
     lastActive: users.lastActive,
     createdAt: users.createdAt,
     updatedAt: users.updatedAt,
+    source: users.source,
     emailVerified: userAuth.emailVerified,
     isNewUser: users.isNewUser,
     vipExpiresAt: users.vipExpiresAt,

@@ -149,7 +149,6 @@ Registers a new user account with email/password authentication. Creates both us
 - `409 Conflict`: Email or username already exists
 - `422 Unprocessable Entity`: Weak password, invalid username, or disposable email
 - `429 Too Many Requests`: Rate limit exceeded
-- `500 Internal Server Error`: Server error
 
 **Security Features:**
 - IP-based rate limiting
@@ -193,14 +192,16 @@ Initiates password reset flow by generating a secure token and sending a passwor
 **Response (200 OK):**
 ```json
 {
-  "message": "Password reset email sent if account exists"
+  "message": "Password reset email sent if account exists",
+  "emailSent": true
 }
 ```
+
+The `emailSent` field indicates whether Resend successfully accepted the email delivery request. Always `false` for non-existing emails (prevents enumeration).
 
 **Error Responses:**
 - `400 Bad Request`: Email is required
 - `429 Too Many Requests`: Rate limit exceeded
-- `500 Internal Server Error`: Server error
 
 **Security Features:**
 - IP-based rate limiting
@@ -340,18 +341,20 @@ Resends email verification token for users who didn't receive or lost their veri
 **Response (200 OK):**
 ```json
 {
-  "message": "Verification email sent"
+  "message": "Verification email sent if account exists",
+  "emailSent": true
 }
 ```
+
+`emailSent` indicates whether the email was actually sent via Resend. Always `false` for non-existing or already-verified emails (prevents enumeration). Same response body returned for all code paths including unexpected errors.
 
 **Error Responses:**
 - `400 Bad Request`: Email is required
 - `429 Too Many Requests`: Rate limit exceeded
-- `500 Internal Server Error`: Server error
 
 **Security Features:**
 - IP-based rate limiting
-- Email enumeration prevention (always returns success for unknown/verified emails)
+- Email enumeration prevention (always returns the same response regardless of email existence or verification status, including on unexpected errors)
 - Checks if email is already verified before sending
 - Generates new token (invalidates old token)
 

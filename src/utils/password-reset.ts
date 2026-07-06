@@ -127,7 +127,7 @@ export async function verifyPasswordResetToken(token: string): Promise<string | 
  * ```
  */
 export async function resetPassword(token: string, newPassword: string): Promise<boolean> {
-  // Verify token first
+  // Verify token first (fresh read — the transaction below locks the row)
   const auth = await dbRead
     .select({
       userId: userAuth.userId,
@@ -147,29 +147,29 @@ export async function resetPassword(token: string, newPassword: string): Promise
   const userId = auth[0].userId;
   const passwordHash = await hashPassword(newPassword);
 
-  // Update users table with new password
-  await dbWrite
-    .update(users)
-    .set({
-      passwordHash,
-    })
-    .where(eq(users.userId, userId));
+  // Update password and clear token in a single transaction for atomicity.
+  // If either update fails, everything rolls back — no partial state.
+  const result = await dbWrite.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({ passwordHash })
+      .where(eq(users.userId, userId));
 
-  // Update user_auth table to clear reset tokens (atomic with token check)
-  const result = await dbWrite
-    .update(userAuth)
-    .set({
-      passwordResetToken: null,
-      passwordResetExpires: null,
-      failedLoginAttempts: 0,
-      lockUntil: null,
-    })
-    .where(
-      and(
-        eq(userAuth.userId, userId),
-        eq(userAuth.passwordResetToken, token)
-      )
-    );
+    return tx
+      .update(userAuth)
+      .set({
+        passwordResetToken: null,
+        passwordResetExpires: null,
+        failedLoginAttempts: 0,
+        lockUntil: null,
+      })
+      .where(
+        and(
+          eq(userAuth.userId, userId),
+          eq(userAuth.passwordResetToken, token)
+        )
+      );
+  });
 
   // If no rows were updated, the token was already used by another request
   return result.rowCount !== null && result.rowCount > 0;

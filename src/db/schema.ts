@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
-import type { CheckinClaimType, Gender, UserActivityType, UserTier } from "../types/user.js";
+import type { CheckinClaimType, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType } from "../types/book.js";
@@ -217,6 +217,7 @@ export const users = pgTable(
     tier: text("tier").$type<UserTier>(),
     isNewUser: boolean("is_new_user").notNull().default(true), // For user onboarding
     referrerId: uuid("referrer_id"),
+    source: text("source").$type<Source>(), // How user discovered the platform (set during onboarding)
     subscriptionId: uuid("subscription_id"),
     vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation

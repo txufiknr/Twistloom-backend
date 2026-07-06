@@ -57,7 +57,7 @@ import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
 import { imageUpload, deleteFileFromImageKit } from "../services/image.js";
 import { extractPaginationParams, createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
-import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender } from "../utils/search.js";
+import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
 import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
@@ -1520,8 +1520,11 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
     // Fetch function for cache
     const fetchBooks = async () => {
       // Build base query with enriched fields
+      const baseSelect = getEnrichedBookSelect(userId, req.headerLanguage);
       const baseQuery = dbRead
-        .select(getEnrichedBookSelect(userId, req.headerLanguage))
+        .select(sanitizedSearch
+          ? { ...baseSelect, relevanceScore: createRelevanceExpression(sanitizedSearch, books) }
+          : baseSelect)
         .from(books)
         // TODO: should add left join to userSessions & firstPageSq
         .leftJoin(users, eq(books.userId, users.userId));
