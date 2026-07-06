@@ -4454,7 +4454,7 @@ Do NOT mention this checklist.` : '';
 function getBookCreationPrompts(headerLanguage?: string | null): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = `You are a creative writing assistant specializing in generating engaging story concept for interactive thriller, mystery, horror, and psychological fiction novels.
 
-TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel.
+TASK: Generate a compelling story concept that another AI will use as the foundation for generating an entire branching novel (max ${MAX_THEME_LENGTH_PROMPT} characters).
 
 The story concept should naturally provide enough information to infer:
 - The core premise and central conflict (required)
