@@ -226,6 +226,7 @@ export type GenAIErrorCode =
   | 'NETWORK_ERROR'
   | 'INVALID_SCHEMA'
   | 'SCHEMA_TOO_COMPLEX'
+  | 'MAX_TOKENS_EXCEEDED'
   | 'VALIDATION_ERROR'
   | 'BAD_REQUEST'
   | 'SERVICE_UNAVAILABLE'
@@ -251,6 +252,7 @@ export const NON_RETRYABLE_GENAI_ERROR_CODES: ReadonlySet<GenAIErrorCode> = new 
   'SAFETY_BLOCKED',
   'INVALID_SCHEMA',
   'SCHEMA_TOO_COMPLEX',
+  'MAX_TOKENS_EXCEEDED',
   'VALIDATION_ERROR',
   'BAD_REQUEST',
   'UNKNOWN',
@@ -273,6 +275,44 @@ export function isGenAIErrorNonRetryable(code: GenAIErrorCode): boolean {
 }
 
 /**
+ * Internal utility to extract a deep string representation of an error specifically 
+ * for the classifier. Safely traverses common provider error structures (like 
+ * OpenAI metadata and Cohere bodies) without altering the user-facing `getErrorMessage`.
+ */
+function getDeepErrorStringForClassification(err: unknown): string {
+  let combinedStr = getErrorMessage(err);
+  
+  if (err instanceof Error) {
+    combinedStr += ` ${err.name} ${err.message} ${err.stack || ''}`;
+  }
+  
+  if (typeof err === 'object' && err !== null) {
+    const obj = err as Record<string, any>;
+    
+    // Catch OpenAI deep raw metadata
+    if (obj.error?.metadata?.raw) {
+      combinedStr += ` ${obj.error.metadata.raw}`;
+    }
+    
+    // Catch Cohere body messages
+    if (obj.body?.message) {
+      combinedStr += ` ${obj.body.message}`;
+    }
+
+    // Catch generic axios/fetch data bodies
+    if (obj.response?.data) {
+      try {
+        combinedStr += ` ${JSON.stringify(obj.response.data)}`;
+      } catch {
+        // Ignore JSON stringify errors on circular dependencies
+      }
+    }
+  }
+  
+  return combinedStr.toLowerCase();
+}
+
+/**
  * Classify a GenAI-related error into a small set of canonical error codes.
  *
  * The classifier uses conservative substring matching of known provider and
@@ -285,15 +325,16 @@ export function isGenAIErrorNonRetryable(code: GenAIErrorCode): boolean {
  * - "413 Request body too large" / "request body too large for model" -> `BAD_REQUEST`
  * - "429" or "rate limit" -> `RATE_LIMITED`
  * - "quota" or "resource_exhausted" -> `QUOTA_EXCEEDED`
+ * - "too many tokens" -> `MAX_TOKENS_EXCEEDED`
  *
- * Note: This is a best-effort classifier based on message text. When possible
- * callers should prefer structured error fields (HTTP status, provider codes).
+ * Note: This is a best-effort classifier based on message text and object layout.
  *
  * @param err - The thrown value or error to classify
  * @returns One of the `GenAIErrorCode` discriminants describing the category
  */
 export function classifyGenAIError(err: unknown): GenAIErrorCode {
-  const msg = getErrorMessage(err).toLowerCase();
+  // Use deep string extraction to ensure we catch deeply nested raw JSON payloads
+  const msg = getDeepErrorStringForClassification(err);
 
   // Check for timeout/transport aborts — treat as request timeout for retry/backoff
   if (
@@ -306,6 +347,23 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     return 'REQUEST_TIMEOUT';
   }
 
+  // Check for complex schema error BEFORE generic validation/schema
+  if (msg.includes('too many states for serving')) {
+    console.log(`[classifyGenAIError] ❓ Schema too complex:`, err, typeof err);
+    return 'SCHEMA_TOO_COMPLEX';
+  }
+
+  // Check for max token exhaustion
+  if (
+    msg.includes('too many tokens') || 
+    msg.includes('max tokens must be less than') || 
+    msg.includes('max_tokens') || 
+    msg.includes('context length exceeded')
+  ) {
+    console.log(`[classifyGenAIError] ❓ Max tokens exceeded:`, err, typeof err);
+    return 'MAX_TOKENS_EXCEEDED';
+  }
+
   // Check for schema validation errors
   if (
     msg.includes('invalid schema') ||
@@ -316,10 +374,6 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
   ) {
     console.log(`[classifyGenAIError] ❓ Schema invalid:`, err, typeof err);
     return 'INVALID_SCHEMA';
-  }
-
-  if (msg.includes('too many states for serving')) {
-    return 'SCHEMA_TOO_COMPLEX';
   }
 
   // Check for general validation errors
@@ -347,7 +401,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
   }
 
   // Check for payload-too-large / request body too large (HTTP 413)
-  // Example: "APIError: 413 Request body too large for gpt-4o model. Max size: 8000 tokens."
+  // Example: "APIError: 413 Request body too large for gpt-4o model."
   if (
     msg.includes('413') ||
     msg.includes('payload too large') ||
@@ -390,7 +444,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     return 'SERVICE_UNAVAILABLE';
   }
 
-  console.log(`[classifyGenAIError] ❓ Original error from gemini:`, err, typeof err);
+  console.log(`[classifyGenAIError] ❓ Original error from provider:`, err, typeof err);
   return 'UNKNOWN';
 }
 
