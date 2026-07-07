@@ -90,7 +90,8 @@ export type UserActivityType =
   'credits_added' |
   'session_updated' |
   'onboarding_complete' |
-  'referrer_set';
+  'referrer_set' |
+  'shared_ending';
 
 export type CheckinClaimType = 'regular' | 'vip_2x';
 

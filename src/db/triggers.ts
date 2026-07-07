@@ -475,7 +475,6 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
  * - Safe to run multiple times without errors
  */
 async function ensureBookCompleteCountTrigger(): Promise<void> {
-  // TODO: add completion_rate calculation
   // -- In update_book_complete_count() (triggers.ts, ~line 470) — add after the complete_count UPDATE:
   // CREATE OR REPLACE FUNCTION update_book_complete_count()
   // RETURNS TRIGGER AS $$

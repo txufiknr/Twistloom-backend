@@ -45,7 +45,7 @@ import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress } from "../db/schema.js";
+import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
@@ -1652,8 +1652,8 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
         collection, // Filter favorites by collection name
       });
 
-      const totalCountResult = await countQuery;
-      const totalCount = totalCountResult.length;
+      const [totalCountResult] = await countQuery;
+      const totalCount = (totalCountResult?.count as number) ?? 0;
 
       // Apply pagination
       const offset = (page - 1) * limit;
@@ -3326,6 +3326,63 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
 
     handleApiError(res, "Failed to purchase action hint", error);
   }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/share
+ *
+ * Records a user sharing a completed ending page for a book.
+ * The user must have actually reached this page (have a completion record).
+ *
+ * @route POST /api/books/:identifier/:pageId/share
+ * @auth Required
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - UUID v7 of the ending page to share
+ * @returns 200 `{ success: true }` on success
+ * @returns 404 if no completion record exists for this user+page
+ *
+ * @example
+ * POST /api/books/the-haunting/01912345-6789-1234-5678-123456789012/share
+ * → 200 { "success": true }
+ */
+router.post("/:identifier/:pageId/share", requireAuth, async (req: Request, res: Response) => {
+  const bookIdentifier = req.params.identifier as string;
+  const pageId = req.params.pageId as string;
+  const userId = req.userId!;
+
+  // Get page
+  const dbPage = await getPageFromDB(pageId, { bookIdentifier });
+  if (!dbPage) {
+    return handleNotFoundError(res, `Page not found`);
+  }
+
+  const bookId = dbPage.bookId;
+
+  // Resolve the specific completion this share refers to
+  const [completion] = await dbRead
+    .select({ id: userCompletedBooks.id, bookId: userCompletedBooks.bookId, branchId: userCompletedBooks.branchId })
+    .from(userCompletedBooks)
+    .where(and(
+      eq(userCompletedBooks.userId, userId),
+      eq(userCompletedBooks.pageId, pageId),
+      eq(userCompletedBooks.bookId, bookId),
+    ))
+    .limit(1);
+
+  if (!completion) {
+    return handleNotFoundError(res, 'No completion found for this page — cannot share an ending you have not reached.');
+  }
+
+  // Log user activity
+  await logUserActivity({
+    userId,
+    activityType: 'shared_ending',
+    targetType: 'book',
+    targetId: completion.id,
+    metadata: { bookId: completion.bookId, pageId, branchId: completion.branchId },
+  }, { req });
+
+  res.json({ success: true });
 });
 
 /**

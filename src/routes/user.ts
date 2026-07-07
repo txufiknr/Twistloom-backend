@@ -2075,24 +2075,14 @@ router.get("/progress", optionalAuth, async (req: Request, res: Response) => {
 
 /**
  * GET /api/user/achievements
- * Returns detailed view of unlocked and locked achievements with progress calculations.
- *
- * @query {number} page - Page number for pagination (default: 1)
- * @query {number} limit - Items per page (default: 50)
+ * Returns all available achievements with user progress, unfiltered.
  */
 router.get('/achievements', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.userId!;
     const badges = await getUserAchievements(userId);
 
-    // Apply pagination if params provided
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || badges.length;
-    const offset = (page - 1) * limit;
-    const pagedBadges = badges.slice(offset, offset + limit);
-    const pagination = calculatePaginationMeta(page, limit, badges.length);
-
-    res.json({ success: true, badges: pagedBadges, pagination });
+    res.json({ success: true, badges });
   } catch (error) {
     handleApiError(res, 'Failed to fetch achievements layout', error);
   }

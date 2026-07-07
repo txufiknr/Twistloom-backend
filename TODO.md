@@ -3,17 +3,17 @@
 [ ] Implement belief
 [ ] Implement corruption curve
 [ ] Kalau real take action request & source action belum ada, page ga boleh dilihat
-[ ] create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
+[ ] publish book: create paid book (vip with 500 followers, 30 days-old account, email verified, has published 50 books) -> pay as much as the book price -> book promoted
 [ ] isGeneratingStartedAt -> lastGenerationHeartbeatAt (no heartbeat for X minutes)
 [ ] mistral API key issue: https://www.reddit.com/r/MistralAI/comments/1ttqvbw/api_error_401_was_working/
 [ ] pass title idea ke initalize book & github workflow dynamic job title
 [ ] Generate originals tambah custom input book title & mc name
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
-[ ] Sale credits: 10% fee, cuma bisa dicairkan integer ke credits
+[ ] Sale credits: 10% fee, cuma bisa dicairkan kelipatan 10 ke credits
 [ ] userSettings schema
 - interests: string[]
 - email notification settings
-[ ] vip: addPlannedCharacters (via add custom character button)
+[ ] reader vip: addPlannedCharacters (via add custom character button)
 [ ] enhance book explore:
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?
 - [ ] search jaccard similarity (by book keywords & title)
@@ -23,6 +23,7 @@
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
 [ ] sync sampling formula with ai-sampling.ts
+[ ] prompt first book creation include summary & hook (alongside titleIdea)
 
 ---
 
@@ -44,10 +45,11 @@ ensure stripe webhook events:
 
 ---
 
-src\db\schema.ts
-src\db\triggers.ts
-
-claude: ask about TODO-counter-trigger.md
+2026-07-06 11:37:25.963 [error] [uploadImageKit] ❌ Image upload failed for entity 019ed9a8-0b2b-72bb-92af-260e19e699aa: 400 Invalid custom metadata.
+2026-07-06 11:37:25.963 [warning] [PUT /api/user] ⚠️ Failed to upload profile image - ImageKit upload returned no URL
+2026-07-06 11:37:25.963 [error] Error: ImageKit upload returned no URL
+    at <anonymous> (/vercel/path0/src/routes/user.ts:337:63)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
 
 ---
 

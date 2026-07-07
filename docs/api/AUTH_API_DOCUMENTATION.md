@@ -37,6 +37,10 @@ The Authentication API provides endpoints for user registration, credential veri
    - [Logout from All Devices](#post-apiauthlogout-all-devices)
    - [Logout from Specific Session](#post-apiauthlogout-session)
    - [Logout](#post-apiauthlogout)
+7. [Account Management](#account-management)
+   - [Change Email](#put-apiauthemail)
+   - [Change Password](#put-apiauthpassword)
+   - [Change Username](#put-apiauthusername)
 
 ---
 
@@ -762,6 +766,155 @@ await signOut({ callbackUrl: '/' });
 ```bash
 curl -X POST http://localhost:3000/api/auth/logout
 ```
+
+---
+
+## Account Management
+
+### PUT /api/auth/email
+
+Changes the authenticated user's email address. Requires current password verification. Resets email verification status — the new address is considered unverified until the user verifies it.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** IP-based rate limiting
+
+**Request Body:**
+```json
+{
+  "newEmail": "user@example.com",
+  "currentPassword": "current-password"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Email updated successfully"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing fields or invalid email format
+- `401 Unauthorized`: Current password is incorrect, user not found, or OAuth-only account
+- `409 Conflict`: New email already in use by another account
+- `429 Too Many Requests`: Rate limit exceeded
+- `500 Internal Server Error`: Server error
+
+**Security Features:**
+- Requires current password verification (prevents unauthorized email changes)
+- Resets `email_verified` to null (new email must be verified)
+- Basic email format validation
+- Uniqueness check prevents account takeover via email squatting
+
+**Database Operations:**
+1. Fetches user's `passwordHash` from `users` table
+2. Verifies `currentPassword` against stored bcrypt hash
+3. Checks `newEmail` uniqueness in `users` table (409 if taken)
+4. Updates `users.email` and `user_auth.email_verified` (set to null)
+
+---
+
+### PUT /api/auth/password
+
+Changes the authenticated user's password. Requires current password verification.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** IP-based rate limiting
+
+**Request Body:**
+```json
+{
+  "currentPassword": "current-password",
+  "newPassword": "NewP@ss123!"
+}
+```
+
+**Password Requirements** (same as signup):
+- Minimum 8 characters, maximum 128 characters
+- At least one uppercase letter
+- At least one lowercase letter
+- At least one number
+- At least one special character
+- Cannot be a common password
+
+**Response (200 OK):**
+```json
+{
+  "message": "Password updated successfully"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing fields
+- `401 Unauthorized`: Current password is incorrect, user not found, or OAuth-only account
+- `422 Unprocessable Entity`: New password does not meet security requirements
+  ```json
+  {
+    "error": "Password does not meet security requirements",
+    "details": ["Password must be at least 8 characters long"]
+  }
+  ```
+- `429 Too Many Requests`: Rate limit exceeded
+- `500 Internal Server Error`: Server error
+
+**Behavior:**
+1. Verifies `currentPassword` against the stored bcrypt hash
+2. Validates `newPassword` strength
+3. Hashes `newPassword` with bcrypt (12 salt rounds)
+4. Updates `users.password_hash`
+5. Resets `user_auth.failed_login_attempts` and `user_auth.lock_until`
+
+---
+
+### PUT /api/auth/username
+
+Changes the authenticated user's username.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** IP-based rate limiting
+
+**Request Body:**
+```json
+{
+  "newUsername": "newusername"
+}
+```
+
+**Username Rules** (same as signup):
+- 3–30 characters
+- Only lowercase letters (a-z), digits (0-9), and hyphens (-)
+- No spaces or underscores
+- Cannot start or end with a hyphen
+- No consecutive hyphens (--)
+- Not a reserved word (admin, support, etc.)
+
+**Response (200 OK):**
+```json
+{
+  "message": "Username updated successfully"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing username
+- `409 Conflict`: Username already taken by another user
+- `422 Unprocessable Entity`: Invalid username format
+  ```json
+  {
+    "error": "Invalid username",
+    "details": ["Username must be at least 3 characters long"]
+  }
+  ```
+- `429 Too Many Requests`: Rate limit exceeded
+- `500 Internal Server Error`: Server error
+
+**Behavior:**
+1. Validates `newUsername` format using `validateUsername()`
+2. Checks uniqueness in `users` table (excludes current user)
+3. Updates `users.username`
 
 ---
 

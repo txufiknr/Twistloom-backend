@@ -31,7 +31,7 @@ import { Router } from "express";
 import { OAuth2Client } from 'google-auth-library';
 import { dbRead, dbWrite } from '../db/client.js';
 import { users, userAuth } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, ne } from 'drizzle-orm';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { validatePasswordStrength } from '../utils/password-validation.js';
 import { checkAccountLockout, recordFailedLogin, resetFailedLoginAttempts } from '../utils/account-lockout.js';
@@ -42,6 +42,7 @@ import { handleApiError, handleRateLimitError, handleUnauthorizedError, handleVa
 import { checkRateLimitByIP } from '../middleware/rate-limit.js';
 import { generateId } from '../utils/uuid.js';
 import { createOrUpdateOAuthUser, setReferrerForNewUser } from '../services/user-controller.js';
+import { validateUsername } from '../utils/username.js';
 import { isTemp as isTemporaryEmail } from 'tempmail-checker';
 import { requireAuth } from '../middleware/nextauth.js';
 import { getUserSessions, logoutFromSpecificDevice, logoutFromAllOtherDevices, logoutFromAllDevices, deleteSessionById } from '../services/session-manager.js';
@@ -977,6 +978,244 @@ router.delete('/sessions/:id', requireAuth, async (req: Request, res: Response) 
   } catch (error) {
     console.error('[DELETE /api/auth/sessions/:id] ❌ Error deleting session:', error);
     handleApiError(res, 'Failed to delete session', error, 500);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/auth/email
+// ---------------------------------------------------------------------------
+
+/**
+ * PUT /api/auth/email
+ *
+ * Changes the authenticated user's email address. Requires current password verification.
+ * Resets email verification status for the new address.
+ *
+ * @route PUT /api/auth/email
+ * @description Change user email address
+ * @auth Required (requireAuth)
+ *
+ * @body {string} newEmail - New email address
+ * @body {string} currentPassword - Current password for verification
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Success message
+ *
+ * @throws 400 - Missing fields or invalid email format
+ * @throws 401 - Current password is incorrect
+ * @throws 409 - New email already in use
+ * @throws 429 - Rate limit exceeded
+ */
+router.put('/email', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+
+    const userId = req.userId!;
+    const { newEmail, currentPassword } = req.body;
+
+    if (!newEmail || !currentPassword) {
+      return handleValidationError(res, 'New email and current password are required');
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(newEmail)) {
+      return handleValidationError(res, 'Invalid email format');
+    }
+
+    const [user] = await dbRead
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!user) return handleUnauthorizedError(res, 'User not found');
+
+    if (!user.passwordHash) {
+      return handleUnauthorizedError(res, 'This account uses OAuth login. Cannot change email.');
+    }
+
+    const isValid = await verifyPassword(currentPassword, user.passwordHash);
+    if (!isValid) {
+      return handleUnauthorizedError(res, 'Current password is incorrect');
+    }
+
+    const sanitizedEmail = newEmail.toLowerCase().trim();
+
+    const [emailConflict] = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(eq(users.email, sanitizedEmail))
+      .limit(1);
+
+    if (emailConflict) {
+      return res.status(409).json({ error: 'Email already in use' });
+    }
+
+    const now = new Date();
+    await dbWrite
+      .update(users)
+      .set({ email: sanitizedEmail, updatedAt: now })
+      .where(eq(users.userId, userId));
+
+    await dbWrite
+      .update(userAuth)
+      .set({ emailVerified: null, updatedAt: now })
+      .where(eq(userAuth.userId, userId));
+
+    res.json({ message: 'Email updated successfully' });
+  } catch (error) {
+    console.error('[PUT /api/auth/email] ❌', error);
+    handleApiError(res, 'Failed to update email', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/auth/password
+// ---------------------------------------------------------------------------
+
+/**
+ * PUT /api/auth/password
+ *
+ * Changes the authenticated user's password. Requires current password verification.
+ * Resets failed login attempts and lockout status on success.
+ *
+ * @route PUT /api/auth/password
+ * @description Change user password
+ * @auth Required (requireAuth)
+ *
+ * @body {string} currentPassword - Current password for verification
+ * @body {string} newPassword - New password (8+ chars, mixed case, number, special)
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Success message
+ *
+ * @throws 400 - Missing fields
+ * @throws 401 - Current password is incorrect
+ * @throws 422 - New password does not meet security requirements
+ * @throws 429 - Rate limit exceeded
+ */
+router.put('/password', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+
+    const userId = req.userId!;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return handleValidationError(res, 'Current password and new password are required');
+    }
+
+    const passwordValidation = validatePasswordStrength(newPassword);
+    if (!passwordValidation.valid) {
+      return res.status(422).json({
+        error: 'Password does not meet security requirements',
+        details: passwordValidation.errors,
+      });
+    }
+
+    const [user] = await dbRead
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!user) return handleUnauthorizedError(res, 'User not found');
+
+    if (!user.passwordHash) {
+      return handleUnauthorizedError(res, 'This account uses OAuth login. Cannot change password.');
+    }
+
+    const isValid = await verifyPassword(currentPassword, user.passwordHash);
+    if (!isValid) {
+      return handleUnauthorizedError(res, 'Current password is incorrect');
+    }
+
+    const newPasswordHash = await hashPassword(newPassword);
+    const now = new Date();
+
+    await dbWrite
+      .update(users)
+      .set({ passwordHash: newPasswordHash, updatedAt: now })
+      .where(eq(users.userId, userId));
+
+    await dbWrite
+      .update(userAuth)
+      .set({ failedLoginAttempts: 0, lockUntil: null, updatedAt: now })
+      .where(eq(userAuth.userId, userId));
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('[PUT /api/auth/password] ❌', error);
+    handleApiError(res, 'Failed to update password', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/auth/username
+// ---------------------------------------------------------------------------
+
+/**
+ * PUT /api/auth/username
+ *
+ * Changes the authenticated user's username. Validates format and checks uniqueness.
+ *
+ * @route PUT /api/auth/username
+ * @description Change user username
+ * @auth Required (requireAuth)
+ *
+ * @body {string} newUsername - New username (3-30 chars, lowercase letters, numbers, hyphens)
+ *
+ * @returns {Object} Status
+ * @returns {string} message - Success message
+ *
+ * @throws 400 - Missing or invalid username format
+ * @throws 409 - Username already taken
+ * @throws 429 - Rate limit exceeded
+ */
+router.put('/username', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimitByIP(ip)) return handleRateLimitError(res);
+
+    const userId = req.userId!;
+    const { newUsername } = req.body;
+
+    if (!newUsername) {
+      return handleValidationError(res, 'New username is required');
+    }
+
+    const sanitized = (typeof newUsername === 'string' ? newUsername.trim().toLowerCase() : '');
+
+    const validation = validateUsername(sanitized);
+    if (!validation.valid) {
+      return res.status(422).json({
+        error: 'Invalid username',
+        details: validation.errors,
+      });
+    }
+
+    const [usernameConflict] = await dbRead
+      .select({ userId: users.userId })
+      .from(users)
+      .where(and(eq(users.username, sanitized), ne(users.userId, userId)))
+      .limit(1);
+
+    if (usernameConflict) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+
+    const now = new Date();
+    await dbWrite
+      .update(users)
+      .set({ username: sanitized, updatedAt: now })
+      .where(eq(users.userId, userId));
+
+    res.json({ message: 'Username updated successfully' });
+  } catch (error) {
+    console.error('[PUT /api/auth/username] ❌', error);
+    handleApiError(res, 'Failed to update username', error);
   }
 });
 

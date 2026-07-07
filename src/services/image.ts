@@ -424,14 +424,14 @@ export async function uploadBookCover(
   imageSource: ImageUploadSource,
   bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
 ): Promise<ImageKit.Files.FileUploadResponse | null> {
-  const { id, title, keywords } = bookMeta;
+  const { id, keywords } = bookMeta;
   return uploadImageKit(imageSource, id, {
     folder: 'books',
     tags: [...keywords, 'book-cover', `book-id:${id}`],
     // TODO: 400 Invalid custom metadata.
     // customMetadata: {
     //   bookId: id,
-    //   bookTitle: title,
+    //   bookTitle: bookMeta.title,
     // },
     filenamePrefix: 'cover',
   });

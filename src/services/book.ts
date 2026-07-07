@@ -741,6 +741,39 @@ export async function getBook(bookId: string): Promise<Book | null> {
 }
 
 /**
+ * Resolves a book ID by identifier (slug or UUID v7)
+ *
+ * If the identifier is already a valid UUID, returns it immediately.
+ * Otherwise performs a lightweight query to look up the book ID by slug.
+ *
+ * @param identifier - Book slug or UUID v7
+ * @returns Promise resolving to the book ID or null if not found
+ *
+ * @example
+ * ```typescript
+ * // UUID: early return
+ * const id = await resolveBookId("0190f123-4567-...");
+ *
+ * // Slug: lightweight query
+ * const id = await resolveBookId("twistloom");
+ *
+ * // Not found
+ * const id = await resolveBookId("nonexistent"); // null
+ * ```
+ */
+export async function resolveBookId(identifier: string): Promise<string | null> {
+  if (isValidUuid(identifier)) return identifier;
+
+  const [book] = await dbRead
+    .select({ id: books.id })
+    .from(books)
+    .where(eq(books.slug, identifier))
+    .limit(1);
+
+  return book?.id ?? null;
+}
+
+/**
  * Resolves a book by identifier (slug or UUID v7)
  * 
  * This function uses a single OR query to match either slug or UUID,
