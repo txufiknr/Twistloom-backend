@@ -59,7 +59,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -71,7 +71,7 @@ import { logUserActivity, updateUserLastActivity } from "../services/user.js";
 import type { ProgressCallback } from "../types/sse.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { getActionProgressEvents, clearActionProgressEvents } from "../utils/progress-tracking.js";
-import type { DBNewBook, DBNewBookGeneration, DBUpdateBook } from "../types/schema.js";
+import type { DBBook, DBNewBook, DBNewBookGeneration, DBUpdateBook } from "../types/schema.js";
 import type { ActionProgressEvent, CandidateGenerationStatus } from "../types/candidate-generation.js";
 import { GITHUB_REPO_CONFIG } from "../config/env.js";
 import { initSSEHeaders, pollForCandidateGeneration, sendSSEEvent } from "../utils/sse.js";
@@ -396,23 +396,27 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     //
     // `executeWithCredits` opens a single Postgres transaction:
     //   - Deducts STORY_GENERATION credits (row-locked)
-    //   - Inserts `books` draft row
+    //   - Inserts `books` draft row (returned via `.returning()`)
     //   - Inserts `bookGenerations` tracking row
     //
     // If any insert fails the transaction rolls back and credits are preserved
     // automatically. The runner picks up all generation params from the DB row.
-    await executeWithCredits(
+    const { result: dbBook } = await executeWithCredits<DBBook>(
       userId,
       'STORY_GENERATION',
       async (tx) => {
-        await tx.insert(books).values(initialBookData);
+        const [insertedBook] = await tx.insert(books).values(initialBookData).returning();
         await tx.insert(bookGenerations).values(initialBookGenerationData);
+        return insertedBook;
       },
       {
         context:  'book_creation_async',
         metadata: { theme, bookId },
       }
     );
+
+    // Map DB row to frontend-facing Book shape for the response.
+    const book = mapBookFromDb(dbBook);
 
     // ── STEP 5: Dispatch GitHub Actions workflow (fire-and-forget) ────────────
     //
@@ -423,9 +427,14 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     // ── STEP 6: Respond immediately with 202 Accepted ─────────────────────────
     //
     // HTTP 202 is the correct semantic: "request accepted for background processing."
+    // Include the draft book object + aiComment so the frontend can render
+    // title/mc/summary/hook/commentary immediately without waiting for the first
+    // status poll tick.
     res.status(202).json({
       bookId,
       message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
+      aiComment,
+      book,
     });
 
     // ── STEP 7: Log user activity (fire-and-forget AFTER response) ────────────

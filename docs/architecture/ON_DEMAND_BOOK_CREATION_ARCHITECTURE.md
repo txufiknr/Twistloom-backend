@@ -203,15 +203,21 @@ const { aiResult } = await createBookValidate(theme, mcCandidate, generateCoverI
 const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
 ```
 
-### Step 3: Draft record creation + Credit consumption
+### Step 3: Atomic Draft Insertion + Credit Consumption
 
-A single Postgres transaction (`executeWithCredits`):
+A single Postgres transaction (`executeWithCredits`) — the inserted book is returned via `.returning()`:
 
 ```typescript
-await executeWithCredits(userId, 'STORY_GENERATION', async (tx) => {
-  await tx.insert(books).values(initialBookData);       // status: 'draft'
-  await tx.insert(bookGenerations).values(initialBookGenerationData); // status: 'pending'
-}, { context: 'book_creation_async', metadata: { theme, bookId } });
+const { result: dbBook } = await executeWithCredits<DBBook>(
+  userId, 'STORY_GENERATION',
+  async (tx) => {
+    const [insertedBook] = await tx.insert(books).values(initialBookData).returning();
+    await tx.insert(bookGenerations).values(initialBookGenerationData);
+    return insertedBook;
+  },
+  { context: 'book_creation_async', metadata: { theme, bookId } },
+);
+const book = mapBookFromDb(dbBook); // Frontend-facing shape
 ```
 
 If either insert fails, the entire transaction rolls back and credits are preserved. No explicit refund is needed.
@@ -227,10 +233,24 @@ The dispatch function calls the GitHub API with up to 3 retries (1s, 2s, 4s expo
 
 ### Step 5: HTTP 202 Accepted
 
+The response includes the draft book and pre-commentary so the frontend can render
+title/mc/summary/hook/commentary immediately without waiting for the first status poll:
+
 ```typescript
 res.status(202).json({
   bookId,
   message: 'Book creation started. Poll /api/books/:bookId/status for updates.',
+  aiComment,           // Pre-commentary from AI validation step
+  book: {              // Draft book data for instant frontend rendering
+    id: bookId,
+    userId,
+    title,
+    hook,
+    summary,
+    mc,
+    language,
+    // ...additional draft fields (slug, status, etc.)
+  },
 });
 ```
 
@@ -240,7 +260,7 @@ User activity logging happens after the response to guarantee no double-response
 void logUserActivity({...}).catch(err => { console.error(...); });
 ```
 
-### Step 6: GitHub Actions Runner (`processBookGeneration`)
+### Step 6: GitHub Actions Runner
 
 The runner executes `src/cron/on-demand-book-creation.ts` with `BOOK_ID` environment variable:
 

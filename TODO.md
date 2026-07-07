@@ -23,29 +23,56 @@
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
 [ ] sync sampling formula with ai-sampling.ts
+[ ] ensure to refund 5 credits when generation failed
 [x] prompt first book creation include summary & hook (alongside titleIdea)
 
 ---
 
-frontend files:
-src\db\schema.ts
-src\cron\vip-expiration.ts
-src\config\subscription.ts
-docs\roadmap\SUBSCRIPTION_HYBRID_MODEL_ROADMAP.md
-src\types\subscription.ts
-src\services\subscription.ts
-docs\architecture\STRIPE_PAYMENT_ARCHITECTURE.md
-docs\api\PAYMENTS_API_DOCUMENTATION.md
-src\routes\payments.ts
-src\config\credits.ts
-src\utils\stripe.ts
-src\app.ts
+duplicate futureNoteKeys
 
-forntend: Next.js 16
-backend: Express
+[resolvePageDelta] 🔮 futureNoteKeys (10): [
+  'mystery_1',
+  'mystery_1',
+  'world_1',
+  'mystery_1',
+  'character_1',
+  'inventory_1',
+  'character_1',
+  'location_1',
+  'relationship_1',
+  'inventory_1'
+]
+
+---
+
+@src/components/modals/StoryGenerationModal.tsx @src/lib/hooks/query/useUser.ts @src/stores/generation-store.ts @src/lib/utils/generation-refund.ts @src/lib/services/book-generation-tracker.ts when generation failed in frontend (e.g., timeout), can you ensure backend refunded book creation credits to user (with optimistic UI update)? then clicking "retry" (`POST /api/books/:bookId/retry`) should consumes credits again in backend
+please examine current implementation to be sure it's already implemented or not, if not, please create robust plan and complete the implementation
+
+---
+
+can you comprehensively review my payment and subscription implementation using Stripe? let's start from backend project (Express)
 package: "stripe": "^22.2.0"
 
-Claude review stripe implementation + 1 month VIP free trial roadmap plan
+backend files (uploaded):
+docs\api\PAYMENTS_API_DOCUMENTATION.md
+docs\architecture\STRIPE_PAYMENT_ARCHITECTURE.md (maybe obsolete)
+docs\roadmap\SUBSCRIPTION_HYBRID_MODEL_ROADMAP.md (maybe obsolete)
+src\config\credits.ts
+src\config\subscription.ts
+src\cron\vip-expiration.ts
+src\db\schema.ts
+src\routes\payments.ts
+src\services\credits.ts
+src\services\subscription.ts
+src\types\credits.ts
+src\types\subscription.ts
+src\utils\stripe.ts
+
+if you find any issues, please refine and correct
+after my stripe & VIP subscription implementation truly stable, I thought about implementing "1-month VIP free trial" for users (much like in LinkedIn), can you write comprehensive roadmap plan MD file?
+
+
+src\app.ts (later check)
 
 ---
 
