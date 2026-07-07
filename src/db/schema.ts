@@ -375,7 +375,7 @@ export const books = pgTable(
   "books",
   {
     id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "set null" }), // Preserve books when users are deleted
+    userId: uuid("user_id").references(() => users.userId, { onDelete: "set null" }), // Preserve books when users are deleted
     slug: text("slug").unique(), // SEO-friendly URL identifier
     title: text("title").notNull(),
     totalPages: integer("total_pages").notNull().default(BOOK_MIN_PAGES),
@@ -1418,7 +1418,7 @@ export const storyPrompts = pgTable(
     /** Number of unique users who have seen this prompt */
     uniqueUserCount: integer("unique_user_count").notNull().default(0),
     /** Initiator user id (who requested / generated this prompt) */
-    userId: userId().references(() => users.userId, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.userId, { onDelete: "set null" }),
     /** Language code for which this prompt was generated (e.g. 'en') */
     language: text("language").notNull().default('en'),
     /** Whether this prompt is currently active for serving */
@@ -1565,7 +1565,7 @@ export const uploadedImages = pgTable(
   "uploaded_images",
   {
     id: id(),
-    userId: userId().references(() => users.userId, { onDelete: "set null" }), // orphaned images kept when user is deleted (images scheduled for deletion via cron)
+    userId: uuid("user_id").references(() => users.userId, { onDelete: "set null" }), // orphaned images kept when user is deleted (images scheduled for deletion via cron)
     imageId: text("image_id").notNull(), // ImageKit file ID for deletion
     imageUrl: text("image_url").notNull(), // ImageKit URL
     type: text("type").$type<UploadedImageType>().notNull(),

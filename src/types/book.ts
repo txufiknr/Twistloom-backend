@@ -107,8 +107,8 @@ export type BookAuthor = { id: string } & Pick<User, 'email' | 'username' | 'nam
 export type Book = {
   /** Unique identifier for the book */
   id: string;
-  /** User ID who owns this book */
-  userId: string;
+  /** User ID who owns this book (null if user was deleted) */
+  userId: string | null;
   /** SEO-friendly URL identifier (null if not implemented) */
   slug?: string;
   /** Book title (catchy, mysterious) */

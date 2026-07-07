@@ -23,7 +23,29 @@
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
 [ ] sync sampling formula with ai-sampling.ts
-[ ] prompt first book creation include summary & hook (alongside titleIdea)
+[x] prompt first book creation include summary & hook (alongside titleIdea)
+
+---
+
+frontend files:
+src\db\schema.ts
+src\cron\vip-expiration.ts
+src\config\subscription.ts
+docs\roadmap\SUBSCRIPTION_HYBRID_MODEL_ROADMAP.md
+src\types\subscription.ts
+src\services\subscription.ts
+docs\architecture\STRIPE_PAYMENT_ARCHITECTURE.md
+docs\api\PAYMENTS_API_DOCUMENTATION.md
+src\routes\payments.ts
+src\config\credits.ts
+src\utils\stripe.ts
+src\app.ts
+
+forntend: Next.js 16
+backend: Express
+package: "stripe": "^22.2.0"
+
+Claude review stripe implementation + 1 month VIP free trial roadmap plan
 
 ---
 

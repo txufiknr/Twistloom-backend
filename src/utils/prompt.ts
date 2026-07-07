@@ -1506,7 +1506,9 @@ ${firstBookOutputFormat}
 FIELD INSTRUCTIONS:
 ${firstBookFieldInstructions}
 
-All field values MUST USE THE DETECTED LANGUAGE consistently: ${formatLanguage(language || 'en')}.
+LANGUAGE REQUIREMENT:
+- MUST output all field values in SAME LANGUAGE as story theme exclusively (detected: ${formatLanguage(language)}).
+- Do NOT mix languages.
 
 ---
 INSTRUCTIONS — FOLLOW IN ORDER:
@@ -3312,10 +3314,18 @@ function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT
  * ```
  */
 function buildBookCreationPrompt(params: InitializeBookParams): string {
-  const { theme, language } = params;
+  const { theme, language, titleIdea, summary, hook } = params;
   return `TASK: Create a psychological thriller story from this theme input from user:\n"""\n${theme.trim()}\n"""
 
-Align language with theme input${language ? ` (current detected: "${language}")` : '. Use English ("en") if uncertain'}.
+LANGUAGE REQUIREMENT:
+- MUST output all story content, metadata, and narrative in SAME LANGUAGE as user's theme input exclusively (detected: ${formatLanguage(language)}).
+- Do NOT mix languages.
+
+TITLE IDEA:\n${titleIdea || '-'}
+
+HOOK IDEA:\n${hook || '-'}
+
+SUMMARY IDEA:\n${summary || '-'}
 
 STORY SETUP:
 - Establish unease immediately — not fear yet, but something subtly wrong.

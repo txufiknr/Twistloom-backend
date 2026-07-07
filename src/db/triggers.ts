@@ -72,14 +72,24 @@ async function dropAllTriggers(): Promise<void> {
  * Creates database trigger for user session exclusivity
  * 
  * This trigger ensures only one active session per user:
- * 1. Trigger fires BEFORE UPDATE on user_sessions table
- * 2. When status is set to 'active', deactivates all other sessions for that user
+ * 1. Trigger fires BEFORE INSERT OR UPDATE on user_sessions table
+ * 2. Whenever a row's status is (or becomes) 'active', deactivates all other
+ *    active sessions for that user (i.e. sessions belonging to other books)
  * 3. Ensures data consistency without relying on application logic
+ * 
+ * Why INSERT must also be covered (not just UPDATE):
+ * - `user_sessions.status` defaults to 'active' at the column level, so a
+ *   brand-new session for a book the user has never opened before is
+ *   inserted directly as 'active' — no UPDATE ever fires for that row. A
+ *   BEFORE UPDATE-only trigger silently misses this case, letting a user
+ *   end up with two simultaneously "active" sessions (their previous book,
+ *   still active, plus the freshly-inserted one) until the next unrelated
+ *   UPDATE happens to run and clean it up.
  * 
  * Idempotency:
  * - Uses DROP TRIGGER IF EXISTS and CREATE OR REPLACE FUNCTION
  * - Safe to run multiple times without errors
- * - Trigger only fires when status is being changed to 'active'
+ * - Trigger only takes action when status is (or becomes) 'active'
  */
 async function ensureUserSessionTrigger(): Promise<void> {
   try {
@@ -88,7 +98,8 @@ async function ensureUserSessionTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION deactivate_other_user_sessions()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- When status is being set to 'active', update all other sessions for this user to 'past'
+        -- Whenever a row is (or becomes) 'active', deactivate every other
+        -- active session this same user has for a different book.
         IF NEW.status = 'active' THEN
           UPDATE user_sessions 
           SET status = 'past', updated_at = NOW()
@@ -101,15 +112,18 @@ async function ensureUserSessionTrigger(): Promise<void> {
       $$ LANGUAGE plpgsql;
     `);
     
-    // Drop existing trigger if it exists
+    // Drop existing trigger(s) if they exist (covers the legacy UPDATE-only name too)
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_sessions_update_trigger ON user_sessions;
     `);
-    
-    // Create the trigger
     await dbWrite.execute(`
-      CREATE TRIGGER user_sessions_update_trigger
-        BEFORE UPDATE ON user_sessions
+      DROP TRIGGER IF EXISTS user_sessions_exclusivity_trigger ON user_sessions;
+    `);
+    
+    // Create the trigger — now covers INSERT as well as UPDATE
+    await dbWrite.execute(`
+      CREATE TRIGGER user_sessions_exclusivity_trigger
+        BEFORE INSERT OR UPDATE ON user_sessions
         FOR EACH ROW
         EXECUTE FUNCTION deactivate_other_user_sessions();
     `);
@@ -125,13 +139,22 @@ async function ensureUserSessionTrigger(): Promise<void> {
  * Creates trigger to update book read count and page 1 visit count based on unique users in user_sessions
  * 
  * This trigger fires AFTER INSERT OR UPDATE on user_sessions table:
- * 1. When a user starts or updates a session for a book
- * 2. Updates read_count to match unique users who have read this book
- * 3. Updates page 1's visit_count to match book's read_count (every reader visits page 1)
- * 4. Ensures denormalized counts stay synchronized
+ * 1. INSERT — the `user_sessions_user_book_unique` constraint guarantees
+ *    (user_id, book_id) is unique, so a fresh INSERT is *always* a brand-new
+ *    unique reader for that book. We increment read_count/completion_rate/
+ *    page-1 visit_count by 1 (O(1)) instead of re-scanning the whole table
+ *    with COUNT(DISTINCT ...).
+ * 2. UPDATE — an UPDATE on this table only ever represents a session status
+ *    flip (active <-> past, see deactivate_other_user_sessions()), which can
+ *    NEVER change the number of unique readers. We skip the count recompute
+ *    entirely here and only bump trending_score, since re-engaging with a
+ *    book (resuming or switching back to it) is still a meaningful trending
+ *    signal — this preserves the original "hybrid approach" behavior while
+ *    dropping the wasted full-table recompute that used to run on every
+ *    single status flip.
  * 
- * Note: This counts unique users (distinct user_id), not total page visits
- * Page 1 visit count is consolidated with book read count since every reader visits page 1
+ * Note: This counts unique users (distinct user_id), not total page visits.
+ * Page 1 visit count is consolidated with book read count since every reader visits page 1.
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
@@ -146,46 +169,42 @@ async function ensureBookReadCountTrigger(): Promise<void> {
       DECLARE
         v_page_1_id UUID;
       BEGIN
-        -- Update book read count
-        UPDATE books
-        SET read_count = (
-          SELECT COUNT(DISTINCT user_id)
-          FROM user_sessions
-          WHERE book_id = NEW.book_id
-        ),
-            completion_rate = CASE WHEN (
-              SELECT COUNT(DISTINCT user_id)
-              FROM user_sessions
-              WHERE book_id = NEW.book_id
-            ) > 0 THEN
-              ROUND(complete_count::numeric / (
-                SELECT COUNT(DISTINCT user_id)
-                FROM user_sessions
-                WHERE book_id = NEW.book_id
-              ) * 100)
-            ELSE NULL END,
-            trending_score = trending_score + 0.5, -- Incremental update for hybrid approach
-            updated_at = NOW()
-        WHERE id = NEW.book_id;
-        
-        -- Update page 1's visit_count to match book's read_count
-        -- Every book reader visits page 1, so visit_count = read_count
-        SELECT id INTO v_page_1_id
-        FROM pages
-        WHERE book_id = NEW.book_id AND page = 1
-        LIMIT 1;
-        
-        IF v_page_1_id IS NOT NULL THEN
-          UPDATE pages
-          SET visit_count = (
-            SELECT COUNT(DISTINCT user_id)
-            FROM user_sessions
-            WHERE book_id = NEW.book_id
-          ),
+        IF TG_OP = 'INSERT' THEN
+          -- A new (user_id, book_id) row is guaranteed to be a brand-new
+          -- unique reader (user_sessions_user_book_unique), so a plain +1
+          -- is correct and avoids a full COUNT(DISTINCT) table scan.
+          UPDATE books
+          SET read_count = read_count + 1,
+              completion_rate = CASE WHEN (read_count + 1) > 0 THEN
+                ROUND(complete_count::numeric / (read_count + 1) * 100)
+              ELSE NULL END,
+              trending_score = trending_score + 0.5, -- Incremental update for hybrid approach
               updated_at = NOW()
-          WHERE id = v_page_1_id;
+          WHERE id = NEW.book_id;
+
+          -- Update page 1's visit_count to match book's read_count
+          -- Every book reader visits page 1, so visit_count tracks read_count
+          SELECT id INTO v_page_1_id
+          FROM pages
+          WHERE book_id = NEW.book_id AND page = 1
+          LIMIT 1;
+
+          IF v_page_1_id IS NOT NULL THEN
+            UPDATE pages
+            SET visit_count = visit_count + 1,
+                updated_at = NOW()
+            WHERE id = v_page_1_id;
+          END IF;
+
+        ELSIF TG_OP = 'UPDATE' THEN
+          -- Session status flips (active <-> past) never change the unique
+          -- reader count, so only the trending signal needs a bump here.
+          UPDATE books
+          SET trending_score = trending_score + 0.5,
+              updated_at = NOW()
+          WHERE id = NEW.book_id;
         END IF;
-        
+
         RETURN NEW;
       END;
       $$ LANGUAGE plpgsql;
@@ -325,8 +344,14 @@ async function ensureBookBranchesIncrementTrigger(): Promise<void> {
  * 
  * This trigger fires AFTER INSERT OR UPDATE on user_page_progress table:
  * 1. When a user progresses to a new page (pages > 1)
- * 2. Updates visit_count for both actionedPageId and nextPageId to count unique users
- * 3. Ensures denormalized count stays synchronized for fast reads
+ * 2. Recomputes visit_count for whichever actionedPageId/nextPageId the NEW
+ *    row currently points to (unique users)
+ * 3. On UPDATE, ALSO recomputes visit_count for the OLD actionedPageId/
+ *    nextPageId if they differ from the NEW ones. Without this, a page that
+ *    a row's action/destination moves away from (e.g. when async candidate
+ *    generation resolves a placeholder destination to its final page) is
+ *    left with a stale, permanently-too-high visit_count — nothing else
+ *    ever revisits it once the row stops pointing there.
  * 
  * Note: This counts unique users (distinct user_id) from user_page_progress
  * Page 1 visit count is handled by book read count trigger (every reader visits page 1)
@@ -342,7 +367,7 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
       CREATE OR REPLACE FUNCTION increment_page_visit_count()
       RETURNS TRIGGER AS $$
       BEGIN
-        -- Update visit_count for actionedPageId (page where action was taken)
+        -- Recompute visit_count for the page(s) this row currently points to
         IF NEW.actioned_page_id IS NOT NULL THEN
           UPDATE pages
           SET visit_count = (
@@ -354,7 +379,6 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
           WHERE id = NEW.actioned_page_id;
         END IF;
         
-        -- Update visit_count for nextPageId (destination page)
         IF NEW.next_page_id IS NOT NULL THEN
           UPDATE pages
           SET visit_count = (
@@ -364,6 +388,32 @@ async function ensurePageVisitCountIncrementTrigger(): Promise<void> {
           ),
               updated_at = NOW()
           WHERE id = NEW.next_page_id;
+        END IF;
+
+        -- On UPDATE, if the row moved away from its previous actioned/next
+        -- page, that old page's visit_count is now stale — recompute it too.
+        IF TG_OP = 'UPDATE' THEN
+          IF OLD.actioned_page_id IS NOT NULL AND OLD.actioned_page_id IS DISTINCT FROM NEW.actioned_page_id THEN
+            UPDATE pages
+            SET visit_count = (
+              SELECT COUNT(DISTINCT user_id)
+              FROM user_page_progress
+              WHERE actioned_page_id = OLD.actioned_page_id
+            ),
+                updated_at = NOW()
+            WHERE id = OLD.actioned_page_id;
+          END IF;
+
+          IF OLD.next_page_id IS NOT NULL AND OLD.next_page_id IS DISTINCT FROM NEW.next_page_id THEN
+            UPDATE pages
+            SET visit_count = (
+              SELECT COUNT(DISTINCT user_id)
+              FROM user_page_progress
+              WHERE next_page_id = OLD.next_page_id
+            ),
+                updated_at = NOW()
+            WHERE id = OLD.next_page_id;
+          END IF;
         END IF;
         
         RETURN NEW;
@@ -430,25 +480,23 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
       $$ LANGUAGE plpgsql;
     `);
     
-    // Drop existing triggers if they exist
+    // Drop existing triggers if they exist (including the legacy split INSERT/DELETE names)
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_comments_insert_comments_trigger ON user_comments;
     `);
     await dbWrite.execute(`
       DROP TRIGGER IF EXISTS user_comments_delete_comments_trigger ON user_comments;
     `);
-    
-    // Create the triggers
     await dbWrite.execute(`
-      CREATE TRIGGER user_comments_insert_comments_trigger
-        AFTER INSERT ON user_comments
-        FOR EACH ROW
-        EXECUTE FUNCTION update_book_comments_count();
+      DROP TRIGGER IF EXISTS user_comments_count_trigger ON user_comments;
     `);
     
+    // Create a single combined trigger — the function already branches on
+    // TG_OP, so one AFTER INSERT OR DELETE trigger covers both cases
+    // (previously this was two separate, identically-configured triggers)
     await dbWrite.execute(`
-      CREATE TRIGGER user_comments_delete_comments_trigger
-        AFTER DELETE ON user_comments
+      CREATE TRIGGER user_comments_count_trigger
+        AFTER INSERT OR DELETE ON user_comments
         FOR EACH ROW
         EXECUTE FUNCTION update_book_comments_count();
     `);
@@ -468,65 +516,34 @@ async function ensureBookCommentsCountTrigger(): Promise<void> {
  * 2. Updates complete_count to match unique users who completed the book
  * 3. Ensures denormalized count stays synchronized
  * 
- * Note: Counts unique users (DISTINCT user_id) who completed the book
+ * Note: Counts unique users (DISTINCT user_id) who completed the book — a
+ * single user who discovers multiple distinct endings for the same book is
+ * still only counted once here (books.complete_count answers "how many
+ * people have finished this book at least once"). This is intentionally
+ * different from `user_counters.books_completed`, which counts rows — i.e.
+ * counts every unique ending discovered (see ensureUserCountersTriggers below).
  * 
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION
  * - Safe to run multiple times without errors
  */
 async function ensureBookCompleteCountTrigger(): Promise<void> {
-  // -- In update_book_complete_count() (triggers.ts, ~line 470) — add after the complete_count UPDATE:
-  // CREATE OR REPLACE FUNCTION update_book_complete_count()
-  // RETURNS TRIGGER AS $$
-  // BEGIN
-  //   UPDATE books
-  //   SET complete_count = (
-  //         SELECT COUNT(DISTINCT user_id) FROM user_completed_books WHERE book_id = NEW.book_id
-  //       ),
-  //       completion_rate = CASE WHEN read_count > 0 THEN
-  //         ROUND((SELECT COUNT(DISTINCT user_id) FROM user_completed_books WHERE book_id = NEW.book_id)::numeric / read_count * 100)
-  //         ELSE NULL END,
-  //       updated_at = NOW()
-  //   WHERE id = NEW.book_id;
-  //   RETURN NEW;
-  // END;
-  // $$ LANGUAGE plpgsql;
-
-  // -- In update_book_read_count() (triggers.ts, ~line 144) — add after the read_count UPDATE:
-  // CREATE OR REPLACE FUNCTION update_book_read_count()
-  // RETURNS TRIGGER AS $$
-  // DECLARE
-  //   v_page_1_id UUID;
-  // BEGIN
-  //   UPDATE books
-  //   SET read_count = (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE book_id = NEW.book_id),
-  //       completion_rate = CASE WHEN (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE book_id = NEW.book_id) > 0 THEN
-  //         ROUND(complete_count::numeric / (SELECT COUNT(DISTINCT user_id) FROM user_sessions WHERE book_id = NEW.book_id) * 100)
-  //         ELSE NULL END,
-  //       trending_score = trending_score + 0.5,
-  //       updated_at = NOW()
-  //   WHERE id = NEW.book_id;
-  //   -- ...(page 1 visit_count block unchanged)
-  // END;
-  // $$ LANGUAGE plpgsql;
   try {
     // Create the trigger function for user_completed_books
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_book_complete_count()
       RETURNS TRIGGER AS $$
+      DECLARE
+        v_complete_count INT;
       BEGIN
+        SELECT COUNT(DISTINCT user_id) INTO v_complete_count
+        FROM user_completed_books
+        WHERE book_id = NEW.book_id;
+
         UPDATE books
-        SET complete_count = (
-          SELECT COUNT(DISTINCT user_id)
-          FROM user_completed_books
-          WHERE book_id = NEW.book_id
-        ),
+        SET complete_count = v_complete_count,
             completion_rate = CASE WHEN read_count > 0 THEN
-              ROUND((
-                SELECT COUNT(DISTINCT user_id)
-                FROM user_completed_books
-                WHERE book_id = NEW.book_id
-              )::numeric / read_count * 100)
+              ROUND(v_complete_count::numeric / read_count * 100)
             ELSE NULL END,
             updated_at = NOW()
         WHERE id = NEW.book_id;
@@ -560,36 +577,91 @@ async function ensureBookCompleteCountTrigger(): Promise<void> {
  * Creates highly optimized delta triggers to keep the `user_counters`
  * denormalized table in sync with the source tables used by achievement metrics.
  *
- * Trigger map and calculation logic:
- *  1. user_page_progress → pages_read
- *     Counts the number of distinct `actioned_page_id` values for each user,
- *     so a user is counted once per page they have progressed through.
- *  2. books → books_generated
- *     Counts one generated book per inserted row for the owning user.
- *  3. pages → pages_generated
- *     Counts the total number of page rows owned by the user.
- *  4. user_completed_books → books_completed
- *     Counts one completed-book record per row for the owning user.
- *  5. user_follows → followers_count
- *     Counts the number of follow relationships pointing to the followed user.
- *  6. transactions → topup_credits
- *     Sums the `credits` value for purchase transactions belonging to the user.
- *  7. users → referred_users
- *     Counts how many users were referred by a given referrer.
- *  8. user_checkins → active_checkin_streak / max_checkin_streak
- *     Recomputes the streak from the latest consecutive daily check-ins.
- *  9. pages → branches_opened
- *     Counts the number of distinct branch IDs created by the user.
- * 10. custom_actions → custom_actions_written
- *     Counts accepted custom actions where `outcome = 'allow'`.
+ * Achievement Philosophy (see TODO-counter-trigger.md for the full discussion):
+ * - Type A (Lifetime): Never decrease. The action happened once and the
+ *   achievement stays earned even if the underlying row is later deleted,
+ *   edited, or the entity it refers to is removed.
+ *   (books_generated, pages_generated, books_completed, topup_credits,
+ *   referred_users, branches_opened, custom_actions_written)
+ * - Type B (Current): Fluctuates with live state — can go up AND down.
+ *   (followers_count, pages_read)
+ * - Type C (Maxima): Tracks the highest-ever value of a Type B metric; never
+ *   decreases even though the Type B metric it's derived from can.
+ *   (max_checkin_streak, derived alongside active_checkin_streak)
  *
- * Achievement Philosophy:
- * - Type A (Lifetime): Never decrease (books, pages gen, completed, topups, branches, custom actions).
- * - Type B (Current): Fluctuate based on state (followers, pages read, active streak).
- * - Type C (Maxima): Never decrease, tracks peaks (max checkin streak).
- * 
+ * Trigger map, calculation logic, and review notes:
+ *  1. user_page_progress → pages_read (Type B)
+ *     O(1) delta. The unique constraint on (user_id, book_id, actioned_page_id)
+ *     guarantees every INSERT is a newly-read page for that user; every DELETE
+ *     removes exactly one previously-read page. Kept as a fluctuating "current"
+ *     metric (not lifetime) per the design discussion in TODO-counter-trigger.md.
+ *  2. books → books_generated (Type A)
+ *     +1 per book row a user creates. Deleting the book later doesn't revoke it.
+ *  3. pages → pages_generated (Type A)
+ *     +1 per page row "initiated" by a user.
+ *  4. user_completed_books → books_completed (Type A)
+ *     +1 per completion row. NOTE: one row = one *unique ending* discovered
+ *     (see that table's unique constraint on user_id/book_id/page_id), so a
+ *     user who finds 3 distinct endings in the same book increments this 3
+ *     times. This intentionally differs from `books.complete_count`, which
+ *     counts distinct users instead (see ensureBookCompleteCountTrigger
+ *     above). If you want "distinct books finished" semantics here instead,
+ *     scope the increment to only fire the first time a given
+ *     (user_id, book_id) pair appears in this table.
+ *  5. user_follows → followers_count (Type B)
+ *     +1/-1 on follow/unfollow of the followed user (following_id).
+ *  6. transactions → topup_credits (Type A)
+ *     Sums `credits` for `type = 'purchase'` transactions. NOTE: this only
+ *     observes the `transactions` table — credits granted via
+ *     `subscription_transactions` (recurring subscription allocations) are
+ *     NOT included. Add a mirroring trigger on that table if lifetime
+ *     "credits acquired" should also include subscription credits.
+ *  7. users → referred_users (Type A)
+ *     +1 to the referrer when a new user signs up with referrer_id set, AND
+ *     when an existing user's referrer_id is set later for the first time
+ *     (NULL -> non-NULL via UPDATE — e.g. entering a referral code after
+ *     signup, if your onboarding flow allows that). Assumes referrer_id,
+ *     once non-NULL, is never reassigned to a *different* referrer — only
+ *     INSERT and the initial NULL -> value UPDATE are counted, so a later
+ *     change would not double-count or transfer credit.
+ *  8. user_checkins → active_checkin_streak / max_checkin_streak (Type B / C)
+ *     Recomputes both streaks from the user's full check-in history on every
+ *     mutation. max_checkin_streak is clamped with GREATEST() so it can never
+ *     drop even if a check-in row is later deleted (a fresh recompute over a
+ *     smaller row set could otherwise produce a lower "all-time max", which
+ *     would violate the Type C "never decreases" guarantee). NOTE: because
+ *     this only runs when a check-in row changes, active_checkin_streak will
+ *     not "decay" purely from time passing — if a user simply stops checking
+ *     in, the stored value stays at its last computed streak until their next
+ *     check-in event recomputes it. If the streak must reflect a break the
+ *     moment a day is missed (not just on the next check-in), that requires a
+ *     scheduled job or an on-read recalculation, since triggers only fire on
+ *     data mutations.
+ *  9. pages → branches_opened (Type A)
+ *     +1 the first time a user opens a given branch_id *within a specific
+ *     book*. Deliberately excludes the default 'main' branch_id, since every
+ *     book starts there — it's the trunk story path, not a genuine fork, so
+ *     it shouldn't count as "opening a branch". Uniqueness is scoped to
+ *     (user_id, book_id, branch_id) rather than just (user_id, branch_id),
+ *     because branch_id is only guaranteed unique *within* a book, not
+ *     globally — the previous (user_id, branch_id)-only check meant a user's
+ *     'main' page in their very first book counted as "opening a branch",
+ *     while 'main' in every subsequent book silently did NOT (since a row
+ *     with that user_id + branch_id='main' already existed from book #1).
+ * 10. custom_actions → custom_actions_written (Type A)
+ *     +1 when a custom action is inserted as 'allow', or updated into
+ *     'allow' from a non-'allow' outcome (covers async moderation resolving
+ *     a pending/rejected action into an approved one). NOTE: if a single row
+ *     can flip allow -> reject -> allow again (e.g. an appealed moderation
+ *     decision), this counts that one row twice. Treated as an acceptable
+ *     rare edge case rather than guarded against; add a boolean
+ *     "already counted" flag on custom_actions if strict per-row idempotency
+ *     is required.
+ *
  * Performance:
- * Uses O(1) increment/decrement deltas or indexed EXISTS checks instead of full table COUNT() scans.
+ * Uses O(1) increment/decrement deltas or indexed EXISTS checks instead of
+ * full table COUNT() scans, wherever the underlying schema's unique
+ * constraints make that safe.
  */
 export async function ensureUserCountersTriggers(): Promise<void> {
   try {
@@ -745,10 +817,17 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     // ==========================================
     // 7. REFERRED USERS (Type A: Lifetime)
     // ==========================================
+    // Handles both:
+    // - INSERT with referrer_id already set (referred at signup)
+    // - UPDATE where referrer_id goes from NULL to a value (referral code
+    //   entered after signup, if your onboarding flow allows that)
+    // Assumes referrer_id is never reassigned from one non-NULL referrer to
+    // a different one — only a NULL -> value transition is counted.
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_referred_users() RETURNS TRIGGER AS $$
       BEGIN
-        IF TG_OP = 'INSERT' AND NEW.referrer_id IS NOT NULL THEN
+        IF (TG_OP = 'INSERT' AND NEW.referrer_id IS NOT NULL) OR
+           (TG_OP = 'UPDATE' AND OLD.referrer_id IS NULL AND NEW.referrer_id IS NOT NULL) THEN
           INSERT INTO user_counters (user_id, referred_users, updated_at) VALUES (NEW.referrer_id, 1, NOW())
           ON CONFLICT (user_id) DO UPDATE SET referred_users = user_counters.referred_users + 1, updated_at = NOW();
         END IF;
@@ -759,7 +838,7 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     await dbWrite.execute(`DROP TRIGGER IF EXISTS users_referral_trigger ON users;`);
     await dbWrite.execute(`
       CREATE TRIGGER users_referral_trigger
-        AFTER INSERT ON users
+        AFTER INSERT OR UPDATE ON users
         FOR EACH ROW EXECUTE FUNCTION update_referred_users();
     `);
     console.log("✅ Trigger created: Referred Users (Lifetime)");
@@ -780,26 +859,28 @@ export async function ensureUserCountersTriggers(): Promise<void> {
       BEGIN
         target_user_id := COALESCE(NEW.user_id, OLD.user_id);
 
-        -- Compute ACTIVE streak
-        FOR rec IN SELECT DISTINCT date::date AS date FROM user_checkins WHERE user_id = target_user_id ORDER BY date DESC
+        -- Compute ACTIVE streak (consecutive days counting back from the
+        -- user's most recent check-in date — not necessarily "today"; see
+        -- the staleness note in this function's block comment above)
+        FOR rec IN SELECT DISTINCT date::date AS checkin_date FROM user_checkins WHERE user_id = target_user_id ORDER BY date DESC
         LOOP
           IF prev_date IS NULL THEN
             active_streak := 1;
-          ELSIF prev_date = rec.date + 1 THEN
+          ELSIF prev_date = rec.checkin_date + 1 THEN
             active_streak := active_streak + 1;
           ELSE
             EXIT;
           END IF;
-          prev_date := rec.date;
+          prev_date := rec.checkin_date;
         END LOOP;
 
-        -- Compute MAX streak
+        -- Compute MAX streak (longest run of consecutive days ever)
         prev_date := NULL;
-        FOR rec IN SELECT DISTINCT date::date AS date FROM user_checkins WHERE user_id = target_user_id ORDER BY date ASC
+        FOR rec IN SELECT DISTINCT date::date AS checkin_date FROM user_checkins WHERE user_id = target_user_id ORDER BY date ASC
         LOOP
           IF prev_date IS NULL THEN
             current_streak := 1;
-          ELSIF rec.date = prev_date + 1 THEN
+          ELSIF rec.checkin_date = prev_date + 1 THEN
             current_streak := current_streak + 1;
           ELSE
             current_streak := 1;
@@ -808,15 +889,17 @@ export async function ensureUserCountersTriggers(): Promise<void> {
           IF current_streak > max_streak THEN
             max_streak := current_streak;
           END IF;
-          prev_date := rec.date;
+          prev_date := rec.checkin_date;
         END LOOP;
 
-        -- Upsert counters
+        -- Upsert counters. max_checkin_streak is clamped with GREATEST so a
+        -- DELETE that shrinks the check-in history can never pull the
+        -- all-time max streak back down (Type C: never decreases).
         INSERT INTO user_counters (user_id, active_checkin_streak, max_checkin_streak, updated_at)
         VALUES (target_user_id, active_streak, max_streak, NOW())
         ON CONFLICT (user_id) DO UPDATE SET
           active_checkin_streak = EXCLUDED.active_checkin_streak,
-          max_checkin_streak = EXCLUDED.max_checkin_streak,
+          max_checkin_streak = GREATEST(user_counters.max_checkin_streak, EXCLUDED.max_checkin_streak),
           updated_at = NOW();
 
         RETURN COALESCE(NEW, OLD);
@@ -834,12 +917,22 @@ export async function ensureUserCountersTriggers(): Promise<void> {
     // ==========================================
     // 9. BRANCHES OPENED (Type A: Lifetime)
     // ==========================================
-    // O(1) lookup to ensure we only increment if the user has NEVER opened this specific branch ID before.
+    // O(1) lookup to ensure we only increment the first time a user opens a
+    // given branch_id *within a specific book*. Excludes the default 'main'
+    // branch, since every book starts there — it's the trunk path, not a
+    // deliberately-opened fork (see the fix note in the JSDoc block above).
     await dbWrite.execute(`
       CREATE OR REPLACE FUNCTION update_user_branches_opened() RETURNS TRIGGER AS $$
       BEGIN
-        IF TG_OP = 'INSERT' AND NEW.branch_id IS NOT NULL THEN
-          IF NOT EXISTS (SELECT 1 FROM pages WHERE user_id = NEW.user_id AND branch_id = NEW.branch_id AND id != NEW.id LIMIT 1) THEN
+        IF TG_OP = 'INSERT' AND NEW.branch_id IS NOT NULL AND NEW.branch_id != 'main' THEN
+          IF NOT EXISTS (
+            SELECT 1 FROM pages
+            WHERE user_id = NEW.user_id
+              AND book_id = NEW.book_id
+              AND branch_id = NEW.branch_id
+              AND id != NEW.id
+            LIMIT 1
+          ) THEN
             INSERT INTO user_counters (user_id, branches_opened, updated_at)
             VALUES (NEW.user_id, 1, NOW())
             ON CONFLICT (user_id) DO UPDATE SET
@@ -1016,10 +1109,18 @@ async function ensureUserFavoritesCleanupTrigger(): Promise<void> {
 /**
  * Creates trigger to set user's `image_url` when they upload a profile image
  *
- * Fires AFTER INSERT OR UPDATE on `uploaded_images`:
+ * Fires AFTER INSERT OR UPDATE OR DELETE on `uploaded_images`:
  * - When a new row with `type = 'user'` is inserted, update the corresponding user's `image_url`.
  * - When an existing uploaded image is updated to `type = 'user'` or its `image_url` changes,
  *   update the user's `image_url` as well.
+ * - When a `type = 'user'` row is deleted, or updated away from `type = 'user'`, clear the
+ *   user's `image_url` (only if it still matches the removed upload, so a newer image set by
+ *   a different row in the meantime isn't clobbered).
+ *
+ * NOTE (fixed during review): the DELETE-handling branch below previously existed in the
+ * function body but could never run, because the trigger itself was only registered for
+ * `AFTER INSERT OR UPDATE` — `DELETE` was missing from the trigger's event list. The function
+ * logic was correct; only the trigger registration was incomplete.
  *
  * Idempotency:
  * - Uses CREATE OR REPLACE FUNCTION and DROP TRIGGER IF EXISTS so it's safe to run multiple times.
@@ -1068,7 +1169,7 @@ async function ensureUploadedUserImageTrigger(): Promise<void> {
 
     await dbWrite.execute(`
       CREATE TRIGGER uploaded_images_user_update_trigger
-        AFTER INSERT OR UPDATE ON uploaded_images
+        AFTER INSERT OR UPDATE OR DELETE ON uploaded_images
         FOR EACH ROW
         EXECUTE FUNCTION set_user_image_url_from_upload();
     `);
@@ -1090,12 +1191,22 @@ async function ensureUploadedUserImageTrigger(): Promise<void> {
  * 
  * Behavior:
  * - Creates user session exclusivity trigger
- * - Creates book likes count increment/decrement triggers
- * - Creates book read count increment trigger
+ * - Creates book read count / completion-rate trigger
  * - Creates book branches count increment/decrement triggers
+ * - Creates page visit count trigger
+ * - Creates book comments count trigger
+ * - Creates book complete count / completion-rate trigger
+ * - Creates all user_counters (achievement metric) sync triggers
  * - Creates user favorites cleanup trigger
+ * - Creates uploaded-image -> user profile picture sync trigger
  * - Logs successful creation operations
  * - Handles errors gracefully with detailed logging
+ * 
+ * NOTE: `books.likes_count` currently has no corresponding trigger in this
+ * file (an older version of this doc block mentioned one, but it doesn't
+ * exist here) — confirm whether it's intentionally maintained by application
+ * code, or whether it's a genuinely missing trigger that should follow the
+ * same pattern as the other denormalized counts above.
  * 
  * Idempotency:
  * - Safe to run multiple times without errors
@@ -1128,13 +1239,6 @@ export async function ensureTriggers(): Promise<void> {
 
     // Update user's profile image when they upload an image with type 'user'
     await ensureUploadedUserImageTrigger();
-
-    // Clean up legacy triggers
-    await dbWrite.execute(`
-      DROP TRIGGER IF EXISTS pages_insert_pending_count_trigger ON pages;
-      DROP TRIGGER IF EXISTS pages_update_pending_count_trigger ON pages;
-      DROP FUNCTION IF EXISTS update_pending_generation_count();
-    `);
 
     const mode = process.env['NODE_ENV'] || "development";
     console.log(`✅ All triggers created successfully in ${mode} mode!`);
