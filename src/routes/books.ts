@@ -45,7 +45,7 @@ import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks } from "../db/schema.js";
+import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
@@ -82,7 +82,7 @@ import { getPsychologicalProfileResult } from "../services/psychological-profile
 import { getLockedPaths } from "../services/locked-paths.js";
 import { runGate0, runGate1, buildCustomActionValidationPrompt, buildCanonicalAction, getRejectionMessage, CUSTOM_ACTION_VALIDATION_SCHEMA_DEFINITION, CUSTOM_ACTION_VALIDATION_REQUIRED_FIELDS } from "../services/custom-actions.js";
 import { customActions } from "../db/schema.js";
-import { getStoryStateFromPage } from "../services/story.js";
+import { getStoryStateFromPage, computeEndingStats } from "../services/story.js";
 import { AI_CHAT_CONFIG_DEFAULT } from "../config/ai-chat.js";
 import { createAIOptionsWithSchema, aiPrompt } from "../utils/ai-chat.js";
 import { AI_CHAT_MODELS_THEME } from "../config/ai-clients.js";
@@ -3383,6 +3383,120 @@ router.post("/:identifier/:pageId/share", requireAuth, async (req: Request, res:
   }, { req });
 
   res.json({ success: true });
+});
+
+/**
+ * GET /share/:username/:bookSlug/:pageId
+ *
+ * Public endpoint for viewing a shared ending page.
+ * No authentication required — this is a marketing/share surface.
+ *
+ * Three gates restrict access:
+ * 1. Book visibility must not be 'private'
+ * 2. The completion must exist in userCompletedBooks
+ * 3. The completion must have been shared via POST .../share
+ *
+ * Only returns public-safe fields — nothing personal to the sharer
+ * beyond what they explicitly agreed to expose by clicking Share.
+ *
+ * @route GET /share/:username/:bookSlug/:pageId
+ * @auth None (public)
+ * @param username - Sharer's username
+ * @param bookSlug - Book slug
+ * @param pageId - UUID v7 of the ending page
+ * @returns 200 with sharer, book, and ending data
+ * @returns 404 if any gate fails
+ *
+ * @example
+ * GET /share/jane/the-haunting/01912345-6789-1234-5678-123456789012
+ * → 200 {
+ *     "sharer": { "name": "Jane", "imageUrl": "https://..." },
+ *     "book": { "title": "The Haunting", "hook": "...", "slug": "the-haunting", "imageUrl": null, "readCount": 142 },
+ *     "ending": { "text": "I walked out the front door...", "percentage": 12.5 }
+ *   }
+ */
+router.get("/share/:username/:bookSlug/:pageId", async (req: Request, res: Response) => {
+  try {
+    const username = req.params.username as string;
+    const bookSlug = req.params.bookSlug as string;
+    const pageId = req.params.pageId as string;
+
+    // ── Lookup user by username ────────────────────────────────────────────
+    const [user] = await dbRead
+      .select({ userId: users.userId, name: users.name, imageUrl: users.imageUrl })
+      .from(users)
+      .where(eq(users.username, username))
+      .limit(1);
+    if (!user) return handleNotFoundError(res, 'Not found');
+
+    // ── Lookup book by slug ─────────────────────────────────────────────────
+    const [book] = await dbRead
+      .select({
+        id: books.id,
+        title: books.title,
+        hook: books.hook,
+        slug: books.slug,
+        visibility: books.visibility,
+        readCount: books.readCount,
+        imageUrl: sql<string | null>`(
+          SELECT ui.image_url FROM ${uploadedImages} ui WHERE ui.image_id = books.image_id LIMIT 1
+        )`,
+      })
+      .from(books)
+      .where(eq(books.slug, bookSlug))
+      .limit(1);
+    if (!book) return handleNotFoundError(res, 'Not found');
+
+    // Gate 1: visibility — private books are never publicly reachable
+    if (book.visibility === 'private') return handleNotFoundError(res, 'Not found');
+
+    // Gate 2: did this completion actually happen
+    const [completion] = await dbRead
+      .select({ id: userCompletedBooks.id, bookId: userCompletedBooks.bookId, branchId: userCompletedBooks.branchId })
+      .from(userCompletedBooks)
+      .where(and(
+        eq(userCompletedBooks.userId, user.userId),
+        eq(userCompletedBooks.bookId, book.id),
+        eq(userCompletedBooks.pageId, pageId),
+      ))
+      .limit(1);
+    if (!completion) return handleNotFoundError(res, 'Not found');
+
+    // Gate 3: consent — was this specific completion ever actually shared
+    const [shareLog] = await dbRead
+      .select({ id: userActivityLogs.id })
+      .from(userActivityLogs)
+      .where(and(
+        eq(userActivityLogs.activityType, 'shared_ending'),
+        eq(userActivityLogs.targetId, completion.id),
+      ))
+      .limit(1);
+    if (!shareLog) return handleNotFoundError(res, 'Not found');
+
+    // ── Compute ending stats ───────────────────────────────────────────────
+    const endingStats = await computeEndingStats(book.id, pageId, user.userId);
+
+    // ── Get page text ──────────────────────────────────────────────────────
+    const page = await getPageFromDB(pageId);
+
+    res.json({
+      sharer: { name: user.name, imageUrl: user.imageUrl },
+      book: {
+        title: book.title,
+        hook: book.hook,
+        slug: book.slug,
+        imageUrl: book.imageUrl,
+        readCount: book.readCount,
+      },
+      ending: {
+        text: page?.text ?? null,
+        percentage: endingStats.endingPercentage,
+      },
+    });
+  } catch (error) {
+    console.error('[GET /share/:username/:bookSlug/:pageId] ❌ Error:', error);
+    handleApiError(res, 'Failed to load shared ending', error);
+  }
 });
 
 /**

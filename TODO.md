@@ -27,12 +27,6 @@
 
 ---
 
-get user:
-src\routes\user.ts
-src\services\user-controller.ts
-src\services\cache.ts
----
-
 ensure stripe webhook events:
  * Events:
  * - checkout.session.completed
@@ -42,48 +36,6 @@ ensure stripe webhook events:
  * - customer.subscription.deleted
  * - invoice.payment_succeeded
  * - invoice.payment_failed
-
----
-
-2026-07-06 11:37:25.963 [error] [uploadImageKit] ❌ Image upload failed for entity 019ed9a8-0b2b-72bb-92af-260e19e699aa: 400 Invalid custom metadata.
-2026-07-06 11:37:25.963 [warning] [PUT /api/user] ⚠️ Failed to upload profile image - ImageKit upload returned no URL
-2026-07-06 11:37:25.963 [error] Error: ImageKit upload returned no URL
-    at <anonymous> (/vercel/path0/src/routes/user.ts:337:63)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-
----
-
-src\components\home\StoryGeneratorInput.tsx
-src\components\modals\StoryGenerationModal.tsx
-src\components\modals\GlobalModals.tsx
-src\components\dashboard\DashboardPageClient.tsx
-src\components\dashboard\DashboardBookGrid.tsx
-src\components\dashboard\GenerationStepIndicator.tsx
-src\stores\generation-store.ts
-src\lib\types\books.ts
-src\lib\services\users-api.ts
-src\lib\hooks\query\useDashboardQueries.ts
-
-now for the next step, please examine book creation implementation flow in frontend (Next.js) side
-in a nutshell: input theme > initialize once > progress status polling, not SSE
-
-have they perfectly aligned with our corrected backend implementation earlier?
-
-for UX, I need it to:
-- support multiple book generation in parallel (don't disable input & button when book generation on progress)
-- both created and in-generation books are listed in library section in the dashbard (sorted by newest)
-- customize book list display in library (via `DashboardBookGrid` with 'library' variant): much like 'sessions' variant - books which still generating displayed with multi-step indicator bar (like in the modal, but horizontal), indicating current generation step, else display it normally
-
-user flow:
-1. user write theme input
-2. StoryGenerationModal opened
-3. user can close the modal and repeat to number 1 to create 2nd book
-4. user can go to dashboard > library to see their book list (still generating or created)
-5. on click LibraryCard:
-  - book which still generating -> open StoryGenerationModal
-  - book which created -> open book detail modal
-
-please review, elaborate, and correct
 
 ---
 
