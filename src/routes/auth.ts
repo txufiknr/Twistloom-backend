@@ -30,7 +30,7 @@ import type { Router as RouterType } from "express";
 import { Router } from "express";
 import { OAuth2Client } from 'google-auth-library';
 import { dbRead, dbWrite } from '../db/client.js';
-import { users, userAuth } from '../db/schema.js';
+import { users, userAuth, userProviders } from '../db/schema.js';
 import { eq, and, ne } from 'drizzle-orm';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { validatePasswordStrength } from '../utils/password-validation.js';
@@ -73,10 +73,10 @@ async function handleGoogleAuth(idToken: string, req: Request, res: Response): P
   const payload = ticket.getPayload();
   if (!payload?.email) return handleUnauthorizedError(res, 'Invalid token payload');
 
-  const { email, name, picture: image } = payload;
+  const { email, name, picture: image, sub } = payload;
 
   // Create user if new, or update profile fields if existing
-  const userId = await createOrUpdateOAuthUser({email, name, image});
+  const userId = await createOrUpdateOAuthUser({email, name, image, sub});
 
   // Fetch full user record including isNewUser.
   // isNewUser reflects the canonical database state — true for brand-new users,
@@ -1035,6 +1035,22 @@ router.put('/email', requireAuth, async (req: Request, res: Response) => {
       return handleUnauthorizedError(res, 'This account uses OAuth login. Cannot change email.');
     }
 
+    // Block email change if Google account is linked (prevents OAuth matching breakage)
+    const [googleLinked] = await dbRead
+      .select({ linked: userProviders.provider })
+      .from(userProviders)
+      .where(and(
+        eq(userProviders.userId, userId),
+        eq(userProviders.provider, 'google'),
+      ))
+      .limit(1);
+
+    if (googleLinked) {
+      return res.status(403).json({
+        error: 'Cannot change email while Google account is linked. Unlink Google first.',
+      });
+    }
+
     const isValid = await verifyPassword(currentPassword, user.passwordHash);
     if (!isValid) {
       return handleUnauthorizedError(res, 'Current password is incorrect');
@@ -1216,6 +1232,304 @@ router.put('/username', requireAuth, async (req: Request, res: Response) => {
   } catch (error) {
     console.error('[PUT /api/auth/username] ❌', error);
     handleApiError(res, 'Failed to update username', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/link/google
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/link/google
+ *
+ * Links a Google account to the currently authenticated user.
+ * Verifies the Google ID token, ensures the Google account isn't already
+ * linked to a different Twistloom user, and inserts a provider record.
+ *
+ * @route POST /api/auth/link/google
+ * @description Link Google account to current user
+ * @auth Required (requireAuth)
+ *
+ * @body {string} idToken - Google ID token from GIS
+ *
+ * @returns {Object} Link result
+ * @returns {string} message - Success message
+ * @returns {string[]} linkedMethods - Updated list of linked auth methods
+ *
+ * @throws 400 - Missing token
+ * @throws 401 - Token verification failed
+ * @throws 409 - Google account already linked to another user
+ */
+router.post('/link/google', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { idToken } = req.body;
+
+    if (!idToken) return handleValidationError(res, 'ID token is required');
+
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload?.sub) return handleUnauthorizedError(res, 'Invalid token payload');
+
+    const { sub } = payload;
+
+    // Check if Google account already linked to a different user
+    const [existing] = await dbRead
+      .select({ userId: userProviders.userId })
+      .from(userProviders)
+      .where(and(
+        eq(userProviders.provider, 'google'),
+        eq(userProviders.providerAccountId, sub),
+        ne(userProviders.userId, userId),
+      ))
+      .limit(1);
+
+    if (existing) {
+      return res.status(409).json({ error: 'This Google account is already linked to another user' });
+    }
+
+    // Insert the provider link
+    await dbWrite
+      .insert(userProviders)
+      .values({ userId, provider: 'google', providerAccountId: sub })
+      .onConflictDoNothing({ target: [userProviders.userId, userProviders.provider] });
+
+    // Return updated methods
+    const providers = await dbRead
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    res.json({
+      message: 'Google account linked',
+      linkedMethods: providers.map(p => p.provider),
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/link/google] ❌', error);
+    handleApiError(res, 'Failed to link Google account', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/unlink/google
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/unlink/google
+ *
+ * Unlinks Google from the current user. Requires at least one other
+ * auth method (credentials) to remain linked.
+ *
+ * @route POST /api/auth/unlink/google
+ * @description Unlink Google account from current user
+ * @auth Required (requireAuth)
+ *
+ * @returns {Object} Unlink result
+ * @returns {string} message - Success message
+ * @returns {string[]} linkedMethods - Updated list of linked auth methods
+ *
+ * @throws 400 - Cannot unlink last remaining method
+ */
+router.post('/unlink/google', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    // Check user has more than one provider
+    const providers = await dbRead
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    if (providers.length <= 1) {
+      return res.status(400).json({
+        error: 'Cannot remove last sign-in method',
+      });
+    }
+
+    await dbWrite
+      .delete(userProviders)
+      .where(and(
+        eq(userProviders.userId, userId),
+        eq(userProviders.provider, 'google'),
+      ));
+
+    const remaining = providers.filter(p => p.provider !== 'google').map(p => p.provider);
+
+    res.json({
+      message: 'Google account unlinked',
+      linkedMethods: remaining,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/unlink/google] ❌', error);
+    handleApiError(res, 'Failed to unlink Google account', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/link/credentials
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/link/credentials
+ *
+ * Sets a password for the currently authenticated user, linking the
+ * credentials (email/password) auth method. Uses the user's existing email.
+ *
+ * @route POST /api/auth/link/credentials
+ * @description Set password and link credentials method
+ * @auth Required (requireAuth)
+ *
+ * @body {string} password - New password (8+ chars, mixed case, number, special)
+ *
+ * @returns {Object} Link result
+ * @returns {string} message - Success message
+ * @returns {string[]} linkedMethods - Updated list of linked auth methods
+ *
+ * @throws 400 - Weak password, missing fields
+ * @throws 409 - Credentials already linked
+ */
+router.post('/link/credentials', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { password } = req.body;
+
+    if (!password) return handleValidationError(res, 'Password is required');
+
+    const passwordValidation = validatePasswordStrength(password);
+    if (!passwordValidation.valid) {
+      return res.status(422).json({
+        error: 'Password does not meet security requirements',
+        details: passwordValidation.errors,
+      });
+    }
+
+    // Check credentials not already linked
+    const [existingCredentials] = await dbRead
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(and(
+        eq(userProviders.userId, userId),
+        eq(userProviders.provider, 'credentials'),
+      ))
+      .limit(1);
+
+    if (existingCredentials) {
+      return res.status(409).json({ error: 'Credentials method already linked' });
+    }
+
+    const passwordHash = await hashPassword(password);
+    const now = new Date();
+
+    await dbWrite
+      .update(users)
+      .set({ passwordHash, updatedAt: now })
+      .where(eq(users.userId, userId));
+
+    await dbWrite
+      .insert(userProviders)
+      .values({ userId, provider: 'credentials', providerAccountId: null })
+      .onConflictDoNothing({ target: [userProviders.userId, userProviders.provider] });
+
+    const providers = await dbRead
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    res.json({
+      message: 'Password set, credentials method linked',
+      linkedMethods: providers.map(p => p.provider),
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/link/credentials] ❌', error);
+    handleApiError(res, 'Failed to link credentials', error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/unlink/credentials
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/auth/unlink/credentials
+ *
+ * Removes the password from the current user, unlinking the credentials
+ * auth method. Requires a current password for verification and at least
+ * one other auth method (Google) to remain linked.
+ *
+ * @route POST /api/auth/unlink/credentials
+ * @description Remove password and unlink credentials method
+ * @auth Required (requireAuth)
+ *
+ * @body {string} currentPassword - Current password for verification
+ *
+ * @returns {Object} Unlink result
+ * @returns {string} message - Success message
+ * @returns {string[]} linkedMethods - Updated list of linked auth methods
+ *
+ * @throws 400 - Cannot unlink last remaining method
+ * @throws 401 - Wrong password
+ */
+router.post('/unlink/credentials', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { currentPassword } = req.body;
+
+    if (!currentPassword) return handleValidationError(res, 'Current password is required');
+
+    // Verify the password
+    const [user] = await dbRead
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    if (!user?.passwordHash) {
+      return handleUnauthorizedError(res, 'No password set for this account');
+    }
+
+    const isValid = await verifyPassword(currentPassword, user.passwordHash);
+    if (!isValid) {
+      return handleUnauthorizedError(res, 'Current password is incorrect');
+    }
+
+    // Check user has more than one provider
+    const providers = await dbRead
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    if (providers.length <= 1) {
+      return res.status(400).json({
+        error: 'Cannot remove last sign-in method',
+      });
+    }
+
+    const now = new Date();
+    await dbWrite
+      .update(users)
+      .set({ passwordHash: null, updatedAt: now })
+      .where(eq(users.userId, userId));
+
+    await dbWrite
+      .delete(userProviders)
+      .where(and(
+        eq(userProviders.userId, userId),
+        eq(userProviders.provider, 'credentials'),
+      ));
+
+    const remaining = providers.filter(p => p.provider !== 'credentials').map(p => p.provider);
+
+    res.json({
+      message: 'Credentials method unlinked',
+      linkedMethods: remaining,
+    });
+  } catch (error) {
+    console.error('[POST /api/auth/unlink/credentials] ❌', error);
+    handleApiError(res, 'Failed to unlink credentials', error);
   }
 });
 

@@ -12,7 +12,7 @@
  * - OAuth user creation
  */
 
-import { users, userAuth, userCounters } from '../db/schema.js';
+import { users, userAuth, userCounters, userProviders } from '../db/schema.js';
 import { sql, eq, type SQL } from 'drizzle-orm';
 import { type DBClient, dbRead, dbWrite } from '../db/client.js';
 import { generateId } from '../utils/uuid.js';
@@ -181,6 +181,7 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
   email: string;
   name?: string;
   image?: string;
+  sub?: string;
 }): Promise<string> {
   const cleanEmail = sanitizeTextForDB(String(oAuthUser.email).trim().toLowerCase());
 
@@ -214,6 +215,18 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
 
       // Invalidate LRU cache so subsequent email→userId lookups are fresh
       invalidateByEmail(cleanEmail);
+    }
+
+    // Upsert Google provider — insert if first sign-in, no-op if already recorded
+    if (oAuthUser.sub) {
+      await dbWrite
+        .insert(userProviders)
+        .values({
+          userId: existingUserId,
+          provider: 'google',
+          providerAccountId: oAuthUser.sub,
+        })
+        .onConflictDoNothing({ target: [userProviders.userId, userProviders.provider] });
     }
 
     return existingUserId;
@@ -263,6 +276,12 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
       .returning();
 
     await tx.insert(userAuth).values({ userId: user.userId });
+
+    await tx.insert(userProviders).values({
+      userId: user.userId,
+      provider: 'google',
+      providerAccountId: oAuthUser.sub ?? null,
+    });
 
     return user;
   });

@@ -52,7 +52,7 @@ import { sources } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages } from "../db/schema.js";
+import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages, userProviders } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -166,7 +166,17 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
 
     if (!user) return handleNotFoundError(res, 'User not found');
 
-    res.json({ user });
+    const providers = await dbRead
+      .select({ provider: userProviders.provider })
+      .from(userProviders)
+      .where(eq(userProviders.userId, userId));
+
+    res.json({
+      user: {
+        ...user,
+        linkedMethods: providers.map(p => p.provider),
+      }
+    });
   } catch (error) {
     console.error('[GET /api/user] ❌', error);
     handleApiError(res, 'Failed to fetch user profile', error);

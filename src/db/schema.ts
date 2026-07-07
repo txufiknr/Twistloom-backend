@@ -281,6 +281,39 @@ export const userAuth = pgTable(
 );
 
 /**
+ * User providers table for account linking
+ * @summary Tracks which authentication providers are linked to each user account
+ * Enables dual-auth (credentials + Google) with the ability to link/unlink independently.
+ *
+ * One row per provider per user (composite PK).
+ * provider_account_id stores the Google `sub` for OAuth providers (null for credentials).
+ *
+ * @example
+ * {
+ *   "user_id": "user123",
+ *   "provider": "google",
+ *   "provider_account_id": "1234567890",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const userProviders = pgTable(
+  "user_providers",
+  {
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    provider: text("provider").$type<'credentials' | 'google'>().notNull(),
+    providerAccountId: text("provider_account_id"),
+    createdAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.provider] }),
+    // Prevent same Google account from linking to multiple Twistloom users
+    unique("user_providers_account_unique").on(t.provider, t.providerAccountId),
+    // Index for user provider lookups
+    index("user_providers_user_idx").on(t.userId),
+  ]
+);
+
+/**
  * Create auth sessions table for per-device logout
  * @summary Track every active device login with unique session IDs for selective logout
  * @example

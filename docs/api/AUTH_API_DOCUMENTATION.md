@@ -37,7 +37,12 @@ The Authentication API provides endpoints for user registration, credential veri
    - [Logout from All Devices](#post-apiauthlogout-all-devices)
    - [Logout from Specific Session](#post-apiauthlogout-session)
    - [Logout](#post-apiauthlogout)
-7. [Account Management](#account-management)
+7. [Account Linking](#account-linking)
+   - [Link Google](#post-apiauthlinkgoogle)
+   - [Unlink Google](#post-apiauthunlinkgoogle)
+   - [Link Credentials](#post-apiauthlinkcredentials)
+   - [Unlink Credentials](#post-apiauthunlinkcredentials)
+8. [Account Management](#account-management)
    - [Change Email](#put-apiauthemail)
    - [Change Password](#put-apiauthpassword)
    - [Change Username](#put-apiauthusername)
@@ -769,11 +774,171 @@ curl -X POST http://localhost:3000/api/auth/logout
 
 ---
 
+## Account Linking
+
+### POST /api/auth/link/google
+
+Links a Google account to the currently authenticated user. Verifies the Google ID token, ensures the Google account isn't already linked to a different user, and inserts a provider record.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Body:**
+```json
+{
+  "idToken": "string"  // Google ID token from GIS
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Google account linked",
+  "linkedMethods": ["credentials", "google"]
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing ID token
+- `401 Unauthorized`: Token verification failed
+- `409 Conflict`: Google account already linked to another user
+  ```json
+  { "error": "This Google account is already linked to another user" }
+  ```
+- `500 Internal Server Error`: Server error
+
+**Logic:**
+1. Verifies Google ID token via `googleClient.verifyIdToken()`
+2. Extracts `sub` from verified token payload
+3. Checks `sub` not already linked to a different user
+4. Inserts `(user_id, 'google', sub)` into `user_providers`
+
+---
+
+### POST /api/auth/unlink/google
+
+Unlinks Google from the current user. Requires at least one other auth method (credentials) to remain linked.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Body:** None
+
+**Response (200 OK):**
+```json
+{
+  "message": "Google account unlinked",
+  "linkedMethods": ["credentials"]
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Cannot remove last sign-in method
+  ```json
+  { "error": "Cannot remove last sign-in method" }
+  ```
+- `500 Internal Server Error`: Server error
+
+**Logic:**
+1. Checks user has >1 provider in `user_providers`
+2. Deletes `user_providers` row where provider = 'google'
+3. Returns remaining methods
+
+---
+
+### POST /api/auth/link/credentials
+
+Sets a password for the currently authenticated user, linking the credentials (email/password) auth method. Uses the user's existing email.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Body:**
+```json
+{
+  "password": "NewP@ss123!"
+}
+```
+
+**Password Requirements:** Same as signup endpoint (8+ chars, mixed case, number, special char)
+
+**Response (200 OK):**
+```json
+{
+  "message": "Password set, credentials method linked",
+  "linkedMethods": ["google", "credentials"]
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing password
+- `409 Conflict`: Credentials already linked (password_hash already set)
+  ```json
+  { "error": "Credentials method already linked" }
+  ```
+- `422 Unprocessable Entity`: Weak password
+  ```json
+  {
+    "error": "Password does not meet security requirements",
+    "details": ["Password must be at least 8 characters long"]
+  }
+  ```
+- `500 Internal Server Error`: Server error
+
+**Logic:**
+1. Validates password strength (same rules as signup)
+2. Hashes password with bcrypt
+3. Updates `users.password_hash` (does NOT change email)
+4. Inserts `(user_id, 'credentials', null)` into `user_providers`
+
+---
+
+### POST /api/auth/unlink/credentials
+
+Removes the password from the current user, unlinking the credentials auth method. Requires current password for verification and at least one other auth method (Google) to remain linked.
+
+**Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
+
+**Rate Limiting:** None (authenticated endpoint)
+
+**Request Body:**
+```json
+{
+  "currentPassword": "current-password"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "message": "Credentials method unlinked",
+  "linkedMethods": ["google"]
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Cannot remove last sign-in method or missing password
+- `401 Unauthorized`: Current password is incorrect or no password set
+- `500 Internal Server Error`: Server error
+
+**Logic:**
+1. Verifies current password against stored bcrypt hash
+2. Checks user has >1 provider in `user_providers`
+3. Sets `users.password_hash = NULL`
+4. Deletes `user_providers` row where provider = 'credentials'
+
+---
+
 ## Account Management
 
 ### PUT /api/auth/email
 
 Changes the authenticated user's email address. Requires current password verification. Resets email verification status — the new address is considered unverified until the user verifies it.
+
+> **Note:** Email change is **blocked** if a Google account is linked to prevent OAuth matching breakage. User must unlink Google first.
 
 **Authentication:** Required (uses NextAuth JWT cookie via `requireAuth` middleware)
 
@@ -797,12 +962,17 @@ Changes the authenticated user's email address. Requires current password verifi
 **Error Responses:**
 - `400 Bad Request`: Missing fields or invalid email format
 - `401 Unauthorized`: Current password is incorrect, user not found, or OAuth-only account
+- `403 Forbidden`: Cannot change email while Google account is linked
+  ```json
+  { "error": "Cannot change email while Google account is linked. Unlink Google first." }
+  ```
 - `409 Conflict`: New email already in use by another account
 - `429 Too Many Requests`: Rate limit exceeded
 - `500 Internal Server Error`: Server error
 
 **Security Features:**
 - Requires current password verification (prevents unauthorized email changes)
+- Blocks email change when Google is linked (prevents OAuth matching breakage)
 - Resets `email_verified` to null (new email must be verified)
 - Basic email format validation
 - Uniqueness check prevents account takeover via email squatting
@@ -810,8 +980,9 @@ Changes the authenticated user's email address. Requires current password verifi
 **Database Operations:**
 1. Fetches user's `passwordHash` from `users` table
 2. Verifies `currentPassword` against stored bcrypt hash
-3. Checks `newEmail` uniqueness in `users` table (409 if taken)
-4. Updates `users.email` and `user_auth.email_verified` (set to null)
+3. Checks if Google account is linked (403 if true)
+4. Checks `newEmail` uniqueness in `users` table (409 if taken)
+5. Updates `users.email` and `user_auth.email_verified` (set to null)
 
 ---
 
@@ -949,10 +1120,18 @@ Changes the authenticated user's username.
 - `createdAt` (timestamp, default now) — Session creation time
 - `updatedAt` (timestamp, default now) — Last update time
 
+**user_providers table:** Stores linked auth providers per user (account linking)
+- `userId` (UUID, PK, references users.userId → CASCADE)
+- `provider` (text, PK) — `'credentials'` | `'google'`
+- `providerAccountId` (text, nullable) — Google `sub` (null for credentials)
+- `createdAt` (timestamp, default now) — When the provider was linked
+
 **Indexes:**
 - `auth_sessions_user_idx` on `userId` for user session queries
 - `auth_sessions_id_idx` on `id` for session ID lookups (JWT verification)
 - `auth_sessions_last_active_idx` on `lastActiveAt` for cleanup of inactive sessions
+- `user_providers_user_idx` on `userId` for user provider lookups
+- `user_providers_account_unique` unique index on `(provider, provider_account_id)` to prevent duplicate Google linking
 
 ### Security Features
 

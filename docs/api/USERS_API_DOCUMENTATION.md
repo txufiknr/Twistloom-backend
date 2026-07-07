@@ -88,6 +88,7 @@ interface User {
   credits: number;                     // Available credits
   isNewUser: boolean;                  // Onboarding completed flag
   lastActive: string;                  // Last activity timestamp (ISO 8601)
+  linkedMethods?: string[];            // Linked auth methods: ["credentials", "google"]
   subscription: {                      // Subscription information
     tier: string | null;               // User tier
     vipExpiresAt: string | null;       // VIP expiration timestamp
@@ -513,10 +514,11 @@ Partially updates the authenticated user's profile. Only provided fields are upd
     "name": "John Doe",
     "bio": "Psychological thriller enthusiast",
     "gender": "male",
-    "imageUrl": "https://ik.imagekit.io/abc123/user-user123-profile.jpg",
+    "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
     "credits": 500,
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
+    "linkedMethods": ["credentials", "google"],
     "subscription": {
       "tier": null,
       "vipExpiresAt": null
