@@ -6,7 +6,8 @@ import type Stripe from "stripe";
 export type SubscriptionTransactionType = 
   | 'activation' 
   | 'renewal' 
-  | 'cancellation';
+  | 'cancellation'
+  | 'trial_started'; // Trial-start credit allocation, kept distinct from 'activation' for analytics (conversion rate, credits-during-trial reporting)
 
 /**
  * Subscription status for VIP subscriptions

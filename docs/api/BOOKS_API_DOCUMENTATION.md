@@ -729,6 +729,19 @@ Polls for book creation status when using async book creation. Used by frontend 
 }
 ```
 
+**Response (200 OK) - Cancelled (retryable):**
+```json
+{
+  "bookId": "01912345-6789-1234-5678-123456789012",
+  "status": "draft",
+  "generationStatus": "cancelled",
+  "generationStep": null,
+  "generationStepDescription": "Book generation was cancelled",
+  "createdAt": "2026-05-12T10:00:00.000Z",
+  "updatedAt": "2026-05-12T10:10:00.000Z"
+}
+```
+
 **Error Responses:**
 - `400 Bad Request`: Invalid book ID format
 - `403 Forbidden`: You can only view status for your own books
@@ -738,7 +751,13 @@ Polls for book creation status when using async book creation. Used by frontend 
 
 ### POST /api/books/:bookId/cancel
 
-Cancels a pending or failed book generation. Sets the generation status to `cancelled`, cancels any running GitHub Actions workflow (best-effort), refunds credits on a pro-rata basis based on the current generation step, and deletes the draft book row.
+Cancels a non-completed book generation. Sets the generation status to `cancelled`, cancels any running GitHub Actions workflow (best-effort), refunds credits on a pro-rata basis based on the current generation step, and keeps the draft book row (`status: 'draft'`) for later retry. If the generation is past the point of no return, the book is archived instead of deleted.
+
+Cancelled (and all draft) books can be found via the creations tab:
+```
+GET /api/books/explore?sortBy=creations&status=draft
+```
+Each book's `generationStatus` can be checked individually via `GET /api/books/:bookId/status`.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -771,31 +790,50 @@ Cancels a pending or failed book generation. Sets the generation status to `canc
 - `403 Forbidden`: Not the book owner
 - `404 Not Found`: Book not found
 
+**Frontend integration:**
+- Cancelled books appear in the user's creations tab with a "Cancelled" badge
+- The book card shows the title, theme, and cancellation status
+- Available actions: **Retry** (re-dispatch generation) or **Delete** (permanently remove)
+- To find cancelled books, use `GET /api/books/explore?sortBy=creations&status=draft` and check `generationStatus` via the status endpoint
+
 ---
 
 ### POST /api/books/:bookId/retry
 
-Retries a failed async book generation. Resets the generation state back to `pending`, clears any error messages and timestamps, and re-dispatches the GitHub Actions workflow. Credits are **not** consumed again — the original deduction still stands.
+Retries a failed or cancelled async book generation. Resets the generation state back to `pending`, clears all error/refund timestamps, re-consumes credits, and re-dispatches the GitHub Actions workflow. The original theme and MC parameters are preserved from the draft book row.
 
 **Authentication:** Required (via `requireAuth`)
 
 **Path Parameters:**
 - `bookId` (string, required): Book ID (UUID v7)
 
+**Finding retryable books:**
+All draft books (including cancelled, failed, pending, and in-progress) appear in the user's creations tab. Filter by draft status to see them:
+```
+GET /api/books/explore?sortBy=creations&status=draft
+```
+Use `GET /api/books/:bookId/status` to check the exact generation status before retrying.
+
 **Guards:**
-- Only `failed` generations can be retried. Completed, in-progress, or cancelled generations are rejected
-- Refunded books cannot be retried (the credit deduction was returned to the user)
+- Only `failed` or `cancelled` generations can be retried. Completed or in-progress generations are rejected
+- Credits are re-consumed atomically with the state reset (the original deduction was refunded on failure/cancellation)
+
+**Credit Consumption:**
+- Requires 5 credits to retry (same as initial creation, configurable via `CREDIT_COSTS.STORY_GENERATION`)
+- Credits are deducted transactionally before the retry is initiated
+- Returns 402 Payment Required if insufficient credits
 
 **Response (200 OK):**
 ```json
 {
   "success": true,
-  "message": "Book generation retry initiated"
+  "message": "Book generation retry initiated. 5 credits consumed."
 }
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Invalid book ID format, generation not in retryable state, already refunded
+- `400 Bad Request`: Invalid book ID format, generation not in retryable state
+- `402 Payment Required`: Insufficient credits
 - `403 Forbidden`: Not the book owner
 - `404 Not Found`: Book not found
 
@@ -1322,6 +1360,7 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `ageRange` (string, optional): Filter by main character age range (format: n-m, e.g. 18-30)
 - `sortBy` (string, optional): Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations
 - `sortOrder` (string, optional): Sort direction (default: desc)`n- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
+- `status` (string, optional): Filter by comma-separated statuses (only applies with `sortBy=creations`). Values: active, draft, archived. E.g., "active,draft"
 
 **Shared Implementation:**
 - Uses same filter building helpers as GET /api/books (buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
@@ -1329,7 +1368,16 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - Same enriched book data format with author info and engagement metrics
 - Unified caching strategy with TTL based on sort option
 
-**Response (200 OK):**
+**Behavior by `sortBy`:**
+- `creations`: Shows the authenticated user's own books (requires auth). Use `status` query param to filter by book status — `status=draft` includes pending, generating, failed, and cancelled generations. Check each book's `generationStatus` via `GET /api/books/:bookId/status` to see its exact state.
+- All other sort options: Show published books only (optional auth, status filter ignored)
+
+**Example — Find all draft books (cancelled, failed, pending):**
+```
+GET /api/books/explore?sortBy=creations&status=draft&page=1&limit=20
+```
+
+**Response (200 OK) — Published books (explore):**
 ```json
 {
   "books": [
@@ -1744,6 +1792,10 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.8.0 (2026-07-08)
+- **Cancel is now retryable**: `POST /api/books/:bookId/cancel` preserves the draft book row instead of deleting it. Cancelled generations remain in the user's library with a "cancelled" badge and can be retried via `POST /api/books/:bookId/retry`.
+- **Retry accepts cancelled**: `POST /api/books/:bookId/retry` now accepts `cancelled` generations alongside `failed`. Credits are re-consumed atomically since the original deduction was refunded on cancellation.
 
 ### v2.7.0 (2026-07-06)
 - Added `POST /api/books/:bookId/cancel` — cancels a pending/failed async book generation, refunds credits on a pro-rata basis, and deletes the draft book row

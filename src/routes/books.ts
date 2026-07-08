@@ -625,7 +625,20 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
 /**
  * POST /api/books/:bookId/cancel
  *
- * Cancels a pending or failed book generation and issues a credit refund.
+ * Cancels a pending, in-progress, or failed book generation and issues a
+ * pro-rata credit refund. The draft `books` row is **preserved** (not deleted)
+ * so the user can retry the generation later without re-entering their theme.
+ *
+ * **Finding cancelled books:**
+ * All draft books (pending, generating, failed, cancelled) appear in the
+ * user's creations tab — use the explore endpoint with status filter:
+ * ```
+ * GET /api/books/explore?sortBy=creations&status=draft
+ * ```
+ * Check a specific book's generation status via:
+ * ```
+ * GET /api/books/:bookId/status
+ * ```
  *
  * **Guards:**
  * - Completed books (`status === 'active'` OR `generationStatus === 'completed'`)
@@ -653,7 +666,7 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
  * @example
  * // Success
  * POST /api/books/01912345-6789-1234-5678-123456789012/cancel
- * → 200 { "success": true, "message": "Book generation cancelled and credits refunded" }
+ * → 200 { "success": true, "message": "Book generation cancelled. 5 credits refunded." }
  *
  * // Cannot cancel completed book
  * → 400 { "error": "Cannot cancel completed book" }
@@ -805,11 +818,17 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
       return res.status(500).json({ error: 'Failed to refund credits' });
     }
 
-    // ── Delete the draft book ──────────────────────────────────────────────────
+    // ── Keep the draft book for retryability ───────────────────────────────────
     //
-    // Since the generation is cancelled, the draft book has no content and should
-    // be removed entirely. The bookGenerations row is cascade-deleted along with it.
-    await dbWrite.delete(books).where(eq(books.id, bookId));
+    // The `books` row is preserved as `status: 'draft'` so the user can retry
+    // the generation later without re-entering their theme and MC. The book is
+    // hidden from feeds (only appears in the user's creations tab with a
+    // "cancelled" badge). The bookGenerations row is kept alongside it.
+    // Only an explicit DELETE from the user permanently removes the record.
+    await dbWrite
+      .update(books)
+      .set({ status: 'draft', updatedAt: new Date() })
+      .where(eq(books.id, bookId));
     invalidateBookCache(bookId);
     invalidateEnrichedBookCache(bookId);
 
@@ -826,24 +845,35 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
 /**
  * POST /api/books/:bookId/retry
  *
- * Retries a failed async book generation by resetting the generation state
- * and re-dispatching the GitHub Actions workflow.
+ * Retries a failed or cancelled async book generation by resetting the
+ * generation state and re-dispatching the GitHub Actions workflow.
+ *
+ * **Finding retryable books:**
+ * All draft books (including cancelled/failed) appear in the user's creations
+ * tab filtered by draft status:
+ * ```
+ * GET /api/books/explore?sortBy=creations&status=draft
+ * ```
+ * Use `GET /api/books/:bookId/status` to check the generation status before
+ * retrying.
  *
  * **Guards:**
- * - Only `failed` generations can be retried. Completed or cancelled generations
- *   are rejected (they cannot meaningfully be retried).
+ * - Only `failed` or `cancelled` generations can be retried. Completed or
+ *   in-progress generations are rejected.
  * - The user must own the book.
  *
  * **What it does:**
- * 1. Validates book ownership and that `generationStatus === 'failed'`
- * 2. Resets `generationStatus` → `'pending'`, clears `generationError`,
- *    `isGeneratingStartedAt`, and `generationCompletedAt`
- * 3. Dispatches the `on-demand-book-creation.yml` workflow (fire-and-forget)
+ * 1. Validates book ownership and that `generationStatus` is retryable
+ * 2. Re-consumes credits via `executeWithCredits` (they were refunded on
+ *    failure/cancellation — the retry is a fresh attempt with a new deduction)
+ * 3. Resets `generationStatus` → `'pending'`, clears `generationError`,
+ *    `isGeneratingStartedAt`, `generationCompletedAt`, and `isRefunded`
+ * 4. Dispatches the `on-demand-book-creation.yml` workflow (fire-and-forget)
  *
  * **Credit note:**
- * Credits were already consumed when the book was first created. A retry does
- * NOT deduct credits again — the original deduction still stands. If the book
- * was previously refunded (cancelled), the retry route rejects it.
+ * Credits are re-consumed atomically with the state reset. If the original
+ * generation was refunded (cancelled or failed), the user pays again for the
+ * retry. Generations still in progress are not retryable — cancel first.
  *
  * @route   POST /api/books/:bookId/retry
  * @auth    Required
@@ -853,13 +883,10 @@ router.post('/:bookId/cancel', requireAuth, async (req: Request, res: Response) 
  * @example
  * // Success
  * POST /api/books/01912345-6789-1234-5678-123456789012/retry
- * → 200 { "success": true, "message": "Book generation retry initiated" }
+ * → 200 { "success": true, "message": "Book generation retry initiated. 5 credits consumed." }
  *
- * // Not failed
- * → 400 { "error": "Book generation is not in a retryable state" }
- *
- * // Already refunded
- * → 400 { "error": "Cannot retry a refunded book generation" }
+ * // Not retryable
+ * → 400 { "error": "Book generation is not in a retryable state (current: completed)" }
  */
 router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -889,15 +916,15 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
       return handleForbiddenError(res, 'You can only retry your own books');
     }
 
-    if (data.generationStatus !== 'failed') {
+    if (data.generationStatus !== 'failed' && data.generationStatus !== 'cancelled') {
       return res.status(400).json({
         error: `Book generation is not in a retryable state (current: ${data.generationStatus ?? 'none'})`,
       });
     }
 
     // Consume credits atomically with resetting the generation state.
-    // Credits were refunded when the generation failed (auto-refund in
-    // updateBookGenerationStatusCore), so retrying re-deducts them.
+    // Credits were refunded when the generation failed or was cancelled,
+    // so retrying re-deducts them.
     await executeWithCredits(
       userId,
       BOOK_GENERATION_COST,

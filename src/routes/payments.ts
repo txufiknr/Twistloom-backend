@@ -90,6 +90,23 @@ export function handleInsufficientCreditsError(
 const router: RouterType = Router();
 
 /**
+ * Detects a Postgres unique-constraint violation (SQLSTATE 23505).
+ *
+ * Used as a last-resort idempotency backstop for webhook processing: the
+ * `transactions.stripeEventId` / `transactions.paymentIntentId` unique
+ * constraints are the ultimate source of truth against double-processing a
+ * webhook, since the app-level "check then insert" pattern has an inherent
+ * race window when two deliveries of the same event arrive concurrently
+ * (both can pass the SELECT check before either commits its INSERT). When
+ * that race is lost, Postgres itself will reject the second INSERT — this
+ * lets us treat that specific failure as "already processed" instead of a
+ * real error that should fail the webhook and trigger endless Stripe retries.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
+}
+
+/**
  * Handles customer.subscription.created webhook event
  */
 async function handleSubscriptionCreated(event: Stripe.Event) {
@@ -105,6 +122,11 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
     return console.error("[subscription] ❌ Missing userId in subscription metadata");
   }
 
+  // Read trial state off the Subscription object itself rather than trusting checkout
+  // session metadata — the Subscription is the source of truth for its own state.
+  const isTrial = subscription.status === 'trialing';
+  const trialEnd = subscription.trial_end ? new Date(subscription.trial_end * 1000) : null;
+
   const priceId = subscription.items.data[0].price.id;
   await createSubscription({
     userId,
@@ -113,9 +135,11 @@ async function handleSubscriptionCreated(event: Stripe.Event) {
     stripePriceId: priceId,
     currentPeriodStart: new Date(subscription.current_period_start * 1000),
     currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+    isTrial,
+    trialEnd,
   });
 
-  console.log(`[subscription] ✅ Created subscription for user ${userId}`);
+  console.log(`[subscription] ✅ Created subscription for user ${userId}${isTrial ? " (trial)" : ""}`);
 }
 
 /**
@@ -155,6 +179,16 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
 
 /**
  * Handles invoice.payment_succeeded webhook event
+ *
+ * IMPORTANT: invoice.payment_succeeded fires for EVERY successful subscription
+ * invoice — including the very first one, which fires alongside (and grants
+ * credits redundantly with) customer.subscription.created for a brand-new,
+ * immediately-charged subscription. Stripe's invoice.billing_reason field is
+ * exactly what distinguishes these:
+ *   - 'subscription_create' → the initial invoice — already credited via
+ *     handleSubscriptionCreated → createSubscription(). Skip here.
+ *   - 'subscription_cycle'  → a genuine recurring renewal. Grant credits.
+ * Without this check, every new VIP subscriber was credited twice on day one.
  */
 async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   const invoice = event.data.object as Stripe.Invoice;
@@ -167,6 +201,14 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   
   if (!subscriptionId) {
     return console.error("[subscription] ❌ Missing subscriptionId in invoice");
+  }
+
+  if (invoice.billing_reason !== 'subscription_cycle') {
+    // Initial invoice (subscription_create), a plan change (subscription_update),
+    // or another non-renewal reason — credits for subscription creation are
+    // already granted by handleSubscriptionCreated. Nothing to do here.
+    console.log(`[subscription] ℹ️ Skipping credit grant for invoice ${invoice.id} (billing_reason=${invoice.billing_reason}, not a renewal)`);
+    return;
   }
 
   const periodEnd = invoice.lines?.data[0]?.period?.end;
@@ -771,7 +813,13 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
     let isDuplicateTx = false;
 
     // Handle different event types
-    if (event.type === "checkout.session.completed") {
+    // NOTE: checkout.session.completed also fires for VIP subscription checkouts
+    // (mode: "subscription"), which have no payment_intent — those are handled by
+    // customer.subscription.created / invoice.payment_succeeded instead. Without the
+    // `session.mode === "payment"` guard below, a subscription checkout would hit the
+    // "Missing payment intent" validation error on every delivery attempt and Stripe
+    // would retry it for days without ever succeeding.
+    if (event.type === "checkout.session.completed" && (event.data.object as Stripe.Checkout.Session).mode === "payment") {
       const session = event.data.object as Stripe.Checkout.Session;
       
       // Check for idempotency using Stripe event.id (best practice)
@@ -799,7 +847,8 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       }
 
       // Use database transaction for atomic credit update and transaction record creation
-      await dbWrite.transaction(async (tx) => {
+      try {
+        await dbWrite.transaction(async (tx) => {
         // Check for idempotency using Stripe event.id (best practice)
         const existingTransaction = await tx
           .select()
@@ -823,10 +872,17 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           metadata: { paymentIntentId, stripeEventId, amountUsd, packId },
           amountUsd: amountUsd ?? null,
           context: 'credit_pack_purchase',
+          // Persisted to the real unique-constrained columns — this is what makes the
+          // idempotency check above and the charge.refunded lookup below actually work.
+          paymentIntentId,
+          stripeEventId,
           tx
         });
 
-        // Award first-purchase bonus if applicable
+        // Award first-purchase bonus if applicable.
+        // Deliberately NOT passing paymentIntentId/stripeEventId here — those columns are
+        // unique per row, and the main purchase transaction above already claims them for
+        // this event. The link back to the triggering payment is preserved in `metadata`.
         if (priorPurchase.length === 0 && FIRST_PURCHASE_BONUS > 0) {
           try {
             await awardCredits(userId, FIRST_PURCHASE_BONUS, {
@@ -849,11 +905,26 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
         await tx.update(webhookDeliveries)
           .set({ status: 'success', processedAt: new Date(), updatedAt: new Date() })
           .where(eq(webhookDeliveries.id, webhookDeliveryId!));
-      });
+        });
+      } catch (txError) {
+        if (isUniqueViolation(txError)) {
+          // Lost the race against a concurrent delivery of the same event — the other
+          // request already recorded this purchase. Nothing left to do here.
+          console.log(`[stripe] 🔄 Concurrent duplicate delivery detected via unique constraint: ${stripeEventId}`);
+          isDuplicateTx = true;
+        } else {
+          throw txError;
+        }
+      }
 
       // Handle response outside the tx boundary
       if (isDuplicateTx) {
-         return res.json({ received: true, duplicate: true });
+        if (webhookDeliveryId) {
+          await dbWrite.update(webhookDeliveries)
+            .set({ status: 'success', processedAt: new Date(), updatedAt: new Date() })
+            .where(eq(webhookDeliveries.id, webhookDeliveryId)).catch(console.error);
+        }
+        return res.json({ received: true, duplicate: true });
       }
       
     } else if (event.type === "charge.refunded") {
@@ -863,7 +934,8 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       
       if (!paymentIntentId) return handleValidationError(res, 'Missing payment intent');
       
-      await dbWrite.transaction(async (tx) => {
+      try {
+        await dbWrite.transaction(async (tx) => {
         // Check for idempotency for refunds
         const existingRefund = await tx.select().from(transactions).where(eq(transactions.stripeEventId, stripeEventId)).limit(1);
         if (existingRefund.length > 0) {
@@ -872,7 +944,19 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
         }
 
         const originalTransaction = await tx.select().from(transactions).where(eq(transactions.paymentIntentId, paymentIntentId)).limit(1);
-        if (!originalTransaction.length) throw new Error('Original transaction not found');
+        if (!originalTransaction.length) {
+          // Not every refunded charge is a credit-pack purchase — subscription invoice
+          // charges never get a `transactions` row with paymentIntentId set (VIP credits
+          // are allocated via addCredits, tracked in `subscriptionTransactions` instead).
+          // Throwing here would leave this webhook permanently un-succeeded and Stripe
+          // would retry it for days. Until subscription-refund credit clawback is a
+          // defined product policy (see roadmap), log it and mark the webhook handled.
+          console.warn(`[stripe] ⚠️ charge.refunded for paymentIntent ${paymentIntentId} has no matching credit-pack transaction — likely a subscription charge. Skipping credit clawback.`);
+          await tx.update(webhookDeliveries)
+            .set({ status: 'success', processedAt: new Date(), updatedAt: new Date() })
+            .where(eq(webhookDeliveries.id, webhookDeliveryId!));
+          return;
+        }
         
         const transaction = originalTransaction[0];
         const refundAmount = charge.amount_refunded ? charge.amount_refunded / 100 : 0;
@@ -913,12 +997,30 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
         await tx.update(webhookDeliveries)
           .set({ status: 'success', processedAt: new Date(), updatedAt: new Date() })
           .where(eq(webhookDeliveries.id, webhookDeliveryId!));
-      });
+        });
+      } catch (txError) {
+        if (isUniqueViolation(txError)) {
+          console.log(`[stripe] 🔄 Concurrent duplicate refund delivery detected via unique constraint: ${stripeEventId}`);
+          isDuplicateTx = true;
+        } else {
+          throw txError;
+        }
+      }
 
-      if (isDuplicateTx) return res.json({ received: true, duplicate: true });
+      if (isDuplicateTx) {
+        if (webhookDeliveryId) {
+          await dbWrite.update(webhookDeliveries)
+            .set({ status: 'success', processedAt: new Date(), updatedAt: new Date() })
+            .where(eq(webhookDeliveries.id, webhookDeliveryId)).catch(console.error);
+        }
+        return res.json({ received: true, duplicate: true });
+      }
 
     } else {
-      // Subscriptions / other events fall through here
+      // Subscriptions / other events fall through here.
+      // This also catches subscription-mode checkout.session.completed events (no-op,
+      // since VIP activation is driven by customer.subscription.created below) and any
+      // other event types we don't act on — all get marked 'success' so Stripe stops retrying.
       if (event.type === "customer.subscription.created") await handleSubscriptionCreated(event);
       else if (event.type === "customer.subscription.updated") await handleSubscriptionUpdated(event);
       else if (event.type === "customer.subscription.deleted") await handleSubscriptionDeleted(event);
@@ -1342,7 +1444,33 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
 router.get("/subscription/portal", requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const returnUrl = req.query.returnUrl as string || `${process.env.FRONTEND_URL}/dashboard`;
+
+    // Security: prevent open redirects. The two checkout endpoints above already
+    // validate returnUrl origin — this endpoint accepted any URL Stripe would then
+    // redirect the user to after the portal session, which is a classic open-redirect
+    // vector (e.g. ?returnUrl=https://evil.example.com).
+    const baseUrl = process.env.FRONTEND_URL;
+    if (!baseUrl) {
+      return handleApiError(res, "Frontend URL not configured");
+    }
+
+    const rawReturnUrl = req.query.returnUrl as string | undefined;
+    let returnUrl = `${baseUrl}/dashboard`;
+
+    if (rawReturnUrl) {
+      try {
+        const returnUrlObj = new URL(rawReturnUrl, baseUrl);
+        const baseUrlObj = new URL(baseUrl);
+
+        if (returnUrlObj.origin !== baseUrlObj.origin) {
+          throw new Error("Cross-origin returnUrl not allowed");
+        }
+
+        returnUrl = returnUrlObj.toString();
+      } catch {
+        return handleValidationError(res, "Invalid returnUrl");
+      }
+    }
 
     // Try to get customer ID from subscription first, then fall back to user record
     let customerId: string | null = null;

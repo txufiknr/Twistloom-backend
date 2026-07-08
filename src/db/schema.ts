@@ -220,6 +220,10 @@ export const users = pgTable(
     source: text("source").$type<Source>(), // How user discovered the platform (set during onboarding)
     subscriptionId: uuid("subscription_id"),
     vipExpiresAt: timestamp("vip_expires_at", { withTimezone: true }),
+    // Set once when a VIP trial starts; never cleared, even if the subscription is later
+    // deleted/cancelled/refunded. This is what enforces one-trial-per-user, independent of
+    // whatever happens to the underlying Stripe subscription record. See VIP_FREE_TRIAL_ROADMAP.md.
+    vipTrialUsedAt: timestamp("vip_trial_used_at", { withTimezone: true }),
     tokenVersion: integer("token_version").notNull().default(0), // Session version for JWT revocation
     lastActive,
     createdAt,
@@ -1315,7 +1319,9 @@ export const subscriptions = pgTable(
   "subscriptions",
   {
     id: id(),
-    userId: uuid("user_id").notNull(),
+    // Was missing a FK reference to users, unlike every other user-linked table in this
+    // schema (e.g. subscriptionTransactions.userId below). Added for referential integrity.
+    userId: uuid("user_id").notNull().references(() => users.userId, { onDelete: "cascade" }),
     stripeSubscriptionId: text("stripe_subscription_id").unique().notNull(),
     stripeCustomerId: text("stripe_customer_id").notNull(),
     stripePriceId: text("stripe_price_id").notNull(),
@@ -1324,6 +1330,10 @@ export const subscriptions = pgTable(
     currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }).notNull(),
     cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
     canceledAt: timestamp("canceled_at", { withTimezone: true }),
+    // Mirrors Stripe's own trial_start/trial_end so trial state can be read locally without
+    // an API round-trip. See VIP_FREE_TRIAL_ROADMAP.md.
+    isTrial: boolean("is_trial").notNull().default(false),
+    trialEnd: timestamp("trial_end", { withTimezone: true }),
     metadata: jsonb("metadata"),
     createdAt,
     updatedAt,

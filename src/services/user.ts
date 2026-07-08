@@ -659,7 +659,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
       return {
         success: true,
         creditsAwarded: creditsToAward,
-        currentStreak: prevStreak + 1,
+        currentStreak: Math.min(prevStreak + 1, DAILY_CHECKIN_DAYS),
         totalCreditsClaimed,
         checkInDate: todayUTC,
         message: `Successfully claimed ${creditsToAward} ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits`,
@@ -745,6 +745,11 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       d.setUTCDate(d.getUTCDate() - i);
       const iso = d.toISOString().slice(0, 10);
       if (dateSet.has(iso)) streak++; else break;
+    }
+
+    // If a full 7-day cycle is complete and today hasn't been claimed yet, reset to start a new cycle
+    if (streak >= DAILY_CHECKIN_DAYS && canCheckInStatus.canCheckIn) {
+      streak = 0;
     }
 
     // Determine claimed rewards directly from today's check-in rows

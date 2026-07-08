@@ -524,6 +524,9 @@ interface AwardCreditsOptions {
   amountUsd?: number | null;
   /** Human-readable context label for the transaction */
   context?: string;
+  /** Persisted to the real unique-constrained columns */
+  paymentIntentId?: string;
+  stripeEventId?: string;
   /** Existing DB transaction to join */
   tx?: DBTransaction;
 }

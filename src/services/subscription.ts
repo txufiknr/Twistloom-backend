@@ -3,7 +3,7 @@
  *
  * Handles subscription lifecycle, credit allocation, and tier management.
  * This service manages VIP subscriptions including:
- * - Creating new subscriptions and allocating initial credits
+ * - Creating new subscriptions (trial or immediate-paid) and allocating initial credits
  * - Processing monthly renewals and adding recurring credits
  * - Handling subscription cancellations and scheduling tier downgrades
  * - Checking user VIP status and expiration
@@ -11,15 +11,21 @@
  *
  * Stripe Integration:
  * Subscription lifecycle is driven by Stripe webhooks:
- * - `customer.subscription.created` → createSubscription()
- * - `invoice.payment_succeeded` → renewSubscription()
+ * - `customer.subscription.created` → createSubscription() (status may be 'trialing' or 'active')
+ * - `invoice.payment_succeeded` (billing_reason='subscription_cycle' only) → renewSubscription()
+ * - `customer.subscription.updated` → updateSubscription()
  * - `customer.subscription.deleted` → cancelSubscription()
  *
  * Credit Allocation:
- * Credits are allocated atomically within database transactions:
- * - Activation: +50 credits on subscription creation
- * - Renewal: +50 credits on each monthly payment
- * - All allocations create both transaction and subscription_transaction records
+ * Credits are allocated atomically within database transactions, once per billing period:
+ * - Trial start / Activation: +monthlyCredits on subscription creation (whether trial or paid)
+ * - Renewal: +monthlyCredits on each subsequent 'subscription_cycle' invoice payment
+ * - All allocations create both a `transactions` and a `subscriptionTransactions` record
+ *
+ * See VIP_FREE_TRIAL_ROADMAP.md for the reasoning behind the billing_reason filter in
+ * handleInvoicePaymentSucceeded — without it, every new subscription (trial or not) was
+ * credited twice on day one, since invoice.payment_succeeded fires for the first invoice
+ * too, not just genuine renewals.
  */
 
 import { dbWrite, dbRead } from "../db/client.js";
@@ -28,6 +34,19 @@ import { eq } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
+
+/**
+ * Detects a Postgres unique-constraint violation (SQLSTATE 23505).
+ *
+ * `subscriptions.stripeSubscriptionId` and `subscriptionTransactions.stripeInvoiceId`
+ * are unique-constrained specifically so that a redelivered `customer.subscription.created`
+ * or `invoice.payment_succeeded` webhook can't double-allocate credits. Without catching
+ * this specific error, a redelivery would throw, mark the webhook 'failed', and Stripe
+ * would keep retrying an event that was actually already processed successfully.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
+}
 
 /**
  * Creates a new subscription record and allocates initial credits
@@ -62,48 +81,74 @@ export async function createSubscription(params: {
   stripePriceId: string;
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
+  /** True when this subscription was created with a trial (status will be 'trialing') */
+  isTrial?: boolean;
+  /** Trial end date — required when isTrial is true. See VIP_FREE_TRIAL_ROADMAP.md */
+  trialEnd?: Date | null;
 }): Promise<void> {
-  await dbWrite.transaction(async (tx) => {
-    // Create subscription record
-    const [subscription] = await tx.insert(subscriptions).values({
-      userId: params.userId,
-      stripeSubscriptionId: params.stripeSubscriptionId,
-      stripeCustomerId: params.stripeCustomerId,
-      stripePriceId: params.stripePriceId,
-      status: 'active',
-      currentPeriodStart: params.currentPeriodStart,
-      currentPeriodEnd: params.currentPeriodEnd,
-    }).returning();
+  const isTrial = params.isTrial ?? false;
 
-    if (!subscription) {
-      throw new Error('Failed to create subscription record');
-    }
+  try {
+    await dbWrite.transaction(async (tx) => {
+      // Create subscription record
+      const [subscription] = await tx.insert(subscriptions).values({
+        userId: params.userId,
+        stripeSubscriptionId: params.stripeSubscriptionId,
+        stripeCustomerId: params.stripeCustomerId,
+        stripePriceId: params.stripePriceId,
+        status: isTrial ? 'trialing' : 'active',
+        currentPeriodStart: params.currentPeriodStart,
+        currentPeriodEnd: params.currentPeriodEnd,
+        isTrial,
+        trialEnd: isTrial ? (params.trialEnd ?? null) : null,
+      }).returning();
 
-    // Set user tier to VIP
-    await tx.update(users)
-      .set({
-        tier: 'vip',
+      if (!subscription) {
+        throw new Error('Failed to create subscription record');
+      }
+
+      // Set user tier to VIP.
+      // For a trial, vipExpiresAt tracks the trial end (not currentPeriodEnd — Stripe sets
+      // the period to span the whole trial, but we want vip-expiration.ts to correctly
+      // downgrade a trial that ends without converting, at the same point Stripe itself
+      // would cancel/pause it).
+      await tx.update(users)
+        .set({
+          tier: 'vip',
+          subscriptionId: subscription.id,
+          vipExpiresAt: isTrial ? (params.trialEnd ?? params.currentPeriodEnd) : params.currentPeriodEnd,
+          // Set once, permanently — this is what enforces one-trial-per-user regardless
+          // of what later happens to this subscription (cancel, refund, deletion).
+          ...(isTrial ? { vipTrialUsedAt: new Date() } : {}),
+        })
+        .where(eq(users.userId, params.userId));
+
+      // Allocate initial credits — passes `tx` so credits are part of the
+      // same atomic operation. addCredits now correctly honours the provided tx.
+      await addCredits(params.userId, VIP_BENEFITS.monthlyCredits, {
+        context: isTrial ? "vip_trial_started" : "subscription_activation",
+        metadata: { subscriptionId: subscription.id, isTrial },
+        tx
+      });
+
+      // Create subscription transaction record
+      await tx.insert(subscriptionTransactions).values({
         subscriptionId: subscription.id,
-        vipExpiresAt: params.currentPeriodEnd,
-      })
-      .where(eq(users.userId, params.userId));
-
-    // Allocate initial monthly credits — passes `tx` so credits are part of the
-    // same atomic operation. addCredits now correctly honours the provided tx.
-    await addCredits(params.userId, VIP_BENEFITS.monthlyCredits, {
-      context: "subscription_activation",
-      metadata: { subscriptionId: subscription.id },
-      tx
+        userId: params.userId,
+        type: isTrial ? 'trial_started' : 'activation',
+        creditsAllocated: VIP_BENEFITS.monthlyCredits,
+      });
     });
-
-    // Create subscription transaction record
-    await tx.insert(subscriptionTransactions).values({
-      subscriptionId: subscription.id,
-      userId: params.userId,
-      type: 'activation',
-      creditsAllocated: VIP_BENEFITS.monthlyCredits,
-    });
-  });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      // stripeSubscriptionId already exists — this is a redelivered
+      // customer.subscription.created webhook for a subscription we already
+      // activated. Nothing left to do; treat as success.
+      console.log(`[subscription] 🔄 Duplicate createSubscription for ${params.stripeSubscriptionId} — already activated, skipping.`);
+      return;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -149,6 +194,9 @@ export async function updateSubscription(params: {
       // Conditionally include fields that were actually provided
       ...(params.currentPeriodEnd !== undefined && { currentPeriodEnd: params.currentPeriodEnd }),
       ...(params.cancelAtPeriodEnd !== undefined && { cancelAtPeriodEnd: params.cancelAtPeriodEnd }),
+      // A status leaving 'trialing' means the trial converted (→ active) or ended some
+      // other way (→ canceled/paused). Either way it's no longer "in trial" going forward.
+      ...(params.status !== 'trialing' && { isTrial: false }),
       updatedAt: new Date(),
     })
     .where(eq(subscriptions.stripeSubscriptionId, params.stripeSubscriptionId));
@@ -179,48 +227,62 @@ export async function renewSubscription(params: {
   stripeInvoiceId: string;
   currentPeriodEnd: Date;
 }): Promise<void> {
-  await dbWrite.transaction(async (tx) => {
-    // Get subscription
-    const [subscription] = await tx
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.stripeSubscriptionId, params.stripeSubscriptionId))
-      .limit(1);
+  try {
+    await dbWrite.transaction(async (tx) => {
+      // Get subscription
+      const [subscription] = await tx
+        .select()
+        .from(subscriptions)
+        .where(eq(subscriptions.stripeSubscriptionId, params.stripeSubscriptionId))
+        .limit(1);
 
-    if (!subscription) {
-      throw new Error("Subscription not found");
+      if (!subscription) {
+        throw new Error("Subscription not found");
+      }
+
+      // Update subscription period
+      await tx.update(subscriptions)
+        .set({
+          currentPeriodEnd: params.currentPeriodEnd,
+          status: 'active',
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, subscription.id));
+
+      // Update user VIP expiration
+      await tx.update(users)
+        .set({ vipExpiresAt: params.currentPeriodEnd })
+        .where(eq(users.userId, subscription.userId));
+
+      // Allocate monthly credits atomically within this transaction
+      await addCredits(subscription.userId, VIP_BENEFITS.monthlyCredits, {
+        context: "subscription_renewal",
+        metadata: { subscriptionId: subscription.id },
+        tx
+      });
+
+      // Create subscription transaction record. stripeInvoiceId is unique-constrained,
+      // so if this same invoice was already processed (redelivered webhook), the insert
+      // below throws and the whole transaction — including the addCredits call above —
+      // rolls back atomically. No double-crediting risk from a bare retry.
+      await tx.insert(subscriptionTransactions).values({
+        subscriptionId: subscription.id,
+        userId: subscription.userId,
+        type: 'renewal',
+        creditsAllocated: VIP_BENEFITS.monthlyCredits,
+        stripeInvoiceId: params.stripeInvoiceId,
+      });
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      // This invoice was already processed on a prior delivery of this webhook.
+      // The transaction rolled back in full (including the credit allocation
+      // above), so it's safe to just treat this as already-handled.
+      console.log(`[subscription] 🔄 Duplicate renewSubscription for invoice ${params.stripeInvoiceId} — already processed, skipping.`);
+      return;
     }
-
-    // Update subscription period
-    await tx.update(subscriptions)
-      .set({
-        currentPeriodEnd: params.currentPeriodEnd,
-        status: 'active',
-        updatedAt: new Date(),
-      })
-      .where(eq(subscriptions.id, subscription.id));
-
-    // Update user VIP expiration
-    await tx.update(users)
-      .set({ vipExpiresAt: params.currentPeriodEnd })
-      .where(eq(users.userId, subscription.userId));
-
-    // Allocate monthly credits atomically within this transaction
-    await addCredits(subscription.userId, VIP_BENEFITS.monthlyCredits, {
-      context: "subscription_renewal",
-      metadata: { subscriptionId: subscription.id },
-      tx
-    });
-
-    // Create subscription transaction record
-    await tx.insert(subscriptionTransactions).values({
-      subscriptionId: subscription.id,
-      userId: subscription.userId,
-      type: 'renewal',
-      creditsAllocated: VIP_BENEFITS.monthlyCredits,
-      stripeInvoiceId: params.stripeInvoiceId,
-    });
-  });
+    throw error;
+  }
 }
 
 /**
