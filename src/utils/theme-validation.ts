@@ -225,12 +225,12 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - value: the detected text
   - context: brief context of where it was found
   - reason: explanation of why it's a violation
-- suggestion: 1-sentence (how to fix the issue, or empty string if theme is valid)
-- comment: max 250 chars (a complimentary comment about theme idea. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
-- language: detected language code of theme input (ISO 639-1)
+- suggestion: 1-sentence in detected language (how to fix the issue, or empty string if theme is valid)
+- comment: max 250 chars (a complimentary comment about theme idea in detected language. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
+- language: detected language code of theme input (ISO 639-1). If the theme request certain language, strictly use it.
 - titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
-- hook: immediate intrigue — ${HOOK_LENGTH}. Derived from the theme and MC. Omit if theme is invalid.
-- summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH}. Derived from the theme and MC. Omit if theme is invalid.
+- hook: immediate intrigue — ${HOOK_LENGTH} in detected language. Derived from the theme and MC. Omit if theme is invalid.
+- summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH} in detected language. Derived from the theme and MC. Omit if theme is invalid.
 - mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
   - knownName: Preferred alias or nick referred by other characters.

@@ -26,7 +26,7 @@
 [ ] ensure to refund 5 credits when generation failed
 [x] prompt first book creation include summary & hook (alongside titleIdea)
 [ ] prompt ensure add language check in review checklist
-
+[ ] add "LANGUAGE CONSISTENCY CHECKS" alongside "JSON INTEGRITY CHECKS"
 ---
 
 src\utils\prompt.ts

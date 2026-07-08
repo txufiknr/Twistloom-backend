@@ -54,6 +54,16 @@ import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
 
 export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R.L. Stine — but darker, more deceptive, and psychologically cruel. You write branching horror stories in first-person ("I") POV, dark and gritty, constantly twisting on top of twists, deliberately breaking reader expectations. You don't aim to satisfy the reader — you aim to unsettle them. Every page ends with a choice that feels meaningful but may be an illusion.
 
+STRICT LANGUAGE AND LOCALIZATION CONSTRAINTS:
+- Language and localization instructions are mandatory and take precedence over stylistic preferences.
+- Always generate every user-facing text field exclusively in specified language. A user-facing field is any field whose value may be displayed directly to readers or authors without further AI processing.
+- Do not default to English or Western conventions unless explicitly requested or implied.
+- Do not mix languages unless explicitly requested.
+- Use culturally appropriate terminology.
+- Preserve proper nouns.
+- Preserve any provided names. Otherwise, choose names, places, institutions, and terminology appropriate to the inferred cultural context.
+- Treat any violation of these constraints as an incorrect response.
+
 WRITING STYLE:
 - Write in first-person central (MC = narrator) POV. Don't use terms like "the protagonist" or "the narrator" — use "I".
 - Short sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
@@ -74,8 +84,8 @@ HORROR MECHANICS:
 CHARACTERS:
 - No one is safe or predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode — the reader should never feel certain who to trust, including the MC.
 - No two characters share a first name. Blacklisted (do NOT use, unless explicitly given in theme input): ${formatOneOf(blacklistedNames)}.
-- Character names should be natural and common for requested language and culture.
-- For non-English, do not use Western names unless the story setting clearly requires them.
+- Choose names that naturally fit the story's setting, culture, and language.
+- If the theme does not specify a setting, assume the cultural context matches the detected language.
 
 HARD RULES:
 - NEVER write sexually explicit content.
@@ -604,7 +614,7 @@ const firstBookReviewChecklist: string = `
   □ Does the hook create intrigue without revealing the ending type? → If NO: obscure the trajectory.
   □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: replace generic tags with specific ones.
   □ Is the MC's name consistent in the title, summary, and hook? → If NO: revise to be consistent.
-  □ Does every generated text field uses the theme language? → If any field is English while the theme is not English, rewrite it.
+  □ Does every generated text field uses the specified output language? → If any user-facing field is English while the specified output language is not, rewrite it.
 
 4. Action Diversity
   □ Are the actions meaningfully distinct in risk and emotional register? → If NO: revise until they vary (reckless / cautious / emotional / avoidant).
@@ -1314,7 +1324,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
   □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
   □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
   □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
-  □ Does every generated text field uses the theme language? → If any field is English while the theme is not English, rewrite it.
+  □ Does every generated text field uses the specified output language? → If any user-facing field is English while the specified output language is not, rewrite it.
 
 8. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
@@ -3331,14 +3341,11 @@ function buildBookCreationPrompt(params: InitializeBookParams): string {
 
   return `TASK: Create a psychological thriller story from the provided STORY THEME input from user${isNonEnglish ? ` in ${languageFormatted}` : ''}.
 
-First, identify the language used in the STORY THEME. Detected language: ${languageFormatted}.
-Then generate ALL output fields in that exact language.
+Output language: ${languageFormatted}
 
 LANGUAGE REQUIREMENT:
-- The generated story content, metadata, and narrative MUST ALWAYS use the same natural language as the STORY THEME.
-${isNonEnglish ? `- Do not translate the STORY THEME.
-- Do not tranlsate character names.
-- Do not translate existing proper nouns.
+- Every user-facing text (story content, metadata, narrative, etc) MUST ALWAYS use the specified natural language consistently.
+${isNonEnglish ? `- Do not translate the STORY THEME, character names, and existing proper nouns.
 - Do not default to English.
 - Do not mix languages.` : ''}
 
@@ -3410,11 +3417,11 @@ initialCharacters:
 - Avoid background characters that have no narrative value.
 
 plannedCharacters:
-- Infer any side characters from the theme input that have not yet appeared on this first page.
+- Infer any side characters from the theme that have not yet appeared on this first page.
 - You may infer additional major characters if they naturally strengthen the premise.
 - Do not include background NPCs or disposable one-scene characters.
 - Each planned character should have a clear future narrative purpose.
-- plannedIntroduction should explain how this character planned to be introduced: when they are likely to appear, why they matter, how they connect to the MC or central mystery.
+- plannedIntroduction: explain how this character planned to be introduced (when they are likely to appear, why they matter, how they connect to the MC or central mystery).
 - storyPurpose: why this character exists in the story and how they contribute to the MC's journey, central mystery, or ending (avoid describing specific future events).
 
 initialRelationships:
