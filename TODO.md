@@ -25,11 +25,26 @@
 [ ] sync sampling formula with ai-sampling.ts
 [ ] ensure to refund 5 credits when generation failed
 [x] prompt first book creation include summary & hook (alongside titleIdea)
+[ ] prompt ensure add language check in review checklist
 
 ---
 
-duplicate futureNoteKeys
+src\utils\prompt.ts
+src\utils\candidate-generation.ts
+src\types\story.ts
+src\utils\story.ts
+src\utils\text-processing.ts
 
+can you trace and investigate what makes duplicate `futureNoteKeys` in `resolvePageDelta` function, and solve it?
+
+functions to focus:
+- resolvePageDelta
+- generateNextPages
+- generateCandidatePages
+- mapFutureNoteWithKey
+- ensureUniqueId
+
+log:
 [resolvePageDelta] 🔮 futureNoteKeys (10): [
   'mystery_1',
   'mystery_1',
@@ -42,6 +57,33 @@ duplicate futureNoteKeys
   'relationship_1',
   'inventory_1'
 ]
+
+Now I understand mapFutureNoteWithKey and ensureUniqueId. Let me trace the flow:
+
+mapFutureNoteWithKey takes futureNoteKeys (existing keys) and uses ensureUniqueId with alwaysShowSuffix: true to generate unique keys like mystery_1, mystery_2, etc.
+ensureUniqueId checks against a registeredKeys Set and increments suffix if needed.
+Within a single call to mapFutureNoteWithKey, it properly adds each new key to registeredKeys (line 326), so duplicates within a single call are prevented.
+The problem likely stems from either incomplete futureNoteKeys being passed to extractStateDelta, or the merge logic in applyStateDelta and processTagUpdates not properly deduplicating when combining futureNotes into state.
+I need to examine how applyStateDelta handles the merging and check the callers of resolvePageDelta at lines 4202 and 4328 to see if advancedState already contains duplicates before processing.
+
+Actually, looking at the log output more carefully—those futureNoteKeys are already duplicated in advancedState.futureNotes when resolvePageDelta gets called, which means the duplicates were introduced in a previous applyStateDelta call. I should trace through processTagUpdates to see how it's adding futureNotes.
+
+---
+
+Now I understand the full flow:
+
+advanceStoryState does a structuredClone(state) and advances it (increments page, updates flags/psychology, etc.) — it does NOT touch futureNotes directly.
+So advancedState.futureNotes are exactly the futureNotes from currentState (the state at the previous page).
+resolvePageDelta then reads advancedState.futureNotes and maps keys.
+So the duplicates in advancedState.futureNotes must have been introduced when the previous page's state was computed.
+
+The previous page's state came from applyStateDelta, which calls processFutureNoteUpdates → processTagUpdates. There's a dedup check that compares items by key and skips duplicates, so duplicates shouldn't be introduced there. But I need to trace back to the initial state creation to see where they're actually coming from.
+
+I'm wondering if the real issue is in the reconstruction path — when replaying deltas from the database, maybe the dedup logic isn't being applied consistently, or there's a race condition if multiple candidates are being generated in parallel and sharing the same state reference.
+
+---
+
+Now let me look at applyStateDelta and processTagUpdates — the duplicates are already in advancedState.futureNotes before resolvePageDelta is called, so they must be introduced when applying a previous delta.
 
 ---
 

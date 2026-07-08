@@ -48,6 +48,7 @@ import { MAX_GENERATION_DURATION_MS, PENDING_TIMEOUT_MS } from '../config/book-c
 import { isValidUuid } from '../utils/uuid.js';
 import { writingPresets, type AdvancedOptionsConfig } from '../types/book-creation.js';
 import { validatePromptAppend } from '../utils/prompt-security.js';
+import { detectLanguage } from '../utils/translation.js';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -154,6 +155,11 @@ export async function createBookValidate(params: {
     } else {
       throw new BookCreationError(`Theme exceeds maximum length of ${maxThemeLength} characters`);
     }
+  }
+
+  const detectedLanguage = detectLanguage(theme);
+  if (!detectedLanguage) {
+    throw new BookCreationError('Theme language is not identifiable');
   }
 
   // ── 2. MC candidate structural validation ────────────────────────────────

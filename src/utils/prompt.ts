@@ -63,6 +63,8 @@ WRITING STYLE:
 - Don't begin sentences with "The" too often. Direct object heavily preferred.
 - Evocative, visceral, poetic, punchy. No purple prose, melodrama, predictable cliches, repetitive metaphors, or tidy resolutions.
 - Subtext over flat explanation. Let scenes linger in tension.
+- When generating content, respect the requested language constraints.
+- For non-English, everyday expressions and terminology should feel native to that locale.
 
 HORROR MECHANICS:
 - Normal → slightly wrong → spiral. Always. One sentence turns an ordinary moment into dread. Escalate fast, unpredictably, without warning.
@@ -72,6 +74,8 @@ HORROR MECHANICS:
 CHARACTERS:
 - No one is safe or predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode — the reader should never feel certain who to trust, including the MC.
 - No two characters share a first name. Blacklisted (do NOT use, unless explicitly given in theme input): ${formatOneOf(blacklistedNames)}.
+- Character names should be natural and common for requested language and culture.
+- For non-English, do not use Western names unless the story setting clearly requires them.
 
 HARD RULES:
 - NEVER write sexually explicit content.
@@ -362,11 +366,11 @@ const firstBookOutputFormat: string = `{
   "summary": "...",
   "keywords": ["mood-tag", "theme-tag", "..."],
   "mainCharacter": {
-    "name": "Full Name",
+    "name": "Full Name. A rare name, yet consistent with the detected language.",
     "knownName": "Preferred alias or nick",
     "age": <integer between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}>,
     "gender": "'male' OR 'female'",
-    "bio": "Trait-forward description. Include at least one psychological vulnerability."
+    "bio": "Trait-forward description in detected language. Include at least one psychological vulnerability."
   },
   "firstPage": {
     "text": "...",
@@ -600,6 +604,7 @@ const firstBookReviewChecklist: string = `
   □ Does the hook create intrigue without revealing the ending type? → If NO: obscure the trajectory.
   □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: replace generic tags with specific ones.
   □ Is the MC's name consistent in the title, summary, and hook? → If NO: revise to be consistent.
+  □ Does every generated text field uses the theme language? → If any field is English while the theme is not English, rewrite it.
 
 4. Action Diversity
   □ Are the actions meaningfully distinct in risk and emotional register? → If NO: revise until they vary (reckless / cautious / emotional / avoidant).
@@ -951,11 +956,12 @@ const multiNextPageOutputFormat: string = `{
 }`;
 
 function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, candidateCount } = params;
+  const { advancedState: state, candidateCount, book } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
+  const { language } = book;
 
   return [
-    `TASK: ${formatNextPageTaskPrompt(state, candidateCount)}`,
+    `TASK: ${formatNextPageTaskPrompt(state, candidateCount, language)}`,
     formatNextPageStoryContextPrompt(params),
     formatNextPageNarrativePrompt(params),
     state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
@@ -1167,6 +1173,7 @@ ${isLatePhase || isFinale ? `  - Relationships should be breaking, inverting, or
 placeUpdates.newPlaces
 ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} reached.`
 : isEarlyPhase || isMidPhase ? `  - You can introduce up to ${placesSlot} new meaningful places the MC enters for the first time in this page — no generic one-offs.
+  - knownName: should fit the in-world cultural setting.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
   - hints: known clues, obstacles, spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
   - canonicalType: category for audio atmosphere. Choose the closest match: ${formatOneOf(canonicalPlaceTypes)}.
@@ -1307,6 +1314,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
   □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
   □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
   □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
+  □ Does every generated text field uses the theme language? → If any field is English while the theme is not English, rewrite it.
 
 8. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
@@ -1319,13 +1327,14 @@ function buildNextPageReviewChecklist(state: StoryState): string {
 }
 
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage, candidateCount } = params;
+  const { advancedState: state, actionedPage, candidateCount, book } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
   const { action, sceneType } = actionedPage;
+  const { language } = book;
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
-Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount)}
+Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount, language)}
 
 ${formatNextPageStoryContextPrompt(params)}
 
@@ -1507,7 +1516,7 @@ FIELD INSTRUCTIONS:
 ${firstBookFieldInstructions}
 
 LANGUAGE REQUIREMENT:
-- MUST output all field values in SAME LANGUAGE as story theme exclusively (detected: ${formatLanguage(language)}).
+- MUST output all field values in SAME LANGUAGE as STORY THEME exclusively (detected: ${formatLanguage(language)}).
 - Do NOT mix languages.
 
 ---
@@ -2572,16 +2581,18 @@ ${buildEndingRules(state)}`;
  * //    Occasionally, let a faint echo bleed across timelines — a déjà vu, a half-remembered
  * //    feeling or hallucination — but keep it subtle.'
  */
-function formatNextPageTaskPrompt(state: StoryState, candidateCount: number): string {
+function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, language: string): string {
   const { page, maxPage, memoryIntegrity, flags } = state;
   const { trust, curiosity } = flags;
   const remainingPages = maxPage - page;
+  const isNonEnglish = language !== 'en';
+  const languageFormatted = formatLanguage(language);
 
   const pageLabel = remainingPages > 0
     ? `page ${page} of ${maxPage} — ${remainingPages} page${remainingPages === 1 ? '' : 's'} remaining`
     : `the final page of the book. The story ends completely right now.`;
 
-  const base = `Continue the story in first-person ("I") POV. You're now writing ${pageLabel}.`;
+  const base = `Continue the story in first-person ("I") POV${isNonEnglish ? ` in ${languageFormatted}` : ''}. You're now writing ${pageLabel}.`;
 
   if (candidateCount === 1) return base;
 
@@ -3315,11 +3326,23 @@ function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT
  */
 function buildBookCreationPrompt(params: InitializeBookParams): string {
   const { theme, language, titleIdea, summary, hook } = params;
-  return `TASK: Create a psychological thriller story from this theme input from user:\n"""\n${theme.trim()}\n"""
+  const isNonEnglish = language !== 'en';
+  const languageFormatted = formatLanguage(language);
+
+  return `TASK: Create a psychological thriller story from the provided STORY THEME input from user${isNonEnglish ? ` in ${languageFormatted}` : ''}.
+
+First, identify the language used in the STORY THEME. Detected language: ${languageFormatted}.
+Then generate ALL output fields in that exact language.
 
 LANGUAGE REQUIREMENT:
-- MUST output all story content, metadata, and narrative in SAME LANGUAGE as user's theme input exclusively (detected: ${formatLanguage(language)}).
-- Do NOT mix languages.
+- The generated story content, metadata, and narrative MUST ALWAYS use the same natural language as the STORY THEME.
+${isNonEnglish ? `- Do not translate the STORY THEME.
+- Do not tranlsate character names.
+- Do not translate existing proper nouns.
+- Do not default to English.
+- Do not mix languages.` : ''}
+
+STORY THEME:\n"""\n${theme.trim()}\n"""
 
 TITLE IDEA:\n${titleIdea || '-'}
 

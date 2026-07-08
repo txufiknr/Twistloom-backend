@@ -59,6 +59,9 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      fasttext-ts:
+        specifier: 0.2.0-beta.1
+        version: 0.2.0-beta.1
       google-auth-library:
         specifier: ^10.6.2
         version: 10.6.2
@@ -1280,6 +1283,10 @@ packages:
 
   fast-sha256@1.3.0:
     resolution: {integrity: sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ==}
+
+  fasttext-ts@0.2.0-beta.1:
+    resolution: {integrity: sha512-2LMJJRnGcq6LwNLM+VKuoVZSr2gDoZkl0cPOmo5gRAPmNXM6HgEb1jbDoJ1Kvj1uUcz3N002Bj1fQAoro/Wk6A==}
+    engines: {node: '>=16.0.0'}
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
@@ -2929,6 +2936,8 @@ snapshots:
   fast-levenshtein@2.0.6: {}
 
   fast-sha256@1.3.0: {}
+
+  fasttext-ts@0.2.0-beta.1: {}
 
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:

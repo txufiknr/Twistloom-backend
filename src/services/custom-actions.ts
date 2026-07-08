@@ -334,7 +334,7 @@ SPECIAL INSTRUCTIONS:
 - For "allow_as_attempt" outcomes, set hintType and interpretedIntent to guide the page generator toward a failed/punished consequence.
 - Never reveal hidden narrative state in your reasoning.
 - The action text has already been cleaned — focus on narrative evaluation.
-- Detect the language of the action text and return its ISO 639-1 code (e.g., "en", "id"). Use "un" if uncertain.
+- Detect the language of the action text and return its ISO 639-1 code (e.g., "en", "id").
 
 ${context}`;
 }

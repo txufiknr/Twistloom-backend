@@ -1,3 +1,5 @@
+import { FastTextLanguageDetector } from 'fasttext-ts';
+
 /**
  * Translates text using LibreTranslate API
  * 
@@ -150,4 +152,19 @@ export function getLanguageName(languageCode: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * 
+ * @param text 
+ * @param options 
+ * @returns 
+ */
+export async function detectLanguage(text: string, options?: { cache: boolean }): Promise<string | null> {
+  const { cache = false } = options ?? {};
+  const detector = new FastTextLanguageDetector({ cache });
+  await detector.load();
+
+  const result = await detector.detectSimple(text);
+  return result;
 }

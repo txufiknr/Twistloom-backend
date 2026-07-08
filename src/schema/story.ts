@@ -145,7 +145,7 @@ export function buildTraitItemSchema(params?: {
 export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = {
   placeId: { type: 'string', description: 'Lowercase slug identifier (e.g., "abandoned_hotel")' },
   parentPlaceId: { type: 'string', description: `If it's a sub-place (e.g., 'canteen' in a 'school')` },
-  knownName: { type: 'string', description: `Place name as it appears in the narrative (preferred name)` },
+  knownName: { type: 'string', description: `Place name as it appears in the narrative (preferred name). Should fit the in-world cultural setting.` },
   realName: { type: 'string', description: 'Original name unrevealed (e.g., institution name)' },
   type: { type: 'string', description: 'Type of place for categorization and behavior patterns (e.g., "building", "forest")' },
   context: { type: 'string', description: 'Short human-readable description for immediate recall' },
@@ -380,7 +380,7 @@ export const CHARACTER_PLAN_PROPERTIES: Record<keyof CharacterPlan, AIJsonProper
   realName: { type: 'string', description: 'Real full name, even if undisclosed yet.' },
   role: { type: 'string', description: 'Role or occupation known to the MC.' },
   gender: { type: 'string', enum: [...genders] },
-  bio: { type: 'string', description: "Brief character description. Include one trait that could become a source of threat or betrayal." },
+  bio: { type: 'string', description: "Brief character description in detected language. Include one trait that could become a source of threat or betrayal." },
   visualDescription: { type: 'string', description: "Visual appearance (e.g., height, skin color, eye color, hair)." },
   storyPurpose: { type: 'string', description: 'Explain why this character exists in the story' },
   plannedIntroduction: { type: 'string', description: 'Explain how this character planned to be introduced' },
@@ -512,7 +512,7 @@ function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, i
 };
 
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {
-  text: { type: 'string', description: `Main story page content (max ${MAX_WORDS_PER_PAGE} words). First-person central ("I") POV as MC.` },
+  text: { type: 'string', description: `Story page text written in detected language (max ${MAX_WORDS_PER_PAGE} words). First-person central ("I") POV as MC.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   placeId: { type: 'string', description: 'Current place ID or "unknown"' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
@@ -533,8 +533,8 @@ export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJ
       additionalProperties: false
     },
   },
-  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page' },
-  importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page' },
+  keyEvents: { type: 'array', items: { type: 'string' }, description: 'Key events that occurred in this page in detected language' },
+  importantObjects: { type: 'array', items: { type: 'string' }, description: 'Important objects in this page in detected language' },
   actions: STORY_ACTION_SCHEMA
 };
 
@@ -890,10 +890,10 @@ export const MAIN_CHARACTER_SCHEMA: AIJsonProperty = {
   type: 'object',
   description: 'Inferred main character who perfectly fit with the story theme',
   properties: {
-    name: { type: 'string' },
+    name: { type: 'string', description: 'A rare name, yet consistent with the detected language.' },
     age: { type: 'integer', description: `Between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}` },
     gender: { type: 'string', enum: ['male', 'female'] satisfies KnownGender[] },
-    bio: { type: 'string', description: 'Trait-forward description. Include at least one psychological vulnerability. Can include birth date (month and day) if relevant to story.' },
+    bio: { type: 'string', description: 'Trait-forward description in detected language. Include at least one psychological vulnerability. Can include birth date (month and day) if relevant to story.' },
     knownName: { type: 'string', description: 'Preferred alias or nick referred by other characters.' },
   } satisfies Record<keyof StoryMCGeneration, AIJsonProperty>,
   required: ['name', 'age', 'gender', 'bio', 'knownName'] satisfies (keyof StoryMCGeneration)[],
@@ -922,12 +922,12 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
       additionalProperties: false
     }
   },
-  suggestion: { type: 'string', description: '1-sentence suggestion on how to fix the issue. Omit if theme is valid.' },
-  comment: { type: 'string', description: 'Your complimentary comment (follow comment structure & example). Omit if theme is invalid.' },
   language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
-  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH}. Omit if theme is invalid.` },
-  hook: { type: 'string', description: `Immediate intrigue — ${HOOK_LENGTH}. Omit if theme is invalid.` },
-  summary: { type: 'string', description: `Sets up premise — ${SUMMARY_LENGTH}. Omit if theme is invalid.` },
+  suggestion: { type: 'string', description: '1-sentence suggestion in detected language on how to fix the issue. Omit if theme is valid.' },
+  comment: { type: 'string', description: 'Your complimentary comment in detected language (follow comment structure & example). Omit if theme is invalid.' },
+  titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH} in detected language. Omit if theme is invalid.` },
+  hook: { type: 'string', description: `Immediate intrigue — ${HOOK_LENGTH} in detected language. Omit if theme is invalid.` },
+  summary: { type: 'string', description: `Sets up premise — ${SUMMARY_LENGTH} in detected language. Omit if theme is invalid.` },
   mcCandidate: {
     ...MAIN_CHARACTER_SCHEMA,
     description: `${MAIN_CHARACTER_SCHEMA.description}. Omit if theme is invalid.`
