@@ -30,6 +30,13 @@
 
 ---
 
+updated backend files:
+src\config\subscription.ts
+src\routes\payments.ts
+src\services\subscription.ts
+
+---
+
 my think-then-output (or self-review checklist) is currently formatted like this:
 
 1. Theme & MC Fit

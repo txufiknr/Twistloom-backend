@@ -623,7 +623,7 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
         if (dateSet.has(iso)) prevStreak++; else break;
       }
 
-      const nextIndex = Math.min(prevStreak + 1, DAILY_CHECKIN_DAYS);
+      const nextIndex = (prevStreak % DAILY_CHECKIN_DAYS) + 1;
       // Base bonus: days 1-6 => DAILY_CHECKIN_BONUS each, day 7 => DAILY_CHECKIN_BIG_BONUS
       const baseCredits = nextIndex === DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
       
@@ -727,30 +727,37 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       .where(eq(userCheckins.userId, userId))
       .limit(1);
 
-    // Get longest streak from user counters
+    // Get active & longest streak from user counters (trigger computes raw counts
+    // across all check-ins, not capped to DAILY_CHECKIN_DAYS)
     const [counter] = await dbRead
-      .select({ maxCheckinStreak: userCounters.maxCheckinStreak })
+      .select({
+        activeCheckinStreak: userCounters.activeCheckinStreak,
+        maxCheckinStreak:    userCounters.maxCheckinStreak,
+      })
       .from(userCounters)
       .where(eq(userCounters.userId, userId))
       .limit(1);
 
-    // Compute current consecutive streak (include today if present)
+    // Build date set and UTC today for streak computations
     const dateSet = new Set(checkInHistory.map(c => c.checkInDate));
     const utcToday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()));
-    let streak = 0;
-    // If user already checked in today, count from today (i=0); otherwise count from yesterday (i=1)
-    const startOffset = canCheckInStatus.canCheckIn ? 1 : 0;
-    for (let i = startOffset; i < DAILY_CHECKIN_DAYS + startOffset; i++) {
-      const d = new Date(utcToday);
-      d.setUTCDate(d.getUTCDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      if (dateSet.has(iso)) streak++; else break;
-    }
 
-    // If a full 7-day cycle is complete and today hasn't been claimed yet, reset to start a new cycle
-    if (streak >= DAILY_CHECKIN_DAYS && canCheckInStatus.canCheckIn) {
-      streak = 0;
-    }
+    // Raw consecutive day count from the DB trigger (unbounded), with a
+    // fallback to capped loop-based computation for users without a counter row.
+    const rawStreak = counter?.activeCheckinStreak ?? (() => {
+      let s = 0;
+      const startOffset = canCheckInStatus.canCheckIn ? 1 : 0;
+      for (let i = startOffset; i < DAILY_CHECKIN_DAYS + startOffset; i++) {
+        const d = new Date(utcToday);
+        d.setUTCDate(d.getUTCDate() - i);
+        const iso = d.toISOString().slice(0, 10);
+        if (dateSet.has(iso)) s++; else break;
+      }
+      return s;
+    })();
+
+    // Display streak capped at DAILY_CHECKIN_DAYS (HUD shows 7 for a completed cycle)
+    const displayStreak = Math.min(rawStreak, DAILY_CHECKIN_DAYS);
 
     // Determine claimed rewards directly from today's check-in rows
     const claimedRewards: CheckinClaimType[] = canCheckInStatus.claimTypes;
@@ -767,9 +774,9 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
     let regularClaimAmount = 0;
     let vipClaimAmount = 0;
     if (effectiveCanCheckIn) {
-      // Determine streak position for today's slot.
-      // When the regular claim is already done (VIP-only window), currentStreak
-      // already includes today. Otherwise compute position excluding today + 1.
+      // Determine streak position for today's slot using modulo arithmetic so
+      // that cycles wrap correctly (day 7 → position 7 = big bonus, day 8 →
+      // position 1 = regular bonus).
       let streakPosition: number;
       if (!claimedRewards.includes('regular')) {
         let streakBackwards = 0;
@@ -779,9 +786,11 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
           const iso = d.toISOString().slice(0, 10);
           if (dateSet.has(iso)) streakBackwards++; else break;
         }
-        streakPosition = streakBackwards + 1;
+        streakPosition = (streakBackwards % DAILY_CHECKIN_DAYS) + 1;
       } else {
-        streakPosition = Math.min(streak, DAILY_CHECKIN_DAYS);
+        // rawStreak includes today's check-in — subtract 1 to find the cycle
+        // position of the day that was just claimed with regular.
+        streakPosition = ((rawStreak - 1) % DAILY_CHECKIN_DAYS) + 1;
       }
 
       const baseAmount = streakPosition >= DAILY_CHECKIN_DAYS ? DAILY_CHECKIN_BIG_BONUS : DAILY_CHECKIN_BONUS;
@@ -790,13 +799,21 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       vipClaimAmount = isVip && !claimedRewards.includes('vip_2x') ? baseAmount * VIP_BENEFITS.checkInMultiplier : 0;
     }
 
+    // Grid slot index (0-based) indicating today's position in the cycle.
+    // Uses rawStreak so cycle boundaries are handled correctly (rawStreak 7 →
+    // slot 0 = day 1 of new cycle; rawStreak 14 → slot 6 = day 7).
+    const todayCycleDay = claimedRewards.includes('regular')
+      ? ((rawStreak - 1) % DAILY_CHECKIN_DAYS)
+      : (rawStreak % DAILY_CHECKIN_DAYS);
+
     const statusResult: CheckinStatusResponse = {
       canCheckIn: effectiveCanCheckIn,
       lastCheckInDate: canCheckInStatus.lastCheckInDate,
       totalCheckIns: totals[0]?.totalCheckIns || 0,
       totalCreditsClaimed: totals[0]?.totalCreditsClaimed || 0,
-      currentStreak: streak,
+      currentStreak: displayStreak,
       longestStreak: counter?.maxCheckinStreak || 0,
+      todayCycleDay,
       recentCheckIns: checkInHistory,
       isVip,
       regularClaimAmount,

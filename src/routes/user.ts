@@ -1671,6 +1671,7 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
  * @returns {number} totalCreditsClaimed - Total credits claimed from check-ins
  * @returns {number} currentStreak - Current consecutive check-in streak
  * @returns {number} longestStreak - Longest check-in streak
+ * @returns {number} todayCycleDay - 0-based grid slot index for today's cycle position (0-6)
  * @returns {Array} recentCheckIns - Recent check-in history (last 30 days)
  * @returns {boolean} isVip - Whether user has VIP tier
  * @returns {number} regularClaimAmount - Regular daily claim amount
@@ -1689,6 +1690,7 @@ router.get("/following", requireAuth, async (req: Request, res: Response) => {
  *   "totalCreditsClaimed": 360,
  *   "currentStreak": 5,
  *   "longestStreak": 12,
+ *   "todayCycleDay": 4,
  *   "recentCheckIns": [
  *     {
  *       "checkInDate": "2026-05-03",

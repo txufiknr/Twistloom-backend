@@ -29,10 +29,10 @@
  */
 
 import { dbWrite, dbRead } from "../db/client.js";
-import { subscriptions, subscriptionTransactions, users } from "../db/schema.js";
+import { subscriptions, subscriptionTransactions, users, userNotifications } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { addCredits } from "./credits.js";
-import { VIP_BENEFITS } from "../config/subscription.js";
+import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
 
 /**
@@ -391,4 +391,84 @@ export async function downgradeUserFromVip(userId: string): Promise<void> {
       subscriptionId: null,
     })
     .where(eq(users.userId, userId));
+}
+
+/**
+ * Checks whether a user is eligible to start a VIP free trial.
+ *
+ * A user is eligible if:
+ * 1. They have never used a trial before (vipTrialUsedAt IS NULL)
+ * 2. They do not already have an active VIP subscription
+ *
+ * This is the primary gate that enforces one-trial-per-user. The flag lives on
+ * `users` rather than on the subscription because eligibility must survive
+ * subscription deletion/cleanup/GDPR flows against the subscription record.
+ *
+ * Defense in depth: this check runs both at the eligibility endpoint (UX
+ * convenience) AND at checkout-session creation (security boundary). A client
+ * that bypasses the frontend gate will still be caught server-side.
+ *
+ * @param userId - The user to check eligibility for
+ * @returns true if the user can start a new trial
+ *
+ * @see VIP_FREE_TRIAL_ROADMAP.md §4.2
+ */
+export async function isTrialEligible(userId: string): Promise<boolean> {
+  if (!VIP_TRIAL.enabled) return false;
+
+  // Check 1: Never used a trial before (most common reject reason — fast path)
+  const [user] = await dbRead
+    .select({ vipTrialUsedAt: users.vipTrialUsedAt })
+    .from(users)
+    .where(eq(users.userId, userId))
+    .limit(1);
+
+  if (!user) return false;
+  if (user.vipTrialUsedAt) return false;
+
+  // Check 2: No active VIP subscription (trial or paid)
+  const hasActive = await hasActiveVipSubscription(userId);
+  if (hasActive) return false;
+
+  return true;
+}
+
+/**
+ * Handles customer.subscription.trial_will_end webhook event.
+ *
+ * Stripe fires this event ~3 days before the trial ends (configurable in the
+ * Stripe Dashboard). This creates a user notification reminding them to ensure
+ * their payment method is up to date so the trial converts successfully.
+ *
+ * Stripe's own email for this event ("Manage free trial messaging" in Dashboard)
+ * serves as a zero-code safety net — this notification is the in-app complement.
+ *
+ * @param stripeSubscriptionId - The Stripe subscription ID that's ending its trial
+ *
+ * @see VIP_FREE_TRIAL_ROADMAP.md §4.4b
+ */
+export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<void> {
+  const [subscription] = await dbRead
+    .select()
+    .from(subscriptions)
+    .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+    .limit(1);
+
+  if (!subscription) {
+    console.log(`[subscription] ⚠️ trial_will_end for unknown subscription ${stripeSubscriptionId} — skipping`);
+    return;
+  }
+
+  await dbWrite.insert(userNotifications).values({
+    userId: subscription.userId,
+    type: 'trial_ending_soon',
+    title: 'Your VIP trial ends soon',
+    message: 'Your free trial ends in 3 days. Make sure your payment method is up to date to keep your VIP benefits.',
+    data: { trialEnd: subscription.trialEnd },
+    read: false,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  console.log(`[subscription] 🔔 Sent trial-ending-soon notification for user ${subscription.userId}`);
 }

@@ -28,7 +28,7 @@
 import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import type Stripe from "stripe";
-import { eq, sql, and, desc } from "drizzle-orm";
+import { eq, sql, and, desc, inArray } from "drizzle-orm";
 import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
 import { checkRateLimitByIP } from "../middleware/rate-limit.js";
@@ -40,8 +40,8 @@ import { getErrorMessage, handleApiError, handleConflictError, handleNotFoundErr
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
 import { consumeCredits, getCreditCost, awardCredits } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
-import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, hasActiveVipSubscription } from "../services/subscription.js";
-import { VIP_BENEFITS, VIP_SUBSCRIPTION } from "../config/subscription.js";
+import { createSubscription, updateSubscription, renewSubscription, cancelSubscription, hasActiveVipSubscription, isTrialEligible, handleTrialWillEnd } from "../services/subscription.js";
+import { VIP_BENEFITS, VIP_SUBSCRIPTION, VIP_TRIAL } from "../config/subscription.js";
 import { getStripe } from "../utils/stripe.js";
 
 /**
@@ -241,6 +241,23 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   });
 
   console.log(`[subscription] ❌ Payment failed for subscription ${subscriptionId}`);
+}
+
+/**
+ * Handles customer.subscription.trial_will_end webhook event
+ *
+ * Stripe fires this ~3 days before trial end. Delegates to the service layer
+ * which creates an in-app notification reminding the user to keep their payment
+ * method up to date.
+ *
+ * Stripe's own email for this event (Dashboard → Subscriptions and emails →
+ * Manage free trial messaging) serves as a zero-code safety net; this handler
+ * is the in-app complement.
+ */
+async function handleTrialWillEndEvent(event: Stripe.Event) {
+  const subscription = event.data.object as Stripe.Subscription;
+  await handleTrialWillEnd(subscription.id);
+  console.log(`[subscription] ⏰ Trial ending soon for subscription ${subscription.id}`);
 }
 
 /**
@@ -634,6 +651,207 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
 });
 
 /**
+ * GET /payments/subscription/trial-eligibility
+ *
+ * Checks whether the current user is eligible for the VIP free trial.
+ * This is a UX convenience gate — the backend independently re-checks eligibility
+ * at checkout-session creation (see POST /create-trial-checkout-session below),
+ * so a client bypassing this endpoint is still caught server-side.
+ *
+ * @route GET /payments/subscription/trial-eligibility
+ * @returns {{ eligible: boolean }} Whether the user can start a trial
+ *
+ * @example
+ * // Response (eligible)
+ * { "eligible": true }
+ *
+ * // Response (ineligible — already used trial or has active sub)
+ * { "eligible": false }
+ *
+ * @see VIP_FREE_TRIAL_ROADMAP.md §4.2
+ */
+router.get("/subscription/trial-eligibility", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    const eligible = await isTrialEligible(userId);
+    res.json({ eligible });
+  } catch (error) {
+    handleApiError(res, "Failed to check trial eligibility", error);
+  }
+});
+
+/**
+ * POST /payments/create-trial-checkout-session
+ *
+ * Creates a Stripe Checkout session for the VIP free trial.
+ *
+ * This is a separate endpoint (not a param on create-subscription-checkout)
+ * because trial and non-trial checkout have meaningfully different validation
+ * paths: trial checks `isTrialEligible`, non-trial checks only
+ * `hasActiveVipSubscription`. Mixing them into one endpoint with a `trial`
+ * boolean param makes the branching harder to reason about and audit.
+ *
+ * Request Body:
+ * {
+ *   successPath?: string;  // Custom success path (default: "/dashboard?subscription=success")
+ *   cancelPath?: string;   // Custom cancel path (default: "/pricing")
+ *   returnUrl?: string;    // Current page URL for refresh-less UX
+ * }
+ *
+ * Response (200 OK):
+ * {
+ *   url: string;       // Stripe Checkout URL to redirect the user to
+ *   sessionId: string; // Stripe session ID for reconciliation/analytics
+ * }
+ *
+ * Security:
+ * - Requires authentication
+ * - Server-side eligibility re-check (defense in depth — never trust the frontend gate alone)
+ * - Rate limited: 1 session per 10 seconds per user
+ * - URL origin validation to prevent open redirects
+ *
+ * @example
+ * ```typescript
+ * const res = await fetch('/api/payments/create-trial-checkout-session', {
+ *   method: 'POST',
+ *   headers: { 'Content-Type': 'application/json' },
+ *   body: JSON.stringify({ returnUrl: window.location.href }),
+ * });
+ * const { url } = await res.json();
+ * window.location.href = url;
+ * ```
+ *
+ * @see VIP_FREE_TRIAL_ROADMAP.md §4.3
+ */
+router.post("/create-trial-checkout-session", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { successPath, cancelPath, returnUrl } = req.body;
+    const userId = req.user!.id;
+
+    // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
+    const rateLimitResult = await checkRateLimit(`trial-checkout-${userId}`, {
+      maxRequests: 1,
+      windowSeconds: 10,
+    });
+    if (!rateLimitResult.allowed) {
+      return handleRateLimitError(res, "Too many checkout session attempts. Please wait a few seconds before trying again.");
+    }
+
+    // Master kill-switch check
+    if (!VIP_TRIAL.enabled) {
+      return handleValidationError(res, "Trials are not currently available");
+    }
+
+    // Defense in depth: re-check eligibility server-side regardless of what
+    // the frontend showed. A vipTrialUsedAt check that only runs client-side
+    // is trivially bypassed.
+    const eligible = await isTrialEligible(userId);
+    if (!eligible) {
+      return handleValidationError(res, "Trial not available for this account");
+    }
+
+    // Validate and construct URLs (security: prevent open redirects)
+    const baseUrl = process.env.FRONTEND_URL;
+    if (!baseUrl) {
+      return handleApiError(res, "Frontend URL not configured");
+    }
+
+    // For refresh-less UX: use returnUrl to return user to same page
+    let successUrl: string;
+    let cancelUrl: string;
+
+    // Secure origin parsing — same pattern as create-subscription-checkout
+    if (returnUrl) {
+      try {
+        const returnUrlObj = new URL(returnUrl, baseUrl);
+        const baseUrlObj = new URL(baseUrl);
+
+        if (returnUrlObj.origin !== baseUrlObj.origin) {
+          throw new Error("Cross-origin returnUrl not allowed");
+        }
+
+        // Reuses the same ?subscription=success / ?subscription=cancel contract
+        // as the regular subscription checkout, meaning SubscriptionStatusMessage
+        // needs zero changes to handle trial checkout redirects.
+        returnUrlObj.searchParams.set('subscription', 'success');
+        successUrl = returnUrlObj.toString();
+
+        returnUrlObj.searchParams.set('subscription', 'cancel');
+        cancelUrl = returnUrlObj.toString();
+      } catch {
+        successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
+        cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+      }
+    } else {
+      successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
+      cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
+    }
+
+    // Validate VIP subscription configuration
+    if (!VIP_SUBSCRIPTION.priceId) {
+      return handleApiError(res, "VIP subscription not configured");
+    }
+
+    // Always query DB for fresh stripeCustomerId, rather than relying on JWT middleware payload
+    const [user] = await dbRead
+      .select({ stripeCustomerId: users.stripeCustomerId, email: users.email })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1);
+
+    let customerId = user?.stripeCustomerId;
+    const userEmail = user?.email;
+
+    if (!customerId) {
+      const customer = await getStripe().customers.create({
+        email: userEmail ?? req.user!.email,
+        metadata: { userId },
+      });
+      customerId = customer.id;
+
+      // Update user with Stripe customer ID
+      await dbWrite.update(users)
+        .set({ stripeCustomerId: customerId })
+        .where(eq(users.userId, userId));
+    }
+
+    // Create Stripe trial checkout session.
+    // Note: payment_method_collection defaults to 'always' for subscription-mode
+    // sessions, which is the LinkedIn-style card-required behavior we want.
+    // Explicitly setting it here to avoid relying on Stripe's default silently
+    // matching our intent.
+    const session = await getStripe().checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "subscription",
+      customer: customerId,
+      line_items: [
+        {
+          price: VIP_SUBSCRIPTION.priceId,
+          quantity: 1,
+        },
+      ],
+      subscription_data: {
+        trial_period_days: VIP_TRIAL.trialPeriodDays,
+        trial_settings: {
+          end_behavior: { missing_payment_method: VIP_TRIAL.endBehavior },
+        },
+        metadata: { userId, isTrial: "true" },
+      },
+      payment_method_collection: "always",
+      metadata: { userId, subscriptionType: 'vip', isTrial: "true" },
+      client_reference_id: userId,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    });
+
+    res.json({ url: session.url, sessionId: session.id });
+  } catch (error) {
+    handleApiError(res, "Failed to create trial checkout session", error);
+  }
+});
+
+/**
  * GET /payments/subscription
  * 
  * Returns the user's VIP subscription status and details.
@@ -694,6 +912,8 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
         currentPeriodStart: subscriptions.currentPeriodStart,
         currentPeriodEnd: subscriptions.currentPeriodEnd,
         cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+        isTrial: subscriptions.isTrial,
+        trialEnd: subscriptions.trialEnd,
         vipExpiresAt: users.vipExpiresAt,
       })
       .from(subscriptions)
@@ -701,7 +921,11 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
       .where(eq(subscriptions.userId, userId))
       .limit(1);
 
-    if (subscription.length === 0 || subscription[0].status !== 'active') {
+    // Accept both 'active' and 'trialing' as "has active subscription" —
+    // a trial user needs to see their subscription details to manage it,
+    // and the cancel endpoint (which also uses this gate) must be reachable.
+    const activeStatuses: string[] = ['active', 'trialing'];
+    if (subscription.length === 0 || !activeStatuses.includes(subscription[0].status)) {
       return res.json({ hasActiveSubscription: false, subscription: null });
     }
 
@@ -716,6 +940,10 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
         currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
         cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
         monthlyCredits: VIP_BENEFITS.monthlyCredits,
+        /** True when this subscription is currently in its free-trial period */
+        isTrial: sub.isTrial,
+        /** Trial end date as ISO string, null once the trial converts or ends */
+        trialEnd: sub.trialEnd?.toISOString() ?? null,
       },
       vipExpiresAt: sub.vipExpiresAt?.toISOString(),
     });
@@ -1024,6 +1252,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       if (event.type === "customer.subscription.created") await handleSubscriptionCreated(event);
       else if (event.type === "customer.subscription.updated") await handleSubscriptionUpdated(event);
       else if (event.type === "customer.subscription.deleted") await handleSubscriptionDeleted(event);
+      else if (event.type === "customer.subscription.trial_will_end") await handleTrialWillEndEvent(event);
       else if (event.type === "invoice.payment_succeeded") await handleInvoicePaymentSucceeded(event);
       else if (event.type === "invoice.payment_failed") await handleInvoicePaymentFailed(event);
 
@@ -1392,7 +1621,7 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
     const subscription = await dbRead
       .select()
       .from(subscriptions)
-      .where(and(eq(subscriptions.userId, userId), eq(subscriptions.status, 'active')))
+      .where(and(eq(subscriptions.userId, userId), inArray(subscriptions.status, ['active', 'trialing'])))
       .limit(1);
 
     if (subscription.length === 0) return handleNotFoundError(res, "No active subscription found");

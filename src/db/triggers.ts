@@ -862,7 +862,7 @@ export async function ensureUserCountersTriggers(): Promise<void> {
         -- Compute ACTIVE streak (consecutive days counting back from the
         -- user's most recent check-in date — not necessarily "today"; see
         -- the staleness note in this function's block comment above)
-        FOR rec IN SELECT DISTINCT date::date AS checkin_date FROM user_checkins WHERE user_id = target_user_id ORDER BY date DESC
+        FOR rec IN SELECT DISTINCT date::date AS checkin_date FROM user_checkins WHERE user_id = target_user_id ORDER BY checkin_date DESC
         LOOP
           IF prev_date IS NULL THEN
             active_streak := 1;
@@ -876,7 +876,7 @@ export async function ensureUserCountersTriggers(): Promise<void> {
 
         -- Compute MAX streak (longest run of consecutive days ever)
         prev_date := NULL;
-        FOR rec IN SELECT DISTINCT date::date AS checkin_date FROM user_checkins WHERE user_id = target_user_id ORDER BY date ASC
+        FOR rec IN SELECT DISTINCT date::date AS checkin_date FROM user_checkins WHERE user_id = target_user_id ORDER BY checkin_date ASC
         LOOP
           IF prev_date IS NULL THEN
             current_streak := 1;

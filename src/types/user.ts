@@ -117,6 +117,8 @@ export interface CheckinStatusResponse {
   totalCreditsClaimed: number;
   currentStreak: number;
   longestStreak: number;
+  /** 0-based grid slot index for today's position in the cycle (0-6). */
+  todayCycleDay: number;
   recentCheckIns: CheckinRecord[];
   isVip: boolean;
   regularClaimAmount: number;
