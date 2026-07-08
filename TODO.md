@@ -27,38 +27,7 @@
 [x] prompt first book creation include summary & hook (alongside titleIdea)
 [x] prompt ensure add language check in review checklist
 [ ] add "LANGUAGE CONSISTENCY CHECKS" alongside "JSON INTEGRITY CHECKS"
-
----
-
-updated backend files:
-src\config\subscription.ts
-src\routes\payments.ts
-src\services\subscription.ts
-
----
-
-my think-then-output (or self-review checklist) is currently formatted like this:
-
-1. Theme & MC Fit
-  □ Does the MC's specific bio make this theme more dangerous for them personally? → If NO: adjust bio or infer a better-fit character.
-  □ Is the psychological vulnerability in the bio something that will actually be used against them? → If NO: make it more specific.
-
-2. Opening Disturbance
-  □ Does page 1 open mid-moment (not with introduction or scene-setting)? → If NO: rewrite the opening.
-  □ Is something subtly wrong by the end of the first paragraph? → If NO: inject it.
-  □ Does the page end on tension or uncertainty — not resolution? → If YES to resolution: cut or reframe the ending beat.
-  □ Is the mood field reflecting the disturbance specifically — not just the genre? → If NO: reassign.
-  □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
-
-3. Metadata Quality
-  □ Is the title generic (e.g. "The Dark Secret", "Shadow House")? → If YES: rework. It should feel specific to this story.
-  □ Does the hook create intrigue without revealing the ending type? → If NO: obscure the trajectory.
-  □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: replace generic tags with specific ones.
-  □ Is the MC's name consistent in the title, summary, and hook? → If NO: revise to be consistent.
-  □ Does every generated text field uses the specified output language? → If any user-facing field is English while the specified output language is not, rewrite it.
-
-how do I incorporate that "language_commitment" as your suggestion cleanly?
-and does my checklist format actually good? please elaborate
+[ ] claude payment review: src\app.ts (later check)
 
 ---
 
@@ -122,44 +91,15 @@ Now let me look at applyStateDelta and processTagUpdates — the duplicates are 
 
 ---
 
-@src/components/modals/StoryGenerationModal.tsx @src/lib/hooks/query/useUser.ts @src/stores/generation-store.ts @src/lib/utils/generation-refund.ts @src/lib/services/book-generation-tracker.ts when generation failed in frontend (e.g., timeout), can you ensure backend refunded book creation credits to user (with optimistic UI update)? then clicking "retry" (`POST /api/books/:bookId/retry`) should consumes credits again in backend
-please examine current implementation to be sure it's already implemented or not, if not, please create robust plan and complete the implementation
-
----
-
-can you comprehensively review my payment and subscription implementation using Stripe? let's start from backend project (Express)
-package: "stripe": "^22.2.0"
-
-backend files (uploaded):
-docs\api\PAYMENTS_API_DOCUMENTATION.md
-docs\architecture\STRIPE_PAYMENT_ARCHITECTURE.md (maybe obsolete)
-docs\roadmap\SUBSCRIPTION_HYBRID_MODEL_ROADMAP.md (maybe obsolete)
-src\config\credits.ts
-src\config\subscription.ts
-src\cron\vip-expiration.ts
-src\db\schema.ts
-src\routes\payments.ts
-src\services\credits.ts
-src\services\subscription.ts
-src\types\credits.ts
-src\types\subscription.ts
-src\utils\stripe.ts
-
-if you find any issues, please refine and correct
-after my stripe & VIP subscription implementation truly stable, I thought about implementing "1-month VIP free trial" for users (much like in LinkedIn), can you write comprehensive roadmap plan MD file?
-
-
-src\app.ts (later check)
-
----
-
 ensure stripe webhook events:
+ * Endpoint: https://twistloom-backend.vercel.app/api/payments/stripe/webhook
  * Events:
  * - checkout.session.completed
  * - charge.refunded
  * - customer.subscription.created
  * - customer.subscription.updated
  * - customer.subscription.deleted
+ * - customer.subscription.trial_will_end
  * - invoice.payment_succeeded
  * - invoice.payment_failed
 

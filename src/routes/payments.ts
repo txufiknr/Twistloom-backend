@@ -903,7 +903,17 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
       return res.json({ hasActiveSubscription: false, subscription: null });
     }
 
-    // Get subscription details
+    // Get subscription details.
+    //
+    // IMPORTANT: joins on users.subscriptionId (the canonical "current subscription"
+    // pointer, set by createSubscription() and cleared by downgradeUserFromVip()) —
+    // NOT on a bare subscriptions.userId match. A user can accumulate more than one
+    // subscriptions row over their lifetime (cancel, later resubscribe; a trial that
+    // lapses, then a fresh paid signup) since each customer.subscription.created
+    // inserts a new row rather than reusing the old one. Joining/filtering by userId
+    // alone with `.limit(1)` and no ORDER BY has no guarantee of returning the current
+    // row — it could just as easily return a long-canceled one, making an active VIP
+    // user appear to have no subscription at all.
     const subscription = await dbRead
       .select({
         id: subscriptions.id,
@@ -916,9 +926,9 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
         trialEnd: subscriptions.trialEnd,
         vipExpiresAt: users.vipExpiresAt,
       })
-      .from(subscriptions)
-      .innerJoin(users, eq(subscriptions.userId, users.userId))
-      .where(eq(subscriptions.userId, userId))
+      .from(users)
+      .innerJoin(subscriptions, eq(subscriptions.id, users.subscriptionId))
+      .where(eq(users.userId, userId))
       .limit(1);
 
     // Accept both 'active' and 'trialing' as "has active subscription" —
@@ -965,6 +975,7 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
  * - customer.subscription.created
  * - customer.subscription.updated
  * - customer.subscription.deleted
+ * - customer.subscription.trial_will_end
  * - invoice.payment_succeeded
  * - invoice.payment_failed
  * 
@@ -1704,10 +1715,15 @@ router.get("/subscription/portal", requireAuth, async (req: Request, res: Respon
     // Try to get customer ID from subscription first, then fall back to user record
     let customerId: string | null = null;
 
+    // Same "which row" caveat as GET /subscription, but lower stakes here since every
+    // subscription row for a given user should carry the same stripeCustomerId (the
+    // checkout endpoints always reuse users.stripeCustomerId once set) — ordering by
+    // recency is just cheap insurance against that invariant ever slipping.
     const subscription = await dbRead
       .select({ stripeCustomerId: subscriptions.stripeCustomerId })
       .from(subscriptions)
       .where(eq(subscriptions.userId, userId))
+      .orderBy(desc(subscriptions.createdAt))
       .limit(1);
 
     if (subscription.length > 0 && subscription[0].stripeCustomerId) {

@@ -1,4 +1,4 @@
-import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH } from "../config/story.js";
+import { FACT_KEY_FORMAT, HOOK_LENGTH, SUMMARY_LENGTH, MAX_CHARACTER_SECRETS, MAX_FUTURE_NOTES, MAX_TRAUMA_TAGS, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT, RELATIONSHIP_TO_MC_LENGTH, BOOK_MAX_PAGES, BOOK_MIN_PAGES, BOOK_TITLE_LENGTH, MAX_CHARACTER_AGE, MIN_CHARACTER_AGE, VIABLE_ENDING_LENGTH, KEYWORDS_COUNT } from "../config/story.js";
 import { characterImportances, characterRecognitionLevels, characterStatuses, healthConditions, injuryCategories, potentialTwistTypes, relationshipStatuses, relationshipTypes } from "../types/character.js";
 import type { NarrativeFlags, CharacterUpdates, RelationshipUpdate, InitialInventoryItem, InitialInjury, InventoryItem, Injury, NewCharacter, CharacterRelationshipContext, CharacterUpdate, CharacterSchedule, StoryMCGeneration } from "../types/character.js";
 import { canonicalPlaceTypes, type NewPlace, type PlaceUpdate, placeWeathers, type PlaceUpdates, type PlaceConnectionUpdate, placeAccessibilities } from "../types/places.js";
@@ -512,7 +512,7 @@ function getTagUpdatesSchema<T extends TagItem>(params: {description?: string, i
 };
 
 export const STORY_PAGE_GENERATION_SCHEMA: Record<keyof StoryPageGeneration, AIJsonProperty> = {
-  text: { type: 'string', description: `Story page text written in detected language (max ${MAX_WORDS_PER_PAGE} words). First-person central ("I") POV as MC.` },
+  text: { type: 'string', description: `Story page text written in specified language (max ${MAX_WORDS_PER_PAGE} words). First-person central ("I") POV as MC.` },
   mood: { type: 'string', description: 'Current emotional atmosphere', enum: [...moods] },
   placeId: { type: 'string', description: 'Current place ID or "unknown"' },
   weather: { type: 'string', enum: [...placeWeathers], description: 'Current weather conditions' },
@@ -954,11 +954,11 @@ export const INITIAL_STORY_PAGE_GENERATION_SCHEMA: Record<keyof InitialStoryPage
 export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse, AIJsonProperty> = {
   title: { type: 'string' },
   alternativeTitles: { type: 'array', items: { type: 'string' } },
-  totalPages: { type: 'integer', description: `Must be between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}` },
-  language: { type: 'string', description: 'Must be a valid ISO 639-1 code' },
-  hook: { type: 'string' },
-  summary: { type: 'string' },
-  keywords: { type: 'array', items: { type: 'string' } },
+  totalPages: { type: 'integer', description: `Between ${BOOK_MIN_PAGES} and ${BOOK_MAX_PAGES}` },
+  language: { type: 'string', description: 'ISO 639-1 code' },
+  hook: { type: 'string', description: `${HOOK_LENGTH}. Immediate intrigue. Psychological tension.` },
+  summary: { type: 'string', description: `${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.` },
+  keywords: { type: 'array', items: { type: 'string' }, description: `${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).` },
   firstPage: {
     type: 'object',
     properties: INITIAL_STORY_PAGE_GENERATION_SCHEMA,
@@ -1019,7 +1019,7 @@ export const BOOK_CREATION_SCHEMA_DEFINITION: Record<keyof BookCreationResponse,
   } },
   initialRelationships: { type: 'array', items: RELATIONSHIP_UPDATE_SCHEMA },
   mainCharacter: MAIN_CHARACTER_SCHEMA,
-  aiFinalComment: { type: 'string', description: `Creative thriller-themed congratulatory message (max ${MAX_FINAL_COMMENT_LENGTH} chars). Use the same language as the book.` }
+  aiFinalComment: { type: 'string', description: `Thriller-themed congratulatory message in specified language (max ${MAX_FINAL_COMMENT_LENGTH} chars).` }
 };
 
 export const BOOK_CREATION_REQUIRED_FIELDS = [

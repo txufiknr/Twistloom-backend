@@ -591,7 +591,7 @@ const firstBookOutputFormat: string = `{
       "reason": "Reason for the fact"
     }
   ],
-  "aiFinalComment": "Creative thriller-themed congratulations message (in the same language as the book)"
+  "aiFinalComment": "..."
 }`;
 
 const buildFirstBookReviewChecklist = (language: string): string => {
@@ -619,21 +619,20 @@ const buildFirstBookReviewChecklist = (language: string): string => {
   □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: Replace generic tags with granular, visceral ones.
   □ Is the MC's name consistent across the title, summary, and hook? → If NO: Revise to ensure absolute consistency.
 
-4. Action Diversity
-  □ Are the actions meaningfully distinct in risk and emotional register? → If NO: revise until they vary (reckless / cautious / emotional / avoidant).
-  □ Could any two actions lead to the same implied consequence? → If YES: differentiate them.
-  □ Does at least one action feel subtly wrong or inadvisable? → If NO: add one.
+4. Action Diversity (The Illusion of Choice)
+  □ Are the actions meaningfully distinct in risk and emotional register? → If NO: Revise until they vary drastically (e.g., reckless / cautious / emotional / avoidant).
+  □ Could any two actions lead to the same implied consequence? → If YES: Differentiate them. Never give the reader overlapping choices.
+  □ Does at least one action feel subtly wrong, dangerous, or inadvisable? → If NO: Add a "trap" choice that tempts the reader into danger.
 
 5. Character & Place Integrity
-  □ Do charactersPresent IDs exactly match IDs in initialCharacters? → If NO: align them.
-  □ Does at least one initial character have a relationship that can corrupt? → If NO: adjust bio or relationship.
-  □ Does the initial place familiarity reflect the MC's actual history with it? → If NO: correct the value.
-  □ Is the place context evocative (atmosphere) rather than descriptive (facts)? → If NO: rewrite.
+  □ Do the characters present in this scene EXACTLY match the provided character data? → If NO: Align them. Do not hallucinate new characters.
+  □ Does at least one character have a relationship status that can corrode or betray the MC? → If NO: Adjust their bio to introduce a hidden psychological betrayal vector.
+  □ Is the place context evocative (sensory atmosphere) rather than purely descriptive (flat facts)? → If NO: Rewrite to focus on the weight, smell, and dread of the room.
 
 6. Initial State Calibration
-  □ Are flags set based on the opening scene — not generic defaults? → If NO: reassign based on what just happened on page 1.
-  □ Is the viableEnding specific to this MC and theme — not a genre template? → If NO: rewrite with this story's specific details.
-  □ Does the difficulty reflect how hostile this world is to this specific MC? → If NO: adjust.
+  □ Are the psychological flags set based strictly on the events of THIS page — not generic defaults? → If NO: Reassign them to reflect the immediate trauma.
+  □ Is the viableEnding hyper-specific to this MC's vulnerabilities and theme? → If YES to a generic genre template: Rewrite it to be deeply personal and inescapable.
+  □ Does the difficulty strictly reflect how hostile this world is to this specific MC right now? → If NO: Adjust it based on the current momentum.
 
 7. JSON Integrity
   □ All fields present and populated? → If NO: complete missing fields.
@@ -1333,7 +1332,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ Dialogue natural and specific to this character's voice? → Each character should be recognizable from word choice alone.
   □ Scene physically coherent despite distortion? → Reader can doubt what's real. They should never doubt what physically happened.
   □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
-  □ Does every generated text field uses the specified output language? → If any user-facing field is English while the specified output language is not, rewrite it.
+  □ Does every generated text field uses the specified target language? → If any user-facing field is English while specified language is not, rewrite it.
 
 8. Choice Quality
   □ Page ends at genuine tension or unresolved disturbance — not resolution? → If NO: reposition the final beat.
@@ -3348,15 +3347,14 @@ function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT
  * ```
  */
 function buildBookCreationPrompt(params: InitializeBookParams): string {
-  const { theme, language, titleIdea, summary, hook } = params;
+  const { theme, language, titleIdea, summary, hook, aiComment } = params;
   const isNonEnglish = language !== 'en';
   const languageFormatted = formatLanguage(language);
 
   return `TASK: Create a psychological thriller story from the provided STORY THEME input from user${isNonEnglish ? ` in ${languageFormatted}` : ''}.
 
-Output language: ${languageFormatted}
-
 LANGUAGE REQUIREMENT:
+- Target language: ${languageFormatted}
 - Every user-facing text (story content, metadata, narrative, etc) MUST ALWAYS use the specified natural language consistently.
 ${isNonEnglish ? `- Do not translate the STORY THEME, character names, and existing proper nouns.
 - Do not default to English.
@@ -3369,6 +3367,8 @@ TITLE IDEA:\n${titleIdea || '-'}
 HOOK IDEA:\n${hook || '-'}
 
 SUMMARY IDEA:\n${summary || '-'}
+
+AI COMMENTARY:\n${aiComment || '-'}
 
 STORY SETUP:
 - Establish unease immediately — not fear yet, but something subtly wrong.
@@ -3403,7 +3403,7 @@ const firstBookFieldInstructions: string = `Book Metadata:
 - summary: ${SUMMARY_LENGTH}. Sets up premise without revealing the ending plan.
 - keywords: ${KEYWORDS_COUNT} kebab-case tags for theme, genre, mood, and story categorization (keep each short).
 - totalPages: min ${BOOK_MIN_PAGES}, max ${BOOK_MAX_PAGES}. Avoid exact multiples of 10. Let theme complexity and MC arc influence the count. If user mention anything about total pages, respect it as long as it's within bounds.
-- language: detected language code (ISO 639-1).
+- language: language code (ISO 639-1).
 
 mainCharacter:
 - Infer a character whose personality makes the theme more psychologically dangerous for them specifically.
@@ -3489,9 +3489,10 @@ initialFacts:
 - reason: 1-sentence, why or how it hapenned.
 
 aiFinalComment:
-- Use creative thriller-themed wording in the same language as the book.
-- Express excitement for the published book.
-- Tell what happened in the first page.
+- Use creative thriller-themed wording in specified language.
+- Continue and conclude the previous AI commentary.
+- Express excitement for the generated book.
+- Briefly tease what happens on the first page without spoilers.
 - Max ${MAX_FINAL_COMMENT_LENGTH} chars.`;
 
 /**
