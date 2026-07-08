@@ -80,6 +80,9 @@ export interface BookCreationStatus {
   error?: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Date when credits were refunded (null if not yet refunded).
+   *  Populated after auto-refund on failure or manual cancel. */
+  isRefunded: Date | null;
 }
 
 /**

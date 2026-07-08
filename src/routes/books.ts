@@ -612,6 +612,7 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
       error:                    data.generationError,
       createdAt:                data.bookCreatedAt,
       updatedAt:                data.bookUpdatedAt,
+      isRefunded:               data.isRefunded,
     };
 
     res.json(status);
@@ -894,24 +895,35 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
       });
     }
 
-    if (data.isRefunded) {
-      return res.status(400).json({ error: 'Cannot retry a refunded book generation' });
-    }
-
-    // Reset generation state and re-dispatch workflow
-    await dbWrite
-      .update(bookGenerations)
-      .set({
-        generationStatus:      'pending',
-        generationError:       null,
-        isGeneratingStartedAt: null,
-        generationCompletedAt: null,
-      })
-      .where(eq(bookGenerations.bookId, bookId));
+    // Consume credits atomically with resetting the generation state.
+    // Credits were refunded when the generation failed (auto-refund in
+    // updateBookGenerationStatusCore), so retrying re-deducts them.
+    await executeWithCredits(
+      userId,
+      BOOK_GENERATION_COST,
+      async (tx) => {
+        await tx
+          .update(bookGenerations)
+          .set({
+            generationStatus:      'pending',
+            generationStep:        'theme_validation',
+            generationError:       null,
+            isGeneratingStartedAt: null,
+            generationCompletedAt: null,
+            isRefunded:            null,
+          })
+          .where(eq(bookGenerations.bookId, bookId));
+      },
+      {
+        context:  'book_generation_retry',
+        metadata: { bookId },
+      },
+    );
 
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
 
-    res.json({ success: true, message: 'Book generation retry initiated' });
+    const message = `Book generation retry initiated. ${BOOK_GENERATION_COST} credits consumed.`;
+    res.json({ success: true, message });
   } catch (error) {
     console.error('[POST /api/books/:bookId/retry] ❌ Error:', error);
     handleApiError(res, 'Failed to retry book generation', error);

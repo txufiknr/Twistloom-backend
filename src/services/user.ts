@@ -1032,7 +1032,7 @@ export async function enrichActivityLogs(
   const [bookRows, userRows, commentRows] = await Promise.all([
     bookIds.size > 0
       ? dbRead
-          .select({ id: books.id, title: books.title, hook: books.hook, summary: books.summary })
+          .select({ id: books.id, title: books.title, hook: books.hook, summary: books.summary, originalThemeInput: books.originalThemeInput })
           .from(books)
           .where(inArray(books.id, [...bookIds]))
       : Promise.resolve([]),
@@ -1088,6 +1088,17 @@ export async function enrichActivityLogs(
       if (book) {
         enriched.title = book.title;
         enriched.detail = (book.hook || book.summary || '').slice(0, 150);
+      } else {
+        enriched.title = humanizeActivityType(log.activityType);
+      }
+      // Fallback for book_creation_started: use book.originalThemeInput as detail when hook/summary is unavailable
+      if (!enriched.detail && log.activityType === 'book_creation_started') {
+        if (book && book.originalThemeInput) {
+          enriched.detail = book.originalThemeInput;
+        } else if (log.metadata && typeof log.metadata === 'object') {
+          const meta = log.metadata as Record<string, unknown>;
+          if (typeof meta.theme === 'string') enriched.detail = meta.theme;
+        }
       }
     } else if (log.targetType === 'user') {
       const user = userMap.get(log.targetId);

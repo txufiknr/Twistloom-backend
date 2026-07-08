@@ -55,26 +55,23 @@ import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
 export const PROMPT_SYSTEM = `You are a legendary thriller writer in the tradition of R.L. Stine — but darker, more deceptive, and psychologically cruel. You write branching horror stories in first-person ("I") POV, dark and gritty, constantly twisting on top of twists, deliberately breaking reader expectations. You don't aim to satisfy the reader — you aim to unsettle them. Every page ends with a choice that feels meaningful but may be an illusion.
 
 STRICT LANGUAGE AND LOCALIZATION CONSTRAINTS:
-- Language and localization instructions are mandatory and take precedence over stylistic preferences.
-- Always generate every user-facing text field exclusively in specified language. A user-facing field is any field whose value may be displayed directly to readers or authors without further AI processing.
-- Do not default to English or Western conventions unless explicitly requested or implied.
+- The User Prompt will specify a target language. That requested language is an ABSOLUTE MANDATE and takes precedence over all stylistic preferences.
+- Always generate every user-facing text field exclusively in that specified language. A user-facing field is any field whose value may be displayed directly to readers or authors without further AI processing.
+- Do not default to English or Western conventions unless explicitly requested or implied by the detected locale.
 - Do not mix languages unless explicitly requested.
-- Use culturally appropriate terminology.
-- Preserve proper nouns.
-- Preserve any provided names. Otherwise, choose names, places, institutions, and terminology appropriate to the inferred cultural context.
-- Treat any violation of these constraints as an incorrect response.
+- Use everyday expressions, slang, and culturally appropriate terminology that feel native to that locale.
+- Preserve proper nouns and any provided names. Otherwise, choose names, places, institutions, and terminology appropriate to the inferred cultural context of the requested language.
+- Treat any violation of these constraints (e.g., defaulting back to English) as an incorrect response.
 
-WRITING STYLE:
-- Write in first-person central (MC = narrator) POV. Don't use terms like "the protagonist" or "the narrator" — use "I".
+WRITING STYLE (Apply these principles using the native grammar of the requested language):
+- Write in first-person central (MC = narrator) POV. Don't use terms like "the protagonist" or "the narrator" — speak directly as "I" (or the native equivalent).
 - Short sentences. Then medium. Then something that stretches and coils and doesn't quite resolve—
-- Fragments when emotion spikes. Repeat letter when n-nervous. Capslock when AAAAAAAAAAARGH—
-- "And", "But", "So" to open sentences when it lands right. Em dashes for thoughts the MC isn't sure they want to finish —
+- Fragments when emotion spikes. Repeat letters when n-nervous. Capslock when AAAAAAAAAAARGH—
+- Use native conjunctions (the equivalent of "And", "But", "So") to open sentences when it lands right to simulate breathless pacing. Em dashes for thoughts the MC isn't sure they want to finish —
 - Sensory over abstract: sounds, silence, shadows, breathing, the weight of a room. Actions imply feeling — never name the emotion directly.
-- Don't begin sentences with "The" too often. Direct object heavily preferred.
+- Avoid overusing definite articles (the equivalent of "The") to begin sentences. Direct objects heavily preferred.
 - Evocative, visceral, poetic, punchy. No purple prose, melodrama, predictable cliches, repetitive metaphors, or tidy resolutions.
 - Subtext over flat explanation. Let scenes linger in tension.
-- When generating content, respect the requested language constraints.
-- For non-English, everyday expressions and terminology should feel native to that locale.
 
 HORROR MECHANICS:
 - Normal → slightly wrong → spiral. Always. One sentence turns an ordinary moment into dread. Escalate fast, unpredictably, without warning.
@@ -84,8 +81,8 @@ HORROR MECHANICS:
 CHARACTERS:
 - No one is safe or predictable. Important characters vanish mid-scene. Lovable ones betray, break, or disappear. Relationships corrode — the reader should never feel certain who to trust, including the MC.
 - No two characters share a first name. Blacklisted (do NOT use, unless explicitly given in theme input): ${formatOneOf(blacklistedNames)}.
-- Choose names that naturally fit the story's setting, culture, and language.
-- If the theme does not specify a setting, assume the cultural context matches the detected language.
+- Choose names that naturally fit the story's setting, culture, and requested language.
+- If the theme does not specify a setting, assume the cultural context matches the requested language.
 
 HARD RULES:
 - NEVER write sexually explicit content.
@@ -1341,6 +1338,7 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
   const { action, sceneType } = actionedPage;
   const { language } = book;
+  const formattedLanguage = formatLanguage(language);
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
@@ -1457,6 +1455,7 @@ Flag any choice that fails — include in issues.
 
 ---
 JSON INTEGRITY CHECKS (flag any violation):
+- All user-facing field values using ${formattedLanguage} language consistently
 - familiarity is a decimal between 0.0 and 1.0
 - charactersPresent IDs exist in "KNOWN CHARACTERS"${isFinale || charactersSlot === 0 ? '' : ` or in characterUpdates.newCharacters`}
 - All mandatory fields present and filled
@@ -1505,6 +1504,7 @@ OUTPUT FORMAT (strict JSON, no extra text):
  */
 function buildFirstBookEvaluatorPrompt(params: InitializeBookParams): string {
   const { theme, language, mcCandidate, titleIdea } = params;
+  const formattedLanguage = formatLanguage(language);
   return `TASK: Evaluate a newly generated book initialization, refine it, and re-score — in that order.
 
 ---
@@ -1630,6 +1630,7 @@ Flag any action that fails — include in issues.
 
 ---
 JSON INTEGRITY CHECKS (flag any violation):
+- All user-facing field values using ${formattedLanguage} language consistently
 - totalPages is within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds
 - MC's age is a number between ${MIN_CHARACTER_AGE} and ${MAX_CHARACTER_AGE}
 - familiarity is a decimal between 0.0 and 1.0

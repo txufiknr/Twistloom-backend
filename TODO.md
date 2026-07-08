@@ -23,10 +23,36 @@
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 
 [ ] sync sampling formula with ai-sampling.ts
-[ ] ensure to refund 5 credits when generation failed
+[x] ensure to refund 5 credits when generation failed
 [x] prompt first book creation include summary & hook (alongside titleIdea)
-[ ] prompt ensure add language check in review checklist
+[x] prompt ensure add language check in review checklist
 [ ] add "LANGUAGE CONSISTENCY CHECKS" alongside "JSON INTEGRITY CHECKS"
+
+---
+
+my think-then-output (or self-review checklist) is currently formatted like this:
+
+1. Theme & MC Fit
+  □ Does the MC's specific bio make this theme more dangerous for them personally? → If NO: adjust bio or infer a better-fit character.
+  □ Is the psychological vulnerability in the bio something that will actually be used against them? → If NO: make it more specific.
+
+2. Opening Disturbance
+  □ Does page 1 open mid-moment (not with introduction or scene-setting)? → If NO: rewrite the opening.
+  □ Is something subtly wrong by the end of the first paragraph? → If NO: inject it.
+  □ Does the page end on tension or uncertainty — not resolution? → If YES to resolution: cut or reframe the ending beat.
+  □ Is the mood field reflecting the disturbance specifically — not just the genre? → If NO: reassign.
+  □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
+
+3. Metadata Quality
+  □ Is the title generic (e.g. "The Dark Secret", "Shadow House")? → If YES: rework. It should feel specific to this story.
+  □ Does the hook create intrigue without revealing the ending type? → If NO: obscure the trajectory.
+  □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: replace generic tags with specific ones.
+  □ Is the MC's name consistent in the title, summary, and hook? → If NO: revise to be consistent.
+  □ Does every generated text field uses the specified output language? → If any user-facing field is English while the specified output language is not, rewrite it.
+
+how do I incorporate that "language_commitment" as your suggestion cleanly?
+and does my checklist format actually good? please elaborate
+
 ---
 
 src\utils\prompt.ts
@@ -57,6 +83,8 @@ log:
   'relationship_1',
   'inventory_1'
 ]
+
+here's some thinking from Claude Opus (which not yet solved it), you can continue from there:
 
 Now I understand mapFutureNoteWithKey and ensureUniqueId. Let me trace the flow:
 

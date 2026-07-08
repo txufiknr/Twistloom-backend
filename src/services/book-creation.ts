@@ -30,13 +30,14 @@ import { initializeBook } from '../utils/prompt.js';
 import type { Response } from 'express';
 import { getErrorMessage, handleApiError } from '../utils/error.js';
 import { isInsufficientCreditsError } from '../config/errors.js';
-import { executeWithCredits, refundCredits } from './credits.js';
+import { executeWithCredits, refundCredits, addCredits } from './credits.js';
+import { getRefundForStep } from '../config/generation-refund.js';
 import { MAX_CHARACTER_AGE, MIN_CHARACTER_AGE } from '../config/story.js';
 import { MAX_THEME_LENGTH, MAX_THEME_LENGTH_BUFFER } from '../config/theme-validation.js';
 import type { KnownGender } from '../types/user.js';
 import { handleInsufficientCreditsError } from '../routes/payments.js';
 import type { DBBookGeneration, DBNewBookGeneration } from '../types/schema.js';
-import { bookGenerations } from '../db/schema.js';
+import { books, bookGenerations } from '../db/schema.js';
 import { dbWrite } from '../db/client.js';
 import { eq, and, ne } from 'drizzle-orm';
 import { cleanupObject } from '../utils/parser.js';
@@ -532,6 +533,54 @@ async function updateBookGenerationStatusCore(
         ne(bookGenerations.generationStatus, 'completed'),
       )
     );
+
+  // ── 7. Auto-refund credits on failure ─────────────────────────────────────
+  //
+  // When a generation transitions to 'failed', immediately refund credits based
+  // on the current step. Uses a row-locked inner transaction to prevent
+  // double-refund races from concurrent webhook calls.
+  if (finalStatus === 'failed') {
+    try {
+      await dbWrite.transaction(async (tx) => {
+        const [current] = await tx
+          .select({
+            userId: books.userId,
+            generationStep: bookGenerations.generationStep,
+            isRefunded: bookGenerations.isRefunded,
+          })
+          .from(bookGenerations)
+          .innerJoin(books, eq(books.id, bookGenerations.bookId))
+          .where(eq(bookGenerations.bookId, bookId))
+          .for('update')
+          .limit(1);
+
+        if (current && !current.isRefunded) {
+          const refundAmount = getRefundForStep(current.generationStep ?? null) ?? 0;
+          if (current.userId && refundAmount > 0) {
+            await addCredits(current.userId, refundAmount, {
+              context: 'book_generation_failed',
+              metadata: {
+                bookId,
+                generationStep: current.generationStep,
+                refundAmount,
+              },
+              tx,
+            });
+
+            await tx
+              .update(bookGenerations)
+              .set({ isRefunded: new Date() })
+              .where(eq(bookGenerations.bookId, bookId));
+          }
+        }
+      });
+    } catch (refundErr) {
+      console.error(
+        `[updateBookGenerationStatusCore] ❌ Auto-refund failed for book ${bookId}:`,
+        refundErr,
+      );
+    }
+  }
 }
 
 /**
