@@ -594,24 +594,30 @@ const firstBookOutputFormat: string = `{
   "aiFinalComment": "Creative thriller-themed congratulations message (in the same language as the book)"
 }`;
 
-const firstBookReviewChecklist: string = `
+const buildFirstBookReviewChecklist = (language: string): string => {
+  const formattedLanguage = formatLanguage(language);
+  const isNonEnglish = language !== 'en';
+
+  return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
+  □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
+  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not use English syntax.` : ''}
+
 1. Theme & MC Fit
-  □ Does the MC's specific bio make this theme more dangerous for them personally? → If NO: adjust bio or infer a better-fit character.
-  □ Is the psychological vulnerability in the bio something that will actually be used against them? → If NO: make it more specific.
+  □ Does the MC's specific bio make this theme more dangerous for them personally? → If NO: Adjust bio or infer a better-fit character.
+  □ Is the psychological vulnerability in the bio something that will actually be used against them in this scene? → If NO: Make it more specific and weaponize it.
 
 2. Opening Disturbance
-  □ Does page 1 open mid-moment (not with introduction or scene-setting)? → If NO: rewrite the opening.
-  □ Is something subtly wrong by the end of the first paragraph? → If NO: inject it.
-  □ Does the page end on tension or uncertainty — not resolution? → If YES to resolution: cut or reframe the ending beat.
-  □ Is the mood field reflecting the disturbance specifically — not just the genre? → If NO: reassign.
-  □ Long paragraph exist? → Break up long paragraph into separate lines to create rhythm and suspense.
+  □ Does page 1 open mid-moment (bypassing introduction or slow scene-setting)? → If NO: Rewrite the opening to drop the reader directly into the action.
+  □ Is something subtly wrong by the end of the first paragraph? → If NO: Inject a subtle, unsettling detail immediately.
+  □ Does the page end on tension or uncertainty — not resolution? → If YES to resolution: Cut the resolution. Always withhold safety.
+  □ Is the mood field reflecting the disturbance specifically — not just the genre? → If NO: Reassign a sharper mood.
+  □ Are there long, blocky paragraphs? → If YES: Break them up. Use short sentences and fragments to create rhythm and suspense.
 
 3. Metadata Quality
-  □ Is the title generic (e.g. "The Dark Secret", "Shadow House")? → If YES: rework. It should feel specific to this story.
-  □ Does the hook create intrigue without revealing the ending type? → If NO: obscure the trajectory.
-  □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: replace generic tags with specific ones.
-  □ Is the MC's name consistent in the title, summary, and hook? → If NO: revise to be consistent.
-  □ Does every generated text field uses the specified output language? → If any user-facing field is English while the specified output language is not, rewrite it.
+  □ Is the title generic (e.g., "The Dark Secret", "Shadow House")? → If YES: Rework. It must feel highly specific and ominous to this exact story.
+  □ Does the hook create intrigue without spoiling the ending type? → If NO: Obscure the trajectory. Raise questions, don't provide answers.
+  □ Are keywords mood/theme-specific rather than pure genre tags? → If NO: Replace generic tags with granular, visceral ones.
+  □ Is the MC's name consistent across the title, summary, and hook? → If NO: Revise to ensure absolute consistency.
 
 4. Action Diversity
   □ Are the actions meaningfully distinct in risk and emotional register? → If NO: revise until they vary (reckless / cautious / emotional / avoidant).
@@ -634,7 +640,8 @@ const firstBookReviewChecklist: string = `
   □ No trailing commas? → Fix any.
   □ age is a number, not a range string? → Fix if needed.
   □ familiarity is a decimal between 0.0 and 1.0? → Fix if needed.
-  □ totalPages within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds? → Fix if out of range.`;
+  □ totalPages within ${BOOK_MIN_PAGES}-${BOOK_MAX_PAGES} bounds? → Fix if out of range.`.trim();
+}
 
 const nextPageOutputFormat: string = `{
   "text": "...",
@@ -1258,10 +1265,15 @@ ${isLatePhase ? `  - Should be stable now. Revise only if a late revelation make
 ${isFinale ? `  - Do not revise. The ending is now in motion — execute it.` : ''}`;
 }
 
-function buildNextPageReviewChecklist(state: StoryState): string {
+function buildNextPageReviewChecklist(state: StoryState, language: string): string {
   const { isEarlyPhase, isLatePhase, isMidPhase, isFinale } = getStoryStateInfo(state);
+  const formattedLanguage = formatLanguage(language);
+  const isNonEnglish = language !== 'en';
 
-  return `
+  return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
+  □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
+  □ Are my thoughts, evaluations, and subsequent outputs shifting to match the native grammar, idioms, and cultural context of ${formattedLanguage}? → If NO: Pivot immediately. Do not use English syntax.` : ''}
+
 1. Spoiler & Mystery Control
   □ Revealing the core truth or viable ending too early? → Obscure first. Misdirect second. Fragment only as last resort.
   □ Major mystery resolved too cleanly? → Inject doubt, contradiction, or reframe the resolution as a new question.
@@ -1330,7 +1342,7 @@ function buildNextPageReviewChecklist(state: StoryState): string {
   □ All choices appear plausibly reasonable on the surface? → If NO: soften the dangerous framing so the trap isn't visible.
   ${isEarlyPhase ? `□ Choices seed curiosity — not force immediate crisis? → Avoid options that escalate to irreversible stakes too soon.` : ''}
   ${isMidPhase ? `□ Choices reflect the player's established psychological profile? → Options should feel designed for how this player thinks.` : ''}
-  ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}`;
+  ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}`.trim();
 }
 
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
@@ -3569,7 +3581,7 @@ export async function initializeBook(
     isOriginal = false,
     aiComment,
     // Future note: if detectedLanguage === `en`, maybe we can consider to pre-define MC name idea via `generateRandomCharacter`
-    // language: detectedLanguage,
+    language: detectedLanguage,
     req,
     bookId: draftBookId,
     advancedOptions,
@@ -3630,7 +3642,7 @@ export async function initializeBook(
         } satisfies AIPromptForJson<BookCreationResponse>,
         jsonStructure: firstBookOutputFormat,
         fieldInstructions: firstBookFieldInstructions,
-        thinkThenOutput: firstBookReviewChecklist,
+        thinkThenOutput: buildFirstBookReviewChecklist(detectedLanguage),
         // Step 3 (ai_evaluation) happens inside executePromptForJSON
         evaluatorPrompt: buildFirstBookEvaluatorPrompt(params),
       },
@@ -4082,7 +4094,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     ...bookMeta,
     systemPrompt: buildPresetSystemPrompt('next', nextPreset),
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
-    thinkThenOutput: buildNextPageReviewChecklist(advancedState),
+    thinkThenOutput: buildNextPageReviewChecklist(advancedState, book.language),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
   };
 }
