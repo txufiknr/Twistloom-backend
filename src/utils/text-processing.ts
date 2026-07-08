@@ -440,10 +440,23 @@ export function slugify(text: string, separator: string = "_"): string {
  */
 export function ensureUniqueId(id: string, existingIds: Set<string>, options?: { separator?: string, alwaysShowSuffix?: boolean }): string {
   const { separator = "_", alwaysShowSuffix = false } = options ?? {};
-  
-  // if `alwaysShowSuffix` true, always show "_1" counter suffix when no duplicate
-  if (!existingIds.has(id)) return alwaysShowSuffix ? `${id}${separator}1` : id;
-  
+
+  if (alwaysShowSuffix) {
+    const firstCandidate = `${id}${separator}1`;
+    if (!existingIds.has(id) && !existingIds.has(firstCandidate)) {
+      return firstCandidate;
+    }
+
+    let suffix = 2;
+    while (existingIds.has(`${id}${separator}${suffix}`)) {
+      suffix++;
+    }
+
+    return `${id}${separator}${suffix}`;
+  }
+
+  if (!existingIds.has(id)) return id;
+
   let suffix = 2;
   while (existingIds.has(`${id}${separator}${suffix}`)) {
     suffix++;

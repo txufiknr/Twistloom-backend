@@ -117,7 +117,7 @@ export type AIPromptForJsonParams<T> = {
   configs: AIPromptForJson<T>;
   jsonStructure: string;
   fieldInstructions?: string;
-  thinkThenOutput?: string;
+  reviewChecklist?: string;
   evaluatorPrompt?: string;
 }
 

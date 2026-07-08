@@ -3643,7 +3643,7 @@ export async function initializeBook(
         } satisfies AIPromptForJson<BookCreationResponse>,
         jsonStructure: firstBookOutputFormat,
         fieldInstructions: firstBookFieldInstructions,
-        thinkThenOutput: buildFirstBookReviewChecklist(detectedLanguage),
+        reviewChecklist: buildFirstBookReviewChecklist(detectedLanguage),
         // Step 3 (ai_evaluation) happens inside executePromptForJSON
         evaluatorPrompt: buildFirstBookEvaluatorPrompt(params),
       },
@@ -4095,7 +4095,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     ...bookMeta,
     systemPrompt: buildPresetSystemPrompt('next', nextPreset),
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
-    thinkThenOutput: buildNextPageReviewChecklist(advancedState, book.language),
+    reviewChecklist: buildNextPageReviewChecklist(advancedState, book.language),
     evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
   };
 }
@@ -4203,7 +4203,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   const context = "generateNextPage";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, reviewChecklist, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, 1);
   console.log(`[${context}] 💭 Conceptualizing continuation for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (single story context)
@@ -4228,7 +4228,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     } satisfies AIPromptForJson<StoryGeneration>,
     jsonStructure: nextPageOutputFormat,
     fieldInstructions,
-    thinkThenOutput,
+    reviewChecklist,
     evaluatorPrompt,
   });
   
@@ -4315,7 +4315,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
   const context = "generateNextPages";
 
   // 1 & 2. Setup context, config, and prompts
-  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, thinkThenOutput, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
+  const { prompt, config, systemPrompt, documents, cachedContentId, fieldInstructions, reviewChecklist, evaluatorPrompt, generationContext, advancedState, currentState, expectedPageNumber, action } = await prepareNextPageGenerationSetup(params, candidateCount);
   console.log(`[${context}] 💭 Conceptualizing ${candidateCount} alternative fates for ${generationContext}...`);
   
   // 3. Send prompt to AI with dynamic parameters (multi-page batch schema)
@@ -4340,7 +4340,7 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
     } satisfies AIPromptForJson<CandidatePagesGeneration>,
     jsonStructure: multiNextPageOutputFormat,
     fieldInstructions,
-    thinkThenOutput,
+    reviewChecklist,
     evaluatorPrompt,
   });
   
@@ -4453,32 +4453,46 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   onProgress?: ProgressCallback,
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
-  const { prompt, configs, jsonStructure, fieldInstructions, thinkThenOutput, evaluatorPrompt } = params;
+  const { prompt, configs, jsonStructure, fieldInstructions, reviewChecklist, evaluatorPrompt } = params;
   const supportsStructuredOutput = Boolean(configs.schema && configs.requiredFields?.length); // schema and required fields is specified
 
-  // When structured output is active, send only a compact field-list reminder
-  // instead of the full verbose JSON template. Saves ~1 000–2 000 tokens.
+  /**
+   * When structured output is active, send only a compact field-list reminder
+   * instead of the full verbose JSON template. Saves ~1 000–2 000 tokens.
+   */
   const outputFormatPart = supportsStructuredOutput
     ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
     : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}\n\nIMPORTANT: Return ONLY the raw JSON object. Must begin exactly with the character '{'.`;
 
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
-  const thinkThenOutputPart = thinkThenOutput ? `REVIEW & FIX (IMPORTANT):
 
-Silently evaluate your generated output using the checklist below.
-If any item fails, revise internally before producing final output.
+  /**
+   * Standard models approach (default).
+   * Not needed for reasoning-capable models, but acceptable for multi-provider fallback architecture.
+   * 
+   * | Model Type | Examples in Your Stack | Best Approach |
+   * | --- | --- | --- |
+   * | **Native Reasoning Models** | OpenAI o-series, Gemini Thinking, DeepSeek R1 | **Option 1 (Hidden Reasoning).** Do not use a scratchpad. Let the model think natively and output clean JSON. |
+   * | **Standard/Fast Models** | Llama 3 (Groq/Cerebras), Mistral (Cloudflare) | **Option 2 (Lightweight Plan).** A concise, structured scratchpad is mandatory to force adherence before generating prose. |
+   */
+  const reviewChecklistPart = reviewChecklist ? `REVIEW & FIX (IMPORTANT):
 
-${stripEmptyLines(thinkThenOutput)}
+Before producing the final JSON, silently verify your draft against every requirement below.
+If any requirement is not fully satisfied, revise the draft internally until every item passes.
 
-Only output the final corrected JSON.
-Do NOT mention this checklist.` : '';
+${stripEmptyLines(reviewChecklist)}
 
-  // Cache optimized: sort static > semi-static > dynamic
-  // Output specifications and instructions at the top is the industry best practice for prompt caching
+Output only the final corrected JSON.
+Do not explain, summarize, or mention this review process.` : '';
+
+  /**
+   * Cache optimized: sort static > semi-static > dynamic.
+   * Output specifications and instructions at the top is the industry best practice for prompt caching.
+   */
   const userPrompt = [
     // Semi-static
     fieldInstructionsPart,
-    thinkThenOutputPart,
+    reviewChecklistPart,
     // Dynamic
     prompt.trim(),
   ].join('\n\n---\n');

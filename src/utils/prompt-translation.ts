@@ -361,7 +361,7 @@ export async function translatePage(
     } satisfies AIPromptForJson<PageTranslation>,
     jsonStructure: pageTranslationOutputFormat,
     fieldInstructions: buildPageTranslationFieldInstructions(hasAsterisks),
-    thinkThenOutput: pageTranslationReview
+    reviewChecklist: pageTranslationReview
   });
 
   if (!response.result) {
@@ -408,7 +408,7 @@ export async function translatePagesBulk(
     } satisfies AIPromptForJson<PageTranslationBulk>,
     jsonStructure: bulkPageTranslationOutputFormat,
     fieldInstructions: buildPageTranslationFieldInstructions(hasAsterisks, true),
-    thinkThenOutput: pageTranslationReview
+    reviewChecklist: pageTranslationReview
   });
 
   if (!response.result) {
