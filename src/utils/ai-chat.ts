@@ -234,7 +234,7 @@ export const cloudflarePrompt = createOpenAICompatiblePrompt('cloudflare', getCl
 /**
  * Sends a prompt to Google Gemini and returns structured output.
  *
- * Tries each model in {@link AI_CHAT_MODELS.gemini} in order; throttles via {@link geminiLimiter}
+ * Tries each model in {@link AI_CHAT_MODELS_WRITING.gemini} in order; throttles via {@link geminiLimiter}
  * before each call; respects safety blocks and finish reasons like other chat providers.
  *
  * @param prompt - User portion of the prompt (system rules are concatenated in the request body)

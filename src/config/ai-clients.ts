@@ -36,10 +36,26 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
   // doesn't matter because the daily gate fires per-provider, not per-model.
   github:     { rpm: 10,  rpd: 50 }, // before: { rpm: 15, rpd: 150 },
 
-  // Post Dec-2025 quota cut: gemini-2.5-flash at 10 RPM / 250 RPD.
-  // gemini-3-flash-preview may be higher (some sources say 1,500 RPD) but it's
-  // a preview — using the GA model ceiling to avoid over-spending preview quota.
-  // Verify in AI Studio: https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas
+  /**
+   * Updated Google AI Studio Text Chat Model (Post-December 2025 Cuts)
+   * Ranked from Best Story Writing Capabilities to Lowest
+   * 
+   * | Model ID | Release Date | Context Window Size | Requests Per Minute (RPM) | Requests Per Day (RPD) | Story Writing Benchmark Profile |
+   * |---|---|---|---|---|---|
+   * | gemini-3.1-pro | Feb 19, 2026 | 2,097,152 tokens | 5 RPM | 100 RPD | Master Novelist: Unparalleled structural memory; catches deep emotional subtext, handles nonlinear plotting, and mimics specific author voices beautifully. |
+   * | gemini-2.5-pro | Late 2025 | 2,097,152 tokens | 5 RPM | 100 RPD (Down to 25 RPD on some accounts) | Excellent Wordsmith: Exceptionally deep context tracking; highly descriptive prose but marginally less experimental with its metaphors than 3.1. |
+   * | gemma-3-27b-it | Mar 12, 2025 | 131,072 tokens | ~30 RPM | ~1,500 RPD | Unfiltered Creative: Because open-weights lack commercial pipeline restrictions, it writes gritty, incredibly stylistic, and raw short-form narratives. |
+   * | gemini-3.5-flash | May 19, 2026 | 1,048,576 tokens | 10 RPM | 250 RPD | Fast-Paced Action: Strong vocabulary upgrades over 2.5. Best Flash variant for punchy, rapid dialogue generation and high-stakes thriller drafting. |
+   * | gemini-3-flash-preview | Dec 17, 2025 | 1,048,576 tokens | 10 RPM | 250 RPD (some sources say 1,500 RPD) | Brainstorming Partner: Highly adaptive for rapid outline prototyping or multi-branch plot development, though raw prose can lean generic. |
+   * | gemma-3-4b-it | Mar 12, 2025 | 131,072 tokens | ~30 RPM | ~1,500 RPD | Indie Micro-Fiction: Compact, expressive, and snappy. Highly effective for short fairy tales or quick scene adjustments, though limited by lower absolute logic. |
+   * | gemini-2.5-flash | Mid 2025 | 1,048,576 tokens | 10 RPM | 250 RPD | Basic Co-Writer: Best used as an editor to check grammar or rewrite your blocks of text; struggles to generate thousands of original narrative words without looping. |
+   * | gemini-3.1-flash-lite | May 7, 2026 | 1,048,576 tokens | 15 RPM | 1,000 RPD | World-Building Index: Great for processing high-volume text fast, but write profile is heavily clinical. Best for generation of NPC barks or item lore descriptions. |
+   * | gemini-2.5-flash-lite | Mid 2025 | 1,000,000 tokens | 15 RPM | 1,000 RPD | The Glossary: Lowest creative voice depth; prose is predictable and basic. Perfect strictly for quick character names or background detail tables. |
+   * 
+   * Verify in AI Studio:
+   * @see https://console.cloud.google.com/apis/api/generativelanguage.googleapis.com/quotas
+   * @see https://aistudio.google.com/rate-limit
+   */
   gemini:     { rpm: 10,  rpd: 250 }, // before: { rpm: 15, rpd: 1_500 },
 
   // Trial key: 1,000 calls/month hard cap. No per-day sublimit documented.
@@ -174,8 +190,12 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'mistral-large-latest' // Highly precise, vocabulary-dense. Ideal for complex environmental descriptions.
   ],
   gemini: [
+    // 'gemini-3.1-pro', // Entirely blocked on the free tier. Unrivaled world-building and character memory. It naturally avoids cliché prose, catches subtle subtext, and introduces complex narrative framing.
+    // 'gemini-3.1-pro-preview', // Entirely blocked on the free tier.
+    'gemini-2.5-pro', // Strong emotional nuance, handles complex subplots well, and avoids clichés much better than the Flash models. It is highly reactive to complex prompt instructions regarding prose style and meter.
+    'gemini-3.5-flash', // Prose is clean, coherent, and highly adaptable to action, sci-fi, and fast-paced adventure writing.
     'gemini-3-flash-preview', // Vivid and highly descriptive. Phenomenal at sensory world-building.
-    'gemini-2.5-flash' // Excellent workhorse.
+    'gemini-2.5-flash' // A reliable, highly accessible baseline model. It handles plot progression and narrative outlines beautifully.
   ],
   groq: [
     'openai/gpt-oss-120b', // deepest psychological complexity, best for sustained horror dread
@@ -244,8 +264,10 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash',
+    'gemini-3.1-flash-lite', // Generic, "safe" creative prose. It shines brightest at micro-creative tasks: crafting quick character descriptions, naming fictional places, generating short status messages, or writing brief background dialogue snippets for NPCs.
     'gemini-2.5-flash-lite',
-    'gemini-1.5-flash-8b'
+    'gemma-3-27b-it', // Outstanding for raw, highly stylistic, and gritty short-form stories.
+    'gemma-3-4b-it' // Can be highly expressive for creative writing. Excel at writing quirky, stylistic, and highly unfiltered prose.
   ],
   mistral: [
     'mistral-small-latest',
