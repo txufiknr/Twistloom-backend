@@ -130,7 +130,7 @@ export type PlaceMemory = {
   /** Type of place for categorization and behavior patterns */
   type: string;
   /** Canonical place type for frontend BGM mapping */
-  canonicalType?: CanonicalPlaceType;
+  category?: CanonicalPlaceType;
   /** Short human-readable description for immediate recall */
   context: string;
   /** Known clues, obstacles, spatial relationship to other places */

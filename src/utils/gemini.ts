@@ -461,7 +461,7 @@ export function convertToGeminiSchema(
 ): Schema {
   const {
     minify = false,
-    maxEnums = 5,
+    maxEnums = 4,
     maxDescriptionLength = 60,
     tryRemoveSupplementary = true,
     moveEnumsToDescription = true,
@@ -627,6 +627,7 @@ export function convertToGeminiSchema(
       enumValues?.length &&
       enumValues.every((v: unknown) => typeof v === 'string')
     ) {
+      // TODO: should we enforce `maxDescriptionLength` here?
       description = appendDescription(description, enumHintFormatter(enumValues));
     }
 

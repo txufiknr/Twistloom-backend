@@ -490,7 +490,7 @@ const firstBookOutputFormat: string = `{
     "knownName": "...",
     "realName": "...",
     "type": "...",
-    "canonicalType": "One of: ${formatOneOf(canonicalPlaceTypes)}",
+    "category": "One of: ${formatOneOf(canonicalPlaceTypes)}",
     "context": "One evocative sentence.",
     "familiarity": <number between 0.0 and 1.0>,
     "isRealNameKnown": <boolean>,
@@ -842,7 +842,7 @@ const nextPageOutputFormat: string = `{
         "knownName": "...",
         "realName": "...",
         "type": "...",
-        "canonicalType": "One of: ${formatOneOf(canonicalPlaceTypes)}",
+        "category": "One of: ${formatOneOf(canonicalPlaceTypes)}",
         "context": "...",
         "familiarity": <number between 0.0 and 1.0>,
         "isRealNameKnown": <boolean>,
@@ -874,7 +874,7 @@ const nextPageOutputFormat: string = `{
         "placeId": "<place_id>",
         "knownName": "...",
         "type": "...",
-        "canonicalType": "One of: ${formatOneOf(canonicalPlaceTypes)}",
+        "category": "One of: ${formatOneOf(canonicalPlaceTypes)}",
         "context": "...",
         "familiarityCorrection": <number between -0.5 to 0.5>,
         "isRealNameKnown": <boolean>,
@@ -1189,7 +1189,7 @@ ${placesSlot === 0 ? `  - Don't introduce new places. Limit of ${MAX_PLACES} rea
   - knownName: should fit the in-world cultural setting.
   - context: ${PLACE_CONTEXT_LENGTH}. Evocative over descriptive.
   - hints: known clues, obstacles, spatial relationship to known places (e.g., "500 meters behind school"). Must be consistent to build a "world map."
-  - canonicalType: category for audio atmosphere. Choose the closest match: ${formatOneOf(canonicalPlaceTypes)}.
+  - category: category for audio atmosphere. Choose the closest match: ${formatOneOf(canonicalPlaceTypes)}.
   - familiarity: start at 0.0-0.2 unless MC has prior history with this place.
   - traits: include relevant information about this place (e.g., smell, sound, visual, feeling).
   - knownCharacters: include relevant characters (beside MC) with meaningful context.
@@ -4118,7 +4118,7 @@ function resolvePageDelta(params: {
   const duplicateKeys = futureNoteKeys.length - futureNoteKeysSet.size;
   console.log(`[resolvePageDelta] 🔮 futureNoteKeys (${futureNoteKeys.length}):`, futureNoteKeys);
   if (duplicateKeys) {
-    // TODO: Investigate double key issue
+    // TODO: Investigate double key issue (kayanya udah)
     console.warn(`[resolvePageDelta] ⚠️ ${duplicateKeys} duplicate futureNoteKeys found. Should be none.`);
   }
 
@@ -4454,15 +4454,18 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, reviewChecklist, evaluatorPrompt } = params;
-  const supportsStructuredOutput = Boolean(configs.schema && configs.requiredFields?.length); // schema and required fields is specified
+  // TODO: exclude 'gemini' which not supporting complex schema
+  // const supportsStructuredOutput = Boolean(configs.schema && configs.requiredFields?.length); // schema and required fields is specified
 
   /**
    * When structured output is active, send only a compact field-list reminder
    * instead of the full verbose JSON template. Saves ~1 000–2 000 tokens.
    */
-  const outputFormatPart = supportsStructuredOutput
-    ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
-    : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}\n\nIMPORTANT: Return ONLY the raw JSON object. Must begin exactly with the character '{'.`;
+  const outputFormatPart = jsonStructure.trim();
+  // TODO: move this logic and `supportsStructuredOutput` to be inside `aiPrompt`
+  // const outputFormatPart = supportsStructuredOutput
+  //   ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
+  //   : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}\n\nIMPORTANT: Return ONLY the raw JSON object. Must begin exactly with the character '{'.`;
 
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
 
@@ -4499,8 +4502,10 @@ Do not explain, summarize, or mention this review process.` : '';
 
   // Static outputFormatPart combined with the system prompt
   const options = createAIOptionsWithSchema<T>(configs);
-  options.systemPrompt = `${options.systemPrompt ?? PROMPT_SYSTEM}\n\n---\n${outputFormatPart}`;
+  // options.systemPrompt = `${options.systemPrompt ?? PROMPT_SYSTEM}\n\n---\n${outputFormatPart}`;
+  options.outputFormat = outputFormatPart;
 
+  // TODO: inside `aiPrompt`, if `supportsStructuredOutput` or provider is `gemini`, append `options.outputFormat` to `options.systemPrompt`
   const response = await aiPrompt<T>(
     userPrompt,
     options,

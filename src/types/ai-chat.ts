@@ -69,6 +69,8 @@ export type AIPromptOptions = Partial<AIPromptDocuments> & {
   modelSelection?: AIModelSelection;
   /** Custom system prompt to override default behavior (must be static) */
   systemPrompt?: string;
+  /** Provide JSON output format here. Logic will determine if this needed to be included in system prompt. */
+  outputFormat?: string;
   /** Usage context string for logging and rate limiting (e.g., 'story-page') */
   context?: string;
   /** Additional configuration for the AI model */

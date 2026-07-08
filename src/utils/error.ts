@@ -344,12 +344,13 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     getErrorName(err).toLowerCase().includes('timeout') ||
     isUndiciAbortError(err)
   ) {
+    console.log(`[classifyGenAIError] ⌚ Request timeout:`, err, typeof err);
     return 'REQUEST_TIMEOUT';
   }
 
   // Check for complex schema error BEFORE generic validation/schema
   if (msg.includes('too many states for serving')) {
-    console.log(`[classifyGenAIError] ❓ Schema too complex:`, err, typeof err);
+    console.log(`[classifyGenAIError] 💢 Schema too complex:`, err, typeof err);
     return 'SCHEMA_TOO_COMPLEX';
   }
 
@@ -360,7 +361,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('max_tokens') || 
     msg.includes('context length exceeded')
   ) {
-    console.log(`[classifyGenAIError] ❓ Max tokens exceeded:`, err, typeof err);
+    console.log(`[classifyGenAIError] 💥 Max tokens exceeded:`, err, typeof err);
     return 'MAX_TOKENS_EXCEEDED';
   }
 
@@ -372,7 +373,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     msg.includes('json schema') ||
     msg.includes('array schema')
   ) {
-    console.log(`[classifyGenAIError] ❓ Schema invalid:`, err, typeof err);
+    console.log(`[classifyGenAIError] ❗ Schema invalid:`, err, typeof err);
     return 'INVALID_SCHEMA';
   }
 

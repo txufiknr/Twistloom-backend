@@ -145,6 +145,9 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
  * Unlike corporate-tuned models, it natively understands gritty tension, subtext, and ambiguous 
  * thriller scenes without forcing moralizing, wrapped-up conclusions.
  * 
+ * However, Qwen3-30B-A3B outperforms or heavily rivals Mistral-Medium-latest across creative writing and handling complex schemas.
+ * It provides much deeper narrative pacing and far superior schema adherence at a fraction of the inference cost.
+ * 
  * Legacy (don't use):
  * - mistralai/mistral-7b-instruct // Classic Mistral raw tone, completely free.
  * - google/gemma-2-9b-it // Poetic, surprising, with highly unique vocabulary.
@@ -157,22 +160,22 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
  * @see https://developers.cloudflare.com/workers-ai/models for current model IDs/availability.
  */
 export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
+  openrouter: [
+    'qwen/qwen3-30b-a3b', // 256K+ tokens. Excellent JSON. Toggleable Reasoning. Creative and imaginative with good character voice variety.
+    'google/gemini-2.5-flash', // 1,048,576 (1M) Tokens. Excellent JSON. Hybrid reasoning. Extremely strong prose quality, pacing, emotion, and instruction-following.
+    'z-ai/glm-4.5-air', // 128K tokens. Excellent JSON. Toggleable Reasoning. Clean, coherent, reliable storyteller with natural dialogue.
+    'meta-llama/llama-4-maverick:free', // 1,048,576 (1M) Tokens. Excellent JSON. Toggleable reasoning. Strong narrative fluidity and voice, benefiting from a massive, rich dataset of human social interactions.
+    'nvidia/nemotron-3-super:free', // 1,000,000 (1M) tokens. Excellent JSON. Toggleable Reasoning. Replaces Mixtral. Massive MoE model, exceptional atmospheric tension.
+    'deepseek/deepseek-r1:free', // 128K+ tokens. Superior JSON. Native Reasoning. Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
+    'meta-llama/llama-3.3-70b-instruct:free', // 128K tokens. Very good JSON. Standard Model. Very fluid, natural vocabulary. Excellent at keeping character dialogue sounding organic and culturally nuanced.
+  ],
   mistral: [
-    'mistral-medium-latest', // The Prose Champion. Unmatched human-like fluidity and distinct character voices.
+    'mistral-medium-latest', // 128K tokens. Good JSON. Standard Model. The Prose Champion. Unmatched human-like fluidity and distinct character voices.
     'mistral-large-latest' // Highly precise, vocabulary-dense. Ideal for complex environmental descriptions.
   ],
   gemini: [
     'gemini-3-flash-preview', // Vivid and highly descriptive. Phenomenal at sensory world-building.
     'gemini-2.5-flash' // Excellent workhorse.
-  ],
-  openrouter: [
-    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
-    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
-    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
-    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
-    'nvidia/nemotron-3-super:free', // Replaces Mixtral. Massive MoE model, 1M context, exceptional atmospheric tension.
-    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
-    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   groq: [
     'openai/gpt-oss-120b', // deepest psychological complexity, best for sustained horror dread
@@ -335,21 +338,21 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
  * Requires large context windows, strict schema adherence, and analytical logic mapping.
  */
 export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
+  openrouter: [
+    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
+    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
+    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
+    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
+    'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
+    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
+    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
+  ],
   mistral: [
     'mistral-large-latest',
   ],
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash'
-  ],
-  openrouter: [
-    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
-    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
-    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
-    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
-    'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
-    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
-    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   groq: [
     'openai/gpt-oss-120b',

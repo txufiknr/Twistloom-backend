@@ -173,7 +173,7 @@ export const INITIAL_PLACE_PROPERTIES: Record<keyof NewPlace, AIJsonProperty> = 
       keyDescription: placeTraitsExample,
     })
   },
-  canonicalType: { type: 'string', enum: [...canonicalPlaceTypes], description: 'Canonical place type for BGM mapping' },
+  category: { type: 'string', enum: [...canonicalPlaceTypes], description: 'Canonical place type for BGM mapping' },
 };
 
 export const { keyEvents: placeEvents, familiarity: _f, realName: _n, ...placeUpdateProperties } = INITIAL_PLACE_PROPERTIES;
