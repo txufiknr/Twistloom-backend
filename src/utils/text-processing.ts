@@ -438,26 +438,20 @@ export function slugify(text: string, separator: string = "_"): string {
  * const baseId = generateCharacterId(name);
  * const uniqueId = ensureUniqueId(baseId, existingIds);
  */
-export function ensureUniqueId(id: string, existingIds: Set<string>, options?: { separator?: string, alwaysShowSuffix?: boolean }): string {
+export function ensureUniqueId(
+  id: string,
+  existingIds: Set<string>,
+  options?: {
+    separator?: string;
+    alwaysShowSuffix?: boolean;
+  }
+): string {
   const { separator = "_", alwaysShowSuffix = false } = options ?? {};
 
-  if (alwaysShowSuffix) {
-    const firstCandidate = `${id}${separator}1`;
-    if (!existingIds.has(id) && !existingIds.has(firstCandidate)) {
-      return firstCandidate;
-    }
+  if (!alwaysShowSuffix && !existingIds.has(id)) return id;
 
-    let suffix = 2;
-    while (existingIds.has(`${id}${separator}${suffix}`)) {
-      suffix++;
-    }
+  let suffix = alwaysShowSuffix ? 1 : 2;
 
-    return `${id}${separator}${suffix}`;
-  }
-
-  if (!existingIds.has(id)) return id;
-
-  let suffix = 2;
   while (existingIds.has(`${id}${separator}${suffix}`)) {
     suffix++;
   }

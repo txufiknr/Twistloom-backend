@@ -318,14 +318,39 @@ export function extractStateDelta(params: {
   return stateDelta;
 }
 
+/**
+ * Assigns unique keys to generated future notes.
+ *
+ * Keys are derived from each note's tag and guaranteed to be unique against
+ * both existing future note keys and keys generated earlier in this call.
+ *
+ * Examples:
+ * - character → character_1
+ * - character (duplicate) → character_2
+ * - location → location_1
+ *
+ * Notes with `relatedThreadId === "none"` omit that property in the returned
+ * object.
+ *
+ * @param notes Newly generated future notes.
+ * @param expectedPageNumber Page number where these notes become active.
+ * @param futureNoteKeys Existing future note keys that must not be reused.
+ * @returns Future notes with unique keys and `addedAtPage` assigned.
+ */
 export function mapFutureNoteWithKey(notes: FutureNoteGeneration[] | undefined, expectedPageNumber: number, futureNoteKeys: string[]): FutureNote[] {
   const registeredKeys = new Set(futureNoteKeys);
   return notes?.map<FutureNote>(note => {
     const tag = note.tag || 'other';
     const key = ensureUniqueId(tag, registeredKeys, { alwaysShowSuffix: true });
     registeredKeys.add(key);
-    if (note.relatedThreadId === 'none') delete note.relatedThreadId; // Exclude `relatedThreadId` key if value is "none"
-    return { ...note, addedAtPage: expectedPageNumber, key };
+
+    const { relatedThreadId, ...rest } = note;
+    return {
+      ...rest,
+      ...(relatedThreadId !== "none" && { relatedThreadId }), // Exclude `relatedThreadId` key if value is "none"
+      addedAtPage: expectedPageNumber,
+      key,
+    };
   }) ?? [];
 }
 
