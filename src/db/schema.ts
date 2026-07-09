@@ -1371,6 +1371,10 @@ export const subscriptionTransactions = pgTable(
     creditsAllocated: integer("credits_allocated").notNull(),
     stripeInvoiceId: text("stripe_invoice_id").unique(),
     stripeEventId: text("stripe_event_id").unique(),
+    // Free-form context for rows that aren't credit allocations, e.g. 'trial_expired'
+    // snapshots the user's credit balance at the moment a trial ends without
+    // converting (creditsRemainingAtCancellation) — see VIP_FREE_TRIAL_ROADMAP.md Q4.
+    metadata: jsonb("metadata"),
     createdAt,
   },
   (t) => [

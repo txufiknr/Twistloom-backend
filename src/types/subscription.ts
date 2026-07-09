@@ -7,7 +7,8 @@ export type SubscriptionTransactionType =
   | 'activation' 
   | 'renewal' 
   | 'cancellation'
-  | 'trial_started'; // Trial-start credit allocation, kept distinct from 'activation' for analytics (conversion rate, credits-during-trial reporting)
+  | 'trial_started' // Trial-start credit allocation, kept distinct from 'activation' for analytics (conversion rate, credits-during-trial reporting)
+  | 'trial_expired'; // Trial ended without converting — creditsAllocated is 0; metadata carries the credits-remaining snapshot. See VIP_FREE_TRIAL_ROADMAP.md Q4.
 
 /**
  * Subscription status for VIP subscriptions

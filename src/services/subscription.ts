@@ -34,6 +34,7 @@ import { eq } from "drizzle-orm";
 import { addCredits } from "./credits.js";
 import { VIP_BENEFITS, VIP_TRIAL } from "../config/subscription.js";
 import type { SubscriptionStatus } from "../types/subscription.js";
+import { getErrorMessage } from "../utils/error.js";
 
 /**
  * Detects a Postgres unique-constraint violation (SQLSTATE 23505).
@@ -292,6 +293,24 @@ export async function renewSubscription(params: {
  * VIP benefits continue until the current billing period ends.
  * The cron job will handle the actual tier downgrade.
  *
+ * Trial-specific behavior (see VIP_FREE_TRIAL_ROADMAP.md Q4): if this subscription
+ * never converted to paid, records a `trial_expired` subscriptionTransactions row
+ * snapshotting the user's credit balance at that moment. Decision was explicitly
+ * NOT to claw back unused trial credits — the abuse surface is already bounded by
+ * the permanent one-trial-per-user lockout, and clawback would only ever recover
+ * partially-spent balances anyway. This snapshot exists purely so that decision
+ * can be revisited later with real data instead of a guess, at zero cost to the
+ * user experience.
+ *
+ * IMPORTANT: this checks subscriptionTransactions history (has a 'trial_started'
+ * row, has no 'renewal' row), NOT the subscription's `isTrial` flag. For a trial
+ * cancelled via `missing_payment_method: 'cancel'`, Stripe fires
+ * customer.subscription.updated (trialing → canceled) before .deleted — by the
+ * time this function runs, updateSubscription() has typically already cleared
+ * isTrial to false on the status transition out of 'trialing', so isTrial can't
+ * be trusted here. Transaction history is immutable and gives the right answer
+ * regardless of event ordering.
+ *
  * @param params - Subscription cancellation parameters
  * @param params.stripeSubscriptionId - Stripe subscription ID
  * @param params.canceledAt - When the subscription was canceled
@@ -331,6 +350,38 @@ export async function cancelSubscription(params: {
 
     // Note: User tier remains 'vip' until currentPeriodEnd
     // This will be handled by the cron job
+
+    // Trial-expired analytics snapshot (Q4) — see docstring above for why this
+    // reads transaction history rather than the isTrial flag.
+    const priorTransactions = await tx
+      .select({ type: subscriptionTransactions.type })
+      .from(subscriptionTransactions)
+      .where(eq(subscriptionTransactions.subscriptionId, subscription.id));
+
+    const wasTrial = priorTransactions.some((t) => t.type === 'trial_started');
+    const everConverted = priorTransactions.some((t) => t.type === 'renewal');
+    const alreadyLogged = priorTransactions.some((t) => t.type === 'trial_expired');
+
+    if (wasTrial && !everConverted && !alreadyLogged) {
+      const [user] = await tx
+        .select({ credits: users.credits })
+        .from(users)
+        .where(eq(users.userId, subscription.userId))
+        .limit(1);
+
+      await tx.insert(subscriptionTransactions).values({
+        subscriptionId: subscription.id,
+        userId: subscription.userId,
+        type: 'trial_expired',
+        creditsAllocated: 0, // no credits granted by this event — see metadata for the balance snapshot
+        metadata: {
+          creditsRemainingAtCancellation: user?.credits ?? null,
+          trialEnd: subscription.trialEnd,
+        },
+      });
+
+      console.log(`[subscription] 📊 Trial expired without converting for user ${subscription.userId} — ${user?.credits ?? 'unknown'} credits remaining`);
+    }
   });
 }
 
@@ -438,37 +489,69 @@ export async function isTrialEligible(userId: string): Promise<boolean> {
  *
  * Stripe fires this event ~3 days before the trial ends (configurable in the
  * Stripe Dashboard). This creates a user notification reminding them to ensure
- * their payment method is up to date so the trial converts successfully.
+ * their payment method is up to date so the trial converts successfully, and
+ * sends a branded reminder email via Resend (see VIP_FREE_TRIAL_ROADMAP.md Q5).
  *
  * Stripe's own email for this event ("Manage free trial messaging" in Dashboard)
- * serves as a zero-code safety net — this notification is the in-app complement.
+ * is a zero-code safety net that stays on regardless — this is the branded,
+ * in-app-consistent complement, since a generic Stripe-branded email is easy for
+ * a user to not recognize as being from Twistloom specifically.
+ *
+ * The email send is deliberately non-blocking: a Resend outage or bad address
+ * must not prevent the in-app notification from being created, and must not
+ * fail the webhook (which would make Stripe retry an event that was otherwise
+ * handled correctly).
  *
  * @param stripeSubscriptionId - The Stripe subscription ID that's ending its trial
  *
- * @see VIP_FREE_TRIAL_ROADMAP.md §4.4b
+ * @see VIP_FREE_TRIAL_ROADMAP.md §4.4b, Q5
  */
 export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<void> {
-  const [subscription] = await dbRead
-    .select()
+  const [row] = await dbRead
+    .select({
+      subscriptionId: subscriptions.id,
+      userId: subscriptions.userId,
+      trialEnd: subscriptions.trialEnd,
+      email: users.email,
+      name: users.name,
+    })
     .from(subscriptions)
+    .innerJoin(users, eq(subscriptions.userId, users.userId))
     .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
     .limit(1);
 
-  if (!subscription) {
+  if (!row) {
     console.log(`[subscription] ⚠️ trial_will_end for unknown subscription ${stripeSubscriptionId} — skipping`);
     return;
   }
 
   await dbWrite.insert(userNotifications).values({
-    userId: subscription.userId,
+    userId: row.userId,
     type: 'trial_ending_soon',
     title: 'Your VIP trial ends soon',
     message: 'Your free trial ends in 3 days. Make sure your payment method is up to date to keep your VIP benefits.',
-    data: { trialEnd: subscription.trialEnd },
+    data: { trialEnd: row.trialEnd },
     read: false,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
 
-  console.log(`[subscription] 🔔 Sent trial-ending-soon notification for user ${subscription.userId}`);
+  console.log(`[subscription] 🔔 Sent trial-ending-soon notification for user ${row.userId}`);
+
+  // Non-blocking: log and move on if the email fails. The in-app notification
+  // above already succeeded, and Stripe's own trial-ending email is still a
+  // fallback regardless of whether this one goes out.
+  try {
+    const { sendTrialEndingEmail } = await import("../utils/email.js");
+    if (row.trialEnd) {
+      await sendTrialEndingEmail({
+        to: row.email,
+        name: row.name,
+        trialEndDate: row.trialEnd,
+      });
+      console.log(`[subscription] 📧 Sent trial-ending email to user ${row.userId}`);
+    }
+  } catch (error) {
+    console.error(`[subscription] ❌ Failed to send trial-ending email to user ${row.userId}:`, getErrorMessage(error));
+  }
 }

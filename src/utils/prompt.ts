@@ -4469,8 +4469,11 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   const reviewChecklistPart = reviewChecklist ? `REVIEW & FIX (IMPORTANT):
 
 Before producing the final JSON, silently verify your draft against every requirement below.
-If any requirement is not fully satisfied, revise the draft internally until every item passes.
+Treat every requirement below as mandatory:
+- If any requirement is not fully satisfied, revise the draft internally until every item passes.
+- If any two requirements conflict, prioritize preserving JSON validity, schema correctness, and user-visible language consistency.
 
+Requirements:
 ${stripEmptyLines(reviewChecklist)}
 
 Output only the final corrected JSON.
