@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, users, userPageProgress, userCompletedBooks, userActionHints, customActions } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, ne, sql } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -407,6 +407,44 @@ export async function deleteStoryPage(pageId: string): Promise<void> {
 }
 
 /**
+ * Resolves a unique display name for a new branch from AI-suggested alternatives.
+ *
+ * Tries up to 3 AI suggestions; if all conflict, appends a numeric suffix up to
+ * 5 times. If still conflicting (extremely unlikely), returns the raw first
+ * suggestion — the UUID v7 branchId remains the true unique identifier.
+ *
+ * @param branchNames - AI-suggested branch names (up to 3 used)
+ * @param existingNames - Set of display names already used in this book
+ * @returns A unique (or best-effort) display name for the branch
+ */
+function resolveBranchDisplayName(
+  branchNames: string[] | undefined,
+  existingNames: Set<string>,
+): string {
+  const candidates = branchNames ?? [];
+
+  for (const name of candidates) {
+    if (!existingNames.has(name)) {
+      return name;
+    }
+  }
+
+  // All AI suggestions conflicted → append numeric suffix
+  const base = candidates[0] || 'Alternative Timeline';
+  if (base) {
+    for (let i = 1; i <= 5; i++) {
+      const fallback = `${base} ${i}`;
+      if (!existingNames.has(fallback)) {
+        return fallback;
+      }
+    }
+  }
+
+  // Last resort: return raw first suggestion (duplicate allowed)
+  return base;
+}
+
+/**
  * Atomically persists a generated page and its story state.
  *
  * ── Atomicity ────────────────────────────────────────────────────────────────
@@ -512,6 +550,22 @@ export async function persistPageWithState(params: {
 
         // Calculate health status
         newState.healthStatus = calculateHealthStatus(newState.injuries);
+
+        // If this is a new branch (not "main"), create a branches row atomically
+        if (currentBranchId !== "main") {
+          const existingRows = await tx
+            .select({ name: branches.displayName })
+            .from(branches)
+            .where(eq(branches.bookId, actionedPage.bookId));
+          const existingNames = new Set(existingRows.map(r => r.name));
+          const displayName = resolveBranchDisplayName(generatedStoryPage.branchNames, existingNames);
+
+          await tx.insert(branches).values({
+            branchId: currentBranchId,
+            bookId: actionedPage.bookId,
+            displayName,
+          }).onConflictDoNothing();
+        }
 
         // If this throws, the transaction auto-rolls back — no orphan page
         await insertStoryState(newPage.bookId, newPage.id, newState, 'original', { client: tx });

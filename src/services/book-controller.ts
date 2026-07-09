@@ -525,9 +525,17 @@ export function buildBookQuery<T>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   query = (query as any).where(finalCondition);
 
-  // Apply primary sorting: book-specific sorting (acts as category filter)
+  // Build count query for pagination (must be created before applying sort conditions
+  // so that sort-specific WHERE filters can be applied to both queries)
+  const countQuery = dbRead
+    .select({ count: sql`COUNT(*)::int` })
+    .from(books)
+    .where(finalCondition);
+
+  // Apply primary sorting: book-specific sorting (acts as category filter).
+  // Pass countQuery so sort-specific WHERE conditions are applied to both queries.
   if (bookSortBy) {
-    query = applyBookSorting(query, bookSortBy, currentUserId, collection);
+    query = applyBookSorting(query, bookSortBy, currentUserId, collection, countQuery);
   }
 
   // Apply orderBy for search relevance
@@ -539,12 +547,6 @@ export function buildBookQuery<T>(
     // Apply generic column sorting only when no search
     query = applySorting(query, genericSortBy, sortOrder);
   }
-
-  // Build count query for pagination
-  const countQuery = dbRead
-    .select({ count: sql`COUNT(*)::int` })
-    .from(books)
-    .where(finalCondition);
 
   return {
     query,
@@ -592,7 +594,7 @@ export function combineFilterConditions(...conditions: (ReturnType<typeof sql> |
  * Type safety is maintained through the actual database operations and SQL generation.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, collection?: string): any {
+function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', currentUserId?: string | null, collection?: string, countQuery?: any): any {
   switch (sortBy) {
     case 'for-you': {
       // Recommend books based on user's reading history (from userSessions)
@@ -615,14 +617,20 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
           WHERE kw = ANY(${userReadKeywords})
         )`;
 
-        return query
+        query = query
           .where(sql`${books.keywords} && ${userReadKeywords}`)
           .where(sql`NOT EXISTS (
             SELECT 1 FROM user_sessions us_exclude
             WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
-          )`)
-          .orderBy(desc(overlapScore))
-          .orderBy(desc(books.trendingScore));
+          )`);
+        if (countQuery) {
+          countQuery.where(sql`${books.keywords} && ${userReadKeywords}`)
+            .where(sql`NOT EXISTS (
+              SELECT 1 FROM user_sessions us_exclude
+              WHERE us_exclude.user_id = ${currentUserId} AND us_exclude.book_id = books.id
+            )`);
+        }
+        return query.orderBy(desc(overlapScore)).orderBy(desc(books.trendingScore));
       }
     }
 
@@ -640,9 +648,11 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
 
     case 'top-picks': {
       // Sort by latest topPick timestamp (only books marked as top picks)
-      return query
+      query = query
         .where(sql`${books.topPick} IS NOT NULL`)
         .orderBy(desc(books.topPick));
+      if (countQuery) countQuery.where(sql`${books.topPick} IS NOT NULL`);
+      return query;
     }
 
     case 'originals': {
@@ -650,10 +660,15 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Sort by creation date (newest first)
       // Note: Intentionally filtering to only show originals with covers for quality control
       // Auto-generated books without covers are excluded from the originals list
-      return query
+      query = query
         .where(eq(books.isOriginal, true))
         .where(sql`${books.imageId} IS NOT NULL`)
         .orderBy(desc(books.createdAt));
+      if (countQuery) {
+        countQuery.where(eq(books.isOriginal, true))
+          .where(sql`${books.imageId} IS NOT NULL`);
+      }
+      return query;
     }
 
     case 'reads': {
@@ -661,14 +676,17 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Sort by lastReadAt (most recent first)
       // Requires authentication
       if (!currentUserId) {
-        return query.where(sql`1=0`);
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
       }
-      return query
-        .where(sql`EXISTS (
-          SELECT 1 FROM user_sessions
-          WHERE user_id = ${currentUserId} AND book_id = books.id
-        )`)
-        .orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
+      const readCondition = sql`EXISTS (
+        SELECT 1 FROM user_sessions
+        WHERE user_id = ${currentUserId} AND book_id = books.id
+      )`;
+      query = query.where(readCondition);
+      if (countQuery) countQuery.where(readCondition);
+      return query.orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
     }
 
     case 'favorites': {
@@ -676,19 +694,22 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Sort by favorite creation date (most recent first)
       // Requires authentication
       if (!currentUserId) {
-        return query.where(sql`1=0`);
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
       }
-      return query
-        .where(sql`EXISTS (
-          SELECT 1 FROM user_favorites uf
-          WHERE uf.user_id = ${currentUserId}
-            AND uf.book_id = books.id
-            ${collection ? sql`AND uf.collection = ${collection}` : sql``}
-        )`)
-        .orderBy(sql`(
-          SELECT uf.created_at FROM user_favorites uf
-          WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
-        ) DESC`);
+      const favCondition = sql`EXISTS (
+        SELECT 1 FROM user_favorites uf
+        WHERE uf.user_id = ${currentUserId}
+          AND uf.book_id = books.id
+          ${collection ? sql`AND uf.collection = ${collection}` : sql``}
+      )`;
+      query = query.where(favCondition);
+      if (countQuery) countQuery.where(favCondition);
+      return query.orderBy(sql`(
+        SELECT uf.created_at FROM user_favorites uf
+        WHERE uf.user_id = ${currentUserId} AND uf.book_id = books.id
+      ) DESC`);
     }
 
     case 'recommendations': {
@@ -696,20 +717,23 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       // Get books similar to what the user has liked using keyword similarity
       // Requires authentication
       if (!currentUserId) {
-        return query.where(sql`1=0`);
+        const noop = query.where(sql`1=0`);
+        if (countQuery) countQuery.where(sql`1=0`);
+        return noop;
       }
 
-      return query
-        .where(sql`EXISTS (
-          SELECT 1
-          FROM user_likes ul
-          INNER JOIN books liked_books ON ul.target_id = liked_books.id
-          WHERE ul.user_id = ${currentUserId}
-            AND ul.target_type = 'book'
-            AND liked_books.id != books.id
-            AND books.keywords && liked_books.keywords
-        )`)
-        .orderBy(desc(books.trendingScore));
+      const recCondition = sql`EXISTS (
+        SELECT 1
+        FROM user_likes ul
+        INNER JOIN books liked_books ON ul.target_id = liked_books.id
+        WHERE ul.user_id = ${currentUserId}
+          AND ul.target_type = 'book'
+          AND liked_books.id != books.id
+          AND books.keywords && liked_books.keywords
+      )`;
+      query = query.where(recCondition);
+      if (countQuery) countQuery.where(recCondition);
+      return query.orderBy(desc(books.trendingScore));
     }
 
     case 'newest':

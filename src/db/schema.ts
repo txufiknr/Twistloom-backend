@@ -438,6 +438,45 @@ export const books = pgTable(
 );
 
 /**
+ * Branches table for human-readable display names
+ * @summary Store human-readable branch display names for non-main branches
+ * 
+ * Only non-main branches are stored here. The 'main' branch is identified by
+ * the text literal "main" on pages.branch_id and has no row in this table
+ * (its display name falls back to the book title at query time).
+ * 
+ * Rows are created atomically alongside page insertion inside persistPageWithState.
+ * displayName uniqueness per book is enforced by a unique constraint.
+ * slug is auto-derived via generatedAlwaysAs.
+ * 
+ * @example
+ * {
+ *   "branch_id": "0194f2d1-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+ *   "book_id": "book456",
+ *   "display_name": "The Dark Path",
+ *   "slug": "the-dark-path",
+ *   "created_at": "2023-01-01T00:00:00.000Z"
+ * }
+ */
+export const branches = pgTable(
+  "branches",
+  {
+    branchId: text("branch_id").primaryKey(),
+    bookId: bookId("cascade"),
+    displayName: text("display_name").notNull(),
+    slug: text("slug").notNull().generatedAlwaysAs(
+      sql`lower(regexp_replace(regexp_replace(display_name, '[^a-zA-Z0-9\\s]', '', 'g'), '\\s+', '-', 'g'))`
+    ),
+    createdAt,
+  },
+  (t) => [
+    unique("branches_book_name_unique").on(t.bookId, t.displayName),
+    unique("branches_book_slug_unique").on(t.bookId, t.slug),
+    index("branches_book_idx").on(t.bookId),
+  ]
+);
+
+/**
  * Async book generations tracking table
  * @summary Track async book creation generation status and parameters
  * @example

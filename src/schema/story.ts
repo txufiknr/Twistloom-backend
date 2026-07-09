@@ -716,7 +716,12 @@ export const STORY_STATE_GENERATION_SCHEMA: Record<keyof StateDeltaGeneration, A
  */
 export const STORY_GENERATION_SCHEMA_DEFINITION = {
   ...STORY_PAGE_GENERATION_SCHEMA, // Page
-  ...STORY_STATE_GENERATION_SCHEMA // State Delta
+  ...STORY_STATE_GENERATION_SCHEMA, // State Delta
+  branchNames: {
+    type: 'array',
+    items: { type: 'string' },
+    description: 'Suggest 3 creative, distinct names for this timeline. Evocative, spoiler-free.',
+  },
 } satisfies Record<keyof StoryGeneration, AIJsonProperty>;
 
 export const STORY_GENERATION_REQUIRED_FIELDS = ['text', 'actions', 'calendarDate'] satisfies Array<keyof StoryGeneration>;

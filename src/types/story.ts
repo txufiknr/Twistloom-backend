@@ -1200,7 +1200,10 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
   }
 };
 export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'>;
-export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration;
+export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration & {
+  /** AI-suggested human-readable names for this branch (3 alternatives). Omit if continuing the same branch. */
+  branchNames?: string[];
+};
 export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & Pick<StoryPage, 'momentum'>;
 
 export type PersistedStoryPage = StoryPage & Pick<DBPage, 'id' | 'bookId' | 'branchId' | 'parentId' | 'page' | 'elapsedDays' | ResourceAIProvider | ResourceTimestamp>;

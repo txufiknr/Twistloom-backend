@@ -1,6 +1,6 @@
 # VIP Free Trial (1-Month) — Implementation Roadmap
 
-**Status:** ✅ Fully implemented (Backend & Frontend complete)
+**Status:** ✅ Fully implemented (Backend & Frontend complete), including Q1–Q6 design decisions (see CHANGELOG below)
 **Depends on:** The Stripe payment audit fixes (idempotency, `subscriptions.userId` FK, VIP expiration cron scheduling) — these were landed prior to this implementation.
 **Model:** LinkedIn-style — card required upfront, full VIP benefits during trial, auto-converts to paid unless canceled.
 
@@ -8,34 +8,46 @@
 
 ## Implementation CHANGELOG
 
-### Implemented (Jul 2026)
+### Implemented (Jul 2026, round 2) — Q1–Q6 decisions + two bug fixes
+
+Design rationale for all six open questions is now documented in §9.2 as resolved decisions, not open questions. Summary of what changed in code:
+
+- **Q1, Q2, Q3 — no code changes.** All three were reviewed against the current implementation and the recommendation was to keep behavior as-is; see §9.2 for the reasoning specific to why Twistloom's trial economics don't actually need LinkedIn's stricter versions of these.
+- **Q4 — implemented.** `cancelSubscription()` in `subscription.services.ts` now records a `trial_expired` transaction (new `subscriptionTransactions.type` value, new `metadata` jsonb column on that table) snapshotting the user's credit balance when a trial ends without converting. No clawback — this is purely an analytics capture so the "is this a real cost problem" question can be answered with data later instead of a guess. **Schema change:** `subscriptionTransactions.metadata` (jsonb, nullable) added.
+- **Q5 — implemented.** `handleTrialWillEnd()` now also sends a branded reminder email via Resend, non-blocking (a send failure can't break the in-app notification or fail the webhook). The actual `sendTrialEndingEmail()` function is delivered separately as `email.trial-ending-addition.ts` since your real `src/utils/email.ts` wasn't available to edit directly — merge it in following your existing `sendWelcomeEmail`/`sendPasswordResetEmail` conventions (sender identity, shared template/layout if you have one).
+- **Q6 — implemented.** New env vars documented in `env.trial-addition.example`, to merge into your real `.env.example`.
+- **Bug fix (pre-existing, not introduced by trial work):** `GET /payments/subscription` joined `subscriptions` to `users` on a bare `userId` match with `.limit(1)` and no ordering — for any user with more than one `subscriptions` row over their lifetime (cancel-then-resubscribe, a lapsed trial followed by a real signup), this had no guarantee of returning the *current* row. Fixed to join on `users.subscriptionId`, the canonical current-subscription pointer `createSubscription()`/`downgradeUserFromVip()` already maintain.
+- **Hardening:** Same "which row" pattern in `GET /payments/subscription/portal`'s customer lookup — lower risk (recall `stripeCustomerId` should be stable across a user's history) but given an `orderBy(desc(createdAt))` for defense-in-depth anyway.
+
+### Implemented (Jul 2026, round 1)
 
 - **Schema:** `vipTrialUsedAt` (users), `isTrial` + `trialEnd` (subscriptions) — already present before this work
 - **Types:** `'trial_started'` transaction type, `'trialing'` / `'paused'` statuses — already present before this work
 - **Config:** `VIP_TRIAL` config block with `enabled`, `trialPeriodDays`, `endBehavior` (see `src/config/subscription.ts:36`)
 - **Service layer:**
-  - `isTrialEligible(userId)` — one-trial-per-user, no active sub check (see `src/services/subscription.ts:401`)
-  - `handleTrialWillEnd(stripeSubscriptionId)` — creates `trial_ending_soon` notification (see `src/services/subscription.ts:442`)
+  - `isTrialEligible(userId)` — one-trial-per-user, no active sub check
+  - `handleTrialWillEnd(stripeSubscriptionId)` — creates `trial_ending_soon` notification (now also sends email, round 2)
   - `createSubscription()` already branches on `isTrial` — no changes needed
   - `updateSubscription()` already clears `isTrial` when status leaves `trialing` — no changes needed
 - **Routes:**
-  - `GET /payments/subscription/trial-eligibility` — new endpoint (see `src/routes/payments.ts:638`)
-  - `POST /payments/create-trial-checkout-session` — new endpoint with server-side eligibility re-check (see `src/routes/payments.ts:688`)
-  - `GET /payments/subscription` — now includes `isTrial`/`trialEnd` in response, accepts `trialing` status (see `src/routes/payments.ts:810`)
-  - `POST /payments/subscription/cancel` — accepts `trialing` status via `inArray` (see `src/routes/payments.ts:1417`)
+  - `GET /payments/subscription/trial-eligibility` — new endpoint
+  - `POST /payments/create-trial-checkout-session` — new endpoint with server-side eligibility re-check
+  - `GET /payments/subscription` — now includes `isTrial`/`trialEnd` in response, accepts `trialing` status (query fixed round 2)
+  - `POST /payments/subscription/cancel` — accepts `trialing` status via `inArray`
 - **Webhooks:**
-  - `customer.subscription.trial_will_end` — new handler creates in-app notification (see `src/routes/payments.ts:249`)
-  - Wired into webhook event switch at `src/routes/payments.ts:1056`
+  - `customer.subscription.trial_will_end` — new handler creates in-app notification (now also sends email, round 2)
+  - Wired into webhook event switch
 
-### Implemented (frontend — `twistloom-web` repo)
+### Implemented (Jul 2026, round 3 — frontend, `twistloom-web` repo)
 
-- Frontend types (`UserSubscription.isTrial`, `TrialEligibilityResponse`) in `types/api/subscription.ts`
-- API service methods (`getTrialEligibility`, `createTrialSession`) in `services/subscription-api.ts`
-- `useTrialEligibility` hook in `hooks/query/useTrialEligibility.ts`
-- `useVipActions.handleStartTrial` hook action in `vip/useVipActions.ts`
-- `SubscriptionManagement` trial-aware status display and trial cancellation in `subscription/SubscriptionManagement.tsx`
-- Trial CTA inline notice and actions in `VipUpgradeModal.tsx` and `DashboardAccountSubscriptionClient.tsx`
-- Post-checkout trial-specific success copy in `SubscriptionStatusMessage.tsx` and localization files `messages/en.json` & `messages/id.json`
+- **Types:** `UserSubscription.isTrial` + `UserSubscription.trialEnd`, `TrialEligibilityResponse`, `CreateTrialSessionRequest`, `CreateTrialSessionResponse` (see `src/lib/types/api/subscription.ts`)
+- **API service:** `getTrialEligibility()` + `createTrialSession()` on `SubscriptionApi` (see `src/lib/services/subscription-api.ts:93-110`)
+- **Hook:** `useTrialEligibility()` — TanStack Query with auth guard, no retry, 2-min stale time (see `src/lib/hooks/query/useTrialEligibility.ts`)
+- **Actions:** `handleStartTrial` on `useVipActions` — creates trial checkout session and redirects (see `src/components/vip/useVipActions.ts:115-128`)
+- **Subscription management:** `SubscriptionManagement` trial-aware status display with blue-themed banner, days-remaining countdown, distinct cancel copy for trials (see `src/components/subscription/SubscriptionManagement.tsx`)
+- **Trial CTA:** `VipUpgradeModal` + `DashboardAccountSubscriptionClient` — trial eligibility banner (`Rocket` icon), "Start 1-Month Free Trial" primary CTA when eligible, trial-specific status labels (see `src/components/modals/vip/VipUpgradeModal.tsx`, `src/components/dashboard/DashboardAccountSubscriptionClient.tsx`)
+- **Post-checkout:** `SubscriptionStatusMessage` — `successTrial.title`/`successTrial.description` locale keys when returning from trial checkout (see `src/components/subscription/SubscriptionStatusMessage.tsx:116-118`)
+- **Localization:** Full `en.json` and `id.json` coverage — all trial keys present in both locales (successTrial, trialEligibleTitle/Notice, trialCta, trialActiveLabel, trialEnds, cancelTrialButton, trialWillCancel)
 
 ---
 
@@ -92,21 +104,28 @@ trialEnd: timestamp("trial_end", { withTimezone: true }),
 
 `subscriptionStatuses` in `src/types/subscription.ts:17-26` already includes `'trialing'` and `'paused'`.
 
-### 3.3 `subscriptionTransactions` — new transaction type ✅
+### 3.3 `subscriptionTransactions` — new transaction types + metadata column ✅
 
-Present in `src/types/subscription.ts:10`:
+Present in `src/types/subscription.ts:10` (both backend and frontend):
 
 ```ts
 export type SubscriptionTransactionType =
   | 'activation'
   | 'renewal'
   | 'cancellation'
-  | 'trial_started';   // NEW
+  | 'trial_started'    // trial-start credit allocation
+  | 'trial_expired';   // NEW (round 2) — trial ended without converting; see §9.2 Q4
+```
+
+Round 2 also added a `metadata` column to `subscriptionTransactions` (jsonb, nullable, matching the pattern already used on `subscriptions.metadata`), so the `'trial_expired'` row can carry `{ creditsRemainingAtCancellation, trialEnd }` without needing new dedicated columns:
+
+```ts
+metadata: jsonb("metadata"),
 ```
 
 ### 3.4 Migration note ✅
 
-The `subscriptions.userId` FK fix was landed prior to this implementation.
+The `subscriptions.userId` FK fix was landed prior to this implementation. The round-2 `subscriptionTransactions.metadata` column is additive and nullable — safe to migrate without backfill.
 
 ---
 
@@ -211,24 +230,22 @@ Two new endpoints are live in `src/routes/payments.ts`:
 
 Both reuse the same `?subscription=success` redirect contract, meaning **`SubscriptionStatusMessage.tsx` needs zero changes**.
 
-### 5.3–5.10 Frontend work — ✅ Completed (in `twistloom-web` repo)
+### 5.3–5.10 Frontend work ✅ (completed in `twistloom-web` repo)
 
-The sections below have been fully implemented in the `twistloom-web` repository.
+All frontend work is complete. The sections below reflect what was built — file paths point to the actual implementation.
 
 **Summary of frontend work completed:**
 
-| Section | Component | Status |
-|---------|-----------|--------|
-| 5.3 | Frontend types (`UserSubscription.isTrial`, `TrialEligibilityResponse`) | ✅ Completed |
-| 5.4 | API service methods (`getTrialEligibility`, `createTrialSession`) | ✅ Completed |
-| 5.5 | `useTrialEligibility` hook | ✅ Completed |
-| 5.6 | `useVipActions.handleStartTrial` | ✅ Completed |
-| 5.7 | `SubscriptionManagement` trial-aware status + countdown | ✅ Completed |
-| 5.8 | Trial CTA components | ✅ Completed |
-| 5.9 | Post-checkout trial-specific success copy | ✅ Completed |
-| 5.10 | Notification center handles `trial_ending_soon` type (zero-code) | ✅ Completed |
-
-Each section below remains as originally written — use them as a direct implementation guide for the frontend work.
+| Section | Component | File(s) | Status |
+|---------|-----------|---------|--------|
+| 5.3 | Frontend types | `src/lib/types/api/subscription.ts` | ✅ `UserSubscription.isTrial` + `trialEnd`, `TrialEligibilityResponse`, `CreateTrialSessionRequest`, `CreateTrialSessionResponse` |
+| 5.4 | API service methods | `src/lib/services/subscription-api.ts:93-110` | ✅ `getTrialEligibility()` + `createTrialSession()` on `SubscriptionApi` class |
+| 5.5 | `useTrialEligibility` hook | `src/lib/hooks/query/useTrialEligibility.ts` | ✅ TanStack Query, `enabled: isAuthReady`, `retry: false`, `staleTime: 2min`, `gcTime: 5min` |
+| 5.6 | `handleStartTrial` action | `src/components/vip/useVipActions.ts:115-128` | ✅ Creates trial session + redirects, fallback URL chain via `overrides`/`params`/`origin` |
+| 5.7 | `SubscriptionManagement` trial display | `src/components/subscription/SubscriptionManagement.tsx` | ✅ Blue-themed banner, `isTrial` + `trialing` detection, `trialDaysLeft` countdown, distinct cancel/warning messages |
+| 5.8 | Trial CTA (inline, not separate component) | `src/components/modals/vip/VipUpgradeModal.tsx` + `src/components/dashboard/DashboardAccountSubscriptionClient.tsx` | ✅ Trial eligibility banner with `Rocket` icon, "Start 1-Month Free Trial" primary CTA, `useTrialEligibility()` + `useVipActions.handleStartTrial` integrated |
+| 5.9 | Post-checkout success copy | `src/components/subscription/SubscriptionStatusMessage.tsx:116-118` | ✅ `isTrial` detection on redirect → `successTrial.title`/`description` locale keys |
+| 5.10 | Notification center (zero-code) | N/A | ✅ `trial_ending_soon` type is handled automatically by the existing `userNotifications` rendering pipeline — no changes needed |
 
 ---
 
@@ -275,7 +292,7 @@ Because `subscriptionTransactions.type = 'trial_started'` is distinct from `'act
 | 3. Backend implementation behind `VIP_TRIAL.enabled` flag | ✅ Complete (`src/config/subscription.ts`, `src/services/subscription.ts`, `src/routes/payments.ts`) |
 | 4. Internal testing with Stripe test clocks (§6) in test mode | 🔲 Pending |
 | 5. Flip `VIP_TRIAL.enabled = true` in test mode | 🔲 Pending |
-| 6. Frontend implementation (see §5.3–5.10) | ✅ Complete |
+| 6. Frontend implementation (types, hooks, API service, components, localization — see §5.3–5.10) | ✅ Complete (ships with the backend in `twistloom-web` repo) |
 | 7. Soft launch: enable for a small % of eligible users | 🔲 Pending |
 | 8. Monitor conversion rate + `webhookDeliveries` failure rate | 🔲 Pending |
 | 9. Full rollout once cohort completes a full cycle cleanly | 🔲 Pending |
@@ -303,7 +320,7 @@ These are the decisions that were made during implementation. If any change, the
 
 ---
 
-## 9. Post-Implementation Review — alignment analysis, open questions & gaps
+## 9. Post-Implementation Review — alignment analysis, design rationale & gaps
 
 ### 9.1 Alignment with LinkedIn's real-world trial model
 
@@ -316,110 +333,127 @@ The roadmap claimed a "LinkedIn-style" model. After researching LinkedIn's actua
 | **Trial duration** | 1 month (exact days vary by region) | `trial_period_days: 30` | ✅ |
 | **Auto-convert to paid** | Yes — unless canceled before trial end | Yes — Stripe handles at trial end | ✅ |
 | **In-app trial-end reminder** | Yes — notifications before trial ends | Yes — `trial_ending_soon` via `userNotifications` | ✅ |
-| **Email trial-end reminder** | Yes — sends to primary email before trial end and before charge | 🔲 **Not implemented** — Stripe's own email exists but Twistloom doesn't send its own via Resend | ⚠️ Gap |
-| **Cancellation behavior** | Cancel early → **immediate loss of Premium access** | Cancel early → VIP continues until trial end (`cancel_at_period_end: true`) | ❌ Mismatch |
-| **Failed payment at conversion** | 5-day grace period to update billing before downgrade | Immediate cancellation via `end_behavior: 'cancel'` | ❌ Mismatch |
-| **Re-trial eligibility** | Cooldown period ("at least 12 months" if canceled) | Permanent one-trial-per-user (never eligible again) | ⚠️ Different approach |
+| **Email trial-end reminder** | Yes — sends to primary email before trial end and before charge | ✅ Implemented (round 2) — `sendTrialEndingEmail()` via Resend, non-blocking alongside in-app notification | ✅ |
+| **Cancellation behavior** | Cancel early → **immediate loss of Premium access** | Cancel early → VIP continues until trial end (`cancel_at_period_end: true`) | ✅ Intentional divergence — see Q1 |
+| **Failed payment at conversion** | 5-day grace period to update billing before downgrade | Immediate cancellation via `end_behavior: 'cancel'` | ✅ Intentional divergence — see Q2 |
+| **Re-trial eligibility** | Cooldown period ("at least 12 months" if canceled) | Permanent one-trial-per-user (never eligible again) | ✅ Intentional divergence — see Q3 |
 | **Cancel deadline** | Must cancel at least 1 day before billing date | Can cancel up to the last minute | ⚠️ More permissive |
 | **Trial-eligible scope** | Multiple factors (region, promotions, history) | Simple: never had trial + no active sub | ⚠️ Simpler |
-| **Notification type** | Email + in-app | In-app only (trial_will_end webhook → userNotifications) | ⚠️ Gap |
+| **Notification type** | Email + in-app | Email + in-app — see Q5 | ✅ |
 
-**Key divergence 1 — Cancellation = immediate downgrade (LinkedIn model):**
-LinkedIn cancels Premium access the moment you cancel during trial. Our implementation lets the user keep VIP until trial end via `cancel_at_period_end: true`. LinkedIn's approach is stricter: if you cancel, the value proposition for converting later is gone, which disincentivizes trial-period gaming.
+**Key divergence 1 — Cancellation stays "keep until trial end," not LinkedIn's immediate downgrade:**
+Resolved in Q1 below — the short version is that Twistloom's trial credits are front-loaded at trial *start*, not metered continuously like LinkedIn's InMail/search access, so there's no incremental gaming risk from letting cancel-at-period-end apply the same way it does for paid subscribers.
 
-**Key divergence 2 — Grace period on failed payment (LinkedIn model):**
-LinkedIn gives 5 days to update billing before downgrading. Our `end_behavior: 'cancel'` terminates immediately on failed payment. LinkedIn's approach is more forgiving and likely converts more users who simply have expired cards rather than unwillingness to pay.
+**Key divergence 2 — `cancel`, not LinkedIn's 5-day grace period, on failed payment at conversion:**
+Resolved in Q2 below — staying with `cancel` for v1 is a "ship simple, revisit with data" call, not a final position.
 
-### 9.2 Open questions requiring your decision
+### 9.2 Design rationale — Q1–Q6 resolved
+
+Each question below is now a documented decision, not an open one. Format: the original question and trade-off, the decision, the reasoning specific to Twistloom (not a generic "it depends"), and what — if anything — changed in code.
+
+---
 
 #### Q1: Cancel mid-trial — immediate downgrade or end-of-trial?
 
-**Current behavior:** Mid-trial cancellation sets `cancel_at_period_end: true` → user keeps VIP until trial end.
+**Trade-off recap:** LinkedIn revokes Premium the instant you cancel during trial. Our implementation lets VIP continue until trial end via `cancel_at_period_end: true`, matching how paid-subscriber cancellation already works.
 
-**LinkedIn behavior:** Canceling during trial immediately revokes Premium access.
+**Decision: keep current behavior (access continues until trial end). No code change.**
 
-**Trade-off:**
-- Immediate downgrade is stricter; prevents users from gaming the system by canceling and still getting the full trial period
-- End-of-period is more generous and matches the non-trial cancellation UX (paid subscribers keep access until period end)
+**Why, specifically for Twistloom:** LinkedIn's stricter model defends against continuous metering — InMail credits and search visibility are usable throughout the month, so letting someone cancel-yet-keep-access is genuine ongoing leakage for them. Twistloom's trial credits don't work that way: the full 50 credits land in one lump sum at trial *start*, not doled out over the 30 days. By the time a user could even click "cancel," the credits have already been granted — revoking VIP status doesn't claw anything back, it only stops the 2x check-in multiplier and badge for the remaining trial days.
 
-**→ Is the current "keep until trial ends" behavior acceptable, or should canceling mid-trial immediately downgrade?**
+More importantly: a user can get the *identical* outcome — 50 free credits, never charged — by doing nothing and just letting the trial lapse with no valid card. Cancel-at-period-end isn't an additional exploit on top of that; it's the same outcome reached a different way. Matching LinkedIn here would make cancellation feel punitive and inconsistent with the paid-subscriber mental model, without closing any gap that doesn't already exist regardless.
+
+**If you revisit this:** the trigger would be evidence that users are specifically using cancel-during-trial (vs. just not converting) as a deliberate farming pattern — something the Q4 tracking below would help surface, since both paths end in the same `trial_expired` row.
+
+---
 
 #### Q2: Failed payment at conversion — grace period or immediate cancel?
 
-**Current behavior:** `end_behavior: 'cancel'` → Stripe cancels immediately if card fails at trial end. The cron job (vip-expiration.ts) downgrades the user on next run.
+**Trade-off recap:** LinkedIn gives 5 days to fix billing before downgrading. `end_behavior: 'cancel'` terminates immediately.
 
-**LinkedIn behavior:** 5-day grace period to update billing info before downgrade.
+**Decision: keep `end_behavior: 'cancel'` for v1. No code change.**
 
-**Trade-off:**
-- Immediate cancel is simpler (no paused state to handle), cleaner for v1
-- Grace period likely recovers more users who just have expired cards
+**Why, specifically for Twistloom:** This was always framed as "ship simple, revisit with data" (§2), and that framing hasn't changed — you don't have a launched trial yet, which means you don't have data on how much conversion is actually being lost to expired-vs-abandoned cards. `'pause'` earns its complexity (a `paused` UI state, a resume flow, "update your card" reminder logic) once you can point at real numbers showing that complexity pays for itself. Building it speculatively now is optimizing for a problem you can't yet measure.
 
-**→ Is the current immediate-cancel acceptable for v1, or should we switch to `end_behavior: 'pause'` with a grace period?**
+**If you revisit this:** once you have a full cohort's worth of trial-conversion data, look specifically at how many failed-conversion cancellations happen within, say, 48 hours of the charge attempt (a strong signal for "the card just expired" vs. "actively didn't want to pay"). That number is what would justify building `pause`.
+
+---
 
 #### Q3: Re-trial eligibility — permanent lockout or cooldown?
 
-**Current behavior:** `vipTrialUsedAt` is set once, never cleared → permanent one-trial-per-user.
+**Trade-off recap:** LinkedIn allows a re-trial after a ~12-month cooldown. `vipTrialUsedAt` is currently permanent — set once, never cleared.
 
-**LinkedIn behavior:** Cooldown period ("at least 12 months" if you canceled your trial; possibly longer if you converted and then canceled).
+**Decision: keep permanent lockout. No code change.**
 
-**Trade-off:**
-- Permanent lockout is simpler and prevents abuse
-- Cooldown is friendlier for users who genuinely forgot to cancel; gives them a second chance after a long period
-- LinkedIn's model prevents re-trials but brings users back after 12+ months — potentially valuable for user retention
+**Why, specifically for Twistloom:** A cooldown is a re-engagement lever, and re-engagement levers pay off at volume — LinkedIn has enough lapsed-trial users that winning back a meaningful fraction 12 months later is worth the bookkeeping (a `vipTrialCooldownUntil` column, logic to check and clear it, decisions about what counts as "cooldown expired"). At Twistloom's current stage, you don't have enough historical trial users for that lever to move any meaningful number yet. Permanent lockout is simpler, and — importantly — it's the easier direction to change later: loosening a permanent lockout into a cooldown is a straightforward migration; the reverse (tightening a cooldown back to permanent after users have come to expect re-trial eligibility) is the genuinely annoying one.
 
-**→ Should we keep permanent lockout, or implement a cooldown (e.g., 12 months) via an additional `vipTrialCooldownUntil` column?**
+**If you revisit this:** once you have enough lapsed-trial-user volume that a win-back campaign would be statistically meaningful, not before.
+
+---
 
 #### Q4: Trial credits after failed conversion — keep or claw back?
 
-**Current behavior:** If a trial doesn't convert (card fails), `downgradeUserFromVip()` clears tier/vipExpiresAt/subscriptionId but does **not** deduct the 50 trial credits. The user keeps them.
+**Trade-off recap:** Credits granted at trial start are never reclaimed if the trial doesn't convert. LinkedIn has no analog (no in-app currency).
 
-**LinkedIn behavior:** N/A (LinkedIn doesn't have an in-app currency tied to subscriptions).
+**Decision: no clawback — but capture the data needed to revisit this later. Implemented.**
 
-**Trade-off:**
-- Keeping credits is generous; the user effectively got 50 free credits for trying VIP (positive UX, may convert later via credit pack purchase)
-- Clawing back is more protection against abuse (users who repeatedly find ways to get trials and keep credits)
-- Stripe's `end_behavior: 'cancel'` means the subscription is gone — there's no webhook we can easily hook into for clawback without tracking trial start↔end state explicitly
+**Why, specifically for Twistloom:** The abuse surface here is already tightly bounded by Q3's permanent lockout — at most 50 credits, once, ever, per user, with no repeat exploit available. Clawback would also only ever recover *unspent* credits (spent ones already hit the existing refund floor at zero), so the realistic recoverable amount per non-converting trial is somewhere between 0 and 50 credits, one time. Weigh that thin upside against the failure mode on the other side: clawing back credits from someone who just changed their mind about the card reads as punitive, and is exactly the kind of thing that generates a bad review from someone who wasn't trying to abuse anything.
 
-**→ Should trial credits be clawed back on failed conversion, or does the card-required gate make this acceptable?**
+What's genuinely worth having is the *data* — not a policy, a number. `cancelSubscription()` now checks whether a cancelled subscription ever converted (via `subscriptionTransactions` history: has a `'trial_started'` row, has no `'renewal'` row — not the `isTrial` flag, which is usually already cleared by a preceding `customer.subscription.updated` event by the time `.deleted` fires). If it never converted, it logs a `trial_expired` row with the user's credit balance at that moment, in `metadata.creditsRemainingAtCancellation`. Zero UX cost, and if trial-credit abuse ever turns out to be a real cost driver, you'll have the actual numbers instead of a guess.
 
-#### Q5: Email notifications for trial ending — should we send via Resend?
+**Code changes:**
+- `subscriptionTransactions.metadata` (jsonb, nullable) — new column
+- `SubscriptionTransactionType` — added `'trial_expired'` (both backend and frontend types)
+- `cancelSubscription()` in `subscription.services.ts` — the tracking logic described above
 
-**Current behavior:** Only in-app notification via `userNotifications` table + Stripe's own trial-ending email (Dashboard config).
+**If you revisit this:** query `subscriptionTransactions WHERE type = 'trial_expired'` for the distribution of `metadata.creditsRemainingAtCancellation`. If most non-converters have spent most of their credits by cancellation, clawback wouldn't recover much even if you built it — that alone might settle the question without further debate.
 
-**LinkedIn behavior:** Sends email reminders before trial end AND before charging.
+---
 
-**Context:** The codebase already has Resend integration (`src/utils/email.ts`) — `sendPasswordResetEmail()`, `sendWelcomeEmail()`, etc.
+#### Q5: Email notifications for trial ending — send via Resend?
 
-**→ Do you want to add a `sendTrialEndingEmail()` function, or rely on Stripe's own email for v1?**
+**Trade-off recap:** Currently only Stripe's own trial-ending email (Dashboard config) plus an in-app notification. LinkedIn sends its own branded email.
+
+**Decision: yes, add `sendTrialEndingEmail()`. Implemented.**
+
+**Why, specifically for Twistloom:** Stripe's built-in email is a genuine zero-code safety net, but it's generic and Stripe-branded — for an app with its own distinct voice, a user might not immediately parse "billing notification from Stripe" as being from Twistloom specifically, and it competes for attention differently than a branded email would. You already have the Resend pipeline built (`sendWelcomeEmail`, `sendPasswordResetEmail`) and the exact trigger point already exists (`handleTrialWillEnd`, right next to where the in-app notification gets created) — the marginal cost of adding this is small, and it has a direct line to the metric that matters most for the whole feature: conversion rate.
+
+**Code changes:**
+- `handleTrialWillEnd()` in `subscription.services.ts` — now fetches `email`/`name` and calls `sendTrialEndingEmail()`, wrapped so a send failure can't break the in-app notification or fail the webhook
+- `email.trial-ending-addition.ts` (delivered separately) — the actual send function, written to merge into your real `src/utils/email.ts`, which wasn't available to edit directly. Adjust sender identity and template styling to match your existing emails.
+
+**Sequencing:** land this before full rollout (§8 step 7); it doesn't need to block internal/soft-launch testing.
+
+---
 
 #### Q6: Environment variable documentation
 
-Three new env vars were introduced:
-- `VIP_TRIAL_ENABLED` (default: `false`)
-- `VIP_TRIAL_PERIOD_DAYS` (default: `30`)
-- `VIP_TRIAL_END_BEHAVIOR` (default: `cancel`)
+**Decision: document them. Implemented.**
 
-**→ Should these be documented in a `.env.example` file or in the project README?**
+Straightforward hygiene — `env.trial-addition.example` (delivered separately) has all three (`VIP_TRIAL_ENABLED`, `VIP_TRIAL_PERIOD_DAYS`, `VIP_TRIAL_END_BEHAVIOR`) with descriptions, ready to merge into your real `.env.example`.
+
+---
 
 ### 9.3 Future implementation gaps (not blockers)
 
 These are non-critical gaps that can be addressed post-launch:
 
 | Item | Priority | Description |
-|------|----------|-------------|
-| **Trial analytics queries** | Low | §7 of the roadmap describes queries (trial starts/week, conversion rate, time-to-cancel). No views or SQL have been written. The `subscriptionTransactions.type = 'trial_started'` distinction makes these trivial to write when needed. |
-| **Stripe-side abuse prevention** | Low | §4.5 mentions Stripe Radar rules for repeat-trial card fingerprints. Not implemented — can be configured directly in the Stripe Dashboard. |
-| **Stripe trial-ending email config** | Low | §4.4b mentions Dashboard → Subscriptions and emails → Manage free trial messaging. This is a Stripe-side config, not code. |
-| **Automated tests** | Medium | No test files were created. The roadmap mentions Stripe test clocks (§6) for manual testing. Consider adding automated tests for `isTrialEligible()`, the eligibility endpoint, and the trial checkout endpoint. |
-| **Pause behavior** | Low | If you later want `end_behavior: 'pause'` instead of `cancel`, the `VIP_TRIAL.endBehavior` config is ready, but the downgrade path needs revisiting (paused subscriptions don't trigger `customer.subscription.deleted`). |
+|------|----------|--------------|
+| **Trial analytics queries** | Low | §7 describes the queries (trial starts/week, conversion rate, time-to-cancel). No views or SQL written yet. Both `subscriptionTransactions.type = 'trial_started'` and the new `'trial_expired'` (with its credits-remaining snapshot) make these straightforward to write when you actually want the dashboard. |
+| **Stripe-side abuse prevention** | Low | §4.5 mentions Stripe Radar rules for repeat-trial card fingerprints. Configured in the Stripe Dashboard, not code — not implemented. |
+| **Stripe trial-ending email config** | Low | §4.4b mentions Dashboard → Subscriptions and emails → Manage free trial messaging. Stripe-side config, not code. |
+| **Automated tests** | Medium | No test files yet. §6 covers manual Stripe test-clock scenarios. Worth automating `isTrialEligible()`, the eligibility endpoint, the trial checkout endpoint, and now `cancelSubscription()`'s trial-expired branch given the transaction-history logic isn't entirely trivial. |
+| **`pause` end behavior** | Low | Deliberately deferred per Q2. `VIP_TRIAL.endBehavior` config is ready for it, but the downgrade/notification path needs the work described in §4.6 before it's safe to flip. |
 
-### Summary: decisions needed before launch
+### Resolution summary
 
-| # | Question | Impact if not decided |
-|---|----------|---------------------|
-| Q1 | Cancel mid-trial: immediate downgrade or end-of-period? | Affects frontend cancellation UX + subscription management display |
-| Q2 | Failed payment at conversion: cancel or grace period? | Affects conversion rate + user recovery path |
-| Q3 | Re-trial: permanent lockout or cooldown? | Affects long-term user acquisition strategy |
-| Q4 | Trial credits on failed conversion: keep or claw back? | Affects abuse surface + credit economy |
-| Q5 | Email notifications via Resend for trial ending? | Affects user communication strategy |
-| Q6 | Document new env vars? | Affects deployability for other developers |
+| # | Question | Decision | Status |
+|---|----------|----------|--------|
+| Q1 | Cancel mid-trial: immediate downgrade or end-of-period? | Keep end-of-period | ✅ No code change — current behavior is correct |
+| Q2 | Failed payment at conversion: cancel or grace period? | Keep `cancel` for v1 | ✅ No code change — revisit with real conversion data |
+| Q3 | Re-trial: permanent lockout or cooldown? | Keep permanent lockout | ✅ No code change — revisit at higher lapsed-user volume |
+| Q4 | Trial credits on failed conversion: keep or claw back? | No clawback, track the data | ✅ Implemented |
+| Q5 | Email notifications via Resend for trial ending? | Yes | ✅ Implemented |
+| Q6 | Document new env vars? | Yes | ✅ Implemented |
+
