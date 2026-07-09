@@ -31,7 +31,6 @@ import type Stripe from "stripe";
 import { eq, sql, and, desc, inArray } from "drizzle-orm";
 import { createPaginatedResponse, calculatePaginationMeta } from "../utils/pagination.js";
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { checkRateLimitByIP } from "../middleware/rate-limit.js";
 import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications, subscriptions } from "../db/schema.js";
 import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
@@ -968,16 +967,21 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
  * Handles Stripe webhook events for payment processing.
  * Processes checkout.session.completed events to add credits and create transactions.
  * 
+ * Stripe webhook events:
  * Endpoint: https://twistloom-backend.vercel.app/api/payments/stripe/webhook
- * Events:
- * - checkout.session.completed
- * - charge.refunded
- * - customer.subscription.created
- * - customer.subscription.updated
- * - customer.subscription.deleted
- * - customer.subscription.trial_will_end
- * - invoice.payment_succeeded
- * - invoice.payment_failed
+ * Configure: https://dashboard.stripe.com/acct_1TSpFoFmDKrMqBDf/test/workbench/webhooks/we_1TSpnnFmDKrMqBDfiLH29ofk/edit
+ * API version: 2026-04-22.dahlia
+ * Events (10):
+ * - checkout.session.completed ✅
+ * - charge.refunded ✅
+ * - customer.subscription.created ✅
+ * - customer.subscription.updated ✅
+ * - customer.subscription.deleted ✅
+ * - customer.subscription.trial_will_end ✅
+ * - invoice.payment_succeeded ✅
+ * - invoice.payment_failed ✅
+ * - payment_intent.payment_failed (no-op — handled upstream by Stripe's retries & invoice.payment_failed)
+ * - payment_intent.succeeded (no-op — checkout.session.completed is the authoritative event for one-time payments)
  * 
  * Headers:
  * - stripe-signature: Stripe signature for webhook verification
@@ -1012,10 +1016,24 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
  * // when configured in the Stripe dashboard
  */
 router.post("/stripe/webhook", async (req: Request, res: Response) => {
-  // Apply IP-based rate limiting for webhook security (100 requests per 15 minutes)
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  if (!checkRateLimitByIP(ip)) {
-    return handleRateLimitError(res, 'Too many webhook requests from this IP');
+  // Rate limiting: Redis-based with generous global limits.
+  //
+  // Stripe signature verification is the real auth for this endpoint — the
+  // in-memory IP rate limiter (checkRateLimitByIP) is unsuitable here because:
+  //   1. All Stripe webhooks originate from a small pool of Stripe IPs, so they'd
+  //      share one rate-limit bucket and hit the (very low) default limit instantly.
+  //   2. In serverless (Vercel), in-memory state resets on cold starts, making a
+  //      per-instance limiter unreliable anyway.
+  //
+  // Instead, use Redis-based rate limiting as defense-in-depth with a generous
+  // threshold. This protects against a misconfigured Stripe dashboard sending an
+  // event storm, without blocking legitimate deliveries.
+  const webhookRateLimit = await checkRateLimit('stripe-webhook-global', {
+    maxRequests: 300,
+    windowSeconds: 60,
+  });
+  if (!webhookRateLimit.allowed) {
+    return handleRateLimitError(res, 'Too many webhook requests');
   }
   
   // Track webhook delivery
@@ -1038,13 +1056,34 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
     }
 
     // Only insert if it doesn't exist. If it does, we just update it.
+    //
+    // Race-guard: The SELECT above has a race window — two concurrent deliveries
+    // of the same event can both see `existingDelivery.length === 0` before
+    // either commit their INSERT. When that happens, the second INSERT hits the
+    // unique constraint on webhookDeliveries.eventId. We catch that specific
+    // error and fetch the record inserted by the first request.
     if (existingDelivery.length === 0) {
-      const [deliveryRecord] = await dbWrite.insert(webhookDeliveries).values({
-        eventId: event.id,
-        eventType: event.type,
-        status: 'retrying',
-      }).returning();
-      webhookDeliveryId = deliveryRecord.id;
+      try {
+        const [deliveryRecord] = await dbWrite.insert(webhookDeliveries).values({
+          eventId: event.id,
+          eventType: event.type,
+          status: 'retrying',
+        }).returning();
+        webhookDeliveryId = deliveryRecord.id;
+      } catch (insertError) {
+        // Unique violation (SQLSTATE 23505): another concurrent delivery
+        // already inserted this event. Fetch the existing record instead.
+        if (isUniqueViolation(insertError)) {
+          const [dupRecord] = await dbRead.select()
+            .from(webhookDeliveries)
+            .where(eq(webhookDeliveries.eventId, event.id))
+            .limit(1);
+          webhookDeliveryId = dupRecord?.id ?? null;
+          console.log(`[stripe] 🔄 Concurrent delivery race resolved at webhookDelivery INSERT: ${event.id}`);
+        } else {
+          throw insertError;
+        }
+      }
     } else {
       webhookDeliveryId = existingDelivery[0].id;
     }

@@ -880,7 +880,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     outputJsonFallbackField,
     outputJsonStructure,
     outputJsonRequired,
-    systemPrompt = PROMPT_SYSTEM,
+    systemPrompt: originalSystemPrompt = PROMPT_SYSTEM,
     documents = [],
     context = 'ai',
     logPrompts = false,
@@ -888,12 +888,15 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     meta
   } = options;
 
-  // Define provider order from modelSelection or use empty array
-  const providers = Object.keys(modelSelection) as AIChatProvider[];
-  
+  // Early exit: Define provider order from modelSelection or use empty array
   // If no modelSelection provided, return empty response
+  const providers = Object.keys(modelSelection) as AIChatProvider[];
   if (providers.length === 0) return { provider: 'none', output: '' };
 
+  // Flag whether structured output is active
+  const supportsStructuredOutput = Boolean(outputJsonStructure && outputJsonRequired?.length);
+
+  // Mark AI generation start event
   await onProgress?.({ type: 'ai_generation_start' });
   await onGenerationProgress?.('ai_generation');
 
@@ -901,6 +904,10 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   for (const provider of providers) {
     const isFirstIteration = providers.indexOf(provider) === 0;
     let result: AIResponse<string> | null = null;
+
+    // Append outputFormat to systemPrompt when structured output is active or provider is gemini
+    const shouldAppendOutputFormat = options.outputFormat && (supportsStructuredOutput || provider === 'gemini');
+    const systemPrompt = shouldAppendOutputFormat ? `${originalSystemPrompt}\n\n---\n${options.outputFormat}` : originalSystemPrompt;
 
     try {
       const models = modelSelection[provider];
@@ -910,6 +917,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       const totalDocumentsLength = documents.reduce((sum, doc) => sum + `${doc.title ?? ''}${doc.snippet}`.length, 0);
       const totalPromptLength = systemPrompt.length + prompt.length + totalDocumentsLength;
       const maxPromptLength = AI_MAX_PROMPT_LENGTH[provider];
+
+      // Skip if total prompt length exceeded provider's max prompt length
       if (totalPromptLength > maxPromptLength) {
         console.log(`[${provider}] ⚠️ Prompt length (${totalPromptLength.toLocaleString()} chars) exceeds limit (${maxPromptLength.toLocaleString()} chars), skipping`);
         continue;
@@ -921,6 +930,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         continue;
       }
 
+      // AI provider is available and ready to be used
       console.log(`[${provider}] 🧠 Ready with task (${models.length} models)...`);
       
       // Only log prompts on the very first iteration
@@ -939,13 +949,13 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
       
       // Provider-agnostic stack
       switch (provider) {
-        case 'github': result = await githubPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
-        case 'gemini': result = await geminiPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
-        case 'cohere': result = await coherePrompt(prompt, opts); break;         // ✅ JSON schema | ✅ document via RAG
-        case 'mistral': result = await mistralPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
-        case 'groq': result = await groqPrompt(prompt, opts); break;             // ✅ JSON schema | ☑️ document via system prompt
-        case 'cerebras': result = await cerebrasPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
-        case 'nvidia': result = await nvidiaPrompt(prompt, opts); break;         // ✅ JSON schema via extra_body | ☑️ document via system prompt
+        case 'github':     result = await githubPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
+        case 'gemini':     result = await geminiPrompt(prompt, opts); break;         // ✅ JSON schema | ☑️ document via system prompt
+        case 'cohere':     result = await coherePrompt(prompt, opts); break;         // ✅ JSON schema | ✅ document via RAG
+        case 'mistral':    result = await mistralPrompt(prompt, opts); break;       // ✅ JSON schema | ☑️ document via system prompt
+        case 'groq':       result = await groqPrompt(prompt, opts); break;             // ✅ JSON schema | ☑️ document via system prompt
+        case 'cerebras':   result = await cerebrasPrompt(prompt, opts); break;     // ✅ JSON schema | ☑️ document via system prompt
+        case 'nvidia':     result = await nvidiaPrompt(prompt, opts); break;         // ✅ JSON schema via extra_body | ☑️ document via system prompt
         case 'openrouter': result = await openrouterPrompt(prompt, opts); break; // Same as github
         case 'cloudflare': result = await cloudflarePrompt(prompt, opts); break; // Same as github
       }

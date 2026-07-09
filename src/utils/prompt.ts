@@ -4454,26 +4454,14 @@ export async function executePromptForJSON<T extends Record<string, unknown>>(
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
 ): Promise<AIResponse<T>> {
   const { prompt, configs, jsonStructure, fieldInstructions, reviewChecklist, evaluatorPrompt } = params;
-  // TODO: exclude 'gemini' which not supporting complex schema
-  // const supportsStructuredOutput = Boolean(configs.schema && configs.requiredFields?.length); // schema and required fields is specified
-
-  /**
-   * When structured output is active, send only a compact field-list reminder
-   * instead of the full verbose JSON template. Saves ~1 000–2 000 tokens.
-   */
   const outputFormatPart = jsonStructure.trim();
-  // TODO: move this logic and `supportsStructuredOutput` to be inside `aiPrompt`
-  // const outputFormatPart = supportsStructuredOutput
-  //   ? `OUTPUT FORMAT: Respond with valid JSON matching the schema provided.\nRequired fields: ${configs.requiredFields.join(', ')}`
-  //   : `OUTPUT FORMAT (JSON):\n${jsonStructure.trim()}\n\nIMPORTANT: Return ONLY the raw JSON object. Must begin exactly with the character '{'.`;
-
   const fieldInstructionsPart = fieldInstructions ? `FIELD INSTRUCTIONS:\n${stripEmptyLines(fieldInstructions)}` : '';
 
   /**
    * Standard models approach (default).
    * Not needed for reasoning-capable models, but acceptable for multi-provider fallback architecture.
    * 
-   * | Model Type | Examples in Your Stack | Best Approach |
+   * | Model Type | Model Stack | Best Approach |
    * | --- | --- | --- |
    * | **Native Reasoning Models** | OpenAI o-series, Gemini Thinking, DeepSeek R1 | **Option 1 (Hidden Reasoning).** Do not use a scratchpad. Let the model think natively and output clean JSON. |
    * | **Standard/Fast Models** | Llama 3 (Groq/Cerebras), Mistral (Cloudflare) | **Option 2 (Lightweight Plan).** A concise, structured scratchpad is mandatory to force adherence before generating prose. |
@@ -4500,12 +4488,8 @@ Do not explain, summarize, or mention this review process.` : '';
     prompt.trim(),
   ].join('\n\n---\n');
 
-  // Static outputFormatPart combined with the system prompt
   const options = createAIOptionsWithSchema<T>(configs);
-  // options.systemPrompt = `${options.systemPrompt ?? PROMPT_SYSTEM}\n\n---\n${outputFormatPart}`;
   options.outputFormat = outputFormatPart;
-
-  // TODO: inside `aiPrompt`, if `supportsStructuredOutput` or provider is `gemini`, append `options.outputFormat` to `options.systemPrompt`
   const response = await aiPrompt<T>(
     userPrompt,
     options,

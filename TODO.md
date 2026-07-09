@@ -35,20 +35,6 @@
 
 ---
 
-ensure stripe webhook events:
- * Endpoint: https://twistloom-backend.vercel.app/api/payments/stripe/webhook
- * Events:
- * - checkout.session.completed
- * - charge.refunded
- * - customer.subscription.created
- * - customer.subscription.updated
- * - customer.subscription.deleted
- * - customer.subscription.trial_will_end
- * - invoice.payment_succeeded
- * - invoice.payment_failed
-
----
-
 [ ] callers of `getEnrichedBookSelect` should left join to:
   - userSessions
   - firstPageSq
