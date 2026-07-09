@@ -655,11 +655,20 @@ export async function performDailyCheckIn(userId: string, claimType: CheckinClai
 
       const totalCreditsClaimed = totals[0]?.totalCreditsClaimed || 0;
 
+      // Read the raw streak from counters (trigger already updated it after INSERT)
+      const [counterRow] = await tx
+        .select({ activeCheckinStreak: userCounters.activeCheckinStreak })
+        .from(userCounters)
+        .where(eq(userCounters.userId, userId))
+        .limit(1);
+
+      const newStreak = counterRow?.activeCheckinStreak ?? prevStreak + 1;
+
       console.log(`[checkin] 🎁 User ${userId} checked in (${claimType}) and claimed ${creditsToAward} credits!`);
       return {
         success: true,
         creditsAwarded: creditsToAward,
-        currentStreak: Math.min(prevStreak + 1, DAILY_CHECKIN_DAYS),
+        currentStreak: newStreak,
         totalCreditsClaimed,
         checkInDate: todayUTC,
         message: `Successfully claimed ${creditsToAward} ${claimType === 'vip_2x' ? 'VIP 2x' : 'daily'} credits`,
@@ -756,8 +765,8 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
       return s;
     })();
 
-    // Display streak capped at DAILY_CHECKIN_DAYS (HUD shows 7 for a completed cycle)
-    const displayStreak = Math.min(rawStreak, DAILY_CHECKIN_DAYS);
+    // Raw streak displayed as-is (grid uses todayCycleDay, not currentStreak)
+    const displayStreak = rawStreak;
 
     // Determine claimed rewards directly from today's check-in rows
     const claimedRewards: CheckinClaimType[] = canCheckInStatus.claimTypes;
