@@ -1,17 +1,18 @@
 /**
- * Email Templates Configuration
- * 
- * Centralized email templates for transactional emails.
- * All templates are exported as functions that return HTML strings.
- * 
+ * Email Templates Index
+ *
+ * Centralised barrel export for all transactional email template functions.
+ * Every template uses the shared `buildEmailHtml` layout for visual consistency.
+ *
  * @example
  * ```typescript
- * import { getPasswordResetTemplate, getVerificationTemplate, getWelcomeTemplate } from '../config/emails/index.js';
- * 
- * const resetHtml = getPasswordResetTemplate('Twistloom', 'https://app.com/reset-password?token=xxx');
+ * import { getPasswordResetTemplate, getTrialEndingTemplate } from '../config/emails/index.js';
+ *
+ * const html = getPasswordResetTemplate('Twistloom', 'https://...');
  * ```
  */
 
 export { getPasswordResetTemplate } from './password-reset.js';
 export { getVerificationTemplate } from './verification.js';
 export { getWelcomeTemplate } from './welcome.js';
+export { getTrialEndingTemplate } from './trial-ending.js';

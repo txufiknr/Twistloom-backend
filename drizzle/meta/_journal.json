@@ -120,6 +120,20 @@
       "when": 1783561919810,
       "tag": "0016_sad_fantastic_four",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783565175134,
+      "tag": "0017_small_marvel_apes",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783565193564,
+      "tag": "0018_tan_switch",
+      "breakpoints": true
     }
   ]
 }

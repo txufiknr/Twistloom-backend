@@ -584,20 +584,26 @@ export const actionProgress = pgTable(
 
 /**
  * Create usage table to track daily AI requests
- * @summary Track how many AI requests were made per day by provider and context
+ * @summary Track how many AI requests were made per day by provider, model, and context,
+ * with token and duration metrics for cost analysis and performance monitoring.
  */
 export const usage = pgTable(
   "usage",
   {
-    date, // YYYY-MM-DD format
-    provider: text("provider").$type<AIChatProvider>().notNull(), // github | gemini | groq | cohere | cerebras | mistral | nvidia
-    requests: integer("requests"), // Number of AI requests made
-    // TODO: add model, input token, output token, duration & TTFT?
-    context: text("context"), // Usage context, e.g. 'story-page', etc.
+    date,
+    provider: text("provider").$type<AIChatProvider>().notNull(),
+    model: text("model"), // Specific model used (e.g., "gemini-2.0-flash", "llama-3.3-70b")
+    requests: integer("requests").notNull().default(0),
+    inputTokens: integer("input_tokens"), // Prompt tokens consumed
+    outputTokens: integer("output_tokens"), // Completion tokens generated
+    totalTokens: integer("total_tokens"), // Total tokens (input + output)
+    cachedTokens: integer("cached_tokens"), // Tokens served from provider-side cache
+    durationMs: integer("duration_ms"), // Wall-clock request duration in milliseconds
+    context: text("context"), // Usage context, e.g. 'story-page', 'ai-stream-sse', etc.
   },
   (t) => [
-    // Composite primary key for date + provider + context
-    primaryKey({ columns: [t.date, t.provider, t.context] }),
+    // Composite primary key for date + provider + context + model
+    primaryKey({ columns: [t.date, t.provider, t.context, t.model] }),
   ]
 );
 

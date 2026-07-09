@@ -293,29 +293,56 @@ export async function canUseAIToday(provider: AIChatProvider): Promise<boolean> 
 }
 
 /**
- * Increments daily usage count for a specific AI provider and context
+ * Increments daily usage count for a specific AI provider, model, and context
+ * 
+ * Records request count and optionally token/duration metrics for cost analysis
+ * and performance monitoring.
  * 
  * @param provider - The AI provider to increment usage for
- * @param context - The usage context (e.g., 'summary', 'context', 'title', etc.)
- * @returns Promise that resolves when increment is complete
+ * @param context - The usage context (e.g., 'story-page', 'ai-stream-sse', etc.)
+ * @param options - Optional metrics: model, inputTokens, outputTokens, totalTokens, cachedTokens, durationMs
  * 
  * @example
  * ```typescript
- * // Increment usage for summary generation
+ * // Minimal increment (count only)
  * await incrementDailyUsageCount('gemini', 'summary');
  * 
- * // Increment usage for context generation
- * await incrementDailyUsageCount('github', 'context');
+ * // With full metrics
+ * await incrementDailyUsageCount('groq', 'story-page', {
+ *   model: 'llama-3.3-70b-versatile',
+ *   inputTokens: 450,
+ *   outputTokens: 120,
+ *   totalTokens: 570,
+ *   durationMs: 1234,
+ * });
  * ```
  */
-export async function incrementDailyUsageCount(provider: AIChatProvider, context: string): Promise<void> {
-  // Increment daily usage counter (upsert)
+export async function incrementDailyUsageCount(
+  provider: AIChatProvider,
+  context: string,
+  options?: {
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cachedTokens?: number;
+    durationMs?: number;
+  }
+): Promise<void> {
   try {
     const today = getTodayDate();
+    const { model, inputTokens, outputTokens, totalTokens, cachedTokens, durationMs } = options ?? {};
+
     await dbWrite.execute(sql`
-      INSERT INTO "usage" (date, provider, requests, context)
-      VALUES (${today}, ${provider}, 1, ${context})
-      ON CONFLICT (date, provider, context) DO UPDATE SET requests = "usage".requests + 1
+      INSERT INTO "usage" (date, provider, model, requests, input_tokens, output_tokens, total_tokens, cached_tokens, duration_ms, context)
+      VALUES (${today}, ${provider}, ${model}, 1, ${inputTokens}, ${outputTokens}, ${totalTokens}, ${cachedTokens}, ${durationMs}, ${context})
+      ON CONFLICT (date, provider, context, model) DO UPDATE SET
+        requests = "usage".requests + 1,
+        input_tokens = COALESCE("usage".input_tokens, 0) + COALESCE(${inputTokens}, 0),
+        output_tokens = COALESCE("usage".output_tokens, 0) + COALESCE(${outputTokens}, 0),
+        total_tokens = COALESCE("usage".total_tokens, 0) + COALESCE(${totalTokens}, 0),
+        cached_tokens = COALESCE("usage".cached_tokens, 0) + COALESCE(${cachedTokens}, 0),
+        duration_ms = COALESCE("usage".duration_ms, 0) + COALESCE(${durationMs}, 0)
     `);
   } catch (err) {
     console.error(`[${provider}] ❌ Failed to increment usage for context '${context}':`, err);

@@ -298,6 +298,8 @@ export async function aiStreamSSE(
               controller.enqueue(encoder.encode(createEndEvent(provider, model)));
               providerSucceeded = true;
 
+              const completedAt = Date.now();
+
               // Log telemetry
               logGenerationTelemetry({
                 provider,
@@ -307,9 +309,9 @@ export async function aiStreamSSE(
                 estimatedPromptTokens: estimateTokens(promptChars),
                 requestStartedAt,
                 firstTokenAt,
-                completedAt: Date.now(),
+                completedAt,
                 ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : null,
-                generationMs: firstTokenAt ? Date.now() - firstTokenAt : null,
+                generationMs: firstTokenAt ? completedAt - firstTokenAt : null,
                 cachedTokens: usage?.cachedTokens,
                 cacheHitRate: (usage?.promptTokens && usage?.cachedTokens != null)
                   ? usage.cachedTokens / usage.promptTokens
@@ -326,9 +328,15 @@ export async function aiStreamSSE(
                 // ignore
               }
 
-              // Log success and increment usage
-              logAISuccess({ provider, model, output: '[SSE Stream]', result: '[SSE Stream]' });
-              await incrementDailyUsageCount(provider, context ?? 'ai-stream-sse');
+              // Log success and increment usage with telemetry metrics
+              const durationMs = completedAt - requestStartedAt;
+              logAISuccess({ provider, model, output: '[SSE Stream]', result: '[SSE Stream]', durationMs });
+              await incrementDailyUsageCount(provider, context ?? 'ai-stream-sse', {
+                model,
+                inputTokens: usage?.promptTokens,
+                cachedTokens: usage?.cachedTokens,
+                durationMs,
+              });
               break; // Success - break out of model loop
             } catch (error) {
               console.log(`[${provider}] ⚠️ Model ${model} failed:`, getErrorMessage(error));

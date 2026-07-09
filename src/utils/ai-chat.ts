@@ -90,21 +90,34 @@ async function promptWithFallback<T>(
       
       // Success handling: Process valid response and return result
       if (output) {
-        const usage = extractUsage(response);
+        const rawUsage = extractUsage(response);
         const finishReason = extractFinishReason(response);
+        const durationMs = Date.now() - requestStartAt;
         const aiResponse: AIResponse<string> = {
           provider,
           model,
           output,
-          result: output, // Add result property for string type
-          usage,
+          result: output,
+          usage: rawUsage,
+          durationMs,
           finishReason
         };
+
+        // Extract numeric token values from the loosely-typed usage record
+        const usage = rawUsage as Record<string, unknown> | undefined;
+        const num = (v: unknown): number | undefined => typeof v === 'number' ? v : undefined;
         
         // Logging: Log successful AI response
         logAISuccess(aiResponse, requestStartAt);
-        // Usage tracking: Increment daily usage counter on successful AI response
-        await incrementDailyUsageCount(provider, options.context ?? 'ai-prompt');
+        // Usage tracking: Increment daily usage counter with metrics
+        await incrementDailyUsageCount(provider, options.context ?? 'ai-prompt', {
+          model,
+          inputTokens: num(usage?.promptTokens) ?? num(usage?.inputTokens),
+          outputTokens: num(usage?.completionTokens) ?? num(usage?.outputTokens),
+          totalTokens: num(usage?.totalTokens),
+          cachedTokens: num(usage?.cachedTokens),
+          durationMs,
+        });
         return aiResponse;
       }
 

@@ -544,12 +544,10 @@ export async function handleTrialWillEnd(stripeSubscriptionId: string): Promise<
   try {
     const { sendTrialEndingEmail } = await import("../utils/email.js");
     if (row.trialEnd) {
-      await sendTrialEndingEmail({
-        to: row.email,
-        name: row.name,
-        trialEndDate: row.trialEnd,
-      });
-      console.log(`[subscription] 📧 Sent trial-ending email to user ${row.userId}`);
+      const sent = await sendTrialEndingEmail(row.email, row.name, row.trialEnd);
+      if (sent) {
+        console.log(`[subscription] 📧 Sent trial-ending email to user ${row.userId}`);
+      }
     }
   } catch (error) {
     console.error(`[subscription] ❌ Failed to send trial-ending email to user ${row.userId}:`, getErrorMessage(error));

@@ -50,6 +50,8 @@ export interface AIResponse<T> {
   result?: T;
   /** Token usage statistics for billing and monitoring (varies by provider) */
   usage?: object;
+  /** Wall-clock request duration in milliseconds */
+  durationMs?: number;
   /** Reason why the generation stopped (e.g., 'stop', 'length', 'content_filter') */
   finishReason?: string;
 }
