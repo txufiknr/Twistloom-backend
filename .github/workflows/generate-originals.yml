@@ -48,6 +48,8 @@ jobs:
       # Install project dependencies
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
+        env:
+          CI: "" # .../node_modules/fasttext-ts postinstall: ⚠ Skipping model download (CI environment or --skip-download flag detected)
         
       # Build TypeScript to JavaScript
       - name: Build project
