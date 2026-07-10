@@ -18,6 +18,12 @@ export type KnownGender = Omit<Gender, 'unknown'>
 export const sources = ['social_media', 'friend', 'google', 'advertisement', 'other'] as const;
 export type Source = typeof sources[number];
 
+export const feedbackCategories = ['feedback', 'bug_report', 'feature_request', 'other'] as const;
+export type FeedbackCategory = typeof feedbackCategories[number];
+
+export const feedbackStatuses = ['idle', 'submitting', 'success', 'error'] as const;
+export type FeedbackStatus = typeof feedbackStatuses[number];
+
 /**
  * Union type of all possible like target types
  * 

@@ -60,13 +60,15 @@ The Users API provides endpoints for managing user profiles, social interactions
      - [Get Achievements](#get-userachievements)
      - [Get Unnotified Achievements](#get-userachievementsunnotified)
      - [Acknowledge Achievement](#post-userachievementsacknowledge)
-12. [Error Handling](#error-handling)
-13. [HTTP Headers](#http-headers)
-14. [Caching Strategy](#caching-strategy)
-15. [Authentication](#authentication)
-16. [Database Schema](#database-schema)
-17. [Testing](#testing)
-18. [Changelog](#changelog)
+12. [User Feedback](#user-feedback)
+     - [Submit Feedback](#post-userfeedbacks)
+13. [Error Handling](#error-handling)
+14. [HTTP Headers](#http-headers)
+15. [Caching Strategy](#caching-strategy)
+16. [Authentication](#authentication)
+17. [Database Schema](#database-schema)
+18. [Testing](#testing)
+19. [Changelog](#changelog)
 
 ---
 
@@ -289,6 +291,26 @@ interface ActivityLog {
   createdAt: string;         // Log creation timestamp (ISO 8601)
 }
 ```
+
+### Feedback
+
+User feedback submission record.
+
+```typescript
+interface Feedback {
+  id: string;                      // Feedback unique identifier
+  userId: string;                  // User who submitted the feedback
+  category: 'feedback' | 'bug_report' | 'feature_request' | 'other';  // Feedback category
+  message: string;                 // Feedback message content
+  imageId?: string | null;         // ImageKit file ID for screenshot (optional)
+  imageUrl?: string | null;        // ImageKit URL for screenshot (optional)
+  status: 'idle' | 'submitting' | 'success' | 'error';  // Submission status
+  createdAt: string;               // Feedback creation timestamp (ISO 8601)
+  updatedAt: string;               // Last update timestamp (ISO 8601)
+}
+```
+
+---
 
 ### StoryProgress
 
@@ -1510,6 +1532,54 @@ Marks achievement notifications as viewed/acknowledged by the authenticated user
 
 ---
 
+## User Feedback
+
+### POST /user/feedbacks
+
+Submit user feedback with optional screenshot attachment. Screenshots (base64 data URLs) are uploaded to ImageKit and stored in the `uploaded_images` table before the feedback record is created.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Headers:**
+- `X-App-Version`: Application version (for analytics)
+- `X-Platform`: Client platform (android/ios)
+
+**Request Body:**
+```json
+{
+  "category": "bug_report",
+  "message": "The app crashes when I try to open book settings",
+  "imageUrl": "data:image/png;base64,iVBORw0KGgo..."
+}
+```
+
+**Parameters:**
+- `category` (string, required): Feedback category (`"feedback"` | `"bug_report"` | `"feature_request"` | `"other"`)
+- `message` (string, required): Feedback message content
+- `imageUrl` (string, optional): Base64 data URL of screenshot image
+
+**Response (201 Created):**
+```json
+{
+  "feedback": {
+    "id": "fb-uuid",
+    "userId": "user-uuid",
+    "category": "bug_report",
+    "message": "The app crashes when I try to open book settings",
+    "imageId": "ik_file_id",
+    "imageUrl": "https://ik.imagekit.io/...",
+    "status": "success",
+    "createdAt": "2026-07-10T00:00:00.000Z",
+    "updatedAt": "2026-07-10T00:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid category or missing message
+
+---
+
 ## Error Handling
 
 All endpoints follow consistent error response formats:
@@ -1707,6 +1777,26 @@ CREATE TABLE "user_activity_logs" (
 - `user_activity_logs_target_idx`: (target_type, target_id)
 - `user_activity_logs_created_idx`: (created_at DESC)
 
+### User Feedbacks Table
+```sql
+CREATE TABLE "user_feedbacks" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "category" text NOT NULL, -- "feedback" | "bug_report" | "feature_request" | "other"
+  "message" text NOT NULL,
+  "image_id" text,
+  "image_url" text,
+  "status" text NOT NULL DEFAULT 'idle', -- "idle" | "submitting" | "success" | "error"
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+**Indexes:**
+- `user_feedbacks_user_idx`: (user_id)
+- `user_feedbacks_category_idx`: (category)
+- `user_feedbacks_created_idx`: (created_at DESC)
+
 ---
 
 ## Testing
@@ -1814,9 +1904,39 @@ curl "https://api.twistloom.com/api/user/activity-logs?activityType=liked&limit=
   -H "Cookie: next-auth.session-token=YOUR_TOKEN"
 ```
 
+**Submit feedback (text only):**
+```bash
+curl -X POST https://api.twistloom.com/api/user/feedbacks \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{
+    "category": "bug_report",
+    "message": "The app crashes when I open book settings"
+  }'
+```
+
+**Submit feedback (with screenshot):**
+```bash
+curl -X POST https://api.twistloom.com/api/user/feedbacks \
+  -H "Content-Type: application/json" \
+  -H "Cookie: next-auth.session-token=YOUR_TOKEN" \
+  -d '{
+    "category": "bug_report",
+    "message": "UI broken on editor screen",
+    "imageUrl": "data:image/png;base64,iVBORw0KGgo..."
+  }'
+```
+
 ---
 
 ## Changelog
+
+### v3.3.0 (2026-07-10)
+- Added POST /user/feedbacks endpoint (submit user feedback with optional screenshot)
+- Added Feedback type definition (`category`, `message`, `imageId`, `imageUrl`, `status`)
+- Added `feedback_screenshot` type to UploadedImageType enum
+- Added `user_feedbacks` database table with indexes on user_id, category, created_at
+- Updated API documentation with User Feedback section
 
 ### v3.2.0 (2026-07-04)
 - Added `referrer` field support to PUT /user — sets referrer for new users without a referrer

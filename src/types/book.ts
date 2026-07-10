@@ -438,7 +438,8 @@ export type PublicStats = {
 export type UploadedImageType =
   | 'cover' // Book cover
   | 'mc'    // Main character's picture
-  | 'user'; // Profile picture
+  | 'user'  // Profile picture
+  | 'feedback'; // Feedback screenshot
 
 export type PageVisitStats = {
   nthVisit: number;

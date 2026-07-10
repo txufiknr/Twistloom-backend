@@ -141,6 +141,13 @@
       "when": 1783569453618,
       "tag": "0019_abnormal_cobalt_man",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783639789378,
+      "tag": "0020_common_kingpin",
+      "breakpoints": true
     }
   ]
 }

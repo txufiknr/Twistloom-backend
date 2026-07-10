@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
-import type { CheckinClaimType, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
+import type { CheckinClaimType, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
 import type { BookGenerationStatus, StoryGenerationStep, BookStatus, BookVisibility, Book, BookStats, UploadedImageType } from "../types/book.js";
@@ -1635,5 +1635,40 @@ export const uploadedImages = pgTable(
     index("uploaded_images_user_idx").on(t.userId),
     index("uploaded_images_type_idx").on(t.type),
     unique("uploaded_images_image_id_unique").on(t.imageId),
+  ]
+);
+
+/**
+ * User feedbacks table
+ * @summary Store user feedback submissions with optional screenshot attachments
+ * @example
+ * {
+ *   "id": "fb123",
+ *   "user_id": "user456",
+ *   "category": "bug_report",
+ *   "message": "The app crashes when I open the book",
+ *   "image_id": "ik_abc123",
+ *   "status": "success",
+ *   "created_at": "2026-07-10T00:00:00.000Z",
+ *   "updated_at": "2026-07-10T00:00:00.000Z"
+ * }
+ */
+export const userFeedbacks = pgTable(
+  "user_feedbacks",
+  {
+    id: id(),
+    userId: userId().references(() => users.userId, { onDelete: "cascade" }),
+    category: text("category").$type<FeedbackCategory>().notNull(),
+    message: text("message").notNull(),
+    imageId: text("image_id"), // ImageKit file ID (optional feedback screenshot)
+    imageUrl: text("image_url"), // ImageKit URL (optional feedback screenshot)
+    status: text("status").$type<FeedbackStatus>().notNull().default('idle'),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    index("user_feedbacks_user_idx").on(t.userId),
+    index("user_feedbacks_category_idx").on(t.category),
+    index("user_feedbacks_created_idx").on(t.createdAt.desc()),
   ]
 );

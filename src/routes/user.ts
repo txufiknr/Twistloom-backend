@@ -46,13 +46,13 @@
 
 import type { Router as RouterType } from 'express';
 import type { Request, Response } from 'express';
-import type { DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
-import type { LikeTargetType, Source, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
-import { sources } from "../types/user.js";
+import type { DBNewUserFeedback, DBNewUserLike, DBNewUserFavorite } from "../types/schema.js";
+import type { FeedbackCategory, LikeTargetType, Source, User, UserAchievement, UserActivityType, UserStats } from "../types/user.js";
+import { feedbackCategories, sources } from "../types/user.js";
 import { Router } from 'express';
 import { dbRead, dbWrite } from '../db/client.js';
 import { requireAuth, optionalAuth } from "../middleware/nextauth.js";
-import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages, userProviders } from "../db/schema.js";
+import { users, books, userLikes, userFavorites, userFollows, userActivityLogs, userAchievements, uploadedImages, userProviders, userFeedbacks } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleNotFoundError, handleValidationError } from "../utils/error.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { calculatePaginationMeta } from "../utils/pagination.js";
@@ -60,7 +60,7 @@ import { updateUserLastActivity, getCheckInStatus, logUserActivity, sanitizeProf
 import { invalidateCachePattern } from "../utils/cache.js";
 import { invalidateExploreCache, invalidateUserBooksCache, invalidateUserProfileCache, withCache, CACHE_KEYS, CACHE_TTL } from "../services/cache.js";
 import { getEnrichedUser, getEnrichedUserById, setReferrerForNewUser, handleCheckIn } from "../services/user-controller.js";
-import { uploadUserImage } from "../services/image.js";
+import { uploadUserImage, uploadFeedbackScreenshot } from "../services/image.js";
 import { isValidUuid } from "../utils/uuid.js";
 import { getStoryProgressWithBranch } from '../services/story-branch.js';
 import { checkAndAwardAchievements, getUserAchievements, getUserMetrics } from '../services/achievements.js';
@@ -2187,6 +2187,135 @@ router.post('/achievements/acknowledge', requireAuth, async (req: Request, res: 
     res.json({ success: true, message: 'Badges flagged as viewed' });
   } catch (error) {
     handleApiError(res, 'Failed to clear banner states', error);
+  }
+});
+
+// ===== USER FEEDBACK ROUTES =====
+
+/**
+ * POST /user/feedbacks
+ * 
+ * Submit user feedback with optional screenshot attachment.
+ * If a base64 screenshot is provided, it is uploaded to ImageKit and stored
+ * as a feedback_screenshot in the uploaded_images table before persisting the feedback.
+ * 
+ * @route POST /user/feedbacks
+ * @description Submit user feedback with optional screenshot
+ * 
+ * @header X-App-Version - Application version (for analytics)
+ * @header X-Platform - Client platform (android/ios)
+ * 
+ * @body {Object} Feedback data
+ * @body {string} category - Feedback category ("feedback" | "bug_report" | "feature_request" | "other")
+ * @body {string} message - Feedback message content
+ * @body {string} [imageUrl] - Base64 screenshot data URL (optional)
+ * 
+ * @returns {Object} Feedback creation response
+ * @returns {Object} feedback - Created feedback record
+ * 
+ * @example
+ * // Request (text only)
+ * POST /user/feedbacks
+ * Body: {
+ *   "category": "bug_report",
+ *   "message": "The app crashes when I try to open book settings"
+ * }
+ * 
+ * // Request (with screenshot)
+ * POST /user/feedbacks
+ * Body: {
+ *   "category": "bug_report",
+ *   "message": "The UI is broken on the editor screen",
+ *   "imageUrl": "data:image/png;base64,iVBORw0KGgo..."
+ * }
+ * 
+ * // Response
+ * {
+ *   "feedback": {
+ *     "id": "fb-uuid",
+ *     "userId": "user-uuid",
+ *     "category": "bug_report",
+ *     "message": "The app crashes when I try to open book settings",
+ *     "imageId": "ik_file_id",
+ *     "imageUrl": "https://ik.imagekit.io/...",
+ *     "status": "success",
+ *     "createdAt": "2026-07-10T00:00:00.000Z",
+ *     "updatedAt": "2026-07-10T00:00:00.000Z"
+ *   }
+ * }
+ * 
+ * @example Error
+ * // Response (400 — invalid category)
+ * {
+ *   "success": false,
+ *   "error": "Invalid category. Must be one of: feedback, bug_report, feature_request, other"
+ * }
+ * 
+ * // Response (400 — missing message)
+ * {
+ *   "success": false,
+ *   "error": "Message is required"
+ * }
+ */
+router.post("/feedbacks", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { category, message, imageUrl } = req.body;
+
+    // Validate category
+    if (!category || !feedbackCategories.includes(category as FeedbackCategory)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid category. Must be one of: ${feedbackCategories.join(', ')}`,
+      });
+    }
+
+    // Validate message
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Message is required',
+      });
+    }
+
+    let imageId: string | undefined;
+    let imageUrlResult: string | undefined;
+
+    // Upload screenshot to ImageKit if provided as base64
+    if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('data:')) {
+      const uploadResult = await uploadFeedbackScreenshot(imageUrl, userId);
+      if (uploadResult?.url && uploadResult?.fileId) {
+        imageId = uploadResult.fileId;
+        imageUrlResult = uploadResult.url;
+
+        // Insert into uploaded_images table
+        await dbWrite.insert(uploadedImages).values({
+          imageId,
+          imageUrl: imageUrlResult,
+          type: 'feedback',
+          userId,
+        });
+      }
+    }
+
+    const feedbackData: DBNewUserFeedback = {
+      userId,
+      category: category as FeedbackCategory,
+      message: message.trim(),
+      imageId: imageId ?? null,
+      imageUrl: imageUrlResult ?? null,
+      status: 'success',
+    };
+
+    const [feedback] = await dbWrite
+      .insert(userFeedbacks)
+      .values(feedbackData)
+      .returning();
+
+    res.status(201).json({ feedback });
+  } catch (error) {
+    console.error('[POST /user/feedbacks] ❌', error);
+    handleApiError(res, 'Failed to submit feedback', error);
   }
 });
 

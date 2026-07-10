@@ -465,6 +465,20 @@ export async function uploadBookCover(
  * );
  * ```
  */
+/**
+ * Upload feedback screenshot image to ImageKit.io
+ */
+export async function uploadFeedbackScreenshot(
+  imageSource: ImageUploadSource,
+  feedbackId: string
+): Promise<ImageKit.Files.FileUploadResponse | null> {
+  return uploadImageKit(imageSource, feedbackId, {
+    folder: 'feedbacks',
+    tags: ['feedback-screenshot', `feedback-id:${feedbackId}`],
+    filenamePrefix: 'screenshot',
+  });
+}
+
 export async function uploadUserImage(
   imageSource: ImageUploadSource,
   userId: string

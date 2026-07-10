@@ -19,9 +19,8 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
-[ ] userCompletedBooks -> user_discovered_endings 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-
+[ ] `userFeedbacks` table & API routes
 [ ] sync sampling formula with ai-sampling.ts
 [x] ensure to refund 5 credits when generation failed
 [x] prompt first book creation include summary & hook (alongside titleIdea)
@@ -32,6 +31,7 @@
 [ ] Before insert page, correct futureNote keys
 [ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
+[ ] TODO-vector-semantic.md -> roadmap plan MD
 
 ---
 

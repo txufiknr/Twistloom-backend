@@ -1201,7 +1201,7 @@ export type StateDeltaGeneration = Omit<StateDelta, keyof PsychologicalStateDelt
 };
 export type StoryPageGeneration = Omit<StoryPage, ResourceAIProvider | 'stateDelta' | 'momentum' | 'elapsedDays'>;
 export type StoryGeneration = StoryPageGeneration & StateDeltaGeneration & {
-  /** AI-suggested human-readable names for this branch (3 alternatives). Omit if continuing the same branch. */
+  /** AI-suggested human-readable names for this branch (3 alternatives). Insertion is gated by TypeScript's branchId logic — AI always suggests, TS decides. */
   branchNames?: string[];
 };
 export type InitialStoryPageGeneration = Omit<StoryPageGeneration, 'placeId'> & Pick<StoryPage, 'momentum'>;
