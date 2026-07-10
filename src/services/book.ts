@@ -2175,18 +2175,19 @@ export interface WorkflowDispatchGateResult {
 }
 
 /**
- * Two-layer gate that decides whether a GitHub workflow should be dispatched
+ * Read-only gate that decides whether a GitHub workflow should be dispatched
  * for a given book.
  *
- * **Layer 1 — Read-only pre-flight:**
- * - Terminal states (`completed`, `failed`, `cancelled`): reject immediately,
- *   no point dispatching.
- * - Alive runner (`in_progress` + `isGeneratingStartedAt` set and within
- *   `MAX_GENERATION_DURATION_MS`): reject, the runner is still alive.
+ * This is **not** a mutex — it only inspects the current state. The actual
+ * processing lock (`isGeneratingStartedAt`) is acquired by the GitHub runner
+ * (`processBookGeneration` in the cron job) to prevent concurrent processing.
+ * The dispatcher's job is simply to avoid dispatching when it's clearly futile.
  *
- * **Layer 2 — Atomic mutex:**
- * - Delegates to `acquireBookGenerationLock` so only one process wins the
- *   right to dispatch.
+ * **Rejection cases:**
+ * - Terminal states (`completed`, `failed`, `cancelled`): no point dispatching.
+ * - Alive runner (`in_progress` + `isGeneratingStartedAt` set and within
+ *   `MAX_GENERATION_DURATION_MS`): a runner is actively processing, dispatching
+ *   again would be wasteful (the runner's own lock prevents double-processing).
  *
  * @param bookId - UUID v7 of the target book
  * @returns A `WorkflowDispatchGateResult` indicating whether to dispatch
@@ -2202,12 +2203,10 @@ export interface WorkflowDispatchGateResult {
  * ```
  */
 export async function tryAcquireWorkflowDispatchGate(bookId: string): Promise<WorkflowDispatchGateResult> {
-  // ── Layer 1: Read-only pre-flight ─────────────────────────────────────────
   const [row] = await dbRead
     .select({
       generationStatus:      bookGenerations.generationStatus,
       isGeneratingStartedAt: bookGenerations.isGeneratingStartedAt,
-      updatedAt:             bookGenerations.updatedAt,
     })
     .from(bookGenerations)
     .where(eq(bookGenerations.bookId, bookId))
@@ -2230,12 +2229,6 @@ export async function tryAcquireWorkflowDispatchGate(bookId: string): Promise<Wo
     if (elapsed < MAX_GENERATION_DURATION_MS) {
       return { shouldDispatch: false, reason: `Book ${bookId} is still in progress (lock held, ${Math.round(elapsed / 1000)}s elapsed)` };
     }
-  }
-
-  // ── Layer 2: Atomic mutex — only one caller wins ──────────────────────────
-  const lockAcquired = await acquireBookGenerationLock(bookId);
-  if (!lockAcquired) {
-    return { shouldDispatch: false, reason: `Book ${bookId} is already being processed (lock held by another process)` };
   }
 
   return { shouldDispatch: true };
