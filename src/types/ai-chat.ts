@@ -89,6 +89,8 @@ export type AIPromptOptions = Partial<AIPromptDocuments> & {
   logPrompts?: boolean;
   /** Whether to log the evaluation result */
   logEvaluationResult?: boolean;
+  /** Maximum number of model failures across all providers before giving up (undefined = no limit) */
+  fallbackLimit?: number;
   /** Additional metadata */
   meta?: {
     bookId?: string;
@@ -336,6 +338,12 @@ export type PromptWithFallbackOptions = Omit<AIPromptOptions, 'modelSelection'> 
    * complete quickly and the benefit of cancellation is minimal.
    */
   signal?: AbortSignal;
+  /**
+   * @internal Shared mutable counter for cross-provider fallback limiting.
+   * Initialized once in aiPrompt and passed by reference through every
+   * promptWithFallback call. Never set this from user code.
+   */
+  _fallbackCounter?: { count: number };
 }
 
 // ============================================================================

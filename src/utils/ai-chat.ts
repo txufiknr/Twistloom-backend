@@ -1,6 +1,6 @@
 import type { AIChatProvider, AIDocument, AIJsonEvaluation, AIJsonProperty, AIPromptForJson, AIPromptOptions, AIResponse, NvidiaChatCompletionResponse, OpenRouterCreateParams, PromptWithFallbackOptions } from "../types/ai-chat.js";
 import { AI_PROVIDER_API_KEYS, getCerebrasClient, getCloudflareClient, getCohereClient, getGeminiClient, getGitHubClient, getGroqClient, getMistralClient, getOpenRouterClient } from "./ai-clients.js";
-import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
+import { AI_CHAT_CONFIG_DEFAULT, EVALUATION_FALLBACK_LIMIT, EVALUATION_SCORING_OUTPUT_TOKEN } from "../config/ai-chat.js";
 import { AI_CHAT_MODELS_EVALUATION, AI_CHAT_MODELS_WRITING, AI_MAX_PROMPT_LENGTH } from "../config/ai-clients.js";
 import { canUseAIToday, getRateLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import { requireEnv } from "./env.js";
@@ -61,6 +61,14 @@ async function promptWithFallback<T>(
   // 3️⃣ Model iteration: Try each model in order until one succeeds
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
+
+    // 3a. Fallback limit: Check shared counter across all providers
+    const fallbackCounter = options._fallbackCounter;
+    if (fallbackCounter && options.fallbackLimit !== undefined && fallbackCounter.count >= options.fallbackLimit) {
+      console.warn(`[${provider}] 🛑 Fallback limit (${options.fallbackLimit}) reached across providers, stopping`);
+      break;
+    }
+
     try {
       // Rate limiting: Apply throttling before making API call
       await getRateLimiter(provider).throttle();
@@ -135,6 +143,9 @@ async function promptWithFallback<T>(
         console.error(`[${provider}] ❌ All models failed:`, code);
       }
     }
+
+    // Increment shared fallback counter after any model failure (empty output or error)
+    if (options._fallbackCounter) options._fallbackCounter.count++;
   }
 
   // 4️⃣ Complete failure: Return null when all models fail
@@ -884,7 +895,7 @@ export async function nvidiaPrompt(
  */
 export async function aiPrompt<T extends Record<string, unknown> | string = string>(
   prompt: string, 
-  options: AIPromptOptions = {},
+  options: AIPromptOptions & { evaluatorFallbackLimit?: number } = {},
   evaluatorPrompt?: string,
   onProgress?: ProgressCallback,
   onGenerationProgress?: (step: StoryGenerationStep) => Promise<void>,
@@ -901,6 +912,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
     context = 'ai',
     logPrompts = false,
     logEvaluationResult = false,
+    evaluatorFallbackLimit = EVALUATION_FALLBACK_LIMIT,
     meta
   } = options;
 
@@ -915,6 +927,9 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
   // Mark AI generation start event
   await onProgress?.({ type: 'ai_generation_start' });
   await onGenerationProgress?.('ai_generation');
+
+  // Shared counter for cross-provider fallback limit
+  const fallbackCounter = options.fallbackLimit !== undefined ? { count: 0 } : undefined;
 
   // Try each provider in order
   for (const provider of providers) {
@@ -960,7 +975,8 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
         outputAsJson,
         systemPrompt,
         logPrompts: shouldLogPrompts,
-        meta
+        meta,
+        _fallbackCounter: fallbackCounter,
       };
       
       // Provider-agnostic stack
@@ -1001,6 +1017,7 @@ export async function aiPrompt<T extends Record<string, unknown> | string = stri
               config: {...config, maxOutputToken: config.maxOutputToken + EVALUATION_SCORING_OUTPUT_TOKEN },
               systemPrompt,
               context: evaluationContext,
+              fallbackLimit: evaluatorFallbackLimit,
 
               // Pass generated raw output as document
               documents: [

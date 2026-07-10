@@ -2,6 +2,7 @@ import type { AIChatConfig } from "../types/ai-chat.js";
 
 export const DEFAULT_MAX_OUTPUT_TOKEN: number = 4000;
 export const EVALUATION_SCORING_OUTPUT_TOKEN: number = 2000;
+export const EVALUATION_FALLBACK_LIMIT: number = 3;
 
 /**
  * NVIDIA API request timeout in milliseconds
