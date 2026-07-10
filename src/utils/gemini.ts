@@ -461,7 +461,7 @@ export function convertToGeminiSchema(
 ): Schema {
   const {
     minify = false,
-    maxEnums = 4,
+    maxEnums = 3,
     maxDescriptionLength = 60,
     tryRemoveSupplementary = true,
     moveEnumsToDescription = true,

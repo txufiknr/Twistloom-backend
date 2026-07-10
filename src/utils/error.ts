@@ -344,7 +344,7 @@ export function classifyGenAIError(err: unknown): GenAIErrorCode {
     getErrorName(err).toLowerCase().includes('timeout') ||
     isUndiciAbortError(err)
   ) {
-    console.log(`[classifyGenAIError] ⌚ Request timeout:`, err, typeof err);
+    // console.log(`[classifyGenAIError] ⌚ Request timeout:`, err, typeof err);
     return 'REQUEST_TIMEOUT';
   }
 

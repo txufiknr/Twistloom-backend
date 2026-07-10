@@ -61,7 +61,20 @@ export function getCohereClient(): CohereClientV2 {
 export function getMistralClient(): Mistral {
   if (mistralClient) return mistralClient;
 
-  mistralClient = new Mistral({ apiKey: requireEnv('MISTRAL_API_KEY') });
+  mistralClient = new Mistral({
+    apiKey: requireEnv('MISTRAL_API_KEY'),
+    timeoutMs: 60000,
+    retryConfig: {
+      strategy: "backoff",
+      backoff: {
+        initialInterval: 500,  // Milliseconds to wait before the 1st retry
+        maxInterval: 10000,    // Maximum delay between any two retries
+        exponent: 1.5,         // Multiplier applied to the interval each step
+        maxElapsedTime: 60000, // Max total time across all retry attempts (1 minute)
+      },
+      retryConnectionErrors: true, // Retry on network drops or DNS failures
+    },
+  });
   return mistralClient;
 }
 

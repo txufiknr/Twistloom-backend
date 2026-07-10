@@ -21,8 +21,8 @@
 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] sync sampling formula with ai-sampling.ts
-[ ] claude payment review: src\app.ts (later check)
-[ ] GET /api/payments/stripe/webhook (404)
+[@] claude payment review: src\app.ts (later check)
+[@] GET /api/payments/stripe/webhook (404)
 [ ] Before insert page, correct futureNote keys
 [ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
