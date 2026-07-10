@@ -331,7 +331,13 @@ export async function incrementDailyUsageCount(
 ): Promise<void> {
   try {
     const today = getTodayDate();
-    const { model, inputTokens, outputTokens, totalTokens, cachedTokens, durationMs } = options ?? {};
+    const opts = options ?? {};
+    const model = opts.model ?? null;
+    const inputTokens = opts.inputTokens ?? null;
+    const outputTokens = opts.outputTokens ?? null;
+    const totalTokens = opts.totalTokens ?? null;
+    const cachedTokens = opts.cachedTokens ?? null;
+    const durationMs = opts.durationMs ?? null;
 
     await dbWrite.execute(sql`
       INSERT INTO "usage" (date, provider, model, requests, input_tokens, output_tokens, total_tokens, cached_tokens, duration_ms, context)

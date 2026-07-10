@@ -31,7 +31,12 @@
 [ ] Before insert page, correct futureNote keys
 [ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
-[ ] TODO-vector-semantic.md -> roadmap plan MD
+
+---
+
+let's just use Jina v5 model for Twistloom as Twisloom is in experimentation phase, not production
+
+also, if `"normalized": true` really supported, use it instead of manual L2 normalization
 
 ---
 
