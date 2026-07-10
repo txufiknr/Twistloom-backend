@@ -40,8 +40,7 @@
     "start:cron:candidate": "node dist/cron/retry-pending-generations.js",
     "start:cron:translate": "node dist/cron/auto-translate-indonesian.js",
     "start:cron:vip-expiration": "node dist/cron/vip-expiration.js",
-    "start:cron:cleanup": "node dist/cron/cleanup.js",
-    "postinstall": "pnpm run download-model"
+    "start:cron:cleanup": "node dist/cron/cleanup.js"
   },
   "author": {
     "name": "Taufik Nur Rahmanda",
