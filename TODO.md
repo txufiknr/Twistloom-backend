@@ -32,6 +32,8 @@
 [ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
 
+[ ] evaluator max fallback 3
+
 fix ai result:
 "type": "**dialogue**",
 "traumaTags":[".suara-tanpa-sumber.", ".bayangan-yang-bergerak-sendiri.", ".pintu-yang-terkunci-dari-dalam."],
