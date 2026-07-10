@@ -44,7 +44,7 @@ import { dbRead, dbWrite } from '../db/client.js';
 import { eq, and, or, lt, isNull } from 'drizzle-orm';
 import { updateBookGenerationStatus, triggerBookGenerationWorkflow } from '../services/book-creation.js';
 import { MAX_GENERATION_DURATION_MS, HOURLY_RETRY_BATCH_SIZE, MAX_PENDING_BOOK_COVER_PER_RUN } from '../config/book-creation.js';
-import { mapBookFromDb } from '../services/book.js';
+import { acquireBookGenerationLock, mapBookFromDb } from '../services/book.js';
 import type { InitializeBookParams } from '../types/book.js';
 
 /**
@@ -65,9 +65,9 @@ async function processBookGeneration(bookId: string): Promise<void> {
 
   try {
     // ── Atomic lock acquisition ──────────────────────────────────────────────
-    // Single UPDATE with condition: only acquires the lock if the row exists AND
-    // the lock is either free (NULL) or stale (>1 minute old). This is atomic —
-    // no TOCTOU race between checking and setting.
+    //
+    // Uses the shared helper that atomically sets isGeneratingStartedAt
+    // only when the lock is free (NULL or stale >1 minute). No TOCTOU race.
     //
     // Note: the initial quick read for existence is deliberately separate because
     // the existence of a row does not change during normal operation (no concurrent
@@ -83,22 +83,8 @@ async function processBookGeneration(bookId: string): Promise<void> {
       throw new Error(`Book generation record not found for bookId: ${bookId}`);
     }
 
-    const ONE_MINUTE_AGO = new Date(Date.now() - 60000);
-    const [locked] = await dbWrite
-      .update(bookGenerations)
-      .set({ isGeneratingStartedAt: new Date() })
-      .where(
-        and(
-          eq(bookGenerations.bookId, bookId),
-          or(
-            isNull(bookGenerations.isGeneratingStartedAt),
-            lt(bookGenerations.isGeneratingStartedAt, ONE_MINUTE_AGO)
-          )
-        )
-      )
-      .returning({ id: bookGenerations.bookId });
-
-    if (!locked) {
+    const lockAcquired = await acquireBookGenerationLock(bookId);
+    if (!lockAcquired) {
       // Either another process holds a fresh lock, or the generation just
       // completed (racing with the webhook). Skip silently.
       console.log(`[book-creation] ⏸️ Book ${bookId} is already being processed (lock held by another process), skipping`);

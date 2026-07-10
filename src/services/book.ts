@@ -12,10 +12,11 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
-import { and, eq, asc, or, desc, ne, sql } from "drizzle-orm";
+import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
+import { MAX_GENERATION_DURATION_MS } from "../config/book-creation.js";
 import { getEnrichedBookSelect } from "./book-controller.js";
 import type { DBBook, DBNewBook, DBNewPage, DBPage, DBUpdateBook } from "../types/schema.js";
 import type { Book, BookSlugGenerationResult, BookStatus, BookVisibility, EnrichedBookData, EnrichedPageOptions, PublicStats } from "../types/book.js";
@@ -2118,6 +2119,126 @@ export async function insertUserCompletedBook(
     console.error('[insertUserCompletedBook] ❌ Failed to insert completion record:', getErrorMessage(error));
     return null;
   }
+}
+
+/**
+ * Attempts to atomically acquire the generation lock for a book.
+ *
+ * Uses `isGeneratingStartedAt` as a mutex to prevent duplicate GitHub
+ * workflow runs for the same book:
+ * - `NULL`: lock is free → can acquire
+ * - Set and <1 minute old: lock held by another process → skip
+ * - Set and >=1 minute old: stale lock (e.g. crashed runner) → can acquire
+ *
+ * The conditional UPDATE is atomic — no TOCTOU race between checking and
+ * setting the lock.
+ *
+ * @param bookId - UUID v7 of the target book
+ * @returns `true` if the lock was acquired, `false` if held by another process
+ *
+ * @example
+ * ```typescript
+ * const acquired = await acquireBookGenerationLock(bookId);
+ * if (!acquired) {
+ *   console.log(`Book ${bookId} is already being processed, skipping`);
+ *   return;
+ * }
+ * ```
+ */
+export async function acquireBookGenerationLock(bookId: string): Promise<boolean> {
+  const ONE_MINUTE_AGO = new Date(Date.now() - 60000);
+  const [locked] = await dbWrite
+    .update(bookGenerations)
+    .set({ isGeneratingStartedAt: new Date() })
+    .where(
+      and(
+        eq(bookGenerations.bookId, bookId),
+        or(
+          isNull(bookGenerations.isGeneratingStartedAt),
+          lt(bookGenerations.isGeneratingStartedAt, ONE_MINUTE_AGO)
+        )
+      )
+    )
+    .returning({ id: bookGenerations.bookId });
+
+  return !!locked;
+}
+
+/**
+ * Result of a workflow dispatch gate check.
+ */
+export interface WorkflowDispatchGateResult {
+  /** `true` if the caller should proceed with dispatching the workflow */
+  shouldDispatch: boolean;
+  /** Human-readable reason for denial (only set when `shouldDispatch` is `false`) */
+  reason?: string;
+}
+
+/**
+ * Two-layer gate that decides whether a GitHub workflow should be dispatched
+ * for a given book.
+ *
+ * **Layer 1 — Read-only pre-flight:**
+ * - Terminal states (`completed`, `failed`, `cancelled`): reject immediately,
+ *   no point dispatching.
+ * - Alive runner (`in_progress` + `isGeneratingStartedAt` set and within
+ *   `MAX_GENERATION_DURATION_MS`): reject, the runner is still alive.
+ *
+ * **Layer 2 — Atomic mutex:**
+ * - Delegates to `acquireBookGenerationLock` so only one process wins the
+ *   right to dispatch.
+ *
+ * @param bookId - UUID v7 of the target book
+ * @returns A `WorkflowDispatchGateResult` indicating whether to dispatch
+ *
+ * @example
+ * ```typescript
+ * const gate = await tryAcquireWorkflowDispatchGate(bookId);
+ * if (!gate.shouldDispatch) {
+ *   console.log(`[dispatch] ⏸️ ${gate.reason}`);
+ *   return;
+ * }
+ * triggerBookGenerationWorkflow(bookId, 'my-context');
+ * ```
+ */
+export async function tryAcquireWorkflowDispatchGate(bookId: string): Promise<WorkflowDispatchGateResult> {
+  // ── Layer 1: Read-only pre-flight ─────────────────────────────────────────
+  const [row] = await dbRead
+    .select({
+      generationStatus:      bookGenerations.generationStatus,
+      isGeneratingStartedAt: bookGenerations.isGeneratingStartedAt,
+      updatedAt:             bookGenerations.updatedAt,
+    })
+    .from(bookGenerations)
+    .where(eq(bookGenerations.bookId, bookId))
+    .limit(1);
+
+  if (!row) {
+    return { shouldDispatch: false, reason: `Book generation record not found for ${bookId}` };
+  }
+
+  const { generationStatus, isGeneratingStartedAt } = row;
+
+  // Terminal states — no point dispatching
+  if (generationStatus === 'completed' || generationStatus === 'failed' || generationStatus === 'cancelled') {
+    return { shouldDispatch: false, reason: `Book ${bookId} is already ${generationStatus}` };
+  }
+
+  // Runner appears alive — isGeneratingStartedAt is set and recent
+  if (generationStatus === 'in_progress' && isGeneratingStartedAt) {
+    const elapsed = Date.now() - new Date(isGeneratingStartedAt).getTime();
+    if (elapsed < MAX_GENERATION_DURATION_MS) {
+      return { shouldDispatch: false, reason: `Book ${bookId} is still in progress (lock held, ${Math.round(elapsed / 1000)}s elapsed)` };
+    }
+  }
+
+  // ── Layer 2: Atomic mutex — only one caller wins ──────────────────────────
+  const lockAcquired = await acquireBookGenerationLock(bookId);
+  if (!lockAcquired) {
+    return { shouldDispatch: false, reason: `Book ${bookId} is already being processed (lock held by another process)` };
+  }
+
+  return { shouldDispatch: true };
 }
 
 /**

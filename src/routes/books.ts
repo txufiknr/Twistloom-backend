@@ -50,7 +50,7 @@ import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundEr
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage } from "../services/book.js";
+import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
@@ -418,11 +418,18 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
     // Map DB row to frontend-facing Book shape for the response.
     const book = mapBookFromDb(dbBook);
 
-    // ── STEP 5: Dispatch GitHub Actions workflow (fire-and-forget) ────────────
+    // ── STEP 5: Acquire workflow dispatch gate & dispatch ──────────────────
     //
-    // We do NOT await this — the response must be sent before any long-running
-    // dispatch logic. Dispatch failures are logged and handled by stale-detection.
-    triggerBookGenerationWorkflow(bookId, 'POST /api/books/async');
+    // Two-layer gate: pre-flight check (terminal / alive-runner rejection) +
+    // atomic mutex (only one process claims the right to dispatch).
+    const gate = await tryAcquireWorkflowDispatchGate(bookId);
+    if (!gate.shouldDispatch) {
+      console.log(`[POST /api/books/async] ⏸️ ${gate.reason}`);
+    } else {
+      // Fire-and-forget — response is sent before any long-running dispatch logic.
+      // Dispatch failures are logged and handled by stale-detection.
+      triggerBookGenerationWorkflow(bookId, 'POST /api/books/async');
+    }
 
     // ── STEP 6: Respond immediately with 202 Accepted ─────────────────────────
     //
@@ -555,11 +562,18 @@ router.get('/:bookId/status', requireAuth, async (req: Request, res: Response) =
       return handleForbiddenError(res, 'You can only view status for your own books');
     }
 
-    // Check if generation is stale and trigger workflow if needed
+    // Check if generation is stale and try to dispatch a fresh workflow.
+    // The gate protects against double-dispatch: pre-flight rejects terminal /
+    // alive-runner states, and the atomic lock ensures only one caller wins.
     const isStale = isGenerationStale(data);
     if (isStale && !data.isRefunded && GITHUB_REPO_CONFIG.token) {
-      console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, re-triggering workflow`);
-      triggerBookGenerationWorkflow(bookId, 'GET /api/books/:bookId/status');
+      const gate = await tryAcquireWorkflowDispatchGate(bookId);
+      if (gate.shouldDispatch) {
+        console.log(`[GET /api/books/:bookId/status] 🔄 Stale generation detected for book ${bookId}, re-triggering workflow`);
+        triggerBookGenerationWorkflow(bookId, 'GET /api/books/:bookId/status');
+      } else {
+        console.log(`[GET /api/books/:bookId/status] ⏸️ Stale but gate blocked: ${gate.reason}`);
+      }
     }
 
     // Map generation status to current step description
@@ -946,6 +960,14 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
         metadata: { bookId },
       },
     );
+
+    const gate = await tryAcquireWorkflowDispatchGate(bookId);
+    if (!gate.shouldDispatch) {
+      console.log(`[POST /api/books/:bookId/retry] ⏸️ ${gate.reason}`);
+      return res.status(409).json({
+        error: `Cannot retry book generation: ${gate.reason}`,
+      });
+    }
 
     triggerBookGenerationWorkflow(bookId, 'POST /api/books/:bookId/retry');
 

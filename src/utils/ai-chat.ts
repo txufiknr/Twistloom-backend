@@ -284,11 +284,14 @@ export async function geminiPrompt(
         meta?.bookId,
       ) : null;
 
+      // Penalty is not enabled for models/gemini-2.5-flash
+      const { frequencyPenalty: _fp, ...geminiConfig } = config;
+
       const response = await getGeminiClient().models.generateContent({
         model,
         contents: [{ parts: [{ text: prompt }] }],
         config: {
-          ...config,
+          ...geminiConfig,
           ...(outputAsJson ? { responseMimeType: 'application/json' } : {}),
           responseSchema: responseJsonSchema ? convertToGeminiSchema(responseJsonSchema, { minify: true }) : undefined,
           // responseJsonSchema,
