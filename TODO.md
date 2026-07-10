@@ -20,23 +20,12 @@
 - [ ] need change to cursor pagination?
 
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-[ ] `userFeedbacks` table & API routes
 [ ] sync sampling formula with ai-sampling.ts
-[x] ensure to refund 5 credits when generation failed
-[x] prompt first book creation include summary & hook (alongside titleIdea)
-[x] prompt ensure add language check in review checklist
-[ ] add "LANGUAGE CONSISTENCY CHECKS" alongside "JSON INTEGRITY CHECKS"
 [ ] claude payment review: src\app.ts (later check)
 [ ] GET /api/payments/stripe/webhook (404)
 [ ] Before insert page, correct futureNote keys
 [ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
-
-[ ] evaluator max fallback 3
-
-fix ai result:
-"type": "**dialogue**",
-"traumaTags":[".suara-tanpa-sumber.", ".bayangan-yang-bergerak-sendiri.", ".pintu-yang-terkunci-dari-dalam."],
 
 ---
 

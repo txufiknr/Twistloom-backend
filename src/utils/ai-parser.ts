@@ -563,6 +563,9 @@ function postProcess<T extends Record<string, unknown>>(
   // Pass 1: trim all string leaves.
   let result = trimStringValues<T>(raw);
 
+  // Pass 1b: clean AI formatting artifacts (markdown bold, dotted wrappers, etc.)
+  result = cleanAIArtifacts<T>(result);
+
   // Pass 2: fill missing/null fields from schema type defaults.
   // This is the safety net for truncated responses — fields serialised before
   // the cut-off are preserved; tail fields receive harmless empty defaults
@@ -798,6 +801,54 @@ function tryParse(s: string): Record<string, unknown> | null {
  */
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Removes common AI formatting artifacts from a single string value.
+ *
+ * - Wrapping markdown bold: `**dialogue**` → `dialogue`
+ * - Wrapping dots on enum/tag values: `.suara-tanpa-sumber.` → `suara-tanpa-sumber`
+ *
+ * @param s - String value to clean
+ * @returns Cleaned string
+ */
+function cleanAIStringArtifact(s: string): string {
+  return s
+    .replace(/^\*\*(.+)\*\*$/, '$1')
+    .replace(/^\.(.+)\.$/, '$1');
+}
+
+/**
+ * Recursively cleans AI formatting artifacts from all string values
+ * in a parsed AI response object tree.
+ *
+ * Handles:
+ * - Markdown bold markers: `"**dialogue**"` → `"dialogue"` (enum-like fields)
+ * - Dotted wrappers: `".suara-tanpa-sumber."` → `"suara-tanpa-sumber"` (traumaTags, etc.)
+ *
+ * @param obj - Parsed AI response object
+ * @returns Cleaned object with artifacts removed from string leaves
+ */
+export function cleanAIArtifacts<T extends Record<string, unknown>>(
+  obj: T,
+): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string') {
+      out[k] = cleanAIStringArtifact(v);
+    } else if (Array.isArray(v)) {
+      out[k] = v.map(item => {
+        if (typeof item === 'string') return cleanAIStringArtifact(item);
+        if (isPlainObject(item)) return cleanAIArtifacts(item as Record<string, unknown>);
+        return item;
+      });
+    } else if (isPlainObject(v)) {
+      out[k] = cleanAIArtifacts(v as Record<string, unknown>);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out as T;
 }
 
 /**
