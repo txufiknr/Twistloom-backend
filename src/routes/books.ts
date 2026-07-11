@@ -466,6 +466,49 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/books/generations/active
+ *
+ * Returns all active (in-progress) book generations for the authenticated user.
+ * Lightweight endpoint for the frontend to display generation progress indicators.
+ *
+ * @route GET /api/books/generations/active
+ * @auth Required
+ * @returns Array of { bookId, generationStatus, generationStep }
+ *
+ * @example
+ * GET /api/books/generations/active
+ * Response 200:
+ * [
+ *   { "bookId": "01912345-6789-1234-5678-123456789012", "generationStatus": "in_progress", "generationStep": "ai_generation" },
+ *   { "bookId": "01912345-6789-1234-5678-123456789013", "generationStatus": "in_progress", "generationStep": "theme_validation" }
+ * ]
+ */
+router.get('/generations/active', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    const rows = await dbRead
+      .select({
+        bookId: bookGenerations.bookId,
+        generationStatus: bookGenerations.generationStatus,
+        generationStep: bookGenerations.generationStep,
+      })
+      .from(bookGenerations)
+      .where(
+        and(
+          eq(bookGenerations.userId, userId),
+          eq(bookGenerations.generationStatus, 'in_progress'),
+        ),
+      );
+
+    res.json(rows);
+  } catch (error) {
+    console.error('[GET /api/books/generations/active] ❌ Error:', error);
+    handleApiError(res, 'Failed to get active generations', error);
+  }
+});
+
+/**
  * GET /api/books/:bookId/status
  *
  * Polls for the current progress of an async book creation.
