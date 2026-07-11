@@ -93,15 +93,13 @@ async function ensureVectorExtension(): Promise<void> {
       CREATE EXTENSION IF NOT EXISTS vector;
     `);
 
-    // NOTE: db.execute()'s return shape depends on which Neon driver adapter
-    // this project uses (neon-http returns rows directly; node-postgres-style
-    // adapters wrap them in { rows: [...] }). db/client.ts wasn't reviewed for
-    // this pass, so this tolerates either shape rather than assuming one.
+    // Confirmed against db/client.ts: this project uses drizzle-orm/neon-serverless
+    // (Pool-based, node-postgres-compatible), so db.execute() returns a
+    // QueryResult with a real .rows array — no shape-guessing needed.
     const result = await dbWrite.execute<{ extversion: string }>(`
       SELECT extversion FROM pg_extension WHERE extname = 'vector';
     `);
-    const rows: { extversion: string }[] = Array.isArray(result) ? result : (result as { rows?: { extversion: string }[] }).rows ?? [];
-    const installedVersion = rows[0]?.extversion;
+    const installedVersion = result.rows[0]?.extversion;
 
     if (installedVersion && compareVersions(installedVersion, MIN_PGVECTOR_VERSION) < 0) {
       console.warn(

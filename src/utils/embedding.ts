@@ -27,7 +27,7 @@
 
 import pRetry, { AbortError } from 'p-retry';
 import { getErrorMessage } from './error.js';
-import { getJinaLimiter } from './ai-limiters.js';
+import { getJinaLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import {
   EMBEDDING_MODEL,
   EMBEDDING_DIMENSIONS,
@@ -124,6 +124,14 @@ async function callJinaEmbeddingsAPI(inputs: string[], task: EmbeddingTask): Pro
       if (!data.data?.length) {
         throw new AbortError('[jina] API returned no embeddings');
       }
+
+      // Fire-and-forget — usage tracking should never slow down or fail an
+      // embedding call. context: 'embedding' distinguishes this from chat
+      // completion usage in the same `usage` table.
+      void incrementDailyUsageCount('jina', 'embedding', {
+        model: EMBEDDING_MODEL,
+        totalTokens: data.usage?.total_tokens,
+      }).catch(() => {}); // incrementDailyUsageCount already logs its own errors
 
       // Response schema matches OpenAI's — each item carries its own `index`,
       // so sort defensively rather than assuming response order == request order.

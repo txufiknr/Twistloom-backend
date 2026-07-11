@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phase 0 (Foundation & Jina Plumbing) and Phase 1 step 1 (schema) done — see §8. `pnpm db:generate`/`db:migrate` still need to run in your environment before Phase 2.
+**Status:** Phase 0, Phase 1, and the write-side of Phase 2+3 are done — see §8/§9. Remaining: `pnpm db:generate`/`db:migrate` (your environment), then wiring the already-built `vector-memory.ts` functions into `prompt.ts`'s call sites (the read/prompt-injection side).
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -493,31 +493,35 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
 4. ⬜ `pnpm db:migrate` — needs to be run in your environment.
 5. ⬜ Create HNSW indexes — included in the table definitions from step 1, will be created automatically by the migration in step 2/4 (plain `CREATE INDEX` is fine for empty tables at this phase — see §5 for the `CONCURRENTLY` caveat on future changes).
 
-### Phase 2 — Page embeddings (est. 3-5 days)
+### Phase 2 — Page embeddings (est. 3-5 days) — mostly done (this pass)
 
-1. **Backfill script** (`src/cron/backfill-embeddings.ts`) — same shape as v1, quota math corrected (§11).
-2. **On page creation** — hook location corrected from v1: **not** inside `persistPageWithState` (which owns a documented branch-retry/atomicity contract). Instead, fire-and-forget immediately after each call site awaits it:
-   - In `generateNextPage` (prompt.ts:4271): after `const newPage = await persistPageWithState({...})`, before `return newPage`.
-   - In `generateNextPages` (prompt.ts:~4402): inside the existing `try` block, right after `const newPage = await persistPageWithState({...})` and before `newPages.push(newPage)`.
+1. ✅ **Backfill script** (`cron/backfill-embeddings.ts`) — done, following your actual `vip-expiration.ts` cron conventions exactly (lazy imports to avoid circular deps, `runX(): Promise<void>` + separate `main()`, `process.on('unhandledRejection'/'uncaughtException')` handlers, `void main()` at the end — no `if (process.argv[1] === __filename)` guard, since your real cron jobs run as standalone scripts, not dual-purpose importable modules). Quota math corrected (§11).
+
+   **One discovery that upgraded this step beyond the original plan:** `pages.stateDelta` (column `"delta"`) already stores each page's full `StateDelta` directly — confirmed in your actual `schema.ts`. This means the backfill cron doesn't need to separately reconstruct or thread through a `StateDelta` for old pages; it's already sitting right there on the `pages` row. So the backfill now calls both `embedPersistedPage()` *and* `embedStateDeltaEntities()` per missing page — meaning a single backfill pass catches page text **and** character/place/future-note embeddings for anything that was ever missed, not just page text. It also means `embedStateDeltaEntities()` reads `page.stateDelta` internally now rather than taking it as a separate parameter — one function signature that works identically whether called live or from backfill.
+
+2. ✅ **On page creation** — hook location corrected from v1: **not** inside `persistPageWithState` (which owns a documented branch-retry/atomicity contract). Implemented in `services/vector-memory.ts` as `embedPersistedPage(page)` and `embedStateDeltaEntities(page)` — both fire-and-forget, both meant to be called from the caller immediately after `persistPageWithState` resolves:
    ```typescript
    const newPage = await persistPageWithState({ /* ... */ });
-   embedPersistedPage(newPage, newState).catch(err =>
-     console.error(`[${context}] ⚠️ Failed to embed page ${newPage.page}:`, getErrorMessage(err))
-   ); // fire-and-forget, never awaited, never throws into the caller
+   embedPersistedPage(newPage);        // fire-and-forget, never awaited, never throws into the caller
+   embedStateDeltaEntities(newPage);   // same — reads newPage.stateDelta internally
    return newPage;
    ```
-3. **Prompt integration** (`src/utils/prompt.ts`) — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents(plotFlags)` in `formatNextPageStoryContextPrompt` (confirmed exact location, §7). Keep `contextHistory` unchanged for now.
-4. Create `src/services/vector-memory.ts` — `retrieveSimilarPages`, `embedPersistedPage`, `buildPageEmbeddingText`.
+   **⬜ Still pending:** actually wiring these two calls into `generateNextPage` (prompt.ts:4271) and `generateNextPages` (prompt.ts:~4402) — the functions exist and are ready to import, but the call sites in `prompt.ts` haven't been touched yet.
+3. ⬜ **Prompt integration** (`src/utils/prompt.ts`) — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents(plotFlags)` in `formatNextPageStoryContextPrompt` (confirmed exact location, §7). Keep `contextHistory` unchanged for now. Not yet done.
+4. ✅ Created `src/services/vector-memory.ts` — `retrieveSimilarPages`, `retrieveCharacterInteractions`, `retrievePlaceEvents`, `retrieveRelevantFutureNotes`, `embedPersistedPage`, `embedStateDeltaEntities`, `buildPageEmbeddingText`. Covers all four embedding tables, not just pages — effectively also completes most of Phase 3's plumbing (§ below), just not wired into the prompt yet.
 
-### Phase 3 — Character & place interaction embeddings, future notes (est. 4-6 days)
+### Phase 3 — Character & place interaction embeddings, future notes (est. 4-6 days) — write-side done, read-side wiring pending
 
 Character and place embeddings follow the identical pattern (§4, §6) — grouping them into one phase since the implementation is the same shape twice, not two different designs:
 
 1. **Character interactions:** embed each `pastInteractions` entry once, at the moment it's added (in the page-generation caller, using the page's `CharacterUpdates` output) — before `updateCharacter()`'s `.slice(-MAX_PAST_INTERACTIONS)` can trim it away. Same-page interactions joined into one row, mirroring `formatCharactersForPrompt()`'s existing grouping. Retrieval surfaces only interactions older than what's already visible in the live 5-item window — extend `formatCharactersForPrompt()` with a new "Earlier interactions (recalled):" block, populated only when something relevant turns up.
-2. **Place events:** same pattern — embed `keyEvents` entries once at add-time (page-generation caller, using `PlaceUpdates` output), before `updatePlace()`'s `.slice(-MAX_PLACE_EVENTS)` trims them. Retrieval extends `formatPlacesForPrompt()` the same way, for events older than the live 8-item window. Does **not** touch `calculatePlaceFamiliarity()` — that stays exactly as designed (§4, Use Case 5).
-3. Future notes embedded **once, on `futureNoteUpdates` add/change**, keyed by `noteKey` — not on every page (§6).
-4. Prompt integration: within `formatFutureNotes()`'s `unscheduled` bucket, rank by semantic similarity instead of dumping all; `becomingRelevant` stays fully shown regardless of similarity.
-5. **Verify the replay hazard before wiring any of this in** (§12, Appendix D.3): confirm whether `processCharacterUpdates`/`updateCharacter` and `processPlaceUpdates`/`updatePlace` actually get called during delta-chain replay. If so, the embed calls in steps 1-2 must come from the page-generation caller's own copy of that page's `CharacterUpdates`/`PlaceUpdates`, never from inside those functions.
+1. ✅ **Character interactions:** write-side done — `embedCharacterInteractions()` in `services/vector-memory.ts`, called from `embedStateDeltaEntities()`. ⬜ Read-side (extending `formatCharactersForPrompt()` with an "Earlier interactions (recalled):" block using `retrieveCharacterInteractions()`) not yet wired in.
+2. ✅ **Place events:** write-side done — `embedPlaceEvents()`, same file/caller. Does **not** touch `calculatePlaceFamiliarity()` — that stays exactly as designed (§4, Use Case 5). ⬜ Read-side (`formatPlacesForPrompt()` extension using `retrievePlaceEvents()`) not yet wired in.
+3. ✅ Future notes: write-side done — `embedFutureNote()`, embedded **once, on `futureNoteUpdates` add/change**, keyed by `noteKey` — not on every page (§6).
+4. ⬜ Prompt integration: within `formatFutureNotes()`'s `unscheduled` bucket, rank by semantic similarity instead of dumping all; `becomingRelevant` stays fully shown regardless of similarity. Not yet done — `retrieveRelevantFutureNotes()` exists in `vector-memory.ts` and is ready to call.
+5. ✅ **Replay hazard verified** (§12, Appendix D.3) — confirmed, not just checked, against `story_utils.ts`/`branch-traversal.ts`. All writes in `vector-memory.ts` are designed to be called only from the page-generation caller (or backfill, reading the same `page.stateDelta`), never from inside `applyStateDelta`/`processCharacterUpdates`/`processPlaceUpdates`.
+
+**What's left for Phase 2+3 to be fully live:** wire `embedPersistedPage`/`embedStateDeltaEntities` into `prompt.ts`'s `generateNextPage`/`generateNextPages`, and wire the four `retrieveX` functions into `formatNextPageStoryContextPrompt`/`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes`. All the underlying service functions exist and are tested-by-design against your real schema/types; what remains is strictly the prompt.ts call-site work.
 
 ### Phase 4 — Clue embeddings & finale-callback filtering (est. 2-3 days)
 
@@ -537,22 +541,24 @@ Unchanged from v1.
 |---|---|---|---|
 | `src/utils/embedding.ts` | Jina client, `embedText`/`embedBatch`, LRU cache, pRetry — no manual normalization | **Phase 0** | ✅ Done |
 | `src/config/embedding.ts` | Centralized config | **Phase 0** | ✅ Done |
-| `src/services/vector-memory.ts` | Embed page, retrieve similar pages | **Phase 2** | ⬜ |
-| `src/cron/backfill-embeddings.ts` | Daily backfill, quota-aware | **Phase 2** | ⬜ |
+| `src/services/vector-memory.ts` | Embed page/character/place/future-note, retrieve similar pages/interactions/events/notes | **Phase 2+3** | ✅ Done |
+| `src/cron/backfill-embeddings.ts` | Daily backfill, quota-aware, now covers all four embedding tables (not just pages) via `pages.stateDelta` | **Phase 2** | ✅ Done |
 
 ### Modified files
 
 | File | Changes | Phase | Status |
 |---|---|---|---|
-| `src/types/ai-chat.ts` | Add `'jina'` to `AIChatProvider` | **P0** | ⬜ Not uploaded — still needed, blocks everything below typechecking |
+| `src/types/ai-chat.ts` | Add `'jina'` to `AIChatProvider` | **P0** | ✅ Done |
 | `src/config/ai-clients.ts` | Add `jina: { rpm: 100 }` to `AI_RATE_LIMITS`, and `jina: 131_000` to `AI_MAX_PROMPT_LENGTH` (type-required, correction from Appendix D.7's original "skip" call) | **P0** | ✅ Done |
 | `src/utils/ai-limiters.ts` | Add `jinaLimiter`, `getJinaLimiter()`, `AI_RATE_LIMITS_WITH_BUFFER` entry | **P0** | ✅ Done — no concurrency cap needed, confirmed |
 | `src/db/extensions.ts` | `ensureVectorExtension()`, pin/verify pgvector ≥0.8.2 | **P0** | ✅ Done |
 | `src/db/schema.ts` | Add embedding tables (Appendix A) | **P1** | ✅ Done |
 | `.env.local.example` | Add `JINA_API_KEY` | **P0** | ⬜ Not uploaded — one-line addition |
-| `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ⬜ |
+| `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ⬜ Functions ready in `vector-memory.ts`, call sites not yet wired |
 | `src/utils/prompt.ts` | `formatNextPageStoryContextPrompt` — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents` | **P2** | ⬜ |
 | `src/utils/prompt.ts` | `formatFutureNotes` — rank `unscheduled` bucket by similarity | **P3** | ⬜ |
+| `src/utils/characters_utils.ts` | `formatCharactersForPrompt` — "Earlier interactions (recalled):" block | **P3** | ⬜ |
+| `src/utils/places_utils.ts` | `formatPlacesForPrompt` — same, for place events | **P3** | ⬜ |
 
 ---
 

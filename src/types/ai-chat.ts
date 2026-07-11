@@ -28,6 +28,10 @@ export type AIChatProvider =
   | 'nvidia'
   | 'openrouter'
   | 'cloudflare'
+  // Embeddings only (jina-embeddings-v5-text-small) — not a chat/completion
+  // provider. Included here because rate limiting (RateLimiter, AI_RATE_LIMITS)
+  // is shared infrastructure across both chat and embedding providers.
+  // @see https://jina.ai/embeddings/
   | 'jina';
 
 /**
