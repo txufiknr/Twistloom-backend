@@ -635,7 +635,8 @@ const buildFirstBookReviewChecklist = (language: string): string => {
   □ Does the difficulty strictly reflect how hostile this world is to this specific MC right now? → If NO: Adjust it based on the current momentum.
 
 7. JSON Integrity
-  □ All fields present and populated? → If NO: complete missing fields.
+  □ All fields present and populated? → If NO: Complete missing fields.
+  □ Every opened bracket '{' or '[' is closed correctly? → If NO: Fix or complete.
   □ No trailing commas? → Fix any.
   □ age is a number, not a range string? → Fix if needed.
   □ familiarity is a decimal between 0.0 and 1.0? → Fix if needed.
@@ -1341,7 +1342,12 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ All choices appear plausibly reasonable on the surface? → If NO: soften the dangerous framing so the trap isn't visible.
   ${isEarlyPhase ? `□ Choices seed curiosity — not force immediate crisis? → Avoid options that escalate to irreversible stakes too soon.` : ''}
   ${isMidPhase ? `□ Choices reflect the player's established psychological profile? → Options should feel designed for how this player thinks.` : ''}
-  ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}`.trim();
+  ${isLatePhase || isFinale ? `□ Choices feel increasingly constrained — like the story is closing in? → Reduce options or weight every path with consequence. On the finale: there is no good option, only degrees of loss.` : ''}
+
+9. JSON Integrity
+  □ All fields present and populated? → If NO: Complete missing fields.
+  □ Every opened bracket '{' or '[' is closed correctly? → If NO: Fix or complete.
+  □ No trailing commas? → Fix any.`.trim();
 }
 
 function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
@@ -1683,29 +1689,36 @@ OUTPUT FORMAT (strict JSON, no extra text):
 }`;
 }
 
+/**
+ * Constructs the AI prompt constraints for generating reader actions (choices).
+ * 
+ * Dynamically shifts the generation rules based on story progression. During standard 
+ * gameplay, it enforces strict narrative branching and distinct consequences. During 
+ * the finale, it triggers an "Entropy Collapse," forcing the AI to create an illusion 
+ * of choice where all paths inevitably funnel toward the climax.
+ * 
+ * @param stateInfo - Partial state containing progression flags like `isFirstPage` and `isFinale`.
+ * @returns A highly optimized, capitalized-anchored prompt string for action generation.
+ */
 function getActionRulesText(stateInfo: Partial<StoryStateInfo>): string {
   const { isFirstPage, isFinale } = stateInfo;
   const limit = isFirstPage || isFinale ? MAX_ACTION_CHOICES_FIRST_PAGE : MAX_ACTION_CHOICES;
 
   return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
-- Can be verb (what to do next) or dialogue (say/answer), ${ACTION_TEXT_LENGTH}
-- Represent the reader's decision - must feel natural, immediate, narrative-driven
-- You can mix both types naturally depending on the situation
-- Example: A. "Who are you?" / B. Run away, fast
-- If no action needed or viable, give only 1 action to continue
+- text: ${ACTION_TEXT_LENGTH}. MUST be 100% unique (used as identifier).
+- Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
+- Naturally mix physical verbs (what to do) and dialogue (what to say).
+- Example: A. "Who are you?" / B. Run away, fast.
+- If MC is trapped or no action is viable, generate exactly 1 choice.
 
-${isFinale ? `ENTROPY COLLAPSE SYSTEM (NEAR END):
-- Reduce number of meaningful actions while still sustaining immersion
-- Choices may exist, but should increasingly lead to similar outcomes
-- Make actions feel constrained, inevitable, or repetitive
-- Example actions: A. Open the door / B. Knock first
-  Both → door opens` : `ACTION RULES:
-- Actions must be short, meaningfully distinct — each lead to very different path
-- Action text must be unique (important) — it's used for identifier
-- No two actions should lead to the same implied consequence
-- Choice pattern: safe / risky / ambiguous
-- Occasionally include deceptive choice
-- Avoid over-explaining actions`}`;
+${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
+- Reduce the number of meaningful actions while sustaining immersion.
+- Make actions feel constrained, inevitable, or repetitive. Completely different choices MUST funnel into the exact same terrifying consequence.
+- Example: A. Open the door / B. Knock first -> (Both lead to the door opening).`
+: `BRANCHING DIVERGENCE RULES:
+- Actions must be meaningfully distinct. No two actions should lead to the same implied consequence.
+- Provide a mix of safe, risky, and ambiguous choices.
+- Occasionally include a deceptive choice.}`;
 }
 
 // ============================================================================

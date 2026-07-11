@@ -24,7 +24,7 @@
 [@] claude payment review: src\app.ts (later check)
 [@] GET /api/payments/stripe/webhook (404)
 [ ] Before insert page, correct futureNote keys
-[ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
+[x] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
 
 [ ] use title, mc, summary & hook from theme validation if not generated in initializeBook
@@ -34,14 +34,6 @@
 ---
 
 factsHistory: { 'location.apartemen.is_haunted': [Array] },
-
-Duplikat on-demand
-[book-creation] ✒️ Writing the book... {
-  userId: '019ed9a8-0b2b-72bb-92af-260e19e699aa',
-  theme: 'cerita tentang wanita yang jatuh cinta dengan hantu',
-[book-creation] ✒️ Writing the book... {
-  userId: '019ed9a8-0b2b-72bb-92af-260e19e699aa',
-  theme: 'cerita tentang wanita yang jatuh cinta dengan hantu',
 
 ---
 
