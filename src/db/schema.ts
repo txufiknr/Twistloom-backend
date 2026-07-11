@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, real, jsonb, uuid, index, primaryKey, integer, unique, type UpdateDeleteAction, boolean, vector } from "drizzle-orm/pg-core";
 import type { CheckinClaimType, FeedbackCategory, FeedbackStatus, Gender, Source, UserActivityType, UserTier } from "../types/user.js";
 import type { LikeTargetType } from "../types/user.js";
 import type { CharacterMemoryTranslation, CharacterPlan, HealthStatus, InjuryTranslation, InventoryItem, InventoryItemTranslation, StoryMC, StoryMCCandidate, StoryMCTranslation } from "../types/character.js";
@@ -1670,5 +1670,196 @@ export const userFeedbacks = pgTable(
     index("user_feedbacks_user_idx").on(t.userId),
     index("user_feedbacks_category_idx").on(t.category),
     index("user_feedbacks_created_idx").on(t.createdAt.desc()),
+  ]
+);
+
+// ============================================================================
+// PGVECTOR SEMANTIC MEMORY (Phase 1)
+// ============================================================================
+// Jina AI (jina-embeddings-v5-text-small) embeddings for semantic retrieval,
+// layered alongside — not replacing — the structured StoryState memory above.
+// See PGVECTOR_SEMANTIC_MEMORY_ROADMAP.md for the full design rationale and
+// fact-check history behind every decision below.
+//
+// All four tables share one shape: `pageId` is a real FK (cascade delete —
+// prune a page, its embeddings go with it) used purely for referential
+// integrity; `page` (the plain page NUMBER) is kept alongside it because
+// every retrieval query needs cheap numeric range filtering (`page < N` —
+// "give me things from before the current page"), and joining through
+// `pageId` just to get that number on every query would be needless
+// overhead on the hot path. `bookId`/`branchId` are denormalized for the
+// same reason: every query filters by both directly, no join required.
+//
+// `branchId` is defined fresh per table below rather than reusing the
+// module-level `branchId` const from the `pages` table (line 33) — sharing
+// one Drizzle column-builder instance across multiple pgTable() calls isn't
+// guaranteed side-effect-free, so each table gets its own instance.
+//
+// Embedding inserts happen fire-and-forget, from the page-generation caller
+// (generateNextPage/generateNextPages) reading off that page's own
+// PersistedStoryPage + StateDelta, AFTER persistPageWithState succeeds —
+// never from inside applyStateDelta or the processXxx helpers it calls,
+// since those run identically during live generation AND during
+// delta-chain replay (confirmed against utils/story.ts/branch-traversal.ts
+// — see roadmap §12 / Appendix D.3).
+
+/**
+ * Page embeddings table
+ * @summary Semantic embeddings for story page text (text + key events + mood),
+ * retrieved to supplement contextHistory's lossy 300-word running summary
+ * with pages that are semantically — not just chronologically — relevant to
+ * the current scene. One row per page; pageId is unique.
+ * @example
+ * {
+ *   "id": "emb123",
+ *   "page_id": "page456",
+ *   "book_id": "book789",
+ *   "branch_id": "main",
+ *   "page": 18,
+ *   "source_text": "Page 18:\nScene: You found an old brass key...\nMood: eerie\nKey events: found key, heard voice",
+ *   "created_at": "2026-07-11T00:00:00.000Z"
+ * }
+ */
+export const pageEmbeddings = pgTable(
+  "page_embeddings",
+  {
+    id: id(),
+    pageId: pageId("cascade"),
+    bookId: bookId("cascade"),
+    branchId: text("branch_id").notNull().default("main"),
+    page: integer("page").notNull(),
+    // jina-embeddings-v5-text-small, 1024 dims, unit-normalized server-side
+    // ("normalized": true — see utils/embedding.ts). Must match
+    // EMBEDDING_DIMENSIONS in config/embedding.ts.
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    sourceText: text("source_text"),
+    createdAt,
+  },
+  (t) => [
+    index("page_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+    index("page_embeddings_book_branch_idx").on(t.bookId, t.branchId),
+    unique("page_embeddings_page_unique").on(t.pageId),
+  ]
+);
+
+/**
+ * Character embeddings table
+ * @summary Semantic embeddings for character interactions (CharacterMemory.
+ * pastInteractions), embedded once per (pageId, characterId) at the moment
+ * they're added — before updateCharacter()'s `.slice(-MAX_PAST_INTERACTIONS)`
+ * (cap 5) can trim them away. sourceText joins same-page interactions,
+ * mirroring how formatCharactersForPrompt() already groups them for display.
+ * Retrieved only to surface interactions older than what's currently visible
+ * in the live sliding window — never duplicates what's already shown in full.
+ * @example
+ * {
+ *   "id": "emb123",
+ *   "page_id": "page456",
+ *   "book_id": "book789",
+ *   "branch_id": "main",
+ *   "page": 12,
+ *   "character_id": "char_emma",
+ *   "source_text": "Emma admitted she'd been in the chapel before, years ago.",
+ *   "created_at": "2026-07-11T00:00:00.000Z"
+ * }
+ */
+export const characterEmbeddings = pgTable(
+  "character_embeddings",
+  {
+    id: id(),
+    pageId: pageId("cascade"),
+    bookId: bookId("cascade"),
+    branchId: text("branch_id").notNull().default("main"),
+    page: integer("page").notNull(),
+    characterId: text("character_id").notNull(),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    sourceText: text("source_text"),
+    createdAt,
+  },
+  (t) => [
+    index("character_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+    index("character_embeddings_book_char_idx").on(t.bookId, t.characterId),
+    unique("character_embeddings_unique").on(t.pageId, t.characterId),
+  ]
+);
+
+/**
+ * Place embeddings table
+ * @summary Semantic embeddings for place key events (PlaceMemory.keyEvents) —
+ * same pattern as character_embeddings. Embedded once per (pageId, placeId)
+ * at add-time, before updatePlace()'s `.slice(-MAX_PLACE_EVENTS)` (cap 8) can
+ * trim them away. Does NOT feed calculatePlaceFamiliarity() — that stays
+ * deterministic and synchronous exactly as designed; this table is purely
+ * additive, for recalling events that have scrolled out of the live
+ * keyEvents window.
+ * @example
+ * {
+ *   "id": "emb123",
+ *   "page_id": "page456",
+ *   "book_id": "book789",
+ *   "branch_id": "main",
+ *   "page": 8,
+ *   "place_id": "place_chapel",
+ *   "source_text": "Father Gabriel warned you never to enter the underground chapel.",
+ *   "created_at": "2026-07-11T00:00:00.000Z"
+ * }
+ */
+export const placeEmbeddings = pgTable(
+  "place_embeddings",
+  {
+    id: id(),
+    pageId: pageId("cascade"),
+    bookId: bookId("cascade"),
+    branchId: text("branch_id").notNull().default("main"),
+    page: integer("page").notNull(),
+    placeId: text("place_id").notNull(),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    sourceText: text("source_text"),
+    createdAt,
+  },
+  (t) => [
+    index("place_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+    index("place_embeddings_book_place_idx").on(t.bookId, t.placeId),
+    unique("place_embeddings_unique").on(t.pageId, t.placeId),
+  ]
+);
+
+/**
+ * Future note embeddings table
+ * @summary Semantic embeddings for future notes, keyed by the note's own
+ * stable `key` (NOT array position — array indices shift on removal via
+ * futureNoteUpdates and would silently misattribute embeddings to the wrong
+ * note). Embedded once on note creation; re-embedded only if
+ * futureNoteUpdates reports a text change — never re-embedded just because
+ * the note reappears in a later page's state snapshot. pageId records which
+ * page the note was added at (cascade delete — matches the other three
+ * tables) but is deliberately NOT part of the uniqueness constraint, since a
+ * note's identity is its key, not the page it happened to be added on.
+ * @example
+ * {
+ *   "id": "emb123",
+ *   "page_id": "page456",
+ *   "book_id": "book789",
+ *   "branch_id": "main",
+ *   "note_key": "chapel_secret",
+ *   "source_text": "The chapel basement hides something Emma has never spoken of.",
+ *   "created_at": "2026-07-11T00:00:00.000Z"
+ * }
+ */
+export const futureNoteEmbeddings = pgTable(
+  "future_note_embeddings",
+  {
+    id: id(),
+    pageId: pageId("cascade"),
+    bookId: bookId("cascade"),
+    branchId: text("branch_id").notNull().default("main"),
+    noteKey: text("note_key").notNull(), // FutureNote.key — stable identifier
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    sourceText: text("source_text"),
+    createdAt,
+  },
+  (t) => [
+    index("future_note_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+    unique("future_note_embeddings_unique").on(t.bookId, t.branchId, t.noteKey),
   ]
 );
