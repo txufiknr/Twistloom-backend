@@ -27,6 +27,10 @@
 [ ] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
 
+[ ] use title, mc, summary & hook from theme validation if not generated in initializeBook
+[ ] result mistral medium kepotong
+[ ] classifyGenAIError buat group github action log
+
 ---
 
 [ ] callers of `getEnrichedBookSelect` should left join to:

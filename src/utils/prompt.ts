@@ -8,7 +8,7 @@ import { createNarrativeStyle } from "./narrative-style.js";
 import { aiPrompt, createAIOptionsWithSchema } from "./ai-chat.js";
 import { createEmptyStoryState, createInitialHiddenState, determineOptimalEnding, getStoryStateInfo, extractStateDelta, applyStateDelta, advanceStoryState, calculatePsychologicalDeltas, mapFutureNoteWithKey, createStoryThread } from "./story.js";
 import { ensureCandidatesForPageWithStrategy, triggerCandidateGenerationWorkflow } from "./candidate-generation.js";
-import { calculateHealthStatus, getMainCharacterInfo } from "./characters.js";
+import { calculateHealthStatus, generateRandomCharacter, getMainCharacterInfo } from "./characters.js";
 import { getPreviousPages } from "../services/story.js";
 import { BOOK_MAX_PAGES, MAX_WORDS_PER_PAGE, MAX_WORDS_SUMMARIZED_CONTEXT } from "../config/story.js";
 import { getErrorMessage } from "./error.js";
@@ -35,7 +35,7 @@ import { canonicalPlaceTypes, placeAccessibilities, type PlaceMemory, placeWeath
 import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
-import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus } from "../types/character.js";
+import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
 import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
@@ -3347,7 +3347,7 @@ function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT
  * ```
  */
 function buildBookCreationPrompt(params: InitializeBookParams): string {
-  const { theme, language, titleIdea, summary, hook, aiComment } = params;
+  const { theme, language, titleIdea, summary, hook, aiComment, mcCandidate } = params;
   const isNonEnglish = language !== 'en';
   const languageFormatted = formatLanguage(language);
 
@@ -3367,6 +3367,8 @@ TITLE IDEA:\n${titleIdea || '-'}
 HOOK IDEA:\n${hook || '-'}
 
 SUMMARY IDEA:\n${summary || '-'}
+
+MAIN CHARACTER IDEA:\n- Name: ${mcCandidate?.name || '-'}\n- Age: ${mcCandidate?.age || '-'}\n- Gender: ${mcCandidate?.gender || '-'}\n- Bio: ${mcCandidate?.bio || '-'}
 
 AI COMMENTARY:\n${aiComment || '-'}
 
@@ -3684,6 +3686,25 @@ export async function initializeBook(
       throw new Error('Failed to generate book: first page text is too short');
     }
 
+    // ── 4b. Fallback to theme validation metadata if AI output is broken/empty ──
+    const fallbackHook = hook?.trim() ? hook : (params.hook || hook);
+    const fallbackSummary = summary?.trim() ? summary : (params.summary || summary);
+
+    const isValidMC = mc?.name?.trim() && mc?.age > 0 && mc?.bio?.trim() && mc?.gender;
+    const fallbackMC = (() => {
+      if (!isValidMC && params.mcCandidate) {
+        const candidate: StoryMCCandidate = {
+          name: mc.name?.trim() || params.mcCandidate.name,
+          age: mc.age > 0 ? mc.age : params.mcCandidate.age,
+          gender: mc.gender || params.mcCandidate.gender,
+          bio: mc.bio?.trim() || params.mcCandidate.bio,
+          knownName: mc.knownName?.trim() || params.mcCandidate.knownName,
+        };
+        return generateRandomCharacter(candidate);
+      }
+      return mc;
+    })();
+
     // ── 5. Persist book record ────────────────────────────────────────────────
     await onProgress?.({ type: 'finalizing_start' });
     await onGenerationProgress('finalizing');
@@ -3705,10 +3726,10 @@ export async function initializeBook(
       // Update existing book record with generated content (async book creation flow)
       await updateBook(draftBookId, {
         title,
-        hook,
-        summary,
+        hook: fallbackHook,
+        summary: fallbackSummary,
         keywords,
-        mc,
+        mc: fallbackMC,
         totalPages,
         language, // Match with theme input
         status: finalStatus, // 'archived' if user cancelled at PoNR, 'active' otherwise
@@ -3732,10 +3753,10 @@ export async function initializeBook(
         title,
         totalPages,
         language,
-        hook,
-        summary,
+        hook: fallbackHook,
+        summary: fallbackSummary,
         keywords,
-        mc,
+        mc: fallbackMC,
         isOriginal,
         visibility: isOriginal ? 'public' : undefined,
         originalThemeInput: theme,

@@ -308,15 +308,17 @@ export async function createBookCore(
       isOriginal,
       onProgress
     });
-    const { comment: aiComment, language = 'en', titleIdea, mcCandidate } = aiResult || {};
+    const { comment: aiComment, language = 'en', titleIdea, hook: themeHook, summary: themeSummary, mcCandidate } = aiResult || {};
     const initializeParams: InitializeBookParams = {
       ...params,
       advancedOptions: normalizedAdvancedOptions,
       theme: validatedTheme ?? theme,
       aiComment,
       language,
-      titleIdea,
-      mcCandidate,
+      titleIdea: titleIdea || params.titleIdea,
+      hook: themeHook || params.hook,
+      summary: themeSummary || params.summary,
+      mcCandidate: mcCandidate?.name || mcCandidate?.age || mcCandidate?.bio ? mcCandidate : params.mcCandidate,
     };
 
     let result: CreateBookResponse;
