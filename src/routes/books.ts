@@ -46,7 +46,7 @@ import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs } from "../db/schema.js";
-import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
@@ -98,9 +98,36 @@ import { cancelGitHubWorkflowRuns } from "../utils/github-workflow.js";
 import { requireEnv } from "../utils/env.js";
 import type { UserComment } from "../types/user.js";
 import type { AIChatProvider } from "../types/ai-chat.js";
+import { MAX_CONCURRENT_GENERATIONS } from "../config/book-creation.js";
 import { generateRandomCharacter } from "../utils/characters.js";
 
 const router: RouterType = Router();
+
+/**
+ * Checks whether the user has reached the concurrent generation limit.
+ * If so, responds with 429 and returns true.
+ */
+async function isConcurrentGenerationLimitReached(userId: string, res: Response): Promise<boolean> {
+  const [result] = await dbRead
+    .select({ count: sql<number>`COUNT(*)::int` })
+    .from(bookGenerations)
+    .where(
+      and(
+        eq(bookGenerations.userId, userId),
+        inArray(bookGenerations.generationStatus, ['pending', 'in_progress']),
+      ),
+    );
+
+  if (result.count >= MAX_CONCURRENT_GENERATIONS) {
+    handleRateLimitError(
+      res,
+      `You can only have ${MAX_CONCURRENT_GENERATIONS} concurrent book generations. Please wait for existing generations to complete.`,
+    );
+    return true;
+  }
+
+  return false;
+}
 
 /**
  * POST /api/books
@@ -145,6 +172,9 @@ router.post("/", requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate, generateCoverImage, advancedOptions } = req.body;
     const userId = req.userId!;
+
+    // Enforce concurrent generation limit
+    if (await isConcurrentGenerationLimitReached(userId, res)) return;
     
     // Use shared core logic (without progress callback for synchronous response)
     const result = await createBookCore(
@@ -264,6 +294,9 @@ router.post("/stream", requireAuth, async (req: Request, res: Response) => {
     const { theme, mcCandidate, generateCoverImage, advancedOptions } = req.body;
     const userId = req.userId!;
 
+    // Enforce concurrent generation limit
+    if (await isConcurrentGenerationLimitReached(userId, res)) return;
+
     // Initialize SSE headers
     initSSEHeaders(res);
 
@@ -345,6 +378,9 @@ router.post('/async', requireAuth, async (req: Request, res: Response) => {
   try {
     const { theme, mcCandidate: initialMCCandidate, generateCoverImage, advancedOptions } = req.body;
     const userId = req.userId!;
+
+    // ── STEP 0: Enforce concurrent generation limit ─────────────────────────
+    if (await isConcurrentGenerationLimitReached(userId, res)) return;
 
     // ── STEP 1: Validate theme + MC candidate (structural + AI) ──────────────
     const { aiResult, normalizedAdvancedOptions } = await createBookValidate({
@@ -978,6 +1014,9 @@ router.post('/:bookId/retry', requireAuth, async (req: Request, res: Response) =
         error: `Book generation is not in a retryable state (current: ${data.generationStatus ?? 'none'})`,
       });
     }
+
+    // Enforce concurrent generation limit
+    if (await isConcurrentGenerationLimitReached(userId, res)) return;
 
     // Consume credits atomically with resetting the generation state.
     // Credits were refunded when the generation failed or was cancelled,
