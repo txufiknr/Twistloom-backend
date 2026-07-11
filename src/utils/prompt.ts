@@ -1718,7 +1718,7 @@ ${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
 : `BRANCHING DIVERGENCE RULES:
 - Actions must be meaningfully distinct. No two actions should lead to the same implied consequence.
 - Provide a mix of safe, risky, and ambiguous choices.
-- Occasionally include a deceptive choice.}`;
+- Occasionally include a deceptive choice.`}`;
 }
 
 // ============================================================================
