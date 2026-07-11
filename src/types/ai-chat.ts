@@ -27,7 +27,8 @@ export type AIChatProvider =
   // @see https://docs.nvidia.com/nim/large-language-models/latest/system-example.html
   | 'nvidia'
   | 'openrouter'
-  | 'cloudflare';
+  | 'cloudflare'
+  | 'jina';
 
 /**
  * AI response structure returned from chat completion APIs

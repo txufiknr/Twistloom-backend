@@ -32,6 +32,7 @@ const AI_RATE_LIMITS_WITH_BUFFER: Record<AIChatProvider, { rpm: number; delayMs:
   nvidia: getRateLimitConfig('nvidia'),
   openrouter: getRateLimitConfig('openrouter'),
   cloudflare: getRateLimitConfig('cloudflare'),
+  jina: getRateLimitConfig('jina'),
 };
 
 /**
@@ -132,6 +133,7 @@ let mistralLimiter: RateLimiter | null = null;
 let nvidiaLimiter: RateLimiter | null = null;
 let openrouterLimiter: RateLimiter | null = null;
 let cloudflareLimiter: RateLimiter | null = null;
+let jinaLimiter: RateLimiter | null = null;
 
 /**
  * Get GitHub Models rate limiter (singleton)
@@ -206,6 +208,23 @@ export function getCloudflareLimiter(): RateLimiter {
 }
 
 /**
+ * Get Jina AI rate limiter (singleton)
+ *
+ * Embeddings only (jina-embeddings-v5-text-small), not a chat provider.
+ * Shared by every caller — fire-and-forget page/character/place/future-note
+ * embeds AND the backfill cron all funnel through this one instance, so the
+ * serialized throttle() queue naturally caps concurrency too (see roadmap
+ * §2 for the math: ~652ms spacing at 100 RPM with an 8% buffer, comfortably
+ * above Jina's ~100-500ms typical latency — no separate concurrency
+ * semaphore needed).
+ *
+ * @returns Rate limiter instance for Jina AI
+ */
+export function getJinaLimiter(): RateLimiter {
+  return jinaLimiter || (jinaLimiter = new RateLimiter('jina'));
+}
+
+/**
  * Get rate limiter by provider name with lazy initialization
  * @param provider - AI provider name
  * @returns Rate limiter instance for the provider
@@ -222,6 +241,7 @@ export function getRateLimiter(provider: AIChatProvider): RateLimiter {
     case 'nvidia': return getNvidiaLimiter();
     case 'openrouter': return getOpenRouterLimiter();
     case 'cloudflare': return getCloudflareLimiter();
+    case 'jina': return getJinaLimiter();
     default: throw new Error(`No rate limiter found for provider: ${provider}`);
   }
 }
@@ -331,13 +351,14 @@ export async function incrementDailyUsageCount(
 ): Promise<void> {
   try {
     const today = getTodayDate();
-    const opts = options ?? {};
-    const model = opts.model ?? null;
-    const inputTokens = opts.inputTokens ?? null;
-    const outputTokens = opts.outputTokens ?? null;
-    const totalTokens = opts.totalTokens ?? null;
-    const cachedTokens = opts.cachedTokens ?? null;
-    const durationMs = opts.durationMs ?? null;
+    const {
+      model = null,
+      inputTokens = null,
+      outputTokens = null,
+      totalTokens = null,
+      cachedTokens = null,
+      durationMs = null
+    } = options ?? {};
 
     await dbWrite.execute(sql`
       INSERT INTO "usage" (date, provider, model, requests, input_tokens, output_tokens, total_tokens, cached_tokens, duration_ms, context)

@@ -14,6 +14,7 @@ import type { AIChatProvider, AIModelSelection, AIProviderRateLimit } from "../t
  * | NVIDIA NIM    | 40   | ~57,600     | Excellent fallback for open-source heavy.  |
  * | OpenRouter    | 20   | ~500        | 20 RPM, 50-1000 RPD depending on model route. |
  * | Cloudflare    | 30   | 10,000      | Rate limited by 10,000 free "Neurons" per day. |
+ * | Jina (embed)  | 100  | n/a (TPM)   | 100K TPM, 2 concurrent — not a chat provider.  |
  * 
  * RPM = Requests Per Minute
  * RPD = Requests Per Day
@@ -94,6 +95,14 @@ export const AI_RATE_LIMITS: Record<AIChatProvider, AIProviderRateLimit> = {
 
   // ~10 RPM / ~150 RPD proxy for the 10,000 neurons/day free budget on 8B models.
   cloudflare: { rpm: 10,  rpd: 150 },
+
+  // Embeddings only (jina-embeddings-v5-text-small), not a chat provider.
+  // Free tier: 100 RPM, 100K TPM, 2 concurrent requests — no fixed daily/
+  // monthly cap, so rpd/rpmo are intentionally omitted (same pattern as
+  // mistral/nvidia). canUseAIToday('jina') will always pass; RateLimiter's
+  // RPM throttling is what actually protects this provider.
+  // @see https://jina.ai/embeddings/
+  jina:       { rpm: 100 },
 };
 
 /**
@@ -151,6 +160,13 @@ export const AI_MAX_PROMPT_LENGTH: Record<AIChatProvider, number> = {
   // Keep this small both to fit the context window and to preserve neuron
   // budget for the output.
   cloudflare: 12_000,    // ~3,000 tokens
+
+  // Embeddings only, not a chat provider — nothing currently reads this
+  // entry for jina (embedding.ts does its own input handling). Present
+  // purely because AIChatProvider now includes 'jina', so this Record
+  // requires every key. Value documents jina-embeddings-v5-text-small's
+  // real 32,768-token input cap in characters (~4 chars/token).
+  jina:       131_000,
 };
 
 /**
@@ -360,12 +376,12 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
  * Requires large context windows, strict schema adherence, and analytical logic mapping.
  */
 export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
+  mistral: [
+    'mistral-large-latest',
+  ],
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash'
-  ],
-  mistral: [
-    'mistral-large-latest',
   ],
   openrouter: [
     'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
