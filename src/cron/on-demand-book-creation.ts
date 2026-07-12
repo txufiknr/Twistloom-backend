@@ -293,16 +293,19 @@ async function processHourlyRoutine(): Promise<void> {
     console.log(`[book-creation] 👨‍💻 Triggering workflow for book: ${bookId}`);
     
     try {
-      // Set lock before triggering workflow to prevent race conditions
-      await dbWrite
-        .update(bookGenerations)
-        .set({ isGeneratingStartedAt: new Date() })
-        .where(eq(bookGenerations.bookId, bookId));
-      
+      // Atomically claim this book using conditional UPDATE to prevent
+      // two concurrent cron runs from dispatching workflows for the same book.
+      // acquireBookGenerationLock uses: WHERE isGeneratingStartedAt IS NULL OR stale > 1min
+      const lockAcquired = await acquireBookGenerationLock(bookId);
+      if (!lockAcquired) {
+        console.log(`[book-creation] ⏸️ Book ${bookId} already claimed by another process, skipping`);
+        continue;
+      }
+
       triggerBookGenerationWorkflow(bookId, 'Hourly routine');
     } catch (error) {
-      console.error(`[book-creation] ❌ Failed to set lock or trigger workflow for book ${bookId}:`, getErrorMessage(error));
-      // Clear lock if set, to allow retry on next run
+      console.error(`[book-creation] ❌ Failed to trigger workflow for book ${bookId}:`, getErrorMessage(error));
+      // Clear lock if trigger failed, to allow retry on next run
       await dbWrite
         .update(bookGenerations)
         .set({ isGeneratingStartedAt: null })
