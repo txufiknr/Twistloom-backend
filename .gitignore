@@ -84,6 +84,9 @@ Thumbs.db
 # Test files
 sample/
 
+# FastText model (large binary, download separately)
+models/lid.176.bin
+
 # Backup and custom files
 *.bak.*
 notes

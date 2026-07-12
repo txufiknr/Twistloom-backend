@@ -86,7 +86,6 @@ const router: RouterType = Router();
  * @returns {string|null} user.bio - User's bio
  * @returns {string|null} user.gender - User's gender
  * @returns {string|null} user.imageUrl - User's profile image URL
- * @returns {string|null} user.tier - User's subscription tier
  * @returns {number} user.credits - Available credits
  * @returns {boolean} user.isNewUser - Onboarding completed flag
  * @returns {boolean} user.emailVerified - Whether email is verified
@@ -108,7 +107,7 @@ const router: RouterType = Router();
  * @returns {number} user.maxCheckinStreak - Longest check-in streak
  * @returns {number} user.customActionsWritten - Custom actions authored
  * @returns {Object} user.subscription - Subscription info
- * @returns {string|null} user.subscription.tier - User's tier
+ * @returns {string|null} user.subscription.tier - User's subscription tier (SSOT for VIP gating)
  * @returns {Date} user.lastActive - Last activity timestamp
  * @returns {Date} user.createdAt - Account creation timestamp
  * @returns {Date} user.updatedAt - Last update timestamp
@@ -127,7 +126,6 @@ const router: RouterType = Router();
  *     "bio": "Thriller enthusiast",
  *     "gender": "male",
  *     "imageUrl": "https://ik.imagekit.io/abc123/profile.jpg",
- *     "tier": null,
  *     "credits": 500,
  *     "isNewUser": false,
  *     "emailVerified": "2024-01-01T00:00:00.000Z",
@@ -169,9 +167,14 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       .from(userProviders)
       .where(eq(userProviders.userId, userId));
 
+    // Normalize: move tier into subscription sub-object for consistent API shape
+    // with GET /api/users/:identifier. The frontend reads user.subscription.tier
+    // for VIP gating — keeping it as a single authoritative field prevents SSOT drift.
+    const { tier, ...restUser } = user;
     res.json({
       user: {
-        ...user,
+        ...restUser,
+        subscription: { tier },
         linkedMethods: providers.map(p => p.provider),
       }
     });
@@ -391,8 +394,9 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
     }
 
     // Rename userId → id for frontend consistency
-    const { userId: id, ...rest } = user;
-    res.json({ success: true, user: { id, ...rest } });
+    // Normalize: move tier into subscription sub-object (consistent with GET /api/user)
+    const { userId: id, tier: putTier, ...putRest } = user;
+    res.json({ success: true, user: { id, ...putRest, subscription: { tier: putTier } } });
   } catch (error) {
     console.error('[PUT /api/user] ❌', error);
     handleApiError(res, 'Failed to update profile', error);

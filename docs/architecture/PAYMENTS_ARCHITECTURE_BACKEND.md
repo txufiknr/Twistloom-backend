@@ -87,6 +87,7 @@ erDiagram
         string type "activation|renewal|cancellation|trial_started|trial_expired"
         int creditsAllocated
         string stripeInvoiceId UK
+        string stripeEventId UK
         jsonb metadata
     }
     transactions {
@@ -95,14 +96,19 @@ erDiagram
         string type "purchase|usage|refund|reward"
         int credits
         numeric amountUsd
+        string context
+        jsonb metadata
         string paymentIntentId UK
         string stripeEventId UK
     }
     webhookDeliveries {
         uuid id PK
         string eventId UK
-        string status "processing|success|failed"
+        string eventType
+        timestamp deliveredAt
         timestamp processedAt
+        string status "retrying|success|failed"
+        string errorMessage
     }
 ```
 
@@ -543,4 +549,72 @@ src/
 
 ---
 
-*Last updated: alongside the VIP free trial implementation. Keep this in sync with `VIP_FREE_TRIAL_ROADMAP.md` when either changes — the roadmap is the "how we got here and what we decided," this doc is the "how it actually works."*
+## 12. Issues & Future Enhancements
+
+### 🔴 Critical
+
+#### 12.1 `awardCredits()` ignores `paymentIntentId` / `stripeEventId`
+
+**Severity:** Critical — breaks the Layer 3 unique-constraint idempotency backstop.
+
+**Description:** `AwardCreditsOptions` accepts `paymentIntentId` and `stripeEventId`, and the webhook handler passes them, but `awardCredits()` never writes them to the `transactions` insert. This means two concurrent webhook deliveries of `checkout.session.completed` that both pass the SELECT idempotency check can both successfully insert a transaction row, potentially double-crediting the user. The `webhookDeliveries.eventId` unique constraint is the only remaining guard.
+
+**Fix:** Add `paymentIntentId` and `stripeEventId` to the `transactions.insert()` call inside `awardCredits()`.
+
+### ✅ Resolved
+
+#### 12.2 `transactions.amount_usd` (real) → `transactions.amount_cents` (integer)
+
+**Location:** `src/db/schema.ts:1053`
+
+**Resolution (2026-07-12):** Renamed to `amount_cents: integer` (Stripe-compatible cents). API response still returns `amountUsd` (dollars) via `amountCents / 100` in the transactions endpoint serializer.
+
+#### 12.3 `subscription/cancel` — joined via `users.subscriptionId`
+
+**Location:** `src/routes/payments.ts:1671-1675`
+
+**Resolution (2026-07-12):** Updated to `innerJoin(users, eq(users.subscriptionId, subscriptions.id))` matching the canonical pattern documented in §10.
+
+#### 12.6 Trial metadata added to regular subscription checkout
+
+**Location:** `src/routes/payments.ts:637,642`
+
+**Resolution (2026-07-12):** Regular `create-subscription-checkout` now passes `isTrial: "false"` in both `session.metadata` and `subscription_data.metadata`, matching the trial checkout's `isTrial: "true"`.
+
+### 🟡 Moderate (remaining)
+
+#### 12.4 `subscription/portal` should use canonical join pattern
+
+**Location:** `src/routes/payments.ts:1761-1766`
+
+**Description:** Selects `stripeCustomerId` from `subscriptions` ordered by recency. If the invariant that all rows share the same `customerId` ever breaks, this silently returns a stale value.
+
+**Recommendation:** Join via `users.subscriptionId` or read `stripeCustomerId` directly from `users`.
+
+#### 12.5 Webhook rate limit mismatch
+
+**Description:** API documentation says 1000 req/min per IP; actual code uses 300 req/60sec global (single shared Redis key for all Stripe IPs).
+
+**Recommendation:** Sync docs to code or increase limit + switch to IP-based key if Stripe IP space is known.
+
+### 🟢 Minor
+
+- `checkout.session.completed` mode guard (`session.mode === "payment"`) at line 1100 makes the subsequent `paymentIntentId` null-check at line 1107 redundant — subscription sessions have no payment intent anyway.
+- Type guard `isSubscriptionWithPeriods` at line 64 uses `any`; could use `unknown` for better type safety.
+- Handle `subscription/portal` returning 404 for missing `customerId` — could be confusing vs. "no subscription found" vs. "user never created a customer."
+
+---
+
+## 13. Resolved Open Questions
+
+All three open questions from the initial audit were resolved on 2026-07-12:
+
+| # | Question | Decision | Implementation |
+|---|---|---|---|
+| Q1 | `amountUsd` → integer cents? | Yes — integer cents | Renamed to `amountCents` in schema; API returns computed `amountUsd` |
+| Q2 | `subscription/cancel` → canonical join? | Yes | Updated to `innerJoin` via `users.subscriptionId` |
+| Q3 | Regular checkout → `isTrial: "false"`? | Yes | Added to both `session.metadata` and `subscription_data.metadata` |
+
+---
+
+*Last updated: July 12, 2026 (Added §12 Issues & Enhancements, §13 Open Questions; ERD schema corrections; resolved Q1-Q3)*

@@ -26,9 +26,9 @@ export interface CreditPack {
 
 /**
  * Transaction type for credit operations
- * - purchase: User buys credits (amountUsd is set)
- * - usage: User consumes or receives credits (amountUsd is null)
- * - refund: Credits refunded to user (amountUsd is set)
+ * - purchase: User buys credits (amountCents is set)
+ * - usage: User consumes or receives credits (amountCents is null)
+ * - refund: Credits refunded to user (amountCents is set)
  * - reward: Free credits awarded (daily check-in, promotions)
  */
 export type TransactionType = "purchase" | "usage" | "refund" | "reward";

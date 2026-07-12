@@ -1039,7 +1039,7 @@ export const deletedImages = pgTable(
  *   "user_id": "user456",
  *   "type": "purchase",
  *   "credits": 100,
- *   "amount_usd": 9.99,
+ *   "amount_cents": 999,
  *   "created_at": "2023-01-01T00:00:00.000Z"
  * }
  */
@@ -1050,7 +1050,7 @@ export const transactions = pgTable(
     userId: userId().references(() => users.userId, { onDelete: "cascade" }),
     type: text("type").$type<TransactionType>().notNull(),
     credits: integer("credits").notNull(),
-    amountUsd: real("amount_usd"),
+    amountCents: integer("amount_cents"),
     context: text("context"), // Additional context for usage transactions (e.g., "book_creation")
     metadata: jsonb("metadata"), // Additional metadata for the transaction
     paymentIntentId: text("payment_intent_id").unique(), // Stripe payment intent for idempotency

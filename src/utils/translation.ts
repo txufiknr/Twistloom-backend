@@ -1,4 +1,5 @@
-import { FastTextLanguageDetector } from 'fasttext-ts';
+import { FastText } from '@rafaelkallis/fasttext';
+import path from 'path';
 
 /**
  * Translates text using LibreTranslate API
@@ -154,17 +155,35 @@ export function getLanguageName(languageCode: string): string | null {
   }
 }
 
-/**
- * 
- * @param text 
- * @param options 
- * @returns 
- */
-export async function detectLanguage(text: string, options?: { cache: boolean }): Promise<string | null> {
-  const { cache = false } = options ?? {};
-  const detector = new FastTextLanguageDetector({ cache });
-  await detector.load();
+let detector: FastText | null = null;
 
-  const result = await detector.detectSimple(text);
-  return result;
+async function getDetector(): Promise<FastText> {
+  if (detector) return detector;
+  const modelPath = path.join(process.cwd(), 'models', 'lid.176.bin');
+  detector = await FastText.from(modelPath);
+  return detector;
+}
+
+/**
+ * Detects the language of a given text using FastText WebAssembly model.
+ * 
+ * @param text - The text to detect language for
+ * @returns ISO 639-1 language code (e.g., "en", "id") or null if confidence is below threshold
+ * 
+ * @example
+ * ```typescript
+ * const lang = await detectLanguage("Hello world");
+ * // Returns: "en"
+ * ```
+ */
+export async function detectLanguage(text: string): Promise<string | null> {
+  const model = await getDetector();
+  const predictions = await model.predict(text);
+
+  if (predictions.length === 0) return null;
+
+  const [label, confidence] = predictions[0];
+  if (confidence < 0.5) return null;
+
+  return label.replace('__label__', '');
 }

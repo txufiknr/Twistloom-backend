@@ -158,7 +158,7 @@ export async function createBookValidate(params: {
     }
   }
 
-  const detectedLanguage = detectLanguage(theme);
+  const detectedLanguage = await detectLanguage(theme);
   if (!detectedLanguage) {
     throw new BookCreationError('Theme language is not identifiable');
   }

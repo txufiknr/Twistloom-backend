@@ -91,9 +91,8 @@ interface User {
   isNewUser: boolean;                  // Onboarding completed flag
   lastActive: string;                  // Last activity timestamp (ISO 8601)
   linkedMethods?: string[];            // Linked auth methods: ["credentials", "google"]
-  subscription: {                      // Subscription information
-    tier: string | null;               // User tier
-    vipExpiresAt: string | null;       // VIP expiration timestamp
+  subscription: {                      // Subscription information (SSOT for VIP gating)
+    tier: string | null;               // User's tier — the authoritative VIP gate field
   };
   stats: UserStats;                    // Engagement statistics
   createdAt: string;                   // Account creation timestamp (ISO 8601)
@@ -353,8 +352,7 @@ Retrieves the authenticated user's full enriched profile with engagement statist
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
     "subscription": {
-      "tier": null,
-      "vipExpiresAt": null
+      "tier": null
     },
     "stats": {
       "readsCount": 150,
@@ -411,8 +409,7 @@ Fetch user profile by identifier (UUID or username). Industry standard implement
     "isNewUser": false,
     "lastActive": "2024-01-15T10:30:00.000Z",
     "subscription": {
-      "tier": null,
-      "vipExpiresAt": null
+      "tier": null
     },
     "stats": {
       "readsCount": 150,
@@ -542,8 +539,7 @@ Partially updates the authenticated user's profile. Only provided fields are upd
     "lastActive": "2024-01-15T10:30:00.000Z",
     "linkedMethods": ["credentials", "google"],
     "subscription": {
-      "tier": null,
-      "vipExpiresAt": null
+      "tier": null
     },
     "stats": {
       "readsCount": 150,

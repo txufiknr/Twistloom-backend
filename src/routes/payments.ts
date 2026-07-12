@@ -634,12 +634,12 @@ router.post("/create-subscription-checkout", requireAuth, async (req: Request, r
           quantity: 1,
         },
       ],
-      metadata: { userId, subscriptionType: 'vip' },
+      metadata: { userId, subscriptionType: 'vip', isTrial: "false" },
       client_reference_id: userId,
       success_url: successUrl,
       cancel_url: cancelUrl,
       subscription_data: {
-        metadata: { userId },
+        metadata: { userId, isTrial: "false" },
       },
     });
 
@@ -1114,7 +1114,6 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       if (!userId || !credits || !packId) return handleValidationError(res, "Invalid session metadata");
 
       const creditsAmount = Number(credits);
-      const amountUsd = session.amount_total ? session.amount_total / 100 : undefined;
 
       // Validate payment amount matches expected credit pack price (security check)
       const pack = CREDIT_PACKS.find((p) => p.id === packId);
@@ -1146,9 +1145,9 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           notificationType: "payment_success",
           notificationTitle: "Payment Successful",
           notificationMessage: `Your purchase of ${creditsAmount} credits (${pack.title}) was successful`,
-          notificationData: { amount: amountUsd, paymentIntentId, packId },
-          metadata: { paymentIntentId, stripeEventId, amountUsd, packId },
-          amountUsd: amountUsd ?? null,
+          notificationData: { amountCents: session.amount_total, paymentIntentId, packId },
+          metadata: { paymentIntentId, stripeEventId, amountCents: session.amount_total, packId },
+          amountCents: session.amount_total ?? undefined,
           context: 'credit_pack_purchase',
           // Persisted to the real unique-constrained columns — this is what makes the
           // idempotency check above and the charge.refunded lookup below actually work.
@@ -1168,7 +1167,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
               notificationType: 'first_purchase_bonus',
               notificationTitle: 'First Purchase Bonus',
               notificationMessage: `You received ${FIRST_PURCHASE_BONUS} credits for your first purchase`,
-              notificationData: { amount: amountUsd, packId, paymentIntentId },
+              notificationData: { amountCents: session.amount_total, packId, paymentIntentId },
               metadata: { stripeEventId, paymentIntentId, packId },
               tx
             });
@@ -1237,9 +1236,8 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
         }
         
         const transaction = originalTransaction[0];
-        const refundAmount = charge.amount_refunded ? charge.amount_refunded / 100 : 0;
-        const refundCents = Math.round(refundAmount * 100);
-        const originalCents = Math.round(transaction.amountUsd! * 100);
+        const refundCents = charge.amount_refunded ?? 0;
+        const originalCents = transaction.amountCents!;
         const creditsToDeduct = Number((BigInt(refundCents) * BigInt(transaction.credits)) / BigInt(originalCents));
 
         if (creditsToDeduct > 0) {
@@ -1257,7 +1255,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
             userId: transaction.userId,
             type: 'refund',
             credits: -creditsToDeduct, // Negative for refund
-            amountUsd: -refundAmount, // Negative for refund
+            amountCents: -refundCents, // Negative for refund (cents)
             paymentIntentId,
             stripeEventId: event.id,
           });
@@ -1268,7 +1266,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
             type: 'refund',
             title: 'Refund Processed',
             message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
-            data: { creditsDeducted: creditsToDeduct, refundAmount, originalPaymentId: paymentIntentId },
+            data: { creditsDeducted: creditsToDeduct, refundCents, refundAmount: refundCents / 100, originalPaymentId: paymentIntentId },
           });
         }
         
@@ -1565,9 +1563,11 @@ router.get("/transactions", requireAuth, async (req: Request, res: Response) => 
       .limit(limitNum)
       .offset(offsetNum);
 
-    // Removed JSON.parse(tx.metadata) - Drizzle + pg driver natively handles JSONB as parsed JS objects
+    // Convert amountCents (integer) → amountUsd (float dollars) for API consumers.
+    // Drizzle + pg driver natively handles JSONB as parsed JS objects.
     const formattedTransactions = userTransactions.map(tx => ({
       ...tx,
+      amountUsd: tx.amountCents != null ? tx.amountCents / 100 : null,
     }));
 
     // Calculate summary statistics
@@ -1576,7 +1576,7 @@ router.get("/transactions", requireAuth, async (req: Request, res: Response) => 
         totalCreditsPurchased: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.credits} ELSE 0 END)`,
         totalCreditsUsed: sql<number>`SUM(CASE WHEN ${transactions.type} = 'usage' THEN ABS(${transactions.credits}) ELSE 0 END)`,
         totalCreditsRewarded: sql<number>`SUM(CASE WHEN ${transactions.type} = 'reward' THEN ${transactions.credits} ELSE 0 END)`,
-        totalAmountSpent: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.amountUsd} ELSE 0 END)`,
+        totalAmountSpent: sql<number>`SUM(CASE WHEN ${transactions.type} = 'purchase' THEN ${transactions.amountCents} ELSE 0 END) / 100.0`,
       })
       .from(transactions)
       .where(eq(transactions.userId, userId))
@@ -1669,9 +1669,14 @@ router.post("/subscription/cancel", requireAuth, async (req: Request, res: Respo
     const userId = req.user!.id;
 
     const subscription = await dbRead
-      .select()
+      .select({
+        id: subscriptions.id,
+        stripeSubscriptionId: subscriptions.stripeSubscriptionId,
+        status: subscriptions.status,
+      })
       .from(subscriptions)
-      .where(and(eq(subscriptions.userId, userId), inArray(subscriptions.status, ['active', 'trialing'])))
+      .innerJoin(users, eq(users.subscriptionId, subscriptions.id))
+      .where(and(eq(users.userId, userId), inArray(subscriptions.status, ['active', 'trialing'])))
       .limit(1);
 
     if (subscription.length === 0) return handleNotFoundError(res, "No active subscription found");

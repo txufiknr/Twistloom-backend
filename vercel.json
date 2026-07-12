@@ -2,5 +2,10 @@
   "version": 2,
   "rewrites": [
     { "source": "/(.*)", "destination": "/src/app.ts" }
-  ]
+  ],
+  "functions": {
+    "src/app.ts": {
+      "includeFiles": "models/**"
+    }
+  }
 }

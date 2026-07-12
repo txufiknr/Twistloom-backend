@@ -23,6 +23,8 @@ The Payments API provides endpoints for Stripe checkout sessions, credit purchas
 3. [Subscription Plans](#subscription-plans)
    - [Get Subscription Plans](#get-paymentssubscription-plans)
    - [Create Subscription Checkout](#post-paymentscreate-subscription-checkout)
+   - [Create Trial Checkout](#post-paymentscreate-trial-checkout-session)
+   - [Check Trial Eligibility](#get-paymentssubscriptiontrial-eligibility)
    - [Get Subscription Status](#get-paymentssubscription)
    - [Cancel Subscription](#post-paymentssubscriptioncancel)
    - [Open Customer Portal](#get-paymentssubscriptionportal)
@@ -670,7 +672,6 @@ All endpoints follow consistent error response formats:
 **Standard Error Response:**
 ```json
 {
-  "success": false,
   "error": "Error message description"
 }
 ```
@@ -678,12 +679,7 @@ All endpoints follow consistent error response formats:
 **Validation Error Response (400):**
 ```json
 {
-  "success": false,
-  "error": "Invalid input",
-  "details": {
-    "field": "priceId",
-    "message": "Invalid price ID"
-  }
+  "error": "Invalid input"
 }
 ```
 
@@ -750,7 +746,7 @@ Different endpoints have different rate limits to prevent abuse:
 - `GET /payments/subscription/portal`: 30 requests per minute per user
 
 **Webhook endpoint:**
-- `POST /payments/stripe/webhook`: 1000 requests per minute per IP (Stripe only)
+- `POST /payments/stripe/webhook`: 300 requests per minute global (Stripe only — shared Redis key)
 
 Rate limiting is implemented using Redis with IP-based and user-based keys.
 
@@ -786,29 +782,109 @@ Most endpoints require authentication via NextAuth JWT cookies:
 
 ## Database Schema
 
-### Transactions Table
-```sql
-CREATE TABLE "transactions" (
-  "id" uuid PRIMARY KEY,
-  "user_id" uuid REFERENCES users(id) ON DELETE cascade NOT NULL,
-  "type" text NOT NULL, -- "purchase" | "usage" | "refund" | "reward"
-  "credits" integer NOT NULL,
-  "amount_usd" real,
-  "context" text, -- Additional context for usage transactions
-  "metadata" jsonb, -- Additional metadata for the transaction
-  "payment_intent_id" text UNIQUE, -- Stripe payment intent for idempotency
-  "stripe_event_id" text UNIQUE, -- Stripe event ID for webhook idempotency
-  "created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
-```
-
-### Users Table (Credits Column)
+### Users Table (Credits & VIP Columns)
 ```sql
 CREATE TABLE "users" (
   "user_id" uuid PRIMARY KEY,
   -- ... other user fields
   "credits" integer DEFAULT 0 NOT NULL,
+  "tier" text, -- 'standard' | 'vip'
+  "subscription_id" uuid, -- FK to subscriptions.id (canonical current subscription pointer)
+  "vip_expires_at" timestamp with time zone,
+  "vip_trial_used_at" timestamp with time zone, -- Set once, never cleared (one-trial-per-user)
+  "stripe_customer_id" text UNIQUE,
   -- ... other user fields
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+### Transactions Table
+Tracks all credit movements — purchases, usage, refunds, rewards.
+```sql
+CREATE TABLE "transactions" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid REFERENCES users(user_id) ON DELETE cascade NOT NULL,
+  "type" text NOT NULL, -- "purchase" | "usage" | "refund" | "reward"
+  "credits" integer NOT NULL,
+  "amount_cents" integer,
+  "context" text, -- Additional context (e.g., "credit_pack_purchase", "book_creation")
+  "metadata" jsonb, -- Additional metadata for the transaction
+  "payment_intent_id" text UNIQUE, -- Stripe payment intent for idempotency
+  "stripe_event_id" text UNIQUE, -- Stripe event ID for webhook idempotency
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- Indexes
+CREATE INDEX transactions_user_idx ON transactions(user_id);
+CREATE INDEX transactions_created_idx ON transactions(created_at DESC);
+CREATE INDEX transactions_context_idx ON transactions(context);
+```
+
+### Subscriptions Table
+One row per subscription lifecycle. Users may accumulate multiple rows over time (cancel + resubscribe). The "current subscription" is tracked via `users.subscription_id`.
+```sql
+CREATE TABLE "subscriptions" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "stripe_subscription_id" text UNIQUE NOT NULL,
+  "stripe_customer_id" text NOT NULL,
+  "stripe_price_id" text NOT NULL,
+  "status" text NOT NULL, -- 'active' | 'canceled' | 'past_due' | 'trialing' | ...
+  "current_period_start" timestamp with time zone NOT NULL,
+  "current_period_end" timestamp with time zone NOT NULL,
+  "cancel_at_period_end" boolean NOT NULL DEFAULT false,
+  "canceled_at" timestamp with time zone,
+  "is_trial" boolean NOT NULL DEFAULT false,
+  "trial_end" timestamp with time zone,
+  "metadata" jsonb,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+### Subscription Transactions Table
+Separate from `transactions` — tracks subscription-specific credit allocations and lifecycle events.
+```sql
+CREATE TABLE "subscription_transactions" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "subscription_id" uuid NOT NULL REFERENCES subscriptions(id) ON DELETE cascade,
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "type" text NOT NULL, -- 'activation' | 'renewal' | 'cancellation' | 'trial_started' | 'trial_expired'
+  "credits_allocated" integer NOT NULL,
+  "stripe_invoice_id" text UNIQUE, -- Idempotency for renewal webhooks
+  "stripe_event_id" text UNIQUE, -- Idempotency for subscription webhooks
+  "metadata" jsonb,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+### Webhook Deliveries Table
+Tracks Stripe webhook delivery status for idempotency and monitoring.
+```sql
+CREATE TABLE "webhook_deliveries" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "event_id" text NOT NULL UNIQUE,
+  "event_type" text NOT NULL,
+  "delivered_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "processed_at" timestamp with time zone,
+  "status" text NOT NULL DEFAULT 'retrying', -- 'success' | 'failed' | 'retrying'
+  "error_message" text,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+```
+
+### User Notifications Table
+```sql
+CREATE TABLE "user_notifications" (
+  "id" uuid PRIMARY KEY DEFAULT uuidv7(),
+  "user_id" uuid NOT NULL REFERENCES users(user_id) ON DELETE cascade,
+  "type" text NOT NULL, -- 'payment_success', 'refund', 'trial_ending_soon', 'first_purchase_bonus'
+  "title" text NOT NULL,
+  "message" text NOT NULL,
+  "data" jsonb,
+  "read" boolean NOT NULL DEFAULT false,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -858,6 +934,24 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 ---
 
 ## Changelog
+
+### v1.5.0 (2026-07-12)
+- Migrated `transactions.amount_usd` (real) → `transactions.amount_cents` (integer) for Stripe-compatible precision
+- API response `amountUsd` is now computed as `amountCents / 100` (no frontend contract change)
+- Fixed `POST /payments/subscription/cancel` to join via `users.subscriptionId` (canonical pattern)
+- Added `isTrial: "false"` metadata to regular `create-subscription-checkout` for Stripe symmetry
+- Added migration `0021_rustic_echo` for the schema change
+
+### v1.4.0 (2026-07-12)
+- Added VIP free trial implementation with one-trial-per-user permanent lockout
+- Added `POST /payments/create-trial-checkout-session` endpoint for trial checkout
+- Added `GET /payments/subscription/trial-eligibility` endpoint for eligibility checks
+- Added `customer.subscription.trial_will_end` webhook handler for trial-ending notifications
+- Added `subscriptionTransactions` table to track subscription lifecycle events separately
+- Added trial analytics snapshot on trial expiry (records remaining credits)
+- Fixed `users.subscriptionId` canonical pointer pattern in subscription queries
+- Fixed subscription cancel endpoint to use correct join pattern
+- Updated documentation to reflect full payment schema and rate limiting
 
 ### v1.3.0 (2026-05-24)
 - Fixed Stripe customer ID naming inconsistency across database tables

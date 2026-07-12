@@ -20,12 +20,12 @@ This section tracks which architecture recommendations have been implemented in 
 
 #### 2. Secure Metadata for User Binding
 - **Status**: ✅ Implemented
-- **Location**: `src/routes/payments.ts` lines 115-119
+- **Location**: `src/routes/payments.ts` lines 477-482
 - **Details**: 
   - Binds purchase to user via `metadata.userId` from authenticated session
   - Never trusts frontend userId directly
   - Uses `req.user!.id` from NextAuth middleware
-- **Backup**: Added `client_reference_id: userId` as additional backup (line 120)
+- **Backup**: Added `client_reference_id: userId` as additional backup (line 482)
 
 #### 3. Credit Pack Configuration
 - **Status**: ✅ Implemented
@@ -33,17 +33,22 @@ This section tracks which architecture recommendations have been implemented in 
 - **Details**: 
   - Three credit packs: Observer (50), Investigator (150), Mastermind (500)
   - Server-side price validation prevents manipulation
-  - Dynamic price_data creation (not using pre-created Stripe products)
+  - Uses pre-created Stripe prices (`pack.priceId`) — not dynamic `price_data`
 
 #### 4. Webhook as Source of Truth
 - **Status**: ✅ Implemented
-- **Location**: `src/routes/payments.ts` - `POST /payments/stripe/webhook`
+- **Location**: `src/routes/payments.ts` - `POST /payments/stripe/webhook` (line 1018)
 - **Details**:
-  - Handles `checkout.session.completed` for credit allocation
-  - Handles `payment_intent.succeeded` for monitoring
-  - Handles `payment_intent.payment_failed` for debugging
-  - Handles `charge.refunded` for credit deduction
-  - Idempotency via `stripeEventId` within database transactions
+  - Handles `checkout.session.completed` for credit-pack purchase credit allocation (gated on `session.mode === 'payment'`)
+  - Handles `charge.refunded` for proportional credit clawback
+  - Handles `customer.subscription.created` → `createSubscription()` for new VIP subscriptions (trial or paid)
+  - Handles `customer.subscription.updated` → `updateSubscription()` for status/period changes, trial conversion
+  - Handles `customer.subscription.deleted` → `cancelSubscription()` for subscription end
+  - Handles `customer.subscription.trial_will_end` → `handleTrialWillEnd()` for ~3-day reminder
+  - Handles `invoice.payment_succeeded` → `renewSubscription()` (gated on `billing_reason === 'subscription_cycle'`)
+  - Handles `invoice.payment_failed` for marking `past_due`
+  - `payment_intent.succeeded` / `payment_intent.payment_failed`: no-ops (handled upstream by Stripe retries)
+  - Idempotency via `stripeEventId` unique constraint + `webhookDeliveries.eventId` unique constraint (three-layer pattern)
 
 #### 5. Database Transaction System
 - **Status**: ✅ Implemented
@@ -81,18 +86,20 @@ This section tracks which architecture recommendations have been implemented in 
 
 #### 9. Webhook Delivery Tracking
 - **Status**: ✅ Implemented
-- **Location**: `src/routes/payments.ts` lines 207-213, 319-326, 402-416
+- **Location**: `src/routes/payments.ts` lines 1039-1089, 1183-1185, 1275-1277, 1310-1314, 1319-1323
 - **Details**:
-  - Tracks webhook delivery status (success/failed/retrying)
-  - Logs error messages for debugging
+  - Tracks webhook delivery status (retrying/success/failed) in `webhookDeliveries` table
+  - Race-guarded unique constraint on `eventId` for concurrent delivery safety
+  - Logs error messages for debugging at every processing stage
   - Enables monitoring and reconciliation
 
 #### 10. User Notifications
 - **Status**: ✅ Implemented
-- **Location**: `src/routes/payments.ts` lines 305-317, 380-391
+- **Location**: `src/routes/payments.ts` lines (payment success 1168-1171, refund 1266-1272), `src/services/credits.ts` `awardCredits()` function
 - **Details**:
-  - Automatic notifications for successful payments
-  - Automatic notifications for refunds
+  - Automatic notifications for successful credit-pack purchases (via `awardCredits`)
+  - Automatic notifications for refunds (dedicated insert in refund handler)
+  - Automatic notifications for trial-ending-soon (via `handleTrialWillEnd` in subscription service)
   - Includes transaction details in notification data
 
 #### 11. Atomic Credit Consumption with Refunds
@@ -283,10 +290,10 @@ User spends credits via API
 │  Purpose: Process Stripe events and update user credits                 │
 │                                                                          │
 │  Security checks performed:                                              │
-│  - IP-based rate limiting (100 req/15min)                              │
+│  - Redis-based rate limiting (300 req/60sec global)                    │
 │  - Stripe signature verification                                         │
 │  - Raw body preservation for signature                                   │
-│  - Webhook delivery tracking                                            │
+│  - Webhook delivery tracking (race-guarded unique constraint)           │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -307,43 +314,67 @@ User spends credits via API
                     └───────────────────────────┘
                                     │
                                     ▼
-                    ┌───────────────────────────┐
-                    │  Process event types      │
-                    │  - checkout.session.      │
-                    │    completed              │
-                    │  - payment_intent.        │
-                    │    succeeded              │
-                    │  - payment_intent.        │
-                    │    payment_failed         │
-                    │  - charge.refunded        │
-                    └───────────────────────────┘
-                                    │
-                                    ▼
+                    ┌───────────────────────────────┐
+                    │  GATE: session.mode         │
+                    │  === "payment"?             │
+                    │  (excludes subscription     │
+                    │   checkout.session.         │
+                    │   completed events)         │
+                    └──────────────┬──────────────┘
+                         Yes│          No│
+                            ▼           ▼
+               ┌──────────────────┐  ┌─────────────────────────────────┐
+               │ checkout.session │  │ Subscription events branch:     │
+               │ .completed       │  │ - customer.subscription.created │
+               │ + charge.refunded │  │ - customer.subscription.updated │
+               └──────┬───────────┘  │ - customer.subscription.deleted │
+                      │              │ - customer.subscription.         │
+                      ▼              │   trial_will_end                │
+               ┌──────────────────┐  │ - invoice.payment_succeeded     │
+               │ CREDIT PACK      │  │ - invoice.payment_failed        │
+               │ ALLOCATION       │  └──────────────┬──────────────────┘
+               │ (see below)      │                 │
+               └──────────────────┘                 ▼
+                                          ┌───────────────────────────────┐
+                                          │ Subscription lifecycle        │
+                                          │ - createSubscription()        │
+                                          │ - updateSubscription()        │
+                                          │ - cancelSubscription()        │
+                                          │ - renewSubscription()         │
+                                          │ - handleTrialWillEnd()        │
+                                          └───────────────────────────────┘
+
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    CREDIT ALLOCATION                                     │
-│  Location: src/routes/payments.ts:298                                  │
+│                    CREDIT PACK ALLOCATION                                │
+│  Location: src/routes/payments.ts:1128                                 │
 │  Purpose: Add credits to user account and record transaction            │
 │                                                                          │
 │  Database operations (in transaction):                                   │
-│  1. Check for existing transaction (idempotency)                       │
-│  2. Update user credits                                                 │
-│  3. Create transaction record                                           │
-│  4. Create user notification                                             │
-│  5. Update webhook delivery status                                      │
+│  1. Layer 2: SELECT idempotency check on transactions.stripeEventId    │
+│  2. Validate payment amount against expected pack price                │
+│  3. Update user credits                                                 │
+│  4. Create transaction record (stripeEventId/paymentIntentId written)  │
+│  5. Award first-purchase bonus if applicable                           │
+│  6. Create user notification                                             │
+│  7. Update webhook delivery status to 'success'                        │
+│                                                                          │
+│  Layer 3 (race backstop): If two concurrent deliveries both pass the    │
+│  SELECT check, the second INSERT hits transactions.stripeEventId       │
+│  unique constraint → caught as duplicate, treated as already processed │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
                     │  Begin DB transaction     │
                     │  dbWrite.transaction()    │
-                    │  Atomic operations only    │
+                    │  via awardCredits()       │
                     └───────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Idempotency check         │
-                    │  Find existing transaction  │
-                    │  with stripeEventId        │
+                    │  Layer 2: Idempotency check│
+                    │  SELECT existing txn by    │
+                    │  stripeEventId             │
                     │  Skip if already processed │
                     └───────────────────────────┘
                                     │
@@ -357,27 +388,20 @@ User spends credits via API
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Update user credits       │
-                    │  users.credits += credits  │
-                    │  From pack.credits config  │
+                    │  Award credits             │
+                    │  awardCredits() via        │
+                    │  DB transaction            │
+                    │  - Update users.credits    │
+                    │  - Insert transactions     │
+                    │  - Insert notification     │
                     └───────────────────────────┘
                                     │
                                     ▼
                     ┌───────────────────────────┐
-                    │  Create transaction       │
-                    │  transactions table       │
-                    │  Type: 'purchase'          │
-                    │  Amount: pack.priceUSD    │
-                    │  Credits: pack.credits    │
-                    │  stripeEventId recorded   │
-                    └───────────────────────────┘
-                                    │
-                                    ▼
-                    ┌───────────────────────────┐
-                    │  Create notification       │
-                    │  userNotifications table   │
-                    │  Title: "Payment Successful"│
-                    │  Includes transaction data │
+                    │  First-purchase bonus      │
+                    │  If no prior purchase:     │
+                    │  +FIRST_PURCHASE_BONUS     │
+                    │  credits as reward         │
                     └───────────────────────────┘
                                     │
                                     ▼
@@ -427,45 +451,49 @@ User spends credits via API
    - ✅ Price history tracking
 
 2. **Security Layers**
-   - **Authentication**: `requireAuth` middleware
-   - **Rate Limiting**: Redis-based (IP + user)
-   - **URL Validation**: Prevents open redirects
-   - **Signature Verification**: Stripe webhook security
-   - **Idempotency**: Database transaction safety
+   - **Authentication**: `requireAuth` middleware + `optionalAuth` for guest-safe endpoints
+   - **Rate Limiting**: Redis-based (user + global webhook)
+   - **URL Validation**: Origin-validated `returnUrl` prevents open redirects
+   - **Signature Verification**: Stripe webhook signature via raw body
+   - **Idempotency**: Three-layer — webhookDeliveries table → SELECT check → unique constraint
 
 3. **Error Handling**
+   - **402**: Insufficient credits
+   - **409**: Duplicate request (idempotency)
    - **429**: Rate limit exceeded
    - **400**: Invalid input
-   - **404**: Credit pack not found
+   - **404**: Credit pack / subscription not found
    - **500**: Server/Stripe errors
 
 ### **Performance Optimizations**
 
 1. **Vercel Serverless**
    - Fast webhook response (`res.json({ received: true })`)
-   - Processing happens after response
+   - Processing happens inside or after response (race-guarded)
 
 2. **Database Transactions**
    - Atomic operations prevent partial updates
    - Rollback on errors
 
 3. **Caching Strategy**
-   - Redis for rate limiting
+   - Redis for rate limiting and idempotency key storage
    - Future: Cache credit packs config
 
 ### **Monitoring & Debugging**
 
 1. **Webhook Tracking**
-   - `webhookDeliveries` table logs all events
-   - Status tracking (success/failed/retrying)
+   - `webhookDeliveries` table logs all events with status (retrying/success/failed)
+   - Unique constraint on `eventId` prevents duplicate tracking
 
 2. **Transaction Logging**
-   - Complete audit trail in `transactions` table
-   - Links to Stripe events via `stripeEventId`
+   - Complete audit trail in `transactions` table (purchases, usage, refunds, rewards)
+   - Separate `subscriptionTransactions` for subscription lifecycle events
+   - Links to Stripe events via `stripeEventId`/`paymentIntentId`
 
 3. **Security Logging**
    - Price validation violations logged
    - Rate limit violations tracked
+   - User activity logs for credit consumption
 
 ---
 
@@ -500,44 +528,41 @@ pnpm add stripe
 ### Available Credit Packs
 
 ```typescript
-export const CREDIT_PACKS = [
+export const CREDIT_PACKS: CreditPack[] = [
   {
     id: "observer",
-    title: "🕵️ The Observer",
+    title: "Observer",
     tagline: "You watch… but rarely interfere.",
-    description: "Perfect for first-time readers. Explore branching paths and test how your decisions shape the story.",
+    description: "Step into the dark without committing. Enough to trace a few threads and sense what waits beneath the surface.",
     credits: 50,
     priceUSD: 2.99,
-    priceId: "price_observer", // Stripe Price ID
-    highlight: false,
+    priceId: "price_1TSq8CFmDKrMqBDfv8hHK8hi",
+    productId: "prod_URjbG0HYUqTKjj",
     badge: null,
-    valueTag: "~10-12 choices",
     color: "gray",
   },
   {
-    id: "investigator", 
-    title: "🔍 The Investigator",
+    id: "investigator",
+    title: "Investigator",
     tagline: "You follow the clues. Carefully.",
-    description: "Dig deeper into the mystery. Enough credits to influence key decisions and unlock hidden paths.",
+    description: "Follow the evidence deeper. Shape pivotal moments, reveal what others miss, and craft your own story moves.",
     credits: 150,
     priceUSD: 7.99,
-    priceId: "price_investigator",
-    highlight: true,
+    priceId: "price_1TSqEFFmDKrMqBDfJNv4Rhvi",
+    productId: "prod_URjhcMuRg9MAl7",
     badge: "🔥 Most Popular",
-    valueTag: "~30-40 choices",
     color: "blue",
   },
   {
     id: "mastermind",
-    title: "🧠 The Mastermind",
+    title: "Mastermind",
     tagline: "You don't follow the story. You control it.",
-    description: "Take full control of the narrative. Craft custom actions, explore alternate endings, and bend the story to your will.",
+    description: "The story bends to you. Forge custom choices, pursue alternate endings, and leave your mark on every chapter.",
     credits: 500,
     priceUSD: 19.99,
-    priceId: "price_mastermind",
-    highlight: false,
-    badge: "💎 Best Value", 
-    valueTag: "~120+ choices",
+    priceId: "price_1TSqEpFmDKrMqBDfhrwd9wOn",
+    productId: "prod_URjiSAzuitp1le",
+    badge: "💎 Best Value",
     color: "purple",
   },
 ];
@@ -553,29 +578,32 @@ export const CREDIT_PACKS = [
 
 **Solution**: Configure Express to use raw body middleware for webhook route ONLY.
 
-```javascript
-// app.ts
-// CRITICAL: Raw body middleware for Stripe webhook MUST come before express.json()
+```typescript
+// src/app.ts (or equivalent server entry)
+// CRITICAL: Raw body middleware for Stripe webhook MUST be applied before express.json()
 // Stripe requires raw body for webhook signature verification
+
+// Apply raw body middleware specifically for the webhook route
+// (mounted at the route level in Express or handled via a route-specific middleware pattern)
 app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
 
-// Configure middleware
-app.use(express.json({ limit: "1mb" })); // Parse JSON payloads
+// Configure middleware for all other routes
+app.use(express.json({ limit: "1mb" }));
 ```
 
 ### Common Mistakes (Avoid These)
 
-❌ Using express.json() globally before webhook route
-app.use(express.json()) // ❌ breaks webhook if applied before webhook route
+❌ **Using express.json() globally before webhook route:**
+```typescript
+app.use(express.json()); // ❌ Breaks webhook if applied before webhook route
+// Stripe signature will fail because body is already parsed/transformed
+```
 
-👉 Stripe signature will fail because body is already parsed
-
-✅ Fix
-
-Apply raw middleware BEFORE express.json() for webhook route only:
-
+✅ **Fix: Apply raw middleware BEFORE express.json() for webhook route only:**
+```typescript
 app.use("/api/payments/stripe/webhook", express.raw({ type: "application/json" }));
 app.use(express.json({ limit: "1mb" })); // Apply after webhook route
+```
 
 ### 2. Idempotency (Avoid Double Credits)
 
@@ -701,25 +729,121 @@ if (isInternal) {
 
 ### Transactions Table
 
+Tracks all credit movements — purchases, usage, refunds, and rewards.
+
 ```sql
 CREATE TABLE transactions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  type TEXT NOT NULL CHECK (type IN ('purchase', 'usage', 'refund')),
+  id UUID PRIMARY KEY DEFAULT uuidv7(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK (type IN ('purchase', 'usage', 'refund', 'reward')),
   credits INTEGER NOT NULL,
-  amount_usd REAL,
-  payment_intent_id TEXT UNIQUE,
-  stripe_event_id TEXT UNIQUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  amount_cents INTEGER,                     -- Renamed from amount_usd (real) on 2026-07-12
+  context TEXT,                             -- e.g. "credit_pack_purchase", "book_creation"
+  metadata JSONB,                           -- Arbitrary structured data
+  payment_intent_id TEXT UNIQUE,            -- Layer 3 idempotency backstop
+  stripe_event_id TEXT UNIQUE,              -- Layer 3 idempotency backstop
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Indexes
 CREATE INDEX transactions_user_idx ON transactions(user_id);
 CREATE INDEX transactions_type_idx ON transactions(type);
 CREATE INDEX transactions_created_idx ON transactions(created_at DESC);
-CREATE UNIQUE INDEX transactions_payment_intent_unique ON transactions(payment_intent_id);
-CREATE UNIQUE INDEX transactions_stripe_event_unique ON transactions(stripe_event_id);
+CREATE INDEX transactions_context_idx ON transactions(context);
 ```
+
+### Subscriptions Table
+
+One row per subscription lifecycle — users can accumulate multiple rows over time (cancel + resubscribe). Canonical "current subscription" is `users.subscriptionId`.
+
+```sql
+CREATE TABLE subscriptions (
+  id UUID PRIMARY KEY DEFAULT uuidv7(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  stripe_subscription_id TEXT UNIQUE NOT NULL,
+  stripe_customer_id TEXT NOT NULL,
+  stripe_price_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'canceled', 'past_due', 'unpaid', 'trialing', 'incomplete', 'incomplete_expired', 'paused')),
+  current_period_start TIMESTAMPTZ NOT NULL,
+  current_period_end TIMESTAMPTZ NOT NULL,
+  cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+  canceled_at TIMESTAMPTZ,
+  is_trial BOOLEAN NOT NULL DEFAULT FALSE,
+  trial_end TIMESTAMPTZ,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX subscriptions_user_idx ON subscriptions(user_id);
+CREATE INDEX subscriptions_status_idx ON subscriptions(status);
+CREATE INDEX subscriptions_period_end_idx ON subscriptions(current_period_end);
+```
+
+### Subscription Transactions Table
+
+Separate from `transactions` — tracks subscription-specific events (activation, renewal, trial lifecycle).
+
+```sql
+CREATE TABLE subscription_transactions (
+  id UUID PRIMARY KEY DEFAULT uuidv7(),
+  subscription_id UUID NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  type TEXT NOT NULL,                        -- 'activation' | 'renewal' | 'cancellation' | 'trial_started' | 'trial_expired'
+  credits_allocated INTEGER NOT NULL,
+  stripe_invoice_id TEXT UNIQUE,             -- Idempotency for renewal webhooks
+  stripe_event_id TEXT UNIQUE,               -- Idempotency for subscription webhooks
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX subscription_transactions_subscription_idx ON subscription_transactions(subscription_id);
+CREATE INDEX subscription_transactions_user_idx ON subscription_transactions(user_id);
+CREATE INDEX subscription_transactions_type_idx ON subscription_transactions(type);
+```
+
+### Webhook Deliveries Table
+
+```sql
+CREATE TABLE webhook_deliveries (
+  id UUID PRIMARY KEY DEFAULT uuidv7(),
+  event_id TEXT NOT NULL UNIQUE,             -- Stripe event.id — race-guarded unique constraint
+  event_type TEXT NOT NULL,
+  delivered_at TIMESTAMPTZ DEFAULT NOW(),
+  processed_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'retrying' CHECK (status IN ('success', 'failed', 'retrying')),
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX webhook_deliveries_event_idx ON webhook_deliveries(event_id);
+CREATE INDEX webhook_deliveries_status_idx ON webhook_deliveries(status);
+CREATE INDEX webhook_deliveries_created_idx ON webhook_deliveries(created_at DESC);
+```
+
+### User Notifications Table
+
+```sql
+CREATE TABLE user_notifications (
+  id UUID PRIMARY KEY DEFAULT uuidv7(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  type TEXT NOT NULL,                        -- 'payment_success', 'refund', 'trial_ending_soon', 'first_purchase_bonus'
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  data JSONB,
+  read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX user_notifications_user_idx ON user_notifications(user_id, created_at DESC);
+CREATE INDEX user_notifications_unread_idx ON user_notifications(user_id, read);
+CREATE INDEX user_notifications_type_idx ON user_notifications(type);
 
 ### Webhook Deliveries Table
 
@@ -807,7 +931,7 @@ await dbWrite.transaction(async (tx) => {
     userId,
     type: "purchase",
     credits: creditsAmount,
-    amountUsd,
+    amountCents,
     paymentIntentId,
     stripeEventId,
   });
@@ -1590,7 +1714,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       }
 
       const creditsAmount = Number(credits);
-      const amountUsd = session.amount_total ? session.amount_total / 100 : undefined;
+      // session.amount_total is in cents; stored directly as amountCents
 
       // Validate payment amount matches expected credit pack price (security check)
       const pack = CREDIT_PACKS.find((p) => p.id === packId);
@@ -1649,7 +1773,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           userId,
           type: "purchase",
           credits: creditsAmount,
-          amountUsd,
+          amountCents: session.amount_total, // cents, matches Stripe convention
           paymentIntentId,
           stripeEventId,
         });
@@ -1664,7 +1788,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
           message: `Your purchase of ${creditsAmount} credits was successful`,
           data: {
             credits: creditsAmount,
-            amount: amountUsd,
+            amountCents: session.amount_total,
             paymentIntentId,
             packId,
           },
@@ -1719,10 +1843,9 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
       }
       
       const transaction = originalTransaction[0];
-      const refundAmount = charge.amount_refunded ? charge.amount_refunded / 100 : 0;
-      
-      // Calculate credits to deduct (proportional to refund amount)
-      const creditsToDeduct = Math.floor((refundAmount / transaction.amountUsd!) * transaction.credits);
+      const refundCents = charge.amount_refunded ?? 0;
+      const originalCents = transaction.amountCents!;
+      const creditsToDeduct = Number((BigInt(refundCents) * BigInt(transaction.credits)) / BigInt(originalCents));
       
       if (creditsToDeduct > 0) {
         await dbWrite.transaction(async (tx) => {
@@ -1744,7 +1867,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
             userId: transaction.userId,
             type: 'refund',
             credits: -creditsToDeduct, // Negative for refund
-            amountUsd: -refundAmount, // Negative for refund
+            amountCents: -refundCents, // Negative for refund (cents)
             paymentIntentId,
             stripeEventId: event.id,
           });
@@ -1757,7 +1880,7 @@ router.post("/stripe/webhook", async (req: Request, res: Response) => {
             message: `${creditsToDeduct} credits have been deducted from your account due to a refund`,
             data: {
               creditsDeducted: creditsToDeduct,
-              refundAmount,
+              refundCents, refundAmount: refundCents / 100,
               originalPaymentId: paymentIntentId,
             },
           });
@@ -2141,6 +2264,73 @@ const portalSession = await stripe.billingPortal.sessions.create({
 
 ---
 
+## 🎖️ VIP Subscription & Free Trial
+
+### Subscription Webhook Flow
+
+```
+customer.subscription.created (status=trialing or active)
+    ↓
+createSubscription()
+    ├─ Insert subscriptions row
+    ├─ Set users.tier='vip', users.subscriptionId, users.vipExpiresAt
+    ├─ addCredits(monthlyCredits) — first month's credits
+    └─ Insert subscriptionTransactions (type='trial_started' | 'activation')
+    ↓
+invoice.payment_succeeded (billing_reason='subscription_cycle' only)
+    ↓
+renewSubscription()
+    ├─ Update subscription period
+    ├─ Update users.vipExpiresAt
+    ├─ addCredits(monthlyCredits) — renewal credits
+    └─ Insert subscriptionTransactions (type='renewal')
+    ↓
+customer.subscription.deleted
+    ↓
+cancelSubscription()
+    ├─ Update subscription status to 'canceled'
+    ├─ Check subscriptionTransactions history for trial analytics
+    └─ (downgrade deferred to daily cron)
+    ↓
+vip-expiration cron (daily, 03:00 UTC)
+    └─ downgradeUserFromVip() - tier→'standard', clears subscriptionId
+```
+
+### Trial Checkout vs Regular Checkout
+
+Two separate endpoints to maintain distinct validation paths:
+- **`POST /create-trial-checkout-session`**: Checks `isTrialEligible()` (one-trial-permanent lockout via `users.vipTrialUsedAt`), sets `trial_period_days: 30`
+- **`POST /create-subscription-checkout`**: Checks no active subscription, no trial features
+
+### Credit Grant Rules
+
+| Trigger | Credits | Idempotency |
+|---------|---------|-------------|
+| Trial start | +monthlyCredits | stripeSubscriptionId unique constraint |
+| Trial → paid conversion | SKIP (already credited at start) | billing_reason !== 'subscription_cycle' |
+| Monthly renewal | +monthlyCredits | stripeInvoiceId unique constraint |
+| No clawback on trial expiry | 0 | subscriptionTransactions 'trial_expired' record for analytics |
+
+### Configuration
+
+```ts
+// config/subscription.ts
+export const VIP_SUBSCRIPTION = {
+  priceUSD: 9.99,
+  priceId: process.env.STRIPE_VIP_PRICE_ID,
+  monthlyCredits: 50,
+  checkInMultiplier: 2,
+};
+
+export const VIP_TRIAL = {
+  enabled: process.env.VIP_TRIAL_ENABLED === 'true',
+  trialPeriodDays: 30,
+  endBehavior: 'cancel', // or 'pause'
+};
+```
+
+---
+
 ## 📝 Deployment Checklist
 
 ### Environment Setup
@@ -2203,4 +2393,4 @@ const portalSession = await stripe.billingPortal.sessions.create({
 
 ---
 
-*Last updated: April 29, 2026 (Updated for neon-serverless transaction-based approach)*
+*Last updated: July 12, 2026 (Updated for VIP subscription + trial; full schema; corrected rate limits; fixed credit pack config)*

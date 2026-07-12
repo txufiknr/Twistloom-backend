@@ -144,7 +144,7 @@ async function consumeCreditsInTransaction(
     userId,
     type: 'usage',
     credits: -cost, // Negative for consumption
-    amountUsd: null, // Usage transactions don't have USD amount
+    amountCents: null, // Usage transactions don't have USD amount
     context: options.context,
     metadata: options.metadata
       ? { ...options.metadata, correlationId: options.correlationId }
@@ -241,7 +241,7 @@ export async function addCredits(
       userId,
       type: 'reward',
       credits: amount, // Positive for addition
-      amountUsd: null, // Credit additions don't have USD amount
+      amountCents: null, // Credit additions don't have USD amount
       context,
       metadata,
       createdAt: new Date()
@@ -481,7 +481,7 @@ export async function executeWithCredits<T>(
         userId,
         type: 'refund',
         credits: cost, // Positive for refund
-        amountUsd: null,
+        amountCents: null,
         context: options.context ? `${options.context}_failed` : 'refund',
         metadata: options.metadata
           ? {
@@ -520,8 +520,8 @@ interface AwardCreditsOptions {
   notificationData?: Record<string, unknown>;
   /** Metadata for the transaction record */
   metadata?: Record<string, unknown>;
-  /** USD amount for purchase transactions (null for usage/reward) */
-  amountUsd?: number | null;
+  /** Amount in cents for purchase transactions (null for usage/reward) */
+  amountCents?: number | null;
   /** Human-readable context label for the transaction */
   context?: string;
   /** Persisted to the real unique-constrained columns */
@@ -554,7 +554,7 @@ export async function awardCredits(
     notificationMessage,
     notificationData = {},
     metadata = {},
-    amountUsd = null,
+    amountCents = null,
     context,
     tx: trx
   } = options;
@@ -577,7 +577,7 @@ export async function awardCredits(
       userId,
       type,
       credits: creditsAmount,
-      amountUsd,
+      amountCents,
       context: context ?? notificationType,
       metadata: Object.keys(metadata).length > 0 ? metadata : null,
       createdAt: new Date()

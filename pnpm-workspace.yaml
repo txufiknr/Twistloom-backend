@@ -2,7 +2,6 @@ allowBuilds:
   '@google/genai': true
   bcrypt: true
   esbuild: true
-  fasttext-ts: true
   protobufjs: true
   sharp: set this to true or false
 onlyBuiltDependencies:
