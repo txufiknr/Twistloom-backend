@@ -1411,8 +1411,22 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
   const targetLanguage = translate ? shouldTranslate(language, headerLanguage) : undefined;
   const pageToTranslate = targetLanguage ? await getPageToTranslate(dbPage) : undefined;
 
+  // Resolve human-readable branch name: query branches table for non-main branches,
+  // fall back to book title for "main" branch
+  const branchNamePromise = dbPage.branchId === "main"
+    ? Promise.resolve(book?.title ?? null)
+    : dbRead
+        .select({ displayName: branches.displayName })
+        .from(branches)
+        .where(and(
+          eq(branches.branchId, dbPage.branchId),
+          eq(branches.bookId, bookId),
+        ))
+        .limit(1)
+        .then(rows => rows[0]?.displayName ?? book?.title ?? null);
+
   // Parallelize independent database queries and API calls
-  const [selectedActions, storyState, translation, shownActionHint, communityActions] = await Promise.all([
+  const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName] = await Promise.all([
     // Query user's chosen action for this page (if authenticated)
     userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
 
@@ -1447,6 +1461,9 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
       ))
       .orderBy(desc(customActions.plausibilityScore))
       .limit(MAX_ACTION_CHOICES_COMMUNITY),
+
+    // Resolve human-readable branch name
+    branchNamePromise,
   ]);
 
   if (targetLanguage && translation) {
@@ -1524,6 +1541,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     originalActionsCount: allActions.length,
     selectedActions,
     sourceAction, // sourceAction is the convenience shortcut for the single action that led to this page.
+    branchName: branchName ?? undefined,
     translation,
     shownActionHint,
     context, // context is the SSOT for full action + plot-flag history

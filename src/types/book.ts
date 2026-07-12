@@ -361,7 +361,7 @@ export type VisitBookPageResult = {
 
 export type EnrichedPageOptions = {
   userId?: string,
-  book?: Pick<Book, 'language'>,
+  book?: Pick<Book, 'language' | 'title'>,
   headerLanguage?: string | null,
   translate?: boolean
 } & TakeActionValidity;

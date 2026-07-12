@@ -63,7 +63,6 @@ export type UserTier = 'standard' | 'vip';
 
 export interface UserSubscription {
   tier: UserTier | null;
-  vipExpiresAt: Date | null;
 }
 
 export interface User {

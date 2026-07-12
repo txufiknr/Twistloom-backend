@@ -6,11 +6,11 @@
  *
  * Features:
  * - Retry with exponential backoff via the existing utils/retry.ts
- *   (retryWithBackoff), not a new dependency — abort immediately on
+ *   {@link retryWithBackoff}, not a new dependency — abort immediately on
  *   non-retryable errors via createNonRetryableError/isNonRetryableError,
  *   the same pattern retryWithUniqueConstraint already uses elsewhere
  * - LRU-ish cache with TTL to avoid redundant calls within one generation cycle
- * - Shared rate limiter (getJinaLimiter()) — same singleton used by every
+ * - Shared rate limiter {@link getJinaLimiter} — same singleton used by every
  *   fire-and-forget embed call AND the backfill cron, so RPM/TPM/concurrency
  *   all stay within Jina's free-tier ceiling (100 RPM / 100K TPM / 2
  *   concurrent) without any extra bookkeeping here
@@ -22,7 +22,7 @@
  * freshly-computed StateDelta/PersistedStoryPage — never from inside
  * applyStateDelta or the processXxx state-transition helpers it calls.
  * Those run identically during live generation AND during delta-chain replay
- * (confirmed against story_utils.ts / branch-traversal.ts), so hooking
+ * (confirmed against utils/story.ts / branch-traversal.ts), so hooking
  * embedding calls in there would silently re-embed the same history every
  * time a pruned story_states row gets reconstructed. See
  * PGVECTOR_SEMANTIC_MEMORY_ROADMAP.md §12 / Appendix D.3 for the full trace.
@@ -117,15 +117,15 @@ async function callJinaEmbeddingsAPI(inputs: string[], task: EmbeddingTask): Pro
         const bodyText = await response.text().catch(() => '');
         if (response.status === 429) {
           // Retryable — plain Error, shouldRetry below lets this one through.
-          throw new Error(`[jina] Rate limited (429): ${bodyText}`);
+          throw new Error(`[jina] 💥 Rate limited (429): ${bodyText}`);
         }
         // Non-retryable: bad request, auth failure, model error, etc.
-        throw createNonRetryableError(`[jina] API error ${response.status}: ${bodyText}`, `JINA_HTTP_${response.status}`);
+        throw createNonRetryableError(`[jina] ❌ API error ${response.status}: ${bodyText}`, `JINA_HTTP_${response.status}`);
       }
 
       const data = (await response.json()) as JinaEmbeddingResponse;
       if (!data.data?.length) {
-        throw createNonRetryableError('[jina] API returned no embeddings', 'JINA_EMPTY_RESPONSE');
+        throw createNonRetryableError('[jina] ⚠️ API returned no embeddings', 'JINA_EMPTY_RESPONSE');
       }
 
       // Fire-and-forget — usage tracking should never slow down or fail an

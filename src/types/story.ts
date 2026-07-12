@@ -1216,6 +1216,8 @@ export interface CommunityAction {
 
 export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
   originalActionsCount: number;
+  /** Human-readable display name of the branch this page belongs to */
+  branchName?: string;
   translation?: PageTranslation;
   sourceAction?: SelectedAction;
   // sourceNav?: StoryPageNav;
@@ -1263,6 +1265,13 @@ export type EnrichedStoryPageContext = {
 export type EnrichedStoryPagePlace = Pick<PlaceMemory, 'type' | 'category' | 'context'> & { placeId: string; name: string; };
 export type EnrichedStoryPageCharacter = Pick<CharacterMemory, 'gender' | 'role' | 'bio'> & { characterId: string; name: string; };
 
+/**
+ * | System          | Purpose                     |
+ * | --------------- | --------------------------- |
+ * | `storyPhase`    | overall narrative structure |
+ * | `storyMomentum` | current pressure/tension    |
+ * | `sceneType`     | immediate scene function    |
+ */
 export type NarrativeContext = {
   momentum?: StoryMomentum;
   sceneType?: SceneType;

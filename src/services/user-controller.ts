@@ -71,8 +71,6 @@ export function getEnrichedUserSelect() {
     source: users.source,
     emailVerified: userAuth.emailVerified,
     isNewUser: users.isNewUser,
-    vipExpiresAt: users.vipExpiresAt,
-
     // Expose the rest of the `user_counters` columns as SSOT-backed fields.
     booksGenerated: sql<number>`COALESCE(${userCounters.booksGenerated},0)`,
     booksCompleted: sql<number>`COALESCE(${userCounters.booksCompleted},0)`,

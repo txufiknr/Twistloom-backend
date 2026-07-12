@@ -45,12 +45,12 @@ import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
-import { getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
+import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
 import { shouldUseCache, getFreshPromptForUser, trackPromptView, savePromptToCache } from "../services/prompt-cache.js";
 import { streamCachedPrompt } from "../utils/prompt-stream.js";
 import { PROMPT_CACHE_CONFIG } from "../config/prompt-cache.js";
@@ -2938,6 +2938,69 @@ router.get("/:identifier", optionalAuth, async (req: Request, res: Response) => 
     res.json({ book: enrichedBook });
   } catch (error) {
     handleApiError(res, "Failed to retrieve book", error);
+  }
+});
+
+/**
+ * GET /api/books/:identifier/branches
+ *
+ * Retrieves all branches (id & display name) for a book.
+ * Accepts both slug and UUID v7 as book identifier.
+ *
+ * Returns an array of { branchId, displayName } for all non-main branches,
+ * plus the main branch entry with the book's title as display name.
+ *
+ * @param identifier - Book slug or UUID v7
+ * @returns Array of branch objects with id and name
+ *
+ * @example
+ * GET /api/books/twistloom/branches
+ * Response 200:
+ * [
+ *   { "branchId": "main", "displayName": "The Whispering Halls" },
+ *   { "branchId": "0194f2d1-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "displayName": "The Dark Path" }
+ * ]
+ */
+router.get("/:identifier/branches", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { identifier } = req.params;
+    const bookIdentifier = Array.isArray(identifier) ? identifier[0] : identifier;
+
+    // Resolve book ID from identifier
+    const bookId = isValidUuid(bookIdentifier)
+      ? bookIdentifier
+      : (await dbRead
+          .select({ id: books.id })
+          .from(books)
+          .where(eq(books.slug, bookIdentifier))
+          .limit(1)
+          .then(rows => rows[0]?.id ?? null));
+
+    if (!bookId) return handleNotFoundError(res, "Book not found");
+
+    // Fetch book to get the title for the main branch
+    const book = await getBook(bookId);
+    if (!book) return handleNotFoundError(res, "Book not found");
+
+    // Fetch non-main branches from the branches table
+    const branchRows = await dbRead
+      .select({
+        branchId: branches.branchId,
+        displayName: branches.displayName,
+      })
+      .from(branches)
+      .where(eq(branches.bookId, bookId))
+      .orderBy(branches.createdAt);
+
+    // Construct the list with the main branch first
+    const result = [
+      { branchId: "main", displayName: book.title },
+      ...branchRows,
+    ];
+
+    res.json(result);
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve branches", error);
   }
 });
 

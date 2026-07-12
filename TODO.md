@@ -10,9 +10,7 @@
 [ ] Generate originals tambah custom input book title & mc name
 [ ] Paid book: VIP 500+ followers, must be > 30 days old account, Verified email required
 [ ] Sale credits: 10% fee, cuma bisa dicairkan kelipatan 10 ke credits
-[ ] userSettings schema
-- interests: string[]
-- email notification settings
+[ ] userSettings schema: interests: string[], email notification settings
 [ ] reader vip: addPlannedCharacters (via add custom character button)
 [ ] enhance book explore:
 - [ ] fuzzy search/Levenshtein (typo tolerant) // does postgresql has this built-in?

@@ -11,7 +11,7 @@
  *    persistPageWithState resolves — NEVER from inside applyStateDelta or
  *    the processXxx state-transition helpers it calls. Those run identically
  *    during live generation AND during delta-chain replay (confirmed against
- *    story_utils.ts / branch-traversal.ts: applyStateDelta's own docstring
+ *    utils/story.ts / branch-traversal.ts: applyStateDelta's own docstring
  *    says it's reused "for reconstructing story states... when loading
  *    previously generated pages"), so hooking writes in there would silently
  *    re-embed the same history every time a pruned story_states row gets
@@ -25,18 +25,10 @@
 
 import { and, cosineDistance, eq, lt, sql } from 'drizzle-orm';
 import { dbWrite, dbRead } from '../db/client.js';
-import {
-  pageEmbeddings,
-  characterEmbeddings,
-  placeEmbeddings,
-  futureNoteEmbeddings,
-} from '../db/schema.js';
+import { pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings } from '../db/schema.js';
 import { embedText } from '../utils/embedding.js';
 import { getErrorMessage } from '../utils/error.js';
-import {
-  MAX_VECTOR_RESULTS_PER_QUERY,
-  EMBEDDING_SIMILARITY_THRESHOLD,
-} from '../config/embedding.js';
+import { MAX_VECTOR_RESULTS_PER_QUERY, EMBEDDING_SIMILARITY_THRESHOLD } from '../config/embedding.js';
 import type { PersistedStoryPage, FutureNote } from '../types/story.js';
 
 // ============================================================================

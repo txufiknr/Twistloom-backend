@@ -109,7 +109,6 @@ const router: RouterType = Router();
  * @returns {number} user.customActionsWritten - Custom actions authored
  * @returns {Object} user.subscription - Subscription info
  * @returns {string|null} user.subscription.tier - User's tier
- * @returns {string|null} user.subscription.vipExpiresAt - VIP expiration
  * @returns {Date} user.lastActive - Last activity timestamp
  * @returns {Date} user.createdAt - Account creation timestamp
  * @returns {Date} user.updatedAt - Last update timestamp
@@ -151,7 +150,6 @@ const router: RouterType = Router();
  *     "customActionsWritten": 2,
  *     "subscription": {
  *       "tier": null,
- *       "vipExpiresAt": null
  *     },
  *     "lastActive": "2024-01-15T10:30:00.000Z",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
@@ -444,7 +442,6 @@ router.put('/', requireAuth, async (req: Request, res: Response) => {
  *     "lastActive": "2024-01-15T10:30:00.000Z",
  *     "subscription": {
  *       "tier": null,
- *       "vipExpiresAt": null
  *     },
  *     "stats": {
  *       "readsCount": 150,
@@ -514,7 +511,6 @@ router.get("/users/:identifier", async (req: Request, res: Response) => {
         
         subscription: {
           tier: userData.tier,
-          vipExpiresAt: userData.vipExpiresAt,
         },
 
         stats: {
