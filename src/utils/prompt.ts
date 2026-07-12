@@ -3815,7 +3815,7 @@ export async function initializeBook(
     }, { client });
 
     const { id: pageId, calendarDate, timeOfDay, actions } = firstPage;
-    console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, filterObjectEntries(firstPage));
+    console.log(`[initializeBook] 📔 First page of "${book.title}" inserted:`, JSON.stringify(filterObjectEntries(firstPage), null, 2));
     console.log(`[initializeBook] 👉 Generated ${actions.length} actions for first page:`, actions.map(a => a.text));
 
     // ── 8. Build initial story state ──────────────────────────────────────────

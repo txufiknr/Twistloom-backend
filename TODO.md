@@ -33,6 +33,18 @@
 
 ---
 
+factsHistory: { 'location.apartemen.is_haunted': [Array] },
+
+Duplikat on-demand
+[book-creation] ✒️ Writing the book... {
+  userId: '019ed9a8-0b2b-72bb-92af-260e19e699aa',
+  theme: 'cerita tentang wanita yang jatuh cinta dengan hantu',
+[book-creation] ✒️ Writing the book... {
+  userId: '019ed9a8-0b2b-72bb-92af-260e19e699aa',
+  theme: 'cerita tentang wanita yang jatuh cinta dengan hantu',
+
+---
+
 [ ] callers of `getEnrichedBookSelect` should left join to:
   - userSessions
   - firstPageSq

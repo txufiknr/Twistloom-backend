@@ -360,12 +360,12 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
  * Requires large context windows, strict schema adherence, and analytical logic mapping.
  */
 export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
-  mistral: [
-    'mistral-large-latest',
-  ],
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash'
+  ],
+  mistral: [
+    'mistral-large-latest',
   ],
   openrouter: [
     'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
