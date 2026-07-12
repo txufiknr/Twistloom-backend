@@ -198,7 +198,7 @@ What I found:
 
 | MuslimDigest file | Key patterns | Twistloom target | Change from v1 |
 |---|---|---|---|
-| `src/utils/embedding.ts` | Jina AI client, `createEmbedding()` with pRetry + AbortError, `getOrCreateEmbedding()` race-safe upsert, `buildClusterEmbeddingText()`, LRU cache with TTL | `src/utils/embedding.ts` | **Drop `l2Normalize()`** — use `normalized: true` instead. ✅ Done (this pass) — kept the same `utils/` home as MuslimDigest rather than moving to `services/`, matching Twistloom's own utils-vs-services split |
+| `src/utils/embedding.ts` | Jina AI client, `createEmbedding()` with pRetry + AbortError, `getOrCreateEmbedding()` race-safe upsert, `buildClusterEmbeddingText()`, LRU cache with TTL | `src/utils/embedding.ts` | **Drop `l2Normalize()`** — use `normalized: true` instead. **Also drop `p-retry`** — use the already-existing `retryWithBackoff`/`createNonRetryableError`/`isNonRetryableError` from `utils/retry.ts` instead of adding a new dependency (see §3, corrected after seeing the real file). ✅ Done (this pass) — kept the same `utils/` home as MuslimDigest rather than moving to `services/`, matching Twistloom's own utils-vs-services split |
 | `src/utils/rate-limit.ts` | `RateLimiter` class (same pattern already exists in `ai-limiters.ts`) | Add `'jina'` provider | Confirmed against real `ai-limiters.ts`: no concurrency semaphore needed — just add `jina` to `AI_RATE_LIMITS` and `AI_RATE_LIMITS_WITH_BUFFER` (see §2) |
 | `src/cron/embeddings.ts` | Daily backfill with `canUseAIToday()` gate, generation limit + delay, race-safe idempotent DB update | `src/cron/backfill-embeddings.ts` | Unchanged pattern; quota math corrected (§11). `canUseAIToday('jina')` will always return `true` unless `rpd`/`rpmo` is added — harmless to keep for consistency, but not actually gating anything |
 | `src/config/embedding.ts` | `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION`, cache TTL/size | `src/config/embedding.ts` | `EMBEDDING_MODEL = 'jina-embeddings-v5-text-small'`. ✅ Done (this pass) |
@@ -208,7 +208,7 @@ What I found:
 ### Key implementation details (updated)
 
 1. **LRU cache with TTL** — unchanged, still useful to avoid redundant calls within one generation cycle. Consider including `normalized` and `dimensions` in the cache key for correctness if those ever become configurable per-call.
-2. **pRetry with AbortError** — unchanged; retry on 429/network, abort on other 4xx.
+2. ~~pRetry with AbortError~~ — **corrected, after seeing your real `utils/retry.ts`.** Twistloom already has a generic retry utility with exponential backoff (`retryWithBackoff`) and a "stop retrying now" mechanism (`shouldRetry` predicate + `createNonRetryableError`/`isNonRetryableError`, the same pattern `retryWithUniqueConstraint` already uses for DB conflicts). That's functionally equivalent to `p-retry` + `AbortError` — no reason to add a new dependency that duplicates it. `utils/embedding.ts` uses `retryWithBackoff` directly: retry on 429 (plain `Error`), abort immediately on anything else via `createNonRetryableError`.
 3. ~~L2 normalization~~ — **removed.** `normalized: true` in the request body replaces the client-side `l2Normalize()` safety wrapper entirely.
 4. **Race-safe upsert** — unchanged, `ON CONFLICT DO UPDATE`.
 5. **Quota-aware backfill** — unchanged pattern, corrected math (§11).
@@ -477,7 +477,7 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
 1. ✅ ~~Add `'jina'` to `AIChatProvider` type in `src/types/ai-chat.ts`.~~ **Not yet done — `ai-chat.ts` wasn't uploaded, so this one step is still on you.** Everything else in this phase assumes `'jina'` is a valid `AIChatProvider` value; add it to the union (alongside `'github' | 'gemini' | ...`) before the other files below will typecheck.
 2. ✅ Added Jina rate limits to `AI_RATE_LIMITS` in `config/ai-clients.ts` — `jina: { rpm: 100 }`, no `rpd`/`rpmo`. **Also added a `jina` entry to `AI_MAX_PROMPT_LENGTH`, which the original roadmap said to skip (Appendix D.7) — that was wrong.** `AI_MAX_PROMPT_LENGTH` is also `Record<AIChatProvider, number>`, so adding `'jina'` to the type forces an entry there too, same as `AI_RATE_LIMITS`. Set to `131_000` (documents v5-text-small's real 32,768-token/~4-char-per-token input cap; nothing currently reads this value for jina, it's present purely for type completeness).
 3. ✅ Added Jina limiter plumbing in `utils/ai-limiters.ts` — `jinaLimiter` singleton, `getJinaLimiter()`, case in `getRateLimiter()`, and the `AI_RATE_LIMITS_WITH_BUFFER` entry. No concurrency semaphore (confirmed unnecessary, §2).
-4. ⬜ Install packages — still needed, not something I can run for you: `pnpm add pgvector p-retry` (the second one is a new dependency `utils/embedding.ts` needs — see Phase 0 step 8 below; check first whether it's already installed somewhere in the monorepo before adding a duplicate).
+4. ⬜ **Revised — no `p-retry` needed after all**, still need to run the install yourself. Original plan was `pnpm add pgvector p-retry`. Turns out Twistloom already has `utils/retry.ts` with `retryWithBackoff` + `createNonRetryableError`/`isNonRetryableError` — functionally the same as `p-retry` + `AbortError`, already used elsewhere in the codebase (`retryWithUniqueConstraint`). `utils/embedding.ts` was migrated to use it instead, so only `pgvector` (the npm helper package for Drizzle's `cosineDistance` etc.) still needs installing: `pnpm add pgvector`.
 5. ✅ Added `ensureVectorExtension()` to `db/extensions.ts`, wired into `ensureExtensions()`. Includes a version check against `MIN_PGVECTOR_VERSION = "0.8.2"` (CVE-2026-3172 + iterative-scan reasoning, §5) that warns rather than throws — deliberately non-blocking for a first pass, but treat the warning as a hard blocker before building any HNSW index against a branch with real traffic. **One caveat:** the version-check query's `db.execute()` result shape was written defensively (tolerates both a raw-array and a `{ rows: [...] }` return) because `db/client.ts` wasn't reviewed to confirm which Neon driver adapter this project uses — worth a quick sanity check the first time this runs.
 6. ✅ Created `config/embedding.ts` — same constants as originally specified here, now a real file.
 7. ⬜ Add `JINA_API_KEY` to `.env.local.example` — still needed, `.env.local.example` wasn't uploaded so I can't edit it directly; just add one line: `JINA_API_KEY=`
@@ -539,7 +539,7 @@ Unchanged from v1.
 
 | File | Purpose | Priority | Status |
 |---|---|---|---|
-| `src/utils/embedding.ts` | Jina client, `embedText`/`embedBatch`, LRU cache, pRetry — no manual normalization | **Phase 0** | ✅ Done |
+| `src/utils/embedding.ts` | Jina client, `embedText`/`embedBatch`, LRU cache, retry via existing `utils/retry.ts` (no new dependency) — no manual normalization | **Phase 0** | ✅ Done |
 | `src/config/embedding.ts` | Centralized config | **Phase 0** | ✅ Done |
 | `src/services/vector-memory.ts` | Embed page/character/place/future-note, retrieve similar pages/interactions/events/notes | **Phase 2+3** | ✅ Done |
 | `src/cron/backfill-embeddings.ts` | Daily backfill, quota-aware, now covers all four embedding tables (not just pages) via `pages.stateDelta` | **Phase 2** | ✅ Done |
@@ -1074,7 +1074,7 @@ async function retrieveRelevantFutureNotes(
 
 ## Appendix C: Jina AI Embedding Service — Porting Reference (corrected)
 
-> **✅ Implemented (this pass) as `utils/embedding.ts`**, delivered as a full drop-in file. The shipped version refines the sketch below slightly: a shared low-level `callJinaEmbeddingsAPI()` helper backs both `embedText()` and the newer `embedBatch()` (needed for the Phase 3 character/place/future-note hooks, not present in MuslimDigest's original single-item version), plus a defensive check that each returned embedding is actually `EMBEDDING_DIMENSIONS` long before it gets cached or returned. The sketch below is kept for reference/rationale; treat the actual file as the source of truth.
+> **✅ Implemented (this pass) as `utils/embedding.ts`**, delivered as a full drop-in file. The shipped version refines the sketch below in a few ways: a shared low-level `callJinaEmbeddingsAPI()` helper backs both `embedText()` and the newer `embedBatch()` (needed for the Phase 3 character/place/future-note hooks, not present in MuslimDigest's original single-item version); a defensive check that each returned embedding is actually `EMBEDDING_DIMENSIONS` long before it gets cached or returned; usage tracking via the existing `incrementDailyUsageCount('jina', 'embedding', ...)`; and — **the sketch below is now stale on this specific point** — retries go through the existing `utils/retry.ts` (`retryWithBackoff` + `createNonRetryableError`/`isNonRetryableError`), not a new `p-retry` dependency, once it turned out Twistloom already has an equivalent utility. Treat the actual file as the source of truth; the code below is kept only for the surrounding design rationale.
 
 
 ```typescript

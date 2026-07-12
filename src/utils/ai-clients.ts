@@ -28,6 +28,7 @@ export const AI_PROVIDER_API_KEYS: Record<AIChatProvider, string> = {
   nvidia: 'NVIDIA_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
   cloudflare: 'CLOUDFLARE_API_TOKEN',
+  jina: 'JINA_API_KEY',
 };
 
 // GitHub client singleton

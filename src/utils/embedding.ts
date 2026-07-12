@@ -5,7 +5,10 @@
  * free tier) for pgvector semantic memory retrieval.
  *
  * Features:
- * - Retry with exponential backoff (p-retry), abort on non-retryable errors
+ * - Retry with exponential backoff via the existing utils/retry.ts
+ *   (retryWithBackoff), not a new dependency — abort immediately on
+ *   non-retryable errors via createNonRetryableError/isNonRetryableError,
+ *   the same pattern retryWithUniqueConstraint already uses elsewhere
  * - LRU-ish cache with TTL to avoid redundant calls within one generation cycle
  * - Shared rate limiter (getJinaLimiter()) — same singleton used by every
  *   fire-and-forget embed call AND the backfill cron, so RPM/TPM/concurrency
@@ -25,7 +28,7 @@
  * PGVECTOR_SEMANTIC_MEMORY_ROADMAP.md §12 / Appendix D.3 for the full trace.
  */
 
-import pRetry, { AbortError } from 'p-retry';
+import { retryWithBackoff, isNonRetryableError, createNonRetryableError } from './retry.js';
 import { getErrorMessage } from './error.js';
 import { getJinaLimiter, incrementDailyUsageCount } from './ai-limiters.js';
 import {
@@ -88,11 +91,11 @@ const embeddingCache = new EmbeddingCache();
 async function callJinaEmbeddingsAPI(inputs: string[], task: EmbeddingTask): Promise<number[][]> {
   await getJinaLimiter().throttle();
 
-  return pRetry(
+  return retryWithBackoff(
     async () => {
       const apiKey = process.env['JINA_API_KEY'];
       if (!apiKey) {
-        throw new AbortError('JINA_API_KEY is not set');
+        throw createNonRetryableError('[jina] JINA_API_KEY is not set', 'JINA_NO_API_KEY');
       }
 
       const response = await fetch('https://api.jina.ai/v1/embeddings', {
@@ -113,16 +116,16 @@ async function callJinaEmbeddingsAPI(inputs: string[], task: EmbeddingTask): Pro
       if (!response.ok) {
         const bodyText = await response.text().catch(() => '');
         if (response.status === 429) {
-          // Retryable — pRetry will back off and try again.
+          // Retryable — plain Error, shouldRetry below lets this one through.
           throw new Error(`[jina] Rate limited (429): ${bodyText}`);
         }
         // Non-retryable: bad request, auth failure, model error, etc.
-        throw new AbortError(`[jina] API error ${response.status}: ${bodyText}`);
+        throw createNonRetryableError(`[jina] API error ${response.status}: ${bodyText}`, `JINA_HTTP_${response.status}`);
       }
 
       const data = (await response.json()) as JinaEmbeddingResponse;
       if (!data.data?.length) {
-        throw new AbortError('[jina] API returned no embeddings');
+        throw createNonRetryableError('[jina] API returned no embeddings', 'JINA_EMPTY_RESPONSE');
       }
 
       // Fire-and-forget — usage tracking should never slow down or fail an
@@ -139,15 +142,23 @@ async function callJinaEmbeddingsAPI(inputs: string[], task: EmbeddingTask): Pro
 
       for (const item of sorted) {
         if (item.embedding.length !== EMBEDDING_DIMENSIONS) {
-          throw new AbortError(
-            `[jina] Unexpected embedding length ${item.embedding.length}, expected ${EMBEDDING_DIMENSIONS}`
+          throw createNonRetryableError(
+            `[jina] Unexpected embedding length ${item.embedding.length}, expected ${EMBEDDING_DIMENSIONS}`,
+            'JINA_BAD_SHAPE'
           );
         }
       }
 
       return sorted.map(item => item.embedding);
     },
-    { retries: 3, minTimeout: 1000 }
+    {
+      maxRetries: 3,
+      baseDelayMs: 1000,
+      // createNonRetryableError() sets shouldRetry: false on the error object
+      // (same convention retryWithUniqueConstraint already uses elsewhere in
+      // this codebase) — isNonRetryableError() reads it back here.
+      shouldRetry: (error) => !isNonRetryableError(error),
+    }
   );
 }
 
