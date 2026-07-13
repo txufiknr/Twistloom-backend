@@ -48,4 +48,13 @@ export type BuildNextPagePromptParams = {
    * formatNextPageStoryContextPrompt treats both the same way.
    */
   relevantPastEventsBlock?: string;
+  /**
+   * pgvector semantic memory (Use Case 3) — ranked note keys for the
+   * unscheduled future-notes bucket, ordered by semantic similarity to
+   * the current scene query. Computed once in
+   * prepareNextPageGenerationSetup alongside the other semantic redisplays.
+   * When provided, formatFutureNotes() displays the unscheduled bucket in
+   * this order rather than the default chronological sort.
+   */
+  relevantFutureNoteKeys?: string[];
 }

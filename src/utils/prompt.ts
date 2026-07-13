@@ -47,7 +47,7 @@ import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
-import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents } from "../services/vector-memory.js";
+import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents, retrieveRelevantFutureNotes } from "../services/vector-memory.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2014,6 +2014,13 @@ function formatFutureNotes(params: {
    * When absent, stability triggers evaluate to false.
    */
   currentStability?: StabilityLevel;
+  /**
+   * pgvector semantic memory (Use Case 3) — ranked note keys for the
+   * unscheduled bucket, ordered by semantic similarity to the current
+   * scene query. When provided, the unscheduled bucket is displayed in
+   * this order instead of the default chronological sort.
+   */
+  sortedUnscheduledKeys?: string[];
 }): string {
   const {
     futureNotes,
@@ -2023,6 +2030,7 @@ function formatFutureNotes(params: {
     currentDate,
     currentHealthStatus,
     currentStability,
+    sortedUnscheduledKeys,
   } = params;
 
   if (!futureNotes.length) return 'None yet.';
@@ -2263,6 +2271,16 @@ function formatFutureNotes(params: {
   sortNotes(becomingRelevant);
   sortNotes(upcomingScheduledEvents);
   sortNotes(unscheduled);
+
+  // pgvector semantic memory (Use Case 3): reorder the unscheduled bucket by
+  // semantic-similarity rank when available. Notes closest to the current scene
+  // query surface first, helping the AI prioritize the most contextually
+  // relevant loose ends. Notes without a rank (e.g. not yet embedded or below
+  // threshold) fall through to the end in their original chronological order.
+  if (sortedUnscheduledKeys?.length) {
+    const keyOrder = new Map(sortedUnscheduledKeys.map((k, i) => [k, i]));
+    unscheduled.sort((a, b) => (keyOrder.get(a.key) ?? Infinity) - (keyOrder.get(b.key) ?? Infinity));
+  }
 
   // ── Formatters ─────────────────────────────────────────────────────────────
 
@@ -2922,7 +2940,7 @@ Write that moment before advancing the scene.`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage } = params;
+  const { advancedState: state, actionedPage, relevantFutureNoteKeys } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase, isFinale } = stateInfo;
@@ -2955,6 +2973,7 @@ ${formatFutureNotes({
   currentDate: calendarDate,
   currentHealthStatus: healthStatus,
   currentStability: psychologicalProfile.stability,
+  sortedUnscheduledKeys: relevantFutureNoteKeys,
 })}
 
 ---
@@ -4221,6 +4240,27 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // handling.
   const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book);
 
+  // pgvector semantic memory (Use Case 3): rank the unscheduled future-notes
+  // bucket by semantic similarity to the current scene query — the highest-
+  // similarity notes surface first so the AI treats the most contextually
+  // relevant loose ends as most urgent. Only notes without a schedule entry
+  // are candidates (notes with schedule entries already have a deterministic
+  // timeline order). Never throws — a failed retrieval simply leaves the
+  // bucket in its default chronological sort.
+  let relevantFutureNoteKeys: string[] | undefined;
+  const unscheduledNoteKeys = advancedState.futureNotes
+    .filter(n => !n.schedule?.length)
+    .map(n => n.key);
+  if (unscheduledNoteKeys.length) {
+    try {
+      const query = buildCurrentSceneQuery(actionedPage);
+      const results = await retrieveRelevantFutureNotes(query, book.id, actionedPage.branchId ?? 'main', unscheduledNoteKeys);
+      relevantFutureNoteKeys = results.map(r => r.noteKey);
+    } catch (error) {
+      console.error('[prepareNextPageGenerationSetup] ⚠️ Future note retrieval failed, continuing without semantic ranking:', getErrorMessage(error));
+    }
+  }
+
   const promptParams: BuildNextPagePromptParams = {
     book,
     actionedPage,
@@ -4228,6 +4268,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     previousPages,
     candidateCount,
     relevantPastEventsBlock,
+    relevantFutureNoteKeys,
   };
 
   let prompt = buildNextPagePrompt(promptParams);
