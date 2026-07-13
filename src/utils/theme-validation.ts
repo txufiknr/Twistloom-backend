@@ -412,10 +412,10 @@ export function handleThemeValidationError(
     suggestion,
   };
 
-  // Build error response
+  // Build error response — prefer the actionable suggestion over the generic message
   const errorResponse: ErrorResponse = {
     success: false,
-    error: message,
+    error: suggestion || message,
     details,
   };
 
