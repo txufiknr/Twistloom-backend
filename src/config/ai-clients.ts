@@ -376,26 +376,26 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
  * Requires large context windows, strict schema adherence, and analytical logic mapping.
  */
 export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
-  mistral: [
-    'mistral-large-latest',
-  ],
   gemini: [
     'gemini-3-flash-preview',
     'gemini-2.5-flash'
   ],
-  openrouter: [
-    'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
-    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
-    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue
-    'meta-llama/llama-4-maverick:free', // Large context, broad fallback
-    'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
-    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
-    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
+  mistral: [
+    'mistral-large-latest',
   ],
   groq: [
     'openai/gpt-oss-120b',
     'openai/gpt-oss-safeguard-20b', // fine-tuned from GPT-OSS, this model helps classify text content based on customizable policies
     'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
+  ],
+  openrouter: [
+    'qwen/qwen3-30b-a3b', // Has known tokenization bias during constrained JSON decoding. Creative and imaginative with good character voice variety.
+    'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following.
+    'z-ai/glm-4.5-air', // Clean, coherent, reliable storyteller with natural dialogue.
+    'meta-llama/llama-4-maverick:free', // Large context, broad fallback.
+    'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
+    'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
+    'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
   cloudflare: [
     '@cf/meta/llama-3.1-8b-instruct'
