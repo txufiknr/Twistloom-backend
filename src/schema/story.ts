@@ -909,6 +909,7 @@ export const THEME_VALIDATION_CATEGORIES: ThemeValidationCategory[] = ['INAPPROP
 export const THEME_VALIDATION_DETECTED_ITEM_TYPES: AIDetectedItemType[] = ['word', 'pattern', 'pov_instruction', 'invalid_format', 'other'];
 
 export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonProperty> = {
+  language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
   isViolating: { type: 'boolean', description: 'If theme is valid and safe, output false' },
   category: { type: 'string', enum: THEME_VALIDATION_CATEGORIES, description: 'If theme is valid and safe, output "NONE"' },
   confidence: { type: 'number' },
@@ -927,7 +928,6 @@ export const THEME_VALIDATION_SCHEMA: Record<keyof AIValidationResult, AIJsonPro
       additionalProperties: false
     }
   },
-  language: { type: 'string', description: 'Detected language code (ISO 639-1)' },
   suggestion: { type: 'string', description: '1-sentence suggestion in detected language on how to fix the issue. Omit if theme is valid.' },
   comment: { type: 'string', description: 'Your complimentary comment in detected language (follow comment structure & example). Omit if theme is invalid.' },
   titleIdea: { type: 'string', description: `${BOOK_TITLE_LENGTH} in detected language. Omit if theme is invalid.` },

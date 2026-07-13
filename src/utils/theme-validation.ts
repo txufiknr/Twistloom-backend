@@ -105,12 +105,12 @@ export function validateThemeHeuristic(theme: string): HeuristicValidationResult
  * @returns Formatted prompt for AI model
  */
 function createThemeValidationPrompt(theme: string): string {
-  return `Analyze this story theme from user input for policy violations:
+  return `First, detect language used in this story theme from user input:
 """
 ${theme}
 """
 
-Determine if this theme violates any content policies. Check for:
+Then determine if this theme violates any content policies. Check for:
 
 1. INAPPROPRIATE CONTENT:
    - Sexual content, pornography, rape, incest
@@ -179,13 +179,13 @@ Determine if this theme violates any content policies. Check for:
 export async function validateThemeWithAI(theme: string): Promise<AIValidationResult> {
   const prompt = createThemeValidationPrompt(theme);
   const failSafeResult: AIValidationResult = {
+    language: 'en',
     isViolating: false,
     category: 'OTHER',
     confidence: 0.0,
     detectedItems: [],
     suggestion: '',
     comment: '',
-    language: 'en',
     titleIdea: '',
     hook: '',
     summary: '',
@@ -198,11 +198,11 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
       configs: {
         schema: THEME_VALIDATION_SCHEMA,
         requiredFields: [
+          'language',
           'isViolating',
           'category',
           'confidence',
           'detectedItems',
-          'language',
           'comment',
           'suggestion',
           'hook',
@@ -218,7 +218,8 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           logPrompts: true,
         },
       },
-      fieldInstructions: `- isViolating: boolean (true if any violation detected)
+      fieldInstructions: `- language: ISO 639-1 code of the theme input language. CRITICAL: Determine this FIRST before generating any other text field. This language is your anchor — ALL text fields below MUST be written in this exact language.
+- isViolating: boolean (true if any violation detected)
 - category: ${formatOneOf(THEME_VALIDATION_CATEGORIES, ' | ')}
 - confidence: number (0.0 to 1.0)
 - detectedItems: array of objects with:
@@ -228,7 +229,6 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - reason: explanation of why it's a violation
 - suggestion: 1-sentence in detected language (how to fix the issue, or empty string if theme is valid)
 - comment: max 250 chars (a complimentary comment about theme idea in detected language. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
-- language: detected language code of theme input (ISO 639-1). If the theme request certain language, strictly use it.
 - titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
 - hook: immediate intrigue — ${HOOK_LENGTH} in detected language. Derived from the theme and MC. Omit if theme is invalid.
 - summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH} in detected language. Derived from the theme and MC. Omit if theme is invalid.
@@ -241,15 +241,13 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 - characters.relationships: only between side characters (excluding MC). Empty if characters is less than two.
 
 Comment structure (only if theme is valid):
+- Write in the SAME LANGUAGE as the detected language field above — never another language
 - Use creative & thriller-themed wording
-- Match the SAME LANGUAGE as the theme input
 - Express excitement and anticipation before generation
 
-Comment example (use your own wording):
-"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story—will be ready for you very soon!"
-
-WRITE ALL VALUES IN THE SAME LANGUAGE AS THE THEME INPUT.`,
+CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in the detected language. No exceptions.`,
       jsonStructure: `{
+  "language": "<ISO 639-1 language code — determined FIRST>",
   "isViolating": <boolean>,
   "category": "One of: ${formatOneOf(THEME_VALIDATION_CATEGORIES)}",
   "confidence": <number between 0.0 and 1.0>,
@@ -263,7 +261,6 @@ WRITE ALL VALUES IN THE SAME LANGUAGE AS THE THEME INPUT.`,
   ],
   "suggestion": "...",
   "comment": "...",
-  "language": "<ISO 639-1 language code>",
   "titleIdea": "...",
   "hook": "...",
   "summary": "...",

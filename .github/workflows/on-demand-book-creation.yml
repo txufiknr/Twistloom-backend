@@ -81,6 +81,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           # Workflow input
           BOOK_ID: ${{ github.event.inputs.book_id }}
           # Optional backend webhook & internal secret for notifying completion/progress

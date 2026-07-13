@@ -29,21 +29,23 @@
 [ ] result mistral medium kepotong
 [ ] Json stringify: [book-creation] 📔 Book initialized successfully:
 
-[POST /api/books/async] ❌ Failed to start book creation: BookCreationError: Theme language is not identifiable
-    at createBookValidate (/vercel/path0/src/services/book-creation.ts:163:11)
-    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
-    at async <anonymous> (/vercel/path0/src/routes/books.ts:386:53) {
-  validationResult: undefined,
-  statusCode: undefined
-}
-
 ---
 
-Your action items (not blocked on me):
+All done. Here's a summary of the changes:
 
-[ ] .env.local.example — add JINA_API_KEY=
-[x] pnpm db:generate + pnpm db:migrate — actually creates the 4 embedding tables + HNSW indexes; nothing in schema.ts exists in your real DB yet
-[ ] Confirm pgvector ≥0.8.2 on your Neon branch once the extension's created (extensions.ts will warn if not, but worth an explicit look before real traffic)
+**Use Case 3 (Future Notes Semantic Ranking) — wired up**
+
+- `src/types/prompt.ts:51-61` — Added `relevantFutureNoteKeys?: string[]` to `BuildNextPagePromptParams`
+- `src/utils/prompt.ts:50` — Added `retrieveRelevantFutureNotes` to imports
+- `src/utils/prompt.ts:4234-4255` — In `prepareNextPageGenerationSetup`, computes unscheduled future note keys (notes without `schedule` entries), calls `retrieveRelevantFutureNotes` with the current scene query, and stores the ranked key list before `promptParams` is built
+- `src/utils/prompt.ts:2272-2282` — In `formatFutureNotes`, after the default chronological sort of the unscheduled bucket, reorders by semantic-similarity rank when `sortedUnscheduledKeys` is provided
+- `src/utils/prompt.ts:2961` — `relevantFutureNoteKeys` passed from `formatNextPageNarrativePrompt` down to `formatFutureNotes`
+
+**.env.local.example — JINA_API_KEY added**
+
+- Added with the same "Get from: https://..." pattern as other API keys (line 56-58), plus cross-references in the Vercel and GitHub Actions sections
+
+**Verification**: `pnpm typecheck`, `pnpm lint`, and `pnpm lint:imports` all pass cleanly.
 
 ---
 
@@ -354,3 +356,8 @@ Mystery Guidelines:
 - Mysteries should converge.
 - Avoid creating major unresolved plot threads.
 - Prefer revelations that feel inevitable in hindsight.
+
+---
+
+Comment example (use your own wording):
+"This is a captivating and ominous concept, hinting at a gripping tale that.... So excited to bring your story to life. Let me plan and write the story—will be ready for you very soon!"
