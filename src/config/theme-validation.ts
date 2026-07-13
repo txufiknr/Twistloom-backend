@@ -184,8 +184,15 @@ export const THEME_BLACKLIST: readonly string[] = [
  * Note: Combined from frontend (src/lib/config/form.ts) and backend for comprehensive coverage
  */
 export const THEME_SUSPICIOUS_PATTERNS: readonly RegExp[] = [
-  // SQL injection patterns (comprehensive)
-  /(\b(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|ALTER|CREATE|TRUNCATE)\b.*\b(FROM|INTO|TABLE|WHERE|DATABASE)\b)/i,
+  // SQL injection patterns
+  /\bSELECT\s+(?:\*|[A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(?:\*|[A-Za-z_][A-Za-z0-9_]*))*\s+FROM\b/i,
+  /\bINSERT\s+INTO\b/i,
+  /\bUPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET\b/i,
+  /\bDELETE\s+FROM\b/i,
+  /\bDROP\s+(?:TABLE|DATABASE|INDEX|VIEW)\b/i,
+  /\bALTER\s+(?:TABLE|DATABASE|VIEW)\b/i,
+  /\bCREATE\s+(?:TABLE|DATABASE|INDEX|VIEW|FUNCTION|PROCEDURE|TRIGGER)\b/i,
+  /\bTRUNCATE\s+TABLE\b/i,
   /(--|\/\*|\*\/|xp_|sp_)/,
   /;\s*(SELECT|INSERT|UPDATE|DELETE|DROP|UNION|EXEC|EXECUTE|ALTER|CREATE|TRUNCATE)/i,
   /(\bOR\b.*=.*=|\bAND\b.*=.*=)/i,
