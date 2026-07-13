@@ -148,6 +148,20 @@
       "when": 1783639789378,
       "tag": "0020_common_kingpin",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783920799056,
+      "tag": "0021_redundant_vanisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1783920841037,
+      "tag": "0022_hot_millenium_guard",
+      "breakpoints": true
     }
   ]
 }

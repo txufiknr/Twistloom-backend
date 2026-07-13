@@ -47,6 +47,7 @@ import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
+import { embedPersistedPage, embedStateDeltaEntities } from "../services/vector-memory.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -1709,7 +1710,7 @@ function getActionRulesText(stateInfo: Partial<StoryStateInfo>): string {
 - Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
 - Naturally mix physical verbs (what to do) and dialogue (what to say).
 - Example: A. "Who are you?" / B. Run away, fast.
-- If MC is trapped or no action is viable, generate exactly 1 choice.
+- If no action is viable or needed, generate exactly 1 choice.
 
 ${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
 - Reduce the number of meaningful actions while sustaining immersion.
@@ -4302,7 +4303,7 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
   usedBranchIds.add(branchId);
 
   // 7. Persist page and its state atomically
-  return persistPageWithState({
+  const newPage = await persistPageWithState({
     userId,
     expectedPageNumber,
     generatedStoryPage,
@@ -4316,6 +4317,20 @@ export async function generateNextPage(params: BuildNextPageParams): Promise<Per
     context,
     book,
   });
+
+  // 8. Fire-and-forget pgvector semantic memory embedding. Deliberately NOT
+  // awaited — page text is already safely persisted above, and a failed or
+  // slow embed should never delay the response or fail the request. Reads
+  // newPage.stateDelta internally (same object just persisted), so nothing
+  // extra needs threading through. Never call these from inside
+  // applyStateDelta/processCharacterUpdates/processPlaceUpdates — those also
+  // run during delta-chain replay, and would silently re-embed the same
+  // history on every reconstruction. See PGVECTOR_SEMANTIC_MEMORY_ROADMAP.md
+  // §12 / Appendix D.3.
+  embedPersistedPage(newPage);
+  embedStateDeltaEntities(newPage);
+
+  return newPage;
 }
 
 /**
@@ -4451,6 +4466,12 @@ export async function generateNextPages(params: BuildNextPageParams): Promise<Pe
 
       newPages.push(newPage);
       console.log(`[${context}] 🌌 Persisted alternative fate ${index + 1}/${generatedStoryPages.length} — page ${newPage.id}`);
+
+      // Fire-and-forget pgvector semantic memory embedding — same rationale
+      // as the single-page path in generateNextPage above. Per-candidate,
+      // since each alternative fate is its own branch with its own history.
+      embedPersistedPage(newPage);
+      embedStateDeltaEntities(newPage);
     } catch (error) {
       // One alternative failing should not abort the others
       lastError = error;

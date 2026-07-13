@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phase 0, Phase 1, and the write-side of Phase 2+3 are done — see §8/§9. Remaining: `pnpm db:generate`/`db:migrate` (your environment), then wiring the already-built `vector-memory.ts` functions into `prompt.ts`'s call sites (the read/prompt-injection side).
+**Status:** Phase 0, Phase 1, and all of Phase 2+3's write-side (embedding writes, now wired into `prompt.ts`) are done — see §8/§9. Remaining: `pnpm db:generate`/`db:migrate` (your environment), then the read-side — wiring the four `retrieveX` functions into the actual prompt-building functions (`formatNextPageStoryContextPrompt`/`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes`).
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -26,7 +26,7 @@ Beyond those two, this fact-check surfaced several other corrections, all folded
 | 5 | "All future notes sent to every prompt, unfiltered" | Partially true. `formatFutureNotes()` in `prompt.ts` already buckets notes into `becomingRelevant` / `upcomingScheduledEvents` / `unscheduled` using real temporal + state-trigger logic — this is a solid existing system. The actual gap semantic retrieval fills is **thematic/spatial** relevance within the `unscheduled` bucket (open-ended notes with no time anchor), not temporal filtering, which already exists. Also, `MAX_FUTURE_NOTES` appears to cap the *total number of notes that can exist* (an AI-generation instruction), not a truncation of a larger pool — so the win here is narrative focus, not token savings. | §6, §9 Phase 3 |
 | 6 | pgvector version unspecified | **pgvector 0.7.x, 0.8.0, and 0.8.1 have a CVSS 8.1 buffer-overflow vulnerability (CVE-2026-3172)** triggered during parallel HNSW index builds. Pin to **0.8.2+** and verify with `SELECT extversion FROM pg_extension WHERE extname='vector';` after enabling. | §5, §13 |
 | 7 | Schema (Appendix A) used ad-hoc `uuid().defaultRandom()`, manual FK definitions | Your actual `schema.ts` has established helpers (`id()` → `uuidv7()`, `bookId()`, `createdAt`) and a JSDoc `@summary`/`@example` table-comment convention. Rewritten to match. | Appendix A |
-| 8 | Raw `sql\`...\`` template queries with manual `[${embedding.join(',')}]` string building | Drizzle's native `vector()` type plus the `pgvector` npm package's `pgvector/drizzle-orm` helpers (`cosineDistance`, `l2Distance`) give type-safe query building without hand-rolled vector literals. | Appendix B, Appendix C |
+| 8 | Raw `sql\`...\`` template queries with manual `[${embedding.join(',')}]` string building | `cosineDistance` ships directly in `drizzle-orm` core (not the separate `pgvector` npm package as first assumed) — no manual vector-literal building or extra dependency needed. `services/vector-memory.ts` imports it as `import { cosineDistance } from 'drizzle-orm'`. | Appendix B, Appendix C |
 | 9 | No mention of filtered-ANN recall risk | Every planned query filters by `bookId`/`branchId` on top of the HNSW `ORDER BY embedding <=> ...`. Pre-pgvector-0.8, combining a `WHERE` filter with an approximate index scan could silently return fewer/worse results than `LIMIT` requests. pgvector 0.8+ ships iterative index scans that fix this — another reason to pin ≥ 0.8.2, not just for the CVE. | §5, §13 |
 | 10 | ~~No mention of concurrency cap~~ **Resolved against real `ai-limiters.ts`/`ai-clients.ts`** | Jina free tier caps 2 concurrent requests per key. Checked the actual `RateLimiter` class: it serializes all calls through one `queue` promise chain and spaces call *starts* by `delayMs` (derived from buffered RPM). With `AI_RATE_LIMIT_SAFETY_BUFFER_PERCENT = 8`, buffered RPM ≈ 92, spacing ≈ 652ms — comfortably above Jina's typical 100-500ms latency. Because `getJinaLimiter()` is a singleton shared by *every* caller (fire-and-forget page embeds AND cron backfill), all Jina calls funnel through the same queue. **No separate concurrency semaphore needed.** | §2, §11, §12 |
 | 11 | Self-hosting license | `jina-embeddings-v5-text-small`'s open weights on Hugging Face are **CC BY-NC 4.0** (non-commercial). This only matters if you ever self-host the model instead of calling `api.jina.ai` — the hosted API is governed by Jina's commercial API terms, not the weights license. | Appendix D.1 |
@@ -302,35 +302,33 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 Added alongside the existing `pg_trgm` extension in `ensureExtensions()`.
 
-### Drizzle schema — install the helper package too
+### Drizzle schema — no extra package needed, `cosineDistance` ships in `drizzle-orm` core
 
-```bash
-pnpm add pgvector
-```
-
-This gives you `pgvector/drizzle-orm` — typed `cosineDistance`/`l2Distance`/`maxInnerProduct` helpers for Drizzle's query builder, so you're not hand-building `\`[${embedding.join(',')}]\`` vector literals or dropping into raw `sql\`...\`` templates for every query. Drizzle's native `vector()` column type (from `drizzle-orm/pg-core`) already handles serialization on insert — pass a plain `number[]`.
+Original plan here was `pnpm add pgvector` for `pgvector/drizzle-orm`'s `cosineDistance` helper. **Not needed** — `cosineDistance` (along with `l2Distance`, etc.) is exported directly from `drizzle-orm` itself now, no separate package. `services/vector-memory.ts` imports it as `import { cosineDistance } from 'drizzle-orm'`.
 
 ```typescript
 import { vector } from "drizzle-orm/pg-core";
-import { cosineDistance } from "pgvector/drizzle-orm";
+import { cosineDistance, sql, and, eq, lt } from "drizzle-orm";
 
-// column definition
+// column definition — Drizzle's native vector() type, from drizzle-orm/pg-core
 embedding: vector("embedding", { dimensions: 1024 }).notNull(),
 
-// insert — pass number[] directly, no manual string building
+// insert — pass number[] directly, Drizzle serializes it
 await db.insert(pageEmbeddings).values({
   bookId, branchId, page,
-  embedding, // number[], Drizzle serializes it
-  sourceText, contentType: 'page', sourceId,
+  embedding, // number[]
+  sourceText,
 });
 
-// query — typed helper instead of raw sql template
-const similarity = sql<number>`1 - (${cosineDistance(pageEmbeddings.embedding, queryEmbedding)})`;
+// query
+const distance = cosineDistance(pageEmbeddings.embedding, queryEmbedding);
+const similarity = sql<number>`1 - (${distance})`;
+
 const results = await db
   .select({ sourceId: pageEmbeddings.sourceId, page: pageEmbeddings.page, similarity })
   .from(pageEmbeddings)
   .where(and(eq(pageEmbeddings.bookId, bookId), eq(pageEmbeddings.branchId, branchId), lt(pageEmbeddings.page, currentPage)))
-  .orderBy(cosineDistance(pageEmbeddings.embedding, queryEmbedding))
+  .orderBy(distance)
   .limit(topK);
 ```
 
@@ -477,7 +475,7 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
 1. ✅ ~~Add `'jina'` to `AIChatProvider` type in `src/types/ai-chat.ts`.~~ **Not yet done — `ai-chat.ts` wasn't uploaded, so this one step is still on you.** Everything else in this phase assumes `'jina'` is a valid `AIChatProvider` value; add it to the union (alongside `'github' | 'gemini' | ...`) before the other files below will typecheck.
 2. ✅ Added Jina rate limits to `AI_RATE_LIMITS` in `config/ai-clients.ts` — `jina: { rpm: 100 }`, no `rpd`/`rpmo`. **Also added a `jina` entry to `AI_MAX_PROMPT_LENGTH`, which the original roadmap said to skip (Appendix D.7) — that was wrong.** `AI_MAX_PROMPT_LENGTH` is also `Record<AIChatProvider, number>`, so adding `'jina'` to the type forces an entry there too, same as `AI_RATE_LIMITS`. Set to `131_000` (documents v5-text-small's real 32,768-token/~4-char-per-token input cap; nothing currently reads this value for jina, it's present purely for type completeness).
 3. ✅ Added Jina limiter plumbing in `utils/ai-limiters.ts` — `jinaLimiter` singleton, `getJinaLimiter()`, case in `getRateLimiter()`, and the `AI_RATE_LIMITS_WITH_BUFFER` entry. No concurrency semaphore (confirmed unnecessary, §2).
-4. ⬜ **Revised — no `p-retry` needed after all**, still need to run the install yourself. Original plan was `pnpm add pgvector p-retry`. Turns out Twistloom already has `utils/retry.ts` with `retryWithBackoff` + `createNonRetryableError`/`isNonRetryableError` — functionally the same as `p-retry` + `AbortError`, already used elsewhere in the codebase (`retryWithUniqueConstraint`). `utils/embedding.ts` was migrated to use it instead, so only `pgvector` (the npm helper package for Drizzle's `cosineDistance` etc.) still needs installing: `pnpm add pgvector`.
+4. ✅ **Revised — no new dependencies needed at all.** Original plan was `pnpm add pgvector p-retry`. Neither is needed: `cosineDistance` ships directly in `drizzle-orm` core (not the separate `pgvector` package), and Twistloom already has an equivalent to `p-retry` in `utils/retry.ts` (`retryWithBackoff` + `createNonRetryableError`/`isNonRetryableError`, the same pattern `retryWithUniqueConstraint` already uses). `utils/embedding.ts` and `services/vector-memory.ts` were both built against what's already in the codebase — zero new packages for this entire roadmap.
 5. ✅ Added `ensureVectorExtension()` to `db/extensions.ts`, wired into `ensureExtensions()`. Includes a version check against `MIN_PGVECTOR_VERSION = "0.8.2"` (CVE-2026-3172 + iterative-scan reasoning, §5) that warns rather than throws — deliberately non-blocking for a first pass, but treat the warning as a hard blocker before building any HNSW index against a branch with real traffic. **One caveat:** the version-check query's `db.execute()` result shape was written defensively (tolerates both a raw-array and a `{ rows: [...] }` return) because `db/client.ts` wasn't reviewed to confirm which Neon driver adapter this project uses — worth a quick sanity check the first time this runs.
 6. ✅ Created `config/embedding.ts` — same constants as originally specified here, now a real file.
 7. ⬜ Add `JINA_API_KEY` to `.env.local.example` — still needed, `.env.local.example` wasn't uploaded so I can't edit it directly; just add one line: `JINA_API_KEY=`
@@ -506,7 +504,7 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
    embedStateDeltaEntities(newPage);   // same — reads newPage.stateDelta internally
    return newPage;
    ```
-   **⬜ Still pending:** actually wiring these two calls into `generateNextPage` (prompt.ts:4271) and `generateNextPages` (prompt.ts:~4402) — the functions exist and are ready to import, but the call sites in `prompt.ts` haven't been touched yet.
+   ✅ **Done (this pass)** — wired into both `generateNextPage` (was a direct `return persistPageWithState({...})`, restructured to capture `newPage` first so the fire-and-forget calls have something to act on before returning) and the per-candidate loop in `generateNextPages`, right after `newPages.push(newPage)`. Neither call is awaited.
 3. ⬜ **Prompt integration** (`src/utils/prompt.ts`) — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents(plotFlags)` in `formatNextPageStoryContextPrompt` (confirmed exact location, §7). Keep `contextHistory` unchanged for now. Not yet done.
 4. ✅ Created `src/services/vector-memory.ts` — `retrieveSimilarPages`, `retrieveCharacterInteractions`, `retrievePlaceEvents`, `retrieveRelevantFutureNotes`, `embedPersistedPage`, `embedStateDeltaEntities`, `buildPageEmbeddingText`. Covers all four embedding tables, not just pages — effectively also completes most of Phase 3's plumbing (§ below), just not wired into the prompt yet.
 
@@ -521,7 +519,7 @@ Character and place embeddings follow the identical pattern (§4, §6) — group
 4. ⬜ Prompt integration: within `formatFutureNotes()`'s `unscheduled` bucket, rank by semantic similarity instead of dumping all; `becomingRelevant` stays fully shown regardless of similarity. Not yet done — `retrieveRelevantFutureNotes()` exists in `vector-memory.ts` and is ready to call.
 5. ✅ **Replay hazard verified** (§12, Appendix D.3) — confirmed, not just checked, against `story_utils.ts`/`branch-traversal.ts`. All writes in `vector-memory.ts` are designed to be called only from the page-generation caller (or backfill, reading the same `page.stateDelta`), never from inside `applyStateDelta`/`processCharacterUpdates`/`processPlaceUpdates`.
 
-**What's left for Phase 2+3 to be fully live:** wire `embedPersistedPage`/`embedStateDeltaEntities` into `prompt.ts`'s `generateNextPage`/`generateNextPages`, and wire the four `retrieveX` functions into `formatNextPageStoryContextPrompt`/`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes`. All the underlying service functions exist and are tested-by-design against your real schema/types; what remains is strictly the prompt.ts call-site work.
+**What's left for Phase 2+3 to be fully live:** ✅ ~~wire `embedPersistedPage`/`embedStateDeltaEntities` into `prompt.ts`'s `generateNextPage`/`generateNextPages`~~ — done (this pass), both call sites now fire-and-forget after `persistPageWithState` resolves. ⬜ Still remaining: wire the four `retrieveX` functions into `formatNextPageStoryContextPrompt`/`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes` — the actual prompt-injection/read side. All the underlying service functions exist and are tested-by-design against your real schema/types; what remains is strictly that read-side call-site work.
 
 ### Phase 4 — Clue embeddings & finale-callback filtering (est. 2-3 days)
 
@@ -554,7 +552,7 @@ Unchanged from v1.
 | `src/db/extensions.ts` | `ensureVectorExtension()`, pin/verify pgvector ≥0.8.2 | **P0** | ✅ Done |
 | `src/db/schema.ts` | Add embedding tables (Appendix A) | **P1** | ✅ Done |
 | `.env.local.example` | Add `JINA_API_KEY` | **P0** | ⬜ Not uploaded — one-line addition |
-| `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ⬜ Functions ready in `vector-memory.ts`, call sites not yet wired |
+| `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ✅ Done |
 | `src/utils/prompt.ts` | `formatNextPageStoryContextPrompt` — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents` | **P2** | ⬜ |
 | `src/utils/prompt.ts` | `formatFutureNotes` — rank `unscheduled` bucket by similarity | **P3** | ⬜ |
 | `src/utils/characters_utils.ts` | `formatCharactersForPrompt` — "Earlier interactions (recalled):" block | **P3** | ⬜ |
@@ -641,7 +639,7 @@ embedPersistedPage(newPage, newState);                    // fire-and-forget
 embedStateDeltaEntities(newPage, stateDelta);              // fire-and-forget
 ```
 
-### Persistence hook (corrected: caller-side, uses `pgvector/drizzle-orm`, no manual normalization)
+### Persistence hook (corrected: caller-side, `cosineDistance` from `drizzle-orm` core, no manual normalization)
 
 ```typescript
 // Called from generateNextPage / generateNextPages, right after persistPageWithState resolves.
@@ -953,11 +951,11 @@ export const futureNoteEmbeddings = pgTable(
 
 ---
 
-## Appendix B: Query Scenarios (rewritten with `pgvector/drizzle-orm`)
+## Appendix B: Query Scenarios (using `cosineDistance` from `drizzle-orm` core)
 
 ```typescript
 import { and, eq, lt, sql } from "drizzle-orm";
-import { cosineDistance } from "pgvector/drizzle-orm";
+import { and, cosineDistance, eq, lt, sql } from "drizzle-orm";
 import { pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings } from "../db/schema.js";
 
 async function retrieveSimilarPages(

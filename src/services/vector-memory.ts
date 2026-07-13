@@ -249,7 +249,8 @@ export async function retrieveSimilarPages(
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<SimilarPageResult[]> {
   const queryEmbedding = await embedText(query, 'retrieval.query');
-  const similarity = sql<number>`1 - (${cosineDistance(pageEmbeddings.embedding, queryEmbedding)})`;
+  const distance = cosineDistance(pageEmbeddings.embedding, queryEmbedding);
+  const similarity = sql<number>`1 - (${distance})`;
 
   const rows = await dbRead
     .select({ page: pageEmbeddings.page, sourceText: pageEmbeddings.sourceText, similarity })
@@ -259,7 +260,7 @@ export async function retrieveSimilarPages(
       eq(pageEmbeddings.branchId, branchId),
       lt(pageEmbeddings.page, currentPage),
     ))
-    .orderBy(cosineDistance(pageEmbeddings.embedding, queryEmbedding))
+    .orderBy(distance)
     .limit(limit);
 
   return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
@@ -286,7 +287,8 @@ export async function retrieveCharacterInteractions(
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<SimilarInteractionResult[]> {
   const queryEmbedding = await embedText(query, 'retrieval.query');
-  const similarity = sql<number>`1 - (${cosineDistance(characterEmbeddings.embedding, queryEmbedding)})`;
+  const distance = cosineDistance(characterEmbeddings.embedding, queryEmbedding);
+  const similarity = sql<number>`1 - (${distance})`;
 
   const rows = await dbRead
     .select({ page: characterEmbeddings.page, sourceText: characterEmbeddings.sourceText, similarity })
@@ -297,7 +299,7 @@ export async function retrieveCharacterInteractions(
       eq(characterEmbeddings.characterId, characterId),
       lt(characterEmbeddings.page, oldestVisiblePage),
     ))
-    .orderBy(cosineDistance(characterEmbeddings.embedding, queryEmbedding))
+    .orderBy(distance)
     .limit(limit);
 
   return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
@@ -317,7 +319,8 @@ export async function retrievePlaceEvents(
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<SimilarInteractionResult[]> {
   const queryEmbedding = await embedText(query, 'retrieval.query');
-  const similarity = sql<number>`1 - (${cosineDistance(placeEmbeddings.embedding, queryEmbedding)})`;
+  const distance = cosineDistance(placeEmbeddings.embedding, queryEmbedding);
+  const similarity = sql<number>`1 - (${distance})`;
 
   const rows = await dbRead
     .select({ page: placeEmbeddings.page, sourceText: placeEmbeddings.sourceText, similarity })
@@ -328,7 +331,7 @@ export async function retrievePlaceEvents(
       eq(placeEmbeddings.placeId, placeId),
       lt(placeEmbeddings.page, oldestVisiblePage),
     ))
-    .orderBy(cosineDistance(placeEmbeddings.embedding, queryEmbedding))
+    .orderBy(distance)
     .limit(limit);
 
   return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
@@ -357,7 +360,8 @@ export async function retrieveRelevantFutureNotes(
   if (!candidateKeys.length) return [];
 
   const queryEmbedding = await embedText(query, 'retrieval.query');
-  const similarity = sql<number>`1 - (${cosineDistance(futureNoteEmbeddings.embedding, queryEmbedding)})`;
+  const distance = cosineDistance(futureNoteEmbeddings.embedding, queryEmbedding);
+  const similarity = sql<number>`1 - (${distance})`;
 
   const rows = await dbRead
     .select({ noteKey: futureNoteEmbeddings.noteKey, sourceText: futureNoteEmbeddings.sourceText, similarity })
@@ -367,7 +371,7 @@ export async function retrieveRelevantFutureNotes(
       eq(futureNoteEmbeddings.branchId, branchId),
       sql`${futureNoteEmbeddings.noteKey} = ANY(${candidateKeys})`,
     ))
-    .orderBy(cosineDistance(futureNoteEmbeddings.embedding, queryEmbedding))
+    .orderBy(distance)
     .limit(limit);
 
   return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
