@@ -245,7 +245,7 @@ Comment structure (only if theme is valid):
 - Use creative & thriller-themed wording
 - Express excitement and anticipation before generation
 
-CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in the detected language. No exceptions.`,
+CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in the detected language. If language is "en" then use English. No exceptions.`,
       jsonStructure: `{
   "language": "<ISO 639-1 language code — determined FIRST>",
   "isViolating": <boolean>,
