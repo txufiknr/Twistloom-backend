@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phase 0, Phase 1, and all of Phase 2+3's write-side (embedding writes, now wired into `prompt.ts`) are done — see §8/§9. Remaining: `pnpm db:generate`/`db:migrate` (your environment), then the read-side — wiring the four `retrieveX` functions into the actual prompt-building functions (`formatNextPageStoryContextPrompt`/`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes`).
+**Status:** Phase 0, Phase 1, and Phase 2's write-side + Use Case 1's read-side (fully live, both write and prompt-injection) are done — see §8/§9. Remaining: `pnpm db:generate`/`db:migrate` (your environment), then Use Cases 2/3/5's read-side (`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes`).
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -505,7 +505,13 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
    return newPage;
    ```
    ✅ **Done (this pass)** — wired into both `generateNextPage` (was a direct `return persistPageWithState({...})`, restructured to capture `newPage` first so the fire-and-forget calls have something to act on before returning) and the per-candidate loop in `generateNextPages`, right after `newPages.push(newPage)`. Neither call is awaited.
-3. ⬜ **Prompt integration** (`src/utils/prompt.ts`) — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents(plotFlags)` in `formatNextPageStoryContextPrompt` (confirmed exact location, §7). Keep `contextHistory` unchanged for now. Not yet done.
+3. ✅ **Done (this pass) — Use Case 1 is now fully live, not just written.** `RELEVANT PAST EVENTS` injected between `storyContext` and `formatRecentMajorEvents(plotFlags)` in `formatNextPageStoryContextPrompt`, exactly where §7 said it would go. `contextHistory` unchanged, as planned — this supplements it, doesn't replace it.
+
+   **One design decision made during implementation, not in the original sketch:** `formatNextPageStoryContextPrompt` gets called from *two* places — `buildNextPagePrompt` (the main generation prompt) and `buildNextPageEvaluatorPrompt` (the re-evaluation pass) — and both needed the same block. Rather than make `formatNextPageStoryContextPrompt` itself `async` (which would have forced `buildNextPagePrompt`/`buildNextPageEvaluatorPrompt` async too, and doubled the Jina calls if each computed its own), a new `buildRelevantPastEventsBlock(actionedPage, book)` async helper computes the block **once** in `prepareNextPageGenerationSetup` (already `async`), and threads it through both format functions as a plain `string` parameter. Every `formatXxx`/`buildXxx` function stays synchronous except that one new helper — no async propagation through the rest of the prompt-building call graph.
+
+   **Also:** threaded as a plain function parameter rather than a new field on `BuildNextPagePromptParams` — `types/prompt.ts` wasn't reviewed this pass, so this sidesteps needing to guess at that type's exact shape. If you'd rather have it bundled into the params object instead (arguably tidier long-term), send `types/prompt.ts` and I'll fold it in.
+
+   **Query construction:** `${actionedPage.text}\n\nPlayer chose: ${actionedPage.action?.text ?? ''}` — the current scene plus the just-selected action, since that's the best available proxy for "what's about to happen" before the new page exists to embed anything from. Retrieval never throws into the generation path — a failed/empty result just means no block gets injected, page generation proceeds normally either way.
 4. ✅ Created `src/services/vector-memory.ts` — `retrieveSimilarPages`, `retrieveCharacterInteractions`, `retrievePlaceEvents`, `retrieveRelevantFutureNotes`, `embedPersistedPage`, `embedStateDeltaEntities`, `buildPageEmbeddingText`. Covers all four embedding tables, not just pages — effectively also completes most of Phase 3's plumbing (§ below), just not wired into the prompt yet.
 
 ### Phase 3 — Character & place interaction embeddings, future notes (est. 4-6 days) — write-side done, read-side wiring pending
@@ -553,7 +559,7 @@ Unchanged from v1.
 | `src/db/schema.ts` | Add embedding tables (Appendix A) | **P1** | ✅ Done |
 | `.env.local.example` | Add `JINA_API_KEY` | **P0** | ⬜ Not uploaded — one-line addition |
 | `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ✅ Done |
-| `src/utils/prompt.ts` | `formatNextPageStoryContextPrompt` — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents` | **P2** | ⬜ |
+| `src/utils/prompt.ts` | `formatNextPageStoryContextPrompt` — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents` | **P2** | ✅ Done |
 | `src/utils/prompt.ts` | `formatFutureNotes` — rank `unscheduled` bucket by similarity | **P3** | ⬜ |
 | `src/utils/characters_utils.ts` | `formatCharactersForPrompt` — "Earlier interactions (recalled):" block | **P3** | ⬜ |
 | `src/utils/places_utils.ts` | `formatPlacesForPrompt` — same, for place events | **P3** | ⬜ |

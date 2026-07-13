@@ -47,7 +47,7 @@ import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
-import { embedPersistedPage, embedStateDeltaEntities } from "../services/vector-memory.js";
+import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages } from "../services/vector-memory.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -970,14 +970,14 @@ const multiNextPageOutputFormat: string = `{
   "output": "..."
 }`;
 
-function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
+function buildNextPagePrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock: string = ''): string {
   const { advancedState: state, candidateCount, book } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
   const { language } = book;
 
   return [
     `TASK: ${formatNextPageTaskPrompt(state, candidateCount, language)}`,
-    formatNextPageStoryContextPrompt(params),
+    formatNextPageStoryContextPrompt(params, relevantPastEventsBlock),
     formatNextPageNarrativePrompt(params),
     state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
     isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale })}`
@@ -1351,7 +1351,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ No trailing commas? → Fix any.`.trim();
 }
 
-function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
+function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock: string = ''): string {
   const { advancedState: state, actionedPage, candidateCount, book } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
   const { action, sceneType } = actionedPage;
@@ -1362,7 +1362,7 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
 
 Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount, language)}
 
-${formatNextPageStoryContextPrompt(params)}
+${formatNextPageStoryContextPrompt(params, relevantPastEventsBlock)}
 
 ---
 ${formatNextPageNarrativePrompt(params)}
@@ -2733,7 +2733,39 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
   return situation.map(item => `- ${item}`).join('\n');
 }
 
-function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
+/**
+ * Builds the "RELEVANT PAST EVENTS" prompt block via pgvector semantic
+ * retrieval — computed once per page generation (not once per prompt
+ * function), since buildNextPagePrompt and buildNextPageEvaluatorPrompt
+ * both need it and firing a second Jina call for the identical query would
+ * be wasteful. Called from prepareNextPageGenerationSetup and threaded
+ * through as a plain string parameter rather than added as a field on
+ * BuildNextPagePromptParams — types/prompt.ts wasn't reviewed this pass, so
+ * this avoids guessing at its exact shape while keeping every function
+ * below synchronous except this one.
+ *
+ * Never throws — a failed or empty retrieval just means no block gets
+ * injected. Page generation must never depend on Jina being reachable.
+ */
+async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book): Promise<string> {
+  try {
+    const query = `${actionedPage.text}\n\nPlayer chose: ${actionedPage.action?.text ?? ''}`;
+    const branchId = actionedPage.branchId ?? 'main';
+    const results = await retrieveSimilarPages(query, book.id, branchId, actionedPage.page);
+
+    if (!results.length) return '';
+
+    return [
+      'RELEVANT PAST EVENTS (semantic retrieval):',
+      ...results.map(r => `- Page ${r.page} (similarity: ${r.similarity.toFixed(2)}): ${r.sourceText}`),
+    ].join('\n');
+  } catch (error) {
+    console.error(`[buildRelevantPastEventsBlock] ⚠️ Retrieval failed, continuing without it:`, getErrorMessage(error));
+    return '';
+  }
+}
+
+function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock: string = ''): string {
   const { advancedState: state, actionedPage, previousPages, book } = params;
   const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
   const { mc, storyStartDate } = book;
@@ -2773,7 +2805,7 @@ ${mcCurrentState}
 STORY CONTEXT:
 ${storyContext}
 
-${formatRecentMajorEvents(plotFlags)}
+${relevantPastEventsBlock ? `${relevantPastEventsBlock}\n\n` : ''}${formatRecentMajorEvents(plotFlags)}
 
 CURRENT FACTS:
 ${formatCurrentFacts(factsHistory)}
@@ -4100,7 +4132,14 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     candidateCount,
   };
 
-  let prompt = buildNextPagePrompt(promptParams);
+  // pgvector semantic memory (Use Case 1): computed once here, not inside
+  // buildNextPagePrompt/buildNextPageEvaluatorPrompt themselves, since both
+  // need the same block and a second Jina call for the identical query would
+  // be wasteful. Never throws — see buildRelevantPastEventsBlock's own
+  // graceful-degradation handling.
+  const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book);
+
+  let prompt = buildNextPagePrompt(promptParams, relevantPastEventsBlock);
   const bookMeta = buildBookMetaDocuments(book, advancedState);
 
   // Append developer promptAppend if present
@@ -4131,7 +4170,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     systemPrompt: buildPresetSystemPrompt('next', nextPreset),
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
     reviewChecklist: buildNextPageReviewChecklist(advancedState, book.language),
-    evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
+    evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams, relevantPastEventsBlock),
   };
 }
 

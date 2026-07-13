@@ -31,6 +31,14 @@
 
 ---
 
+Your action items (not blocked on me):
+
+[ ] .env.local.example — add JINA_API_KEY=
+[x] pnpm db:generate + pnpm db:migrate — actually creates the 4 embedding tables + HNSW indexes; nothing in schema.ts exists in your real DB yet
+[ ] Confirm pgvector ≥0.8.2 on your Neon branch once the extension's created (extensions.ts will warn if not, but worth an explicit look before real traffic)
+
+---
+
 factsHistory: { 'location.apartemen.is_haunted': [Array] },
 
 ---
