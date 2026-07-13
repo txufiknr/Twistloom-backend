@@ -47,7 +47,7 @@ import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
-import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages } from "../services/vector-memory.js";
+import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents } from "../services/vector-memory.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -970,14 +970,14 @@ const multiNextPageOutputFormat: string = `{
   "output": "..."
 }`;
 
-function buildNextPagePrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock?: string): string {
+function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, candidateCount, book } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
   const { language } = book;
 
   return [
     `TASK: ${formatNextPageTaskPrompt(state, candidateCount, language)}`,
-    formatNextPageStoryContextPrompt(params, relevantPastEventsBlock),
+    formatNextPageStoryContextPrompt(params),
     formatNextPageNarrativePrompt(params),
     state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
     isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale })}`
@@ -1351,7 +1351,7 @@ function buildNextPageReviewChecklist(state: StoryState, language: string): stri
   □ No trailing commas? → Fix any.`.trim();
 }
 
-function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock: string = ''): string {
+function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage, candidateCount, book } = params;
   const { isEarlyPhase, isMidPhase, isLatePhase, isFinale, charactersSlot } = getStoryStateInfo(state);
   const { action, sceneType } = actionedPage;
@@ -1362,7 +1362,7 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams, relevan
 
 Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount, language)}
 
-${formatNextPageStoryContextPrompt(params, relevantPastEventsBlock)}
+${formatNextPageStoryContextPrompt(params)}
 
 ---
 ${formatNextPageNarrativePrompt(params)}
@@ -2734,22 +2734,36 @@ function formatCurrentSituationForPrompt(page: CandidateGenerationPage, state: S
 }
 
 /**
+ * Shared semantic-retrieval query for all of Use Cases 1/2/5 — the current
+ * scene plus the just-selected action, the best available proxy for "what's
+ * about to happen" before the new page exists to embed anything from.
+ * Reused across buildRelevantPastEventsBlock/buildCharacterRecallBlocks/
+ * buildPlaceRecallBlocks specifically so the query TEXT is byte-identical
+ * across all three — embedText()'s cache key is `${model}:${task}:${text}`,
+ * so identical text means only the first call actually hits Jina; every
+ * subsequent retrieval this page generation reuses the cached query
+ * embedding instead of re-computing it.
+ */
+function buildCurrentSceneQuery(actionedPage: CandidateGenerationPage): string {
+  return `${actionedPage.text}\n\nPlayer chose: ${actionedPage.action?.text ?? ''}`;
+}
+
+/**
  * Builds the "RELEVANT PAST EVENTS" prompt block via pgvector semantic
  * retrieval — computed once per page generation (not once per prompt
  * function), since buildNextPagePrompt and buildNextPageEvaluatorPrompt
- * both need it and firing a second Jina call for the identical query would
- * be wasteful. Called from prepareNextPageGenerationSetup and threaded
- * through as a plain string parameter rather than added as a field on
- * BuildNextPagePromptParams — types/prompt.ts wasn't reviewed this pass, so
- * this avoids guessing at its exact shape while keeping every function
- * below synchronous except this one.
+ * both read it and firing a second Jina call for the identical query would
+ * be wasteful. Called from prepareNextPageGenerationSetup, before
+ * promptParams is built, and set as the relevantPastEventsBlock field on
+ * BuildNextPagePromptParams (types/prompt.ts) — every format/build function
+ * below stays fully synchronous except this one.
  *
  * Never throws — a failed or empty retrieval just means no block gets
  * injected. Page generation must never depend on Jina being reachable.
  */
 async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book): Promise<string> {
   try {
-    const query = `${actionedPage.text}\n\nPlayer chose: ${actionedPage.action?.text ?? ''}`;
+    const query = buildCurrentSceneQuery(actionedPage);
     const branchId = actionedPage.branchId ?? 'main';
     const results = await retrieveSimilarPages(query, book.id, branchId, actionedPage.page);
 
@@ -2765,8 +2779,83 @@ async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPag
   }
 }
 
-function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock?: string): string {
-  const { advancedState: state, actionedPage, previousPages, book } = params;
+/**
+ * Use Case 2 — one "Earlier interactions (recalled)" block per character,
+ * for interactions that have scrolled out of the live MAX_PAST_INTERACTIONS
+ * (5) sliding window formatCharactersForPrompt() already shows in full.
+ * oldestVisiblePage per character = the lowest page among their current
+ * pastInteractions — retrieval only looks further back than that, so it
+ * never duplicates what's already displayed. Falls back to actionedPage.page
+ * (i.e. "everything before now") when a character has no pastInteractions
+ * yet.
+ *
+ * Promise.allSettled — one character's retrieval failing must never block
+ * or drop the others. Never throws; a character simply gets no recalled
+ * block if its retrieval fails.
+ */
+async function buildCharacterRecallBlocks(
+  characters: Record<string, CharacterMemory> | undefined,
+  actionedPage: CandidateGenerationPage,
+  book: Book
+): Promise<Record<string, string>> {
+  if (!characters || !Object.keys(characters).length) return {};
+
+  const query = buildCurrentSceneQuery(actionedPage);
+  const branchId = actionedPage.branchId ?? 'main';
+  const blocks: Record<string, string> = {};
+
+  await Promise.allSettled(Object.entries(characters).map(async ([characterId, character]) => {
+    try {
+      const pastPages = (character.pastInteractions ?? []).map((i: PastInteraction) => i.page);
+      const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
+      const results = await retrieveCharacterInteractions(query, book.id, branchId, characterId, oldestVisiblePage);
+      if (results.length) {
+        blocks[characterId] = results.map(r => `(page ${r.page}) ${r.sourceText}`).join(' ');
+      }
+    } catch (error) {
+      console.error(`[buildCharacterRecallBlocks] ⚠️ Retrieval failed for ${characterId}:`, getErrorMessage(error));
+    }
+  }));
+
+  return blocks;
+}
+
+/**
+ * Use Case 5 — same pattern as buildCharacterRecallBlocks, for place key
+ * events that have scrolled out of the live MAX_PLACE_EVENTS (8) sliding
+ * window formatPlacesForPrompt() already shows in full. Does NOT touch
+ * calculatePlaceFamiliarity() — that stays deterministic and synchronous,
+ * untouched.
+ */
+async function buildPlaceRecallBlocks(
+  places: Record<string, PlaceMemory> | undefined,
+  actionedPage: CandidateGenerationPage,
+  book: Book
+): Promise<Record<string, string>> {
+  if (!places || !Object.keys(places).length) return {};
+
+  const query = buildCurrentSceneQuery(actionedPage);
+  const branchId = actionedPage.branchId ?? 'main';
+  const blocks: Record<string, string> = {};
+
+  await Promise.allSettled(Object.entries(places).map(async ([placeId, place]) => {
+    try {
+      const pastPages = (place.keyEvents ?? []).map(e => e.page);
+      const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
+      const results = await retrievePlaceEvents(query, book.id, branchId, placeId, oldestVisiblePage);
+      if (results.length) {
+        blocks[placeId] = results.map(r => `(page ${r.page}) ${r.sourceText}`).join(' ');
+      }
+    } catch (error) {
+      console.error(`[buildPlaceRecallBlocks] ⚠️ Retrieval failed for ${placeId}:`, getErrorMessage(error));
+    }
+  }));
+
+  return blocks;
+}
+
+function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
+  const { advancedState: state, actionedPage, previousPages, book, relevantPastEventsBlock } = params;
   const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
   const { mc, storyStartDate } = book;
   const { contextHistory, plotFlags, factsHistory, inventory, injuries, hiddenState } = state;
@@ -4124,23 +4213,38 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   const generationContext = `"${book.title}" page ${expectedPageNumber} of ${book.totalPages} after selecting ${letter}. ${action.text} (type: ${action.type})`;
 
   // 1. Build next page generation prompt
+  // pgvector semantic memory (Use Case 1): computed once here, before
+  // promptParams exists, since buildNextPagePrompt and
+  // buildNextPageEvaluatorPrompt both read it off the same params object —
+  // a second Jina call for the identical query would be wasteful. Never
+  // throws — see buildRelevantPastEventsBlock's own graceful-degradation
+  // handling.
+  const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book);
+
   const promptParams: BuildNextPagePromptParams = {
     book,
     actionedPage,
     advancedState,
     previousPages,
     candidateCount,
+    relevantPastEventsBlock,
   };
 
-  // pgvector semantic memory (Use Case 1): computed once here, not inside
-  // buildNextPagePrompt/buildNextPageEvaluatorPrompt themselves, since both
-  // need the same block and a second Jina call for the identical query would
-  // be wasteful. Never throws — see buildRelevantPastEventsBlock's own
-  // graceful-degradation handling.
-  const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book);
+  let prompt = buildNextPagePrompt(promptParams);
 
-  let prompt = buildNextPagePrompt(promptParams, relevantPastEventsBlock);
-  const bookMeta = buildBookMetaDocuments(book, advancedState);
+  // pgvector semantic memory (Use Cases 2 & 5): computed once here, in
+  // parallel with each other since they're independent retrievals against
+  // different tables. Both reuse buildRelevantPastEventsBlock's exact query
+  // text above, so this doesn't trigger extra Jina calls for the query
+  // embedding itself — only the per-character/per-place DB lookups are new.
+  const [characterRecallBlocks, placeRecallBlocks] = await Promise.all([
+    buildCharacterRecallBlocks(advancedState.characters, actionedPage, book),
+    buildPlaceRecallBlocks(advancedState.places, actionedPage, book),
+  ]);
+  const bookMeta = buildBookMetaDocuments(book, advancedState, {
+    characters: characterRecallBlocks,
+    places: placeRecallBlocks,
+  });
 
   // Append developer promptAppend if present
   if (book.advancedOptions?.developer?.promptAppend) {
@@ -4170,7 +4274,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     systemPrompt: buildPresetSystemPrompt('next', nextPreset),
     fieldInstructions: buildNextPageFieldInstructions(advancedState, action, sceneType),
     reviewChecklist: buildNextPageReviewChecklist(advancedState, book.language),
-    evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams, relevantPastEventsBlock),
+    evaluatorPrompt: buildNextPageEvaluatorPrompt(promptParams),
   };
 }
 

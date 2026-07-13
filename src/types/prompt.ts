@@ -37,4 +37,15 @@ export type BuildNextPagePromptParams = {
   advancedState: StoryState,
   previousPages: ActionedStoryPage[],
   candidateCount: number;
+  /**
+   * pgvector semantic memory (Use Case 1) — pre-computed "RELEVANT PAST
+   * EVENTS" prompt block, via buildRelevantPastEventsBlock() in
+   * prepareNextPageGenerationSetup, before this params object is built.
+   * Computed once and reused by both buildNextPagePrompt and
+   * buildNextPageEvaluatorPrompt, since they'd otherwise each trigger their
+   * own identical (and wasteful) Jina retrieval call.
+   * Undefined/empty string means "nothing relevant found, omit the block" —
+   * formatNextPageStoryContextPrompt treats both the same way.
+   */
+  relevantPastEventsBlock?: string;
 }

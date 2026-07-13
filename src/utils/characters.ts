@@ -456,7 +456,7 @@ export function getMainCharacterInfo(params: {
  *     → skills: teaching, gardening
  *     → favorite food: pizza
  */
-export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>): string {
+export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string, CharacterMemory>, recalledInteractions?: Record<string, string>): string {
   const mcDetails = [];
   if (mc.bio) mcDetails.push(`  - Bio: ${mc.bio}`);
   if (mc.knownName) mcDetails.push(`  - Known as: ${mc.knownName}`);
@@ -545,6 +545,16 @@ export function formatCharactersForPrompt(mc: StoryMC, characters: Record<string
             const interactionsText = interactionsByPage[page].join(' ');
             details.push(`    → Page ${page}: ${interactionsText}`);
           });
+      }
+
+      // pgvector semantic memory (Use Case 2): interactions that have
+      // scrolled out of the live MAX_PAST_INTERACTIONS window above, surfaced
+      // only when semantically relevant to the current scene. Never
+      // duplicates what "Recent interactions" already shows in full.
+      const recalled = recalledInteractions?.[id];
+      if (recalled) {
+        details.push(`  - Earlier interactions (recalled):`);
+        details.push(`    → ${recalled}`);
       }
       
       // Character relationships with nested bullets

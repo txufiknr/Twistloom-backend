@@ -302,7 +302,7 @@ export function updateConnection(place: PlaceMemory, update: PlaceConnectionUpda
  *   - Known routes:
  *     → old_river: route-specific details (2 minutes walk, alley, open)
  */
-export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, currentPage: number): string {
+export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, currentPage: number, recalledEvents?: Record<string, string>): string {
   const placeEntries = Object.entries(places);
   if (!placeEntries.length) return 'No known places.';
 
@@ -353,6 +353,16 @@ export function formatPlacesForPrompt(places: Record<string, PlaceMemory>, curre
         .forEach(event => {
           lines.push(`    → Page ${event.page}: ${event.event}`);
         });
+    }
+
+    // pgvector semantic memory (Use Case 5): events that have scrolled out
+    // of the live MAX_PLACE_EVENTS window above, surfaced only when
+    // semantically relevant to the current scene. Does NOT feed
+    // calculatePlaceFamiliarity() — that stays deterministic, untouched.
+    const recalledEvent = recalledEvents?.[id];
+    if (recalledEvent) {
+      lines.push('  - Earlier events (recalled):');
+      lines.push(`    → ${recalledEvent}`);
     }
 
     const keyObjects = place.keyObjects?.filter(i => i.amount);

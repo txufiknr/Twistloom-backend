@@ -1640,16 +1640,29 @@ export function mapBookFromDb(dbBook: DBBook): Book {
  * R.L. Stine but darker, with specific rules for narrative manipulation and
  * psychological horror elements.
  */
-export function buildBookMetaDocuments(book?: Book, state?: Pick<StoryState, 'characters' | 'plannedCharacters' | 'places' | 'page'>): AIPromptDocuments {
+export function buildBookMetaDocuments(
+  book?: Book,
+  state?: Pick<StoryState, 'characters' | 'plannedCharacters' | 'places' | 'page'>,
+  /**
+   * pgvector semantic memory (Use Cases 2 & 5) — pre-computed "recalled"
+   * blocks keyed by characterId/placeId, for interactions/events that have
+   * scrolled out of the live pastInteractions/keyEvents sliding windows.
+   * Optional and additive: omitting this changes nothing about the existing
+   * output. Computed once in prepareNextPageGenerationSetup (prompt.ts),
+   * before this function is called — never fetched from inside here, since
+   * this function itself stays synchronous.
+   */
+  semanticRecall?: { characters?: Record<string, string>; places?: Record<string, string> }
+): AIPromptDocuments {
   const documents: AIDocument[] = [];
 
   if (book) {
     documents.push({ title: `BOOK META`, snippet: formatBookMetaForPrompt(book) });
-    documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}) });
+    documents.push({ title: `KNOWN CHARACTERS`, snippet: formatCharactersForPrompt(book.mc, state?.characters ?? {}, semanticRecall?.characters) });
     if (state?.plannedCharacters?.length) documents.push({ title: `PLANNED CHARACTERS`, snippet: formatPlannedCharactersForPrompt(state.plannedCharacters) });
   }
   if (state) {
-    documents.push({ title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state.places, state.page) });
+    documents.push({ title: `KNOWN PLACES`, snippet: formatPlacesForPrompt(state.places, state.page, semanticRecall?.places) });
   }
 
   // Generate unique identifier per identical `book.id + state.characters + state.places`

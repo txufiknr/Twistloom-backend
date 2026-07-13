@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phase 0, Phase 1, and Phase 2's write-side + Use Case 1's read-side (fully live, both write and prompt-injection) are done — see §8/§9. Remaining: `pnpm db:generate`/`db:migrate` (your environment), then Use Cases 2/3/5's read-side (`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes`).
+**Status:** Phase 0, Phase 1, Phase 2 (fully live), and Use Cases 1/2/5's read-side (fully live) are done — see §8/§9. `db:generate`/`db:migrate` have been run against the real database (tables confirmed created; pgvector is 0.8.1, Neon's current ceiling — see §5). Remaining: Use Case 3 (`formatFutureNotes`'s `unscheduled`-bucket ranking), then Phase 4 (clues) and Phase 5 (finale).
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -280,19 +280,21 @@ Both skipped for now per explicit direction — 3-star priority, lowest of the t
 
 ## 5. pgvector in the Twistloom Stack
 
-### Version & security note (new)
+### Version & security note — updated with confirmed current facts, not just theory
 
-**Pin pgvector ≥ 0.8.2.** Versions 0.7.x, 0.8.0, and 0.8.1 carry **CVE-2026-3172**, a CVSS 8.1 buffer overflow that can trigger during parallel HNSW index builds. After enabling the extension, verify:
+**Confirmed directly against Neon's live supported-extensions table (fetched during implementation): pgvector is capped at 0.8.0 on PG14-17 and 0.8.1 on PG18, across every Neon plan.** 0.8.2 isn't offered on Neon yet, for anyone, on any Postgres version. Verified on Twistloom's actual database — real version is **0.8.1** — this isn't a misconfiguration, it's Neon's current ceiling.
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS vector;
 SELECT extversion FROM pg_extension WHERE extname = 'vector';
--- must be >= 0.8.2
 ```
 
-Neon lets you install "one version back" from whatever it currently lists as latest-supported — check the Neon extensions page for the current ceiling and confirm 0.8.2+ is available before enabling on a production branch.
+**What this actually means, corrected from the original "must pin ≥0.8.2" framing:**
+- The **iterative index scan** feature (the filtered-ANN-recall concern below) landed in pgvector **0.8.0** as a feature release — not 0.8.2. Neon's 0.8.0/0.8.1 floor already has it. That part of the original concern doesn't apply.
+- The real gap is narrower: **CVE-2026-3172**, a CVSS 8.1 buffer overflow, triggers specifically during **parallel** HNSW index builds **on populated tables**. Building an HNSW index on an *empty* table (which is what Phase 1's initial migration does — pgvector supports index-before-data for HNSW) doesn't hit the vulnerable code path, since there's no tuple data for parallel workers to process yet. Twistloom's existing tables aren't currently exposed by anything that's already happened.
+- **Actionable mitigation, works today regardless of pgvector version:** before any *future* `CREATE INDEX`/`REINDEX` against a populated embedding table, run `SET max_parallel_maintenance_workers = 0;` first. That disables parallelism for that one operation, sidestepping the CVE's trigger condition entirely. `db/extensions.ts`'s version-check warning now says this directly instead of pointing at an upgrade path that doesn't exist on Neon yet.
+- Keep an eye on https://neon.com/docs/changelog for when Neon adds pgvector 0.8.2+; there's nothing to do until then.
 
-pgvector 0.8 is also the release that added **iterative index scans**, which matters here independently of the CVE: every planned query in this roadmap filters by `bookId`/`branchId` (and often `page < currentPage`) *on top of* an HNSW `ORDER BY embedding <=> ...`. Pre-0.8, combining a `WHERE` filter with an approximate index scan could silently return fewer or lower-quality results than `LIMIT` requests, because the ANN graph traversal doesn't know about the filter until after candidates are found. This is a real risk for this schema specifically, since the embedding tables are **global** (all books share one `page_embeddings` table with one HNSW index) and every query filters down to one book+branch. 0.8's iterative scans continue searching until enough *filtered* results come back, which is exactly the access pattern this roadmap needs.
+pgvector's **iterative index scans** (0.8.0+, already covered per above) matter here independently of the CVE: every planned query in this roadmap filters by `bookId`/`branchId` (and often `page < currentPage`) *on top of* an HNSW `ORDER BY embedding <=> ...`. Pre-0.8, combining a `WHERE` filter with an approximate index scan could silently return fewer or lower-quality results than `LIMIT` requests, because the ANN graph traversal doesn't know about the filter until after candidates are found. This is a real consideration for this schema specifically, since the embedding tables are **global** (all books share one `page_embeddings` table with one HNSW index) and every query filters down to one book+branch — but as established above, Neon's current floor already includes this fix.
 
 ### Extension activation (one-time, in `src/db/extensions.ts`)
 
@@ -509,7 +511,9 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
 
    **One design decision made during implementation, not in the original sketch:** `formatNextPageStoryContextPrompt` gets called from *two* places — `buildNextPagePrompt` (the main generation prompt) and `buildNextPageEvaluatorPrompt` (the re-evaluation pass) — and both needed the same block. Rather than make `formatNextPageStoryContextPrompt` itself `async` (which would have forced `buildNextPagePrompt`/`buildNextPageEvaluatorPrompt` async too, and doubled the Jina calls if each computed its own), a new `buildRelevantPastEventsBlock(actionedPage, book)` async helper computes the block **once** in `prepareNextPageGenerationSetup` (already `async`), and threads it through both format functions as a plain `string` parameter. Every `formatXxx`/`buildXxx` function stays synchronous except that one new helper — no async propagation through the rest of the prompt-building call graph.
 
-   **Also:** threaded as a plain function parameter rather than a new field on `BuildNextPagePromptParams` — `types/prompt.ts` wasn't reviewed this pass, so this sidesteps needing to guess at that type's exact shape. If you'd rather have it bundled into the params object instead (arguably tidier long-term), send `types/prompt.ts` and I'll fold it in.
+   **Also:** ✅ folded into `BuildNextPagePromptParams` properly (you sent `types/prompt.ts`) — `relevantPastEventsBlock?: string` is now a real field there, computed once in `prepareNextPageGenerationSetup` before `promptParams` is built. Every `formatXxx`/`buildXxx` function is back to its original single-parameter signature; only `buildRelevantPastEventsBlock` itself is `async`.
+
+   **New this pass:** a global kill-switch, `PGVECTOR_MEMORY_ENABLED` (`config/embedding.ts`, defaults enabled). Every exported function in `vector-memory.ts` checks it first and no-ops cleanly (no thrown error, no log noise) if disabled — set `PGVECTOR_MEMORY_ENABLED=false` to turn off all embedding writes and retrieval without a code change if Jina misbehaves in production. Still needs a redeploy/restart to pick up the env var on most platforms, but no revert-and-redeploy of actual code.
 
    **Query construction:** `${actionedPage.text}\n\nPlayer chose: ${actionedPage.action?.text ?? ''}` — the current scene plus the just-selected action, since that's the best available proxy for "what's about to happen" before the new page exists to embed anything from. Retrieval never throws into the generation path — a failed/empty result just means no block gets injected, page generation proceeds normally either way.
 4. ✅ Created `src/services/vector-memory.ts` — `retrieveSimilarPages`, `retrieveCharacterInteractions`, `retrievePlaceEvents`, `retrieveRelevantFutureNotes`, `embedPersistedPage`, `embedStateDeltaEntities`, `buildPageEmbeddingText`. Covers all four embedding tables, not just pages — effectively also completes most of Phase 3's plumbing (§ below), just not wired into the prompt yet.
@@ -519,13 +523,15 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
 Character and place embeddings follow the identical pattern (§4, §6) — grouping them into one phase since the implementation is the same shape twice, not two different designs:
 
 1. **Character interactions:** embed each `pastInteractions` entry once, at the moment it's added (in the page-generation caller, using the page's `CharacterUpdates` output) — before `updateCharacter()`'s `.slice(-MAX_PAST_INTERACTIONS)` can trim it away. Same-page interactions joined into one row, mirroring `formatCharactersForPrompt()`'s existing grouping. Retrieval surfaces only interactions older than what's already visible in the live 5-item window — extend `formatCharactersForPrompt()` with a new "Earlier interactions (recalled):" block, populated only when something relevant turns up.
-1. ✅ **Character interactions:** write-side done — `embedCharacterInteractions()` in `services/vector-memory.ts`, called from `embedStateDeltaEntities()`. ⬜ Read-side (extending `formatCharactersForPrompt()` with an "Earlier interactions (recalled):" block using `retrieveCharacterInteractions()`) not yet wired in.
-2. ✅ **Place events:** write-side done — `embedPlaceEvents()`, same file/caller. Does **not** touch `calculatePlaceFamiliarity()` — that stays exactly as designed (§4, Use Case 5). ⬜ Read-side (`formatPlacesForPrompt()` extension using `retrievePlaceEvents()`) not yet wired in.
+1. ✅ **Character interactions — fully live, write and read.** Write-side: `embedCharacterInteractions()` in `services/vector-memory.ts`, called from `embedStateDeltaEntities()`. Read-side: `formatCharactersForPrompt()` (`characters_utils.ts`) now takes an optional `recalledInteractions?: Record<string, string>` and injects an "Earlier interactions (recalled):" line right after "Recent interactions" for any character with one. Computed via new `buildCharacterRecallBlocks()` in `prompt.ts` — one retrieval per character present, run in parallel via `Promise.allSettled`, reusing the exact same query text as Use Case 1's `buildRelevantPastEventsBlock` so the query embedding is cache-hit for every character after the first (see `buildCurrentSceneQuery`).
+2. ✅ **Place events — fully live, write and read.** Write-side: `embedPlaceEvents()`, same file/caller. Read-side: `formatPlacesForPrompt()` (`places_utils.ts`) takes an optional `recalledEvents?: Record<string, string>`, injects "Earlier events (recalled):" after "Key events". Computed via new `buildPlaceRecallBlocks()` in `prompt.ts`, same shared-query-cache trick. Does **not** touch `calculatePlaceFamiliarity()` — that stays exactly as designed (§4, Use Case 5), untouched.
+
+   **Threading note:** both new maps get computed in `prepareNextPageGenerationSetup` (in parallel with each other via `Promise.all`, since they're independent retrievals) and passed into `buildBookMetaDocuments(book, advancedState, { characters, places })` — `book.ts`'s `buildBookMetaDocuments` gained a third, optional parameter for this, threaded straight through to both formatters. `buildBookMetaDocuments` itself stays fully synchronous.
 3. ✅ Future notes: write-side done — `embedFutureNote()`, embedded **once, on `futureNoteUpdates` add/change**, keyed by `noteKey` — not on every page (§6).
 4. ⬜ Prompt integration: within `formatFutureNotes()`'s `unscheduled` bucket, rank by semantic similarity instead of dumping all; `becomingRelevant` stays fully shown regardless of similarity. Not yet done — `retrieveRelevantFutureNotes()` exists in `vector-memory.ts` and is ready to call.
 5. ✅ **Replay hazard verified** (§12, Appendix D.3) — confirmed, not just checked, against `story_utils.ts`/`branch-traversal.ts`. All writes in `vector-memory.ts` are designed to be called only from the page-generation caller (or backfill, reading the same `page.stateDelta`), never from inside `applyStateDelta`/`processCharacterUpdates`/`processPlaceUpdates`.
 
-**What's left for Phase 2+3 to be fully live:** ✅ ~~wire `embedPersistedPage`/`embedStateDeltaEntities` into `prompt.ts`'s `generateNextPage`/`generateNextPages`~~ — done (this pass), both call sites now fire-and-forget after `persistPageWithState` resolves. ⬜ Still remaining: wire the four `retrieveX` functions into `formatNextPageStoryContextPrompt`/`formatCharactersForPrompt`/`formatPlacesForPrompt`/`formatFutureNotes` — the actual prompt-injection/read side. All the underlying service functions exist and are tested-by-design against your real schema/types; what remains is strictly that read-side call-site work.
+**What's left for Phase 2+3 to be fully live:** ✅ all of it except Use Case 3. Pages (write+read), character interactions (write+read), and place events (write+read) are all live. Only remaining: `formatFutureNotes`'s `unscheduled`-bucket similarity ranking (Use Case 3) — `retrieveRelevantFutureNotes()` already exists in `vector-memory.ts` and is ready to call.
 
 ### Phase 4 — Clue embeddings & finale-callback filtering (est. 2-3 days)
 
@@ -561,8 +567,9 @@ Unchanged from v1.
 | `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ✅ Done |
 | `src/utils/prompt.ts` | `formatNextPageStoryContextPrompt` — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents` | **P2** | ✅ Done |
 | `src/utils/prompt.ts` | `formatFutureNotes` — rank `unscheduled` bucket by similarity | **P3** | ⬜ |
-| `src/utils/characters_utils.ts` | `formatCharactersForPrompt` — "Earlier interactions (recalled):" block | **P3** | ⬜ |
-| `src/utils/places_utils.ts` | `formatPlacesForPrompt` — same, for place events | **P3** | ⬜ |
+| `src/utils/characters_utils.ts` | `formatCharactersForPrompt` — "Earlier interactions (recalled):" block | **P3** | ✅ Done |
+| `src/utils/places_utils.ts` | `formatPlacesForPrompt` — same, for place events | **P3** | ✅ Done |
+| `src/services/book.ts` | `buildBookMetaDocuments` — new optional 3rd param threading character/place recall maps through to both formatters | **P3** | ✅ Done |
 
 ---
 
@@ -782,8 +789,8 @@ async function embedFutureNote(bookId: string, branchId: string, note: FutureNot
 | **Embedding API latency** adds ~300-500ms to page generation | Embed asynchronously after page persistence; query embedding is the only blocking call |
 | **Jina free tier RPM/TPM** (100 RPM / 100K TPM) | Shared rate limiter (`getJinaLimiter().throttle()`) |
 | ~~Jina free tier concurrency cap (2 in-flight requests)~~ — *resolved* | Confirmed against real `ai-limiters.ts`: the shared `RateLimiter` singleton's serialized queue + ~652ms call spacing (8% safety buffer applied to 100 RPM) keeps steady-state concurrency at 1, safely under the 2-request cap, for both fire-and-forget embeds and cron backfill. No action needed. |
-| **pgvector CVE-2026-3172** (buffer overflow in parallel HNSW builds, versions 0.7.x/0.8.0/0.8.1) — *new* | Pin ≥ 0.8.2; verify `extversion` after every extension change |
-| **Filtered-ANN recall degradation** — every query filters by `bookId`/`branchId` on top of the HNSW index — *new* | pgvector ≥0.8's iterative index scans handle this; same version pin as above covers both concerns |
+| **pgvector CVE-2026-3172** (buffer overflow in parallel HNSW builds on populated tables) — *confirmed: Neon caps at 0.8.1, 0.8.2 not yet available anywhere on Neon* | Not exposed by anything so far (initial migration built indexes on empty tables). Mitigation until Neon ships 0.8.2+: `SET max_parallel_maintenance_workers = 0;` before any future `CREATE INDEX`/`REINDEX` on a populated embedding table. |
+| ~~Filtered-ANN recall degradation~~ — *resolved, not actually at risk* | Iterative index scans (the fix) landed in pgvector 0.8.0, not 0.8.2 as originally assumed — Neon's 0.8.0/0.8.1 floor already has it. |
 | **Jina API/model deprecation** | Pin `jina-embeddings-v5-text-small` explicitly; abstract behind `EmbeddingProvider` interface so swapping models later (e.g., to `-nano` or a future v6) is a one-line change |
 | **Cold start** (first page of new book has no prior embeddings) | Vector retrieval gracefully returns empty results; existing `contextHistory` covers the gap |
 | **Storage growth** | ~2MB per book for page embeddings at 1024 dims — negligible on Neon even at scale |

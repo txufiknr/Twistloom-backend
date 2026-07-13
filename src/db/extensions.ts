@@ -19,14 +19,26 @@ import { getErrorMessage } from "../utils/error.js";
 const __filename = fileURLToPath(import.meta.url);
 
 /**
- * Minimum pgvector version required.
+ * Minimum pgvector version this codebase was designed against.
  *
  * pgvector 0.7.x, 0.8.0, and 0.8.1 carry CVE-2026-3172 (CVSS 8.1 buffer
- * overflow during parallel HNSW index builds). 0.8.2 also adds iterative
- * index scans, which matters independently of the CVE: every page/character/
- * place embedding query in this codebase filters by bookId/branchId on top
- * of an HNSW `ORDER BY embedding <=> ...`, and pre-0.8 that combination can
- * silently under-return results versus what LIMIT requests.
+ * overflow during PARALLEL HNSW index builds on populated tables — not
+ * triggered by building an index on an empty table, which is what the
+ * initial migration does). Fixed in 0.8.2.
+ *
+ * As of this writing, Neon's supported extensions table caps pgvector at
+ * 0.8.0 (PG14-17) / 0.8.1 (PG18) on every plan — 0.8.2 isn't available on
+ * Neon yet, for anyone. So this warning is expected to fire on Neon today;
+ * it's not misconfiguration, and there's no version to upgrade to yet.
+ * The iterative-index-scan feature (the other reason this file originally
+ * cared about 0.8.2) landed in 0.8.0 as a feature release, not 0.8.2 — 0.8.2
+ * was a pure security patch — so Neon's current ceiling already has that.
+ *
+ * Actionable mitigation until Neon ships 0.8.2+: before any future
+ * CREATE INDEX/REINDEX on a populated embedding table (not needed for the
+ * initial empty-table migration), run `SET max_parallel_maintenance_workers
+ * = 0;` first — that disables parallel builds for that one operation,
+ * sidestepping the CVE's trigger condition regardless of pgvector version.
  */
 const MIN_PGVECTOR_VERSION = "0.8.2";
 
@@ -103,10 +115,13 @@ async function ensureVectorExtension(): Promise<void> {
 
     if (installedVersion && compareVersions(installedVersion, MIN_PGVECTOR_VERSION) < 0) {
       console.warn(
-        `⚠️ pgvector ${installedVersion} is installed, but ${MIN_PGVECTOR_VERSION}+ is recommended ` +
-        `(CVE-2026-3172 affects 0.7.x/0.8.0/0.8.1 — see MIN_PGVECTOR_VERSION doc comment). ` +
-        `Check the Neon extensions page for available versions and upgrade before relying on ` +
-        `HNSW indexes with real traffic.`
+        `⚠️ pgvector ${installedVersion} is installed (CVE-2026-3172, buffer overflow in ` +
+        `PARALLEL HNSW builds on populated tables — see MIN_PGVECTOR_VERSION doc comment). ` +
+        `Neon doesn't offer ${MIN_PGVECTOR_VERSION}+ yet as of when this was written, so this is ` +
+        `expected, not a misconfiguration. Before any future CREATE INDEX/REINDEX on a ` +
+        `populated embedding table, run "SET max_parallel_maintenance_workers = 0;" first ` +
+        `to sidestep the CVE's trigger condition. Check https://neon.com/docs/changelog ` +
+        `periodically for when a newer pgvector version becomes available.`
       );
     }
 
