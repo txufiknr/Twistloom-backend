@@ -970,7 +970,7 @@ const multiNextPageOutputFormat: string = `{
   "output": "..."
 }`;
 
-function buildNextPagePrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock: string = ''): string {
+function buildNextPagePrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock?: string): string {
   const { advancedState: state, candidateCount, book } = params;
   const { isFinale, isLastPage } = getStoryStateInfo(state);
   const { language } = book;
@@ -2765,7 +2765,7 @@ async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPag
   }
 }
 
-function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock: string = ''): string {
+function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams, relevantPastEventsBlock?: string): string {
   const { advancedState: state, actionedPage, previousPages, book } = params;
   const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
   const { mc, storyStartDate } = book;
@@ -2805,7 +2805,7 @@ ${mcCurrentState}
 STORY CONTEXT:
 ${storyContext}
 
-${relevantPastEventsBlock ? `${relevantPastEventsBlock}\n\n` : ''}${formatRecentMajorEvents(plotFlags)}
+${relevantPastEventsBlock || formatRecentMajorEvents(plotFlags)}
 
 CURRENT FACTS:
 ${formatCurrentFacts(factsHistory)}

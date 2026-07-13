@@ -17,17 +17,17 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
-[ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-[ ] sync sampling formula with ai-sampling.ts
+[x] Khusus gemini tetep show output format, maxEnum coba 3 aja
+[x] use title, mc, summary & hook from theme validation if not generated in initializeBook
+[x] classifyGenAIError buat group github action log
 [@] claude payment review: src\app.ts (later check)
 [@] GET /api/payments/stripe/webhook (404)
+[ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
+[ ] sync sampling formula with ai-sampling.ts
 [ ] Before insert page, correct futureNote keys
-[x] Khusus gemini tetep show output format, maxEnum coba 3 aja
 [ ] Place categories list di prompt aja
-
-[ ] use title, mc, summary & hook from theme validation if not generated in initializeBook
 [ ] result mistral medium kepotong
-[ ] classifyGenAIError buat group github action log
+[ ] Json stringify: [book-creation] 📔 Book initialized successfully:
 
 ---
 
