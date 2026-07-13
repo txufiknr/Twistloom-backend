@@ -130,6 +130,7 @@ Determine if this theme violates any content policies. Check for:
    - Repetitive characters (e.g., "aaaaa", "test test test test")
    - URLs, email addresses, phone numbers
    - Code snippets or technical jargon unrelated to stories
+   - Unidentifiable language or mixed scripts with no coherent language
 
 3. POV INSTRUCTIONS (CRITICAL):
    Twistloom STRICTLY generates 1st person POV stories only.

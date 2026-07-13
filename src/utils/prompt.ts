@@ -597,7 +597,7 @@ const firstBookOutputFormat: string = `{
 
 const buildFirstBookReviewChecklist = (language: string): string => {
   const formattedLanguage = formatLanguage(language);
-  const isNonEnglish = language !== 'en';
+  const isNonEnglish = !!language && language !== 'en';
 
   return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
   □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
@@ -1269,7 +1269,7 @@ ${isFinale ? `  - Do not revise. The ending is now in motion — execute it.` : 
 function buildNextPageReviewChecklist(state: StoryState, language: string): string {
   const { isEarlyPhase, isLatePhase, isMidPhase, isFinale } = getStoryStateInfo(state);
   const formattedLanguage = formatLanguage(language);
-  const isNonEnglish = language !== 'en';
+  const isNonEnglish = !!language && language !== 'en';
 
   return `${isNonEnglish ? `0. Language & Localization Lock (CRITICAL)
   □ COMMITMENT: "I will generate all user-facing story text, metadata, and choices exclusively in ${formattedLanguage} language."
@@ -2621,7 +2621,7 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, lan
   const { page, maxPage, memoryIntegrity, flags } = state;
   const { trust, curiosity } = flags;
   const remainingPages = maxPage - page;
-  const isNonEnglish = language !== 'en';
+  const isNonEnglish = !!language && language !== 'en';
   const languageFormatted = formatLanguage(language);
 
   const pageLabel = remainingPages > 0
@@ -3394,7 +3394,7 @@ function determineAIConfig(state: StoryState, baseConfig: AIChatConfig = AI_CHAT
  */
 function buildBookCreationPrompt(params: InitializeBookParams): string {
   const { theme, language, titleIdea, summary, hook, aiComment, mcCandidate } = params;
-  const isNonEnglish = language !== 'en';
+  const isNonEnglish = !!language && language !== 'en';
   const languageFormatted = formatLanguage(language);
 
   return `TASK: Create a psychological thriller story from the provided STORY THEME input from user${isNonEnglish ? ` in ${languageFormatted}` : ''}.

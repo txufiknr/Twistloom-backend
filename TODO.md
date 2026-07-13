@@ -29,6 +29,14 @@
 [ ] result mistral medium kepotong
 [ ] Json stringify: [book-creation] 📔 Book initialized successfully:
 
+[POST /api/books/async] ❌ Failed to start book creation: BookCreationError: Theme language is not identifiable
+    at createBookValidate (/vercel/path0/src/services/book-creation.ts:163:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async <anonymous> (/vercel/path0/src/routes/books.ts:386:53) {
+  validationResult: undefined,
+  statusCode: undefined
+}
+
 ---
 
 Your action items (not blocked on me):
