@@ -24,6 +24,8 @@
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] Before insert page, correct futureNote keys
 [ ] Place categories list di prompt aja
+[ ] formatEndingPlan: if no `changeNote` (initial viable ending), use from `book.ending` instead
+[ ] on book.ending edit, evaluate with AI for security and viability score
 
 ---
 

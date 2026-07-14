@@ -47,7 +47,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
 import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
-import { sanitizeTextForDB } from '../utils/text-processing.js';
+import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
 import { generateBookCreationPromptStream } from "../utils/prompt.js";
 import { getBook, getBookFromDB, getEnrichedBook, getPageFromDB, mapToEnrichedPage, tryAcquireWorkflowDispatchGate } from "../services/book.js";
@@ -59,7 +59,7 @@ import { extractPaginationParams, createPaginatedResponse, calculatePaginationMe
 import { DEFAULT_ITEMS_PER_PAGE } from "../config/pagination.js";
 import { validateSearchQuery, validateLanguageCode, validateAgeRange, validateGender, createRelevanceExpression } from "../utils/search.js";
 import type { ImageUploadSource } from "../types/image.js";
-import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
+import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, uploadBookCharacterAvatarImage, sanitizeBookTextField, resolveBook, getPublicBookStats, getPopularTags, mapToUserStoryPage, mapBookFromDb, invalidatePopularTagsCache, invalidateBookCache, invalidateEnrichedBookCache } from "../services/book.js";
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
@@ -1285,7 +1285,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
   try {
     const { id } = req.params;
     const userId = req.userId!;
-    const { title, hook, summary, keywords, visibility, status: newStatus, imageUrl } = req.body;
+    const { title, hook, summary, keywords, visibility, status: newStatus, imageUrl, mc, ending } = req.body;
 
     // Verify book ownership
     const [book] = await dbRead.select({ 
@@ -1296,6 +1296,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
       imageId: books.imageId,
       status: books.status,
       visibility: books.visibility,
+      mc: books.mc,
     })
     .from(books)
     .where(and(
@@ -1348,18 +1349,46 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
       }
     }
 
+    // --- MC avatar image upload ---
+    let mcAvatarUploaded = false;
+    const oldMcImageId = book.mc?.imageId;
+    if (mc?.imageUrl && typeof mc.imageUrl === 'string') {
+      const avatarResult = await uploadBookCharacterAvatarImage(
+        { id: book.id, title: title || book.title, keywords: keywords || book.keywords },
+        mc.imageUrl,
+        userId
+      );
+      if (avatarResult?.url) {
+        mc.imageUrl = avatarResult.url;
+        if (avatarResult.fileId) mc.imageId = avatarResult.fileId;
+        mcAvatarUploaded = true;
+
+        // Delete old MC avatar from ImageKit
+        if (oldMcImageId) {
+          await deleteFileFromImageKit(oldMcImageId);
+        }
+      }
+    }
+
     // Prepare update data (only include provided fields)
     const updateData: DBUpdateBook = {
       updatedAt: new Date(),
     };
 
-    if (title !== undefined) updateData.title = title;
-    if (hook !== undefined) updateData.hook = hook;
-    if (summary !== undefined) updateData.summary = summary;
-    if (keywords !== undefined) updateData.keywords = keywords;
+    // Sanitize text fields using sanitizeBookTextField
+    const sanitizedTitle = sanitizeBookTextField('title', title);
+    const sanitizedHook = sanitizeBookTextField('hook', hook);
+    const sanitizedSummary = sanitizeBookTextField('summary', summary);
+    
+    if (sanitizedTitle !== undefined) updateData.title = sanitizedTitle;
+    if (sanitizedHook !== undefined) updateData.hook = sanitizedHook;
+    if (sanitizedSummary !== undefined) updateData.summary = sanitizedSummary;
+    if (keywords !== undefined) updateData.keywords = sanitizeKeywords(keywords);
     if (visibility !== undefined && bookVisibilities.includes(visibility as BookVisibility)) updateData.visibility = visibility;
     if (newStatus !== undefined && bookStatuses.includes(newStatus as BookStatus)) updateData.status = newStatus;
     if (newImageId) updateData.imageId = newImageId;
+    if (mc !== undefined) updateData.mc = mc;
+    if (ending !== undefined) updateData.ending = ending;
 
     // Update the book
     const updatedBook = await updateBook(book.id, updateData);
@@ -1380,6 +1409,7 @@ router.put("/:id", requireAuth, imageUpload.single('imageFile'), async (req: Req
       book: updatedBook,
       imageUploaded: !!newImageUrl,
       oldImageQueuedForDeletion: oldImageIdQueued,
+      mcAvatarUploaded,
       uploadSource: req.file ? 'file' : (imageUrl?.startsWith('data:') ? 'base64' : 'url'),
     });
   } catch (error) {

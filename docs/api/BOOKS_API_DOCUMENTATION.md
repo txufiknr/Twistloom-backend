@@ -53,17 +53,33 @@ interface Book {
   keywords: string[];           // Keywords for book discovery
   status: 'active' | 'archived' | 'draft';
   visibility: 'private' | 'unlisted' | 'followers' | 'public';
-  mc: StoryMC;                  // Main character profile with name, age, gender
+  mc: StoryMC;                  // Main character profile with name, age, gender, imageUrl, imageId
   creditsPrice: number;         // Credit cost to read this book
   isOriginal: boolean;          // Whether this book is an auto-generated original (via cron job)
   originalThemeInput?: string;  // Original theme input for the book
   storyStartDate?: string;      // In-story start date
   advancedOptions?: AdvancedOptionsConfig; // Advanced options for book generation
+  ending?: Ending;              // Author-edited ending text/outline (overrides derived ending)
   topPick?: Date;               // When the book was marked as top pick
   createdAt: Date;              // When the book was created
   updatedAt: Date;              // When the book was last updated
 }
 ```
+
+### Ending
+
+Author-edited ending configuration for a story. Overrides the system-derived ending from `storyStates.viableEnding` when present.
+
+```typescript
+interface Ending {
+  text?: string;                     // Text describing the ending
+  type?: EndingType;                 // Type of ending (e.g. 'good', 'bad', 'ambiguous')
+  outline?: StoryOutline[];          // Outline hints for the ending structure
+  changeNote?: EndingChangeNote;     // Note about changes to the ending plan
+}
+```
+
+See `src/types/story.ts` for the full `EndingType`, `StoryOutline`, and `EndingChangeNote` definitions.
 
 ### EnrichedBookData
 
@@ -572,12 +588,18 @@ Retrieves a book by slug or UUID v7 identifier. Returns complete book informatio
 
 ### PUT /api/books/:id
 
-Updates book information and cover image. Supports partial updates and multiple image upload methods (URL, base64, or multipart file).
+Updates book information, cover image, main character (MC) profile/avatar, and ending data. Supports partial updates and multiple image upload methods (URL, base64, or multipart file).
 
 **Authentication:** Required (via `requireAuth`)
 
 **Path Parameters:**
 - `id` (string, required): Book ID
+
+**Field Sanitization:**
+All text fields (`title`, `hook`, `summary`) are sanitized via `sanitizeBookTextField` before storage:
+- XSS tags are stripped
+- Double-width quotes are normalised
+- Empty/whitespace-only values are treated as "not provided" (field is skipped)
 
 **Request Body (JSON):**
 ```json
@@ -586,7 +608,21 @@ Updates book information and cover image. Supports partial updates and multiple 
   "hook": "Updated hook text",
   "summary": "Updated summary",
   "keywords": ["thriller", "mystery"],
-  "imageUrl": "https://example.com/new-cover.jpg"
+  "imageUrl": "https://example.com/new-cover.jpg",
+  "mc": {
+    "name": "Sarah",
+    "age": 28,
+    "gender": "female",
+    "bio": "Updated bio",
+    "imageUrl": "https://example.com/mc-avatar.jpg"
+  },
+  "ending": {
+    "text": "Sarah finally confronts her past...",
+    "type": "ambiguous",
+    "outline": [
+      { "text": "Confrontation scene", "isDone": false }
+    ]
+  }
 }
 ```
 
@@ -597,6 +633,27 @@ Updates book information and cover image. Supports partial updates and multiple 
 - `summary` (string, optional): Updated summary
 - `keywords` (string, optional): Comma-separated keywords
 - `imageUrl` (string, optional): Cover image URL
+- `mc.imageUrl` (string, optional): MC avatar URL or base64 — uploaded to ImageKit's `book-characters` folder
+
+**Parameters:**
+- `title` (string, optional): Book title (sanitised for XSS)
+- `hook` (string, optional): Hook text (sanitised for XSS)
+- `summary` (string, optional): Summary text (sanitised for XSS)
+- `keywords` (string[], optional): Keyword list (sanitised via `sanitizeKeywords`)
+- `visibility` (string, optional): One of `private`, `unlisted`, `followers`, `public`
+- `status` (string, optional): One of `active`, `archived`, `draft`
+- `imageUrl` (string, optional): Cover image URL
+- `mc` (object, optional): Full MC object (replaces existing)
+  - `name` (string, optional): Character name
+  - `age` (number, optional): Character age
+  - `gender` (string, optional): `male` or `female`
+  - `bio` (string, optional): Character biography
+  - `imageUrl` (string, optional): Avatar image source — triggers upload to ImageKit's `book-characters` folder on update
+- `ending` (object, optional): Full ending object (replaces existing)
+  - `text` (string, optional): Ending description
+  - `type` (string, optional): Ending type (`good`, `bad`, `ambiguous`, etc.)
+  - `outline` (array, optional): Story outline beats
+  - `changeNote` (object, optional): Change tracking note
 
 **Response (200 OK):**
 ```json
@@ -608,13 +665,31 @@ Updates book information and cover image. Supports partial updates and multiple 
     "summary": "Updated summary",
     "keywords": ["thriller", "mystery"],
     "imageUrl": "https://ik.imagekit.io/abc123/cover.jpg",
+    "mc": {
+      "name": "Sarah",
+      "age": 28,
+      "gender": "female",
+      "imageUrl": "https://ik.imagekit.io/abc123/characters/avatar.jpg"
+    },
+    "ending": {
+      "text": "Sarah finally confronts her past...",
+      "type": "ambiguous"
+    },
     "updatedAt": "2023-01-15T12:00:00.000Z"
   },
   "imageUploaded": true,
+  "mcAvatarUploaded": true,
   "uploadSource": "file",
   "oldImageQueuedForDeletion": true
 }
 ```
+
+**Behavior:**
+- Text fields (`title`, `hook`, `summary`) are always sanitised — empty-string values are treated as "not provided" and the field retains its existing value
+- `keywords` are sanitised via `sanitizeKeywords` (deduplication, length limits)
+- When `mc.imageUrl` is provided, the image is uploaded to ImageKit's `book-characters` folder and the URL is replaced with the ImageKit-hosted version (old cover images are *not* deleted automatically). The upload record is persisted to the `uploaded_images` table with `type: 'mc'` for audit and cron-based cleanup
+- `ending` replaces the entire JSONB value — partial merges are not performed
+- Cache is invalidated for user books, explore listings, and popular tags (when keywords change)
 
 **Error Responses:**
 - `400 Bad Request`: Invalid image upload
@@ -1723,6 +1798,7 @@ CREATE TABLE "books" (
   "read_count" integer DEFAULT 0 NOT NULL,
   "branches_count" integer DEFAULT 0 NOT NULL,
   "top_pick" timestamp with time zone,
+  "ending" jsonb,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -1792,6 +1868,14 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.9.0 (2026-07-14)
+- **Updated `PUT /api/books/:id`** — now accepts `mc` (full MC object with avatar image upload) and `ending` (author-edited ending JSONB) fields alongside existing metadata
+- **MC avatar upload** — `mc.imageUrl` triggers upload to ImageKit's `book-characters` folder; response includes `mcAvatarUploaded` boolean. Upload is persisted to `uploaded_images` table with `type: 'mc'` for audit and cron-based cleanup
+- **Ending column** — added `ending: jsonb` column to `books` table; accepts `Ending` type with `text`, `type`, `outline`, and `changeNote`
+- **Text field sanitisation** — `title`, `hook`, `summary` are now sanitised via `sanitizeBookTextField` (XSS stripping, double-quote normalisation); empty-string values are treated as "not provided" (field retained)
+- **Keyword sanitisation** — `keywords` are sanitised via `sanitizeKeywords` before storage
+- **Ending type** — added `Ending` type definition to the documentation with `text`, `type`, `outline`, and `changeNote` fields
 
 ### v2.8.0 (2026-07-08)
 - **Cancel is now retryable**: `POST /api/books/:bookId/cancel` preserves the draft book row instead of deleting it. Cancelled generations remain in the user's library with a "cancelled" badge and can be retried via `POST /api/books/:bookId/retry`.

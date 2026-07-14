@@ -404,6 +404,7 @@ export const books = pgTable(
     originalThemeInput: text("original_theme_input"),
     storyStartDate: text("story_start_date"),
     advancedOptions: jsonb("advanced_options").$type<AdvancedOptionsConfig>(),
+    ending: jsonb("ending").$type<Ending>(),
     createdAt,
     updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'> | keyof BookStats | ResourceTimestamp, unknown>,

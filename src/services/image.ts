@@ -438,6 +438,51 @@ export async function uploadBookCover(
 }
 
 /**
+ * Upload a book's main character avatar image to ImageKit.io.
+ *
+ * Wrapper that stores MC avatar images in a dedicated `book-characters` folder
+ * with book- and character-level tags for traceability.
+ *
+ * @param imageSource - Image source (URL, base64, or file object)
+ * @param bookId - Book ID for folder organisation
+ * @param characterName - Character name used in tags (sanitised internally)
+ * @returns Promise resolving to ImageKit upload response with URL and file ID
+ *
+ * @example
+ * ```typescript
+ * const result = await uploadBookCharacterImage(base64String, bookId, 'Sarah Chen');
+ * if (result?.url) {
+ *   // Update books.mc JSONB with result.url and result.fileId
+ * }
+ * ```
+ */
+export async function uploadBookCharacterImage(
+  imageSource: ImageUploadSource,
+  bookId: string,
+  characterName: string
+): Promise<ImageKit.Files.FileUploadResponse | null> {
+  return uploadImageKit(imageSource, bookId, {
+    folder: 'book-characters',
+    tags: ['book-character', `book-id:${bookId}`, `character:${characterName}`],
+    filenamePrefix: 'character',
+  });
+}
+
+/**
+ * Upload feedback screenshot image to ImageKit.io
+ */
+export async function uploadFeedbackScreenshot(
+  imageSource: ImageUploadSource,
+  feedbackId: string
+): Promise<ImageKit.Files.FileUploadResponse | null> {
+  return uploadImageKit(imageSource, feedbackId, {
+    folder: 'feedbacks',
+    tags: ['feedback-screenshot', `feedback-id:${feedbackId}`],
+    filenamePrefix: 'screenshot',
+  });
+}
+
+/**
  * Upload user profile image to ImageKit.io
  * 
  * Wrapper function for user profile uploads using the universal uploadImageKit function.
@@ -465,20 +510,6 @@ export async function uploadBookCover(
  * );
  * ```
  */
-/**
- * Upload feedback screenshot image to ImageKit.io
- */
-export async function uploadFeedbackScreenshot(
-  imageSource: ImageUploadSource,
-  feedbackId: string
-): Promise<ImageKit.Files.FileUploadResponse | null> {
-  return uploadImageKit(imageSource, feedbackId, {
-    folder: 'feedbacks',
-    tags: ['feedback-screenshot', `feedback-id:${feedbackId}`],
-    filenamePrefix: 'screenshot',
-  });
-}
-
 export async function uploadUserImage(
   imageSource: ImageUploadSource,
   userId: string

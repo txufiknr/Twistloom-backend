@@ -1,6 +1,6 @@
 import type { CharacterMemoryTranslation, CharacterPlan, InjuryTranslation, InventoryItemTranslation, NewCharacter, RelationshipUpdate, StoryMC, StoryMCTranslation } from "./character.js";
 import type { NewPlace, PlaceMemoryTranslation } from "./places.js";
-import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan, InitialEnding, FutureNoteGeneration } from "./story.js";
+import type { ActionTranslation, PersistedStoryPage, StoryPage, StoryState, InitialStoryState, InitialFact, SelectedAction, InitialStoryPageGeneration, StoryPlan, Ending, InitialEnding, FutureNoteGeneration } from "./story.js";
 import type { DBBook, DBPage, DBUserSession } from "./schema.js";
 import type { User } from "./user.js";
 import type { Request } from "express";
@@ -152,6 +152,8 @@ export type Book = {
   storyStartDate?: string;
   /** Advanced options config (writing preset, developer overrides) persisted for ongoing page generation */
   advancedOptions?: AdvancedOptionsConfig;
+  /** Author-edited ending text/outline for the story (overrides derived ending) */
+  ending?: Ending;
   /** When the book was created */
   createdAt: Date;
   /** When the book was last updated */

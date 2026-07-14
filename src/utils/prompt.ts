@@ -2572,7 +2572,9 @@ ${atThreadLimit ? `- Do NOT introduce new threads (active thread limit reached)`
 - Ensure every remaining main thread is moving toward a conclusion`;
 }
 
-function formatEndingPlan(ending?: Ending): string {
+function formatEndingPlan(viableEnding?: Ending, bookEnding?: Ending): string {
+  // If is'a an initial viable ending (no `changeNote`), use from `book.ending` instead
+  const ending = viableEnding?.changeNote ? viableEnding : (bookEnding ?? viableEnding);
   if (!ending) return 'No ending plan yet.';
 
   const { type, text, outline } = ending;
@@ -2597,9 +2599,9 @@ THREAD RULES:
 ${formatThreadRules(threads, stateInfo).trim()}`;
 }
 
-function formatEndingPrompt(state: StoryState): string {
+function formatEndingPrompt(state: StoryState, book: Book): string {
   return `CURRENT ENDING PLAN:
-${formatEndingPlan(state.viableEnding)}
+${formatEndingPlan(state.viableEnding, book.ending)}
 
 ENDING RULES:
 ${buildEndingRules(state)}`;
@@ -2947,7 +2949,7 @@ Write that moment before advancing the scene.`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage, relevantFutureNoteKeys } = params;
+  const { advancedState: state, actionedPage, relevantFutureNoteKeys, book } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase, isFinale } = stateInfo;
@@ -2987,7 +2989,7 @@ ${formatFutureNotes({
 ${formatThreadsPrompt(threads, stateInfo)}
 
 ---
-${formatEndingPrompt(state)}`;
+${formatEndingPrompt(state, book)}`;
 }
 
 /**
@@ -3837,7 +3839,7 @@ export async function initializeBook(
       initialFacts,
       mainCharacter: mc,
       language,
-      viableEnding,
+      viableEnding: initialEnding,
       futureNotes,
       aiFinalComment,
     } = response.result;
@@ -3846,6 +3848,9 @@ export async function initializeBook(
     if (generatedFirstPage.text.length < MIN_CHARS_PER_PAGE) {
       throw new Error('Failed to generate book: first page text is too short');
     }
+
+    // Normalize viable ending object
+    const viableEnding: Ending | undefined = initialEnding ? { ...initialEnding, outline: initialEnding.outline.map(text => ({ text, isDone: false })) } : undefined;
 
     // ── 4b. Fallback to theme validation metadata if AI output is broken/empty ──
     const fallbackHook = hook?.trim() ? hook : (params.hook || hook);
@@ -3896,6 +3901,7 @@ export async function initializeBook(
         status: finalStatus, // 'archived' if user cancelled at PoNR, 'active' otherwise
         visibility: isOriginal ? 'public' : undefined,
         originalThemeInput: theme,
+        ending: viableEnding,
         advancedOptions // Persist for ongoing page generation
       }, { client });
       
@@ -3921,6 +3927,7 @@ export async function initializeBook(
         isOriginal,
         visibility: isOriginal ? 'public' : undefined,
         originalThemeInput: theme,
+        ending: viableEnding,
         advancedOptions // Persist for ongoing page generation
       };
       const dbBook = await insertBook(newBookData, { client, alternativeTitles });
@@ -3996,7 +4003,7 @@ export async function initializeBook(
         injuries,
         healthStatus,
         futureNotes: mapFutureNoteWithKey(futureNotes, 1, []),
-        viableEnding: viableEnding ? { ...viableEnding, outline: viableEnding.outline.map(text => ({ text, isDone: false })) } : undefined,
+        viableEnding,
       },
       hiddenState: createInitialHiddenState(),
       characters,

@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -31,7 +31,7 @@ import { IS_PRODUCTION } from "../config/env.js";
 import { geminiGenerateImage } from "../utils/ai-image.js";
 import { retryWithBranchConflict, isUniqueConstraintError } from "../utils/retry.js";
 import { generateBranchId } from "./story-branch.js";
-import { deleteFileFromImageKit, uploadBookCover } from "./image.js";
+import { deleteFileFromImageKit, uploadBookCover, uploadBookCharacterImage } from "./image.js";
 import { sanitizeText, generateSlug, sanitizeKeywords } from "../utils/text-processing.js";
 import { generateId, isValidUuid } from "../utils/uuid.js";
 import { calculateActionTendency, calculateStoryMomentum, getStoryStateInfo } from "../utils/story.js";
@@ -1598,6 +1598,80 @@ export async function getUserActionHints(userId: string, pageId: string): Promis
 }
 
 /**
+ * Sanitizes a single book metadata text field with consistent rules.
+ *
+ * Mirrors the sanitizeFieldValue pattern from user.ts.
+ * Returns `undefined` when the input is not a usable string — the caller
+ * interprets this as "skip this field" for partial updates.
+ *
+ * Field-specific rules:
+ * - `title`   → sanitizeText (XSS + double-quote correction)
+ * - `hook`    → sanitizeText
+ * - `summary` → sanitizeText
+ *
+ * @param field - The book field to sanitize
+ * @param value - Raw value from the request body
+ * @returns Sanitized text, or undefined to skip
+ *
+ * @example
+ * sanitizeBookTextField('title', '  New Title  ')       // 'New Title'
+ * sanitizeBookTextField('hook', '<script>...</script>') // '' (XSS stripped)
+ * sanitizeBookTextField('title', '')                     // undefined
+ */
+export function sanitizeBookTextField(
+  field: 'title' | 'hook' | 'summary',
+  value: unknown,
+): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return sanitizeText(trimmed);
+}
+
+/**
+ * Uploads a main character avatar image to ImageKit and persists the record
+ * to the `uploadedImages` table with type `'mc'`.
+ *
+ * Wraps {@link uploadBookCharacterImage} with consistent logging, null-guarding,
+ * and database persistence — same pattern as user profile image uploads.
+ *
+ * @param bookMeta - Book metadata used for ImageKit tags and filenames
+ * @param image - Image source (URL, base64, or file object)
+ * @param userId - Uploading user's ID (persisted to uploaded_images for audit)
+ * @returns ImageKit upload response, or null on failure
+ */
+export async function uploadBookCharacterAvatarImage(
+  bookMeta: Pick<Book, 'id' | 'title' | 'keywords'>,
+  image: ImageUploadSource,
+  userId: string
+): Promise<ImageKit.Files.FileUploadResponse | null> {
+  try {
+    const characterName = bookMeta.title ? `avatar-${bookMeta.title}` : 'avatar';
+    const uploadResult = await uploadBookCharacterImage(image, bookMeta.id, characterName);
+
+    if (!uploadResult?.url) {
+      console.warn(`[uploadBookCharacterAvatarImage] ⚠️ Failed to upload MC avatar for book ${bookMeta.id}`);
+      return null;
+    }
+
+    console.log(`[uploadBookCharacterAvatarImage] 🌐 Uploaded MC avatar: ${uploadResult.url}`);
+
+    // Persist to uploaded_images table for audit and cleanup tracking
+    await dbWrite.insert(uploadedImages).values({
+      imageId: uploadResult.fileId!,
+      imageUrl: uploadResult.url!,
+      type: 'mc',
+      userId,
+    });
+
+    return uploadResult;
+  } catch (error) {
+    console.error('[uploadBookCharacterAvatarImage] ❌ Error:', { bookId: bookMeta.id, error: getErrorMessage(error) });
+    return null;
+  }
+}
+
+/**
  * Maps database book data to the Book type with proper type safety
  * 
  * Converts nullable database fields to appropriate types and handles
@@ -1628,6 +1702,7 @@ export function mapBookFromDb(dbBook: DBBook): Book {
     originalThemeInput: dbBook.originalThemeInput || undefined,
     storyStartDate: dbBook.storyStartDate || undefined,
     advancedOptions: dbBook.advancedOptions || undefined,
+    ending: dbBook.ending || undefined,
     createdAt: dbBook.createdAt,
     updatedAt: dbBook.updatedAt,
   } satisfies Record<keyof Omit<Book, 'stats' | 'imageUrl'>, unknown>;
