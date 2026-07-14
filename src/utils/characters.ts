@@ -341,7 +341,7 @@ export function getMainCharacterInfo(params: {
   const mcInfo: string[] = [];
 
   // Format main character's bio
-  if (mc && !Object.values(mc).every((i) => i === undefined)) {
+  if (mc && isMainCharacterValid(mc)) {
     const info = [`${mc.name}${mc.knownName ? ` ("${mc.knownName}")` : ''}`, mc.gender, mc.age].filter(Boolean).join(', ');
     mcInfo.push(`- Bio: ${info}${mc.bio ? ` — ${mc.bio}` : ''}`);
   }
@@ -1027,4 +1027,8 @@ export function calculateHealthStatus(injuries: Injury[], mentalInputs?: MentalH
     actionPercent,
     mentalPercent,
   };
+}
+
+export function isMainCharacterValid(mc?: Partial<StoryMC> | null): boolean {
+  return !!(mc && mc.name && mc.gender && mc.age);
 }
