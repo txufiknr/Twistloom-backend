@@ -192,7 +192,8 @@ export async function createOrUpdateOAuthUser(oAuthUser: {
     // username and email are intentionally excluded.
     const updateData: Partial<Pick<DBNewUser, 'name' | 'imageUrl'>> = {};
 
-    const { name: updateName, imageUrl: updateImage } = await sanitizeUserData(oAuthUser, { createNew: false }) ?? {};
+    const { image: imageUrl, ...oAuthUserData } = oAuthUser;
+    const { name: updateName, imageUrl: updateImage } = await sanitizeUserData({ ...oAuthUserData, imageUrl }, { createNew: false }) ?? {};
     if (updateName) updateData.name = updateName;
     if (updateImage) updateData.imageUrl = updateImage;
 

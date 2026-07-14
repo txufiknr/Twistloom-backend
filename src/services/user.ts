@@ -13,7 +13,7 @@
 
 import type { Request, Response } from "express";
 import type { DBNewUser, DBNewUserActivityLog, DBUserActivityLog, DBUserForAuth } from "../types/schema.js";
-import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse } from "../types/user.js";
+import type { CheckinClaimType, CheckinPostResponse, CheckinStatusResponse, Gender } from "../types/user.js";
 import { type DBClient, dbRead, dbWrite } from "../db/client.js";
 import { users, books, userComments, userAuth, userCheckins, userCounters, userActivityLogs } from "../db/schema.js";
 import { eq, and, gt, ne, sql, desc, or, inArray } from "drizzle-orm";
@@ -841,18 +841,34 @@ export async function getCheckInStatus(userId: string): Promise<CheckinStatusRes
 /**
  * Validates and sanitizes user data before a DB insert or update.
  *
- * createNew = true  (default, new user creation)
- *   • Email uniqueness → HARD conflict: 409 if the email is already registered.
- *   • Username uniqueness → SOFT conflict: calls {@link findUniqueUsername} and
- *     appends a numeric suffix (-2, -3 …) automatically. Never returns a 409
- *     for username alone; the user always gets a unique name.
- *   • Final username is validated for format / reserved-word rules.
+ * Uses the shared {@link sanitizeFieldValue} helper for imageUrl and gender
+ * to ensure base64 handling and normalization are consistent with profile updates.
  *
- * createNew = false  (profile updates)
- *   • No uniqueness checks — caller is responsible.
+ * Name is always derived (from the provided name or email), gender defaults to
+ * `'unknown'`, and the optional imageUrl is sanitized with base64-awareness.
+ *
+ * ## Conflict resolution (createNew = true)
+ *   • **Email uniqueness** → HARD: 409 if the email is already registered.
+ *   • **Username uniqueness** → SOFT: calls {@link findUniqueUsername} and
+ *     appends a numeric suffix (-2, -3 …) automatically. Never returns 409.
+ *
+ * ## Profile updates (createNew = false)
+ *   • No uniqueness checks — the caller is responsible for conflict resolution.
  *   • Fields are still sanitized and the username is validated for format.
  *
- * Name/username are derived from the email when not explicitly provided.
+ * @param userData - Partial user data from the request body or OAuth provider
+ * @param options.createNew - If true (default), performs email + username conflict checks
+ * @returns Sanitized insert-shaped object, or null if a validation error was sent
+ *
+ * @example
+ * ```typescript
+ * // New user registration (with conflict checks)
+ * const data = await sanitizeUserData(req.body, { res, createNew: true });
+ * if (!data) return;
+ *
+ * // OAuth returning user update (no conflict checks)
+ * const partial = await sanitizeUserData(oAuthUser, { createNew: false });
+ * ```
  */
 export async function sanitizeUserData(
   userData: Partial<Pick<DBNewUser, 'name' | 'email' | 'username' | 'gender' | 'imageUrl'>>,
@@ -867,12 +883,16 @@ export async function sanitizeUserData(
   }
 
   // ── Core sanitization ──────────────────────────────────────────────────────
-  const cleanEmail       = sanitizeTextForDB(String(email).trim().toLowerCase());
-  const cleanImage       = imageUrl ? sanitizeTextForDB(String(imageUrl)) : undefined;
-  const normalizedGender = normalizeGender(gender);
+  const cleanEmail = sanitizeTextForDB(String(email).trim().toLowerCase());
+
+  // Use shared helper for base64-aware imageUrl sanitization
+  const cleanImage = sanitizeFieldValue('imageUrl', imageUrl);
+
+  // Use shared helper for gender normalization; default to 'unknown'
+  const normalizedGender = sanitizeFieldValue('gender', gender) ?? 'unknown';
 
   const resolvedName = providedName ?? convertEmailToName(email);
-  const cleanName    = sanitizeTextForDB(String(resolvedName).trim());
+  const cleanName = sanitizeTextForDB(String(resolvedName).trim());
 
   // Derive then normalise username (sanitizeUsername handles spaces, dots, etc.)
   const usernameBase = providedUsername
@@ -906,9 +926,6 @@ export async function sanitizeUserData(
   }
 
   // ── Format validation on the final (possibly suffixed) username ───────────
-  // This replaces the "TODO: should be valid by sanitizeUsername" check.
-  // We still run it after deduplication so reserved-word and length rules
-  // are enforced on the real final value.
   const validation = validateUsername(cleanUsername);
   if (!validation.valid) {
     if (res) res.status(422).json({ error: 'Invalid username', details: validation.errors });
@@ -916,11 +933,11 @@ export async function sanitizeUserData(
   }
 
   return {
-    name:     cleanName,
-    email:    cleanEmail,
-    username: cleanUsername,
-    gender:   normalizedGender,
-    ...(cleanImage ? { image: cleanImage } : {}),
+    name:      cleanName,
+    email:     cleanEmail,
+    username:  cleanUsername,
+    gender:    normalizedGender,
+    ...(cleanImage !== undefined ? { imageUrl: cleanImage } : {}),
   };
 }
 
@@ -929,39 +946,108 @@ export function sanitizeUserBio(bio: string): string {
 }
 
 /**
+ * Sanitizes a single user profile field value with field-appropriate rules.
+ *
+ * Every field first checks `typeof value === 'string' && value.length > 0` and
+ * returns `undefined` (skip) when the input is not a usable string. This makes
+ * the helper suitable for both the creation path (where a field is required and
+ * the caller must ensure a string is always passed) and the update path (where
+ * `undefined` cleanly signals "don't touch this field").
+ *
+ * Field-specific rules:
+ * - `name`     → sanitizeTextForDB, trimmed
+ * - `bio`      → sanitizeTextForDB, trimmed, capped at MAX_USER_BIO_LENGTH
+ * - `imageUrl` → trimmed; skips sanitizeTextForDB for `data:` URLs because the
+ *                repetition check (`/(.)\1{10,}/g`) falsely flags base64-encoded
+ *                binary data as corruption. Non-data URLs still go through
+ *                sanitizeTextForDB for XSS / control-char removal.
+ * - `gender`   → normalizeGender (always produces a valid value; returns
+ *                `'unknown'` for unrecognized input)
+ *
+ * @param field - The profile field to sanitize
+ * @param value - Raw value from the request body
+ * @returns Sanitized value, or `undefined` to skip the field entirely.
+ *          Never returns `null` — handle `null` semantically at the call site.
+ *
+ * @example
+ * sanitizeFieldValue('imageUrl', 'data:image/png;base64,iVBOR...') // base64 string (unchanged)
+ * sanitizeFieldValue('imageUrl', 'https://example.com/avatar.jpg') // sanitizeTextForDB result
+ * sanitizeFieldValue('name', '')                                   // undefined
+ */
+function sanitizeFieldValue(field: 'gender', value: unknown): Gender | undefined;
+function sanitizeFieldValue(field: 'name' | 'bio' | 'imageUrl', value: unknown): string | undefined;
+function sanitizeFieldValue(
+  field: 'name' | 'bio' | 'imageUrl' | 'gender',
+  value: unknown,
+): string | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+
+  switch (field) {
+    case 'name':
+      return sanitizeTextForDB(value.trim());
+    case 'bio':
+      return sanitizeUserBio(value);
+    case 'imageUrl':
+      return value.startsWith('data:')
+        ? value.trim()
+        : sanitizeTextForDB(value.trim());
+    case 'gender':
+      return normalizeGender(value);
+    default:
+      return undefined;
+  }
+}
+
+/**
  * Validates and sanitizes a partial payload for profile updates.
+ *
  * Handles format validation and hard-conflict checks for usernames.
- * 
- * @returns Sanitized update object, or null if an error response was sent.
+ * Uses the shared {@link sanitizeFieldValue} helper for scalar fields
+ * (name, bio, imageUrl, gender) and performs inline validation for username.
+ *
+ * @param userId - The authenticated user's ID (used for username conflict exclusion)
+ * @param payload - Raw request body containing any subset of updatable fields
+ * @param res - Express Response (used to send validation error responses)
+ * @returns Sanitized update object, or null if a validation error response was sent.
+ *
+ * @example
+ * ```typescript
+ * const updateData = await sanitizeProfileUpdate(userId, req.body, res);
+ * if (!updateData) return; // error already sent
+ * ```
  */
 export async function sanitizeProfileUpdate(
   userId: string,
-  // payload: { name?: any; bio?: any; imageUrl?: any; gender?: any; username?: any },
   payload: Record<'name' | 'bio' | 'imageUrl' | 'gender' | 'username', unknown>,
   res: Response
 ): Promise<Partial<DBNewUser> | null> {
   const updateData: Partial<DBNewUser> = {};
 
-  if (typeof payload.name === 'string' && payload.name) updateData.name = sanitizeTextForDB(payload.name.trim());
-  if (typeof payload.bio === 'string' && payload.bio) updateData.bio = sanitizeUserBio(payload.bio);
-  if (typeof payload.imageUrl === 'string' && payload.imageUrl) {
-    // Don't sanitize base64 data URLs — sanitizeTextForDB's repetition check
-    // (/(.)\1{10,}/g) falsely flags base64-encoded binary data as "corruption".
-    updateData.imageUrl = payload.imageUrl.startsWith('data:')
-      ? payload.imageUrl.trim()
-      : sanitizeTextForDB(payload.imageUrl.trim());
-  }
-  if (typeof payload.gender === 'string' && payload.gender) updateData.gender = normalizeGender(payload.gender) ?? null;
+  // Process scalar fields through the shared sanitizer.
+  // Returns undefined for missing/invalid values — the update simply skips them.
+  const name = sanitizeFieldValue('name', payload.name);
+  if (name !== undefined) updateData.name = name;
+
+  const bio = sanitizeFieldValue('bio', payload.bio);
+  if (bio !== undefined) updateData.bio = bio;
+
+  const imageUrl = sanitizeFieldValue('imageUrl', payload.imageUrl);
+  if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
+
+  const gender = sanitizeFieldValue('gender', payload.gender);
+  if (gender !== undefined) updateData.gender = gender;
+
+  // Username is special — needs format validation + hard conflict check
   if (typeof payload.username === 'string' && payload.username) {
     const cleanUsername = sanitizeUsername(String(payload.username));
     const validation = validateUsername(cleanUsername);
-    
+
     if (!validation.valid) {
       res.status(422).json({ error: 'Invalid username', details: validation.errors });
       return null;
     }
 
-    // Hard conflict check: Ensure no *other* user has this username
+    // Hard conflict: ensure no *other* user has this username
     const [conflict] = await dbRead
       .select({ userId: users.userId })
       .from(users)
