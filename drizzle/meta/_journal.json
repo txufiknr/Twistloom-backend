@@ -162,6 +162,20 @@
       "when": 1783920841037,
       "tag": "0022_hot_millenium_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784004513157,
+      "tag": "0023_vengeful_nova",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784023529497,
+      "tag": "0024_glorious_nightshade",
+      "breakpoints": true
     }
   ]
 }

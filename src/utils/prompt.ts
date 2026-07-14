@@ -47,7 +47,7 @@ import type { WritingPreset } from "../types/book-creation.js";
 import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
-import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents, retrieveRelevantFutureNotes } from "../services/vector-memory.js";
+import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents, retrieveRelevantFutureNotes, retrieveClues } from "../services/vector-memory.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2420,7 +2420,7 @@ export function getThreadState(
  *   Urgency: 0.85
  *   Reality: true
  */
-function formatActiveThreads(threads: StoryThread[]): string {
+function formatActiveThreads(threads: StoryThread[], clueRecallBlocks?: Record<string, string>): string {
   if (!threads || threads.length === 0) return 'No active threads yet.';
 
   // Sort by priority > urgency
@@ -2441,9 +2441,15 @@ function formatActiveThreads(threads: StoryThread[]): string {
       .sort((a, b) => a.discoveredAtPage - b.discoveredAtPage)
       .map(c => `  → page ${c.discoveredAtPage}: ${c.clue}${c.isFalse ? ' [FALSE]' : ''}`) : [];
 
+    // pgvector semantic memory (Use Case 4): clues that have scrolled out of
+    // the "Recent clues" window above, surfaced only when semantically
+    // relevant to the current scene. Never duplicates what's already shown.
+    const recalledClue = clueRecallBlocks?.[t.threadId];
+
     return [
       header,
       recent.length && `  Recent clues:\n${recent.join('\n')}`,
+      recalledClue && `  Earlier clues (recalled):\n    → ${recalledClue}`,
       `  Priority: ${t.priority}`,
       `  Urgency: ${t.urgency.toFixed(2)}`,
       t.truth !== 'unknown' && `  Reality: ${t.truth}`,
@@ -2591,9 +2597,9 @@ function formatOutline(outline: StoryOutline[]): string {
     .join('\n');
 }
 
-function formatThreadsPrompt(threads: StoryThread[], stateInfo: StoryStateInfo): string {
+function formatThreadsPrompt(threads: StoryThread[], stateInfo: StoryStateInfo, clueRecallBlocks?: Record<string, string>): string {
   return `ACTIVE THREADS:
-${formatActiveThreads(threads)}
+${formatActiveThreads(threads, clueRecallBlocks)}
 
 THREAD RULES:
 ${formatThreadRules(threads, stateInfo).trim()}`;
@@ -2881,6 +2887,44 @@ async function buildPlaceRecallBlocks(
   return blocks;
 }
 
+/**
+ * Use Case 4 — one "Earlier clues (recalled)" block per thread, for clues
+ * that have scrolled out of formatActiveThreads()'s live MAX_THREADS_CLUES
+ * display window. Unlike character interactions/place events,
+ * StoryThread.clues is never trimmed at STORAGE time (processThreadUpdates
+ * just .push()es) — only at display time — but the recall problem is the
+ * same: anything beyond the displayed window is invisible to the AI unless
+ * surfaced here. oldestVisiblePage per thread = the lowest discoveredAtPage
+ * among the clues currently displayed for it; falls back to actionedPage.page
+ * when a thread has no clues yet.
+ */
+async function buildClueRecallBlocks(
+  threads: StoryThread[] | undefined,
+  actionedPage: CandidateGenerationPage,
+  book: Book
+): Promise<Record<string, string>> {
+  if (!threads?.length) return {};
+
+  const query = buildCurrentSceneQuery(actionedPage);
+  const branchId = actionedPage.branchId ?? 'main';
+  const blocks: Record<string, string> = {};
+
+  await Promise.allSettled(threads.map(async (thread) => {
+    try {
+      const pastPages = (thread.clues ?? []).map(c => c.discoveredAtPage);
+      const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
+      const results = await retrieveClues(query, book.id, branchId, thread.threadId, oldestVisiblePage);
+      if (results.length) {
+        blocks[thread.threadId] = results.map(r => `(page ${r.page}) ${r.sourceText}`).join(' ');
+      }
+    } catch (error) {
+      console.error(`[buildClueRecallBlocks] ⚠️ Retrieval failed for thread ${thread.threadId}:`, getErrorMessage(error));
+    }
+  }));
+
+  return blocks;
+}
+
 function formatNextPageStoryContextPrompt(params: BuildNextPagePromptParams): string {
   const { advancedState: state, actionedPage, previousPages, book, relevantPastEventsBlock } = params;
   const { actions, page: currentPage, calendarDate, elapsedDays } = actionedPage;
@@ -2949,7 +2993,7 @@ Write that moment before advancing the scene.`;
 }
 
 function formatNextPageNarrativePrompt(params: BuildNextPagePromptParams): string {
-  const { advancedState: state, actionedPage, relevantFutureNoteKeys, book } = params;
+  const { advancedState: state, actionedPage, relevantFutureNoteKeys, book, clueRecallBlocks } = params;
   const { flags, psychologicalProfile, hiddenState, threads, memoryIntegrity, futureNotes, healthStatus } = state;
   const stateInfo = getStoryStateInfo(state);
   const { currentPage, phase, isFinale } = stateInfo;
@@ -2986,7 +3030,7 @@ ${formatFutureNotes({
 })}
 
 ---
-${formatThreadsPrompt(threads, stateInfo)}
+${formatThreadsPrompt(threads, stateInfo, clueRecallBlocks)}
 
 ---
 ${formatEndingPrompt(state, book)}`;
@@ -4288,6 +4332,14 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     }
   }
 
+  // pgvector semantic memory (Use Case 4): computed here — before
+  // promptParams, not alongside characterRecallBlocks/placeRecallBlocks below
+  // — because it needs to be readable via params.clueRecallBlocks inside
+  // buildNextPagePrompt's synchronous call at line 4338, which happens
+  // before those two are computed. Reuses the same cached query embedding
+  // as everything else this page generation.
+  const clueRecallBlocks = await buildClueRecallBlocks(advancedState.threads, actionedPage, book);
+
   const promptParams: BuildNextPagePromptParams = {
     book,
     actionedPage,
@@ -4296,6 +4348,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
     candidateCount,
     relevantPastEventsBlock,
     relevantFutureNoteKeys,
+    clueRecallBlocks,
   };
 
   let prompt = buildNextPagePrompt(promptParams);

@@ -56,3 +56,14 @@ export const EMBEDDING_GENERATION_LIMIT = 100;
 
 /** Delay (ms) between backfill embedding calls, on top of getJinaLimiter().throttle()'s own spacing. */
 export const EMBEDDING_GENERATION_DELAY = 1000;
+
+/**
+ * Global kill-switch for pgvector semantic memory. Defaults to enabled —
+ * set PGVECTOR_MEMORY_ENABLED=false to disable every embedding write and
+ * retrieval instantly (checked in services/vector-memory.ts, before any
+ * Jina call is made — not a caught error, a clean early-return) if Jina
+ * misbehaves in production. Note this still requires a redeploy/restart on
+ * most platforms to pick up the new env var — it removes the need to
+ * revert a code change, not the need to redeploy at all.
+ */
+export const PGVECTOR_MEMORY_ENABLED = process.env['PGVECTOR_MEMORY_ENABLED'] !== 'false';

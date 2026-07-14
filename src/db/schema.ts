@@ -1827,15 +1827,13 @@ export const placeEmbeddings = pgTable(
 
 /**
  * Future note embeddings table
- * @summary Semantic embeddings for future notes, keyed by the note's own
- * stable `key` (NOT array position — array indices shift on removal via
- * futureNoteUpdates and would silently misattribute embeddings to the wrong
- * note). Embedded once on note creation; re-embedded only if
- * futureNoteUpdates reports a text change — never re-embedded just because
- * the note reappears in a later page's state snapshot. pageId records which
- * page the note was added at (cascade delete — matches the other three
- * tables) but is deliberately NOT part of the uniqueness constraint, since a
- * note's identity is its key, not the page it happened to be added on.
+ * @summary Semantic embeddings for future notes, keyed by the note's own stable
+ * `key` (NOT array position — array indices shift on removal via futureNoteUpdates
+ * and would silently misattribute embeddings to the wrong note).
+ * Embedded once on note creation; re-embedded only if futureNoteUpdates reports
+ * a text change — never re-embedded just because it appears in a later page's
+ * state snapshot.
+ * 
  * @example
  * {
  *   "id": "emb123",
@@ -1862,5 +1860,49 @@ export const futureNoteEmbeddings = pgTable(
   (t) => [
     index("future_note_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
     unique("future_note_embeddings_unique").on(t.bookId, t.branchId, t.noteKey),
+  ]
+);
+
+/**
+ * Clue embeddings table
+ * @summary Semantic embeddings for thread clues (StoryThread.clues), embedded
+ * once per (pageId, threadId) at the moment they're added — via either
+ * ThreadUpdates.newThreads[].clues (bundled at thread creation) or
+ * ThreadUpdates.addClues[] (added to an existing thread later). Unlike
+ * pastInteractions/keyEvents, StoryThread.clues is never trimmed at storage
+ * time (processThreadUpdates just .push()es) — the trim happens at DISPLAY
+ * time instead (formatActiveThreads shows only the last MAX_THREADS_CLUES).
+ * Functionally the same problem as character/place embeddings though: clues
+ * older than what's currently displayed are invisible to the AI unless
+ * recalled here.
+ * @example
+ * {
+ *   "id": "emb123",
+ *   "page_id": "page456",
+ *   "book_id": "book789",
+ *   "branch_id": "main",
+ *   "page": 22,
+ *   "thread_id": "thread_missing_diary",
+ *   "source_text": "The diary's last entry mentions a name that isn't in any school record.",
+ *   "created_at": "2026-07-14T00:00:00.000Z"
+ * }
+ */
+export const clueEmbeddings = pgTable(
+  "clue_embeddings",
+  {
+    id: id(),
+    pageId: pageId("cascade"),
+    bookId: bookId("cascade"),
+    branchId: text("branch_id").notNull().default("main"),
+    page: integer("page").notNull(),
+    threadId: text("thread_id").notNull(),
+    embedding: vector("embedding", { dimensions: 1024 }).notNull(),
+    sourceText: text("source_text"),
+    createdAt,
+  },
+  (t) => [
+    index("clue_embeddings_hnsw_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+    index("clue_embeddings_book_thread_idx").on(t.bookId, t.threadId),
+    unique("clue_embeddings_unique").on(t.pageId, t.threadId),
   ]
 );

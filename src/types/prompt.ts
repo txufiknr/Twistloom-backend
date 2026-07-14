@@ -57,4 +57,14 @@ export type BuildNextPagePromptParams = {
    * this order rather than the default chronological sort.
    */
   relevantFutureNoteKeys?: string[];
+  /**
+   * pgvector semantic memory (Use Case 4) — pre-computed "Earlier clues
+   * (recalled)" blocks keyed by threadId, for clues that have scrolled out
+   * of formatActiveThreads()'s live MAX_THREADS_CLUES display window.
+   * Computed once in prepareNextPageGenerationSetup, alongside
+   * characterRecallBlocks/placeRecallBlocks. Read by
+   * formatNextPageNarrativePrompt and passed down through
+   * formatThreadsPrompt to formatActiveThreads.
+   */
+  clueRecallBlocks?: Record<string, string>;
 }

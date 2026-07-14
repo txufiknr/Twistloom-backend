@@ -4,9 +4,9 @@
  * Two responsibilities, kept in one file because they're always used together
  * from the same page-generation call site:
  *
- * 1. WRITE — embed page text, character interactions, place events, and
- *    future notes into their respective embedding tables. Every write
- *    function here is meant to be called fire-and-forget, from the
+ * 1. WRITE — embed page text, character interactions, place events, future
+ *    notes, and thread clues into their respective embedding tables. Every
+ *    write function here is meant to be called fire-and-forget, from the
  *    page-generation caller (generateNextPage / generateNextPages), AFTER
  *    persistPageWithState resolves — NEVER from inside applyStateDelta or
  *    the processXxx state-transition helpers it calls. Those run identically
@@ -21,14 +21,19 @@
  * 2. READ — cosine-similarity retrieval against each embedding table,
  *    scoped to the current book/branch and filtered to the past (never
  *    retrieves future pages/events relative to the caller's current page).
+ *
+ * Kill-switch: every exported function here checks PGVECTOR_MEMORY_ENABLED
+ * (config/embedding.ts) first and no-ops (void / []) if disabled — set
+ * PGVECTOR_MEMORY_ENABLED=false to turn off all embedding writes and
+ * retrieval without a code change, if Jina misbehaves in production.
  */
 
 import { and, cosineDistance, eq, lt, sql } from 'drizzle-orm';
 import { dbWrite, dbRead } from '../db/client.js';
-import { pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings } from '../db/schema.js';
+import { pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings, clueEmbeddings } from '../db/schema.js';
 import { embedText } from '../utils/embedding.js';
 import { getErrorMessage } from '../utils/error.js';
-import { MAX_VECTOR_RESULTS_PER_QUERY, EMBEDDING_SIMILARITY_THRESHOLD } from '../config/embedding.js';
+import { MAX_VECTOR_RESULTS_PER_QUERY, EMBEDDING_SIMILARITY_THRESHOLD, PGVECTOR_MEMORY_ENABLED } from '../config/embedding.js';
 import type { PersistedStoryPage, FutureNote } from '../types/story.js';
 
 // ============================================================================
@@ -58,6 +63,7 @@ export function buildPageEmbeddingText(page: PersistedStoryPage): string {
  * later regardless).
  */
 export async function embedPersistedPage(page: PersistedStoryPage): Promise<void> {
+  if (!PGVECTOR_MEMORY_ENABLED) return;
   try {
     const sourceText = buildPageEmbeddingText(page);
     const embedding = await embedText(sourceText, 'retrieval.passage');
@@ -174,8 +180,39 @@ async function embedFutureNote(page: PersistedStoryPage, note: FutureNote): Prom
 }
 
 /**
- * Embeds every character interaction, place event, and future note added by
- * this page's StateDelta — read directly off `page.stateDelta` (confirmed:
+ * Embeds new clues for one thread on one page, joining same-page clues into
+ * a single row — mirrors embedCharacterInteractions/embedPlaceEvents. Unlike
+ * those two, StoryThread.clues is never trimmed at storage time
+ * (processThreadUpdates just .push()es); the trim happens at DISPLAY time in
+ * formatActiveThreads (MAX_THREADS_CLUES). Functionally the same recall gap
+ * though: older clues become invisible once display-time trimming drops them.
+ */
+async function embedClues(page: PersistedStoryPage, threadId: string, clues: string[]): Promise<void> {
+  if (!clues.length) return;
+  try {
+    const sourceText = clues.join(' ');
+    const embedding = await embedText(sourceText, 'retrieval.passage');
+
+    await dbWrite.insert(clueEmbeddings).values({
+      pageId: page.id,
+      bookId: page.bookId,
+      branchId: page.branchId,
+      page: page.page,
+      threadId,
+      embedding,
+      sourceText,
+    }).onConflictDoUpdate({
+      target: [clueEmbeddings.pageId, clueEmbeddings.threadId],
+      set: { embedding, sourceText },
+    });
+  } catch (error) {
+    console.error(`[embedClues] ⚠️ Failed for thread ${threadId} on page ${page.page}:`, getErrorMessage(error));
+  }
+}
+
+/**
+ * Embeds every character interaction, place event, future note, and clue
+ * added by this page's StateDelta — read directly off `page.stateDelta` (confirmed:
  * every persisted page carries its own delta, `pages.stateDelta` /
  * column "delta" in schema.ts), not a separately-threaded parameter. This
  * means the same function works identically whether called live (right
@@ -190,6 +227,8 @@ async function embedFutureNote(page: PersistedStoryPage, note: FutureNote): Prom
  * interaction failing to embed) never blocks or fails the others.
  */
 export async function embedStateDeltaEntities(page: PersistedStoryPage): Promise<void> {
+  if (!PGVECTOR_MEMORY_ENABLED) return;
+
   const stateDelta = page.stateDelta;
   if (!stateDelta) return;
 
@@ -221,6 +260,27 @@ export async function embedStateDeltaEntities(page: PersistedStoryPage): Promise
     jobs.push(embedFutureNote(page, note));
   }
 
+  // Clues come from two sources: bundled with new thread creation, or added
+  // to an existing thread later. addClues is a flat array that can span
+  // multiple threadIds in one page, so group by threadId first — otherwise
+  // two clues added to the same thread on the same page would race on the
+  // same (pageId, threadId) upsert target instead of getting joined into
+  // one row like embedClues expects.
+  for (const newThread of stateDelta.threadUpdates?.newThreads ?? []) {
+    if (newThread.clues?.length) {
+      jobs.push(embedClues(page, newThread.threadId, newThread.clues.map(c => c.clue)));
+    }
+  }
+  const addCluesByThread = new Map<string, string[]>();
+  for (const added of stateDelta.threadUpdates?.addClues ?? []) {
+    const existing = addCluesByThread.get(added.threadId) ?? [];
+    existing.push(added.clue);
+    addCluesByThread.set(added.threadId, existing);
+  }
+  for (const [threadId, clues] of addCluesByThread) {
+    jobs.push(embedClues(page, threadId, clues));
+  }
+
   await Promise.allSettled(jobs);
 }
 
@@ -248,6 +308,8 @@ export async function retrieveSimilarPages(
   currentPage: number,
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<SimilarPageResult[]> {
+  if (!PGVECTOR_MEMORY_ENABLED) return [];
+
   const queryEmbedding = await embedText(query, 'retrieval.query');
   const distance = cosineDistance(pageEmbeddings.embedding, queryEmbedding);
   const similarity = sql<number>`1 - (${distance})`;
@@ -286,6 +348,8 @@ export async function retrieveCharacterInteractions(
   oldestVisiblePage: number,
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<SimilarInteractionResult[]> {
+  if (!PGVECTOR_MEMORY_ENABLED) return [];
+
   const queryEmbedding = await embedText(query, 'retrieval.query');
   const distance = cosineDistance(characterEmbeddings.embedding, queryEmbedding);
   const similarity = sql<number>`1 - (${distance})`;
@@ -318,6 +382,8 @@ export async function retrievePlaceEvents(
   oldestVisiblePage: number,
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<SimilarInteractionResult[]> {
+  if (!PGVECTOR_MEMORY_ENABLED) return [];
+
   const queryEmbedding = await embedText(query, 'retrieval.query');
   const distance = cosineDistance(placeEmbeddings.embedding, queryEmbedding);
   const similarity = sql<number>`1 - (${distance})`;
@@ -357,7 +423,7 @@ export async function retrieveRelevantFutureNotes(
   candidateKeys: string[],
   limit: number = MAX_VECTOR_RESULTS_PER_QUERY
 ): Promise<RelevantFutureNoteResult[]> {
-  if (!candidateKeys.length) return [];
+  if (!candidateKeys.length || !PGVECTOR_MEMORY_ENABLED) return [];
 
   const queryEmbedding = await embedText(query, 'retrieval.query');
   const distance = cosineDistance(futureNoteEmbeddings.embedding, queryEmbedding);
@@ -370,6 +436,42 @@ export async function retrieveRelevantFutureNotes(
       eq(futureNoteEmbeddings.bookId, bookId),
       eq(futureNoteEmbeddings.branchId, branchId),
       sql`${futureNoteEmbeddings.noteKey} = ANY(${candidateKeys})`,
+    ))
+    .orderBy(distance)
+    .limit(limit);
+
+  return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+}
+
+/**
+ * Retrieves clues for one thread, older than `oldestVisiblePage` (the lowest
+ * discoveredAtPage among the clues formatActiveThreads() is already showing
+ * for that thread, up to MAX_THREADS_CLUES), semantically relevant to
+ * `query`. Same pattern as retrieveCharacterInteractions/retrievePlaceEvents
+ * — never duplicates what's already displayed in full.
+ */
+export async function retrieveClues(
+  query: string,
+  bookId: string,
+  branchId: string,
+  threadId: string,
+  oldestVisiblePage: number,
+  limit: number = MAX_VECTOR_RESULTS_PER_QUERY
+): Promise<SimilarInteractionResult[]> {
+  if (!PGVECTOR_MEMORY_ENABLED) return [];
+
+  const queryEmbedding = await embedText(query, 'retrieval.query');
+  const distance = cosineDistance(clueEmbeddings.embedding, queryEmbedding);
+  const similarity = sql<number>`1 - (${distance})`;
+
+  const rows = await dbRead
+    .select({ page: clueEmbeddings.page, sourceText: clueEmbeddings.sourceText, similarity })
+    .from(clueEmbeddings)
+    .where(and(
+      eq(clueEmbeddings.bookId, bookId),
+      eq(clueEmbeddings.branchId, branchId),
+      eq(clueEmbeddings.threadId, threadId),
+      lt(clueEmbeddings.page, oldestVisiblePage),
     ))
     .orderBy(distance)
     .limit(limit);

@@ -19,7 +19,8 @@ export const DEFAULT_TOP_P: number = 0.9;
 /** Top-k sampling: considers top K most likely tokens */
 export const DEFAULT_TOP_K: number = 40;
 /** Stop sequences to control output generation */
-export const DEFAULT_STOP_SEQUENCES: string[] = ['\n\n\n'];
+// export const DEFAULT_STOP_SEQUENCES: string[] = ['\n\n\n'];
+export const DEFAULT_STOP_SEQUENCES: string[] | undefined = undefined;
 
 /**
  * Number of times to retry the same model on retryable errors before falling

@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phase 0, Phase 1, Phase 2 (fully live), and Use Cases 1/2/5's read-side (fully live) are done — see §8/§9. `db:generate`/`db:migrate` have been run against the real database (tables confirmed created; pgvector is 0.8.1, Neon's current ceiling — see §5). Remaining: Use Case 3 (`formatFutureNotes`'s `unscheduled`-bucket ranking), then Phase 4 (clues) and Phase 5 (finale).
+**Status:** Phases 0-4 are done (schema, all writes, all reads, all four use cases 1/2/3/5 live, plus clue embeddings). `db:generate`/`db:migrate` have been run against the real database; pgvector is 0.8.1, confirmed as Neon's current ceiling — see §5. Remaining: Phase 5 (finale-callback filtering, book/image recommendations — the latter two deferred per earlier direction).
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -518,28 +518,32 @@ Implemented as real drop-in files against your actual `ai-limiters.ts`, `ai-clie
    **Query construction:** `${actionedPage.text}\n\nPlayer chose: ${actionedPage.action?.text ?? ''}` — the current scene plus the just-selected action, since that's the best available proxy for "what's about to happen" before the new page exists to embed anything from. Retrieval never throws into the generation path — a failed/empty result just means no block gets injected, page generation proceeds normally either way.
 4. ✅ Created `src/services/vector-memory.ts` — `retrieveSimilarPages`, `retrieveCharacterInteractions`, `retrievePlaceEvents`, `retrieveRelevantFutureNotes`, `embedPersistedPage`, `embedStateDeltaEntities`, `buildPageEmbeddingText`. Covers all four embedding tables, not just pages — effectively also completes most of Phase 3's plumbing (§ below), just not wired into the prompt yet.
 
-### Phase 3 — Character & place interaction embeddings, future notes (est. 4-6 days) — write-side done, read-side wiring pending
+### Phase 3 — Character & place interaction embeddings, future notes (est. 4-6 days) — ✅ done
 
 Character and place embeddings follow the identical pattern (§4, §6) — grouping them into one phase since the implementation is the same shape twice, not two different designs:
 
-1. **Character interactions:** embed each `pastInteractions` entry once, at the moment it's added (in the page-generation caller, using the page's `CharacterUpdates` output) — before `updateCharacter()`'s `.slice(-MAX_PAST_INTERACTIONS)` can trim it away. Same-page interactions joined into one row, mirroring `formatCharactersForPrompt()`'s existing grouping. Retrieval surfaces only interactions older than what's already visible in the live 5-item window — extend `formatCharactersForPrompt()` with a new "Earlier interactions (recalled):" block, populated only when something relevant turns up.
 1. ✅ **Character interactions — fully live, write and read.** Write-side: `embedCharacterInteractions()` in `services/vector-memory.ts`, called from `embedStateDeltaEntities()`. Read-side: `formatCharactersForPrompt()` (`characters_utils.ts`) now takes an optional `recalledInteractions?: Record<string, string>` and injects an "Earlier interactions (recalled):" line right after "Recent interactions" for any character with one. Computed via new `buildCharacterRecallBlocks()` in `prompt.ts` — one retrieval per character present, run in parallel via `Promise.allSettled`, reusing the exact same query text as Use Case 1's `buildRelevantPastEventsBlock` so the query embedding is cache-hit for every character after the first (see `buildCurrentSceneQuery`).
 2. ✅ **Place events — fully live, write and read.** Write-side: `embedPlaceEvents()`, same file/caller. Read-side: `formatPlacesForPrompt()` (`places_utils.ts`) takes an optional `recalledEvents?: Record<string, string>`, injects "Earlier events (recalled):" after "Key events". Computed via new `buildPlaceRecallBlocks()` in `prompt.ts`, same shared-query-cache trick. Does **not** touch `calculatePlaceFamiliarity()` — that stays exactly as designed (§4, Use Case 5), untouched.
 
    **Threading note:** both new maps get computed in `prepareNextPageGenerationSetup` (in parallel with each other via `Promise.all`, since they're independent retrievals) and passed into `buildBookMetaDocuments(book, advancedState, { characters, places })` — `book.ts`'s `buildBookMetaDocuments` gained a third, optional parameter for this, threaded straight through to both formatters. `buildBookMetaDocuments` itself stays fully synchronous.
-3. ✅ Future notes: write-side done — `embedFutureNote()`, embedded **once, on `futureNoteUpdates` add/change**, keyed by `noteKey` — not on every page (§6).
-4. ⬜ Prompt integration: within `formatFutureNotes()`'s `unscheduled` bucket, rank by semantic similarity instead of dumping all; `becomingRelevant` stays fully shown regardless of similarity. Not yet done — `retrieveRelevantFutureNotes()` exists in `vector-memory.ts` and is ready to call.
-5. ✅ **Replay hazard verified** (§12, Appendix D.3) — confirmed, not just checked, against `story_utils.ts`/`branch-traversal.ts`. All writes in `vector-memory.ts` are designed to be called only from the page-generation caller (or backfill, reading the same `page.stateDelta`), never from inside `applyStateDelta`/`processCharacterUpdates`/`processPlaceUpdates`.
+3. ✅ **Future notes — fully live, write and read. Implemented by Taufik, reviewed and fixed by Claude.** Write-side: `embedFutureNote()`, embedded once on `futureNoteUpdates` add/change, keyed by `noteKey`. Read-side: `formatFutureNotes()` takes `sortedUnscheduledKeys?: string[]` and reorders the `unscheduled` bucket to match; `relevantFutureNoteKeys` computed in `prepareNextPageGenerationSetup` via `retrieveRelevantFutureNotes()`, reusing the shared query cache. Three issues found and fixed during review:
+   - **Real regression, fixed:** `${relevantPastEventsBlock || formatRecentMajorEvents(plotFlags)}` used `||`, which meant `formatRecentMajorEvents` (recent major plot flags — a separate, valuable prompt section) got dropped entirely whenever semantic retrieval found anything. Reverted to the original additive form (`relevantPastEventsBlock` prepended, `formatRecentMajorEvents` always still shown after it).
+   - **Minor, fixed:** the sort comparator `(keyOrder.get(a.key) ?? Infinity) - (keyOrder.get(b.key) ?? Infinity)` produces `NaN` when comparing two unranked notes — not spec-guaranteed behavior for `Array.sort`, even though harmless in practice on V8. Replaced with explicit `undefined` handling.
+   - **Minor, fixed:** the unscheduled-candidate filter (`!n.schedule?.length`) didn't check `stateTrigger` activity, so it could include a note that's actually in `becomingRelevant` (active trigger, no schedule) as a ranking candidate. Harmless in practice — extraneous keys just don't match anything in the real `unscheduled` array during the sort — but tightened to also exclude any note with a `stateTrigger` at all, trading a small amount of ranking coverage (dormant-trigger notes never get semantically ranked) for exactness without needing to hoist `isStateTriggerActive` out of `formatFutureNotes`'s closure.
+4. ✅ **Replay hazard verified** (§12, Appendix D.3) — confirmed, not just checked, against `story_utils.ts`/`branch-traversal.ts`. All writes in `vector-memory.ts` are designed to be called only from the page-generation caller (or backfill, reading the same `page.stateDelta`), never from inside `applyStateDelta`/`processCharacterUpdates`/`processPlaceUpdates`.
 
-**What's left for Phase 2+3 to be fully live:** ✅ all of it except Use Case 3. Pages (write+read), character interactions (write+read), and place events (write+read) are all live. Only remaining: `formatFutureNotes`'s `unscheduled`-bucket similarity ranking (Use Case 3) — `retrieveRelevantFutureNotes()` already exists in `vector-memory.ts` and is ready to call.
+### Phase 4 — Clue embeddings (est. 2-3 days) — ✅ done (this pass); finale-callback filtering moved to Phase 5
 
-### Phase 4 — Clue embeddings & finale-callback filtering (est. 2-3 days)
+Grounded against `story-thread.ts` and `story_utils.ts` (sent for this phase). One real difference from Use Cases 2/5 discovered while implementing: `StoryThread.clues` is **never trimmed at storage time** — `processThreadUpdates` just `.push()`es, unlike `updateCharacter()`/`updatePlace()`'s `.slice(-MAX_N)`. The trim happens at **display time** instead, in `formatActiveThreads()` (`.slice(-MAX_THREADS_CLUES)`, = 5). Functionally the same recall gap as Use Cases 2/5 though — clues beyond the displayed window are invisible to the AI unless surfaced here — so the design carries over directly.
 
-Clue embeddings unchanged from v1 (place embeddings moved up into Phase 3 above, since it turned out to share Phase 3's exact implementation shape rather than needing separate design work).
+- **Schema:** `clue_embeddings` added to `schema.ts`, same shape as `character_embeddings`/`place_embeddings` (`pageId` FK cascade + `page` int + `threadId` text, unique on `(pageId, threadId)`).
+- **Write-side:** `embedClues()` in `vector-memory.ts`, wired into `embedStateDeltaEntities()`. Clues arrive from two places in `ThreadUpdates` — bundled with `newThreads[].clues` at thread creation, or added later via the flat `addClues[]` array (which can span multiple threads in one page, so it's grouped by `threadId` first before embedding, same join-same-page-entries approach as characters/places).
+- **Read-side:** `retrieveClues()` in `vector-memory.ts`; `buildClueRecallBlocks()` in `prompt.ts` computes one per-thread recall block. `formatActiveThreads()` now takes an optional `clueRecallBlocks` map and injects "Earlier clues (recalled):" right after "Recent clues". Does not touch clue *display* ordering or thread priority/urgency sorting — purely additive.
+- **One wiring subtlety, different from Use Cases 2/5:** `buildClueRecallBlocks()` has to be computed **before** `promptParams` is constructed, not alongside `characterRecallBlocks`/`placeRecallBlocks` (which run after `buildNextPagePrompt()` since they only feed `buildBookMetaDocuments()`, a separate call). Clue recall needs to be readable via `params.clueRecallBlocks` *inside* `buildNextPagePrompt`'s synchronous call — computing it afterward would be too late, since `formatNextPageNarrativePrompt` would already have read `undefined` by then.
 
 ### Phase 5 — Finale enhancement & recommendations (est. 3-4 days)
 
-Unchanged from v1.
+Unchanged from v1. Emotional-moment/finale-callback filtering on `page_embeddings` (originally scoped as part of Phase 4) lives here now instead.
 
 ---
 
@@ -566,10 +570,14 @@ Unchanged from v1.
 | `.env.local.example` | Add `JINA_API_KEY` | **P0** | ⬜ Not uploaded — one-line addition |
 | `src/utils/prompt.ts` | `generateNextPage` / `generateNextPages` — fire-and-forget embed after `persistPageWithState` resolves (**not** inside it) | **P2** | ✅ Done |
 | `src/utils/prompt.ts` | `formatNextPageStoryContextPrompt` — inject `RELEVANT PAST EVENTS` between `storyContext` and `formatRecentMajorEvents` | **P2** | ✅ Done |
-| `src/utils/prompt.ts` | `formatFutureNotes` — rank `unscheduled` bucket by similarity | **P3** | ⬜ |
+| `src/utils/prompt.ts` | `formatFutureNotes` — rank `unscheduled` bucket by similarity | **P3** | ✅ Done (implemented by Taufik, reviewed/fixed by Claude — see revision notes) |
 | `src/utils/characters_utils.ts` | `formatCharactersForPrompt` — "Earlier interactions (recalled):" block | **P3** | ✅ Done |
 | `src/utils/places_utils.ts` | `formatPlacesForPrompt` — same, for place events | **P3** | ✅ Done |
 | `src/services/book.ts` | `buildBookMetaDocuments` — new optional 3rd param threading character/place recall maps through to both formatters | **P3** | ✅ Done |
+| `src/db/schema.ts` | Add `clue_embeddings` table | **P4** | ✅ Done |
+| `src/services/vector-memory.ts` | `embedClues`, `retrieveClues`, thread/clue handling in `embedStateDeltaEntities` | **P4** | ✅ Done |
+| `src/utils/prompt.ts` | `buildClueRecallBlocks`; `formatActiveThreads`/`formatThreadsPrompt`/`formatNextPageNarrativePrompt` threaded to inject "Earlier clues (recalled):" | **P4** | ✅ Done |
+| `src/types/prompt.ts` | `clueRecallBlocks` field on `BuildNextPagePromptParams` | **P4** | ✅ Done |
 
 ---
 
