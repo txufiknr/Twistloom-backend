@@ -20,11 +20,10 @@
 [@] claude payment review: src\app.ts (later check)
 [@] GET /api/payments/stripe/webhook (404)
 [@] sync sampling formula with ai-sampling.ts
+[@] result mistral medium kepotong
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
 [ ] Before insert page, correct futureNote keys
 [ ] Place categories list di prompt aja
-[ ] result mistral medium kepotong
-[ ] Json stringify: [book-creation] 📔 Book initialized successfully:
 
 ---
 

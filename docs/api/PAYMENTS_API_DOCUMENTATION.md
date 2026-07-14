@@ -163,6 +163,8 @@ interface SubscriptionStatus {
   currentPeriodEnd: string;            // End of current billing period (ISO 8601)
   cancelAtPeriodEnd: boolean;          // Whether subscription cancels at period end
   monthlyCredits: number;             // Monthly credits allocated
+  isTrial: boolean;                   // Whether subscription is in trial period
+  trialEnd: string | null;            // Trial end date (ISO 8601) or null
 }
 ```
 
@@ -311,6 +313,99 @@ Creates a Stripe checkout session for VIP subscription. The user is redirected t
 
 ---
 
+### POST /payments/create-trial-checkout-session
+
+Creates a Stripe Checkout session for the VIP free trial. This is a separate endpoint (not a param on `create-subscription-checkout`) because trial and non-trial checkout have different validation paths.
+
+**Authentication:** Required (via `requireAuth` — wrapped with `wrapAsync` for async error safety)
+
+**Request Body:**
+```json
+{
+  "returnUrl": "https://app.twistloom.com/dashboard",
+  "successPath": "/dashboard?subscription=success",
+  "cancelPath": "/pricing"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "url": "https://checkout.stripe.com/pay/cs_1234567890",
+  "sessionId": "cs_1234567890"
+}
+```
+
+**Error Responses:**
+- **400 Bad Request**: Trials disabled (`VIP_TRIAL.enabled` is false), user not eligible, or invalid returnUrl
+- **401 Unauthorized**: Authentication required
+- **429 Too Many Requests**: Rate limit exceeded (1 request per 10 seconds per user)
+- **500 Internal Server Error**: Can be caused by:
+  - Express 4.x async rejection in `requireAuth` middleware (now guarded by `wrapAsync`)
+  - Missing `FRONTEND_URL` or `VIP_SUBSCRIPTION.priceId` environment variable
+  - Stripe API error when creating customer or checkout session
+  - Database query failure in `isTrialEligible()`
+
+**Behavior:**
+- Server-side eligibility re-check via `isTrialEligible()` (defense in depth — never trust the frontend gate alone)
+- Rate-limited: 1 session per 10 seconds per user
+- `metadata.isTrial: "true"` set on both the session and `subscription_data.metadata`
+- Reuses the same `?subscription=success` / `?subscription=cancel` redirect contract as regular subscription checkout
+- `payment_method_collection: "always"` — card required upfront (LinkedIn-style)
+
+**Debugging:**
+The handler has 11 strategic `[trial-checkout]` console.log checkpoints covering every gate. Check stdout (not stderr) to trace exactly where a failure occurs:
+
+```
+[trial-checkout] ▶️ Entered handler
+[trial-checkout] userId=abc123
+[trial-checkout] 🔒 Checking rate limit for trial-checkout-abc123
+[trial-checkout] ✅ Rate limit passed
+[trial-checkout] 🔧 VIP_TRIAL.enabled=true
+[trial-checkout] 🔍 Checking trial eligibility for userId=abc123
+[trial-checkout] ✅ Trial eligible=true
+[trial-checkout] 🔗 Checking FRONTEND_URL
+[trial-checkout] ✅ FRONTEND_URL=https://app.twistloom.com
+[trial-checkout] 🔗 Processing returnUrl=...
+[trial-checkout] ✅ URLs: success=..., cancel=...
+[trial-checkout] 🔧 Checking VIP_SUBSCRIPTION.priceId
+[trial-checkout] ✅ VIP_SUBSCRIPTION.priceId=price_xxx
+[trial-checkout] 📡 Querying user's stripeCustomerId
+[trial-checkout] 📡 User lookup: stripeCustomerId=null (will create)
+[trial-checkout] 🏦 Creating new Stripe customer for userId=abc123
+[trial-checkout] ✅ Stripe customer created: id=cus_xxx
+[trial-checkout] 💳 Creating Stripe checkout session...
+[trial-checkout] 💳 trial_period_days=30, endBehavior=cancel
+[trial-checkout] ✅ Stripe session created: id=cs_xxx, url=https://checkout.stripe.com/...
+[trial-checkout] ❌ CAUGHT ERROR: Error: ...
+```
+
+---
+
+### GET /payments/subscription/trial-eligibility
+
+Checks whether the current user is eligible for the VIP free trial. This is a UX convenience gate — the backend independently re-checks eligibility at checkout-session creation (server-side security boundary).
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+{
+  "eligible": true
+}
+```
+
+**Error Responses:**
+- **401 Unauthorized**: Authentication required
+- **500 Internal Server Error**: Database query failure
+
+**Behavior:**
+- Returns `{ eligible: true }` if the user has never used a trial (`users.vipTrialUsedAt IS NULL`) AND has no active VIP subscription
+- Returns `{ eligible: false }` if either condition fails
+- One-trial-per-user enforced here and at checkout creation
+
+---
+
 ### GET /payments/subscription
 
 Returns the authenticated user's current subscription status.
@@ -327,16 +422,19 @@ Returns the authenticated user's current subscription status.
     "status": "active",
     "currentPeriodStart": "2026-05-23T00:00:00.000Z",
     "currentPeriodEnd": "2026-06-23T00:00:00.000Z",
-    "cancelAtPeriodEnd": false
-  },
-  "vipExpiresAt": "2026-06-23T00:00:00.000Z"
+    "cancelAtPeriodEnd": false,
+    "monthlyCredits": 50,
+    "isTrial": false,
+    "trialEnd": null
+  }
 }
 ```
 
 **Response (200 OK) - No Subscription:**
 ```json
 {
-  "hasActiveSubscription": false
+  "hasActiveSubscription": false,
+  "subscription": null
 }
 ```
 
@@ -347,8 +445,7 @@ Returns the authenticated user's current subscription status.
 **Behavior:**
 - Checks if user has active VIP subscription
 - Returns subscription details if active
-- Returns VIP expiration date
-- Returns null if no subscription exists
+- Returns null subscription if no active subscription or guest
 
 **Optional Enhancements:**
 - Add subscription history endpoint to show past subscriptions
@@ -739,9 +836,11 @@ Different endpoints have different rate limits to prevent abuse:
 **Authenticated endpoints:**
 - `POST /payments/create-checkout-session`: 1 request per 10 seconds per user
 - `POST /payments/create-subscription-checkout`: 1 request per 10 seconds per user
+- `POST /payments/create-trial-checkout-session`: 1 request per 10 seconds per user
 - `POST /payments/consume-credits`: 60 requests per minute per user
 - `GET /payments/transactions`: 30 requests per minute per user
 - `GET /payments/subscription`: 30 requests per minute per user
+- `GET /payments/subscription/trial-eligibility`: 30 requests per minute per user
 - `POST /payments/subscription/cancel`: 10 requests per minute per user
 - `GET /payments/subscription/portal`: 30 requests per minute per user
 
@@ -934,6 +1033,12 @@ curl "https://api.twistloom.com/payments/transactions?limit=20&type=reward" \
 ---
 
 ## Changelog
+
+### v1.6.0 (2026-07-14)
+- **Async error hardening**: Added `wrapAsync()` utility in `src/utils/error.ts` to catch promise rejections from async Express middleware (Express 4.x does not handle these natively). Applied to `POST /payments/create-trial-checkout-session` — both `requireAuth` and the handler itself are wrapped.
+- **Debug logging**: `handleApiError()` now writes to both stdout (`console.log`) and stderr (`console.error`) so error output is visible regardless of which stream the operator is watching.
+- **11-step trace**: `POST /payments/create-trial-checkout-session` now logs every gate (rate limit, eligibility, URL validation, Stripe customer lookup, Stripe session creation) with `[trial-checkout]` tags.
+- **Documentation**: Added missing `POST /payments/create-trial-checkout-session` and `GET /payments/subscription/trial-eligibility` API sections with full error response details and debugging guidance.
 
 ### v1.5.0 (2026-07-12)
 - Migrated `transactions.amount_usd` (real) → `transactions.amount_cents` (integer) for Stripe-compatible precision

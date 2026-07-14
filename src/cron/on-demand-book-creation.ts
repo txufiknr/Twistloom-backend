@@ -135,7 +135,7 @@ async function processBookGeneration(bookId: string): Promise<void> {
     // Pass bookId to update existing draft instead of creating duplicate
     const result = await initializeBook(params);
 
-    console.log('[book-creation] 📔 Book initialized successfully:', result);
+    console.log('[book-creation] 📔 Book initialized successfully:', JSON.stringify(result, null, 2));
 
     // Await terminal status updates so they are persisted before process.exit().
     // initializeBook already calls onGenerationProgress('complete') internally,

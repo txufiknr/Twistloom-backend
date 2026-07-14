@@ -12,7 +12,7 @@
  * - Gemini API error handling with structured detail processing
  */
 
-import type { Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { IS_DEVELOPMENT } from "../config/env.js";
 import { group } from '@actions/core';
 
@@ -23,6 +23,33 @@ export interface ErrorResponse {
   success: false;
   error: string;
   details?: string | object;
+}
+
+/**
+ * Wraps an async Express middleware or route handler so that promise rejections
+ * are forwarded to Express's error handler via next() instead of becoming
+ * unhandled rejections.
+ *
+ * Express 4.x does not catch promise rejections from async middleware or
+ * route handlers. Without this wrapper, an async throw inside requireAuth
+ * or any handler would either crash the process (local dev) or produce a
+ * generic 500 with no application logs (Vercel serverless).
+ *
+ * @param fn - An async (req, res, next) function
+ * @returns A regular Express middleware that catches rejections and calls next(err)
+ *
+ * @example
+ * ```typescript
+ * router.post("/example", wrapAsync(requireAuth), wrapAsync(async (req, res) => {
+ *   // ...
+ * }));
+ * ```
+ */
+export type AsyncRequestHandler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
+export function wrapAsync(fn: AsyncRequestHandler) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
 }
 
 /**
@@ -61,8 +88,9 @@ export function handleApiError(
   error?: unknown,
   statusCode?: number
 ): void {
-  // Log the full error for debugging
-  if (error) console.error(error);
+  // Log the full error for debugging — write to both stdout and stderr so it's
+  // visible regardless of which stream the user/logger is watching.
+  if (error) console.error(`[handleApiError] ❌ ${message}:`, error);
 
   // Build error response
   // getErrorMessage falls back to the message parameter if error is null/undefined,

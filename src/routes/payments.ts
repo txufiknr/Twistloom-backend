@@ -35,7 +35,7 @@ import { dbRead, dbWrite } from "../db/client.js";
 import { users, transactions, webhookDeliveries, userNotifications, subscriptions } from "../db/schema.js";
 import { CREDIT_PACKS, type CreditCostKey, CREDIT_COSTS, FIRST_PURCHASE_BONUS } from "../config/credits.js";
 import type { TransactionType } from "../types/credits.js";
-import { getErrorMessage, handleApiError, handleConflictError, handleNotFoundError, handleRateLimitError, handleValidationError } from "../utils/error.js";
+import { getErrorMessage, handleApiError, handleConflictError, handleNotFoundError, handleRateLimitError, handleValidationError, wrapAsync } from "../utils/error.js";
 import { checkRateLimit, checkIdempotency, storeIdempotencyResult, constructSafeUrl, setIdempotencyProcessing } from "../utils/redis.js";
 import { consumeCredits, getCreditCost, awardCredits } from "../services/credits.js";
 import { CREDIT_ERRORS, isInsufficientCreditsError } from "../config/errors.js";
@@ -723,38 +723,52 @@ router.get("/subscription/trial-eligibility", requireAuth, async (req: Request, 
  *
  * @see VIP_FREE_TRIAL_ROADMAP.md §4.3
  */
-router.post("/create-trial-checkout-session", requireAuth, async (req: Request, res: Response) => {
+router.post("/create-trial-checkout-session", wrapAsync(requireAuth), wrapAsync(async (req: Request, res: Response) => {
+  const LOG_TAG = '[trial-checkout]';
   try {
+    console.log(`${LOG_TAG} ▶️ Entered handler`);
     const { successPath, cancelPath, returnUrl } = req.body;
     const userId = req.user!.id;
+    console.log(`${LOG_TAG} userId=${userId}`);
 
     // Rate limiting: Prevent duplicate session spam (1 session per 10 seconds per user)
+    console.log(`${LOG_TAG} 🔒 Checking rate limit for trial-checkout-${userId}`);
     const rateLimitResult = await checkRateLimit(`trial-checkout-${userId}`, {
       maxRequests: 1,
       windowSeconds: 10,
     });
     if (!rateLimitResult.allowed) {
+      console.log(`${LOG_TAG} ⛔ Rate limited`);
       return handleRateLimitError(res, "Too many checkout session attempts. Please wait a few seconds before trying again.");
     }
+    console.log(`${LOG_TAG} ✅ Rate limit passed`);
 
     // Master kill-switch check
+    console.log(`${LOG_TAG} 🔧 VIP_TRIAL.enabled=${VIP_TRIAL.enabled}`);
     if (!VIP_TRIAL.enabled) {
+      console.log(`${LOG_TAG} ⛔ Trials disabled via VIP_TRIAL.enabled`);
       return handleValidationError(res, "Trials are not currently available");
     }
 
     // Defense in depth: re-check eligibility server-side regardless of what
     // the frontend showed. A vipTrialUsedAt check that only runs client-side
     // is trivially bypassed.
+    console.log(`${LOG_TAG} 🔍 Checking trial eligibility for userId=${userId}`);
     const eligible = await isTrialEligible(userId);
+    console.log(`${LOG_TAG} ✅ Trial eligible=${eligible}`);
     if (!eligible) {
+      console.log(`${LOG_TAG} ⛔ Not eligible for trial`);
       return handleValidationError(res, "Trial not available for this account");
     }
 
     // Validate and construct URLs (security: prevent open redirects)
+    console.log(`${LOG_TAG} 🔗 Checking FRONTEND_URL`);
     const baseUrl = process.env.FRONTEND_URL;
     if (!baseUrl) {
+      console.log(`${LOG_TAG} ❌ FRONTEND_URL not configured`);
       return handleApiError(res, "Frontend URL not configured");
     }
+    console.log(`${LOG_TAG} ✅ FRONTEND_URL=${baseUrl}`);
 
     // For refresh-less UX: use returnUrl to return user to same page
     let successUrl: string;
@@ -762,11 +776,13 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
 
     // Secure origin parsing — same pattern as create-subscription-checkout
     if (returnUrl) {
+      console.log(`${LOG_TAG} 🔗 Processing returnUrl=${returnUrl}`);
       try {
         const returnUrlObj = new URL(returnUrl, baseUrl);
         const baseUrlObj = new URL(baseUrl);
 
         if (returnUrlObj.origin !== baseUrlObj.origin) {
+          console.log(`${LOG_TAG} ❌ Cross-origin returnUrl rejected: origin=${returnUrlObj.origin}, expected=${baseUrlObj.origin}`);
           throw new Error("Cross-origin returnUrl not allowed");
         }
 
@@ -779,6 +795,7 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
         returnUrlObj.searchParams.set('subscription', 'cancel');
         cancelUrl = returnUrlObj.toString();
       } catch {
+        console.log(`${LOG_TAG} ⚠️ returnUrl parsing failed, falling back to defaults`);
         successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
         cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
       }
@@ -786,13 +803,18 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
       successUrl = constructSafeUrl(successPath, baseUrl, '/dashboard?subscription=success');
       cancelUrl = constructSafeUrl(cancelPath, baseUrl, '/pricing');
     }
+    console.log(`${LOG_TAG} ✅ URLs: success=${successUrl}, cancel=${cancelUrl}`);
 
     // Validate VIP subscription configuration
+    console.log(`${LOG_TAG} 🔧 Checking VIP_SUBSCRIPTION.priceId`);
     if (!VIP_SUBSCRIPTION.priceId) {
+      console.log(`${LOG_TAG} ❌ VIP_SUBSCRIPTION.priceId is not configured`);
       return handleApiError(res, "VIP subscription not configured");
     }
+    console.log(`${LOG_TAG} ✅ VIP_SUBSCRIPTION.priceId=${VIP_SUBSCRIPTION.priceId}`);
 
     // Always query DB for fresh stripeCustomerId, rather than relying on JWT middleware payload
+    console.log(`${LOG_TAG} 📡 Querying user's stripeCustomerId`);
     const [user] = await dbRead
       .select({ stripeCustomerId: users.stripeCustomerId, email: users.email })
       .from(users)
@@ -801,18 +823,23 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
 
     let customerId = user?.stripeCustomerId;
     const userEmail = user?.email;
+    console.log(`${LOG_TAG} 📡 User lookup: stripeCustomerId=${customerId || 'null (will create)'}, email=${userEmail}`);
 
     if (!customerId) {
+      console.log(`${LOG_TAG} 🏦 Creating new Stripe customer for userId=${userId}`);
       const customer = await getStripe().customers.create({
         email: userEmail ?? req.user!.email,
         metadata: { userId },
       });
       customerId = customer.id;
+      console.log(`${LOG_TAG} ✅ Stripe customer created: id=${customerId}`);
 
       // Update user with Stripe customer ID
+      console.log(`${LOG_TAG} 📝 Updating user with stripeCustomerId=${customerId}`);
       await dbWrite.update(users)
         .set({ stripeCustomerId: customerId })
         .where(eq(users.userId, userId));
+      console.log(`${LOG_TAG} ✅ User updated with stripeCustomerId`);
     }
 
     // Create Stripe trial checkout session.
@@ -820,6 +847,8 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
     // sessions, which is the LinkedIn-style card-required behavior we want.
     // Explicitly setting it here to avoid relying on Stripe's default silently
     // matching our intent.
+    console.log(`${LOG_TAG} 💳 Creating Stripe checkout session...`);
+    console.log(`${LOG_TAG} 💳 trial_period_days=${VIP_TRIAL.trialPeriodDays}, endBehavior=${VIP_TRIAL.endBehavior}`);
     const session = await getStripe().checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "subscription",
@@ -844,11 +873,13 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
       cancel_url: cancelUrl,
     });
 
+    console.log(`${LOG_TAG} ✅ Stripe session created: id=${session.id}, url=${session.url}`);
     res.json({ url: session.url, sessionId: session.id });
   } catch (error) {
+    console.log(`[trial-checkout] ❌ CAUGHT ERROR:`, error);
     handleApiError(res, "Failed to create trial checkout session", error);
   }
-});
+}));
 
 /**
  * GET /payments/subscription
@@ -871,7 +902,8 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
  * @returns {string} subscription.currentPeriodEnd - Period end (ISO 8601)
  * @returns {boolean} subscription.cancelAtPeriodEnd - Whether subscription cancels at period end
  * @returns {number} subscription.monthlyCredits - Monthly credit allowance
- * @returns {string|null} vipExpiresAt - VIP expiration timestamp (ISO 8601) or null
+ * @returns {boolean} subscription.isTrial - Whether subscription is in trial period
+ * @returns {string|null} subscription.trialEnd - Trial end date (ISO 8601) or null
  * 
  * @example
  * // Response (active)
@@ -884,9 +916,10 @@ router.post("/create-trial-checkout-session", requireAuth, async (req: Request, 
  *     "currentPeriodStart": "2026-01-01T00:00:00.000Z",
  *     "currentPeriodEnd": "2026-02-01T00:00:00.000Z",
  *     "cancelAtPeriodEnd": false,
- *     "monthlyCredits": 50
- *   },
- *   "vipExpiresAt": "2026-02-01T00:00:00.000Z"
+ *     "monthlyCredits": 50,
+ *     "isTrial": false,
+ *     "trialEnd": null
+ *   }
  * }
  * 
  * // Response (inactive/guest)
@@ -923,7 +956,6 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
         cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
         isTrial: subscriptions.isTrial,
         trialEnd: subscriptions.trialEnd,
-        vipExpiresAt: users.vipExpiresAt,
       })
       .from(users)
       .innerJoin(subscriptions, eq(subscriptions.id, users.subscriptionId))
@@ -954,7 +986,6 @@ router.get("/subscription", optionalAuth, async (req: Request, res: Response) =>
         /** Trial end date as ISO string, null once the trial converts or ends */
         trialEnd: sub.trialEnd?.toISOString() ?? null,
       },
-      vipExpiresAt: sub.vipExpiresAt?.toISOString(),
     });
   } catch (error) {
     handleApiError(res, "Failed to fetch subscription details", error);

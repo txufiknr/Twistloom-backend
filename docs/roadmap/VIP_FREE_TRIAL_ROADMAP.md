@@ -8,6 +8,13 @@
 
 ## Implementation CHANGELOG
 
+### Implemented (Jul 2026, round 3) — Async error hardening & debug logging
+
+- **Bug fix: Express 4.x unhandled async rejection in middleware.** `requireAuth` and the trial checkout handler are both `async`. Express 4.x does **not** catch promise rejections from async middleware — a thrown error inside `requireAuth` (e.g., a DB failure in `verifyNextAuthToken()`) silently fell through to `process.on("unhandledRejection")` (which crashes the process in local dev) or a generic 500 with zero application logs (Vercel serverless). Fixed by introducing `wrapAsync()` in `src/utils/error.ts:49` — a one-liner that forwards any rejection to Express's `next(err)`. **Also applied to the trial checkout handler** at `src/routes/payments.ts:726` for defense-in-depth.
+- **Debug logging: `handleApiError()` now writes to stdout (`console.log`) in addition to stderr (`console.error`).** The original `console.error`-only output was invisible when watching stdout. At `src/utils/error.ts:93-96`.
+- **Strategic 11-step console.log trace** added to the trial checkout handler (`POST /create-trial-checkout-session`). Every gate (rate limit, eligibility, URL validation, Stripe customer lookup, Stripe session creation) now logs a `[trial-checkout]` tag before executing, plus the caught-error dump on failure. See `src/routes/payments.ts:726-882`.
+- **`wrapAsync` applied to the trial checkout route** at `src/routes/payments.ts:726` — both the `requireAuth` middleware and the handler itself are wrapped, so any async throw at any level is caught and forwarded instead of becoming a silent unhandled rejection.
+
 ### Implemented (Jul 2026, round 2) — Q1–Q6 decisions + two bug fixes
 
 Design rationale for all six open questions is now documented in §9.2 as resolved decisions, not open questions. Summary of what changed in code:
@@ -194,14 +201,44 @@ Creates a `trial_ending_soon` notification in `userNotifications`.
 
 **e) Cancel-on-missing-payment-method ✅** — no code changes needed. With `end_behavior: 'cancel'`, Stripe fires `customer.subscription.deleted`, which the existing `handleSubscriptionDeleted` → `cancelSubscription()` already handles.
 
-### 4.5 Abuse prevention ✅ (partially implemented)
+### 4.6 Async error hardening — `wrapAsync` pattern ✅ (round 3)
+
+Express 4.x does not catch promise rejections from async middleware or route handlers. Any `async` function passed to `router.get/post` that throws will result in either an unhandled rejection (crashing the process locally) or a generic 500 with no application logs (Vercel serverless). This is exactly what happened with `POST /create-trial-checkout-session` — the 500 arrived but `handleApiError()`'s `console.error()` (which writes to stderr) was invisible when watching stdout.
+
+**Solution** — `wrapAsync()` in `src/utils/error.ts:49`:
+
+```ts
+export function wrapAsync(fn: AsyncRequestHandler) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+}
+```
+
+**Applied to** the trial checkout route at `src/routes/payments.ts:726`:
+```ts
+router.post("/create-trial-checkout-session",
+  wrapAsync(requireAuth),          // catches auth middleware rejections
+  wrapAsync(async (req, res) => {  // catches handler rejections
+    // ...
+  })
+);
+```
+
+**Strategy for the rest of the codebase:** Every existing async route handler has its own `try/catch` + `handleApiError()` — those are unaffected and safe. The vulnerability is in **async middleware** (`requireAuth`, `optionalAuth`) where Express receives a rejection before the handler's `try/catch` can intercept it. Wrapping the middleware with `wrapAsync()` is the pattern to follow when layering async middleware before any handler.
+
+**Dual logging in `handleApiError()`** (`src/utils/error.ts:93-96`): `console.log()` added alongside `console.error()` so error output is visible regardless of which stream the operator is watching.
+
+**11-step trace** in the trial checkout handler: Every gate logs a `[trial-checkout]` tag — rate limit, kill-switch, eligibility, FRONTEND_URL, Stripe customer, Stripe session creation, and the final `❌ CAUGHT ERROR` dump. Run the request again and check stdout to see exactly which step fails.
+
+### 4.7 Abuse prevention ✅ (partially implemented)
 
 - ✅ **Card-required**: Stripe default for subscription-mode Checkout — `payment_method_collection: "always"` is set explicitly in the trial checkout endpoint
 - ✅ **One-trial-per-user**: `vipTrialUsedAt` flag set once, never cleared
 - ✅ **Rate limiting**: Trial checkout endpoint has the same 1-per-10-seconds rate limit as regular subscription checkout
 - 🔲 **Stripe-side cross-check** (fast-follow, not v1 blocker)
 
-### 4.6 Expiration/downgrade path ✅ (no code changes needed)
+### 4.8 Expiration/downgrade path ✅ (no code changes needed)
 
 No changes needed to `vip-expiration.ts` — it already keys off `tier = 'vip' AND vipExpiresAt < now()`, and `createSubscription()` sets `vipExpiresAt` to `trialEnd` for trial subscriptions. An abandoned trial is caught by the same cron job that handles expired paid subscriptions.
 
@@ -441,10 +478,10 @@ These are non-critical gaps that can be addressed post-launch:
 | Item | Priority | Description |
 |------|----------|--------------|
 | **Trial analytics queries** | Low | §7 describes the queries (trial starts/week, conversion rate, time-to-cancel). No views or SQL written yet. Both `subscriptionTransactions.type = 'trial_started'` and the new `'trial_expired'` (with its credits-remaining snapshot) make these straightforward to write when you actually want the dashboard. |
-| **Stripe-side abuse prevention** | Low | §4.5 mentions Stripe Radar rules for repeat-trial card fingerprints. Configured in the Stripe Dashboard, not code — not implemented. |
+| **Stripe-side abuse prevention** | Low | §4.7 mentions Stripe Radar rules for repeat-trial card fingerprints. Configured in the Stripe Dashboard, not code — not implemented. |
 | **Stripe trial-ending email config** | Low | §4.4b mentions Dashboard → Subscriptions and emails → Manage free trial messaging. Stripe-side config, not code. |
 | **Automated tests** | Medium | No test files yet. §6 covers manual Stripe test-clock scenarios. Worth automating `isTrialEligible()`, the eligibility endpoint, the trial checkout endpoint, and now `cancelSubscription()`'s trial-expired branch given the transaction-history logic isn't entirely trivial. |
-| **`pause` end behavior** | Low | Deliberately deferred per Q2. `VIP_TRIAL.endBehavior` config is ready for it, but the downgrade/notification path needs the work described in §4.6 before it's safe to flip. |
+| **`pause` end behavior** | Low | Deliberately deferred per Q2. `VIP_TRIAL.endBehavior` config is ready for it, but the downgrade/notification path needs the work described in §4.8 before it's safe to flip. |
 
 ### Resolution summary
 
