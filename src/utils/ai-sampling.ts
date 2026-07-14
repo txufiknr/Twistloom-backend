@@ -6,7 +6,7 @@ import type { AdvancedOptionsConfig } from "../types/book-creation.js";
  * The target temperature range derived from the creativity slider (0–1).
  *
  * When a user adjusts `creativity` in the frontend, it maps linearly
- * into this range.  These constants **must** stay in sync with
+ * into this range. These constants **must** stay in sync with
  * `src/lib/utils/ai-sampling.ts` in the frontend project.
  */
 const TEMPERATURE_RANGE = { min: 0.75, max: 1.15 } as const;
@@ -242,10 +242,8 @@ export function validateAIConfig(config: AIChatConfig): AIChatConfig {
 export function mapAdvancedOptionsConfig(
   config: AdvancedOptionsConfig,
 ): Omit<AIChatConfig, "topK" | "maxOutputToken"> {
-  const creativity =
-    typeof config.creativity === "number" ? config.creativity : 0.5;
-  const repetitionControl =
-    typeof config.repetitionControl === "number" ? config.repetitionControl : 0.5;
+  const creativity = typeof config.creativity === "number" ? config.creativity : 0.5;
+  const repetitionControl = typeof config.repetitionControl === "number" ? config.repetitionControl : 0.5;
   const developer = config.developer || {};
 
   return {

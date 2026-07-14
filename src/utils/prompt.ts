@@ -2279,7 +2279,14 @@ function formatFutureNotes(params: {
   // threshold) fall through to the end in their original chronological order.
   if (sortedUnscheduledKeys?.length) {
     const keyOrder = new Map(sortedUnscheduledKeys.map((k, i) => [k, i]));
-    unscheduled.sort((a, b) => (keyOrder.get(a.key) ?? Infinity) - (keyOrder.get(b.key) ?? Infinity));
+    unscheduled.sort((a, b) => {
+      const rankA = keyOrder.get(a.key);
+      const rankB = keyOrder.get(b.key);
+      if (rankA === undefined && rankB === undefined) return 0; // neither ranked — preserve existing order
+      if (rankA === undefined) return 1;  // unranked notes sort after ranked ones
+      if (rankB === undefined) return -1;
+      return rankA - rankB;
+    });
   }
 
   // ── Formatters ─────────────────────────────────────────────────────────────
@@ -2912,7 +2919,7 @@ ${mcCurrentState}
 STORY CONTEXT:
 ${storyContext}
 
-${relevantPastEventsBlock || formatRecentMajorEvents(plotFlags)}
+${relevantPastEventsBlock ? `${relevantPastEventsBlock}\n\n` : ''}${formatRecentMajorEvents(plotFlags)}
 
 CURRENT FACTS:
 ${formatCurrentFacts(factsHistory)}
@@ -3921,6 +3928,9 @@ export async function initializeBook(
       bookId = book.id;
     }
 
+    // Define placeId first to be used as scene context
+    const placeId = initialPlace.placeId;
+
     const characters: Record<string, CharacterMemory> = Object.fromEntries<CharacterMemory>(initialCharacters.map<[string, CharacterMemory]>(char => [
       char.characterId,
       {
@@ -3944,14 +3954,13 @@ export async function initializeBook(
       } satisfies CharacterMemory
     ]));
 
-    const placeId = initialPlace.placeId;
     const places: Record<string, PlaceMemory> = {
       [placeId]: {
         ...initialPlace,
         visitCount: 1,
         lastVisitedAtPage: 1,
         keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
-        knownConnections: []
+        knownConnections: [] // TODO: do we need to include initialCharacters here?
       } satisfies PlaceMemory
     };
 
@@ -4248,8 +4257,19 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // timeline order). Never throws — a failed retrieval simply leaves the
   // bucket in its default chronological sort.
   let relevantFutureNoteKeys: string[] | undefined;
+  // Candidates: notes with neither a schedule NOR a state trigger at all.
+  // (Slightly conservative vs. the real "unscheduled" bucket in
+  // formatFutureNotes, which also allows a DORMANT — currently inactive —
+  // stateTrigger. Those dormant-trigger notes just won't get semantic
+  // ranking; they keep their default chronological order if/when they land
+  // in the unscheduled bucket. Fully replicating the bucket's exact
+  // condition would mean hoisting isStateTriggerActive out of
+  // formatFutureNotes' closure to evaluate it here too — not worth it for
+  // what was already a harmless edge case: any extraneous candidate key
+  // that doesn't match an actual unscheduled note simply never matches
+  // anything in formatFutureNotes' keyOrder lookup and is silently ignored.)
   const unscheduledNoteKeys = advancedState.futureNotes
-    .filter(n => !n.schedule?.length)
+    .filter(n => !n.schedule?.length && !n.stateTrigger?.length)
     .map(n => n.key);
   if (unscheduledNoteKeys.length) {
     try {

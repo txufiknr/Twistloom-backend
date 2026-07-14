@@ -211,19 +211,19 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     'meta-llama/llama-4-maverick:free', // 1,048,576 (1M) Tokens. Excellent JSON. Toggleable reasoning. Strong narrative fluidity and voice, benefiting from a massive, rich dataset of human social interactions.
     'nvidia/nemotron-3-super:free', // 1,000,000 (1M) tokens. Excellent JSON. Toggleable Reasoning. Replaces Mixtral. Massive MoE model, exceptional atmospheric tension.
     'deepseek/deepseek-r1:free', // 128K+ tokens. Superior JSON. Native Reasoning. Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
-    'meta-llama/llama-3.3-70b-instruct:free', // 128K tokens. Very good JSON. Standard Model. Very fluid, natural vocabulary. Excellent at keeping character dialogue sounding organic and culturally nuanced.
+    'meta-llama/llama-3.3-70b-instruct:free', // 128K tokens (~131K tokens). Fair JSON. Standard Model. Very fluid, natural vocabulary. Excellent at keeping character dialogue sounding organic and culturally nuanced.
+  ],
+  cerebras: [
+    'zai-glm-4.7', // 200K tokens. Excellent JSON. Toggleable Reasoning. Fluid dialogue and strong plot pacing. Avoids the rigid, formulaic block-text styling that plagues GPT-OSS-120B. Acts as a powerful middle ground, effectively bridging the gap between the strict structural engineering of GPT-OSS-120B and the creative versatility of Llama-3.3-70B.
   ],
   groq: [
-    'openai/gpt-oss-120b', // deepest psychological complexity, best for sustained horror dread
-    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
-    'qwen/qwen3.6-27b',
-
     // TODO: deprecated Jul 17, 2026
-    'qwen/qwen3-32b', // intricate atmospheric layering; 60 RPM (2x other models)
-    'meta-llama/llama-4-scout-17b-16e-instruct', // MoE: excellent for continuity-heavy branching scenes
+    'meta-llama/llama-4-scout-17b-16e-instruct', // 10M tokens. Very Good JSON. Retains the signature warmth, emotional nuance, and highly organic dialogue flow that made the Llama-3 series popular, but pairs it with unparalleled long-horizon memory tracking. MoE: excellent for continuity-heavy branching scenes.
+    'qwen/qwen3-32b', // Intricate atmospheric layering; 60 RPM (2x other models).
 
-    // TODO: deprecated on Aug 16, 2026
-    'llama-3.1-8b-instant', // fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort
+    'qwen/qwen3.6-27b', // 262K+ tokens (Extendable up to 1M). Excellent JSON. Toggleable Reasoning. Prose leans closer to the structured nature of GPT-OSS-120B. It can write a highly logical mystery plot or complex political intrigue, but its natural dialogue and emotional nuance still won't feel quite as organic or warm as Meta's Llama-3.3.
+    'openai/gpt-oss-120b', // 128K tokens. Excellent JSON. Toggleable Reasoning. Sometimes feel "dry," structural, or overly analytical when tasked with creative storytelling. Deepest psychological complexity, best for sustained horror dread.
+    'openai/gpt-oss-20b', // Structurally reliable fallback, same OpenAI lineage as 120B.
 
     // All models
     // openai/gpt-oss-20b ✅ // Strict Mode (strict: true)
@@ -235,15 +235,9 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
     // llama-3.3-70b-versatile ✅
     // llama-3.1-8b-instant ✅
   ],
-  cerebras: [
-    'gpt-oss-120b', // Production model; strong general quality
-    'zai-glm-4.7',
-    // TODO: is it really available now?
-    'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
-  ],
   nvidia: [
     // Verify still in NIM catalog — Mixtral variants deprecated elsewhere
-    'meta/llama-3.3-70b-instruct', // Tightly paced, structurally robust.
+    'meta/llama-3.3-70b-instruct', // Tightly paced, structurally robust. Llama-3.3 has a large context window and excels naturally at dialogue, character development, and narrative pacing. It generates much more "human-like" text that flows organically without feeling forced.
     'qwen/qwen2.5-72b-instruct', // Intricate, heavily detailed. Ideal for massive lore.
   ],
   cloudflare: [
@@ -263,12 +257,12 @@ export const AI_CHAT_MODELS_WRITING: AIModelSelection = {
 export const AI_CHAT_MODELS_FAST: AIModelSelection = {
   groq: [
     // TODO: deprecated on Aug 16, 2026
-    'llama-3.3-70b-versatile', // cinematic, fast-paced action, sharp dialogue, proven thriller prose
-    'llama-3.1-8b-instant', // fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort
+    'llama-3.3-70b-versatile', // Cinematic, fast-paced action, sharp dialogue, proven thriller prose.
+    'llama-3.1-8b-instant', // Fast/punchy action beats, distinct voice for erratic/poetic internal monologue; 14.4K RPD makes it a high-volume last resort.
   ],
   cerebras: [
     // TODO: is it really available now?
-    'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick
+    'llama3.1-8b', // Fast, punchy — closest in spirit to the old llama-3.3-70b pick.
   ],
 };
 
@@ -299,14 +293,15 @@ export const AI_CHAT_MODELS_IDEA: AIModelSelection = {
     'nvidia/nemotron-nano-9b-v2:free' // Replaces Gemma. Punchy, unique vocabulary, great for erratic character thoughts.
   ],
   groq: [
-    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
+    'openai/gpt-oss-20b', // Structurally reliable fallback, same OpenAI lineage as 120B
     'qwen/qwen3.6-27b',
   ],
   cloudflare: [
+    '@cf/mistral/mistral-7b-instruct-v0.1',
     '@cf/meta/llama-3.1-8b-instruct',
-    '@cf/qwen/qwen1.5-7b-chat-awq'
+    '@cf/qwen/qwen1.5-7b-chat-awq',
   ],
-  nvidia: ['meta/llama-3.3-70b-instruct'],
+  nvidia: ['meta/llama-3.3-70b-instruct'], // Creative writing, roleplay, brainstorming, and generating natural-sounding, lengthy prose.
   cohere: ['command-r-08-2024'],
 };
 
@@ -346,6 +341,15 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'gemini-3-flash-preview',
     'gemini-2.5-flash'
   ],
+  // If you are translating highly complex fiction (like Sci-Fi or High Fantasy) with specific custom world languages, Qwen3.6-27B is your best bet because its massive memory ensures no lore rules are broken. If you are translating an emotional, character-driven drama, GLM-4.7 will give you slightly more moving, poetic prose out of the box.
+  cerebras: [
+    // Best for Prose Aesthetic. GLM-4.7's post-training leans heavily into creative fluid styles. It writes translated dialogue that feels warm, theatrical, and naturally human.
+    'zai-glm-4.7', // GLM series is trained from the ground up on vast, highly diverse multilingual datasets (especially English, Chinese, and other major Asian and European languages). It understands the subtle cultural idioms, emotional tones, and structural nuances of non-English languages.
+  ],
+  groq: [
+    // Best for Continuity and Accuracy. Qwen3.6 is highly literal and accurate. It perfectly captures intricate plot instructions, tracks world-building glossaries, and manages a massive 262K book context effortlessly. Its prose is incredibly polished and clean, though slightly more clinical than GLM-4.7.
+    'qwen/qwen3.6-27b', // Features an elite multilingual vocabulary tokenizer. It processes complex character-based or non-Latin alphabets natively. It preserves its massive 262K native context window even when dealing entirely with translated lore. Incredible, highly precise translator, though it functions more like a masterful "localization machine" rather than a purely poetic writer.
+  ],
   openrouter: [
     'google/gemini-2.5-flash', // Extremely strong prose quality, pacing, emotion, and instruction-following
     'qwen/qwen3-30b-a3b', // Creative and imaginative with good character voice variety
@@ -355,14 +359,10 @@ export const AI_CHAT_MODELS_TRANSLATION: AIModelSelection = {
     'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text.
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
   ],
-  groq: [
-    'openai/gpt-oss-120b',
-    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
-    'qwen/qwen3.6-27b',
-  ],
   cloudflare: [
     '@cf/qwen/qwen1.5-14b-chat-awq', // Qwen is notoriously strong at multilingual tasks.
-    '@cf/mistral/mistral-7b-instruct-v0.1'
+    '@cf/mistral/mistral-7b-instruct-v0.1',
+    '@cf/meta/llama-3.1-8b-instruct'
   ],
   // Possesses enough language complexity to grasp context, maintain story continuity, and accurately translate dialogue.
   // Optimized for 10 core languages: English, French, Spanish, Italian, German, Portuguese, Japanese, Korean, Chinese, Arabic.
@@ -383,10 +383,15 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
   mistral: [
     'mistral-large-latest',
   ],
+  cerebras: [
+    'zai-glm-4.7', // Occasionally beats GPT-OSS-120B on deeply nested structures due to its raw reasoning capabilities.
+    'gpt-oss-120b', // Production model; strong general quality. It is great at plotting, but dialogue and prose can feel slightly robotic.
+  ],
   groq: [
-    'openai/gpt-oss-120b',
-    'openai/gpt-oss-safeguard-20b', // fine-tuned from GPT-OSS, this model helps classify text content based on customizable policies
-    'openai/gpt-oss-20b', // structurally reliable fallback, same OpenAI lineage as 120B
+    'openai/gpt-oss-120b', // Superior choice for complex JSON schema adherence and step-by-step reasoning.
+    'openai/gpt-oss-safeguard-20b', // Fine-tuned from GPT-OSS, this model helps classify text content based on customizable policies
+    'openai/gpt-oss-20b', // Structurally reliable fallback, same OpenAI lineage as 120B
+    'qwen/qwen3.6-27b', // Highly reliable bracket matching and field consistency.
   ],
   openrouter: [
     'qwen/qwen3-30b-a3b', // Has known tokenization bias during constrained JSON decoding. Creative and imaginative with good character voice variety.
@@ -396,9 +401,6 @@ export const AI_CHAT_MODELS_EVALUATION: AIModelSelection = {
     'nvidia/nemotron-3-super:free', // 1M context easily handles parsing massive full-story payloads.
     'deepseek/deepseek-r1:free', // Strong analytical/reasoning prose. Phenomenal at mapping out the underlying logic of a scene before outputting final text. Incredible at analyzing strict JSON constraints and finding errors.
     'meta-llama/llama-3.3-70b-instruct:free', // High-octane cinematic action and dialogue.
-  ],
-  cloudflare: [
-    '@cf/meta/llama-3.1-8b-instruct'
   ],
   cohere: [
     'command-r-08-2024'

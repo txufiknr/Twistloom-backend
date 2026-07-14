@@ -17,35 +17,14 @@
 - [ ] search jaccard similarity (by book keywords & title)
 - [ ] need change to cursor pagination?
 
-[x] Khusus gemini tetep show output format, maxEnum coba 3 aja
-[x] use title, mc, summary & hook from theme validation if not generated in initializeBook
-[x] classifyGenAIError buat group github action log
 [@] claude payment review: src\app.ts (later check)
 [@] GET /api/payments/stripe/webhook (404)
+[@] sync sampling formula with ai-sampling.ts
 [ ] implement trust and safety enforcement system (TODO-trust-safety.md & TRUST_AND_SAFETY_ENFORCEMENT_SYSTEM.md)
-[ ] sync sampling formula with ai-sampling.ts
 [ ] Before insert page, correct futureNote keys
 [ ] Place categories list di prompt aja
 [ ] result mistral medium kepotong
 [ ] Json stringify: [book-creation] 📔 Book initialized successfully:
-
----
-
-All done. Here's a summary of the changes:
-
-**Use Case 3 (Future Notes Semantic Ranking) — wired up**
-
-- `src/types/prompt.ts:51-61` — Added `relevantFutureNoteKeys?: string[]` to `BuildNextPagePromptParams`
-- `src/utils/prompt.ts:50` — Added `retrieveRelevantFutureNotes` to imports
-- `src/utils/prompt.ts:4234-4255` — In `prepareNextPageGenerationSetup`, computes unscheduled future note keys (notes without `schedule` entries), calls `retrieveRelevantFutureNotes` with the current scene query, and stores the ranked key list before `promptParams` is built
-- `src/utils/prompt.ts:2272-2282` — In `formatFutureNotes`, after the default chronological sort of the unscheduled bucket, reorders by semantic-similarity rank when `sortedUnscheduledKeys` is provided
-- `src/utils/prompt.ts:2961` — `relevantFutureNoteKeys` passed from `formatNextPageNarrativePrompt` down to `formatFutureNotes`
-
-**.env.local.example — JINA_API_KEY added**
-
-- Added with the same "Get from: https://..." pattern as other API keys (line 56-58), plus cross-references in the Vercel and GitHub Actions sections
-
-**Verification**: `pnpm typecheck`, `pnpm lint`, and `pnpm lint:imports` all pass cleanly.
 
 ---
 
