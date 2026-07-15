@@ -112,7 +112,8 @@ STORY THEME:
 ${theme}
 """
 
-From now on, you MUST use the exact same language as used in the story theme from user input above.
+LANGUAGE COMMITMENT: From now on, you MUST use the exact same language as used in the story theme from user input above.
+
 Then determine if this theme violates any content policies. Check for:
 
 1. INAPPROPRIATE CONTENT:
@@ -225,7 +226,9 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
           logPrompts: true,
         },
       },
-      fieldInstructions: `- language: ISO 639-1 code of the theme input language. CRITICAL: Determine this FIRST before generating any other text field. This language is your anchor — ALL text fields below MUST be written in this exact language.
+      fieldInstructions: `CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in same natural language as the story theme. If language is "en" then use English. No exceptions.
+
+- language: story theme language (ISO 639-1 code). CRITICAL: Determine this FIRST before generating any other text field. This language is your anchor — ALL text fields below MUST be written in this exact language.
 - isViolating: boolean (true if any violation detected)
 - category: ${formatOneOf(THEME_VALIDATION_CATEGORIES, ' | ')}
 - confidence: number (0.0 to 1.0)
@@ -250,9 +253,7 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
 Comment structure (only if theme is valid):
 - Write in the SAME LANGUAGE as the detected language field above — never another language
 - Use creative & thriller-themed wording
-- Express excitement and anticipation before generation
-
-CRITICAL RULE: ALL TEXT FIELDS (suggestion, comment, titleIdea, hook, summary, mcCandidate.name, mcCandidate.bio) MUST be written in the detected language. If language is "en" then use English. No exceptions.`,
+- Express excitement and anticipation before generation`,
       jsonStructure: `{
   "language": "<ISO 639-1 language code — determined FIRST>",
   "isViolating": <boolean>,
