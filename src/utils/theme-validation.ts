@@ -105,11 +105,14 @@ export function validateThemeHeuristic(theme: string): HeuristicValidationResult
  * @returns Formatted prompt for AI model
  */
 function createThemeValidationPrompt(theme: string): string {
-  return `First, detect language used in this story theme from user input:
+  return `First, detect language used in this story theme from user input below.
+
+STORY THEME:
 """
 ${theme}
 """
 
+From now on, you MUST use the exact same language as used in the story theme from user input above.
 Then determine if this theme violates any content policies. Check for:
 
 1. INAPPROPRIATE CONTENT:
@@ -155,7 +158,11 @@ Then determine if this theme violates any content policies. Check for:
    - SQL injection attempts
    - HTML/JavaScript injection
    - Code execution attempts
-   - Shell commands`;
+   - Shell commands
+
+OUTPUT LANGUAGE:
+Every user-facing text (titleIdea, comment, suggestion, etc) MUST consistently use the same natural language as the story theme.
+If the story theme is in English or unknown, then output in English.`;
 }
 
 /**
@@ -227,11 +234,11 @@ export async function validateThemeWithAI(theme: string): Promise<AIValidationRe
   - value: the detected text
   - context: brief context of where it was found
   - reason: explanation of why it's a violation
-- suggestion: 1-sentence in detected language (how to fix the issue, or empty string if theme is valid)
-- comment: max 250 chars (a complimentary comment about theme idea in detected language. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
+- suggestion: 1-sentence in same natural language as the story theme (how to fix the issue, or empty string if theme is valid)
+- comment: max 250 chars (a complimentary comment about theme idea in same natural language as the story theme. If the theme is invalid, provide an empty string. Use exciting, suspenseful language that matches the thriller genre tone.)
 - titleIdea: book title idea for the story based on the theme (${BOOK_TITLE_LENGTH}). If the theme is invalid, provide an empty string. Else if provided in theme, use it.
-- hook: immediate intrigue — ${HOOK_LENGTH} in detected language. Derived from the theme and MC. Omit if theme is invalid.
-- summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH} in detected language. Derived from the theme and MC. Omit if theme is invalid.
+- hook: immediate intrigue — ${HOOK_LENGTH} in same natural language as the story theme. Derived from the theme and MC. Omit if theme is invalid.
+- summary: sets up premise without revealing the ending plan — ${SUMMARY_LENGTH} in same natural language as the story theme. Derived from the theme and MC. Omit if theme is invalid.
 - mcCandidate: infer a character whose personality makes the theme more psychologically dangerous for them specifically.
   - name: if MC's name provided in theme input, strictly use it. If not provided, generate unusual (rare) but memorable name idea based on age and language context.
   - knownName: Preferred alias or nick referred by other characters.
