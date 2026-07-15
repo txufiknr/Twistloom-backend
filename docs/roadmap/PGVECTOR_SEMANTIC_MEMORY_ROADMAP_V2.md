@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phases 0-4 are done (schema, all writes, all reads, all four use cases 1/2/3/5 live, plus clue embeddings). `db:generate`/`db:migrate` have been run against the real database; pgvector is 0.8.1, confirmed as Neon's current ceiling — see §5. Remaining: Phase 5 (finale-callback filtering, book/image recommendations — the latter two deferred per earlier direction).
+**Status:** Phases 0-5 are all done. Schema, every write path, every read path, all use cases (1, 2, 3, 4, 5, 8) fully live in `prompt.ts`; Use Cases 9/10 deferred per earlier direction. `db:generate`/`db:migrate` have been run against the real database; pgvector is 0.8.1, confirmed as Neon's current ceiling — see §5. This roadmap's active scope is complete — remaining work is testing/validation in your environment, not further implementation.
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -541,9 +541,14 @@ Grounded against `story-thread.ts` and `story_utils.ts` (sent for this phase). O
 - **Read-side:** `retrieveClues()` in `vector-memory.ts`; `buildClueRecallBlocks()` in `prompt.ts` computes one per-thread recall block. `formatActiveThreads()` now takes an optional `clueRecallBlocks` map and injects "Earlier clues (recalled):" right after "Recent clues". Does not touch clue *display* ordering or thread priority/urgency sorting — purely additive.
 - **One wiring subtlety, different from Use Cases 2/5:** `buildClueRecallBlocks()` has to be computed **before** `promptParams` is constructed, not alongside `characterRecallBlocks`/`placeRecallBlocks` (which run after `buildNextPagePrompt()` since they only feed `buildBookMetaDocuments()`, a separate call). Clue recall needs to be readable via `params.clueRecallBlocks` *inside* `buildNextPagePrompt`'s synchronous call — computing it afterward would be too late, since `formatNextPageNarrativePrompt` would already have read `undefined` by then.
 
-### Phase 5 — Finale enhancement & recommendations (est. 3-4 days)
+### Phase 5 — Finale enhancement (est. 3-4 days) — ✅ done; recommendations (Use Cases 9/10) stay deferred
 
-Unchanged from v1. Emotional-moment/finale-callback filtering on `page_embeddings` (originally scoped as part of Phase 4) lives here now instead.
+**No schema or write-side changes needed.** The key finding: `StateDelta.isMajorEvent?: boolean` — the AI's own per-page significance judgment, already produced during generation — gets stored on every page via `pages.stateDelta` (confirmed, same column used throughout this roadmap). That's a better significance signal than anything derivable after the fact (keyword matching, momentum re-scoring), and it was already sitting there unused for this purpose.
+
+- **`retrieveSimilarPages()`** (`vector-memory.ts`) gained an optional `options.prioritizeMajorEvents` mode: joins `page_embeddings` to `pages`, extracts `isMajorEvent` via `(pages.stateDelta->>'isMajorEvent')::boolean`, and orders by `isMajorEvent DESC, distance ASC`. Deliberately a **boost, not a filter** — major-event pages get first priority in the ranking, but non-major pages still fill remaining slots, so a book that never racked up many major-event pages doesn't come back emptier than a normal query would.
+- **`buildRelevantPastEventsBlock()`** (`prompt.ts`, Use Case 1's function) is now finale-aware: takes `advancedState` as a third parameter, checks `isFinale || isLastPage` (same `getStoryStateInfo()` call `buildNextPagePrompt` already makes), and on finale pages uses `MAX_VECTOR_RESULTS_FINALE` (15, vs. the usual 5) with `prioritizeMajorEvents: true`. The prompt block header also changes to "RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS" on finale pages, so the AI knows why more/different results showed up.
+- Flows through to both `buildNextPagePrompt` and `buildNextPageEvaluatorPrompt` automatically, same as every other field on `BuildNextPagePromptParams` — no extra wiring needed at either call site.
+- Use Cases 9 (book recommendations) and 10 (image prompt consistency) remain deferred, per earlier direction.
 
 ---
 
@@ -578,6 +583,8 @@ Unchanged from v1. Emotional-moment/finale-callback filtering on `page_embedding
 | `src/services/vector-memory.ts` | `embedClues`, `retrieveClues`, thread/clue handling in `embedStateDeltaEntities` | **P4** | ✅ Done |
 | `src/utils/prompt.ts` | `buildClueRecallBlocks`; `formatActiveThreads`/`formatThreadsPrompt`/`formatNextPageNarrativePrompt` threaded to inject "Earlier clues (recalled):" | **P4** | ✅ Done |
 | `src/types/prompt.ts` | `clueRecallBlocks` field on `BuildNextPagePromptParams` | **P4** | ✅ Done |
+| `src/services/vector-memory.ts` | `retrieveSimilarPages` — optional `prioritizeMajorEvents` mode, joins `pages` for `StateDelta.isMajorEvent` | **P5** | ✅ Done |
+| `src/utils/prompt.ts` | `buildRelevantPastEventsBlock` — finale-aware (`MAX_VECTOR_RESULTS_FINALE`, `prioritizeMajorEvents: true` on `isFinale`/`isLastPage`) | **P5** | ✅ Done |
 
 ---
 

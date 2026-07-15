@@ -48,6 +48,7 @@ import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
 import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents, retrieveRelevantFutureNotes, retrieveClues } from "../services/vector-memory.js";
+import { MAX_VECTOR_RESULTS_FINALE } from "../config/embedding.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2794,16 +2795,36 @@ function buildCurrentSceneQuery(actionedPage: CandidateGenerationPage): string {
  * Never throws — a failed or empty retrieval just means no block gets
  * injected. Page generation must never depend on Jina being reachable.
  */
-async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book): Promise<string> {
+/**
+ * Use Case 1 (regular pages) and Use Case 8 (finale, via isFinale/isLastPage
+ * — getStoryStateInfo, same computation buildNextPagePrompt already does).
+ * Finale pages get a wider retrieval budget (MAX_VECTOR_RESULTS_FINALE, 15
+ * vs. the usual 5) and prioritizeMajorEvents: true, which boosts pages the
+ * AI itself flagged isMajorEvent during generation (StateDelta.isMajorEvent,
+ * already stored on pages.stateDelta — no schema change needed for this)
+ * to the front of the ranking, without excluding other relevant pages if a
+ * book didn't rack up many major-event pages.
+ */
+async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book, state: StoryState): Promise<string> {
   try {
+    const { isFinale, isLastPage } = getStoryStateInfo(state);
+    const isFinalePage = isFinale || isLastPage;
+
     const query = buildCurrentSceneQuery(actionedPage);
     const branchId = actionedPage.branchId ?? 'main';
-    const results = await retrieveSimilarPages(query, book.id, branchId, actionedPage.page);
+    const results = await retrieveSimilarPages(
+      query,
+      book.id,
+      branchId,
+      actionedPage.page,
+      isFinalePage ? MAX_VECTOR_RESULTS_FINALE : undefined,
+      isFinalePage ? { prioritizeMajorEvents: true } : undefined
+    );
 
     if (!results.length) return '';
 
     return [
-      'RELEVANT PAST EVENTS (semantic retrieval):',
+      isFinalePage ? 'RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS (semantic retrieval):' : 'RELEVANT PAST EVENTS (semantic retrieval):',
       ...results.map(r => `- Page ${r.page} (similarity: ${r.similarity.toFixed(2)}): ${r.sourceText}`),
     ].join('\n');
   } catch (error) {
@@ -4298,7 +4319,7 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   // a second Jina call for the identical query would be wasteful. Never
   // throws — see buildRelevantPastEventsBlock's own graceful-degradation
   // handling.
-  const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book);
+  const relevantPastEventsBlock = await buildRelevantPastEventsBlock(actionedPage, book, advancedState);
 
   // pgvector semantic memory (Use Case 3): rank the unscheduled future-notes
   // bucket by semantic similarity to the current scene query — the highest-

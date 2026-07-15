@@ -30,7 +30,7 @@
 
 import { and, cosineDistance, eq, lt, sql } from 'drizzle-orm';
 import { dbWrite, dbRead } from '../db/client.js';
-import { pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings, clueEmbeddings } from '../db/schema.js';
+import { pages, pageEmbeddings, characterEmbeddings, placeEmbeddings, futureNoteEmbeddings, clueEmbeddings } from '../db/schema.js';
 import { embedText } from '../utils/embedding.js';
 import { getErrorMessage } from '../utils/error.js';
 import { MAX_VECTOR_RESULTS_PER_QUERY, EMBEDDING_SIMILARITY_THRESHOLD, PGVECTOR_MEMORY_ENABLED } from '../config/embedding.js';
@@ -300,19 +300,47 @@ export interface SimilarPageResult {
  * contextHistory's lossy running summary. Results below
  * EMBEDDING_SIMILARITY_THRESHOLD are filtered out so a "no good matches"
  * scene doesn't inject noise into the prompt.
+ *
+ * @param options.prioritizeMajorEvents - Use Case 8 (finale callbacks):
+ * boosts pages where `StateDelta.isMajorEvent` is true — read directly off
+ * `pages.stateDelta` (the AI's own per-page judgment call, already captured
+ * during generation; no new column or write-side change needed) — to the
+ * front of the ranking via `ORDER BY isMajorEvent DESC, distance ASC`. This
+ * doesn't exclude non-major pages, so a book that never racked up many
+ * major-event pages still gets its remaining slots filled by the next-best
+ * similarity matches instead of coming back emptier than a normal query.
  */
 export async function retrieveSimilarPages(
   query: string,
   bookId: string,
   branchId: string,
   currentPage: number,
-  limit: number = MAX_VECTOR_RESULTS_PER_QUERY
+  limit: number = MAX_VECTOR_RESULTS_PER_QUERY,
+  options?: { prioritizeMajorEvents?: boolean }
 ): Promise<SimilarPageResult[]> {
   if (!PGVECTOR_MEMORY_ENABLED) return [];
 
   const queryEmbedding = await embedText(query, 'retrieval.query');
   const distance = cosineDistance(pageEmbeddings.embedding, queryEmbedding);
   const similarity = sql<number>`1 - (${distance})`;
+
+  if (options?.prioritizeMajorEvents) {
+    const isMajorEvent = sql<boolean>`COALESCE((${pages.stateDelta}->>'isMajorEvent')::boolean, false)`;
+
+    const rows = await dbRead
+      .select({ page: pageEmbeddings.page, sourceText: pageEmbeddings.sourceText, similarity })
+      .from(pageEmbeddings)
+      .innerJoin(pages, eq(pageEmbeddings.pageId, pages.id))
+      .where(and(
+        eq(pageEmbeddings.bookId, bookId),
+        eq(pageEmbeddings.branchId, branchId),
+        lt(pageEmbeddings.page, currentPage),
+      ))
+      .orderBy(sql`${isMajorEvent} DESC`, distance)
+      .limit(limit);
+
+    return rows.filter(r => r.similarity >= EMBEDDING_SIMILARITY_THRESHOLD);
+  }
 
   const rows = await dbRead
     .select({ page: pageEmbeddings.page, sourceText: pageEmbeddings.sourceText, similarity })
