@@ -519,6 +519,13 @@ export const bookGenerations = pgTable(
     generationError: text("generation_error"),
     generationStartedAt: timestamp("generation_started_at", { withTimezone: true }),
     generationCompletedAt: timestamp("generation_completed_at", { withTimezone: true }),
+    generationDurationMs: integer("generation_duration_ms").generatedAlwaysAs(
+      // Auto-calculated from generation_started_at and generation_completed_at
+      sql`CASE
+        WHEN generation_completed_at IS NOT NULL AND generation_started_at IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (generation_completed_at - generation_started_at))::int * 1000
+      END`
+    ),
     isGeneratingStartedAt: timestamp("is_generating_started_at", { withTimezone: true }),
     isRefunded: timestamp("is_refunded"),
     cancellationRequestedAt: timestamp("cancellation_requested_at", { withTimezone: true }),

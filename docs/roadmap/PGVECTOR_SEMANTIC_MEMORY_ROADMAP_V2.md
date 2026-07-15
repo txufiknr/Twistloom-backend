@@ -1,6 +1,6 @@
 # pgvector Semantic Memory — Twistloom Implementation Roadmap (v2)
 
-**Status:** Phases 0-5 are all done. Schema, every write path, every read path, all use cases (1, 2, 3, 4, 5, 8) fully live in `prompt.ts`; Use Cases 9/10 deferred per earlier direction. `db:generate`/`db:migrate` have been run against the real database; pgvector is 0.8.1, confirmed as Neon's current ceiling — see §5. This roadmap's active scope is complete — remaining work is testing/validation in your environment, not further implementation.
+**Status:** Phases 0-5 are all done, plus a post-launch addition (Phase 5.1: custom-action-aware retrieval widening — see §8). Schema, every write path, every read path, all use cases (1, 2, 3, 4, 5, 8) fully live in `prompt.ts`; Use Cases 9/10 deferred per earlier direction. `db:generate`/`db:migrate` have been run against the real database; pgvector is 0.8.1, confirmed as Neon's current ceiling — see §5. This roadmap's active scope is complete — remaining work is testing/validation in your environment, not further implementation.
 **Database:** Neon PostgreSQL + pgvector extension (pin **≥ 0.8.2** — see §5)
 **Stack:** Drizzle ORM, TypeScript, **Jina AI `jina-embeddings-v5-text-small`** (free tier)
 **Pattern source:** MuslimDigest (`src/utils/embedding.ts`, `src/utils/rate-limit.ts`, `src/cron/embeddings.ts`)
@@ -546,9 +546,27 @@ Grounded against `story-thread.ts` and `story_utils.ts` (sent for this phase). O
 **No schema or write-side changes needed.** The key finding: `StateDelta.isMajorEvent?: boolean` — the AI's own per-page significance judgment, already produced during generation — gets stored on every page via `pages.stateDelta` (confirmed, same column used throughout this roadmap). That's a better significance signal than anything derivable after the fact (keyword matching, momentum re-scoring), and it was already sitting there unused for this purpose.
 
 - **`retrieveSimilarPages()`** (`vector-memory.ts`) gained an optional `options.prioritizeMajorEvents` mode: joins `page_embeddings` to `pages`, extracts `isMajorEvent` via `(pages.stateDelta->>'isMajorEvent')::boolean`, and orders by `isMajorEvent DESC, distance ASC`. Deliberately a **boost, not a filter** — major-event pages get first priority in the ranking, but non-major pages still fill remaining slots, so a book that never racked up many major-event pages doesn't come back emptier than a normal query would.
-- **`buildRelevantPastEventsBlock()`** (`prompt.ts`, Use Case 1's function) is now finale-aware: takes `advancedState` as a third parameter, checks `isFinale || isLastPage` (same `getStoryStateInfo()` call `buildNextPagePrompt` already makes), and on finale pages uses `MAX_VECTOR_RESULTS_FINALE` (15, vs. the usual 5) with `prioritizeMajorEvents: true`. The prompt block header also changes to "RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS" on finale pages, so the AI knows why more/different results showed up.
+- **`buildRelevantPastEventsBlock()`** (`prompt.ts`, Use Case 1's function) is now finale-aware: takes `advancedState` as a third parameter, checks `isFinale || isLastPage` (same `getStoryStateInfo()` call `buildNextPagePrompt` already makes), and on finale pages uses `MAX_VECTOR_RESULTS_HIGH_VALUE` (15, vs. the usual 5) with `prioritizeMajorEvents: true`. The prompt block header also changes to "RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS" on finale pages, so the AI knows why more/different results showed up.
 - Flows through to both `buildNextPagePrompt` and `buildNextPageEvaluatorPrompt` automatically, same as every other field on `BuildNextPagePromptParams` — no extra wiring needed at either call site.
 - Use Cases 9 (book recommendations) and 10 (image prompt consistency) remain deferred, per earlier direction.
+
+### Phase 5.1 — Custom action retrieval widening (post-launch addition) — ✅ done
+
+Not in the original use-case list — came up once custom actions (readers submitting their own free-text action, consuming credits) were considered against the existing design.
+
+**The question:** if a reader's custom action names a character or place (e.g. "ask Emma about the diary again"), does that need special handling — name detection, entity extraction — to make sure the right memory gets recalled?
+
+**The answer: no, for anything already tracked.** `buildCurrentSceneQuery(actionedPage)` embeds `actionedPage.action.text` verbatim, custom or preset, identically — cosine similarity against that text naturally surfaces past pages mentioning "Emma" without needing to detect that the text contains a name. Use Cases 2/5 (character/place recall) already run for *every* tracked character/place on *every* page regardless of what the action says, so a name being mentioned doesn't gate anything — it just makes that entity's retrieval score better on that specific page. No name-detection logic needed or added.
+
+**The real, narrower gap:** entities that aren't in structured state — never formally tracked, or pruned once `MAX_CHARACTERS`/`MAX_PLACES` (6 each) filled up. For those, Use Case 1's page-level retrieval is the only fallback (surfaces whole pages that mention the name, not an isolated per-entity recall). At a cap of 6 tracked characters/places, this is judged not worth solving with NER/fuzzy matching — over-engineering for the scale involved, and the page-level fallback already does something reasonable.
+
+**What was actually built:** custom actions (`action.type === 'custom'`) get the same widened retrieval budget finale pages already use (`MAX_VECTOR_RESULTS_HIGH_VALUE`, 15 vs. the usual 5) — the reasoning being a reader spending credits on a deliberate, specific moment is worth giving the AI more context for, independent of whether that moment happens to name a tracked entity. Applied consistently across all four recall builders:
+
+- `buildRelevantPastEventsBlock` (Use Case 1) — widened budget, but **not** the `prioritizeMajorEvents` boost, which stays finale-specific. Prompt header changes to "RELEVANT PAST EVENTS (semantic retrieval, expanded for custom action):" so the AI knows why more results showed up.
+- `buildCharacterRecallBlocks` / `buildPlaceRecallBlocks` / `buildClueRecallBlocks` (Use Cases 2/5/4) — same widened `limit` passed to their respective `retrieveX` calls. Lower-impact here since these already run unconditionally for every tracked entity; widening only changes how much comes back per entity, not whether it gets checked.
+- Future-notes ranking (Use Case 3) — same widened `limit` on `retrieveRelevantFutureNotes`, so custom actions rank the *entire* unscheduled bucket instead of leaving some notes to fall back to chronological order.
+
+**Naming note:** `MAX_VECTOR_RESULTS_HIGH_VALUE` is now genuinely shared between finale pages and custom actions, despite the name. Left as-is rather than renamed — a rename would ripple through every file that already references it, for a naming-purity gain that doesn't affect behavior. The doc comment on `buildRelevantPastEventsBlock` explains this explicitly.
 
 ---
 
@@ -584,7 +602,8 @@ Grounded against `story-thread.ts` and `story_utils.ts` (sent for this phase). O
 | `src/utils/prompt.ts` | `buildClueRecallBlocks`; `formatActiveThreads`/`formatThreadsPrompt`/`formatNextPageNarrativePrompt` threaded to inject "Earlier clues (recalled):" | **P4** | ✅ Done |
 | `src/types/prompt.ts` | `clueRecallBlocks` field on `BuildNextPagePromptParams` | **P4** | ✅ Done |
 | `src/services/vector-memory.ts` | `retrieveSimilarPages` — optional `prioritizeMajorEvents` mode, joins `pages` for `StateDelta.isMajorEvent` | **P5** | ✅ Done |
-| `src/utils/prompt.ts` | `buildRelevantPastEventsBlock` — finale-aware (`MAX_VECTOR_RESULTS_FINALE`, `prioritizeMajorEvents: true` on `isFinale`/`isLastPage`) | **P5** | ✅ Done |
+| `src/utils/prompt.ts` | `buildRelevantPastEventsBlock` — finale-aware (`MAX_VECTOR_RESULTS_HIGH_VALUE`, `prioritizeMajorEvents: true` on `isFinale`/`isLastPage`) | **P5** | ✅ Done |
+| `src/utils/prompt.ts` | Custom-action retrieval widening (`action.type === 'custom'`) across `buildRelevantPastEventsBlock`/`buildCharacterRecallBlocks`/`buildPlaceRecallBlocks`/`buildClueRecallBlocks`/future-notes ranking | **P5.1** | ✅ Done |
 
 ---
 

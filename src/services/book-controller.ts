@@ -181,7 +181,8 @@ export function getEnrichedBookSelect(currentUserId: string | null = null, langu
     generation: sql<EnrichedBookGeneration | null>`(
       SELECT jsonb_build_object(
         'generationStatus', bg.generation_status,
-        'generationStep', bg.generation_step
+        'generationStep', bg.generation_step,
+        'generationDurationMs', bg.generation_duration_ms
       )
       FROM book_generations bg
       WHERE bg.book_id = books.id

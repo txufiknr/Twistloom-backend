@@ -205,6 +205,7 @@ export type EnrichedBookSession = { lastReadAt: Date; lastPageId: string; lastPa
 export type EnrichedBookGeneration = {
   generationStatus?: BookGenerationStatus;
   generationStep?: StoryGenerationStep;
+  generationDurationMs?: number | null;
 };
 
 /**

@@ -48,7 +48,7 @@ import { formatOneOf } from "./text-processing.js";
 import { sanitizePromptAppend } from "./prompt-security.js";
 import { applyAdvancedOptions, validateAIConfig } from "./ai-sampling.js";
 import { embedPersistedPage, embedStateDeltaEntities, retrieveSimilarPages, retrieveCharacterInteractions, retrievePlaceEvents, retrieveRelevantFutureNotes, retrieveClues } from "../services/vector-memory.js";
-import { MAX_VECTOR_RESULTS_FINALE } from "../config/embedding.js";
+import { MAX_VECTOR_RESULTS_HIGH_VALUE } from "../config/embedding.js";
 
 // ============================================================================
 // SYSTEM PROMPT
@@ -2794,21 +2794,41 @@ function buildCurrentSceneQuery(actionedPage: CandidateGenerationPage): string {
  *
  * Never throws — a failed or empty retrieval just means no block gets
  * injected. Page generation must never depend on Jina being reachable.
- */
-/**
- * Use Case 1 (regular pages) and Use Case 8 (finale, via isFinale/isLastPage
- * — getStoryStateInfo, same computation buildNextPagePrompt already does).
- * Finale pages get a wider retrieval budget (MAX_VECTOR_RESULTS_FINALE, 15
- * vs. the usual 5) and prioritizeMajorEvents: true, which boosts pages the
- * AI itself flagged isMajorEvent during generation (StateDelta.isMajorEvent,
- * already stored on pages.stateDelta — no schema change needed for this)
- * to the front of the ranking, without excluding other relevant pages if a
- * book didn't rack up many major-event pages.
+ * 
+ * Use Case 1 (regular pages), Use Case 8 (finale, via isFinale/isLastPage —
+ * getStoryStateInfo, same computation buildNextPagePrompt already does),
+ * and custom actions (action.type === 'custom' — a reader spending credits
+ * on a deliberate, specific moment is a good reason to widen the net for
+ * that one page, regardless of what the action text says).
+ *
+ * Finale pages get MAX_VECTOR_RESULTS_HIGH_VALUE (15, vs. the usual 5) AND
+ * prioritizeMajorEvents: true, which boosts pages the AI itself flagged
+ * isMajorEvent during generation (StateDelta.isMajorEvent, already stored
+ * on pages.stateDelta — no schema change needed for this) to the front of
+ * the ranking, without excluding other relevant pages if a book didn't rack
+ * up many major-event pages.
+ *
+ * Custom actions get the same MAX_VECTOR_RESULTS_HIGH_VALUE budget, but NOT the
+ * major-event boost — that's specifically a finale/climax heuristic, not a
+ * general "this moment matters" one. Note MAX_VECTOR_RESULTS_HIGH_VALUE is
+ * genuinely shared between both cases now, not finale-exclusive despite the
+ * name — kept the existing constant rather than adding a new one, since
+ * "wider retrieval budget for a high-value moment" is exactly what both
+ * cases need and a rename would ripple through every file that already
+ * references it for no real gain.
+ *
+ * No detection of WHICH character/place a custom action names is needed
+ * here — retrieveSimilarPages already does cosine similarity against the
+ * full query text (buildCurrentSceneQuery), so a name mentioned in a custom
+ * action naturally pulls in pages that mention it, the same way it would
+ * for a preset action. This just widens how many results come back.
  */
 async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPage, book: Book, state: StoryState): Promise<string> {
   try {
     const { isFinale, isLastPage } = getStoryStateInfo(state);
     const isFinalePage = isFinale || isLastPage;
+    const isCustomAction = actionedPage.action?.type === 'custom';
+    const isHighValueMoment = isFinalePage || isCustomAction;
 
     const query = buildCurrentSceneQuery(actionedPage);
     const branchId = actionedPage.branchId ?? 'main';
@@ -2817,14 +2837,20 @@ async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPag
       book.id,
       branchId,
       actionedPage.page,
-      isFinalePage ? MAX_VECTOR_RESULTS_FINALE : undefined,
-      isFinalePage ? { prioritizeMajorEvents: true } : undefined
+      isHighValueMoment ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined,
+      isFinalePage ? { prioritizeMajorEvents: true } : undefined // major-event boost stays finale-only
     );
 
     if (!results.length) return '';
 
+    const header = isFinalePage
+      ? 'RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS (semantic retrieval):'
+      : isCustomAction
+        ? 'RELEVANT PAST EVENTS (semantic retrieval, expanded for custom action):'
+        : 'RELEVANT PAST EVENTS (semantic retrieval):';
+
     return [
-      isFinalePage ? 'RELEVANT PAST EVENTS & EMOTIONAL CALLBACKS (semantic retrieval):' : 'RELEVANT PAST EVENTS (semantic retrieval):',
+      header,
       ...results.map(r => `- Page ${r.page} (similarity: ${r.similarity.toFixed(2)}): ${r.sourceText}`),
     ].join('\n');
   } catch (error) {
@@ -2846,6 +2872,14 @@ async function buildRelevantPastEventsBlock(actionedPage: CandidateGenerationPag
  * Promise.allSettled — one character's retrieval failing must never block
  * or drop the others. Never throws; a character simply gets no recalled
  * block if its retrieval fails.
+ *
+ * Custom actions (action.type === 'custom') get MAX_VECTOR_RESULTS_HIGH_VALUE
+ * instead of the default per-character limit — same "reader spent credits
+ * on a deliberate moment" reasoning as buildRelevantPastEventsBlock, applied
+ * consistently here even though it matters less: this function already runs
+ * for every tracked character regardless of what the action says, so the
+ * only thing custom-action mode changes is how many recalled interactions
+ * come back per character, not whether the character gets checked at all.
  */
 async function buildCharacterRecallBlocks(
   characters: Record<string, CharacterMemory> | undefined,
@@ -2856,13 +2890,14 @@ async function buildCharacterRecallBlocks(
 
   const query = buildCurrentSceneQuery(actionedPage);
   const branchId = actionedPage.branchId ?? 'main';
+  const limit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
   const blocks: Record<string, string> = {};
 
   await Promise.allSettled(Object.entries(characters).map(async ([characterId, character]) => {
     try {
       const pastPages = (character.pastInteractions ?? []).map((i: PastInteraction) => i.page);
       const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
-      const results = await retrieveCharacterInteractions(query, book.id, branchId, characterId, oldestVisiblePage);
+      const results = await retrieveCharacterInteractions(query, book.id, branchId, characterId, oldestVisiblePage, limit);
       if (results.length) {
         blocks[characterId] = results.map(r => `(page ${r.page}) ${r.sourceText}`).join(' ');
       }
@@ -2880,6 +2915,9 @@ async function buildCharacterRecallBlocks(
  * window formatPlacesForPrompt() already shows in full. Does NOT touch
  * calculatePlaceFamiliarity() — that stays deterministic and synchronous,
  * untouched.
+ *
+ * Same custom-action widening as buildCharacterRecallBlocks — see its
+ * doc comment for the reasoning.
  */
 async function buildPlaceRecallBlocks(
   places: Record<string, PlaceMemory> | undefined,
@@ -2890,13 +2928,14 @@ async function buildPlaceRecallBlocks(
 
   const query = buildCurrentSceneQuery(actionedPage);
   const branchId = actionedPage.branchId ?? 'main';
+  const limit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
   const blocks: Record<string, string> = {};
 
   await Promise.allSettled(Object.entries(places).map(async ([placeId, place]) => {
     try {
       const pastPages = (place.keyEvents ?? []).map(e => e.page);
       const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
-      const results = await retrievePlaceEvents(query, book.id, branchId, placeId, oldestVisiblePage);
+      const results = await retrievePlaceEvents(query, book.id, branchId, placeId, oldestVisiblePage, limit);
       if (results.length) {
         blocks[placeId] = results.map(r => `(page ${r.page}) ${r.sourceText}`).join(' ');
       }
@@ -2918,6 +2957,10 @@ async function buildPlaceRecallBlocks(
  * surfaced here. oldestVisiblePage per thread = the lowest discoveredAtPage
  * among the clues currently displayed for it; falls back to actionedPage.page
  * when a thread has no clues yet.
+ *
+ * Same custom-action widening as buildCharacterRecallBlocks/
+ * buildPlaceRecallBlocks — see buildCharacterRecallBlocks' doc comment for
+ * the reasoning.
  */
 async function buildClueRecallBlocks(
   threads: StoryThread[] | undefined,
@@ -2928,13 +2971,14 @@ async function buildClueRecallBlocks(
 
   const query = buildCurrentSceneQuery(actionedPage);
   const branchId = actionedPage.branchId ?? 'main';
+  const limit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
   const blocks: Record<string, string> = {};
 
   await Promise.allSettled(threads.map(async (thread) => {
     try {
       const pastPages = (thread.clues ?? []).map(c => c.discoveredAtPage);
       const oldestVisiblePage = pastPages.length ? Math.min(...pastPages) : actionedPage.page;
-      const results = await retrieveClues(query, book.id, branchId, thread.threadId, oldestVisiblePage);
+      const results = await retrieveClues(query, book.id, branchId, thread.threadId, oldestVisiblePage, limit);
       if (results.length) {
         blocks[thread.threadId] = results.map(r => `(page ${r.page}) ${r.sourceText}`).join(' ');
       }
@@ -4346,7 +4390,11 @@ async function prepareNextPageGenerationSetup(params: BuildNextPageParams, candi
   if (unscheduledNoteKeys.length) {
     try {
       const query = buildCurrentSceneQuery(actionedPage);
-      const results = await retrieveRelevantFutureNotes(query, book.id, actionedPage.branchId ?? 'main', unscheduledNoteKeys);
+      // Custom action: rank the full unscheduled set instead of leaving
+      // some to fall back to chronological order — same reasoning as the
+      // other three recall builders, applied here too for consistency.
+      const limit = actionedPage.action?.type === 'custom' ? MAX_VECTOR_RESULTS_HIGH_VALUE : undefined;
+      const results = await retrieveRelevantFutureNotes(query, book.id, actionedPage.branchId ?? 'main', unscheduledNoteKeys, limit);
       relevantFutureNoteKeys = results.map(r => r.noteKey);
     } catch (error) {
       console.error('[prepareNextPageGenerationSetup] ⚠️ Future note retrieval failed, continuing without semantic ranking:', getErrorMessage(error));

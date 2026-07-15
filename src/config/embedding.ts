@@ -28,8 +28,8 @@ export const EMBEDDING_DIMENSIONS = 1024;
 /** Default number of similar items to retrieve per semantic query (page context, character interactions, place events, etc.) */
 export const MAX_VECTOR_RESULTS_PER_QUERY = 5;
 
-/** Wider retrieval budget for finale/ending generation, which can afford to pull more callbacks across the whole book. */
-export const MAX_VECTOR_RESULTS_FINALE = 15;
+/** Wider retrieval budget for finale/ending/custom action generation, which can afford to pull more callbacks across the whole book. */
+export const MAX_VECTOR_RESULTS_HIGH_VALUE = 15;
 
 /** Minimum cosine similarity for a retrieved result to be considered relevant enough to surface in a prompt. */
 export const EMBEDDING_SIMILARITY_THRESHOLD = 0.5;
