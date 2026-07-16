@@ -282,37 +282,56 @@ type BookSortingOptions =
    - [Get Book Creation Status](#get-apibooksbookidstatus)
    - [Cancel Book Generation](#post-apibooksbookidcancel)
    - [Retry Book Generation](#post-apibooksbookidretry)
-   - [Update Book](#put-apibooksid)
-   - [Delete Book](#delete-apibooksid)
+   - [Get Active Generations](#get-apibooksgenerationsactive)
+   - [Get User's Library](#get-apibooks)
    - [Get Book by Identifier](#get-apibooksidentifier)
+   - [Update Book](#put-apibooksid)
+   - [Update Book Visibility](#patch-apibooksidvisibility)
+   - [Archive Book](#patch-apibooksidarchive)
+   - [Delete Book](#delete-apibooksid)
+   - [Purchase Book](#post-apibooksidentifierpurchase)
    - [Get Similar Books](#get-apibooksidsimilar)
 4. [Book Reading](#book-reading)
    - [Get Specific Page](#get-apibooksidentifierpageid)
+   - [Confirm Page Visit](#post-apibooksidentifierpageidconfirm-visit)
+   - [Get Book Branches](#get-apibooksidentifierbranches)
    - [Generate Candidates (SSE)](#get-apibooksidentifierpageidcandidates)
    - [Get Candidate Generation Status](#get-apibooksidentifierpageidcandidatesstatus)
-5. [Social Interactions](#social-interactions)
+   - [Purchase Action Hint](#post-apibooksidentifierpageidactionshint)
+5. [Custom Actions](#custom-actions)
+   - [Preview Custom Action](#post-apibooksidentifierpageidcustom-actionspreview)
+   - [Submit Custom Action](#post-apibooksidentifierpageidcustom-actionssubmit)
+6. [Psychological Features](#psychological-features)
+   - [Get Psychological Profile](#get-apibooksidentifierpsychological-profile)
+   - [Get Locked Paths](#get-apibooksidentifierlocked-paths)
+7. [Social Interactions](#social-interactions)
    - [Like Book](#post-apibooksidlike)
    - [Unlike Book](#delete-apibooksidlike)
    - [Favorite Book](#post-apibooksidfavorite)
    - [Unfavorite Book](#delete-apibooksidfavorite)
-6. [Comments](#comments)
+   - [Rename Collection](#patch-apibooksfavoritesrename-collection)
+   - [Share Ending](#post-apibooksidentifierpageidshare)
+   - [View Shared Ending](#get-apibooksshareusernamebookslugpageid)
+8. [Comments](#comments)
+   - [Get User Comments](#get-apibookscomments)
    - [Get Book Comments](#get-apibooksidcomments)
    - [Create Comment](#post-apibooksidcomments)
+   - [Update Comment](#put-apibookscommentsid)
    - [Delete Comment](#delete-apibookscommentsid)
-7. [Exploration](#exploration)
+9. [Exploration](#exploration)
    - [Explore Books](#get-apibooksexplore)
    - [Get Popular Tags](#get-apibookstagspopular)
    - [Get Book Stats](#get-apibooksstats)
-8. [Utilities](#utilities)
-   - [Generate Book Prompt](#get-apibooksprompt)
-   - [Insert Book (Test)](#post-apibooksinsert)
-   - [Workflow Webhook (Internal)](#post-apibooksworkflow-webhook)
-9. [Error Handling](#error-handling)
-10. [HTTP Headers](#http-headers)
-11. [Caching Strategy](#caching-strategy)
-12. [Rate Limiting](#rate-limiting)
-13. [Authentication](#authentication)
-14. [Changelog](#changelog)
+10. [Utilities](#utilities)
+    - [Generate Book Prompt](#get-apibooksprompt)
+    - [Insert Book (Test)](#post-apibooksinsert)
+    - [Workflow Webhook (Internal)](#post-apibooksworkflow-webhook)
+11. [Error Handling](#error-handling)
+12. [HTTP Headers](#http-headers)
+13. [Caching Strategy](#caching-strategy)
+14. [Rate Limiting](#rate-limiting)
+15. [Authentication](#authentication)
+16. [Changelog](#changelog)
 
 ---
 
@@ -509,6 +528,76 @@ data: {"error":"Theme validation failed"}
 - `401 Unauthorized`: Authentication required
 - `402 Payment Required`: Insufficient credits
 - `500 Internal Server Error`: AI generation failed
+
+---
+
+---
+
+### GET /api/books/generations/active
+
+Returns all active (in-progress) book generations for the authenticated user. Lightweight endpoint for the frontend to display generation progress indicators.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Response (200 OK):**
+```json
+[
+  {
+    "bookId": "01912345-6789-1234-5678-123456789012",
+    "generationStatus": "in_progress",
+    "generationStep": "ai_generation"
+  },
+  {
+    "bookId": "01912345-6789-1234-5678-123456789013",
+    "generationStatus": "in_progress",
+    "generationStep": "theme_validation"
+  }
+]
+```
+
+---
+
+### GET /api/books
+
+Retrieves the authenticated user's own book library. Supports the same search, filtering, sorting, and pagination options as the explore endpoint, scoped to the user's own books.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Query Parameters:**
+- `page` (number, optional): Page number for pagination (default: 1)
+- `limit` (number, optional): Number of books per page (default: 20)
+- `search` (string, optional): Search query for title, hook, summary, keywords
+- `sortBy` (string, optional): Field to sort by (default: newest)
+- `sortOrder` (string, optional): Sort direction (default: desc)
+- `status` (string, optional): Filter by comma-separated statuses. Values: active, draft, archived
+
+**Response (200 OK):**
+```json
+{
+  "books": [
+    {
+      "id": "book123",
+      "title": "The Whispering Halls",
+      "status": "active",
+      "author": { "name": "John Doe", "username": "johndoe" },
+      "stats": { "readsCount": 150, "likesCount": 32 },
+      "createdAt": "2023-01-01T00:00:00.000Z",
+      "updatedAt": "2023-01-15T10:30:00.000Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "totalCount": 5,
+    "totalPages": 1,
+    "hasNext": false,
+    "hasPrevious": false
+  }
+}
+```
+
+**Error Responses:**
+- `401 Unauthorized`: Authentication required
 
 ---
 
@@ -721,6 +810,80 @@ Deletes a book and queues its cover image for deletion. Only the book author can
 
 ---
 
+### PATCH /api/books/:id/visibility
+
+Updates the visibility setting of a book. Controls who can see the book in listings and explore feeds.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+
+**Visibility Levels:**
+- `private`: Only the owner can see it in their library
+- `unlisted`: Only accessible via a direct shareable link
+- `followers`: Owner and their followers can see it in feeds
+- `public`: Anyone can discover and read it (explorable)
+
+**Request Body:**
+```json
+{
+  "visibility": "public"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "book": {
+    "id": "book123",
+    "visibility": "public"
+  },
+  "visibility": "public"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid visibility value
+- `403 Forbidden`: Not the book author
+- `404 Not Found`: Book not found
+
+---
+
+### PATCH /api/books/:id/archive
+
+Archives or unarchives a book (toggles status between `active` and `archived`). Archiving removes the book from public listings and explore feeds without deleting it. Unarchiving restores it.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+
+**Request Body:**
+```json
+{
+  "status": "archived"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "book": {
+    "id": "book123",
+    "status": "archived"
+  },
+  "status": "archived"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid status value
+- `403 Forbidden`: Not the book author
+- `404 Not Found`: Book not found
+
+---
+
 ### POST /api/books/async
 
 Creates a new book asynchronously using GitHub Actions workflow. Returns bookId immediately to bypass Vercel's 5-minute timeout. Frontend should poll GET /api/books/:bookId/status for updates.
@@ -914,6 +1077,47 @@ Use `GET /api/books/:bookId/status` to check the exact generation status before 
 
 ---
 
+### POST /api/books/:identifier/purchase
+
+Purchases a paid book with credits. Consumes credits equal to the book's `creditsPrice` to unlock access.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+
+**Credit Consumption:**
+- Consumes credits equal to the book's `creditsPrice`
+- Returns 402 Payment Required if insufficient credits
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "bookId": "book123",
+  "creditsPrice": 50,
+  "alreadyPurchased": false
+}
+```
+
+**Response (200 OK - already purchased):**
+```json
+{
+  "success": true,
+  "bookId": "book123",
+  "creditsPrice": 50,
+  "alreadyPurchased": true,
+  "message": "You have already purchased this book"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Book is not available for purchase
+- `402 Payment Required`: Insufficient credits
+- `404 Not Found`: Book not found
+
+---
+
 ### GET /api/books/:id/similar
 
 Retrieves similar books based on keyword Jaccard similarity. Uses PostgreSQL's native array operations to calculate similarity scores between the target book's keywords and all other books' keywords.
@@ -1069,6 +1273,63 @@ Retrieves a specific page by book identifier (slug or UUID) and page ID. Support
 
 ---
 
+### POST /api/books/:identifier/:pageId/confirm-visit
+
+Confirms a user's visit to a specific page and records it in the user's reading progress. Called when a user actively navigates to a page (by selecting an action), as opposed to prefetching.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Page ID
+
+**Request Body:**
+```json
+{
+  "consumeCredits": false
+}
+```
+
+**Parameters:**
+- `consumeCredits` (boolean, optional): Whether to consume credits for this page
+
+**Response (200 OK):**
+```json
+{
+  "visitDetails": {
+    "userId": "user456",
+    "bookId": "book123",
+    "pageId": "page456",
+    "lastPageNumber": 5,
+    "isCompleted": false
+  }
+}
+```
+
+---
+
+### GET /api/books/:identifier/branches
+
+Retrieves all branches (id & display name) for a book. Accepts both slug and UUID v7 as book identifier. Returns the main branch (using the book's title) followed by all non-main branches.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+
+**Response (200 OK):**
+```json
+[
+  { "branchId": "main", "displayName": "The Whispering Halls" },
+  { "branchId": "0194f2d1-xxxx-xxxx-xxxx-xxxxxxxxxxxx", "displayName": "The Dark Path" }
+]
+```
+
+**Error Responses:**
+- `404 Not Found`: Book not found
+
+---
+
 ### GET /api/books/:identifier/:pageId/candidates
 
 Pre-generates candidate pages for all actions on a specific page using Server-Sent Events (SSE). Provides real-time progress updates for each candidate generation.
@@ -1150,6 +1411,56 @@ Polls the status of candidate page generation for a specific page. Used by front
 
 **Error Responses:**
 - `400 Bad Request`: Invalid pageId format
+- `404 Not Found`: Page not found
+
+---
+
+### POST /api/books/:identifier/:pageId/actions/hint
+
+Purchases an action hint for a specific action on a page. Consumes 1 credit to reveal additional information about an action. Users can purchase hints for actions they haven't selected yet.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Page ID
+
+**Credit Consumption:**
+- Requires 1 credit to purchase a hint (configurable via `CREDIT_COSTS.SHOW_ACTION_HINT`)
+- Returns 402 Payment Required if insufficient credits
+
+**Request Body:**
+```json
+{
+  "actionText": "Investigate the noise"
+}
+```
+
+**Parameters:**
+- `actionText` (string, required): Action text to purchase hint for
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "actionText": "Investigate the noise",
+  "alreadyPurchased": false
+}
+```
+
+**Response (200 OK - already purchased):**
+```json
+{
+  "success": true,
+  "actionText": "Investigate the noise",
+  "alreadyPurchased": true,
+  "message": "You have already purchased this hint"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing actionText, action not found on page
+- `402 Payment Required`: Insufficient credits
 - `404 Not Found`: Page not found
 
 ---
@@ -1305,7 +1616,310 @@ Removes a book from the authenticated user's favorites. Removes the favorite fro
 
 ---
 
+### PATCH /api/books/favorites/rename-collection
+
+Renames a collection for the authenticated user across all their favorites. Every row in `user_favorites` where the `collection` column matches `oldCollection` is updated to `newCollection`.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Request Body:**
+```json
+{
+  "oldCollection": "Thriller",
+  "newCollection": "Horror"
+}
+```
+
+**Parameters:**
+- `oldCollection` (string, required): Current collection name to rename
+- `newCollection` (string, required): New collection name to apply
+
+**Response (200 OK):**
+```json
+{
+  "updatedCount": 5,
+  "message": "Collection renamed successfully"
+}
+```
+
+**Response (200 OK) - No matches:**
+```json
+{
+  "updatedCount": 0,
+  "message": "No favorites found with collection 'NonExistent'"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing or invalid oldCollection/newCollection
+
+---
+
+### POST /api/books/:identifier/:pageId/share
+
+Records a user sharing a completed ending page for a book. The user must have actually reached this page (have a completion record).
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): UUID v7 of the ending page to share
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: No completion found for this page
+
+---
+
+### GET /api/books/share/:username/:bookSlug/:pageId
+
+Public endpoint for viewing a shared ending page. No authentication required. Three gates restrict access:
+1. Book visibility must not be `private`
+2. The completion must exist in `user_completed_books`
+3. The completion must have been shared (activity log entry)
+
+Only returns public-safe fields — nothing personal to the sharer beyond what they explicitly agreed to expose.
+
+**Authentication:** Not required (public)
+
+**Path Parameters:**
+- `username` (string, required): Sharer's username
+- `bookSlug` (string, required): Book slug
+- `pageId` (string, required): UUID v7 of the ending page
+
+**Response (200 OK):**
+```json
+{
+  "sharer": {
+    "name": "Jane",
+    "imageUrl": "https://example.com/avatar.jpg"
+  },
+  "book": {
+    "title": "The Haunting",
+    "hook": "Sarah never believed in ghosts until she found the diary",
+    "slug": "the-haunting",
+    "imageUrl": null,
+    "readCount": 142
+  },
+  "ending": {
+    "text": "I walked out the front door and never looked back...",
+    "percentage": 12.5
+  }
+}
+```
+
+**Error Responses:**
+- `404 Not Found`: Not found (any gate failure)
+
+---
+
+## Custom Actions
+
+Custom actions allow readers to type free-form actions instead of choosing from predefined options. They are validated by AI for narrative plausibility and may incur additional credit costs.
+
+### POST /api/books/:identifier/:pageId/custom-actions/preview
+
+Preview a custom action without charging credits. Runs validity checks (eligibility, security, AI interpretation) and returns the expected credit cost — but does not charge or generate anything.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Current page ID
+
+**Request Body:**
+```json
+{
+  "text": "I try to pick the lock with my hairpin"
+}
+```
+
+**Parameters:**
+- `text` (string, required): Custom action text (3-60 chars)
+
+**Response (200 OK) - Allowed:**
+```json
+{
+  "outcome": "allow",
+  "preview": {
+    "canonicalIntent": "attempt lockpicking escape",
+    "cost": 3
+  }
+}
+```
+
+**Response (200 OK) - Rejected:**
+```json
+{
+  "outcome": "reject",
+  "message": "That doesn't match what's true in this story so far.",
+  "rejectionCategory": "invalid_action"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing text, invalid pageId format
+- `404 Not Found`: Page not found
+
+---
+
+### POST /api/books/:identifier/:pageId/custom-actions/submit
+
+Submit a custom action. Re-runs all validation gates, charges credits (3 credits standard, 6 if the user already chose an action on this page), and triggers page generation.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+- `pageId` (string, required): Current page ID
+
+**Credit Consumption:**
+- Standard: 3 credits (configurable via `CREDIT_COSTS.CUSTOM_ACTION`)
+- After existing choice: 6 credits (configurable via `CREDIT_COSTS.CUSTOM_ACTION_AFTER_CHOICE`)
+- Returns 402 Payment Required if insufficient credits
+
+**Request Body:**
+```json
+{
+  "text": "I try to pick the lock with my hairpin"
+}
+```
+
+**Parameters:**
+- `text` (string, required): Custom action text (3-60 chars)
+
+**Response (202 Accepted):**
+```json
+{
+  "message": "Custom action submitted successfully. Page generation in progress.",
+  "pollingInfo": {
+    "pollingUrl": "/api/books/the-haunting/page456/candidates/status",
+    "pollingIntervalMs": 2000,
+    "maxPollingTimeMs": 80000
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Missing text, rejected custom action
+- `402 Payment Required`: Insufficient credits
+- `404 Not Found`: Page not found
+
+---
+
+## Psychological Features
+
+### GET /api/books/:identifier/psychological-profile
+
+Returns the post-ending "psychological autopsy" — who the MC became, the ending they reached, and teasers for what they didn't trigger. Uses the final page's story state to derive the profile and ending recommendation. No AI calls: purely templated from already-computed data.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+
+**Response (200 OK):**
+```json
+{
+  "archetype": "the_paranoid",
+  "stability": "cracking",
+  "dominantTraits": ["fearful", "suspicious", "cautious"],
+  "manipulationAffinity": "fear",
+  "ending": {
+    "type": "false_reality",
+    "summary": "Paranoia pays off: the world actually isn't real."
+  },
+  "missedTeasers": [
+    {
+      "archetype": "the_explorer",
+      "trigger": "you let fear close your eyes",
+      "wouldHaveEnded": "loop",
+      "teaser": "If you'd trusted just once, you'd have uncovered the truth beneath the lies."
+    }
+  ]
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not the book owner
+- `404 Not Found`: Book not found or no profile data available
+
+---
+
+### GET /api/books/:identifier/locked-paths
+
+Returns a timeline of places, connections, and threads that became permanently locked or closed during the story — the "paths not taken." Scans story state history to detect when place connections became blocked/destroyed/restricted and story threads were closed/resolved.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `identifier` (string, required): Book slug or UUID v7
+
+**Response (200 OK):**
+```json
+{
+  "lockedPaths": [
+    {
+      "kind": "place_connection",
+      "label": "Abandoned Station → Underground Tunnel",
+      "restriction": "Route blocked",
+      "page": 12,
+      "context": "The route between Abandoned Station and Underground Tunnel is now blocked."
+    },
+    {
+      "kind": "thread",
+      "label": "Who left the footsteps?",
+      "restriction": "Closed",
+      "page": 18,
+      "context": "The thread \"Who left the footsteps?\" is now closed."
+    }
+  ]
+}
+```
+
+**Error Responses:**
+- `403 Forbidden`: Not the book owner
+- `404 Not Found`: Book not found
+
+---
+
 ## Comments
+
+### GET /api/books/comments
+
+Retrieves comments made by the authenticated user, optionally filtered by book.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Query Parameters:**
+- `bookId` (string, optional): Filter by book ID
+- `limit` (number, optional): Maximum number of results (default: 50)
+- `offset` (number, optional): Pagination offset (default: 0)
+
+**Response (200 OK):**
+```json
+{
+  "comments": [
+    {
+      "id": "comment123",
+      "userId": "user456",
+      "bookId": "book123",
+      "parentCommentId": null,
+      "content": "This story is amazing!",
+      "createdAt": "2023-01-01T00:00:00.000Z",
+      "updatedAt": "2023-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
 
 ### GET /api/books/:id/comments
 
@@ -1393,6 +2007,47 @@ Creates a new comment on a book. Supports threaded comments via parentCommentId 
 **Error Responses:**
 - `400 Bad Request`: Invalid content, parent comment not found, parent comment belongs to different book
 - `404 Not Found`: Book not found
+
+---
+
+### PUT /api/books/comments/:id
+
+Updates a comment. Only the original author can update their own comments.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Comment ID
+
+**Request Body:**
+```json
+{
+  "content": "Updated comment content"
+}
+```
+
+**Parameters:**
+- `content` (string, required): Updated comment content (max 5000 chars)
+
+**Response (200 OK):**
+```json
+{
+  "comment": {
+    "id": "comment123",
+    "userId": "user456",
+    "bookId": "book123",
+    "parentCommentId": null,
+    "content": "Updated comment content",
+    "createdAt": "2023-01-01T00:00:00.000Z",
+    "updatedAt": "2023-01-01T12:00:00.000Z"
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Content is required
+- `403 Forbidden`: Not the comment author
+- `404 Not Found`: Comment not found
 
 ---
 
@@ -1868,6 +2523,20 @@ curl https://api.twistloom.com/api/books \
 ---
 
 ## Changelog
+
+### v2.11.0 (2026-07-16)
+- **Fully documented all Books API routes** — added complete documentation for every endpoint missing from the spec:
+  - **Book Management**: `GET /api/books` (user library), `GET /api/books/generations/active`, `PATCH /:id/visibility`, `PATCH /:id/archive`, `POST /:identifier/purchase`
+  - **Book Reading**: `POST /:identifier/:pageId/confirm-visit`, `GET /:identifier/branches`, `POST /:identifier/:pageId/actions/hint`
+  - **Comments**: `GET /api/books/comments` (user's own), `PUT /api/books/comments/:id`
+  - **Social Interactions**: `POST /:identifier/:pageId/share`, `GET /share/:username/:bookSlug/:pageId`
+  - **Custom Actions**: `POST /:identifier/:pageId/custom-actions/preview`, `POST /:identifier/:pageId/custom-actions/submit`
+  - **Psychological Features**: `GET /:identifier/psychological-profile`, `GET /:identifier/locked-paths`
+- **Rewrote overview JSDoc** in `books.ts` to enumerate all 30+ routes grouped by category
+- **Updated Table of Contents** to include all newly documented sections with anchor links
+
+### v2.10.0 (2026-07-16)
+- **Added `PATCH /api/books/favorites/rename-collection`** — renames a collection across all of the authenticated user's favorites. Updates every row in `user_favorites` matching `oldCollection` to `newCollection`. Returns the count of affected rows.
 
 ### v2.9.0 (2026-07-14)
 - **Updated `PUT /api/books/:id`** — now accepts `mc` (full MC object with avatar image upload) and `ending` (author-edited ending JSONB) fields alongside existing metadata

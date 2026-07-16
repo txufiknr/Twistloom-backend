@@ -12,33 +12,69 @@
  * - Psychological state management
  * - Translation support with caching
  * - Social interactions (likes, favorites, comments)
+ * - Custom actions with AI validation
+ * - Ending sharing and psychological profiles
  * 
  * Endpoints:
+ * 
+ * Book Creation & Generation:
  * - POST /api/books - Create new psychological thriller books (requires auth + credits)
  * - POST /api/books/stream - Create new psychological thriller books with streaming (requires auth + credits)
+ * - POST /api/books/async - Create new book asynchronously via GitHub Actions (requires auth + credits)
+ * - GET /api/books/:bookId/status - Poll async book creation status (requires auth)
+ * - POST /api/books/:bookId/cancel - Cancel a pending/in-progress book generation (requires auth)
+ * - POST /api/books/:bookId/retry - Retry a failed/cancelled book generation (requires auth)
+ * - GET /api/books/generations/active - List active in-progress generations (requires auth)
+ * - POST /api/books/workflow-webhook - Internal webhook for GitHub Actions workflow (internal auth)
+ * - POST /api/books/insert - Test route for direct book insertion (requires auth)
+ * 
+ * Book Retrieval & Management:
  * - GET /api/books - Retrieve user's book library (requires auth)
  * - GET /api/books/explore - Explore published books with search and pagination (optional auth)
+ * - GET /api/books/:identifier - Retrieve specific book by slug or id (optional auth)
  * - PUT /api/books/:id - Update book information and cover image (requires auth)
- * - GET /api/books/:identifier - Retrieve specific book by slug or id
- * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (requires auth)
- * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages via SSE (requires auth)
- * - GET /api/books/:identifier/:pageId/candidates/status - Poll candidate generation status (requires auth)
- * - POST /api/books/:identifier/:pageId/generate - Pre-generate candidate pages via github workflow (requires auth)
+ * - PATCH /api/books/:id/visibility - Update book visibility level (requires auth)
+ * - PATCH /api/books/:id/archive - Archive or unarchive a book (requires auth)
+ * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
  * - GET /api/books/:id/similar - Get similar books by keyword Jaccard similarity (optional auth)
+ * - GET /api/books/tags/popular - Get popular tags for filtering (no auth required)
+ * - GET /api/books/stats - Get public book statistics (optional auth)
+ * - POST /api/books/:identifier/purchase - Purchase a paid book with credits (requires auth)
+ * 
+ * Book Reading & Navigation:
+ * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (optional auth)
+ * - POST /api/books/:identifier/:pageId/confirm-visit - Confirm page visit and record progress (requires auth)
+ * - GET /api/books/:identifier/branches - List all branches for a book (optional auth)
+ * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages via SSE (requires auth)
+ * - GET /api/books/:identifier/:pageId/candidates/status - Poll candidate generation status (optional auth)
+ * - POST /api/books/:identifier/:pageId/actions/hint - Purchase an action hint (requires auth + credits)
+ * 
+ * Custom Actions:
+ * - POST /api/books/:identifier/:pageId/custom-actions/preview - Preview a custom action without charging (requires auth)
+ * - POST /api/books/:identifier/:pageId/custom-actions/submit - Submit a custom action and generate page (requires auth + credits)
+ * 
+ * Psychological Features:
+ * - GET /api/books/:identifier/psychological-profile - Get psychological "autopsy" of the MC (requires auth)
+ * - GET /api/books/:identifier/locked-paths - Get timeline of locked/closed paths (requires auth)
+ * 
+ * Social Interactions:
  * - POST /api/books/:id/like - Like a book (requires auth)
  * - DELETE /api/books/:id/like - Unlike a book (requires auth)
  * - POST /api/books/:id/favorite - Add book to favorites (requires auth)
  * - DELETE /api/books/:id/favorite - Remove book from favorites (requires auth)
- * - GET /api/books/comments - Get authenticated user's comments (requires auth)
+ * - PATCH /api/books/favorites/rename-collection - Rename a collection across all favorites (requires auth)
+ * - POST /api/books/:identifier/:pageId/share - Share a completed ending (requires auth)
+ * - GET /api/books/share/:username/:bookSlug/:pageId - Public endpoint for viewing a shared ending (no auth)
+ * 
+ * Comments:
  * - GET /api/books/:id/comments - Get book comments with pagination (optional auth)
  * - POST /api/books/:id/comments - Create comment on book (requires auth)
  * - PUT /api/books/comments/:id - Update comment (requires auth)
  * - DELETE /api/books/comments/:id - Delete comment on book (requires auth)
- * - GET /api/books/tags/popular - Get popular tags for filtering (no auth required)
- * - GET /api/books/stats - Get public book statistics (optional auth)
+ * - GET /api/books/comments - Get authenticated user's comments (requires auth)
+ * 
+ * Utilities:
  * - GET /api/books/prompt - Generate book creation prompt via SSE (optional auth)
- * - POST /api/books/insert - Test route for direct book insertion (requires auth)
- * - DELETE /api/books/:id - Delete a book and queue image for deletion (requires auth)
  */
 
 import type { Request, Response, Router as RouterType } from "express";
@@ -2462,6 +2498,80 @@ router.delete("/:id/favorite", requireAuth, async (req: Request, res: Response) 
     });
   } catch (error) {
     handleApiError(res, "Failed to unfavorite book", error);
+  }
+});
+
+/**
+ * PATCH /api/books/favorites/rename-collection
+ * 
+ * Renames a collection for the authenticated user across all their favorites.
+ * Updates every row in user_favorites where collection matches the old name
+ * to use the new collection name instead.
+ * 
+ * **Authentication:** Required (via `requireAuth`)
+ * 
+ * @body oldCollection - Current collection name to rename
+ * @body newCollection - New collection name to apply
+ * @returns Updated count of affected rows
+ * 
+ * @example
+ * PATCH /api/books/favorites/rename-collection
+ * Body: { "oldCollection": "Thriller", "newCollection": "Horror" }
+ * 
+ * Response (200):
+ * {
+ *   "updatedCount": 5,
+ *   "message": "Collection renamed successfully"
+ * }
+ * 
+ * @example
+ * PATCH /api/books/favorites/rename-collection
+ * Body: { "oldCollection": "NonExistent", "newCollection": "Horror" }
+ * 
+ * Response (200):
+ * {
+ *   "updatedCount": 0,
+ *   "message": "No favorites found with collection 'NonExistent'"
+ * }
+ */
+router.patch("/favorites/rename-collection", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { oldCollection, newCollection } = req.body;
+    const userId = req.userId!;
+
+    if (!oldCollection || typeof oldCollection !== 'string') {
+      return handleValidationError(res, "oldCollection is required and must be a string");
+    }
+
+    if (!newCollection || typeof newCollection !== 'string') {
+      return handleValidationError(res, "newCollection is required and must be a string");
+    }
+
+    if (oldCollection === newCollection) {
+      return res.json({
+        updatedCount: 0,
+        message: "oldCollection and newCollection are the same — no changes needed",
+      });
+    }
+
+    const result = await dbWrite
+      .update(userFavorites)
+      .set({ collection: newCollection })
+      .where(and(
+        eq(userFavorites.userId, userId),
+        eq(userFavorites.collection, oldCollection),
+      ));
+
+    const updatedCount = (result as { rowCount?: number })?.rowCount ?? 0;
+
+    res.json({
+      updatedCount,
+      message: updatedCount > 0
+        ? "Collection renamed successfully"
+        : `No favorites found with collection '${oldCollection}'`,
+    });
+  } catch (error) {
+    handleApiError(res, "Failed to rename collection", error);
   }
 });
 

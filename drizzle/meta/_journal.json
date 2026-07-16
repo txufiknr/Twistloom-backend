@@ -176,6 +176,13 @@
       "when": 1784023529497,
       "tag": "0024_glorious_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784161625144,
+      "tag": "0025_silent_nocturne",
+      "breakpoints": true
     }
   ]
 }
