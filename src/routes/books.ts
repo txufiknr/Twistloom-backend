@@ -68,9 +68,13 @@
  * 
  * Comments:
  * - GET /api/books/:id/comments - Get book comments with pagination (optional auth)
- * - POST /api/books/:id/comments - Create comment on book (requires auth)
+ * - POST /api/books/:id/comments - Create comment on book (or page/paragraph) (requires auth)
+ * - GET /api/books/:id/pages/:pageId/comments - Get comments for a page (optional auth)
+ * - POST /api/books/:id/pages/:pageId/comments - Create comment on a page (requires auth)
+ * - GET /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments - Get comments for a paragraph (optional auth)
+ * - POST /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments - Create comment on a paragraph (requires auth)
  * - PUT /api/books/comments/:id - Update comment (requires auth)
- * - DELETE /api/books/comments/:id - Delete comment on book (requires auth)
+ * - DELETE /api/books/comments/:id - Delete comment (requires auth)
  * - GET /api/books/comments - Get authenticated user's comments (requires auth)
  * 
  * Utilities:
@@ -81,7 +85,7 @@ import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
@@ -2588,10 +2592,14 @@ router.patch("/favorites/rename-collection", requireAuth, async (req: Request, r
  * @param id - Book ID
  * @query page - Page number for pagination (default: 1)
  * @query limit - Number of comments per page (default: 20)
+ * @query pageId - Filter to comments on a specific page (optional)
+ * @query paragraphNumber - Filter to comments on a specific paragraph within the page (optional, requires pageId)
  * @returns Paginated list of comments with user info
  * 
  * @example
  * GET /api/books/book123/comments?page=1&limit=20
+ * GET /api/books/book123/comments?pageId=page456
+ * GET /api/books/book123/comments?pageId=page456&paragraphNumber=3
  * 
  * Response (200):
  * {
@@ -2602,6 +2610,8 @@ router.patch("/favorites/rename-collection", requireAuth, async (req: Request, r
  *       "name": "John Doe",
  *       "imageUrl": "https://example.com/avatar.jpg",
  *       "bookId": "book123",
+ *       "pageId": null,
+ *       "paragraphNumber": null,
  *       "parentCommentId": null,
  *       "content": "This story is amazing!",
  *       "createdAt": "2023-01-01T00:00:00.000Z",
@@ -2622,10 +2632,24 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
   try {
     const { id } = req.params;
     const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
+    const { pageId, paragraphNumber } = req.query;
 
     // Check if book exists
     const book = await getBookFromDB(id as string);
     if (!book) return handleNotFoundError(res, "Book not found");
+
+    // Build filter conditions (book-scoped, optionally narrowed by page/paragraph)
+    const conditions = [eq(userComments.bookId, id as string)];
+    if (pageId) {
+      conditions.push(eq(userComments.pageId, pageId as string));
+      if (paragraphNumber !== undefined && paragraphNumber !== null && paragraphNumber !== '') {
+        const parsed = parseInt(paragraphNumber as string, 10);
+        if (Number.isNaN(parsed)) {
+          return handleValidationError(res, "paragraphNumber must be an integer");
+        }
+        conditions.push(eq(userComments.paragraphNumber, parsed));
+      }
+    }
 
     // Get total count using SQL COUNT(*)
     // Using SQL COUNT(*) is more efficient than selecting all rows and counting in JavaScript.
@@ -2633,7 +2657,7 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
     const [countResult] = await dbRead
       .select({ count: sql<number>`count(*)::int` })
       .from(userComments)
-      .where(eq(userComments.bookId, id as string));
+      .where(and(...conditions));
     const totalCount = countResult.count;
 
     // Get comments with user info
@@ -2645,6 +2669,8 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
         name: users.name,
         imageUrl: users.imageUrl,
         bookId: userComments.bookId,
+        pageId: userComments.pageId,
+        paragraphNumber: userComments.paragraphNumber,
         parentCommentId: userComments.parentCommentId,
         content: userComments.content,
         createdAt: userComments.createdAt,
@@ -2652,7 +2678,7 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
       } satisfies Record<keyof UserComment, unknown>)
       .from(userComments)
       .leftJoin(users, eq(userComments.userId, users.userId))
-      .where(eq(userComments.bookId, id as string))
+      .where(and(...conditions))
       .orderBy(desc(userComments.createdAt))
       .limit(limit)
       .offset(offset);
@@ -2681,11 +2707,19 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
  * @param id - Book ID
  * @body {string} content - Comment content (max 5000 chars)
  * @body {string} [parentCommentId] - Parent comment ID for replies
+ * @body {string} [pageId] - Page ID when commenting on a specific page
+ * @body {number} [paragraphNumber] - 1-based paragraph number when commenting on a paragraph (requires pageId)
  * @returns Created comment with user info
  * 
  * @example
  * POST /api/books/book123/comments
  * Body: { "content": "This story is amazing!", "parentCommentId": "comment789" }
+ * 
+ * POST /api/books/book123/comments
+ * Body: { "content": "Loved this page!", "pageId": "page456" }
+ * 
+ * POST /api/books/book123/comments
+ * Body: { "content": "This paragraph was intense", "pageId": "page456", "paragraphNumber": 3 }
  * 
  * Response (201):
  * {
@@ -2695,6 +2729,8 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
  *     "name": "John Doe",
  *     "imageUrl": "https://example.com/avatar.jpg",
  *     "bookId": "book123",
+ *     "pageId": null,
+ *     "paragraphNumber": null,
  *     "parentCommentId": null,
  *     "content": "This story is amazing!",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
@@ -2705,19 +2741,29 @@ router.get("/:id/comments", optionalAuth, async (req: Request, res: Response) =>
 router.post("/:id/comments", requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { content, parentCommentId } = req.body;
+    const { content, parentCommentId, pageId, paragraphNumber } = req.body;
     const userId = req.userId!;
 
-    if (!content || typeof content !== 'string' || content.trim().length === 0) {
-      return res.status(400).json({
-        error: "Content is required and must be a non-empty string"
-      });
-    }
+    const contentError = validateCommentContent(content);
+    if (contentError) return res.status(400).json({ error: contentError });
 
-    if (content.length > 5000) {
-      return res.status(400).json({
-        error: "Content exceeds maximum length of 5000 characters"
-      });
+    // Normalize and validate optional page/paragraph scope
+    let normalizedPageId: string | null = null;
+    let normalizedParagraphNumber: number | null = null;
+    if (pageId) {
+      if (typeof pageId !== 'string') {
+        return handleValidationError(res, "pageId must be a string");
+      }
+      normalizedPageId = pageId;
+      if (paragraphNumber !== undefined && paragraphNumber !== null) {
+        const parsed = parseInt(paragraphNumber, 10);
+        if (Number.isNaN(parsed) || parsed < 1) {
+          return handleValidationError(res, "paragraphNumber must be a positive integer");
+        }
+        normalizedParagraphNumber = parsed;
+      }
+    } else if (paragraphNumber !== undefined && paragraphNumber !== null) {
+      return handleValidationError(res, "paragraphNumber requires pageId");
     }
 
     // Check if book exists
@@ -2731,10 +2777,27 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       return handleNotFoundError(res, "Book not found");
     }
 
+    // Validate pageId belongs to this book when provided
+    if (normalizedPageId) {
+      const [page] = await dbRead
+        .select({ id: pages.id, bookId: pages.bookId })
+        .from(pages)
+        .where(eq(pages.id, normalizedPageId))
+        .limit(1);
+
+      if (!page) {
+        return handleNotFoundError(res, "Page not found");
+      }
+
+      if (page.bookId !== id) {
+        return handleValidationError(res, "Page does not belong to this book");
+      }
+    }
+
     // Validate parentCommentId if provided
     if (parentCommentId) {
       const [parentComment] = await dbRead
-        .select({ id: userComments.id, bookId: userComments.bookId })
+        .select({ id: userComments.id, bookId: userComments.bookId, pageId: userComments.pageId, paragraphNumber: userComments.paragraphNumber })
         .from(userComments)
         .where(eq(userComments.id, parentCommentId))
         .limit(1);
@@ -2745,6 +2808,14 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
 
       if (parentComment.bookId !== id) {
         return handleValidationError(res, "Parent comment does not belong to this book");
+      }
+
+      // Replies must live in the same scope as the parent comment
+      if ((parentComment.pageId ?? null) !== normalizedPageId) {
+        return handleValidationError(res, "Parent comment does not belong to this page");
+      }
+      if ((parentComment.paragraphNumber ?? null) !== normalizedParagraphNumber) {
+        return handleValidationError(res, "Parent comment does not belong to this paragraph");
       }
     }
 
@@ -2759,6 +2830,8 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
       const [newComment] = await tx.insert(userComments).values({
         userId,
         bookId: id as string,
+        pageId: normalizedPageId,
+        paragraphNumber: normalizedParagraphNumber,
         parentCommentId: parentCommentId || null,
         content: cleanContent,
         createdAt: new Date(),
@@ -2772,6 +2845,8 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
           name: users.name,
           imageUrl: users.imageUrl,
           bookId: userComments.bookId,
+          pageId: userComments.pageId,
+          paragraphNumber: userComments.paragraphNumber,
           parentCommentId: userComments.parentCommentId,
           content: userComments.content,
           createdAt: userComments.createdAt,
@@ -2788,6 +2863,413 @@ router.post("/:id/comments", requireAuth, async (req: Request, res: Response) =>
     res.status(201).json({ comment: commentWithUser });
   } catch (error) {
     handleApiError(res, "Failed to create comment", error);
+  }
+});
+
+/**
+ * Shared helper: validate raw comment content from the request body.
+ * Returns a human-readable error string when invalid, or null when valid.
+ */
+function validateCommentContent(content: unknown): string | null {
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
+    return "Content is required and must be a non-empty string";
+  }
+  if (content.length > 5000) {
+    return "Content exceeds maximum length of 5000 characters";
+  }
+  return null;
+}
+
+/**
+ * Shared helper: validate that a page belongs to the given book.
+ * Returns the page row (with bookId) or null when not found / mismatched.
+ */
+async function findPageInBook(pageId: string, bookId: string): Promise<{ id: string; bookId: string } | null> {
+  const [page] = await dbRead
+    .select({ id: pages.id, bookId: pages.bookId })
+    .from(pages)
+    .where(eq(pages.id, pageId))
+    .limit(1);
+
+  if (!page || page.bookId !== bookId) return null;
+  return page;
+}
+
+/**
+ * Shared helper: validate and normalize the optional page/paragraph scope supplied
+ * for a comment. When `pageId` is provided it must exist and belong to the book.
+ * `paragraphNumber` (when present) must be a positive integer and requires `pageId`.
+ * Returns the normalized values, or throws a descriptive error via the response helpers.
+ */
+async function resolveCommentScope(
+  req: Request,
+  res: Response,
+  bookId: string,
+  pageId: unknown,
+  paragraphNumber: unknown,
+): Promise<{ pageId: string | null; paragraphNumber: number | null } | null> {
+  if (!pageId) {
+    if (paragraphNumber !== undefined && paragraphNumber !== null) {
+      handleValidationError(res, "paragraphNumber requires pageId");
+      return null;
+    }
+    return { pageId: null, paragraphNumber: null };
+  }
+
+  if (typeof pageId !== 'string') {
+    handleValidationError(res, "pageId must be a string");
+    return null;
+  }
+
+  const page = await findPageInBook(pageId, bookId);
+  if (!page) {
+    handleNotFoundError(res, "Page not found");
+    return null;
+  }
+
+  let normalizedParagraphNumber: number | null = null;
+  if (paragraphNumber !== undefined && paragraphNumber !== null) {
+    const parsed = parseInt(paragraphNumber as string, 10);
+    if (Number.isNaN(parsed) || parsed < 1) {
+      handleValidationError(res, "paragraphNumber must be a positive integer");
+      return null;
+    }
+    normalizedParagraphNumber = parsed;
+  }
+
+  return { pageId, paragraphNumber: normalizedParagraphNumber };
+}
+
+/**
+ * Shared helper: create a comment within a resolved scope and return it joined with user info.
+ */
+async function createCommentInScope(
+  userId: string,
+  bookId: string,
+  content: string,
+  scope: { pageId: string | null; paragraphNumber: number | null },
+  parentCommentId?: string,
+): Promise<Record<keyof UserComment, unknown>> {
+  return dbWrite.transaction(async (tx) => {
+    const [newComment] = await tx.insert(userComments).values({
+      userId,
+      bookId,
+      pageId: scope.pageId,
+      paragraphNumber: scope.paragraphNumber,
+      parentCommentId: parentCommentId || null,
+      content,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }).returning();
+
+    const [joined] = await tx
+      .select({
+        id: userComments.id,
+        userId: userComments.userId,
+        name: users.name,
+        imageUrl: users.imageUrl,
+        bookId: userComments.bookId,
+        pageId: userComments.pageId,
+        paragraphNumber: userComments.paragraphNumber,
+        parentCommentId: userComments.parentCommentId,
+        content: userComments.content,
+        createdAt: userComments.createdAt,
+        updatedAt: userComments.updatedAt,
+      } satisfies Record<keyof UserComment, unknown>)
+      .from(userComments)
+      .leftJoin(users, eq(userComments.userId, users.userId))
+      .where(eq(userComments.id, newComment.id))
+      .limit(1);
+
+    return joined;
+  });
+}
+
+/**
+ * Shared helper: fetch paginated comments for a given book-scoped condition set.
+ */
+async function fetchComments(
+  bookId: string,
+  conditions: ReturnType<typeof eq>[],
+  page: number,
+  limit: number,
+): Promise<{ comments: Record<keyof UserComment, unknown>[]; pagination: ReturnType<typeof calculatePaginationMeta> }> {
+  const [countResult] = await dbRead
+    .select({ count: sql<number>`count(*)::int` })
+    .from(userComments)
+    .where(and(...conditions));
+  const totalCount = countResult.count;
+
+  const offset = (page - 1) * limit;
+  const comments = await dbRead
+    .select({
+      id: userComments.id,
+      userId: userComments.userId,
+      name: users.name,
+      imageUrl: users.imageUrl,
+      bookId: userComments.bookId,
+      pageId: userComments.pageId,
+      paragraphNumber: userComments.paragraphNumber,
+      parentCommentId: userComments.parentCommentId,
+      content: userComments.content,
+      createdAt: userComments.createdAt,
+      updatedAt: userComments.updatedAt,
+    } satisfies Record<keyof UserComment, unknown>)
+    .from(userComments)
+    .leftJoin(users, eq(userComments.userId, users.userId))
+    .where(and(...conditions))
+    .orderBy(desc(userComments.createdAt))
+    .limit(limit)
+    .offset(offset);
+
+  const pagination = calculatePaginationMeta(page, limit, totalCount);
+  return { comments, pagination };
+}
+
+/**
+ * GET /api/books/:id/pages/:pageId/comments
+ *
+ * Retrieves all comments scoped to a specific page of a book, optionally narrowed
+ * to a single paragraph. Supports pagination for large comment threads.
+ *
+ * @route GET /api/books/:id/pages/:pageId/comments
+ * @description Get paginated comments for a page (and optionally a paragraph)
+ * @auth Optional (optionalAuth)
+ *
+ * @param id - Book ID
+ * @param pageId - Page ID
+ * @query paragraphNumber - Filter to comments on a specific paragraph (optional)
+ * @query page - Page number for pagination (default: 1)
+ * @query limit - Number of comments per page (default: 20)
+ * @returns Paginated list of comments with user info
+ *
+ * @example
+ * GET /api/books/book123/pages/page456/comments
+ * GET /api/books/book123/pages/page456/comments?paragraphNumber=3
+ */
+router.get("/:id/pages/:pageId/comments", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { id, pageId } = req.params;
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
+    const { paragraphNumber } = req.query;
+
+    const book = await getBookFromDB(id as string);
+    if (!book) return handleNotFoundError(res, "Book not found");
+
+    const pageRow = await findPageInBook(pageId as string, id as string);
+    if (!pageRow) return handleNotFoundError(res, "Page not found");
+
+    const conditions = [eq(userComments.bookId, id as string), eq(userComments.pageId, pageId as string)];
+    if (paragraphNumber !== undefined && paragraphNumber !== null && paragraphNumber !== '') {
+      const parsed = parseInt(paragraphNumber as string, 10);
+      if (Number.isNaN(parsed)) {
+        return handleValidationError(res, "paragraphNumber must be an integer");
+      }
+      conditions.push(eq(userComments.paragraphNumber, parsed));
+    }
+
+    const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
+    res.json({ comments, pagination });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve page comments", error);
+  }
+});
+
+/**
+ * POST /api/books/:id/pages/:pageId/comments
+ *
+ * Creates a new comment on a specific page of a book. Supports threaded replies
+ * (via parentCommentId) and paragraph-level scoping via `paragraphNumber`.
+ *
+ * @route POST /api/books/:id/pages/:pageId/comments
+ * @description Create a comment on a page (optionally on a paragraph)
+ * @auth Required (requireAuth)
+ *
+ * @param id - Book ID
+ * @param pageId - Page ID
+ * @body {string} content - Comment content (max 5000 chars)
+ * @body {string} [parentCommentId] - Parent comment ID for replies
+ * @body {number} [paragraphNumber] - 1-based paragraph number within the page
+ * @returns Created comment with user info
+ *
+ * @example
+ * POST /api/books/book123/pages/page456/comments
+ * Body: { "content": "Loved this page!" }
+ *
+ * POST /api/books/book123/pages/page456/comments
+ * Body: { "content": "This paragraph was intense", "paragraphNumber": 3 }
+ */
+router.post("/:id/pages/:pageId/comments", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id, pageId } = req.params;
+    const { content, parentCommentId, paragraphNumber } = req.body;
+    const userId = req.userId!;
+
+    const contentError = validateCommentContent(content);
+    if (contentError) return res.status(400).json({ error: contentError });
+
+    const book = await dbRead.select({ id: books.id }).from(books).where(eq(books.id, id as string)).limit(1);
+    if (!book.length) return handleNotFoundError(res, "Book not found");
+
+    const pageRow = await findPageInBook(pageId as string, id as string);
+    if (!pageRow) return handleNotFoundError(res, "Page not found");
+
+    let normalizedParagraphNumber: number | null = null;
+    if (paragraphNumber !== undefined && paragraphNumber !== null) {
+      const parsed = parseInt(paragraphNumber, 10);
+      if (Number.isNaN(parsed) || parsed < 1) {
+        return handleValidationError(res, "paragraphNumber must be a positive integer");
+      }
+      normalizedParagraphNumber = parsed;
+    }
+
+    // Validate parentCommentId + scope consistency
+    if (parentCommentId) {
+      const [parentComment] = await dbRead
+        .select({ id: userComments.id, bookId: userComments.bookId, pageId: userComments.pageId, paragraphNumber: userComments.paragraphNumber })
+        .from(userComments)
+        .where(eq(userComments.id, parentCommentId))
+        .limit(1);
+
+      if (!parentComment) return handleNotFoundError(res, "Parent comment not found");
+      if (parentComment.bookId !== id) return handleValidationError(res, "Parent comment does not belong to this book");
+      if ((parentComment.pageId ?? null) !== pageId) return handleValidationError(res, "Parent comment does not belong to this page");
+      if ((parentComment.paragraphNumber ?? null) !== normalizedParagraphNumber) return handleValidationError(res, "Parent comment does not belong to this paragraph");
+    }
+
+    const cleanContent = sanitizeTextForDB(String(content).trim());
+    if (!cleanContent || cleanContent.length === 0) {
+      return handleValidationError(res, "Content is required and cannot be empty after sanitization");
+    }
+
+    const comment = await createCommentInScope(userId, id as string, cleanContent, {
+      pageId: pageId as string,
+      paragraphNumber: normalizedParagraphNumber,
+    }, parentCommentId);
+
+    res.status(201).json({ comment });
+  } catch (error) {
+    handleApiError(res, "Failed to create page comment", error);
+  }
+});
+
+/**
+ * GET /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments
+ *
+ * Retrieves all comments scoped to a specific paragraph of a page.
+ * Convenience route equivalent to
+ * `GET /api/books/:id/pages/:pageId/comments?paragraphNumber=N`.
+ *
+ * @route GET /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments
+ * @description Get paginated comments for a single paragraph
+ * @auth Optional (optionalAuth)
+ *
+ * @param id - Book ID
+ * @param pageId - Page ID
+ * @param paragraphNumber - 1-based paragraph number
+ * @query page - Page number for pagination (default: 1)
+ * @query limit - Number of comments per page (default: 20)
+ * @returns Paginated list of comments with user info
+ *
+ * @example
+ * GET /api/books/book123/pages/page456/paragraphs/3/comments
+ */
+router.get("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", optionalAuth, async (req: Request, res: Response) => {
+  try {
+    const { id, pageId, paragraphNumber } = req.params;
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE } = extractPaginationParams(req);
+
+    const book = await getBookFromDB(id as string);
+    if (!book) return handleNotFoundError(res, "Book not found");
+
+    const pageRow = await findPageInBook(pageId as string, id as string);
+    if (!pageRow) return handleNotFoundError(res, "Page not found");
+
+    const parsedParagraph = parseInt(paragraphNumber as string, 10);
+    if (Number.isNaN(parsedParagraph) || parsedParagraph < 1) {
+      return handleValidationError(res, "paragraphNumber must be a positive integer");
+    }
+
+    const conditions = [
+      eq(userComments.bookId, id as string),
+      eq(userComments.pageId, pageId as string),
+      eq(userComments.paragraphNumber, parsedParagraph),
+    ];
+
+    const { comments, pagination } = await fetchComments(id as string, conditions, page, limit);
+    res.json({ comments, pagination });
+  } catch (error) {
+    handleApiError(res, "Failed to retrieve paragraph comments", error);
+  }
+});
+
+/**
+ * POST /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments
+ *
+ * Creates a new comment on a specific paragraph of a page. Supports threaded
+ * replies (via parentCommentId).
+ *
+ * @route POST /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments
+ * @description Create a comment on a paragraph
+ * @auth Required (requireAuth)
+ *
+ * @param id - Book ID
+ * @param pageId - Page ID
+ * @param paragraphNumber - 1-based paragraph number
+ * @body {string} content - Comment content (max 5000 chars)
+ * @body {string} [parentCommentId] - Parent comment ID for replies
+ * @returns Created comment with user info
+ *
+ * @example
+ * POST /api/books/book123/pages/page456/paragraphs/3/comments
+ * Body: { "content": "This paragraph was intense" }
+ */
+router.post("/:id/pages/:pageId/paragraphs/:paragraphNumber/comments", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { id, pageId, paragraphNumber } = req.params;
+    const { content, parentCommentId } = req.body;
+    const userId = req.userId!;
+
+    const contentError = validateCommentContent(content);
+    if (contentError) return res.status(400).json({ error: contentError });
+
+    const parsedParagraph = parseInt(paragraphNumber as string, 10);
+    if (Number.isNaN(parsedParagraph) || parsedParagraph < 1) {
+      return handleValidationError(res, "paragraphNumber must be a positive integer");
+    }
+
+    const book = await dbRead.select({ id: books.id }).from(books).where(eq(books.id, id as string)).limit(1);
+    if (!book.length) return handleNotFoundError(res, "Book not found");
+
+    const pageRow = await findPageInBook(pageId as string, id as string);
+    if (!pageRow) return handleNotFoundError(res, "Page not found");
+
+    if (parentCommentId) {
+      const [parentComment] = await dbRead
+        .select({ id: userComments.id, bookId: userComments.bookId, pageId: userComments.pageId, paragraphNumber: userComments.paragraphNumber })
+        .from(userComments)
+        .where(eq(userComments.id, parentCommentId))
+        .limit(1);
+
+      if (!parentComment) return handleNotFoundError(res, "Parent comment not found");
+      if (parentComment.bookId !== id) return handleValidationError(res, "Parent comment does not belong to this book");
+      if ((parentComment.pageId ?? null) !== pageId) return handleValidationError(res, "Parent comment does not belong to this page");
+      if ((parentComment.paragraphNumber ?? null) !== parsedParagraph) return handleValidationError(res, "Parent comment does not belong to this paragraph");
+    }
+
+    const cleanContent = sanitizeTextForDB(String(content).trim());
+    if (!cleanContent || cleanContent.length === 0) {
+      return handleValidationError(res, "Content is required and cannot be empty after sanitization");
+    }
+
+    const comment = await createCommentInScope(userId, id as string, cleanContent, {
+      pageId: pageId as string,
+      paragraphNumber: parsedParagraph,
+    }, parentCommentId);
+
+    res.status(201).json({ comment });
+  } catch (error) {
+    handleApiError(res, "Failed to create paragraph comment", error);
   }
 });
 
@@ -2866,6 +3348,8 @@ router.delete("/comments/:id", requireAuth, async (req: Request, res: Response) 
  *     "id": "comment123",
  *     "userId": "user456",
  *     "bookId": "book123",
+ *     "pageId": "page456",
+ *     "paragraphNumber": 3,
  *     "parentCommentId": null,
  *     "content": "Updated comment content",
  *     "createdAt": "2023-01-01T00:00:00.000Z",
@@ -2879,17 +3363,8 @@ router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => 
     const { content } = req.body;
     const userId = req.userId!;
 
-    if (!content || typeof content !== 'string' || content.trim().length === 0) {
-      return res.status(400).json({
-        error: "Content is required and must be a non-empty string"
-      });
-    }
-
-    if (content.length > 5000) {
-      return res.status(400).json({
-        error: "Content exceeds maximum length of 5000 characters"
-      });
-    }
+    const contentError = validateCommentContent(content);
+    if (contentError) return res.status(400).json({ error: contentError });
 
     // Sanitize content before storing
     const cleanContent = sanitizeTextForDB(String(content).trim());
@@ -2951,6 +3426,8 @@ router.put("/comments/:id", requireAuth, async (req: Request, res: Response) => 
  *       "id": "comment123",
  *       "userId": "user456",
  *       "bookId": "book123",
+ *       "pageId": "page456",
+ *       "paragraphNumber": 3,
  *       "parentCommentId": null,
  *       "content": "This story is amazing!",
  *       "createdAt": "2023-01-01T00:00:00.000Z",

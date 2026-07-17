@@ -313,11 +313,15 @@ type BookSortingOptions =
    - [Share Ending](#post-apibooksidentifierpageidshare)
    - [View Shared Ending](#get-apibooksshareusernamebookslugpageid)
 8. [Comments](#comments)
-   - [Get User Comments](#get-apibookscomments)
-   - [Get Book Comments](#get-apibooksidcomments)
-   - [Create Comment](#post-apibooksidcomments)
-   - [Update Comment](#put-apibookscommentsid)
-   - [Delete Comment](#delete-apibookscommentsid)
+    - [Get User Comments](#get-apibookscomments)
+    - [Get Book Comments](#get-apibooksidcomments)
+    - [Get Page Comments](#get-apibooksidpagespageidcomments)
+    - [Get Paragraph Comments](#get-apibooksidpagespageidparagraphsparagraphnumbercomments)
+    - [Create Comment](#post-apibooksidcomments)
+    - [Create Page Comment](#post-apibooksidpagespageidcomments)
+    - [Create Paragraph Comment](#post-apibooksidpagespageidparagraphsparagraphnumbercomments)
+    - [Update Comment](#put-apibookscommentsid)
+    - [Delete Comment](#delete-apibookscommentsid)
 9. [Exploration](#exploration)
    - [Explore Books](#get-apibooksexplore)
    - [Get Popular Tags](#get-apibookstagspopular)
@@ -1245,6 +1249,11 @@ Retrieves a specific page by book identifier (slug or UUID) and page ID. Support
     "translatedText": "La biblioteca estaba en silencio excepto por la lluvia...",
     "aiProvider": "gemini",
     "aiModel": "gemini-2.5-flash",
+    "paragraphCommentCounts": {
+      "0": 5,
+      "1": 2,
+      "3": 1
+    },
     "createdAt": "2023-01-01T00:00:00.000Z"
   },
   "book": {
@@ -1267,6 +1276,7 @@ Retrieves a specific page by book identifier (slug or UUID) and page ID. Support
 - Includes user's previously chosen action if they've visited this page
 - Supports translation via Accept-Language header (cached for performance)
 - Returns originalActionsCount to show total actions before filtering
+- Returns `paragraphCommentCounts`, a map of comment counts keyed by paragraph number (1-based). Page-level comments (no paragraph scope) are reported under the key `0`. Only paragraphs with at least one comment are included. Use this for per-paragraph comment badges. Comments themselves are fetched via the page/paragraph comment endpoints.
 
 **Error Responses:**
 - `404 Not Found`: Book or page not found
@@ -1910,6 +1920,8 @@ Retrieves comments made by the authenticated user, optionally filtered by book.
       "id": "comment123",
       "userId": "user456",
       "bookId": "book123",
+      "pageId": "page456",
+      "paragraphNumber": 3,
       "parentCommentId": null,
       "content": "This story is amazing!",
       "createdAt": "2023-01-01T00:00:00.000Z",
@@ -1923,7 +1935,7 @@ Retrieves comments made by the authenticated user, optionally filtered by book.
 
 ### GET /api/books/:id/comments
 
-Retrieves all comments for a specific book. Supports pagination for large comment threads.
+Retrieves all comments for a specific book. Supports pagination for large comment threads, and can be narrowed to a specific page and/or paragraph via query parameters.
 
 **Authentication:** Optional (via `optionalAuth`)
 
@@ -1933,6 +1945,8 @@ Retrieves all comments for a specific book. Supports pagination for large commen
 **Query Parameters:**
 - `page` (number, optional): Page number (default: 1)
 - `limit` (number, optional): Comments per page (default: 20)
+- `pageId` (string, optional): Filter to comments on a specific page
+- `paragraphNumber` (number, optional): Filter to comments on a specific paragraph within the page (requires `pageId`)
 
 **Response (200 OK):**
 ```json
@@ -1944,6 +1958,8 @@ Retrieves all comments for a specific book. Supports pagination for large commen
       "name": "John Doe",
       "imageUrl": "https://example.com/avatar.jpg",
       "bookId": "book123",
+      "pageId": null,
+      "paragraphNumber": null,
       "parentCommentId": null,
       "content": "This story is amazing!",
       "createdAt": "2023-01-01T00:00:00.000Z",
@@ -1962,13 +1978,62 @@ Retrieves all comments for a specific book. Supports pagination for large commen
 ```
 
 **Error Responses:**
+- `400 Bad Request`: `paragraphNumber` is not an integer
 - `404 Not Found`: Book not found
+
+---
+
+### GET /api/books/:id/pages/:pageId/comments
+
+Retrieves all comments scoped to a specific page of a book, optionally narrowed to a single paragraph. Supports pagination.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+- `pageId` (string, required): Page ID
+
+**Query Parameters:**
+- `page` (number, optional): Page number (default: 1)
+- `limit` (number, optional): Comments per page (default: 20)
+- `paragraphNumber` (number, optional): Filter to comments on a specific paragraph within the page
+
+**Response (200 OK):** Same shape as `GET /api/books/:id/comments` (comments carry `pageId` and `paragraphNumber`).
+
+**Error Responses:**
+- `400 Bad Request`: `paragraphNumber` is not an integer
+- `404 Not Found`: Book not found, or page does not belong to this book
+
+---
+
+### GET /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments
+
+Retrieves all comments scoped to a specific paragraph of a page. Convenience route equivalent to `GET /api/books/:id/pages/:pageId/comments?paragraphNumber=N`.
+
+**Authentication:** Optional (via `optionalAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+- `pageId` (string, required): Page ID
+- `paragraphNumber` (number, required): 1-based paragraph number
+
+**Query Parameters:**
+- `page` (number, optional): Page number (default: 1)
+- `limit` (number, optional): Comments per page (default: 20)
+
+**Response (200 OK):** Same shape as `GET /api/books/:id/comments`.
+
+**Error Responses:**
+- `400 Bad Request`: `paragraphNumber` is not a positive integer
+- `404 Not Found`: Book not found, or page does not belong to this book
 
 ---
 
 ### POST /api/books/:id/comments
 
-Creates a new comment on a book. Supports threaded comments via parentCommentId for replies.
+Creates a new comment on a book. Supports threaded comments via `parentCommentId`, and can be scoped to a specific page and/or paragraph via `pageId` and `paragraphNumber`.
+
+When `pageId` is provided it must belong to the book. When `paragraphNumber` is provided, `pageId` is required. Replies (`parentCommentId`) must live in the same page/paragraph scope as the parent comment.
 
 **Authentication:** Required (via `requireAuth`)
 
@@ -1983,9 +2048,26 @@ Creates a new comment on a book. Supports threaded comments via parentCommentId 
 }
 ```
 
+```json
+{
+  "content": "Loved this page!",
+  "pageId": "page456"
+}
+```
+
+```json
+{
+  "content": "This paragraph was intense",
+  "pageId": "page456",
+  "paragraphNumber": 3
+}
+```
+
 **Parameters:**
 - `content` (string, required): Comment content (max 5000 chars)
 - `parentCommentId` (string, optional): Parent comment ID for replies
+- `pageId` (string, optional): Page ID when commenting on a specific page
+- `paragraphNumber` (number, optional): 1-based paragraph number when commenting on a paragraph (requires `pageId`)
 
 **Response (201 Created):**
 ```json
@@ -1996,6 +2078,8 @@ Creates a new comment on a book. Supports threaded comments via parentCommentId 
     "name": "John Doe",
     "imageUrl": "https://example.com/avatar.jpg",
     "bookId": "book123",
+    "pageId": null,
+    "paragraphNumber": null,
     "parentCommentId": null,
     "content": "This story is amazing!",
     "createdAt": "2023-01-01T00:00:00.000Z",
@@ -2005,8 +2089,78 @@ Creates a new comment on a book. Supports threaded comments via parentCommentId 
 ```
 
 **Error Responses:**
-- `400 Bad Request`: Invalid content, parent comment not found, parent comment belongs to different book
-- `404 Not Found`: Book not found
+- `400 Bad Request`: Invalid content, `paragraphNumber` without `pageId`, or `paragraphNumber` not a positive integer
+- `404 Not Found`: Book not found, page not found, parent comment not found
+- `403 Forbidden`: Parent comment belongs to a different book/page/paragraph
+
+---
+
+### POST /api/books/:id/pages/:pageId/comments
+
+Creates a new comment on a specific page of a book. Supports threaded replies (via `parentCommentId`) and paragraph-level scoping via `paragraphNumber`. The `pageId` in the path is authoritative; any `pageId` in the body is ignored.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+- `pageId` (string, required): Page ID
+
+**Request Body:**
+```json
+{
+  "content": "Loved this page!"
+}
+```
+
+```json
+{
+  "content": "This paragraph was intense",
+  "paragraphNumber": 3
+}
+```
+
+**Parameters:**
+- `content` (string, required): Comment content (max 5000 chars)
+- `parentCommentId` (string, optional): Parent comment ID for replies
+- `paragraphNumber` (number, optional): 1-based paragraph number within the page
+
+**Response (201 Created):** Same shape as `POST /api/books/:id/comments` (with `pageId` set from the path).
+
+**Error Responses:**
+- `400 Bad Request`: Invalid content, or `paragraphNumber` not a positive integer
+- `404 Not Found`: Book not found, page not found, parent comment not found
+- `403 Forbidden`: Parent comment belongs to a different book/page/paragraph
+
+---
+
+### POST /api/books/:id/pages/:pageId/paragraphs/:paragraphNumber/comments
+
+Creates a new comment on a specific paragraph of a page. Supports threaded replies (via `parentCommentId`). The `pageId` and `paragraphNumber` in the path are authoritative.
+
+**Authentication:** Required (via `requireAuth`)
+
+**Path Parameters:**
+- `id` (string, required): Book ID
+- `pageId` (string, required): Page ID
+- `paragraphNumber` (number, required): 1-based paragraph number
+
+**Request Body:**
+```json
+{
+  "content": "This paragraph was intense"
+}
+```
+
+**Parameters:**
+- `content` (string, required): Comment content (max 5000 chars)
+- `parentCommentId` (string, optional): Parent comment ID for replies
+
+**Response (201 Created):** Same shape as `POST /api/books/:id/comments` (with `pageId` and `paragraphNumber` set from the path).
+
+**Error Responses:**
+- `400 Bad Request`: Invalid content, or `paragraphNumber` not a positive integer
+- `404 Not Found`: Book not found, page not found, parent comment not found
+- `403 Forbidden`: Parent comment belongs to a different book/page/paragraph
 
 ---
 
@@ -2036,6 +2190,8 @@ Updates a comment. Only the original author can update their own comments.
     "id": "comment123",
     "userId": "user456",
     "bookId": "book123",
+    "pageId": "page456",
+    "paragraphNumber": 3,
     "parentCommentId": null,
     "content": "Updated comment content",
     "createdAt": "2023-01-01T00:00:00.000Z",

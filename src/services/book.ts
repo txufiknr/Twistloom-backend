@@ -12,7 +12,7 @@
  */
 
 import { type DBClient, dbRead, dbWrite, isTransaction } from "../db/client.js";
-import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages } from "../db/schema.js";
+import { pages, books, branches, users, userPageProgress, userCompletedBooks, userActionHints, customActions, bookGenerations, uploadedImages, userComments } from "../db/schema.js";
 import type ImageKit from "@imagekit/nodejs";
 import { and, eq, asc, or, desc, ne, sql, isNull, lt } from "drizzle-orm";
 import { getErrorMessage } from "../utils/error.js";
@@ -1426,7 +1426,7 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
         .then(rows => rows[0]?.displayName ?? book?.title ?? null);
 
   // Parallelize independent database queries and API calls
-  const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName] = await Promise.all([
+  const [selectedActions, storyState, translation, shownActionHint, communityActions, branchName, paragraphCommentCountsRows] = await Promise.all([
     // Query user's chosen action for this page (if authenticated)
     userId ? getPageActionsFromDB(userId, bookId, pageId) : Promise.resolve([]),
 
@@ -1464,6 +1464,21 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
 
     // Resolve human-readable branch name
     branchNamePromise,
+
+    // Fetch per-paragraph comment counts for this page (page-level comments
+    // use paragraphNumber = 0). Grouped server-side to avoid transferring
+    // full comment rows for the count badges.
+    dbRead
+      .select({
+        paragraphNumber: sql<number>`COALESCE(${userComments.paragraphNumber}, 0)`,
+        count: sql<number>`COUNT(*)::int`,
+      })
+      .from(userComments)
+      .where(and(
+        eq(userComments.bookId, bookId),
+        eq(userComments.pageId, pageId),
+      ))
+      .groupBy(sql`COALESCE(${userComments.paragraphNumber}, 0)`),
   ]);
 
   if (targetLanguage && translation) {
@@ -1546,6 +1561,11 @@ export async function mapToEnrichedPage(dbPage: DBPage, options: EnrichedPageOpt
     shownActionHint,
     context, // context is the SSOT for full action + plot-flag history
     communityActions: communityActions.length > 0 ? communityActions : undefined,
+
+    // Per-paragraph comment counts for this page (key 0 = page-level comments)
+    paragraphCommentCounts: paragraphCommentCountsRows.length > 0
+      ? Object.fromEntries(paragraphCommentCountsRows.map(row => [row.paragraphNumber, row.count]))
+      : undefined,
 
     // Provider info
     aiProvider: dbPage.aiProvider || undefined,

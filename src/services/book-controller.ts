@@ -444,7 +444,7 @@ export function buildSearchCondition(search?: string) {
  * Handles all filtering options, search relevance scoring, and specialised book sorting.
  *
  * Sorting Hierarchy:
- * 1. Primary: Book-specific sorting (applyBookSorting) — handles popular, trending, top-picks, originals, newest
+ * 1. Primary: Book-specific sorting ({@link applyBookSorting}) — handles popular, trending, top-picks, originals, newest
  * 2. Secondary: Contextual sorting — relevance for search, generic column sorting otherwise
  *
  * @param params - Query parameters object
@@ -687,6 +687,7 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       )`;
       query = query.where(readCondition);
       if (countQuery) countQuery.where(readCondition);
+      // TODO: where is this `last_read_at` comes from?
       return query.orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
     }
 

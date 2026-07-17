@@ -1230,6 +1230,10 @@ export type EnrichedStoryPage = Partial<Omit<UserStoryPage, 'stateDelta'>> & {
   communityActions?: CommunityAction[];
   aiProvider?: AIChatProvider | 'none';
   aiModel?: string;
+  /** Comment counts keyed by paragraph number (1-based) for this page.
+   * Only paragraphs with at least one comment are included. Page-level
+   * comments (no paragraph scope) are reported under the key `0`. */
+  paragraphCommentCounts?: Record<number, number>;
 };
 
 // export type StoryPageNav = Record<number, StoryPageNavItem>;

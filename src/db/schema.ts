@@ -742,6 +742,7 @@ export const userComments = pgTable(
     userId: userId().references(() => users.userId, { onDelete: "cascade" }), // Cascade delete when user is deleted
     bookId: bookId("cascade"), // Delete if book is deleted
     pageId: uuid("page_id").references(() => pages.id, { onDelete: "cascade" }), // Delete if page is deleted
+    paragraphNumber: integer("paragraph_number"), // 1-based paragraph index within the page (null for page-level comments)
     parentCommentId: uuid("parent_comment_id"), // For threaded comments
     content: text("content").notNull(),
     createdAt,
@@ -759,7 +760,13 @@ export const userComments = pgTable(
     
     // Composite index for parent comments count (optimized for commentsCount query)
     index("user_comments_book_parent_idx").on(t.bookId, t.parentCommentId),
-    
+
+    // Composite index for per-page comments (page-level + paragraph-level)
+    index("user_comments_book_page_idx").on(t.bookId, t.pageId),
+
+    // Composite index for per-paragraph comments (optimized for paragraph-scoped queries)
+    index("user_comments_book_page_para_idx").on(t.bookId, t.pageId, t.paragraphNumber),
+
     // Index for recent comments
     index("user_comments_created_idx").on(t.createdAt.desc()),
     

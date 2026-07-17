@@ -137,6 +137,8 @@ export type UserComment = {
   name: string;
   imageUrl: string;
   bookId: string;
+  pageId?: string;
+  paragraphNumber?: number;
   parentCommentId?: string;
   content: string;
   createdAt: Date;
