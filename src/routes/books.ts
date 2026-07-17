@@ -44,6 +44,7 @@
  * Book Reading & Navigation:
  * - GET /api/books/:identifier/:pageId - Retrieve specific pages with translation support (optional auth)
  * - POST /api/books/:identifier/:pageId/confirm-visit - Confirm page visit and record progress (requires auth)
+ * - POST /api/books/:identifier/:pageId/touch - Lightweight "last read" heartbeat updating session updatedAt (requires auth)
  * - GET /api/books/:identifier/branches - List all branches for a book (optional auth)
  * - GET /api/books/:identifier/:pageId/candidates - Pre-generate candidate pages via SSE (requires auth)
  * - GET /api/books/:identifier/:pageId/candidates/status - Poll candidate generation status (optional auth)
@@ -85,7 +86,7 @@ import type { Request, Response, Router as RouterType } from "express";
 import { Router } from "express";
 import { dbRead, dbWrite } from "../db/client.js";
 import { optionalAuth, requireAuth } from "../middleware/nextauth.js";
-import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages } from "../db/schema.js";
+import { books, branches, deletedImages, users, userLikes, userFavorites, userComments, bookGenerations, userActionHints, userPurchasedBooks, userPageProgress, userCompletedBooks, uploadedImages, userActivityLogs, pages, userSessions } from "../db/schema.js";
 import { getErrorMessage, handleApiError, handleForbiddenError, handleNotFoundError, handleRateLimitError, handleUnauthorizedError, handleValidationError } from "../utils/error.js";
 import { sanitizeTextForDB, sanitizeKeywords } from '../utils/text-processing.js';
 import { eq, and, desc, sql, ne, inArray, arrayOverlaps } from "drizzle-orm";
@@ -2896,51 +2897,6 @@ async function findPageInBook(pageId: string, bookId: string): Promise<{ id: str
 }
 
 /**
- * Shared helper: validate and normalize the optional page/paragraph scope supplied
- * for a comment. When `pageId` is provided it must exist and belong to the book.
- * `paragraphNumber` (when present) must be a positive integer and requires `pageId`.
- * Returns the normalized values, or throws a descriptive error via the response helpers.
- */
-async function resolveCommentScope(
-  req: Request,
-  res: Response,
-  bookId: string,
-  pageId: unknown,
-  paragraphNumber: unknown,
-): Promise<{ pageId: string | null; paragraphNumber: number | null } | null> {
-  if (!pageId) {
-    if (paragraphNumber !== undefined && paragraphNumber !== null) {
-      handleValidationError(res, "paragraphNumber requires pageId");
-      return null;
-    }
-    return { pageId: null, paragraphNumber: null };
-  }
-
-  if (typeof pageId !== 'string') {
-    handleValidationError(res, "pageId must be a string");
-    return null;
-  }
-
-  const page = await findPageInBook(pageId, bookId);
-  if (!page) {
-    handleNotFoundError(res, "Page not found");
-    return null;
-  }
-
-  let normalizedParagraphNumber: number | null = null;
-  if (paragraphNumber !== undefined && paragraphNumber !== null) {
-    const parsed = parseInt(paragraphNumber as string, 10);
-    if (Number.isNaN(parsed) || parsed < 1) {
-      handleValidationError(res, "paragraphNumber must be a positive integer");
-      return null;
-    }
-    normalizedParagraphNumber = parsed;
-  }
-
-  return { pageId, paragraphNumber: normalizedParagraphNumber };
-}
-
-/**
  * Shared helper: create a comment within a resolved scope and return it joined with user info.
  */
 async function createCommentInScope(
@@ -4158,6 +4114,74 @@ router.post("/:identifier/:pageId/actions/hint", requireAuth, async (req: Reques
 
     handleApiError(res, "Failed to purchase action hint", error);
   }
+});
+
+/**
+ * POST /api/books/:identifier/:pageId/touch
+ *
+ * Lightweight "last read" heartbeat. Updates the user's reading session
+ * `updated_at` (which the `reads` dashboard sort keys on) without recording a
+ * page visit, inserting page progress, consuming credits, or writing activity
+ * logs.
+ *
+ * Intended to be fired exactly once per page open from the reader client so the
+ * "continue reading" / sessions list re-orders with the most-recently-opened
+ * book on top. Idempotent: hitting the same page repeatedly just keeps bumping
+ * `updated_at`.
+ *
+ * @route POST /api/books/:identifier/:pageId/touch
+ * @description Mark the book's session as recently read (no progress side effects)
+ * @auth Required (requireAuth)
+ *
+ * @param identifier - Book slug or UUID v7
+ * @param pageId - Page identifier (UUID v7)
+ * @returns 200 `{ success: true, lastReadAt }` on success (or 404 if book/page missing)
+ *
+ * @example
+ * POST /api/books/whispering-halls/page456/touch
+ * → 200 { "success": true, "lastReadAt": "2026-07-17T12:00:00.000Z" }
+ */
+router.post("/:identifier/:pageId/touch", requireAuth, async (req: Request, res: Response) => {
+  const { identifier: bookIdentifier, pageId } = req.params;
+  const userId = req.userId!;
+  const pageIdStr = Array.isArray(pageId) ? pageId[0] : pageId;
+  const bookIdentifierStr = Array.isArray(bookIdentifier) ? bookIdentifier[0] : bookIdentifier;
+
+  if (!isValidUuid(pageIdStr)) {
+    return handleValidationError(res, "Invalid pageId: must be valid uuid");
+  }
+
+  // Resolve book id (slug or uuid) and confirm the page belongs to it.
+  const book = await resolveBook(bookIdentifierStr);
+  if (!book) return handleNotFoundError(res, "Book not found");
+  const dbPage = await getPageFromDB(pageIdStr, { bookIdentifier: book.id });
+  if (!dbPage) return handleNotFoundError(res, "Page not found");
+
+  // Upsert the active session row, bumping updated_at. This is the same row
+  // the `reads` sort and `getEnrichedBook` session subquery read from, so the
+  // dashboard reorders immediately — without any visit/progress/credit side effects.
+  const now = new Date();
+  const [session] = await dbWrite
+    .insert(userSessions)
+    .values({
+      userId,
+      bookId: book.id,
+      pageId: pageIdStr,
+      previousPageId: dbPage.parentId,
+      status: 'active',
+    })
+    .onConflictDoUpdate({
+      target: [userSessions.userId, userSessions.bookId],
+      set: {
+        pageId: pageIdStr,
+        previousPageId: dbPage.parentId,
+        status: 'active',
+        updatedAt: now,
+      },
+    })
+    .returning({ updatedAt: userSessions.updatedAt });
+
+  res.json({ success: true, lastReadAt: session?.updatedAt ?? now });
 });
 
 /**

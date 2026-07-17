@@ -687,8 +687,15 @@ function applyBookSorting(query: any, sortBy: BookSortOption = 'newest', current
       )`;
       query = query.where(readCondition);
       if (countQuery) countQuery.where(readCondition);
-      // TODO: where is this `last_read_at` comes from?
-      return query.orderBy(sql`COALESCE(last_read_at, ${books.updatedAt}) DESC`);
+      // Sort by the most recent read timestamp. A user has at most one
+      // user_sessions row per book (unique (user_id, book_id)), upserted on
+      // every visit, so its updated_at is the last-read time. Falls back to
+      // the book's updatedAt when no session exists (shouldn't happen here
+      // due to the readCondition filter above).
+      return query.orderBy(sql`COALESCE((
+        SELECT us.updated_at FROM user_sessions us
+        WHERE us.user_id = ${currentUserId} AND us.book_id = books.id
+      ), ${books.updatedAt}) DESC`);
     }
 
     case 'favorites': {
