@@ -4099,7 +4099,11 @@ export async function initializeBook(
 
     // ── 8. Build initial story state ──────────────────────────────────────────
     const injuries = generatedInitialState.injuries?.map<Injury>((injury) => ({ ...injury, pageAcquired: 1, placeId })) || [];
-    const healthStatus = calculateHealthStatus(injuries);
+    const healthStatus = calculateHealthStatus(injuries, {
+      traumaTagCount:  generatedInitialState.traumaTags?.length ?? 0,
+      fearLevel:       generatedInitialState.flags?.fear ?? 'low',
+      memoryIntegrity: 'stable', // TODO: shouldn't always be stable
+    });
 
     // Create initial story state with generated psychological profile
     const initialState: StoryState = {

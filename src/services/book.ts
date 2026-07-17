@@ -550,7 +550,11 @@ export async function persistPageWithState(params: {
         newState.pageId = newPage.id;
 
         // Calculate health status
-        newState.healthStatus = calculateHealthStatus(newState.injuries);
+        newState.healthStatus = calculateHealthStatus(newState.injuries, {
+          traumaTagCount:  newState.traumaTags.length,
+          memoryIntegrity: newState.memoryIntegrity,
+          fearLevel:       newState.flags.fear,
+        });
 
         // If this is a new branch (not "main"), create a branches row atomically
         if (currentBranchId !== "main") {

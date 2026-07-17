@@ -1569,6 +1569,7 @@ export type StoryStateSnapshotType = "interval" | "first" | "middle" | "last" | 
 
 export type StoryStateSource = 'original' | 'reconstructed';
 
+// TODO: should include memoryIntegrity
 export type InitialStoryState = Partial<Pick<StoryState, 'flags' | 'difficulty' | 'traumaTags' | 'plotFlags' | 'inventory'> & {
   injuries: InitialInjury[];
 }>;

@@ -552,7 +552,11 @@ export function applyStateDelta(baseState: StoryState, stateDelta: StateDelta, s
   // Apply injury updates (full replacements, remove which has severity of 0).
   if (injuries?.length) {
     newState.injuries = removeHealedInjuries(injuries);
-    newState.healthStatus = calculateHealthStatus(newState.injuries);
+    newState.healthStatus = calculateHealthStatus(newState.injuries, {
+      traumaTagCount:  newState.traumaTags.length,
+      memoryIntegrity: newState.memoryIntegrity,
+      fearLevel:       newState.flags.fear,
+    });
   }
 
   // Update world clock using AI-provided minutesPassed or scene-type heuristic
@@ -703,7 +707,7 @@ export async function advanceStoryState(state: StoryState, actionedPage: Pick<Ca
   const { actions: allActions, action, page } = actionedPage;
   const { phase } = getStoryStateInfo(state);
 
-  const selectedIndex = allActions.findIndex(action => action.text === action.text);
+  const selectedIndex = allActions.findIndex(a => a.text === action.text);
   const selectedLetter = String.fromCharCode(65 + selectedIndex); // A, B, C, etc.
   const narrativeContext: NarrativeContext = {
     momentum: actionedPage.momentum,
