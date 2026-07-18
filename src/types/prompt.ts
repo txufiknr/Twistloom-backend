@@ -1,4 +1,4 @@
-import type { Book } from "./book.js";
+import type { Book, BookMode } from "./book.js";
 import type { CandidateGenerationPage } from "./candidate-generation.js";
 import type { ActionedStoryPage, StoryState } from "./story.js";
 
@@ -33,6 +33,8 @@ export type BuildNextPageParams = {
 
 export type BuildNextPagePromptParams = {
   book: Book,
+  /** Book creation mode (story format) — drives branching behaviour in prompts */
+  mode?: BookMode,
   actionedPage: CandidateGenerationPage,
   advancedState: StoryState,
   previousPages: ActionedStoryPage[],

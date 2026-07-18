@@ -42,6 +42,8 @@ export interface PaginationParams {
   ageRange?: string;
   /** Gender filter (male/female) */
   gender?: string;
+  /** Mode filter (novel|interactive|multiverse) */
+  mode?: string;
   /** Collection name to filter favorites */
   collection?: string;
 }
@@ -82,6 +84,7 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
   const tags = req.query.tags as string | undefined;
   const ageRange = req.query.ageRange as string | undefined;
   const gender = req.query.gender as string | undefined;
+  const mode = req.query.mode as string | undefined;
   const collection = (req.query.collection as string || '').trim() || undefined;
 
   return {
@@ -96,6 +99,7 @@ export function extractPaginationParams(req: Request, defaultLimit: number = DEF
     tags,
     ageRange,
     gender,
+    mode,
     collection,
   };
 }

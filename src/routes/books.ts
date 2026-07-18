@@ -104,7 +104,7 @@ import { updateBook, updateBookVisibility, insertBook, uploadBookCoverImage, upl
 import { isValidBookSortOption, isValidLastUpdatedFilter } from "../utils/books.js";
 import { getEnrichedBookSelect, getSimilarBookSelect, buildBookQuery, visitBookPage } from "../services/book-controller.js";
 import { withCache, CACHE_KEYS, CACHE_TTL, invalidateUserBooksCache, invalidateExploreCache, invalidateUserProfileCache } from "../services/cache.js";
-import type { BookCreationStatus, BookGenerationPayload, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
+import type { BookCreationStatus, BookGenerationPayload, BookMode, BookSortOption, BookStatus, BookVisibility, EnrichedBookData } from "../types/book.js";
 import { bookStatuses, bookVisibilities, bookModes, lastUpdatedFilterOptions, storyGenerationSteps } from "../types/book.js";
 import { createBookCore, createBookValidate, handleBookCreationError, updateBookGenerationStatus } from "../services/book-creation.js";
 import { executeWithCredits, addCredits } from "../services/credits.js";
@@ -1708,6 +1708,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @query lastUpdated - Filter by last update time: anytime|today|this-week|this-month|this-year
  * @query ageRange - Filter by main character age range (format: n-m, e.g., 18-30)
  * @query gender - Filter by main character gender (male/female)
+ * @query mode - Filter by book creation mode (story format): novel|interactive|multiverse
  * @query status - Filter by comma-separated statuses (only applies with sortBy=creations). Values: active, draft, archived. E.g., "active,draft"
  * @returns Paginated list of books
  * 
@@ -1721,6 +1722,12 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  * @example
  * // Get user's own active and draft books
  * GET /api/books/explore?sortBy=creations&status=active,draft&page=1&limit=20
+ * 
+ * // Filter published books by mode (story format)
+ * GET /api/books/explore?mode=multiverse&sortBy=trending&page=1&limit=20
+ * 
+ * // Combine mode with other filters
+ * GET /api/books/explore?mode=interactive&language=en&ageRange=18-30&tags=thriller,mystery&sortBy=newest
  * 
  * // Response
  * {
@@ -1752,7 +1759,7 @@ router.get("/:id/similar", optionalAuth, async (req: Request, res: Response) => 
  */
 router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, collection } = extractPaginationParams(req);
+    const { page = 1, limit = DEFAULT_ITEMS_PER_PAGE, search, sortBy, sortOrder, lastUpdated, language, tags, ageRange, gender, mode, collection } = extractPaginationParams(req);
     const userId = req.userId || null;
     
     // Extract tags from query parameter (comma-separated)
@@ -1801,6 +1808,15 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       sanitizedGender = genderValidation.sanitized;
     }
 
+    // Validate mode if provided
+    let sanitizedMode: BookMode | undefined;
+    if (mode) {
+      if (!bookModes.includes(mode as BookMode)) {
+        return handleValidationError(res, `Invalid mode value. Must be one of: ${bookModes.join(', ')}`);
+      }
+      sanitizedMode = mode as BookMode;
+    }
+
     // Validate lastUpdated filter if provided
     if (lastUpdated && !isValidLastUpdatedFilter(lastUpdated)) {
       return handleValidationError(res, `Invalid lastUpdated value. Must be: ${lastUpdatedFilterOptions.join(', ')}`);
@@ -1843,7 +1859,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
       : and(eq(books.status, 'active'), eq(books.visibility, 'public'))!; // Only active & public books in explore
 
     // Cache strategy: don't cache user-specific or filtered queries
-    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
+    const shouldCache = page === 1 && !isCreations && !search && tagsArray.length === 0 && !language && !lastUpdated && !ageRange && !gender && !mode && !statusFilter && bookSortBy !== 'reads' && bookSortBy !== 'favorites' && bookSortBy !== 'recommendations' && bookSortBy !== 'for-you';
     const cacheKey = isCreations
       ? `books:user:${userId}:page:${page}`
       : bookSortBy === 'trending'
@@ -1879,6 +1895,7 @@ router.get("/explore", optionalAuth, async (req: Request, res: Response) => {
         minAge,
         maxAge,
         gender: sanitizedGender,
+        mode: sanitizedMode,
         currentUserId: userId, // Pass userId for user-specific sorting (reads, recommendations)
         collection, // Filter favorites by collection name
       });

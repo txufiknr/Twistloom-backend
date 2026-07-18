@@ -2278,8 +2278,10 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 - `tags` (string, optional): Comma-separated tags for filtering (e.g., "thriller,mystery,horror"). Books matching ANY tag will be included (OR logic)
 - `ageRange` (string, optional): Filter by main character age range (format: n-m, e.g. 18-30)
 - `sortBy` (string, optional): Field to sort by (default: newest). Options: newest, popular, trending, top-picks, originals, reads, recommendations, creations
-- `sortOrder` (string, optional): Sort direction (default: desc)`n- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
+- `sortOrder` (string, optional): Sort direction (default: desc)
+- `lastUpdated` (string, optional): Filter by last update time: anytime|today|this-week|this-month|this-year
 - `status` (string, optional): Filter by comma-separated statuses (only applies with `sortBy=creations`). Values: active, draft, archived. E.g., "active,draft"
+- `mode` (string, optional): Filter by book creation mode (story format). Values: `novel`, `interactive`, `multiverse`. E.g., "multiverse"
 
 **Shared Implementation:**
 - Uses same filter building helpers as GET /api/books (buildSearchCondition, buildTagsFilterCondition, combineFilterConditions)
@@ -2294,6 +2296,16 @@ Retrieves books for exploration or user's own creations. Supports both authentic
 **Example — Find all draft books (cancelled, failed, pending):**
 ```
 GET /api/books/explore?sortBy=creations&status=draft&page=1&limit=20
+```
+
+**Example — Filter published books by mode:**
+```
+GET /api/books/explore?mode=multiverse&sortBy=trending&page=1&limit=20
+```
+
+**Example — Combine mode filter with other filters:**
+```
+GET /api/books/explore?mode=interactive&language=en&ageRange=18-30&tags=thriller,mystery&sortBy=newest
 ```
 
 **Response (200 OK) — Published books (explore):**

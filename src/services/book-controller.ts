@@ -29,7 +29,7 @@ import { handleForbiddenError, handleNotFoundError } from "../utils/error.js";
 import { computeVisitStats, mapActionToSelectedAction, markPageVisited } from "./story.js";
 import { FREE_ACTION_SELECTION_UNTIL_PAGE } from "../config/story.js";
 import type { Request, Response } from "express";
-import type { BookAuthor, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
+import type { BookAuthor, BookMode, BookPageVisit, BookSortOption, BookStats, BookTranslation, EnrichedBookData, EnrichedBookFirstPage, EnrichedBookGeneration, EnrichedBookSession, VisitBookPageParams, VisitBookPageResult } from "../types/book.js";
 import type { Action, SelectedAction } from "../types/story.js";
 
 /**
@@ -411,6 +411,22 @@ export function buildGenderFilterCondition(gender?: string) {
 }
 
 /**
+ * Builds mode filter condition for book creation mode (story format).
+ *
+ * @param mode - Book mode value (novel|interactive|multiverse)
+ * @returns SQL condition or null if no mode
+ */
+export function buildModeFilterCondition(mode?: BookMode) {
+  if (!mode) {
+    return null;
+  }
+
+  // books.mode is a string-literal union column; cast the column to a plain
+  // string column so eq() accepts the string-valued filter param.
+  return eq(books.mode, mode);
+}
+
+/**
  * Builds search condition with ILIKE patterns for title, hook, summary, and keywords.
  *
  * Note: `books.keywords` is `text[]` — ILIKE cannot be applied directly to an array.
@@ -493,13 +509,15 @@ export function buildBookQuery<T>(
     maxAge?: number;
     /** Gender filter */
     gender?: string;
+    /** Mode filter (novel|interactive|multiverse) */
+    mode?: BookMode;
     /** Current user ID for user-specific sorting (reads, recommendations) */
     currentUserId?: string | null;
     /** Collection name to filter favorites (only applies when sortBy=favorites) */
     collection?: string;
   }
 ) {
-  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, currentUserId, collection } = params;
+  const { baseQuery, baseCondition, search, bookSortBy, genericSortBy, sortOrder, tags, language, lastUpdated, minAge, maxAge, gender, mode, currentUserId, collection } = params;
 
   // Build filter conditions using shared helpers
   const timeCondition      = buildTimeFilterCondition(lastUpdated);
@@ -508,6 +526,7 @@ export function buildBookQuery<T>(
   const tagsCondition      = buildTagsFilterCondition(tags || []);
   const ageRangeCondition  = buildAgeRangeFilterCondition(minAge, maxAge);
   const genderCondition    = buildGenderFilterCondition(gender);
+  const modeCondition      = buildModeFilterCondition(mode);
 
   // Combine all conditions with base condition
   const finalCondition = combineFilterConditions(
@@ -517,7 +536,8 @@ export function buildBookQuery<T>(
     searchCondition,
     tagsCondition,
     ageRangeCondition,
-    genderCondition
+    genderCondition,
+    modeCondition
   );
 
   // Apply secondary sorting: contextual sorting

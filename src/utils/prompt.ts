@@ -36,7 +36,7 @@ import type { DBNewBook } from "../types/schema.js";
 import type { ActionedStoryPage, Ending, EndingPlan, FactHistory, FutureNote, FutureNoteSchedule, FutureNoteStateTrigger, MemoryIntegrity, PastEvent, PlotFlag, SceneType, StateDelta, StoryGeneration, StoryOutline, StoryPage, StoryPhase, StoryStateInfo, UserStoryPage } from "../types/story.js";
 import type { AIChatConfig, AIChatConfigCaps, AIPromptForJson, AIPromptForJsonParams, AIResponse } from "../types/ai-chat.js";
 import type { CharacterMemory, CharacterRelationship, Injury, InventoryItem, PastInteraction, HealthStatus, StoryMCCandidate } from "../types/character.js";
-import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus } from "../types/book.js";
+import type { Book, BookCreationResponse, BookGenerationProgress, StoryGenerationStep, InitializeBookParams, CreateBookResponse, BookStatus, BookMode } from "../types/book.js";
 import type { BuildNextPageParams, GenerateBookCreationPromptParams, BuildNextPagePromptParams } from "../types/prompt.js";
 import type { AIChatStreamResult, ProgressCallback } from "../types/sse.js";
 import type { CandidateGenerationPage, CandidatePagesGeneration } from "../types/candidate-generation.js";
@@ -978,11 +978,11 @@ function buildNextPagePrompt(params: BuildNextPagePromptParams): string {
   const { language } = book;
 
   return [
-    `TASK: ${formatNextPageTaskPrompt(state, candidateCount, language)}`,
+    `TASK: ${formatNextPageTaskPrompt(state, candidateCount, language, book.mode)}`,
     formatNextPageStoryContextPrompt(params),
     formatNextPageNarrativePrompt(params),
     state.plannedCharacters?.length && RULES_PLANNED_CHARACTERS,
-    isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale })}`
+    isLastPage && `BRANCHING ACTIONS:\n${getActionRulesText({ isFinale, mode: book.mode })}`
   ].filter(Boolean).join(`\n\n---\n`);
 }
 
@@ -1362,7 +1362,7 @@ function buildNextPageEvaluatorPrompt(params: BuildNextPagePromptParams): string
 
   const taskPrompt = `TASK: Evaluate a newly generated branching story page from selected action, refine output, and re-evaluate — in that order.
 
-Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount, language)}
+Original task (on previous AI): ${formatNextPageTaskPrompt(state, candidateCount, language, book.mode)}
 
 ${formatNextPageStoryContextPrompt(params)}
 
@@ -1703,10 +1703,36 @@ OUTPUT FORMAT (strict JSON, no extra text):
  * @param stateInfo - Partial state containing progression flags like `isFirstPage` and `isFinale`.
  * @returns A highly optimized, capitalized-anchored prompt string for action generation.
  */
-function getActionRulesText(stateInfo: Partial<StoryStateInfo>): string {
-  const { isFirstPage, isFinale } = stateInfo;
+function getActionRulesText(stateInfo: Partial<StoryStateInfo> & { mode?: BookMode }): string {
+  const { isFirstPage, isFinale, mode } = stateInfo;
   const limit = isFirstPage || isFinale ? MAX_ACTION_CHOICES_FIRST_PAGE : MAX_ACTION_CHOICES;
 
+  // ── NOVEL: no branching actions at all ─────────────────────────────────────
+  if (mode === 'novel') {
+    return `This is a NOVEL — a strictly LINEAR story. Do NOT generate any branching actions or choices. Set "actions" to an empty array [] for every page. The narrative must flow as one continuous, inevitable path with a single ending.`;
+  }
+
+  // ── INTERACTIVE: branching, but exactly one destination per action ────────
+  if (mode === 'interactive') {
+    return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
+- text: ${ACTION_TEXT_LENGTH}. MUST be 100% unique (used as identifier).
+- Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
+- Naturally mix physical verbs (what to do) and dialogue (what to say).
+- Example: A. "Who are you?" / B. Run away, fast.
+- If no action is viable or needed, generate exactly 1 choice.
+
+${isFinale ? `ENTROPY COLLAPSE SYSTEM (Finale mechanic):
+- Reduce the number of meaningful actions while sustaining immersion.
+- Make actions feel constrained, inevitable, or repetitive. Completely different choices MUST funnel into the exact same terrifying consequence.
+- Example: A. Open the door / B. Knock first -> (Both lead to the door opening).`
+: `BRANCHING DIVERGENCE RULES:
+- Actions must be meaningfully distinct. No two actions should lead to the same implied consequence.
+- Each action MUST resolve to exactly ONE destination page (a single chosen path) — do NOT pre-generate alternate fates or parallel timelines.
+- Provide a mix of safe, risky, and ambiguous choices.
+- Occasionally include a deceptive choice.`}`;
+  }
+
+  // ── MULTIVERSE (default): current behaviour ───────────────────────────────
   return `Generate ${MIN_ACTION_CHOICES}-${limit} actions to choose:
 - text: ${ACTION_TEXT_LENGTH}. MUST be 100% unique (used as identifier).
 - Make actions feel immediate, natural, and narrative-driven. Avoid over-explaining.
@@ -2635,6 +2661,11 @@ ${buildEndingRules(state)}`;
  *
  * @param state - Current story state. Uses `page`, `maxPage`, and `memoryIntegrity` (bleed instruction is only injected when integrity is not `'stable'`).
  * @param candidateCount - Number of alternative continuations to generate. Pass `1` for the standard single-page path.
+ * @param language - Target language code (ISO 639-1) for localization lock.
+ * @param mode - Book creation mode. Controls the branching instruction:
+ *   - `novel`: no branching at all; `pages.actions` is always an empty array.
+ *   - `interactive`: each action has exactly one `destinationPageIds` (a single chosen path).
+ *   - `multiverse` (default when unset): like current behaviour — multiple alternate-fate continuations.
  * @returns A prompt string ready to be inserted as the `TASK:` section of the user message.
  *
  * @example
@@ -2643,8 +2674,8 @@ ${buildEndingRules(state)}`;
  * // → 'Continue the story in first-person ("I") POV. You're now writing page 4 of 10 — 6 pages remaining.'
  *
  * @example
- * // Two alternate fates, degraded memory integrity
- * formatNextPageTaskPrompt({ page: 4, maxPage: 10, memoryIntegrity: 'fragmented', ... }, 2);
+ * // Two alternate fates, degraded memory integrity (multiverse)
+ * formatNextPageTaskPrompt({ page: 4, maxPage: 10, memoryIntegrity: 'fragmented', ... }, 2, 'en', 'multiverse');
  * // → 'Continue the story in first-person ("I") POV. You're now writing page 4 of 10 — 6 pages remaining.
  * //    Generate 2 alternate-fate continuations — parallel timelines in the multiverse.
  * //    Each continuation must follow all the same narrative rules above, but diverge
@@ -2652,7 +2683,7 @@ ${buildEndingRules(state)}`;
  * //    Occasionally, let a faint echo bleed across timelines — a déjà vu, a half-remembered
  * //    feeling or hallucination — but keep it subtle.'
  */
-function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, language: string): string {
+function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, language: string, mode?: BookMode): string {
   const { page, maxPage, memoryIntegrity, flags } = state;
   const { trust, curiosity } = flags;
   const remainingPages = maxPage - page;
@@ -2665,6 +2696,21 @@ function formatNextPageTaskPrompt(state: StoryState, candidateCount: number, lan
 
   const base = `Continue the story in first-person ("I") POV${isNonEnglish ? ` in ${languageFormatted}` : ''}. You're now writing ${pageLabel}.`;
 
+  // ── NOVEL: strictly linear. Never offer branching choices. ──────────────
+  if (mode === 'novel') {
+    return `${base}
+This is a NOVEL — a strictly LINEAR story with a single path and a single ending. Do NOT write any branching actions or choices. Leave "actions" as an empty array []. The page must read as one continuous, inevitable progression of the narrative.`;
+  }
+
+  // ── INTERACTIVE: single chosen path per action. ───────────────────────
+  if (mode === 'interactive') {
+    if (candidateCount === 1) return `${base}
+This is an INTERACTIVE story — the reader's choices shape ONE path through the book. Write a small set of 2-3 distinct branching actions as usual, but each action leads to exactly ONE outcome. Do NOT pre-generate alternate fates; every action resolves to a single destination page.`;
+    return `${base}
+This is an INTERACTIVE story — the reader's choices shape ONE path through the book. Generate ${candidateCount} distinct alternate branches the reader could choose between, but each branch is a single, self-contained path (exactly one destination per action). Do NOT create parallel timelines that echo across each other.`;
+  }
+
+  // ── MULTIVERSE (default): current behaviour. ──────────────────────────
   if (candidateCount === 1) return base;
 
   // Only inject the cross-timeline bleed instruction when memory is degraded.
@@ -2679,10 +2725,10 @@ Each continuation must follow all the same narrative rules, but diverge into a d
 
 Multiple possible futures example:
 Open the door
-    ├── Empty, but echoes of his voice linger
-    ├── A missing fellow waits in the dark
-    ├── Something breathes inside
-    └── The room shouldn't exist`;
+  - Empty, but echoes of his voice linger
+  - A missing fellow waits in the dark
+  - Something breathes inside
+  - The room shouldn't exist`;
 }
 
 /**
@@ -3692,7 +3738,7 @@ FIRST PAGE RULES:
 - Max ${MAX_WORDS_PER_PAGE} words.
 
 BRANCHING ACTIONS:
-${getActionRulesText({ isFirstPage: true })}`;
+${getActionRulesText({ isFirstPage: true, mode: params.mode })}`;
 }
 
 const firstBookFieldInstructions: string = `Book Metadata:
