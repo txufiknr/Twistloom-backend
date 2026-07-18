@@ -4077,7 +4077,7 @@ export async function initializeBook(
         visitCount: 1,
         lastVisitedAtPage: 1,
         keyEvents: initialPlace.keyEvents?.map<PastEvent>(e => ({ page: 1, event: e })) ?? [],
-        knownConnections: [] // TODO: do we need to include initialCharacters here?
+        knownConnections: []
       } satisfies PlaceMemory
     };
 
